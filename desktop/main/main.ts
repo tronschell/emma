@@ -142,6 +142,7 @@ function openMain() {
     return;
   }
   mainWindow = secureWindow({
+    backgroundColor: "#00000000",
     width: 1380,
     height: 860,
     minWidth: 1040,
