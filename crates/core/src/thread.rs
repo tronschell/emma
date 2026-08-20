@@ -228,6 +228,13 @@ impl ThreadStore {
         let destination = self.path_for(&thread.id);
         let temporary = self.root.join(format!(".{}.tmp", thread.id));
         let result = (|| {
+            // ponytail: The single persistence worker owns this temp name; use
+            // unique temp names or locking if multi-process writers arrive.
+            match fs::remove_file(&temporary) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)

@@ -1,3 +1,4 @@
+use emma_core::LiveClient;
 use emma_ui::{
     ActivateFocused, AgentSurfaceView, Analyze, Cancel, DismissAgentSurface, FocusNext,
     FocusPrevious, LibraryView, OverlayPlacement, ScreenRect, SurfacePreferences,
@@ -14,7 +15,7 @@ actions!(emma, [Quit]);
 const SURFACE_WIDTH: f32 = 480.0;
 const SURFACE_HEIGHT: f32 = 220.0;
 
-fn open_library(cx: &mut App) {
+fn open_library(cx: &mut App, live: LiveClient) {
     let bounds = Bounds::centered(None, size(px(1040.0), px(700.0)), cx);
     cx.open_window(
         WindowOptions {
@@ -22,7 +23,7 @@ fn open_library(cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| LibraryView::new(window, cx)),
+        move |window, cx| cx.new(|cx| LibraryView::new(live, window, cx)),
     )
     .expect("open Emma library window");
 }
@@ -38,11 +39,10 @@ fn close_agent_surface(cx: &mut App) -> bool {
 
     handle
         .update(cx, |_, window, _| window.remove_window())
-        .expect("close Emma agent surface");
-    true
+        .is_ok()
 }
 
-fn toggle_agent_surface(_: &ToggleAgentSurface, cx: &mut App) {
+fn toggle_agent_surface(_: &ToggleAgentSurface, live: &LiveClient, cx: &mut App) {
     if close_agent_surface(cx) {
         return;
     }
@@ -77,14 +77,15 @@ fn toggle_agent_surface(_: &ToggleAgentSurface, cx: &mut App) {
             ))),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| AgentSurfaceView::new(SurfacePreferences::default(), window, cx)),
+        {
+            let live = live.clone();
+            move |window, cx| {
+                cx.new(|cx| AgentSurfaceView::new(live, SurfacePreferences::default(), window, cx))
+            }
+        },
     )
     .expect("open Emma agent surface");
     cx.activate(true);
-}
-
-fn dismiss_agent_surface(_: &DismissAgentSurface, cx: &mut App) {
-    close_agent_surface(cx);
 }
 
 fn quit(_: &Quit, cx: &mut App) {
@@ -113,21 +114,23 @@ pub mod capture {
 }
 
 fn main() {
-    application().run(|cx: &mut App| {
+    let live = runtime::start().expect("start Emma runtime");
+    application().run(move |cx: &mut App| {
+        gpui_base::init(cx);
         cx.on_action(quit);
-        cx.on_action(toggle_agent_surface);
-        cx.on_action(dismiss_agent_surface);
+        let surface_live = live.clone();
+        cx.on_action(move |action, cx| toggle_agent_surface(action, &surface_live, cx));
         cx.bind_keys([
             KeyBinding::new("cmd-shift-space", ToggleAgentSurface, None),
             KeyBinding::new("escape", DismissAgentSurface, Some("AgentSurface")),
             KeyBinding::new("enter", ActivateFocused, Some("AgentSurface")),
-            KeyBinding::new("space", ActivateFocused, Some("AgentSurface")),
+            KeyBinding::new("space", ActivateFocused, Some("AgentSurfaceButton")),
             KeyBinding::new("tab", FocusNext, Some("AgentSurface")),
             KeyBinding::new("shift-tab", FocusPrevious, Some("AgentSurface")),
             KeyBinding::new("cmd-enter", Analyze, Some("AgentSurface")),
             KeyBinding::new("cmd-period", Cancel, Some("AgentSurface")),
             KeyBinding::new("enter", ActivateFocused, Some("LibraryShell")),
-            KeyBinding::new("space", ActivateFocused, Some("LibraryShell")),
+            KeyBinding::new("space", ActivateFocused, Some("LibraryButton")),
             KeyBinding::new("tab", FocusNext, Some("LibraryShell")),
             KeyBinding::new("shift-tab", FocusPrevious, Some("LibraryShell")),
             KeyBinding::new("cmd-q", Quit, None),
@@ -146,7 +149,9 @@ fn main() {
         if let Err(reason) = global_hotkey::install_command_shift_space(cx) {
             eprintln!("Emma: {reason}; typed in-app shortcut remains active");
         }
-        open_library(cx);
+        open_library(cx, live.clone());
         cx.activate(true);
     });
 }
+
+mod runtime;

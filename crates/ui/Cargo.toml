@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 emma-core.workspace = true
 gpui.workspace = true
+gpui-base.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

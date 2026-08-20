@@ -7,8 +7,7 @@ test:
     cargo test --workspace --locked
 
 dev:
-    cargo run -p emma-desktop
+    cargo run --locked -p emma-desktop
 
 run:
-    cargo run --release -p emma-desktop
-
+    cargo run --locked --release -p emma-desktop

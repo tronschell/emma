@@ -1,8 +1,13 @@
-use crate::{ActivateFocused, Analyze, Cancel, FocusNext, FocusPrevious};
-use emma_core::OverlayPlacement;
-use gpui::{
-    Context, FocusHandle, FontWeight, Render, Role, Window, div, prelude::*, px, rgb, rgba,
+use crate::{
+    ActivateFocused, Analyze, Cancel, DismissAgentSurface, FocusNext, FocusPrevious,
+    ToggleAgentSurface,
 };
+use emma_core::{LiveClient, OverlayPlacement, Thread, ThreadRole};
+use gpui::{
+    AppContext as _, Context, FocusHandle, Focusable, FontWeight, MouseButton, Render, Role,
+    Subscription, Task, Window, div, prelude::*, px, rgb, rgba,
+};
+use gpui_base::input::{Input, InputBase, InputEvent, InputState};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenRect {
@@ -52,18 +57,8 @@ pub enum AgentSurfaceState {
 }
 
 impl AgentSurfaceState {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Ready => "Ready",
-            Self::Analyzing => "Analyzing",
-            Self::Saved => "Saved",
-            Self::Failed => "Failed",
-        }
-    }
-
     fn transition(self, event: AgentSurfaceEvent) -> Self {
         match (self, event) {
-            (Self::Analyzing, AgentSurfaceEvent::Cancel) => Self::Ready,
             (Self::Analyzing, AgentSurfaceEvent::Saved) => Self::Saved,
             (Self::Analyzing, AgentSurfaceEvent::Failed) => Self::Failed,
             (state, AgentSurfaceEvent::Analyze) if state != Self::Analyzing => Self::Analyzing,
@@ -75,7 +70,6 @@ impl AgentSurfaceState {
 #[derive(Clone, Copy)]
 enum AgentSurfaceEvent {
     Analyze,
-    Cancel,
     Saved,
     Failed,
 }
@@ -122,68 +116,163 @@ impl SurfaceTokens {
 }
 
 pub struct AgentSurfaceView {
+    live: LiveClient,
+    thread: Option<Thread>,
+    prompt: gpui::Entity<InputState>,
     state: AgentSurfaceState,
+    status: String,
     root_focus: FocusHandle,
-    analyze_focus: FocusHandle,
-    cancel_focus: FocusHandle,
+    send_focus: FocusHandle,
     preferences: SurfacePreferences,
+    _subscriptions: Vec<Subscription>,
+    task: Option<Task<()>>,
 }
 
 impl AgentSurfaceView {
     pub fn new(
+        live: LiveClient,
         preferences: SurfacePreferences,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let analyze_focus = cx.focus_handle();
-        analyze_focus.focus(window, cx);
-        Self {
-            state: AgentSurfaceState::Ready,
+        let prompt = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Ask Emma…")
+                .submit_on_enter(true)
+        });
+        let subscription = cx.subscribe_in(
+            &prompt,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                    this.submit(window, cx);
+                }
+            },
+        );
+        prompt.update(cx, |input, cx| input.focus(window, cx));
+        let mut view = Self {
+            live,
+            thread: None,
+            prompt,
+            state: AgentSurfaceState::Analyzing,
+            status: "Loading durable thread…".into(),
             root_focus: cx.focus_handle(),
-            analyze_focus,
-            cancel_focus: cx.focus_handle(),
+            send_focus: cx.focus_handle(),
             preferences,
-        }
+            _subscriptions: vec![subscription],
+            task: None,
+        };
+        view.load(cx);
+        view
     }
 
     pub fn state(&self) -> AgentSurfaceState {
         self.state
     }
 
-    pub fn mark_saved(&mut self, cx: &mut Context<Self>) {
-        self.transition(AgentSurfaceEvent::Saved, cx);
+    fn load(&mut self, cx: &mut Context<Self>) {
+        self.state = AgentSurfaceState::Analyzing;
+        self.status = "Loading durable thread…".into();
+        let live = self.live.clone();
+        let background = cx.background_spawn(async move {
+            let snapshot = live.snapshot()?;
+            match snapshot.threads.into_iter().next() {
+                Some(thread) => Ok(thread),
+                None => live.create_thread(),
+            }
+        });
+        self.task = Some(cx.spawn(async move |view, cx| {
+            let result = background.await;
+            let _ = view.update(cx, |this, cx| {
+                match result {
+                    Ok(thread) => {
+                        this.thread = Some(thread);
+                        this.state = AgentSurfaceState::Ready;
+                        this.status = "Ready".into();
+                    }
+                    Err(error) => {
+                        this.state = AgentSurfaceState::Failed;
+                        this.status = format!("Load failed: {error}");
+                    }
+                }
+                cx.notify();
+            });
+        }));
     }
 
-    pub fn mark_failed(&mut self, cx: &mut Context<Self>) {
-        self.transition(AgentSurfaceEvent::Failed, cx);
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state == AgentSurfaceState::Analyzing {
+            return;
+        }
+        let Some(thread_id) = self.thread.as_ref().map(|thread| thread.id.clone()) else {
+            self.load(cx);
+            return;
+        };
+        let content = self.prompt.read(cx).value().trim().to_string();
+        if content.is_empty() {
+            return;
+        }
+        self.prompt
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.state = self.state.transition(AgentSurfaceEvent::Analyze);
+        self.status = "Emma is responding…".into();
+        let live = self.live.clone();
+        let background = cx.background_spawn(async move {
+            let result = live.send_message(thread_id, content);
+            let restored = result
+                .as_ref()
+                .err()
+                .and_then(|_| live.snapshot().ok())
+                .and_then(|snapshot| snapshot.threads.into_iter().next());
+            (result, restored)
+        });
+        self.task = Some(cx.spawn(async move |view, cx| {
+            let (result, restored) = background.await;
+            let _ = view.update(cx, |this, cx| {
+                match result {
+                    Ok(thread) => {
+                        this.thread = Some(thread);
+                        this.state = this.state.transition(AgentSurfaceEvent::Saved);
+                        this.status = "Response saved".into();
+                    }
+                    Err(error) => {
+                        if let Some(thread) = restored {
+                            this.thread = Some(thread);
+                        }
+                        this.state = this.state.transition(AgentSurfaceEvent::Failed);
+                        this.status = format!("Send failed: {error}");
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
-    fn analyze(&mut self, _: &Analyze, _: &mut Window, cx: &mut Context<Self>) {
-        self.transition(AgentSurfaceEvent::Analyze, cx);
+    fn analyze(&mut self, _: &Analyze, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit(window, cx);
     }
 
-    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
-        self.transition(AgentSurfaceEvent::Cancel, cx);
-    }
-
-    fn transition(&mut self, event: AgentSurfaceEvent, cx: &mut Context<Self>) {
-        let next = self.state.transition(event);
-        if next != self.state {
-            self.state = next;
-            cx.notify();
+    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state != AgentSurfaceState::Analyzing {
+            self.prompt
+                .update(cx, |input, cx| input.set_value("", window, cx));
         }
     }
 
-    fn activate_focused(
-        &mut self,
-        _: &ActivateFocused,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.analyze_focus.is_focused(window) {
-            self.analyze(&Analyze, window, cx);
-        } else if self.cancel_focus.is_focused(window) {
-            self.cancel(&Cancel, window, cx);
+    fn dismiss(&mut self, _: &DismissAgentSurface, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        window.remove_window();
+    }
+
+    fn toggle(&mut self, _: &ToggleAgentSurface, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        window.remove_window();
+    }
+
+    fn activate(&mut self, _: &ActivateFocused, window: &mut Window, cx: &mut Context<Self>) {
+        if self.send_focus.is_focused(window) {
+            self.submit(window, cx);
         }
     }
 
@@ -197,9 +286,28 @@ impl AgentSurfaceView {
 }
 
 impl Render for AgentSurfaceView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = SurfaceTokens::for_preferences(self.preferences);
-        let analyzing = self.state == AgentSurfaceState::Analyzing;
+        let working = self.state == AgentSurfaceState::Analyzing;
+        let latest = self
+            .thread
+            .as_ref()
+            .and_then(|thread| {
+                thread
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == ThreadRole::Assistant)
+            })
+            .map(|message| message.content.clone())
+            .unwrap_or_else(|| "This durable thread is ready.".into());
+        let thread_summary = self.thread.as_ref().map_or_else(
+            || "Preparing a durable thread…".into(),
+            |thread| format!("{} · {} messages", thread.title, thread.messages.len()),
+        );
+        let prompt = self.prompt.clone();
+        let prompt_for_mouse = prompt.clone();
+        let prompt_focused = prompt.read(cx).focus_handle(cx).is_focused(window);
 
         div()
             .id("agent-surface")
@@ -210,7 +318,9 @@ impl Render for AgentSurfaceView {
             .track_focus(&self.root_focus)
             .on_action(cx.listener(Self::analyze))
             .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(Self::activate_focused))
+            .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(Self::toggle))
+            .on_action(cx.listener(Self::activate))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
             .size_full()
@@ -219,7 +329,7 @@ impl Render for AgentSurfaceView {
             .text_color(rgb(0xf7f8fa))
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(px(9.0))
             .child(
                 div()
                     .flex()
@@ -230,109 +340,89 @@ impl Render for AgentSurfaceView {
                         div()
                             .id("agent-status")
                             .role(Role::Status)
-                            .aria_label(format!("Agent status: {}", self.state.label()))
+                            .aria_label(self.status.clone())
                             .text_size(px(12.0))
                             .text_color(tokens.secondary)
-                            .child(self.state.label()),
+                            .child(self.status.clone()),
                     ),
             )
             .child(
                 div()
-                    .id("context-preview")
+                    .text_size(px(11.0))
+                    .text_color(tokens.secondary)
+                    .child(thread_summary),
+            )
+            .child(
+                div()
+                    .id("latest-response")
                     .role(Role::Group)
-                    .aria_label("Context preview")
+                    .aria_label("Latest assistant response")
+                    .flex_1()
+                    .min_h_0()
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(tokens.border)
                     .bg(tokens.panel)
                     .p(px(10.0))
                     .text_size(px(12.0))
-                    .child("Fixture context · Safari · Example article selection"),
+                    .child(latest),
             )
             .child(
                 div()
-                    .id("prompt-placeholder")
-                    .role(Role::TextInput)
-                    .aria_label("Prompt entry unavailable")
-                    .aria_placeholder("Ask Emma about this context")
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(tokens.border)
-                    .p(px(10.0))
-                    .text_size(px(13.0))
-                    .text_color(tokens.secondary)
-                    .child("Ask Emma about this context… (prompt entry deferred)"),
-            )
-            .child(
-                div()
-                    .mt_auto()
                     .flex()
-                    .justify_end()
+                    .items_center()
                     .gap(px(8.0))
                     .child(
-                        div()
-                            .id("cancel-analysis")
-                            .accessibility_id("emma.agent.cancel")
-                            .focusable()
-                            .tab_stop(analyzing)
-                            .track_focus(&self.cancel_focus)
-                            .focus_visible(|style| style.border_2().border_color(rgb(0x8fc7ff)))
-                            .role(Role::Button)
-                            .aria_label(if analyzing {
-                                "Cancel analysis"
-                            } else {
-                                "Cancel analysis, unavailable"
-                            })
-                            .px(px(14.0))
-                            .py(px(7.0))
+                        InputBase::new("surface-prompt")
+                            .accessibility_label("Agent prompt")
+                            .focused(prompt_focused)
+                            .disabled(working)
+                            .flex_1()
+                            .h(px(38.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(tokens.border)
-                            .text_color(if analyzing {
-                                rgb(0xf7f8fa)
-                            } else {
-                                rgb(0x777f8b)
+                            .bg(tokens.panel)
+                            .styles(|styles| {
+                                styles.focused(|style| style.border_color(rgb(0x8fc7ff)))
                             })
-                            .when(analyzing, |button| button.cursor_pointer())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.cancel_focus.focus(window, cx);
-                                this.cancel(&Cancel, window, cx);
-                            }))
-                            .child("Cancel"),
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                prompt_for_mouse.update(cx, |input, cx| input.focus(window, cx));
+                            })
+                            .child(Input::new(&prompt)),
                     )
                     .child(
                         div()
-                            .id("analyze-context")
-                            .accessibility_id("emma.agent.analyze")
+                            .id("send-agent-message")
+                            .accessibility_id("emma.agent.send")
+                            .key_context("AgentSurfaceButton")
                             .focusable()
-                            .tab_stop(!analyzing)
-                            .track_focus(&self.analyze_focus)
+                            .tab_stop(!working)
+                            .track_focus(&self.send_focus)
                             .focus_visible(|style| style.border_2().border_color(rgb(0xffffff)))
                             .role(Role::Button)
-                            .aria_label(if analyzing {
-                                "Analyze context, unavailable while analyzing"
+                            .aria_label(if working {
+                                "Send message, unavailable"
                             } else {
-                                "Analyze fixture context"
+                                "Send message"
                             })
-                            .px(px(14.0))
-                            .py(px(7.0))
                             .rounded(px(8.0))
-                            .bg(if analyzing {
+                            .bg(if working {
                                 rgb(0x3a414b)
                             } else {
                                 rgb(0x2f80ed)
                             })
-                            .text_color(if analyzing {
-                                rgb(0x9ba3ae)
-                            } else {
-                                rgb(0xffffff)
-                            })
-                            .when(!analyzing, |button| button.cursor_pointer())
+                            .px(px(14.0))
+                            .py(px(9.0))
+                            .when(!working, |button| button.cursor_pointer())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.analyze_focus.focus(window, cx);
-                                this.analyze(&Analyze, window, cx);
+                                this.send_focus.focus(window, cx);
+                                this.submit(window, cx);
                             }))
-                            .child(if analyzing { "Analyzing…" } else { "Analyze" }),
+                            .child(if working { "Sending…" } else { "Send" }),
                     ),
             )
     }
@@ -341,7 +431,6 @@ impl Render for AgentSurfaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
 
     #[test]
     fn geometry_uses_each_display_center_placement_and_clamps() {
@@ -409,25 +498,8 @@ mod tests {
             AgentSurfaceState::Ready
                 .transition(AgentSurfaceEvent::Analyze)
                 .transition(AgentSurfaceEvent::Analyze)
-                .transition(AgentSurfaceEvent::Cancel),
-            AgentSurfaceState::Ready
-        );
-    }
-
-    #[gpui::test]
-    fn agent_state_actions_are_guarded(cx: &mut TestAppContext) {
-        let window = cx.add_window(|window, cx| {
-            AgentSurfaceView::new(SurfacePreferences::default(), window, cx)
-        });
-        cx.dispatch_action(window.into(), Analyze);
-        assert_eq!(
-            window.read_with(cx, |view, _| view.state()).unwrap(),
-            AgentSurfaceState::Analyzing
-        );
-        cx.dispatch_action(window.into(), Analyze);
-        assert_eq!(
-            window.read_with(cx, |view, _| view.state()).unwrap(),
-            AgentSurfaceState::Analyzing
+                .transition(AgentSurfaceEvent::Saved),
+            AgentSurfaceState::Saved
         );
     }
 }
