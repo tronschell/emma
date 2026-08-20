@@ -39,7 +39,9 @@ npm install --prefix desktop
 npm run dev
 ```
 
-Command-Shift-Space opens the compact agent surface. Threads are saved under
+Double-tap the physical left Option key to open the compact agent surface.
+macOS asks for Accessibility access so Emma can observe that modifier-only gesture;
+the listener discards every other key event. Threads are saved under
 `~/Library/Application Support/Emma`; set `EMMA_DATA_DIR` for an isolated
 store. Every thread selects one named knowledge base (the stable **Default**
 base is used by older data). **Save & Analyze** creates an exportable Markdown

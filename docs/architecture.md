@@ -41,7 +41,8 @@ from durable message and page timestamps.
 ## Windows and shortcuts
 
 The library is a resizable three-pane workspace with independently collapsible,
-bounded, locally persisted rail widths. `Command-Shift-Space` toggles a compact
+bounded, locally persisted rail widths. A double-tap of the physical left Option
+key toggles a compact
 always-on-top agent surface. Electron does not expose exact notch bounds, so
 settings offer a centered below-notch surface or top-edge split rails with a
 validated, click-through hardware-gap calibration. The original dither glow uses 24 discrete

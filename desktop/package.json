@@ -7,14 +7,15 @@
     "build:host": "cargo build --locked -p emma-host && zig build --build-file ../agent/build.zig",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
+    "build:hotkey": "mkdir -p dist-native && clang -O2 -mmacosx-version-min=12.0 -fobjc-arc -framework AppKit -framework ApplicationServices native/quick_ask.m -o dist-native/emma-option-tap && dist-native/emma-option-tap --self-test",
     "build": "npm run build:main && npm run build:renderer",
     "dev": "node scripts/dev.mjs",
-    "start": "npm run build:host && npm run build && electron .",
+    "start": "npm run build:host && npm run build:hotkey && npm run build && electron .",
     "test": "npm run build:main && node --test dist-main/test/*.test.js",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "lint": "eslint . --max-warnings 0",
     "check": "npm run test && npm run typecheck && npm run lint && npm run build:renderer",
-    "package:mac": "cargo build --locked --release -p emma-host && zig build -Doptimize=ReleaseSafe --build-file ../agent/build.zig && npm run build && electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar --extra-resource=../target/release/emma-host --extra-resource=../agent/zig-out/bin/emma-agent --app-bundle-id=dev.local.emma"
+    "package:mac": "cargo build --locked --release -p emma-host && zig build -Doptimize=ReleaseSafe --build-file ../agent/build.zig && npm run build:hotkey && npm run build && electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar --extra-resource=../target/release/emma-host --extra-resource=../agent/zig-out/bin/emma-agent --extra-resource=dist-native/emma-option-tap --app-bundle-id=dev.local.emma"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",

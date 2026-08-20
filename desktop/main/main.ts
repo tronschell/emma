@@ -1,5 +1,5 @@
-import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, nativeImage, screen, session, shell, systemPreferences, type Display } from "electron";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, screen, session, shell, systemPreferences, type Display } from "electron";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -76,6 +76,7 @@ class Host {
 }
 
 let host: Host | undefined;
+let hotkeyHelper: ChildProcess | undefined;
 let mainWindow: BrowserWindow | null = null;
 let overlay: BrowserWindow | null = null;
 let annotation: BrowserWindow | null = null;
@@ -95,6 +96,31 @@ function binary(name: string) {
   return app.isPackaged
     ? path.join(process.resourcesPath, name)
     : path.join(app.getAppPath(), "..", name === "emma-host" ? "target/debug/emma-host" : "agent/zig-out/bin/emma-agent");
+}
+
+function startQuickAskHotkey() {
+  if (process.platform !== "darwin") return;
+  const executable = app.isPackaged
+    ? path.join(process.resourcesPath, "emma-option-tap")
+    : path.join(app.getAppPath(), "dist-native/emma-option-tap");
+  const child = spawn(executable, [], { stdio: ["ignore", "pipe", "pipe"] });
+  const lines = new BoundedLines(16);
+  hotkeyHelper = child;
+  child.stdout?.on("data", (data: Buffer) => {
+    try {
+      for (const line of lines.push(data)) {
+        if (line !== "toggle") throw new Error("invalid Quick Ask hotkey event");
+        toggleOverlay();
+      }
+    } catch (error) {
+      console.error("Emma: Quick Ask hotkey listener failed", error);
+      child.kill();
+    }
+  });
+  child.stdout?.on("end", () => { try { lines.end(); } catch (error) { console.error("Emma: Quick Ask hotkey listener failed", error); } });
+  child.stderr?.on("data", (data) => console.error(String(data).trim()));
+  child.once("error", (error) => console.error("Emma: Quick Ask hotkey listener failed", error));
+  child.once("exit", () => { if (hotkeyHelper === child) hotkeyHelper = undefined; });
 }
 
 function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
@@ -381,9 +407,7 @@ if (primaryInstance) app.whenReady().then(() => {
     }
   });
   openMain();
-  if (!globalShortcut.register("CommandOrControl+Shift+Space", toggleOverlay)) {
-    console.error("Emma: Command-Shift-Space is already registered");
-  }
+  startQuickAskHotkey();
   app.on("activate", openMain);
 });
 
@@ -391,6 +415,6 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("will-quit", () => {
-  globalShortcut.unregisterAll();
+  hotkeyHelper?.kill();
   host?.close();
 });
