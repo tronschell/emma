@@ -59,10 +59,13 @@ function Mark({ small = false }: { small?: boolean }) {
 
 function AppMockup() {
   return (
-    <div className="mock-wrap" aria-label="Emma desktop interface preview">
+    <div
+      className="mock-wrap"
+      aria-label="Illustrative Emma desktop interface preview"
+    >
       <div className="notch-card">
         <span className="live-dot" />
-        <span>EMMA IS LISTENING</span>
+        <span>EMMA IS READY</span>
         <span className="keys">⌘ ↵</span>
       </div>
       <div className="window">
@@ -74,7 +77,7 @@ function AppMockup() {
           </div>
           <span>EMMA / WORKSPACE</span>
           <span className="run-state">
-            <i /> RUNNING
+            <i /> DEMO
           </span>
         </div>
         <div className="window-grid">
@@ -162,7 +165,7 @@ function AppMockup() {
         </div>
         <div className="telemetry">
           <span>
-            <i /> RUN ACTIVE
+            <i /> EXAMPLE RUN
           </span>
           <span>3 TOOLS</span>
           <span>1,842 TOKENS</span>
