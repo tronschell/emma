@@ -233,7 +233,10 @@ fn validate_schedule(value: &str) -> Result<(), ValidationError> {
         (fields[3], 1, 12),
         (fields[4], 0, 7),
     ] {
-        if !(min..=max).any(|value| field_matches(field, value, min, max)) {
+        if field
+            .split(',')
+            .any(|part| !(min..=max).any(|value| field_matches(part, value, min, max)))
+        {
             return Err(ValidationError::new(
                 "schedule contains an invalid cron field",
             ));
@@ -474,5 +477,12 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cron_rejects_invalid_members_in_compound_fields() {
+        for schedule in ["1,999 * * * *", "1,2-999 * * * *", "1,*/0 * * * *"] {
+            assert!(validate_schedule(schedule).is_err(), "accepted {schedule}");
+        }
     }
 }
