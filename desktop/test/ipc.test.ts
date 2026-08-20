@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { externalUrl, trustedSender, validJpegDataUrl, validateRequest } from "../main/ipc";
+import { externalUrl, MAX_ARTIFACT_EDIT_CHARS, trustedSender, validJpegDataUrl, validateRequest } from "../main/ipc";
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
 import { activityDays } from "../src/activity";
@@ -42,6 +42,9 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.throws(() => validateRequest({ method: "setScheduledJobEnabled", params: { jobId: "job-123456789012", enabled: true } }), /Invalid parameters/);
   assert.equal(validateRequest({ method: "updatePage", params: { pageId: "p", title: "x", category: "c", summary: "x", body: "" } }).params.body, "");
   assert.throws(() => validateRequest({ method: "updatePage", params: { pageId: "p", title: "x".repeat(65_536), category: "c", summary: "x".repeat(65_536), body: "x".repeat(65_536) } }), /too large/);
+  const artifacts = JSON.stringify([{ id: "summary", type: "rich-text", version: 1, source: {}, payload: { markdown: "Summary" }, fallback: "Summary" }]);
+  assert.equal(validateRequest({ method: "updatePageDocument", params: { pageId: "p", title: "x", category: "c", summary: "Summary", body: "Body", artifacts } }).method, "updatePageDocument");
+  assert.throws(() => validateRequest({ method: "updatePageDocument", params: { pageId: "p", title: "x", category: "c", summary: "x", body: "x", artifacts: "x".repeat(MAX_ARTIFACT_EDIT_CHARS + 1) } }), /Invalid parameters/);
 });
 
 test("host response lines are framed and bounded before JSON parsing", () => {

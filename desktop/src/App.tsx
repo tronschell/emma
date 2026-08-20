@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import type { AgentImportSource, KnowledgePage, OpenRouterCatalog, ScreenStroke, Snapshot, Thread } from "./types";
+import type { AgentImportSource, ArtifactBlock, KnowledgePage, OpenRouterCatalog, ScreenStroke, Snapshot, Thread } from "./types";
 import { activityDays } from "./activity";
 import { deriveAgentInsights } from "./agent-insights";
 import { canRemoveLocalModel, defaultSettings, migrateQuickActionDestinations, resolveQuickActionDestination, validateSettings, type LocalModelProfile, type UserSettings } from "../shared/settings";
@@ -477,12 +477,95 @@ function PageView(props: { page?: KnowledgePage; snapshot: Snapshot; act: (metho
   return props.page ? <PageEditor page={props.page} snapshot={props.snapshot} act={props.act} busy={props.busy} /> : <div className="content-empty"><Mark /><h2>Knowledge with provenance</h2><p>Create a base or save an analyzed thread to begin.</p></div>;
 }
 
+type JsonObject = Record<string, unknown>;
+
+function objectPayload(value: unknown): JsonObject {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function textList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function externalArtifactUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function RichArtifact({ markdown }: { markdown: string }) {
+  const paragraphs = markdown.split(/\n{2,}/).filter(Boolean);
+  return <div className="artifact-rich">{paragraphs.length ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>{markdown}</p>}</div>;
+}
+
+function ChartArtifact({ labels, values }: { labels: string[]; values: number[] }) {
+  const safeValues = values.map((value) => Number.isFinite(value) && value >= 0 ? value : 0);
+  const maximum = Math.max(1, ...safeValues);
+  return <div className="artifact-chart"><svg viewBox="0 0 360 126" role="img" aria-label="Artifact data chart"><line x1="18" y1="104" x2="350" y2="104" /><g>{safeValues.slice(0, 8).map((value, index) => { const x = 28 + index * 48; const height = value / maximum * 76; return <g key={index}><rect x={x} y={104 - height} width="24" height={height} rx="2" /><text x={x + 12} y="119" textAnchor="middle">{labels[index] ?? `Item ${index + 1}`}</text><text x={x + 12} y={98 - height} textAnchor="middle">{value}</text></g>; })}</g></svg></div>;
+}
+
+function ArtifactBlockView({ block }: { block: ArtifactBlock }) {
+  const payload = objectPayload(block.payload);
+  if (block.type === "rich-text" || block.type === "markdown") return <RichArtifact markdown={textValue(payload.markdown) || block.fallback} />;
+  if (block.type === "list" || block.type === "bullets") {
+    const items = textList(payload.items);
+    const List = payload.ordered === true ? "ol" : "ul";
+    return items.length ? <List>{items.map((item, index) => <li key={index}>{item}</li>)}</List> : <pre className="artifact-fallback">{block.fallback}</pre>;
+  }
+  if (block.type === "citations") {
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    return items.length ? <ul className="artifact-citations">{items.map((item, index) => { const citation = objectPayload(item); const url = externalArtifactUrl(citation.url); return <li key={index}>{url ? <a href={url} target="_blank" rel="noreferrer">{textValue(citation.title) || url} ↗</a> : <span>{textValue(citation.title) || block.fallback}</span>}</li>; })}</ul> : <pre className="artifact-fallback">{block.fallback}</pre>;
+  }
+  if (block.type === "table") {
+    const headers = textList(payload.headers);
+    const rows = Array.isArray(payload.rows) ? payload.rows.filter(Array.isArray).map((row) => textList(row)) : [];
+    return headers.length ? <div className="artifact-table"><table><thead><tr>{headers.map((header, index) => <th key={index}>{header}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{headers.map((_header, columnIndex) => <td key={columnIndex}>{row[columnIndex] ?? ""}</td>)}</tr>)}</tbody></table></div> : <pre className="artifact-fallback">{block.fallback}</pre>;
+  }
+  if (block.type === "chart" || block.type === "data") {
+    const labels = textList(payload.labels);
+    const values = Array.isArray(payload.values) ? payload.values.filter((value): value is number => typeof value === "number") : [];
+    return labels.length && values.length ? <ChartArtifact labels={labels} values={values} /> : <pre className="artifact-fallback">{block.fallback}</pre>;
+  }
+  return <div className="artifact-unknown"><small>UNSUPPORTED BLOCK · {block.type} v{block.version}</small><pre>{block.fallback}</pre></div>;
+}
+
+function editableArtifact(block: ArtifactBlock, value: string): ArtifactBlock {
+  if (block.type === "rich-text" || block.type === "markdown") {
+    return { ...block, fallback: value, payload: { ...objectPayload(block.payload), markdown: value } };
+  }
+  if (block.type === "list" || block.type === "bullets") {
+    const items = value.split("\n").map((item) => item.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean);
+    return { ...block, fallback: value, payload: { ...objectPayload(block.payload), items, ordered: objectPayload(block.payload).ordered === true } };
+  }
+  return { ...block, fallback: value };
+}
+
+function ArtifactEditor({ blocks, setBlocks, busy }: { blocks: ArtifactBlock[]; setBlocks: (blocks: ArtifactBlock[]) => void; busy: boolean }) {
+  const update = (index: number, block: ArtifactBlock) => setBlocks(blocks.map((item, itemIndex) => itemIndex === index ? block : item));
+  const move = (index: number, delta: number) => { const next = index + delta; if (next < 0 || next >= blocks.length) return; const reordered = [...blocks]; [reordered[index], reordered[next]] = [reordered[next], reordered[index]]; setBlocks(reordered); };
+  return <div className="artifact-editor">{blocks.map((block, index) => <fieldset key={block.id}><legend>{block.id} · {block.type} v{block.version}</legend><label>PORTABLE FALLBACK<textarea value={block.fallback} maxLength={65_536} disabled={busy} onChange={(event) => update(index, editableArtifact(block, event.target.value))} /></label>{(block.type === "rich-text" || block.type === "markdown" || block.type === "list" || block.type === "bullets") ? <small className="artifact-edit-help">Editing this fallback updates its declarative payload. Other blocks keep their structured payload and use this text as their export fallback.</small> : <small className="artifact-edit-help">Structured payload is preserved; this text is the portable export fallback.</small>}<div className="artifact-order"><button type="button" disabled={busy || index === 0} onClick={() => move(index, -1)} aria-label={`Move ${block.id} up`}>↑</button><button type="button" disabled={busy || index === blocks.length - 1} onClick={() => move(index, 1)} aria-label={`Move ${block.id} down`}>↓</button></div></fieldset>)}</div>;
+}
+
+function artifactMarkdown(blocks: ArtifactBlock[], id: string, fallback: string): string {
+  const block = blocks.find((item) => item.id === id);
+  const markdown = block ? textValue(objectPayload(block.payload).markdown) : "";
+  return markdown || fallback;
+}
+
 function PageEditor({ page, snapshot, act, busy }: { page: KnowledgePage; snapshot: Snapshot; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
   const base = snapshot.knowledgeBases.find((item) => item.id === page.knowledgeBaseId);
   const [title, setTitle] = useState(page.title);
   const [category, setCategory] = useState(page.category);
-  const [summary, setSummary] = useState(page.analysis.summary);
-  const [body, setBody] = useState(page.analysis.body);
+  const [blocks, setBlocks] = useState(page.artifacts ?? []);
+  const [editing, setEditing] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const info = useRef<HTMLDivElement>(null);
   const infoTrigger = useRef<HTMLButtonElement>(null);
@@ -494,8 +577,12 @@ function PageEditor({ page, snapshot, act, busy }: { page: KnowledgePage; snapsh
     addEventListener("pointerdown", outside);
     return () => removeEventListener("pointerdown", outside);
   }, [closeInfo, infoOpen]);
-  const save = (event: FormEvent) => { event.preventDefault(); if (!busy) void act("updatePage", { pageId: page.id, title: title.trim(), category: category.trim(), summary: summary.trim(), body }); };
-  return <form className="page page-editor" onSubmit={save}><header className="page-head"><div className="page-eyebrow"><span>{base?.name.toUpperCase()} / EDITABLE DOCUMENT</span><button ref={infoTrigger} type="button" className="page-info-button" aria-label="Show page details" aria-haspopup="dialog" aria-expanded={infoOpen} onClick={() => infoOpen ? closeInfo() : setInfoOpen(true)}>i</button>{infoOpen && <div className="page-info" role="dialog" aria-label="Page details" tabIndex={-1} ref={info} onKeyDown={(event) => { if (event.key === "Escape") closeInfo(); }}><header><span>PAGE DETAILS</span><button type="button" aria-label="Close page details" onClick={closeInfo}>×</button></header><dl><div><dt>Added</dt><dd>{date(page.addedAt)} · {time(page.addedAt)}</dd></div><div><dt>Analyzed</dt><dd>{date(page.analyzedAt)} · {time(page.analyzedAt)}</dd></div><div><dt>Model</dt><dd><i />{page.telemetry.model}</dd></div><div><dt>Tokens</dt><dd>{(page.telemetry.inputTokens + page.telemetry.outputTokens).toLocaleString()} total <small>{page.telemetry.inputTokens.toLocaleString()} in · {page.telemetry.outputTokens.toLocaleString()} out</small></dd></div><div><dt>Subagents</dt><dd>{page.telemetry.subagentCount}</dd></div>{page.sourceThreadId && <div><dt>Source thread</dt><dd><code>{page.sourceThreadId}</code></dd></div>}</dl></div>}</div><label><span className="sr-only">Page title</span><textarea className="page-title" value={title} disabled={busy} maxLength={256} rows={2} onChange={(event) => setTitle(event.target.value)} /></label><div className="page-category"><label>CATEGORY<input value={category} disabled={busy} maxLength={64} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" onChange={(event) => setCategory(event.target.value)} /></label><button disabled={busy || !title.trim() || !summary.trim() || !category.trim()}>Save changes</button></div><label><span className="sr-only">Summary</span><textarea className="page-summary" value={summary} disabled={busy} maxLength={4096} onChange={(event) => setSummary(event.target.value)} rows={3} /></label></header><div className="page-body"><span>ANALYSIS</span><label><span className="sr-only">Analysis body</span><textarea value={body} disabled={busy} maxLength={65536} onChange={(event) => setBody(event.target.value)} rows={16} /></label>{page.sources.length > 0 && <section><h3>Sources</h3>{page.sources.map((source) => <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>{source.title} ↗</a>)}</section>}</div></form>;
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (await act("updatePageDocument", { pageId: page.id, title: title.trim(), category: category.trim(), summary: artifactMarkdown(blocks, "summary", page.analysis.summary), body: artifactMarkdown(blocks, "body", page.analysis.body), artifacts: JSON.stringify(blocks) }) !== undefined) setEditing(false);
+  };
+  return <form className="page page-editor" onSubmit={(event) => void save(event)}><header className="page-head"><div className="page-eyebrow"><span>{base?.name.toUpperCase()} / ARTIFACT DOCUMENT</span><button ref={infoTrigger} type="button" className="page-info-button" aria-label="Show page details" aria-haspopup="dialog" aria-expanded={infoOpen} onClick={() => infoOpen ? closeInfo() : setInfoOpen(true)}>i</button>{infoOpen && <div className="page-info" role="dialog" aria-label="Page details" tabIndex={-1} ref={info} onKeyDown={(event) => { if (event.key === "Escape") closeInfo(); }}><header><span>PAGE DETAILS</span><button type="button" aria-label="Close page details" onClick={closeInfo}>×</button></header><dl><div><dt>Added</dt><dd>{date(page.addedAt)} · {time(page.addedAt)}</dd></div><div><dt>Analyzed</dt><dd>{date(page.analyzedAt)} · {time(page.analyzedAt)}</dd></div><div><dt>Model</dt><dd><i />{page.telemetry.model}</dd></div><div><dt>Tokens</dt><dd>{(page.telemetry.inputTokens + page.telemetry.outputTokens).toLocaleString()} total <small>{page.telemetry.inputTokens.toLocaleString()} in · {page.telemetry.outputTokens.toLocaleString()} out</small></dd></div><div><dt>Subagents</dt><dd>{page.telemetry.subagentCount}</dd></div>{page.sourceThreadId && <div><dt>Source thread</dt><dd><code>{page.sourceThreadId}</code></dd></div>}</dl></div>}</div><label><span className="sr-only">Page title</span><textarea className="page-title" value={title} disabled={busy} maxLength={256} rows={2} onChange={(event) => setTitle(event.target.value)} /></label><div className="page-category"><label>CATEGORY<input value={category} disabled={busy} maxLength={64} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" onChange={(event) => setCategory(event.target.value)} /></label><button type="button" disabled={busy} onClick={() => setEditing(!editing)}>{editing ? "Preview document" : "Edit & reorder"}</button>{editing && <button disabled={busy || !title.trim() || !category.trim()}>Save document</button>}</div>{!editing && <p className="page-summary">{artifactMarkdown(blocks, "summary", page.analysis.summary)}</p>}</header><div className="page-body"><div className="artifact-heading"><span>ORDERED BLOCKS</span><small>{blocks.length} / 64 · explicit save only</small></div>{editing ? <ArtifactEditor blocks={blocks} setBlocks={setBlocks} busy={busy} /> : <div className="artifact-document">{blocks.map((block) => <article className="artifact-block" key={block.id}><header><span>{block.type.toUpperCase()} · v{block.version}</span><small>{block.id}</small></header><ArtifactBlockView block={block} /></article>)}</div>}</div></form>;
 }
 
 function NewThreadDialog({ bases, close, create, error }: { bases: Snapshot["knowledgeBases"]; close: () => void; create: (ids: string[]) => Promise<boolean>; error: string }) {

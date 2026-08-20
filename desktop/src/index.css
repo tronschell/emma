@@ -212,6 +212,38 @@ i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; backgrou
 .page-body section { display: grid; gap: 8px; margin-top: 25px; }
 .page-body h3 { margin-bottom: 6px; font-size: 14px; }
 .page-body a { color: #aaa18c; font-size: 12px; }
+.artifact-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--muted); font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .12em; }
+.artifact-heading small { color: var(--muted); font: inherit; letter-spacing: .04em; }
+.artifact-document { display: grid; }
+.artifact-block { padding: 13px 0 15px; border-top: 1px solid var(--line); background: transparent; }
+.artifact-block > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 8px; color: var(--muted); font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .09em; }
+.artifact-block > header small { overflow: hidden; color: var(--muted); font: inherit; letter-spacing: .03em; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-rich { padding-top: 10px; color: #c9c6be; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.artifact-rich p { margin: 0 0 9px; }
+.artifact-rich p:last-child { margin-bottom: 0; }
+.artifact-block > ul, .artifact-block > ol { margin: 11px 0 0 18px; color: #c9c6be; font-size: 12px; line-height: 1.6; }
+.artifact-citations { display: grid; gap: 6px; }
+.artifact-block a { color: #b4a27f; }
+.artifact-fallback, .artifact-unknown pre { margin: 10px 0 0; overflow-x: auto; color: #c9c6be; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.artifact-unknown { padding-top: 9px; }
+.artifact-unknown small { color: #d0ad69; font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .09em; }
+.artifact-table { margin-top: 10px; overflow-x: auto; }
+.artifact-table table { width: 100%; border-collapse: collapse; color: #c9c6be; font-size: 10px; }
+.artifact-table th, .artifact-table td { padding: 6px 7px; border: 1px solid #30312d; text-align: left; vertical-align: top; }
+.artifact-table th { color: #aaa69c; background: #1a1b18; font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .08em; }
+.artifact-chart { margin-top: 8px; overflow-x: auto; }
+.artifact-chart svg { display: block; width: 100%; min-width: 260px; height: 126px; color: #9bad86; }
+.artifact-chart line { stroke: #4a4b42; }
+.artifact-chart rect { fill: #9bad86; }
+.artifact-chart text { fill: #a4a096; font: 7px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.artifact-editor { display: grid; gap: 9px; }
+.artifact-editor fieldset { position: relative; display: grid; gap: 8px; min-width: 0; padding: 13px 0 15px; border: 0; border-top: 1px solid var(--line); }
+.artifact-editor legend { padding: 0; color: var(--muted); font: 8px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .06em; }
+.artifact-editor label { display: grid; gap: 5px; color: var(--muted); font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .07em; }
+.artifact-editor label small, .artifact-edit-help { color: var(--muted); font: 8px/1.3 ui-sans-serif, -apple-system, sans-serif; letter-spacing: 0; }
+.artifact-editor textarea { min-height: 62px; padding: 7px; border: 1px solid #30312d; border-radius: 3px; color: #c9c6be; background: #0d0e0c; font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+.artifact-order { display: flex; gap: 5px; justify-content: flex-end; }
+.artifact-order button { min-width: 28px; min-height: 25px; padding: 4px 7px; color: #aaa69c; border: 1px solid #3b3c36; border-radius: 3px; background: #1b1c18; }
 .notice { position: fixed; z-index: 20; right: 16px; bottom: 16px; max-width: 440px; padding: 12px 38px 12px 14px; color: #e2c7c2; background: #2b1917; border: 1px solid #6d3d36; border-radius: 6px; font-size: 11px; }
 .notice button { position: absolute; right: 8px; top: 7px; color: inherit; background: transparent; font-size: 18px; }
 

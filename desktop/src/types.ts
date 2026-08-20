@@ -26,6 +26,15 @@ export interface KnowledgeBase {
   categories: string[];
 }
 
+export interface ArtifactBlock {
+  id: string;
+  type: string;
+  version: number;
+  source: { sourceThreadId?: string; sourceUrl?: string };
+  payload: unknown;
+  fallback: string;
+}
+
 export interface KnowledgePage {
   id: string;
   knowledgeBaseId: string;
@@ -38,6 +47,7 @@ export interface KnowledgePage {
   analyzedAt: string;
   telemetry: { model: string; inputTokens: number; outputTokens: number; subagentCount: number };
   sourceThreadId?: string;
+  artifacts?: ArtifactBlock[];
 }
 
 export interface ScheduledJob {

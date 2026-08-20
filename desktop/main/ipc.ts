@@ -4,6 +4,7 @@ const MAX_HOST_REQUEST_BYTES = 128 * 1024;
 export const MAX_ANNOTATION_INPUT_CHARS = 16 * 1024 * 1024;
 // Keep the encoded image below the host's 128 KiB NDJSON request ceiling.
 export const MAX_SCREEN_CONTEXT_CHARS = 96 * 1024;
+export const MAX_ARTIFACT_EDIT_CHARS = 96 * 1024;
 
 export const methods = [
   "snapshot",
@@ -14,6 +15,7 @@ export const methods = [
   "addKnowledgeBaseCategory",
   "removeKnowledgeBaseCategory",
   "updatePage",
+  "updatePageDocument",
   "sendMessage",
   "saveToKnowledge",
   "createScheduledJob",
@@ -36,6 +38,7 @@ const fields: Record<Method, readonly string[]> = {
   addKnowledgeBaseCategory: ["knowledgeBaseId", "category"],
   removeKnowledgeBaseCategory: ["knowledgeBaseId", "category"],
   updatePage: ["pageId", "title", "category", "summary", "body"],
+  updatePageDocument: ["pageId", "title", "category", "summary", "body", "artifacts"],
   sendMessage: ["threadId", "content"],
   saveToKnowledge: ["threadId"],
   createScheduledJob: ["title", "schedule", "prompt", "sourceDomains"],
@@ -70,7 +73,8 @@ export function validateRequest(value: unknown): Request {
   for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
     const optionalCredential = method === "selectLocalModel" && key === "credentialEnv";
-    if (text.length > (key === "screenContextId" ? 128 : 65_536) || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
+    const maxLength = key === "screenContextId" ? 128 : key === "artifacts" ? MAX_ARTIFACT_EDIT_CHARS : 65_536;
+    if (text.length > maxLength || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {
     throw new Error("Request is too large");

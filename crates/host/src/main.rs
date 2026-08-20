@@ -1,10 +1,13 @@
 use std::io::{self, BufRead, Read, Write};
 
-use emma_core::{KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ScreenContext, ThreadId};
+use emma_core::{
+    ArtifactBlock, KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ScreenContext, ThreadId,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
+const MAX_ARTIFACT_EDIT_BYTES: usize = 96 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +81,17 @@ struct UpdatePageParams {
     category: String,
     summary: String,
     body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdatePageDocumentParams {
+    page_id: String,
+    title: String,
+    category: String,
+    summary: String,
+    body: String,
+    artifacts: String,
 }
 
 #[derive(Deserialize)]
@@ -324,6 +338,22 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     params.category,
                     params.summary,
                     params.body,
+                ))?)
+            }
+            "updatePageDocument" => {
+                let params: UpdatePageDocumentParams = params(request)?;
+                if params.artifacts.len() > MAX_ARTIFACT_EDIT_BYTES {
+                    return Err("artifact document is too large".into());
+                }
+                let artifacts: Vec<ArtifactBlock> = serde_json::from_str(&params.artifacts)
+                    .map_err(|_| "artifact document is invalid JSON".to_string())?;
+                encode(call(live.update_page_document(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
+                    params.title,
+                    params.category,
+                    params.summary,
+                    params.body,
+                    artifacts,
                 ))?)
             }
             "sendMessage" => {

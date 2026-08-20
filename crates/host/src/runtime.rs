@@ -205,6 +205,8 @@ impl Sidecar {
                     category: artifact.category,
                     summary: artifact.summary,
                     body,
+                    interesting_points: artifact.interesting_points,
+                    counterarguments: artifact.counterarguments,
                     sources,
                     model: artifact.model,
                     input_tokens: artifact.input_tokens,

@@ -8,12 +8,13 @@ use std::{
 };
 
 use crate::{
-    AnalysisContent, CapturedContext, Category, CitedSource, GenerationTelemetry, KnowledgeBase,
-    KnowledgeBaseId, KnowledgePage, KnowledgeStore, PageId, RunTelemetry, ScheduledJob,
-    ScheduledJobId, ScheduledJobStore, SourceUrl, StoreError, Thread, ThreadId, ThreadMessage,
-    ThreadRole, ThreadStore, Timestamp, validate_text,
+    AnalysisContent, ArtifactBlock, ArtifactSource, CapturedContext, Category, CitedSource,
+    GenerationTelemetry, KnowledgeBase, KnowledgeBaseId, KnowledgePage, KnowledgeStore, PageId,
+    RunTelemetry, ScheduledJob, ScheduledJobId, ScheduledJobStore, SourceUrl, StoreError, Thread,
+    ThreadId, ThreadMessage, ThreadRole, ThreadStore, Timestamp, validate_text,
 };
 use serde::Serialize;
+use serde_json::json;
 
 const MAX_AGENT_TITLE_BYTES: usize = 256;
 const MAX_AGENT_SUMMARY_BYTES: usize = 4 * 1024;
@@ -117,6 +118,8 @@ pub struct AgentAnalysis {
     pub category: String,
     pub summary: String,
     pub body: String,
+    pub interesting_points: Vec<String>,
+    pub counterarguments: Vec<String>,
     pub sources: Vec<AgentSource>,
     pub model: String,
     pub input_tokens: u64,
@@ -196,6 +199,15 @@ enum Command {
         category: String,
         summary: String,
         body: String,
+        reply: Reply<KnowledgePage>,
+    },
+    UpdatePageDocument {
+        page_id: PageId,
+        title: String,
+        category: String,
+        summary: String,
+        body: String,
+        artifacts: Vec<ArtifactBlock>,
         reply: Reply<KnowledgePage>,
     },
     SendMessage {
@@ -390,6 +402,34 @@ impl LiveClient {
         result
             .recv()
             .map_err(|_| LiveError::new("Emma runtime stopped while sending the message"))?
+    }
+
+    pub fn update_page_document(
+        &self,
+        page_id: PageId,
+        title: String,
+        category: String,
+        summary: String,
+        body: String,
+        artifacts: Vec<ArtifactBlock>,
+    ) -> Result<KnowledgePage, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::UpdatePageDocument {
+                page_id,
+                title,
+                category,
+                summary,
+                body,
+                artifacts,
+                reply,
+            })
+            .map_err(|_| {
+                LiveError::new("Emma runtime stopped before updating the page document")
+            })?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while updating the page document"))?
     }
 
     pub fn save_to_knowledge(&self, thread_id: ThreadId) -> Result<KnowledgePage, LiveError> {
@@ -598,6 +638,19 @@ where
                 reply,
             } => {
                 let _ = reply.send(self.update_page(page_id, title, category, summary, body));
+            }
+            Command::UpdatePageDocument {
+                page_id,
+                title,
+                category,
+                summary,
+                body,
+                artifacts,
+                reply,
+            } => {
+                let _ = reply.send(
+                    self.update_page_document(page_id, title, category, summary, body, artifacts),
+                );
             }
             Command::SendMessage {
                 thread_id,
@@ -903,6 +956,23 @@ where
         summary: String,
         body: String,
     ) -> Result<KnowledgePage, LiveError> {
+        let artifacts = self
+            .knowledge
+            .load(&id)
+            .map_err(|error| LiveError::new(format!("could not load page {id}: {error}")))?
+            .artifacts;
+        self.update_page_document(id, title, category, summary, body, artifacts)
+    }
+
+    fn update_page_document(
+        &self,
+        id: PageId,
+        title: String,
+        category: String,
+        summary: String,
+        body: String,
+        artifacts: Vec<ArtifactBlock>,
+    ) -> Result<KnowledgePage, LiveError> {
         validate_agent_text("page title", &title, true, MAX_AGENT_TITLE_BYTES)?;
         validate_agent_text("analysis summary", &summary, true, MAX_AGENT_SUMMARY_BYTES)?;
         validate_agent_text("analysis body", &body, false, MAX_AGENT_BODY_BYTES)?;
@@ -915,6 +985,8 @@ where
             .map_err(|error| LiveError::new(format!("category is invalid: {error}")))?;
         page.analysis = AnalysisContent::new(summary, body)
             .map_err(|error| LiveError::new(format!("page content is invalid: {error}")))?;
+        page.replace_artifacts(artifacts)
+            .map_err(|error| LiveError::new(format!("page artifacts are invalid: {error}")))?;
         self.knowledge
             .save(&page)
             .map_err(|error| LiveError::new(format!("could not update page: {error}")))?;
@@ -1027,8 +1099,20 @@ where
                 "agent returned a message when analysis was expected",
             ));
         };
-        let sources = response
-            .sources
+        let AgentAnalysis {
+            title,
+            category,
+            summary,
+            body,
+            interesting_points,
+            counterarguments,
+            sources: response_sources,
+            model,
+            input_tokens,
+            output_tokens,
+            subagent_count,
+        } = response;
+        let sources = response_sources
             .into_iter()
             .map(|source| {
                 let url = SourceUrl::parse(source.url).map_err(|error| {
@@ -1039,29 +1123,65 @@ where
             })
             .collect::<Result<Vec<_>, _>>()?;
         let timestamp = Timestamp::now().max(thread.updated_at);
-        let page = KnowledgePage::new(
-            response.title,
-            Category::parse(response.category).map_err(|error| {
+        let mut page = KnowledgePage::new(
+            title,
+            Category::parse(category).map_err(|error| {
                 LiveError::new(format!("analysis category is invalid: {error}"))
             })?,
             CapturedContext::new(text, Some("Emma".into()), None)
                 .map_err(|error| LiveError::new(format!("analysis context is invalid: {error}")))?,
-            AnalysisContent::new(response.summary, response.body)
+            AnalysisContent::new(summary, body)
                 .map_err(|error| LiveError::new(format!("analysis content is invalid: {error}")))?,
             sources,
             timestamp,
             timestamp,
-            RunTelemetry::new(
-                response.model,
-                response.input_tokens,
-                response.output_tokens,
-                response.subagent_count,
-            )
-            .map_err(|error| LiveError::new(format!("analysis telemetry is invalid: {error}")))?,
+            RunTelemetry::new(model, input_tokens, output_tokens, subagent_count).map_err(
+                |error| LiveError::new(format!("analysis telemetry is invalid: {error}")),
+            )?,
         )
         .map_err(|error| LiveError::new(format!("knowledge page is invalid: {error}")))?
-        .with_source_thread(thread_id)
+        .with_source_thread(thread_id.clone())
         .in_knowledge_base(selected_base.id);
+        let source = ArtifactSource::from_thread(Some(&thread_id));
+        let mut artifacts = page.artifacts.clone();
+        append_list_artifact(
+            &mut artifacts,
+            "interesting-points",
+            &interesting_points,
+            source.clone(),
+        )?;
+        append_list_artifact(
+            &mut artifacts,
+            "counterarguments",
+            &counterarguments,
+            source.clone(),
+        )?;
+        if !interesting_points.is_empty() || !counterarguments.is_empty() {
+            let values = vec![interesting_points.len(), counterarguments.len()];
+            artifacts.push(
+                ArtifactBlock::new(
+                    "evidence-balance",
+                    "chart",
+                    1,
+                    source,
+                    json!({
+                        "labels": ["Interesting points", "Counterarguments"],
+                        "values": values,
+                    }),
+                    format!(
+                        "Interesting points: {}\nCounterarguments: {}",
+                        interesting_points.len(),
+                        counterarguments.len()
+                    ),
+                )
+                .map_err(|error| {
+                    LiveError::new(format!("analysis artifact is invalid: {error}"))
+                })?,
+            );
+        }
+        page = page
+            .with_artifacts(artifacts)
+            .map_err(|error| LiveError::new(format!("knowledge artifacts are invalid: {error}")))?;
         self.knowledge
             .save(&page)
             .map_err(|error| LiveError::new(format!("could not save knowledge page: {error}")))?;
@@ -1091,6 +1211,37 @@ fn validate_agent_text(
             "{name} cannot exceed {max_bytes} bytes"
         )));
     }
+    Ok(())
+}
+
+fn append_list_artifact(
+    artifacts: &mut Vec<ArtifactBlock>,
+    id: &str,
+    items: &[String],
+    source: ArtifactSource,
+) -> Result<(), LiveError> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    for item in items {
+        validate_agent_text("analysis point", item, true, MAX_AGENT_SUMMARY_BYTES)?;
+    }
+    let fallback = items
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    artifacts.push(
+        ArtifactBlock::new(
+            id,
+            "list",
+            1,
+            source,
+            json!({"items": items, "ordered": false}),
+            fallback,
+        )
+        .map_err(|error| LiveError::new(format!("analysis artifact is invalid: {error}")))?,
+    );
     Ok(())
 }
 
@@ -1153,6 +1304,8 @@ mod tests {
                     category: "general".into(),
                     summary: "Focused integration analysis".into(),
                     body: format!("Analyzed: {text}"),
+                    interesting_points: vec!["A useful point".into()],
+                    counterarguments: vec!["A caveat".into()],
                     sources: Vec::new(),
                     model: "fake".into(),
                     input_tokens: 4,
@@ -1213,6 +1366,22 @@ mod tests {
         let page = runtime.save_to_knowledge(created.id.clone()).unwrap();
         assert_eq!(page.source_thread_id, Some(created.id));
         assert_eq!(page.knowledge_base_id, KnowledgeBaseId::default_id());
+        assert!(page.artifacts.iter().any(|block| block.id == "summary"));
+        assert!(
+            page.artifacts
+                .iter()
+                .any(|block| block.id == "interesting-points")
+        );
+        assert!(
+            page.artifacts
+                .iter()
+                .any(|block| block.id == "counterarguments")
+        );
+        assert!(
+            page.artifacts
+                .iter()
+                .any(|block| block.block_type == "chart")
+        );
         assert_eq!(runtime.knowledge.list().unwrap().pages, [page]);
 
         let project = runtime.create_knowledge_base("Project".into()).unwrap();
@@ -1236,6 +1405,43 @@ mod tests {
             .unwrap();
         assert_eq!(edited.source_thread_id, project_page.source_thread_id);
         assert_eq!(edited.telemetry, project_page.telemetry);
+        let before_failed_update = runtime.knowledge.load(&edited.id).unwrap();
+        let duplicate_artifacts = vec![
+            ArtifactBlock::new(
+                "duplicate",
+                "rich-text",
+                1,
+                ArtifactSource::default(),
+                serde_json::json!({"markdown": "one"}),
+                "one",
+            )
+            .unwrap(),
+            ArtifactBlock::new(
+                "duplicate",
+                "rich-text",
+                1,
+                ArtifactSource::default(),
+                serde_json::json!({"markdown": "two"}),
+                "two",
+            )
+            .unwrap(),
+        ];
+        assert!(
+            runtime
+                .update_page_document(
+                    edited.id.clone(),
+                    "Should not persist".into(),
+                    "research".into(),
+                    "Should not persist".into(),
+                    "Should not persist".into(),
+                    duplicate_artifacts,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            runtime.knowledge.load(&edited.id).unwrap(),
+            before_failed_update
+        );
         let extra = runtime.create_knowledge_base("Extra".into()).unwrap();
         let sourced = runtime
             .select_thread_sources(
