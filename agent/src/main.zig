@@ -493,6 +493,7 @@ fn titleFrom(text: []const u8) []const u8 {
 }
 
 fn classify(text: []const u8) []const u8 {
+    // ponytail: Keyword fallback is context-blind; replace it when provider-backed analysis lands.
     if (containsIgnoreCase(text, "bug") or containsIgnoreCase(text, "code") or containsIgnoreCase(text, "software")) return "technology";
     if (containsIgnoreCase(text, "money") or containsIgnoreCase(text, "market") or containsIgnoreCase(text, "finance")) return "finance";
     if (containsIgnoreCase(text, "health") or containsIgnoreCase(text, "medical")) return "health";
