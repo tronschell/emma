@@ -1,0 +1,649 @@
+const std = @import("std");
+
+const max_line_bytes = 128 * 1024;
+const max_text_bytes = 64 * 1024;
+const max_tools = 256;
+
+const RequestError = error{
+    InvalidRequest,
+    InvalidField,
+    CatalogTooLarge,
+    DuplicateTool,
+    NoSearchResult,
+    ToolNotFound,
+    ThreadNotFound,
+};
+
+const Tool = struct {
+    server: []u8,
+    name: []u8,
+    description: []u8,
+    schema_json: []u8,
+
+    fn deinit(self: Tool, alloc: std.mem.Allocator) void {
+        alloc.free(self.server);
+        alloc.free(self.name);
+        alloc.free(self.description);
+        alloc.free(self.schema_json);
+    }
+};
+
+const Message = struct {
+    id: []u8,
+    role: []const u8,
+    content: []u8,
+
+    fn deinit(self: Message, alloc: std.mem.Allocator) void {
+        alloc.free(self.id);
+        alloc.free(self.content);
+    }
+};
+
+const Thread = struct {
+    id: []u8,
+    title: []u8,
+    messages: std.ArrayList(Message) = .empty,
+
+    fn deinit(self: *Thread, alloc: std.mem.Allocator) void {
+        alloc.free(self.id);
+        alloc.free(self.title);
+        for (self.messages.items) |message| message.deinit(alloc);
+        self.messages.deinit(alloc);
+    }
+};
+
+const State = struct {
+    tools: std.ArrayList(Tool) = .empty,
+    last_results: std.ArrayList([]const u8) = .empty,
+    threads: std.ArrayList(Thread) = .empty,
+    next_thread_id: usize = 1,
+
+    fn deinit(self: *State, alloc: std.mem.Allocator) void {
+        self.clearTools(alloc);
+        self.tools.deinit(alloc);
+        self.last_results.deinit(alloc);
+        for (self.threads.items) |*thread| thread.deinit(alloc);
+        self.threads.deinit(alloc);
+    }
+
+    fn clearTools(self: *State, alloc: std.mem.Allocator) void {
+        for (self.tools.items) |tool| tool.deinit(alloc);
+        self.tools.clearRetainingCapacity();
+        self.last_results.clearRetainingCapacity();
+    }
+
+    fn handle(self: *State, alloc: std.mem.Allocator, line: []const u8) ![]u8 {
+        var parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch
+            return responseError(alloc, null, "invalid_json", "request is not valid JSON");
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return responseError(alloc, null, "invalid_request", "request must be an object");
+        const object = parsed.value.object;
+        const id_value = object.get("id");
+        const id = validId(id_value) catch
+            return responseError(alloc, null, "invalid_id", "id must be a non-empty string of at most 128 bytes");
+        const kind = requiredString(object, "type", 64) catch
+            return responseError(alloc, id, "invalid_request", "type must be a non-empty string");
+
+        if (std.mem.eql(u8, kind, "health")) return self.health(alloc, id);
+        if (std.mem.eql(u8, kind, "thread_create")) return self.threadCreate(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "thread_list")) return self.threadList(alloc, id);
+        if (std.mem.eql(u8, kind, "thread_get")) return self.threadGet(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "thread_message")) return self.threadMessage(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "analyze") or std.mem.eql(u8, kind, "save_to_knowledge")) return self.analyze(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "mcp_catalog")) return self.catalog(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "mcp_search_tools")) return self.search(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "mcp_select_tool")) return self.select(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        return responseError(alloc, id, "unknown_request", "unsupported request type");
+    }
+
+    fn health(self: *State, alloc: std.mem.Allocator, id: []const u8) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"status\":\"ok\",\"protocol\":1,\"thread_count\":");
+        try out.writer.print(
+            "{d},\"tool_count\":{d}",
+            .{ self.threads.items.len, self.tools.items.len },
+        );
+        try out.writer.writeAll(",\"requests\":[\"health\",\"thread_create\",\"thread_list\",\"thread_get\",\"thread_message\",\"analyze\",\"save_to_knowledge\",\"mcp_catalog\",\"mcp_search_tools\",\"mcp_select_tool\"]}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn threadCreate(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        if (self.threads.items.len == 1024) return error.InvalidField;
+        const title = try optionalString(object.get("title"), "New thread", 256);
+        const thread_id = try std.fmt.allocPrint(alloc, "thread-{d}", .{self.next_thread_id});
+        const owned_title = alloc.dupe(u8, title) catch |err| {
+            alloc.free(thread_id);
+            return err;
+        };
+        self.threads.append(alloc, .{ .id = thread_id, .title = owned_title }) catch |err| {
+            alloc.free(thread_id);
+            alloc.free(owned_title);
+            return err;
+        };
+        self.next_thread_id += 1;
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try writeThreadSummary(&out.writer, self.threads.items[self.threads.items.len - 1]);
+        try out.writer.writeAll("}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn threadList(self: *State, alloc: std.mem.Allocator, id: []const u8) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"threads\":[");
+        for (self.threads.items, 0..) |thread, index| {
+            if (index != 0) try out.writer.writeByte(',');
+            try writeThreadSummary(&out.writer, thread);
+        }
+        try out.writer.writeAll("]}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn threadGet(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        const thread_id = try requiredString(object, "thread_id", 128);
+        const thread = self.findThread(thread_id) orelse return error.ThreadNotFound;
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"id\":");
+        try jsonString(&out.writer, thread.id);
+        try out.writer.writeAll(",\"title\":");
+        try jsonString(&out.writer, thread.title);
+        try out.writer.writeAll(",\"messages\":[");
+        for (thread.messages.items, 0..) |message, index| {
+            if (index != 0) try out.writer.writeByte(',');
+            try writeMessage(&out.writer, message);
+        }
+        try out.writer.writeAll("]}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn threadMessage(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        const thread_id = try requiredString(object, "thread_id", 128);
+        const content = try requiredString(object, "content", max_text_bytes);
+        if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidField;
+        try validateProvider(object.get("provider"));
+        const thread = self.findThread(thread_id) orelse return error.ThreadNotFound;
+        const user_id = try std.fmt.allocPrint(alloc, "message-{d}", .{thread.messages.items.len + 1});
+        const user_content = alloc.dupe(u8, content) catch |err| {
+            alloc.free(user_id);
+            return err;
+        };
+        const assistant_id = std.fmt.allocPrint(alloc, "message-{d}", .{thread.messages.items.len + 2}) catch |err| {
+            alloc.free(user_id);
+            alloc.free(user_content);
+            return err;
+        };
+        const assistant_content = fallbackReply(alloc, content) catch |err| {
+            alloc.free(user_id);
+            alloc.free(user_content);
+            alloc.free(assistant_id);
+            return err;
+        };
+        thread.messages.ensureUnusedCapacity(alloc, 2) catch |err| {
+            alloc.free(user_id);
+            alloc.free(user_content);
+            alloc.free(assistant_id);
+            alloc.free(assistant_content);
+            return err;
+        };
+        thread.messages.appendAssumeCapacity(.{ .id = user_id, .role = "user", .content = user_content });
+        thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"message\":");
+        try writeMessage(&out.writer, thread.messages.items[thread.messages.items.len - 1]);
+        try out.writer.writeAll(",\"model\":\"local-fallback\",\"events\":[],\"tool_calls\":[],\"permission_requests\":[],\"input_tokens\":");
+        try out.writer.print("{d},\"output_tokens\":{d}", .{ (content.len + 3) / 4, (assistant_content.len + 3) / 4 });
+        try out.writer.writeAll("}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn analyze(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        const thread_id = try requiredString(object, "thread_id", 128);
+        if (self.findThread(thread_id) == null) return error.ThreadNotFound;
+        const text = try requiredString(object, "text", max_text_bytes);
+        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidField;
+        try validateProvider(object.get("provider"));
+        const sources = try validateSources(object.get("sources"));
+        const title = titleFrom(text);
+        const category = classify(text);
+        const input_tokens = (text.len + 3) / 4;
+        const output_tokens = (title.len + 95) / 4;
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"destination\":\"knowledge\",\"artifact\":{\"source_thread_id\":");
+        try jsonString(&out.writer, thread_id);
+        try out.writer.writeAll(",\"category\":");
+        try jsonString(&out.writer, category);
+        try out.writer.writeAll(",\"title\":");
+        try jsonString(&out.writer, title);
+        try out.writer.writeAll(",\"summary\":");
+        try out.writer.writeAll("\"Deterministic local analysis generated without provider credentials.\"");
+        try out.writer.writeAll(",\"interesting_points\":[\"The input was classified using explicit local keyword rules.\",\"No network or model call was required.\"]");
+        try out.writer.writeAll(",\"counterarguments\":[\"Keyword classification can miss context and nuance.\"]");
+        try out.writer.writeAll(",\"cited_sources\":[");
+        for (sources, 0..) |source, index| {
+            if (index != 0) try out.writer.writeByte(',');
+            try jsonString(&out.writer, source.string);
+        }
+        try out.writer.print(
+            "],\"model\":\"local-fallback\",\"input_tokens\":{d},\"output_tokens\":{d},\"subagent_count\":0",
+            .{ input_tokens, output_tokens },
+        );
+        try out.writer.writeAll("}}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn findThread(self: *State, id: []const u8) ?*Thread {
+        for (self.threads.items) |*thread| if (std.mem.eql(u8, thread.id, id)) return thread;
+        return null;
+    }
+
+    fn catalog(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        if (object.get("servers")) |servers_value| try self.replaceCatalog(alloc, servers_value);
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"servers\":[");
+        var emitted: usize = 0;
+        for (self.tools.items, 0..) |tool, index| {
+            var prior = false;
+            for (self.tools.items[0..index]) |candidate| {
+                if (std.mem.eql(u8, candidate.server, tool.server)) {
+                    prior = true;
+                    break;
+                }
+            }
+            if (prior) continue;
+            var count: usize = 0;
+            for (self.tools.items) |candidate| if (std.mem.eql(u8, candidate.server, tool.server)) {
+                count += 1;
+            };
+            if (emitted != 0) try out.writer.writeByte(',');
+            try out.writer.writeAll("{\"name\":");
+            try jsonString(&out.writer, tool.server);
+            try out.writer.print(",\"availability\":\"ready\",\"tool_count\":{d}}}", .{count});
+            emitted += 1;
+        }
+        try out.writer.writeAll("],\"schemas_advertised\":0}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn replaceCatalog(self: *State, alloc: std.mem.Allocator, value: std.json.Value) !void {
+        if (value != .array or value.array.items.len > 32) return error.InvalidField;
+        var replacement: std.ArrayList(Tool) = .empty;
+        errdefer {
+            for (replacement.items) |tool| tool.deinit(alloc);
+            replacement.deinit(alloc);
+        }
+        for (value.array.items) |server_value| {
+            if (server_value != .object) return error.InvalidField;
+            const server = try requiredString(server_value.object, "name", 128);
+            const tools_value = server_value.object.get("tools") orelse return error.InvalidField;
+            if (tools_value != .array) return error.InvalidField;
+            for (tools_value.array.items) |tool_value| {
+                if (replacement.items.len == max_tools) return error.CatalogTooLarge;
+                if (tool_value != .object) return error.InvalidField;
+                const name = try requiredString(tool_value.object, "name", 128);
+                const description = try requiredString(tool_value.object, "description", 1024);
+                const schema = tool_value.object.get("input_schema") orelse return error.InvalidField;
+                if (schema != .object) return error.InvalidField;
+                for (replacement.items) |existing| if (std.mem.eql(u8, existing.name, name)) return error.DuplicateTool;
+                const schema_json = try stringifyValue(alloc, schema);
+                errdefer alloc.free(schema_json);
+                const owned_server = try alloc.dupe(u8, server);
+                errdefer alloc.free(owned_server);
+                const owned_name = try alloc.dupe(u8, name);
+                errdefer alloc.free(owned_name);
+                const owned_description = try alloc.dupe(u8, description);
+                errdefer alloc.free(owned_description);
+                try replacement.append(alloc, .{
+                    .server = owned_server,
+                    .name = owned_name,
+                    .description = owned_description,
+                    .schema_json = schema_json,
+                });
+            }
+        }
+        self.clearTools(alloc);
+        self.tools.deinit(alloc);
+        self.tools = replacement;
+    }
+
+    fn search(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        const query = try requiredString(object, "query", 256);
+        const limit = try optionalLimit(object.get("limit"));
+        self.last_results.clearRetainingCapacity();
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"tools\":[");
+        var count: usize = 0;
+        for (self.tools.items) |tool| {
+            if (!matches(tool, query)) continue;
+            if (count == limit) break;
+            try self.last_results.append(alloc, tool.name);
+            if (count != 0) try out.writer.writeByte(',');
+            try out.writer.writeAll("{\"server\":");
+            try jsonString(&out.writer, tool.server);
+            try out.writer.writeAll(",\"name\":");
+            try jsonString(&out.writer, tool.name);
+            try out.writer.writeAll(",\"description\":");
+            try jsonString(&out.writer, tool.description);
+            try out.writer.writeByte('}');
+            count += 1;
+        }
+        try out.writer.writeAll("],\"schemas_advertised\":0}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn select(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        const name = try requiredString(object, "name", 128);
+        var was_searched = false;
+        for (self.last_results.items) |result| if (std.mem.eql(u8, result, name)) {
+            was_searched = true;
+            break;
+        };
+        if (!was_searched) return error.NoSearchResult;
+        const tool = for (self.tools.items) |candidate| {
+            if (std.mem.eql(u8, candidate.name, name)) break candidate;
+        } else return error.ToolNotFound;
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"advertise_on_next_model_step\":{\"type\":\"function\",\"name\":");
+        try jsonString(&out.writer, tool.name);
+        try out.writer.writeAll(",\"description\":");
+        try jsonString(&out.writer, tool.description);
+        try out.writer.writeAll(",\"inputSchema\":");
+        try out.writer.writeAll(tool.schema_json);
+        try out.writer.writeAll("}}}\n");
+        self.last_results.clearRetainingCapacity();
+        return out.toOwnedSlice();
+    }
+};
+
+pub fn main() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+    var io_backend: std.Io.Threaded = .init_single_threaded;
+    defer io_backend.deinit();
+    const io = io_backend.io();
+    var read_buffer: [4096]u8 = undefined;
+    var reader = std.Io.File.stdin().reader(io, &read_buffer);
+    var state: State = .{};
+    defer state.deinit(alloc);
+
+    while (true) {
+        const line = readLine(alloc, &reader.interface) catch |err| {
+            if (err == error.LineTooLarge) {
+                const response = try responseError(alloc, null, "line_too_large", "NDJSON line exceeds 131072 bytes");
+                defer alloc.free(response);
+                try std.Io.File.stdout().writeStreamingAll(io, response);
+                continue;
+            }
+            return err;
+        } orelse break;
+        defer alloc.free(line);
+        if (line.len == 0) continue;
+        const response = try state.handle(alloc, line);
+        defer alloc.free(response);
+        try std.Io.File.stdout().writeStreamingAll(io, response);
+    }
+}
+
+fn readLine(alloc: std.mem.Allocator, reader: *std.Io.Reader) !?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var oversized = false;
+    while (true) {
+        const fragment = reader.takeDelimiter('\n') catch |err| switch (err) {
+            error.StreamTooLong => {
+                const buffered = reader.buffered();
+                if (!oversized and out.items.len + buffered.len > max_line_bytes) oversized = true;
+                if (!oversized) try out.appendSlice(alloc, buffered);
+                reader.tossBuffered();
+                continue;
+            },
+            error.ReadFailed => return error.ReadFailed,
+        } orelse {
+            if (out.items.len == 0 and !oversized) return null;
+            break;
+        };
+        if (!oversized and out.items.len + fragment.len > max_line_bytes) oversized = true;
+        if (!oversized) try out.appendSlice(alloc, fragment);
+        break;
+    }
+    if (oversized) return error.LineTooLarge;
+    if (out.items.len > 0 and out.items[out.items.len - 1] == '\r') _ = out.pop();
+    return try out.toOwnedSlice(alloc);
+}
+
+fn validId(value: ?std.json.Value) RequestError![]const u8 {
+    const id = value orelse return error.InvalidRequest;
+    if (id != .string or id.string.len == 0 or id.string.len > 128) return error.InvalidRequest;
+    return id.string;
+}
+
+fn requiredString(object: std.json.ObjectMap, key: []const u8, max: usize) RequestError![]const u8 {
+    const value = object.get(key) orelse return error.InvalidField;
+    if (value != .string or value.string.len == 0 or value.string.len > max) return error.InvalidField;
+    return value.string;
+}
+
+fn optionalString(value: ?std.json.Value, default: []const u8, max: usize) RequestError![]const u8 {
+    const text = value orelse return default;
+    if (text != .string or text.string.len == 0 or text.string.len > max or !std.unicode.utf8ValidateSlice(text.string)) return error.InvalidField;
+    return text.string;
+}
+
+fn optionalLimit(value: ?std.json.Value) RequestError!usize {
+    const limit = value orelse return 10;
+    if (limit != .integer or limit.integer < 1 or limit.integer > 20) return error.InvalidField;
+    return @intCast(limit.integer);
+}
+
+fn validateProvider(value: ?std.json.Value) RequestError!void {
+    const provider = value orelse return;
+    if (provider != .object) return error.InvalidField;
+    const base_url = try requiredString(provider.object, "base_url", 2048);
+    _ = try requiredString(provider.object, "model", 128);
+    const env_name = try requiredString(provider.object, "credential_env", 128);
+    if (!std.mem.startsWith(u8, base_url, "https://") and !std.mem.startsWith(u8, base_url, "http://")) return error.InvalidField;
+    if (!validEnvName(env_name)) return error.InvalidField;
+}
+
+fn validEnvName(name: []const u8) bool {
+    if (name.len == 0 or !(std.ascii.isAlphabetic(name[0]) or name[0] == '_')) return false;
+    for (name[1..]) |byte| if (!(std.ascii.isAlphanumeric(byte) or byte == '_')) return false;
+    return true;
+}
+
+fn validateSources(value: ?std.json.Value) RequestError![]const std.json.Value {
+    const sources = value orelse return &.{};
+    if (sources != .array or sources.array.items.len > 16) return error.InvalidField;
+    for (sources.array.items) |source| {
+        if (source != .string or source.string.len == 0 or source.string.len > 2048) return error.InvalidField;
+    }
+    return sources.array.items;
+}
+
+fn titleFrom(text: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    var end = std.mem.indexOfAny(u8, trimmed, ".\n") orelse trimmed.len;
+    end = @min(end, 120);
+    while (end > 0 and !std.unicode.utf8ValidateSlice(trimmed[0..end])) end -= 1;
+    return trimmed[0..end];
+}
+
+fn classify(text: []const u8) []const u8 {
+    if (containsIgnoreCase(text, "bug") or containsIgnoreCase(text, "code") or containsIgnoreCase(text, "software")) return "technology";
+    if (containsIgnoreCase(text, "money") or containsIgnoreCase(text, "market") or containsIgnoreCase(text, "finance")) return "finance";
+    if (containsIgnoreCase(text, "health") or containsIgnoreCase(text, "medical")) return "health";
+    return "general";
+}
+
+fn fallbackReply(alloc: std.mem.Allocator, content: []const u8) ![]u8 {
+    const subject = titleFrom(content);
+    return std.fmt.allocPrint(
+        alloc,
+        "I received your message about \"{s}\". This local fallback keeps the conversation in this thread; connect a provider for a model-generated answer.",
+        .{subject},
+    );
+}
+
+fn matches(tool: Tool, query: []const u8) bool {
+    return containsIgnoreCase(tool.name, query) or containsIgnoreCase(tool.description, query) or containsIgnoreCase(tool.server, query);
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(haystack, needle) != null;
+}
+
+fn stringifyValue(alloc: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try std.json.Stringify.value(value, .{}, &out.writer);
+    return out.toOwnedSlice();
+}
+
+fn jsonString(writer: *std.Io.Writer, value: []const u8) !void {
+    try std.json.Stringify.value(value, .{}, writer);
+}
+
+fn writeMessage(writer: *std.Io.Writer, message: Message) !void {
+    try writer.writeAll("{\"id\":");
+    try jsonString(writer, message.id);
+    try writer.writeAll(",\"role\":");
+    try jsonString(writer, message.role);
+    try writer.writeAll(",\"content\":");
+    try jsonString(writer, message.content);
+    try writer.writeByte('}');
+}
+
+fn writeThreadSummary(writer: *std.Io.Writer, thread: Thread) !void {
+    try writer.writeAll("{\"id\":");
+    try jsonString(writer, thread.id);
+    try writer.writeAll(",\"title\":");
+    try jsonString(writer, thread.title);
+    try writer.print(",\"message_count\":{d}}}", .{thread.messages.items.len});
+}
+
+fn responseStart(writer: *std.Io.Writer, id: []const u8) !void {
+    try writer.writeAll("{\"id\":");
+    try jsonString(writer, id);
+    try writer.writeAll(",\"ok\":true,\"result\":");
+}
+
+fn responseError(alloc: std.mem.Allocator, id: ?[]const u8, code: []const u8, message: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"id\":");
+    if (id) |value| try jsonString(&out.writer, value) else try out.writer.writeAll("null");
+    try out.writer.writeAll(",\"ok\":false,\"error\":{\"code\":");
+    try jsonString(&out.writer, code);
+    try out.writer.writeAll(",\"message\":");
+    try jsonString(&out.writer, message);
+    try out.writer.writeAll("}}\n");
+    return out.toOwnedSlice();
+}
+
+fn requestFailure(alloc: std.mem.Allocator, id: []const u8, err: anyerror) ![]u8 {
+    return switch (err) {
+        error.CatalogTooLarge => responseError(alloc, id, "catalog_too_large", "catalog exceeds 256 tools"),
+        error.DuplicateTool => responseError(alloc, id, "duplicate_tool", "tool names must be globally unique"),
+        error.NoSearchResult => responseError(alloc, id, "tool_not_searched", "select an exact result from the preceding search"),
+        error.ToolNotFound => responseError(alloc, id, "tool_not_found", "selected tool is no longer available"),
+        error.ThreadNotFound => responseError(alloc, id, "thread_not_found", "thread does not exist in this process"),
+        error.InvalidRequest, error.InvalidField => responseError(alloc, id, "invalid_field", "request contains a missing, invalid, or oversized field"),
+        else => err,
+    };
+}
+
+fn expectValidResponse(response: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, std.mem.trimEnd(u8, response, "\n"), .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+}
+
+test "parser preserves valid ids and returns structured field errors" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const response = try state.handle(std.testing.allocator, "{\"id\":\"req-7\",\"type\":\"analyze\",\"text\":42}");
+    defer std.testing.allocator.free(response);
+    try expectValidResponse(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"req-7\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"code\":\"invalid_field\"") != null);
+}
+
+test "NDJSON reader rejects oversized lines" {
+    const input = try std.testing.allocator.alloc(u8, max_line_bytes + 2);
+    defer std.testing.allocator.free(input);
+    @memset(input, 'x');
+    input[input.len - 1] = '\n';
+    var reader = std.Io.Reader.fixed(input);
+    try std.testing.expectError(error.LineTooLarge, readLine(std.testing.allocator, &reader));
+}
+
+test "thread messages persist user and general assistant roles" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\",\"title\":\"General\"}");
+    defer std.testing.allocator.free(created);
+    try expectValidResponse(created);
+    const turn = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"What should I do next?\"}");
+    defer std.testing.allocator.free(turn);
+    try expectValidResponse(turn);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"role\":\"assistant\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"tool_calls\":[]") != null);
+    const fetched = try state.handle(std.testing.allocator, "{\"id\":\"3\",\"type\":\"thread_get\",\"thread_id\":\"thread-1\"}");
+    defer std.testing.allocator.free(fetched);
+    try expectValidResponse(fetched);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"user\""));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"assistant\""));
+}
+
+test "search returns compact metadata without schemas" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const catalog = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"mcp_catalog\",\"servers\":[{\"name\":\"files\",\"tools\":[{\"name\":\"read_file\",\"description\":\"Read workspace text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}]}");
+    defer std.testing.allocator.free(catalog);
+    const response = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"mcp_search_tools\",\"query\":\"workspace\"}");
+    defer std.testing.allocator.free(response);
+    try expectValidResponse(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "read_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "inputSchema") == null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "properties") == null);
+}
+
+test "selection requires the preceding search and advertises exactly one schema" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const catalog = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"mcp_catalog\",\"servers\":[{\"name\":\"files\",\"tools\":[{\"name\":\"read_file\",\"description\":\"Read\",\"input_schema\":{\"type\":\"object\"}}]}]}");
+    defer std.testing.allocator.free(catalog);
+    const rejected = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"mcp_select_tool\",\"name\":\"read_file\"}");
+    defer std.testing.allocator.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "tool_not_searched") != null);
+    const search = try state.handle(std.testing.allocator, "{\"id\":\"3\",\"type\":\"mcp_search_tools\",\"query\":\"read\"}");
+    defer std.testing.allocator.free(search);
+    const selected = try state.handle(std.testing.allocator, "{\"id\":\"4\",\"type\":\"mcp_select_tool\",\"name\":\"read_file\"}");
+    defer std.testing.allocator.free(selected);
+    try expectValidResponse(selected);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, selected, "inputSchema"));
+}
