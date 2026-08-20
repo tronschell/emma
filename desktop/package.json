@@ -15,7 +15,7 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "lint": "eslint . --max-warnings 0",
     "check": "npm run test && npm run typecheck && npm run lint && npm run build:renderer",
-    "package:mac": "cargo build --locked --release -p emma-host && zig build -Doptimize=ReleaseSafe --build-file ../agent/build.zig && npm run build:hotkey && npm run build && electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar --extra-resource=../target/release/emma-host --extra-resource=../agent/zig-out/bin/emma-agent --extra-resource=dist-native/emma-option-tap --app-bundle-id=dev.local.emma"
+    "package:mac": "cargo build --locked --release -p emma-host && zig build -Doptimize=ReleaseSafe --build-file ../agent/build.zig && npm run build:hotkey && npm run build && electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar --ignore=\"^/(assets|src|main|shared|test|screenshots|native|scripts|node_modules)(/|$)\" --ignore=\"^/dist-main/(src|test)(/|$)\" --ignore=\"^/(index\\.html|eslint\\.config\\.mjs|vite\\.config\\.mts|tsconfig\\.(main|renderer)\\.json|\\.package-lock\\.json)$\" --extra-resource=../target/release/emma-host --extra-resource=../agent/zig-out/bin/emma-agent --extra-resource=dist-native/emma-option-tap --app-bundle-id=dev.local.emma"
   },
   "devDependencies": {
     "@electron/packager": "20.0.4",
