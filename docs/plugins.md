@@ -29,6 +29,20 @@ Imported skills and MCP files are inactive references until selected. This keeps
 first launch safe and prevents config credentials or every tool schema from
 entering model context.
 
+The current imported-capability slice searches skill directory metadata and loads
+one selected `SKILL.md` only after explicit attachment; referenced skill files and
+assets are not loaded in this slice. It supports the common
+JSON `mcpServers`/`mcp` shapes and the Codex-style `[mcp_servers.<name>]` TOML
+stdio subset (`command`, `args`, and `env`). Config files and environment values
+stay in Electron's main process; the renderer receives only bounded metadata,
+redacted arguments, environment key names, and a one-use permission-review
+token. A review starts exactly one selected stdio server, performs bounded
+`initialize` and `tools/list`, then search exposes compact tool metadata and
+selection exposes only one schema. `tools/call` is a separate user-invoked
+action. Provider-driven autonomous tool loops, remote MCP transports, pagination
+beyond the first bounded tool list, and JSON-Schema argument validation are
+deliberately outside this slice.
+
 The knowledge-artifact data seam follows the same boundary: plugins register
 versioned block types and render validated declarative payloads in a sandbox.
 Each block must provide a portable Markdown/data fallback. Filesystem, network,

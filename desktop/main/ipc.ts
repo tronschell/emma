@@ -50,7 +50,7 @@ const fields: Record<Method, readonly string[]> = {
 };
 
 const optionalFields: Partial<Record<Method, readonly string[]>> = {
-  sendMessage: ["screenContextId"],
+  sendMessage: ["screenContextId", "skillAttachmentId"],
 };
 
 export function validateRequest(value: unknown): Request {
@@ -73,7 +73,7 @@ export function validateRequest(value: unknown): Request {
   for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
     const optionalCredential = method === "selectLocalModel" && key === "credentialEnv";
-    const maxLength = key === "screenContextId" ? 128 : key === "artifacts" ? MAX_ARTIFACT_EDIT_CHARS : 65_536;
+    const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "artifacts" ? MAX_ARTIFACT_EDIT_CHARS : 65_536;
     if (text.length > maxLength || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {

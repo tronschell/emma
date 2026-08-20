@@ -73,6 +73,15 @@ endpoint:
 {"id":"message-2","type":"thread_message","thread_id":"thread-1","content":"Help me plan the release.","provider":{"base_url":"https://api.openai.com/v1","model":"example-model","credential_env":"EMMA_OPENAI_API_KEY"}}
 ```
 
+An explicitly selected skill can be attached to one provider-backed turn with
+the optional `skill_context` field. It is capped at 64 KiB, enters that request
+as a system instruction, and is not added to durable thread history. The local
+fallback rejects skill or screen context because it cannot interpret either:
+
+```json
+{"id":"message-3","type":"thread_message","thread_id":"thread-1","content":"Review this change.","skill_context":"Apply the selected review procedure.","provider":{"base_url":"https://api.openai.com/v1","model":"example-model","credential_env":"EMMA_OPENAI_API_KEY"}}
+```
+
 The provider seam is only an OpenAI-compatible base URL, model, and the *name*
 of a credential environment variable. The sidecar reads that variable only
 when making the request and sends it as bearer authorization; neither the
@@ -116,7 +125,7 @@ artifact; normal assistant replies do not:
 Knowledge analysis remains the deterministic local classifier in this slice;
 provider-backed generation currently applies only to `thread_message`.
 
-Lazy MCP discovery is stateful within one process. The host installs metadata
+Lazy MCP discovery is stateful within one process. A caller installs metadata
 and schemas, but catalog and search responses keep schemas out of model
 context. Selection must name a result from the immediately preceding search;
 only that exact schema is returned for the next model step.
@@ -126,6 +135,10 @@ only that exact schema is returned for the next model step.
 {"id":"search-1","type":"mcp_search_tools","query":"workspace","limit":5}
 {"id":"select-1","type":"mcp_select_tool","name":"read_file"}
 ```
+
+The Zig sidecar does not launch MCP servers or execute `tools/call`. Emma's
+Electron main process owns the separately permissioned, user-invoked stdio
+transport; autonomous provider tool loops remain outside this slice.
 
 ## fx attribution
 

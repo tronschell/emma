@@ -85,6 +85,41 @@ export interface AgentImportSource {
   locations: string[];
 }
 
+export interface ImportedSkill {
+  id: string;
+  source: string;
+  name: string;
+  threadId?: string;
+}
+
+export interface ImportedMcpServer {
+  id: string;
+  source: string;
+  name: string;
+  command: string;
+  args: string[];
+  argCount: number;
+  environmentKeys: string[];
+}
+
+export interface ImportedMcpPermissionReview extends ImportedMcpServer {
+  token: string;
+  warning: string;
+  capabilities: string[];
+}
+
+export interface ImportedMcpTool {
+  name: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export interface ImportedMcpCallResult {
+  content?: unknown;
+  isError?: boolean;
+  [key: string]: unknown;
+}
+
 export interface UiPlugin {
   id: string;
   name: string;
@@ -109,6 +144,17 @@ declare global {
       clearScreenAnnotation(id: string): Promise<void>;
       discoverAgentImports(): Promise<AgentImportSource[]>;
       importAgentSources(ids: string[]): Promise<string[]>;
+      searchImportedSkills(value: { query: string; limit?: number }): Promise<ImportedSkill[]>;
+      selectImportedSkill(value: { id: string; threadId: string }): Promise<ImportedSkill>;
+      importedSkillStatus(): Promise<(ImportedSkill & { threadId: string }) | null>;
+      clearImportedSkill(id: string): Promise<void>;
+      listImportedMcpServers(): Promise<ImportedMcpServer[]>;
+      reviewImportedMcpServer(id: string): Promise<ImportedMcpPermissionReview>;
+      connectImportedMcpServer(value: { serverId: string; token: string }): Promise<{ server: ImportedMcpServer; tools: number }>;
+      searchMcpTools(value: { query: string; limit?: number }): Promise<ImportedMcpTool[]>;
+      selectMcpTool(name: string): Promise<ImportedMcpTool>;
+      callMcpTool(argsJson: string): Promise<ImportedMcpCallResult>;
+      closeImportedMcpServer(): Promise<void>;
       loadUiPlugins(): Promise<UiPlugin[]>;
       onChanged(listener: () => void): number;
       offChanged(id: number): void;

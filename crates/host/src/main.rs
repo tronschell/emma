@@ -1,7 +1,8 @@
 use std::io::{self, BufRead, Read, Write};
 
 use emma_core::{
-    ArtifactBlock, KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ScreenContext, ThreadId,
+    ArtifactBlock, KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ScreenContext,
+    SkillContext, ThreadId,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -36,6 +37,7 @@ struct MessageParams {
     thread_id: String,
     content: String,
     screen_context: Option<String>,
+    skill_context: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -372,10 +374,16 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     .map(ScreenContext::new)
                     .transpose()
                     .map_err(|error| error.to_string())?;
+                let skill_context = params
+                    .skill_context
+                    .map(SkillContext::new)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
                 encode(call(live.send_message(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                     params.content,
                     screen_context,
+                    skill_context,
                 ))?)
             }
             "saveToKnowledge" => {

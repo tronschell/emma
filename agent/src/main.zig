@@ -8,6 +8,7 @@ const max_imported_messages = 256;
 const max_imported_content_bytes = 96 * 1024;
 const max_relevant_pages = 4;
 const max_screen_context_bytes = 96 * 1024;
+const max_skill_context_bytes = 64 * 1024;
 const jpeg_data_url_prefix = "data:image/jpeg;base64,";
 
 const RequestError = error{
@@ -18,6 +19,8 @@ const RequestError = error{
     NoSearchResult,
     ToolNotFound,
     ThreadNotFound,
+    ScreenContextRequiresProvider,
+    SkillRequiresProvider,
 };
 
 const Tool = struct {
@@ -188,6 +191,9 @@ const State = struct {
         if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidField;
         const provider = try parseProvider(object.get("provider"));
         const screen_context = try parseScreenContext(object.get("screen_context"));
+        const skill_context = try parseSkillContext(object.get("skill_context"));
+        if (screen_context != null and provider == null) return error.ScreenContextRequiresProvider;
+        if (skill_context != null and provider == null) return error.SkillRequiresProvider;
         var knowledge_buffer: [max_relevant_pages]openai.KnowledgePage = undefined;
         const knowledge = try parseKnowledge(object.get("knowledge"), &knowledge_buffer);
         const thread = self.findThread(thread_id) orelse return error.ThreadNotFound;
@@ -197,7 +203,7 @@ const State = struct {
         var input_tokens = (input_bytes + 3) / 4;
         var output_tokens: usize = undefined;
         const assistant_content = if (provider) |config| content: {
-            const payload = try openai.buildRequest(alloc, config, thread.messages.items, content, knowledge, screen_context);
+            const payload = try openai.buildRequest(alloc, config, thread.messages.items, content, knowledge, screen_context, skill_context);
             defer alloc.free(payload);
             const reply = try self.provider_transport.send(alloc, config, payload);
             model = config.model;
@@ -205,7 +211,7 @@ const State = struct {
             output_tokens = reply.output_tokens;
             break :content reply.content;
         } else content: {
-            const reply = try fallbackReply(alloc, content, knowledge, screen_context);
+            const reply = try fallbackReply(alloc, content, knowledge);
             output_tokens = (reply.len + 3) / 4;
             break :content reply;
         };
@@ -558,6 +564,13 @@ fn parseScreenContext(value: ?std.json.Value) RequestError!?[]const u8 {
     return context.string;
 }
 
+fn parseSkillContext(value: ?std.json.Value) RequestError!?[]const u8 {
+    const context = value orelse return null;
+    if (context != .string or context.string.len == 0 or context.string.len > max_skill_context_bytes or !std.unicode.utf8ValidateSlice(context.string) or std.mem.trim(u8, context.string, " \t\r\n").len == 0) return error.InvalidField;
+    for (context.string) |byte| if ((byte < ' ' and byte != '\t' and byte != '\r' and byte != '\n') or byte == 0x7f) return error.InvalidField;
+    return context.string;
+}
+
 fn parseKnowledge(
     value: ?std.json.Value,
     buffer: *[max_relevant_pages]openai.KnowledgePage,
@@ -637,7 +650,6 @@ fn fallbackReply(
     alloc: std.mem.Allocator,
     content: []const u8,
     knowledge: []const openai.KnowledgePage,
-    screen_context: ?[]const u8,
 ) ![]u8 {
     const subject = titleFrom(content);
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -653,7 +665,6 @@ fn fallbackReply(
         }
         try out.writer.writeByte('.');
     }
-    if (screen_context != null) try out.writer.writeAll(" A local yellow screen annotation is attached to this turn; it was not sent to a provider.");
     try out.writer.writeAll(" This local fallback keeps the conversation in this thread; connect a provider for a model-generated answer.");
     return out.toOwnedSlice();
 }
@@ -720,6 +731,8 @@ fn requestFailure(alloc: std.mem.Allocator, id: []const u8, err: anyerror) ![]u8
         error.DuplicateTool => responseError(alloc, id, "duplicate_tool", "tool names must be globally unique"),
         error.NoSearchResult => responseError(alloc, id, "tool_not_searched", "select an exact result from the preceding search"),
         error.ToolNotFound => responseError(alloc, id, "tool_not_found", "selected tool is no longer available"),
+        error.ScreenContextRequiresProvider => responseError(alloc, id, "screen_context_requires_provider", "attached screen context requires a configured model endpoint"),
+        error.SkillRequiresProvider => responseError(alloc, id, "skill_requires_provider", "an attached skill requires a configured model endpoint"),
         error.ThreadNotFound => responseError(alloc, id, "thread_not_found", "thread does not exist in this process"),
         error.InvalidRequest, error.InvalidField, error.InvalidProviderConfig => responseError(alloc, id, "invalid_field", "request contains a missing, invalid, or oversized field"),
         error.ProviderRequestTooLarge => responseError(alloc, id, "provider_request_too_large", "thread history exceeds the provider request limit"),
@@ -913,14 +926,24 @@ test "provider fixture receives thread history and returns parsed content and us
     try std.testing.expectEqual(@as(usize, 1), fixture.calls);
 }
 
-test "screen context stays local without a provider" {
+test "screen context fails closed without a provider" {
     var state: State = .{};
     defer state.deinit(std.testing.allocator);
     const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\"}");
     defer std.testing.allocator.free(created);
-    const local = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Look\",\"screen_context\":\"data:image/jpeg;base64,/9j/\"}");
-    defer std.testing.allocator.free(local);
-    try std.testing.expect(std.mem.indexOf(u8, local, "local yellow screen annotation") != null);
+    const rejected = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Look\",\"screen_context\":\"data:image/jpeg;base64,/9j/\"}");
+    defer std.testing.allocator.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "screen_context_requires_provider") != null);
+}
+
+test "skill context fails closed without a provider" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\"}");
+    defer std.testing.allocator.free(created);
+    const rejected = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Use it\",\"skill_context\":\"Follow the selected procedure.\"}");
+    defer std.testing.allocator.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "skill_requires_provider") != null);
 }
 
 test "provider payload includes screen context only when explicitly attached" {

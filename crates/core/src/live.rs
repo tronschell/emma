@@ -22,6 +22,7 @@ const MAX_AGENT_BODY_BYTES: usize = 64 * 1024;
 const MAX_AGENT_CONTEXT_BODY_BYTES: usize = 8 * 1024;
 const MAX_AGENT_MESSAGE_BYTES: usize = 64 * 1024;
 pub const MAX_SCREEN_CONTEXT_BYTES: usize = 96 * 1024;
+pub const MAX_SKILL_CONTEXT_BYTES: usize = 64 * 1024;
 const JPEG_DATA_URL_PREFIX: &str = "data:image/jpeg;base64,";
 
 #[derive(Clone, Debug)]
@@ -31,6 +32,7 @@ pub enum AgentRequest {
         content: String,
         knowledge: Vec<AgentKnowledgePage>,
         screen_context: Option<ScreenContext>,
+        skill_context: Option<SkillContext>,
     },
     Analyze {
         thread: Thread,
@@ -74,6 +76,22 @@ pub struct AgentKnowledgePage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenContext {
     pub jpeg_data_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillContext {
+    pub instructions: String,
+}
+
+impl SkillContext {
+    pub fn new(instructions: String) -> Result<Self, LiveError> {
+        validate_text("skill context", &instructions, true)
+            .map_err(|error| LiveError::new(error.to_string()))?;
+        if instructions.len() > MAX_SKILL_CONTEXT_BYTES {
+            return Err(LiveError::new("skill context is invalid or too large"));
+        }
+        Ok(Self { instructions })
+    }
 }
 
 impl ScreenContext {
@@ -214,6 +232,7 @@ enum Command {
         thread_id: ThreadId,
         content: String,
         screen_context: Option<ScreenContext>,
+        skill_context: Option<SkillContext>,
         reply: Reply<Thread>,
     },
     SaveToKnowledge {
@@ -389,6 +408,7 @@ impl LiveClient {
         thread_id: ThreadId,
         content: String,
         screen_context: Option<ScreenContext>,
+        skill_context: Option<SkillContext>,
     ) -> Result<Thread, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
@@ -396,6 +416,7 @@ impl LiveClient {
                 thread_id,
                 content,
                 screen_context,
+                skill_context,
                 reply,
             })
             .map_err(|_| LiveError::new("Emma runtime stopped before sending the message"))?;
@@ -656,9 +677,15 @@ where
                 thread_id,
                 content,
                 screen_context,
+                skill_context,
                 reply,
             } => {
-                let _ = reply.send(self.send_message(thread_id, content, screen_context));
+                let _ = reply.send(self.send_message(
+                    thread_id,
+                    content,
+                    screen_context,
+                    skill_context,
+                ));
             }
             Command::SaveToKnowledge { thread_id, reply } => {
                 let _ = reply.send(self.save_to_knowledge(thread_id));
@@ -717,7 +744,7 @@ where
             }
             job.last_thread_id = Some(thread.id.to_string());
             let _ = self.scheduled.save(&job);
-            let _ = self.send_message(thread.id, job.prompt.clone(), None);
+            let _ = self.send_message(thread.id, job.prompt.clone(), None, None);
         }
     }
 
@@ -998,6 +1025,7 @@ where
         thread_id: ThreadId,
         content: String,
         screen_context: Option<ScreenContext>,
+        skill_context: Option<SkillContext>,
     ) -> Result<Thread, LiveError> {
         validate_agent_text("prompt", &content, true, MAX_AGENT_MESSAGE_BYTES)?;
         let mut thread = self.threads.load(&thread_id).map_err(|error| {
@@ -1048,6 +1076,7 @@ where
             content: content.clone(),
             knowledge,
             screen_context,
+            skill_context,
         })?;
         let AgentResponse::Message(response) = response else {
             return Err(LiveError::new(
@@ -1285,10 +1314,12 @@ mod tests {
                 content,
                 knowledge,
                 screen_context,
+                skill_context,
             } => {
                 assert_eq!(thread.messages.len(), 1);
                 assert!(knowledge.is_empty());
                 assert!(screen_context.is_none());
+                assert!(skill_context.is_none());
                 Ok(AgentResponse::Message(AgentMessage {
                     content: format!("Fake reply to {content}"),
                     model: "fake".into(),
@@ -1331,7 +1362,7 @@ mod tests {
         let oversized = "x".repeat(MAX_AGENT_MESSAGE_BYTES + 1);
         assert!(
             runtime
-                .send_message(created.id.clone(), oversized, None)
+                .send_message(created.id.clone(), oversized, None, None)
                 .unwrap_err()
                 .to_string()
                 .contains("cannot exceed 65536 bytes")
@@ -1347,7 +1378,7 @@ mod tests {
         let stale_temp = thread_root.join(format!(".{}.tmp", created.id));
         fs::write(&stale_temp, "stale interrupted save").unwrap();
         let updated = runtime
-            .send_message(created.id.clone(), "hello".into(), None)
+            .send_message(created.id.clone(), "hello".into(), None, None)
             .unwrap();
 
         assert_eq!(updated.id, created.id);

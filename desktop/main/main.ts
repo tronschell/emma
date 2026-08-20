@@ -9,6 +9,7 @@ import { discoverImports, saveImportManifest } from "./imports";
 import { loadUiPlugins } from "./plugins";
 import { overlayBounds } from "./overlay";
 import { BoundedLines, parseHostResponse } from "./ndjson";
+import { ImportedCapabilityRuntime, SkillAttachmentStore } from "./capabilities";
 import { defaultSettings, validateOverlayPreferences, type OverlayPreferences } from "../shared/settings";
 import { ScreenContextStore, validateScreenStrokes, type ScreenStroke } from "../shared/screen-context";
 
@@ -78,6 +79,8 @@ class Host {
 }
 
 let host: Host | undefined;
+let capabilities: ImportedCapabilityRuntime | undefined;
+const skillAttachment = new SkillAttachmentStore();
 let hotkeyHelper: ChildProcess | undefined;
 let mainWindow: BrowserWindow | null = null;
 let overlay: BrowserWindow | null = null;
@@ -297,6 +300,25 @@ function closeAnnotation() {
   else restoreOverlay();
 }
 
+function mainWindowSender(event: Electron.IpcMainInvokeEvent) {
+  if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Capability sender is not allowed");
+}
+
+function boundedCapabilityQuery(value: unknown, label: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.query !== "string" || candidate.query.length > 256) throw new Error(`${label} is invalid`);
+  const rawLimit = candidate.limit;
+  const limit = rawLimit === undefined ? 16 : rawLimit;
+  if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 32) throw new Error(`${label} is invalid`);
+  return { query: candidate.query, limit };
+}
+
+function boundedCapabilityId(value: unknown, label: string) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) throw new Error(`${label} is invalid`);
+  return value;
+}
+
 async function startAnnotation() {
   if (!overlay || overlay.isDestroyed() || annotating) return;
   annotating = true;
@@ -344,32 +366,51 @@ if (primaryInstance) app.whenReady().then(() => {
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   host = new Host(binary("emma-host"), binary("emma-agent"));
+  capabilities = new ImportedCapabilityRuntime(app.getPath("userData"));
   ipcMain.handle("emma:request", async (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {
       throw new Error("IPC sender is not allowed");
     }
     let request = validateRequest(value);
     let screenContextId: string | undefined;
-    if (request.method === "sendMessage" && request.params.screenContextId !== undefined) {
-      if (event.sender !== overlay?.webContents) throw new Error("Screen context sender is not allowed");
-      screenContextId = request.params.screenContextId;
-      const attachment = annotationAttachment.claim(screenContextId);
-      request = {
-        method: request.method,
-        params: { threadId: request.params.threadId, content: request.params.content, screenContext: attachment.image },
-      };
+    let skillAttachmentId: string | undefined;
+    if (request.method === "sendMessage" && request.params.skillAttachmentId !== undefined) {
+      mainWindowSender(event);
+      skillAttachmentId = request.params.skillAttachmentId;
     }
     let delivered = false;
+    let screenClaimed = false;
+    let skillClaimed = false;
     try {
+      if (request.method === "sendMessage" && request.params.screenContextId !== undefined) {
+        if (event.sender !== overlay?.webContents) throw new Error("Screen context sender is not allowed");
+        screenContextId = request.params.screenContextId;
+        const attachment = annotationAttachment.claim(screenContextId);
+        screenClaimed = true;
+        request = {
+          method: request.method,
+          params: { threadId: request.params.threadId, content: request.params.content, screenContext: attachment.image },
+        };
+      }
+      if (skillAttachmentId) {
+        const skill = skillAttachment.claim(skillAttachmentId, request.params.threadId);
+        skillClaimed = true;
+        request = {
+          method: request.method,
+          params: { threadId: request.params.threadId, content: request.params.content, ...(request.params.screenContext ? { screenContext: request.params.screenContext } : {}), skillContext: skill.instructions },
+        };
+      }
       const result = await host!.request(request);
       delivered = true;
-      if (screenContextId) annotationAttachment.finish(screenContextId, true);
+      if (screenClaimed) annotationAttachment.finish(screenContextId!, true);
+      if (skillClaimed) skillAttachment.finish(skillAttachmentId!, true);
       if (!(["snapshot", "listOpenRouterModels"] as string[]).includes(request.method)) {
         for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:changed");
       }
       return result;
     } finally {
-      if (screenContextId && !delivered) annotationAttachment.finish(screenContextId, false);
+      if (screenClaimed && !delivered) annotationAttachment.finish(screenContextId!, false);
+      if (skillClaimed && !delivered) skillAttachment.finish(skillAttachmentId!, false);
     }
   });
   ipcMain.handle("emma:discover-agent-imports", (event) => {
@@ -379,6 +420,63 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:import-agent-sources", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents || !Array.isArray(value) || value.length > 8 || value.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
     return saveImportManifest(app.getPath("userData"), homedir(), value);
+  });
+  ipcMain.handle("emma:search-imported-skills", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const query = boundedCapabilityQuery(value, "Skill search");
+    return capabilities!.searchSkills(query.query, query.limit);
+  });
+  ipcMain.handle("emma:select-imported-skill", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Skill selection is invalid");
+    const candidate = value as Record<string, unknown>;
+    const id = boundedCapabilityId(candidate.id, "Skill selection");
+    const threadId = boundedCapabilityId(candidate.threadId, "Skill attachment thread");
+    const skill = await capabilities!.selectSkill(id);
+    skillAttachment.put(skill, threadId);
+    return { id: skill.id, source: skill.source, name: skill.name, threadId };
+  });
+  ipcMain.handle("emma:imported-skill-status", (event) => {
+    mainWindowSender(event);
+    return skillAttachment.status();
+  });
+  ipcMain.handle("emma:clear-imported-skill", (event, value: unknown) => {
+    mainWindowSender(event);
+    skillAttachment.clear(boundedCapabilityId(value, "Skill attachment"));
+  });
+  ipcMain.handle("emma:list-imported-mcp-servers", (event) => {
+    mainWindowSender(event);
+    return capabilities!.listMcpServers();
+  });
+  ipcMain.handle("emma:review-imported-mcp-server", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return capabilities!.permissionReview(boundedCapabilityId(value, "MCP server selection"));
+  });
+  ipcMain.handle("emma:connect-imported-mcp-server", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MCP connection is invalid");
+    const candidate = value as Record<string, unknown>;
+    return capabilities!.connect(boundedCapabilityId(candidate.serverId, "MCP server selection"), boundedCapabilityId(candidate.token, "MCP permission token"));
+  });
+  ipcMain.handle("emma:search-mcp-tools", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const query = boundedCapabilityQuery(value, "MCP tool search");
+    return capabilities!.searchTools(query.query, query.limit);
+  });
+  ipcMain.handle("emma:select-mcp-tool", (event, value: unknown) => {
+    mainWindowSender(event);
+    return capabilities!.selectTool(boundedCapabilityId(value, "MCP tool selection"));
+  });
+  ipcMain.handle("emma:call-mcp-tool", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (typeof value !== "string" || value.length === 0 || value.length > 64 * 1024) throw new Error("MCP tool arguments are invalid");
+    let args: unknown;
+    try { args = JSON.parse(value); } catch (error) { throw new Error("MCP tool arguments must be valid JSON", { cause: error }); }
+    return capabilities!.callTool(args);
+  });
+  ipcMain.handle("emma:close-imported-mcp-server", (event) => {
+    mainWindowSender(event);
+    return capabilities!.close();
   });
   ipcMain.handle("emma:load-ui-plugins", (event) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) throw new Error("UI plugin sender is not allowed");
@@ -445,5 +543,7 @@ app.on("window-all-closed", () => {
 });
 app.on("will-quit", () => {
   hotkeyHelper?.kill();
+  skillAttachment.clearAll();
+  void capabilities?.close();
   host?.close();
 });

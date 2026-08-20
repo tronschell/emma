@@ -106,23 +106,31 @@ pub fn buildRequest(
     pending_user_content: []const u8,
     knowledge: []const KnowledgePage,
     screen_context: ?[]const u8,
+    skill_context: ?[]const u8,
 ) ![]u8 {
     const knowledge_prompt = if (knowledge.len == 0) null else try buildKnowledgePrompt(alloc, knowledge);
     defer if (knowledge_prompt) |prompt| alloc.free(prompt);
+    const skill_prompt = if (skill_context) |instructions| try buildSkillPrompt(alloc, instructions) else null;
+    defer if (skill_prompt) |prompt| alloc.free(prompt);
     const buffer = try alloc.alloc(u8, max_request_bytes + 1);
     errdefer alloc.free(buffer);
     var writer = std.Io.Writer.fixed(buffer);
-    writeRequest(&writer, config, history, pending_user_content, knowledge_prompt, screen_context) catch return error.ProviderRequestTooLarge;
+    writeRequest(&writer, config, history, pending_user_content, knowledge_prompt, skill_prompt, screen_context) catch return error.ProviderRequestTooLarge;
     if (writer.end > max_request_bytes) return error.ProviderRequestTooLarge;
     return try alloc.realloc(buffer, writer.end);
 }
 
-fn writeRequest(writer: *std.Io.Writer, config: Config, history: anytype, pending_user_content: []const u8, knowledge_prompt: ?[]const u8, screen_context: ?[]const u8) !void {
+fn writeRequest(writer: *std.Io.Writer, config: Config, history: anytype, pending_user_content: []const u8, knowledge_prompt: ?[]const u8, skill_prompt: ?[]const u8, screen_context: ?[]const u8) !void {
     try writer.writeAll("{\"model\":");
     try std.json.Stringify.value(config.model, .{}, writer);
     try writer.writeAll(",\"messages\":[");
     var emitted = false;
     if (knowledge_prompt) |prompt| {
+        try writeMessage(writer, "system", prompt);
+        emitted = true;
+    }
+    if (skill_prompt) |prompt| {
+        if (emitted) try writer.writeByte(',');
         try writeMessage(writer, "system", prompt);
         emitted = true;
     }
@@ -148,6 +156,14 @@ fn buildKnowledgePrompt(alloc: std.mem.Allocator, knowledge: []const KnowledgePa
             .{ page.id, page.title, page.summary, page.body },
         );
     }
+    return out.toOwnedSlice();
+}
+
+fn buildSkillPrompt(alloc: std.mem.Allocator, instructions: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try out.writer.writeAll("Instructions from the explicitly attached Emma skill follow. Apply them only to this turn; do not write durable knowledge or access unselected tools.\n\n");
+    try out.writer.writeAll(instructions);
     return out.toOwnedSlice();
 }
 
@@ -499,7 +515,7 @@ test "OpenRouter requests enforce privacy and catalog only free tool models" {
     });
 
     const Message = struct { role: []const u8, content: []const u8 };
-    const request = try buildRequest(std.testing.allocator, config, &[_]Message{}, "hello", &.{}, null);
+    const request = try buildRequest(std.testing.allocator, config, &[_]Message{}, "hello", &.{}, null, null);
     defer std.testing.allocator.free(request);
     var parsed_request = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, request, .{});
     defer parsed_request.deinit();
@@ -520,4 +536,30 @@ test "OpenRouter requests enforce privacy and catalog only free tool models" {
     defer catalog.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), catalog.models.len);
     try std.testing.expectEqualStrings("openai/gpt-oss-20b:free", catalog.models[0].id);
+}
+
+test "an attached skill enters only the current provider request" {
+    const config: Config = .{
+        .base_url = "http://127.0.0.1:1234/v1",
+        .model = "fixture",
+        .credential_env = "",
+    };
+    const Message = struct { role: []const u8, content: []const u8 };
+    const request = try buildRequest(
+        std.testing.allocator,
+        config,
+        &[_]Message{},
+        "Review this",
+        &.{},
+        null,
+        "Use the imported review checklist.",
+    );
+    defer std.testing.allocator.free(request);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, request, .{});
+    defer parsed.deinit();
+    const messages = parsed.value.object.get("messages").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), messages.len);
+    try std.testing.expectEqualStrings("system", messages[0].object.get("role").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, messages[0].object.get("content").?.string, "Use the imported review checklist.") != null);
+    try std.testing.expectEqualStrings("Review this", messages[1].object.get("content").?.string);
 }

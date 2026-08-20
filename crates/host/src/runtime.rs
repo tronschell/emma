@@ -112,6 +112,7 @@ impl Sidecar {
                 content,
                 knowledge,
                 screen_context,
+                skill_context,
             } => {
                 if thread.messages.last().is_some_and(|message| {
                     message.role == ThreadRole::User && message.content == content
@@ -139,6 +140,9 @@ impl Sidecar {
                     screen_context: screen_context
                         .as_ref()
                         .map(|context| context.jpeg_data_url.as_str()),
+                    skill_context: skill_context
+                        .as_ref()
+                        .map(|context| context.instructions.as_str()),
                     provider: provider.as_ref(),
                 };
                 let started = Instant::now();
@@ -649,6 +653,8 @@ struct ThreadMessageRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     screen_context: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    skill_context: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<&'a ProviderConfig>,
 }
 
@@ -774,6 +780,7 @@ mod tests {
             content: "hello",
             knowledge: &[],
             screen_context: None,
+            skill_context: None,
             provider: Some(&provider),
         };
         let json = serde_json::to_value(request).unwrap();
@@ -788,11 +795,29 @@ mod tests {
             content: "hello",
             knowledge: &[],
             screen_context: Some(&context.jpeg_data_url),
+            skill_context: None,
             provider: None,
         };
         assert_eq!(
             serde_json::to_value(request).unwrap()["screen_context"],
             "data:image/jpeg;base64,/9j/"
+        );
+
+        let skill =
+            emma_core::SkillContext::new("Use the selected review procedure.".into()).unwrap();
+        let request = ThreadMessageRequest {
+            id: "test",
+            kind: "thread_message",
+            thread_id: "thread-1",
+            content: "hello",
+            knowledge: &[],
+            screen_context: None,
+            skill_context: Some(&skill.instructions),
+            provider: None,
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap()["skill_context"],
+            "Use the selected review procedure."
         );
 
         let openrouter = provider_config_from_values(

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import type { AgentImportSource, ArtifactBlock, KnowledgePage, OpenRouterCatalog, ScreenStroke, Snapshot, Thread } from "./types";
+import type { AgentImportSource, ArtifactBlock, ImportedMcpPermissionReview, ImportedMcpServer, ImportedMcpTool, ImportedSkill, KnowledgePage, OpenRouterCatalog, ScreenStroke, Snapshot, Thread } from "./types";
 import { activityDays } from "./activity";
 import { deriveAgentInsights } from "./agent-insights";
 import { canRemoveLocalModel, defaultSettings, migrateQuickActionDestinations, resolveQuickActionDestination, validateSettings, type LocalModelProfile, type UserSettings } from "../shared/settings";
@@ -399,21 +399,69 @@ function SourceChecks({ thread, snapshot, act, busy }: { thread: Thread; snapsho
   return <div className="source-checks">{snapshot.knowledgeBases.map((base) => <label key={base.id}><input type="checkbox" checked={thread.sourceKnowledgeBaseIds.includes(base.id)} disabled={busy || base.id === thread.knowledgeBaseId} onChange={(event) => select(base.id, event.target.checked)} />{base.name}{base.id === thread.knowledgeBaseId && <small>destination</small>}</label>)}</div>;
 }
 
+function CapabilityPopover({ threadId, locked, close, skill, setSkill, setBusy }: { threadId: string; locked: boolean; close: () => void; skill: ImportedSkill | null; setSkill: (skill: ImportedSkill | null) => void; setBusy: (busy: boolean) => void }) {
+  const [skillQuery, setSkillQuery] = useState("");
+  const [skills, setSkills] = useState<ImportedSkill[]>([]);
+  const [servers, setServers] = useState<ImportedMcpServer[]>([]);
+  const [server, setServer] = useState<ImportedMcpServer>();
+  const [review, setReview] = useState<ImportedMcpPermissionReview>();
+  const [connected, setConnected] = useState(false);
+  const [toolQuery, setToolQuery] = useState("");
+  const [tools, setTools] = useState<ImportedMcpTool[]>([]);
+  const [tool, setTool] = useState<ImportedMcpTool>();
+  const [args, setArgs] = useState("{}");
+  const [result, setResult] = useState("");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  useEffect(() => () => { void window.emma.closeImportedMcpServer().catch(() => undefined); }, []);
+  const run = async <T,>(operation: () => Promise<T>, onResult: (value: T) => void, onFailure?: () => void) => {
+    if (locked || pending) return;
+    setPending(true); setBusy(true); setError("");
+    try { onResult(await operation()); }
+    catch (reason) { onFailure?.(); setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setPending(false); setBusy(false); }
+  };
+  const searchSkills = () => { if (!skillQuery.trim()) return; void run(() => window.emma.searchImportedSkills({ query: skillQuery.trim(), limit: 8 }), setSkills); };
+  const attach = (item: ImportedSkill) => void run(() => window.emma.selectImportedSkill({ id: item.id, threadId }), setSkill);
+  const clearSkill = () => void run(() => window.emma.clearImportedSkill(skill?.id ?? ""), () => setSkill(null));
+  const loadServers = () => void run(() => window.emma.listImportedMcpServers(), setServers);
+  const inspectServer = (item: ImportedMcpServer) => { if (connected) return; setServer(item); setReview(undefined); setTools([]); setTool(undefined); setResult(""); };
+  const reviewServer = () => { if (server) void run(() => window.emma.reviewImportedMcpServer(server.id), setReview); };
+  const connect = () => {
+    if (!server || !review) return;
+    void run(() => window.emma.connectImportedMcpServer({ serverId: server.id, token: review.token }), (value) => { setConnected(true); setReview(undefined); setTools([]); setTool(undefined); setResult(`${value.tools} tool${value.tools === 1 ? "" : "s"} ready.`); }, () => setReview(undefined));
+  };
+  const searchTools = () => { if (!toolQuery.trim()) return; void run(() => window.emma.searchMcpTools({ query: toolQuery.trim(), limit: 8 }), setTools); };
+  const selectTool = (item: ImportedMcpTool) => void run(() => window.emma.selectMcpTool(item.name), setTool);
+  const callTool = () => void run(async () => { JSON.parse(args); return window.emma.callMcpTool(args); }, (value) => setResult(JSON.stringify(value, null, 2)));
+  const closeServer = () => void run(() => window.emma.closeImportedMcpServer(), () => { setConnected(false); setReview(undefined); setTools([]); setTool(undefined); setResult(""); });
+  return <section className="capability-panel" aria-label="Imported capabilities"><header><div><span>IMPORTED SKILLS & MCP</span><small>Each attachment is explicit and limited to the next action.</small></div><button type="button" disabled={locked || pending} onClick={close} aria-label="Back to add menu">← Back</button></header>{skill && <div className="capability-attached"><span>SKILL ATTACHED · {skill.source}/{skill.name}</span><button type="button" disabled={locked || pending} onClick={clearSkill}>Clear</button></div>}<div className="capability-section"><label>SEARCH SKILLS<input value={skillQuery} disabled={locked || pending} onChange={(event) => setSkillQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchSkills(); } }} placeholder="review, research…" /></label><button type="button" className="capability-action" disabled={locked || pending || !skillQuery.trim()} onClick={searchSkills}>Search</button>{skills.map((item) => <button type="button" className="capability-row" disabled={locked || pending} key={item.id} onClick={() => attach(item)}><strong>{item.name}</strong><small>{item.source} · attach to this thread</small></button>)}<small>Instructions remain main-side and apply only to the next provider-backed turn; local fallback rejects them.</small></div><div className="capability-section"><div className="capability-label"><span>MCP SERVERS</span><button type="button" className="capability-action" disabled={locked || pending} onClick={loadServers}>Load</button></div>{servers.map((item) => <button type="button" className={`capability-row ${server?.id === item.id ? "selected" : ""}`} disabled={locked || pending || connected} key={item.id} onClick={() => inspectServer(item)}><strong>{item.name}</strong><small>{item.source} · {item.command} · {item.args.length} safe args · env: {item.environmentKeys.join(", ") || "none"}</small></button>)}{server && !connected && <div className="capability-review"><p><strong>PERMISSION REVIEW</strong><br />Run exactly one selected stdio process: <code>{server.command}</code> {server.args.map((arg, index) => <code key={index}>{arg}</code>)}<br />Configured environment values stay in Emma; keys: {server.environmentKeys.join(", ") || "none"}.</p>{review && <><p className="capability-review-warning">{review.warning}</p><p className="capability-review-capabilities">Allowed: {review.capabilities.join(" · ")}</p></>}{review ? <button type="button" className="capability-action" disabled={locked || pending} onClick={connect}>Approve & connect</button> : <button type="button" className="capability-action" disabled={locked || pending} onClick={reviewServer}>Review server</button>}</div>}{connected && <div className="capability-review"><p><strong>CONNECTED · USER-INVOKED ONLY</strong><br />Provider autonomous tool loops are not enabled.</p><label>SEARCH TOOLS<input value={toolQuery} disabled={locked || pending} onChange={(event) => setToolQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchTools(); } }} placeholder="files, calendar…" /></label><button type="button" className="capability-action" disabled={locked || pending || !toolQuery.trim()} onClick={searchTools}>Search tools</button>{tools.map((item) => <button type="button" className={`capability-row ${tool?.name === item.name ? "selected" : ""}`} disabled={locked || pending} key={item.name} onClick={() => selectTool(item)}><strong>{item.name}</strong><small>{item.description || "No description"}</small></button>)}{tool && <><pre className="capability-schema">{JSON.stringify(tool.inputSchema, null, 2)}</pre><label>TOOL ARGUMENTS · JSON<textarea value={args} disabled={locked || pending} onChange={(event) => setArgs(event.target.value)} rows={3} /></label><button type="button" className="capability-action" disabled={locked || pending} onClick={callTool}>Call selected tool</button></>}{result && <pre className="capability-result" role="status">{result}</pre>}<button type="button" className="capability-close" disabled={locked || pending} onClick={closeServer}>Close server</button></div>}</div>{error && <p className="capability-error" role="alert">{error}</p>}</section>;
+}
+
 function ThreadView({ thread, snapshot, busy, act, onSendingChange, openModels, modelLabel, modelBrand, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; onSendingChange: (busy: boolean) => void; openModels: () => void; modelLabel: string; modelBrand?: BrandDefinition } & PaneProps) {
   const [message, setMessage] = useState("");
   const [newBase, setNewBase] = useState("");
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [capabilityBusy, setCapabilityBusy] = useState(false);
+  const [skill, setSkill] = useState<ImportedSkill | null>(null);
   const sendingRef = useRef(false);
   const end = useRef<HTMLDivElement>(null);
   const sourceTrigger = useRef<HTMLButtonElement>(null);
-  const closeSources = () => { setSourcesOpen(false); queueMicrotask(() => sourceTrigger.current?.focus()); };
+  const closeSources = () => { setSourcesOpen(false); setCapabilitiesOpen(false); queueMicrotask(() => sourceTrigger.current?.focus()); };
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
   }, [thread?.messages.length]);
+  useEffect(() => {
+    let active = true;
+    void window.emma.importedSkillStatus().then((status) => { if (active) setSkill(status?.threadId === thread?.id ? status : null); }).catch(() => { if (active) setSkill(null); });
+    return () => { active = false; };
+  }, [thread?.id]);
   if (!thread) return <div className="content-empty"><Mark /><h2>Start a durable thread</h2><p>Normal agent work stays here until you explicitly save it to knowledge.</p></div>;
-  const locked = busy || sending;
+  const locked = busy || sending || capabilityBusy;
+  const setCapabilityRunning = (value: boolean) => { setCapabilityBusy(value); onSendingChange(value); };
   const send = async (event: FormEvent) => {
     event.preventDefault();
     if (busy || sendingRef.current) return;
@@ -425,7 +473,8 @@ function ThreadView({ thread, snapshot, busy, act, onSendingChange, openModels, 
     const previousMessageCount = thread.messages.length;
     setMessage("");
     try {
-      const result = await act("sendMessage", { threadId: thread.id, content });
+      const result = await act("sendMessage", { threadId: thread.id, content, ...(skill ? { skillAttachmentId: skill.id } : {}) });
+      if (result !== undefined && skill) setSkill(null);
       if (result === undefined) {
         const latest = await window.emma.request<Snapshot>("snapshot").catch(() => undefined);
         if (!latest || !hasPersistedPrompt(latest, thread.id, previousMessageCount, content)) setMessage(content);
@@ -452,7 +501,7 @@ function ThreadView({ thread, snapshot, busy, act, onSendingChange, openModels, 
         {thread.messages.map((item, index) => <article className={`message ${item.role}`} key={`${item.timestamp}-${index}`}><header><span>{item.role === "user" ? "YOU" : "EMMA"}</span><time dateTime={item.timestamp}>{time(item.timestamp)}</time></header><p>{item.content}</p>{item.generation && <footer className="generation-rate" title={`${item.generation.outputTokens} output tokens in ${item.generation.durationMilliseconds} ms`}>{(item.generation.outputTokens / item.generation.durationMilliseconds * 1000).toFixed(1)} TOKENS/S</footer>}</article>)}
         <div ref={end} />
       </div>
-      <form className="composer" onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label><textarea id="message" value={message} disabled={locked} maxLength={65_536} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Ask Emma to continue…" rows={2} /><div><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><button type="button" className="model-button composer-model" disabled={locked} onClick={openModels} aria-label={`Select model, currently ${modelLabel}`}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span><span aria-hidden="true">⌄</span></button><span>↵ SEND · ⇧↵ NEW LINE</span></div><button disabled={locked || !message.trim()} aria-label="Send message">↑</button></div>{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button autoFocus type="button" aria-label="Close add menu" onClick={closeSources}>×</button></header><div className="add-row"><b>◇</b><div><strong>Knowledge bases</strong><small>Attach one or more read-only sources to this thread</small></div></div><div className="add-sources"><SourceChecks thread={thread} snapshot={snapshot} act={act} busy={locked} /></div><span className="add-section">Built-in plugins</span><button type="button" className="add-row" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent sidecar</strong><small>Inspect Emma's Zig runtime and headless entry point</small></div></button><div className="add-row muted"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div><div className="add-row muted"><b>＋</b><div><strong>More actions come from plugins</strong><small>Imported skills and MCPs appear here after permission review</small></div></div></section>}</form>
+      <form className="composer" onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label><textarea id="message" value={message} disabled={locked} maxLength={65_536} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Ask Emma to continue…" rows={2} /><div><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><button type="button" className="model-button composer-model" disabled={locked} onClick={openModels} aria-label={`Select model, currently ${modelLabel}`}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span><span aria-hidden="true">⌄</span></button><span>↵ SEND · ⇧↵ NEW LINE</span></div><button disabled={locked || !message.trim()} aria-label="Send message">↑</button></div>{skill && <div className="composer-attachment"><span>SKILL · {skill.name} · NEXT TURN ONLY</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button autoFocus type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><div className="add-row"><b>◇</b><div><strong>Knowledge bases</strong><small>Attach one or more read-only sources to this thread</small></div></div><div className="add-sources"><SourceChecks thread={thread} snapshot={snapshot} act={act} busy={locked} /></div><span className="add-section">Imported capabilities</span><button type="button" className="add-row" onClick={() => setCapabilitiesOpen(true)}><b>⌘</b><div><strong>Imported skills &amp; MCP</strong><small>Search, review, and invoke one selected capability</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent sidecar</strong><small>Inspect Emma's Zig runtime and headless entry point</small></div></button><div className="add-row muted"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div></>}</section>}</form>
     </section>
     <aside className={`inspector ${layout.inspectorCollapsed ? "collapsed" : ""}`}>
       {!layout.inspectorCollapsed && <ResizeHandle label="Resize thread inspector" value={layout.inspectorWidth} min={210} max={360} direction={-1} onChange={(inspectorWidth) => pane({ inspectorWidth })} />}
