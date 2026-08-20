@@ -18,13 +18,13 @@
     "package:mac": "cargo build --locked --release -p emma-host && zig build -Doptimize=ReleaseSafe --build-file ../agent/build.zig && npm run build:hotkey && npm run build && electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar --extra-resource=../target/release/emma-host --extra-resource=../agent/zig-out/bin/emma-agent --extra-resource=dist-native/emma-option-tap --app-bundle-id=dev.local.emma"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.3.3",
-    "@vitejs/plugin-react": "6.1.0",
     "@electron/packager": "20.0.4",
     "@eslint/js": "10.0.1",
+    "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.10.1",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.1.0",
     "electron": "43.4.0",
     "eslint": "10.0.1",
     "eslint-plugin-react-hooks": "7.1.1",
@@ -36,5 +36,8 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "vite": "8.2.2"
+  },
+  "dependencies": {
+    "recharts": "3.10.1"
   }
 }

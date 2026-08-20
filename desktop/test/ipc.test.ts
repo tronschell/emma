@@ -7,6 +7,7 @@ import { externalUrl, trustedSender, validJpegDataUrl, validateRequest } from ".
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
 import { activityDays } from "../src/activity";
+import { deriveAgentInsights } from "../src/agent-insights";
 import { defaultSettings, localEndpoint, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { overlayBounds } from "../main/overlay";
@@ -22,6 +23,8 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.throws(() => validateRequest({ method: "shell", params: {} }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
+  assert.deepEqual(validateRequest({ method: "createScheduledJob", params: { title: "Weekly", schedule: "0 9 * * 1", prompt: "Find reading", sourceDomains: "[]" } }).method, "createScheduledJob");
+  assert.throws(() => validateRequest({ method: "setScheduledJobEnabled", params: { jobId: "job-123456789012", enabled: true } }), /Invalid parameters/);
   assert.equal(validateRequest({ method: "updatePage", params: { pageId: "p", title: "x", category: "c", summary: "x", body: "" } }).params.body, "");
   assert.throws(() => validateRequest({ method: "updatePage", params: { pageId: "p", title: "x".repeat(65_536), category: "c", summary: "x".repeat(65_536), body: "x".repeat(65_536) } }), /too large/);
 });
@@ -77,6 +80,15 @@ test("activity spans the first recorded day through the current week", () => {
   assert.equal(days[1].count, 2);
 });
 
+test("agent insights deterministically derive domain and category evidence from the last 60 days", () => {
+  const page = (title: string, addedAt: string, url: string, category = "research") => ({ id: title.padEnd(16, "x"), knowledgeBaseId: "default", title, category, context: { text: title, sourceUrl: url }, analysis: { summary: title, body: title }, sources: [{ title: "source", url }], addedAt, analyzedAt: addedAt, telemetry: { model: "local", inputTokens: 1, outputTokens: 1, subagentCount: 0 } });
+  const snapshot: Snapshot = { threads: [], knowledgeBases: [{ id: "default", name: "Default", createdAt: "1970-01-01T00:00:00Z", categories: [] }], pages: [page("recent-b", "2026-08-19T00:00:00Z", "https://www.example.com/b"), page("recent-a", "2026-08-18T00:00:00Z", "https://example.com/a"), page("old", "2026-01-01T00:00:00Z", "https://old.test")], scheduledJobs: [], warnings: [] };
+  const insights = deriveAgentInsights(snapshot, new Date("2026-08-20T00:00:00Z"));
+  assert.deepEqual(insights.domains[0], { domain: "example.com", count: 2, titles: ["recent-b", "recent-a"] });
+  assert.deepEqual(insights.categories[0], { category: "research", base: "Default", count: 2, titles: ["recent-b", "recent-a"] });
+  assert.equal(insights.domains.some((item) => item.domain === "old.test"), false);
+});
+
 test("settings require three actions and local-only transcription", () => {
   assert.equal(validateSettings(defaultSettings).quickActions.length, 3);
   assert.equal(localEndpoint("http://127.0.0.1:8080/v1/audio/transcriptions")?.hostname, "127.0.0.1");
@@ -100,7 +112,7 @@ test("overlay geometry centers below the active display with mode-specific bound
 });
 
 test("draft reconciliation checks only messages persisted by the attempted turn", () => {
-  const snapshot: Snapshot = { threads: [{ id: "thread-1", title: "Draft test", knowledgeBaseId: "default", sourceKnowledgeBaseIds: ["default"], createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] }], knowledgeBases: [], pages: [], warnings: [] };
+  const snapshot: Snapshot = { threads: [{ id: "thread-1", title: "Draft test", knowledgeBaseId: "default", sourceKnowledgeBaseIds: ["default"], createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] }], knowledgeBases: [], pages: [], scheduledJobs: [], warnings: [] };
   assert.equal(hasPersistedPrompt(snapshot, "thread-1", 1, "retry"), true);
   assert.equal(hasPersistedPrompt(snapshot, "thread-1", 2, "retry"), false);
 });

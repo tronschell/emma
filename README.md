@@ -80,6 +80,13 @@ user category slugs alongside learned page categories. Page edits persist
 through `emma-core` without changing capture provenance or run telemetry. The
 activity heatmap is derived only from durable message/page timestamps.
 
+Agent is a transparent local dashboard over the last 60 days of durable
+knowledge. It shows the saved pages behind repeated site and category patterns
+and can propose a bounded weekly discovery job. Emma creates that job only when
+you approve it. Scheduled job definitions are atomic Markdown, use validated
+five-field UTC cron expressions, run only while Emma is open, and create normal
+threads; they never save knowledge automatically.
+
 Settings stores exactly three quick actions locally. `Command-1/2/3` in the
 overlay runs them. Settings also chooses a below-notch surface or split side
 rails and calibrates the center gap for the current Mac. The local transcription

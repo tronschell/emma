@@ -15,6 +15,8 @@ export const methods = [
   "updatePage",
   "sendMessage",
   "saveToKnowledge",
+  "createScheduledJob",
+  "setScheduledJobEnabled",
   "listOpenRouterModels",
   "selectOpenRouterModel",
 ] as const;
@@ -33,6 +35,8 @@ const fields: Record<Method, readonly string[]> = {
   updatePage: ["pageId", "title", "category", "summary", "body"],
   sendMessage: ["threadId", "content"],
   saveToKnowledge: ["threadId"],
+  createScheduledJob: ["title", "schedule", "prompt", "sourceDomains"],
+  setScheduledJobEnabled: ["jobId", "enabled"],
   listOpenRouterModels: [],
   selectOpenRouterModel: ["modelId"],
 };

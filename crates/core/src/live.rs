@@ -2,14 +2,16 @@ use std::{
     error::Error,
     fmt, io,
     path::PathBuf,
-    sync::mpsc::{self, Sender},
+    sync::mpsc::{self, RecvTimeoutError, Sender},
     thread,
+    time::Duration,
 };
 
 use crate::{
     AnalysisContent, CapturedContext, Category, CitedSource, GenerationTelemetry, KnowledgeBase,
-    KnowledgeBaseId, KnowledgePage, KnowledgeStore, PageId, RunTelemetry, SourceUrl, StoreError,
-    Thread, ThreadId, ThreadMessage, ThreadRole, ThreadStore, Timestamp, validate_text,
+    KnowledgeBaseId, KnowledgePage, KnowledgeStore, PageId, RunTelemetry, ScheduledJob,
+    ScheduledJobId, ScheduledJobStore, SourceUrl, StoreError, Thread, ThreadId, ThreadMessage,
+    ThreadRole, ThreadStore, Timestamp, validate_text,
 };
 use serde::Serialize;
 
@@ -101,6 +103,7 @@ pub struct LiveSnapshot {
     pub threads: Vec<Thread>,
     pub knowledge_bases: Vec<KnowledgeBase>,
     pub pages: Vec<KnowledgePage>,
+    pub scheduled_jobs: Vec<ScheduledJob>,
     pub warnings: Vec<String>,
 }
 
@@ -166,6 +169,18 @@ enum Command {
     SaveToKnowledge {
         thread_id: ThreadId,
         reply: Reply<KnowledgePage>,
+    },
+    CreateScheduledJob {
+        title: String,
+        schedule: String,
+        prompt: String,
+        source_domains: Vec<String>,
+        reply: Reply<ScheduledJob>,
+    },
+    SetScheduledJobEnabled {
+        job_id: ScheduledJobId,
+        enabled: bool,
+        reply: Reply<ScheduledJob>,
     },
     ListOpenRouterModels(Reply<OpenRouterCatalog>),
     SelectOpenRouterModel {
@@ -336,6 +351,50 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while saving the analysis"))?
     }
 
+    pub fn create_scheduled_job(
+        &self,
+        title: String,
+        schedule: String,
+        prompt: String,
+        source_domains: Vec<String>,
+    ) -> Result<ScheduledJob, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::CreateScheduledJob {
+                title,
+                schedule,
+                prompt,
+                source_domains,
+                reply,
+            })
+            .map_err(|_| {
+                LiveError::new("Emma runtime stopped before creating the scheduled job")
+            })?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while creating the scheduled job"))?
+    }
+
+    pub fn set_scheduled_job_enabled(
+        &self,
+        job_id: ScheduledJobId,
+        enabled: bool,
+    ) -> Result<ScheduledJob, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SetScheduledJobEnabled {
+                job_id,
+                enabled,
+                reply,
+            })
+            .map_err(|_| {
+                LiveError::new("Emma runtime stopped before updating the scheduled job")
+            })?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while updating the scheduled job"))?
+    }
+
     pub fn list_openrouter_models(&self) -> Result<OpenRouterCatalog, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
@@ -360,6 +419,7 @@ impl LiveClient {
 pub fn start_live_runtime<A>(
     thread_root: PathBuf,
     knowledge_root: PathBuf,
+    scheduled_root: PathBuf,
     agent: A,
 ) -> Result<LiveClient, LiveError>
 where
@@ -369,9 +429,13 @@ where
     thread::Builder::new()
         .name("emma-live-runtime".into())
         .spawn(move || {
-            let mut runtime = Runtime::new(thread_root, knowledge_root, agent);
-            while let Ok(command) = receiver.recv() {
-                runtime.handle(command);
+            let mut runtime = Runtime::new(thread_root, knowledge_root, scheduled_root, agent);
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(30)) {
+                    Ok(command) => runtime.handle(command),
+                    Err(RecvTimeoutError::Timeout) => runtime.run_due_jobs(),
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
             }
         })
         .map_err(|error| LiveError::new(format!("could not start Emma runtime: {error}")))?;
@@ -381,6 +445,7 @@ where
 struct Runtime<A> {
     threads: ThreadStore,
     knowledge: KnowledgeStore,
+    scheduled: ScheduledJobStore,
     agent: A,
 }
 
@@ -388,10 +453,16 @@ impl<A> Runtime<A>
 where
     A: FnMut(AgentRequest) -> Result<AgentResponse, LiveError>,
 {
-    fn new(thread_root: PathBuf, knowledge_root: PathBuf, agent: A) -> Self {
+    fn new(
+        thread_root: PathBuf,
+        knowledge_root: PathBuf,
+        scheduled_root: PathBuf,
+        agent: A,
+    ) -> Self {
         Self {
             threads: ThreadStore::new(thread_root),
             knowledge: KnowledgeStore::new(knowledge_root),
+            scheduled: ScheduledJobStore::new(scheduled_root),
             agent,
         }
     }
@@ -455,12 +526,50 @@ where
             Command::SaveToKnowledge { thread_id, reply } => {
                 let _ = reply.send(self.save_to_knowledge(thread_id));
             }
+            Command::CreateScheduledJob {
+                title,
+                schedule,
+                prompt,
+                source_domains,
+                reply,
+            } => {
+                let _ =
+                    reply.send(self.create_scheduled_job(title, schedule, prompt, source_domains));
+            }
+            Command::SetScheduledJobEnabled {
+                job_id,
+                enabled,
+                reply,
+            } => {
+                let _ = reply.send(self.set_scheduled_job_enabled(job_id, enabled));
+            }
             Command::ListOpenRouterModels(reply) => {
                 let _ = reply.send(self.list_openrouter_models());
             }
             Command::SelectOpenRouterModel { model_id, reply } => {
                 let _ = reply.send(self.select_openrouter_model(model_id));
             }
+        }
+    }
+
+    fn run_due_jobs(&mut self) {
+        let Ok(listing) = self.scheduled.list() else {
+            return;
+        };
+        let now = Timestamp::now();
+        for mut job in listing.jobs {
+            if job.claim_run(now) != Ok(true) || self.scheduled.save(&job).is_err() {
+                continue;
+            }
+            let Ok(thread) = Thread::new(job.title.clone(), now) else {
+                continue;
+            };
+            if self.threads.save(&thread).is_err() {
+                continue;
+            }
+            job.last_thread_id = Some(thread.id.to_string());
+            let _ = self.scheduled.save(&job);
+            let _ = self.send_message(thread.id, job.prompt.clone());
         }
     }
 
@@ -495,6 +604,10 @@ where
             .knowledge
             .list_bases()
             .map_err(|error| LiveError::new(format!("could not load knowledge bases: {error}")))?;
+        let job_listing = self
+            .scheduled
+            .list()
+            .map_err(|error| LiveError::new(format!("could not load scheduled jobs: {error}")))?;
         let mut warnings = thread_listing
             .malformed
             .into_iter()
@@ -520,12 +633,51 @@ where
                 item.reason
             )
         }));
+        warnings.extend(job_listing.malformed.into_iter().map(|(path, reason)| {
+            format!(
+                "Skipped malformed scheduled job {}: {}",
+                path.display(),
+                reason
+            )
+        }));
         Ok(LiveSnapshot {
             threads: thread_listing.threads,
             knowledge_bases: base_listing.bases,
             pages: page_listing.pages,
+            scheduled_jobs: job_listing.jobs,
             warnings,
         })
+    }
+
+    fn create_scheduled_job(
+        &self,
+        title: String,
+        schedule: String,
+        prompt: String,
+        source_domains: Vec<String>,
+    ) -> Result<ScheduledJob, LiveError> {
+        let job = ScheduledJob::new(title, schedule, prompt, source_domains, Timestamp::now())
+            .map_err(|error| LiveError::new(format!("scheduled job is invalid: {error}")))?;
+        self.scheduled
+            .save(&job)
+            .map_err(|error| LiveError::new(format!("could not save scheduled job: {error}")))?;
+        Ok(job)
+    }
+
+    fn set_scheduled_job_enabled(
+        &self,
+        job_id: ScheduledJobId,
+        enabled: bool,
+    ) -> Result<ScheduledJob, LiveError> {
+        let mut job = self
+            .scheduled
+            .load(&job_id)
+            .map_err(|error| LiveError::new(format!("could not load scheduled job: {error}")))?;
+        job.enabled = enabled;
+        self.scheduled
+            .save(&job)
+            .map_err(|error| LiveError::new(format!("could not save scheduled job: {error}")))?;
+        Ok(job)
     }
 
     fn create_thread(&self) -> Result<Thread, LiveError> {
@@ -847,6 +999,7 @@ mod tests {
         let root = temp_child();
         let thread_root = root.join("threads");
         let knowledge_root = root.join("knowledge");
+        let scheduled_root = root.join("scheduled");
         let agent = |request| match request {
             AgentRequest::ThreadMessage {
                 thread,
@@ -881,7 +1034,12 @@ mod tests {
                 unreachable!()
             }
         };
-        let mut runtime = Runtime::new(thread_root.clone(), knowledge_root.clone(), agent);
+        let mut runtime = Runtime::new(
+            thread_root.clone(),
+            knowledge_root.clone(),
+            scheduled_root,
+            agent,
+        );
 
         let created = runtime.create_thread().unwrap();
         let oversized = "x".repeat(MAX_AGENT_MESSAGE_BYTES + 1);
@@ -969,6 +1127,53 @@ mod tests {
                 .contains("does not exist")
         );
         assert_eq!(runtime.knowledge.list().unwrap().pages.len(), page_count);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn due_scheduled_job_claims_once_and_creates_an_ordinary_thread() {
+        let root = temp_child();
+        let mut runtime = Runtime::new(
+            root.join("threads"),
+            root.join("knowledge"),
+            root.join("scheduled"),
+            |request| match request {
+                AgentRequest::ThreadMessage { content, .. } => {
+                    Ok(AgentResponse::Message(AgentMessage {
+                        content: format!("Ran: {content}"),
+                        model: "fake".into(),
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        duration_milliseconds: 1,
+                    }))
+                }
+                _ => unreachable!(),
+            },
+        );
+        let mut job = runtime
+            .create_scheduled_job(
+                "Weekly discovery".into(),
+                "0 9 * * 1".into(),
+                "Find useful reading".into(),
+                vec!["example.com".into()],
+            )
+            .unwrap();
+        job.created_at = Timestamp::from_unix_seconds(0);
+        job.next_run_at = Timestamp::from_unix_seconds(60);
+        runtime.scheduled.save(&job).unwrap();
+
+        runtime.run_due_jobs();
+        runtime.run_due_jobs();
+
+        let jobs = runtime.scheduled.list().unwrap().jobs;
+        let threads = runtime.threads.list().unwrap().threads;
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].messages.len(), 2);
+        assert_eq!(
+            jobs[0].last_thread_id.as_deref(),
+            Some(threads[0].id.as_str())
+        );
+        assert!(jobs[0].last_run_at.is_some());
         fs::remove_dir_all(root).unwrap();
     }
 }

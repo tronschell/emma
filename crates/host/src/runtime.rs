@@ -31,6 +31,7 @@ pub fn start() -> Result<LiveClient, LiveError> {
     start_live_runtime(
         data_root.join("threads"),
         data_root.join("knowledge"),
+        data_root.join("scheduled"),
         move |request| sidecar.call(request),
     )
 }
