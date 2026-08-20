@@ -105,6 +105,62 @@ mod tests {
     }
 
     #[test]
+    fn durable_store_collection_limits_reject_oversized_counts() {
+        let thread = Thread::new("bounded", Timestamp::from_unix_seconds(1)).unwrap();
+        let oversized_thread = thread.to_markdown().replace(
+            "message-count: 0",
+            &format!("message-count: {}", MAX_THREAD_MESSAGES + 1),
+        );
+        assert!(Thread::from_markdown(&oversized_thread).is_err());
+        let message =
+            ThreadMessage::new(ThreadRole::User, "message", Timestamp::from_unix_seconds(1))
+                .unwrap();
+        let mut thread_for_save = thread;
+        thread_for_save.messages = vec![message; MAX_THREAD_MESSAGES + 1];
+        assert!(
+            ThreadStore::new(temp_child("thread-message-limit"))
+                .save(&thread_for_save)
+                .is_err()
+        );
+
+        let page = page(1_700_000_000, "bounded");
+        let oversized_page = page.to_markdown().replace(
+            "cited-source-count: 1",
+            &format!("cited-source-count: {}", MAX_CITED_SOURCES + 1),
+        );
+        assert!(KnowledgePage::from_markdown(&oversized_page).is_err());
+        let source = page.sources[0].clone();
+        let mut page_for_save = page;
+        page_for_save.sources = vec![source; MAX_CITED_SOURCES + 1];
+        assert!(
+            KnowledgeStore::new(temp_child("cited-source-limit"))
+                .save(&page_for_save)
+                .is_err()
+        );
+
+        let job = ScheduledJob::new(
+            "bounded".into(),
+            "0 9 * * 1".into(),
+            "prompt".into(),
+            vec![],
+            Timestamp::from_unix_seconds(1_700_000_000),
+        )
+        .unwrap();
+        let oversized_job = job.to_markdown().replace(
+            "source-domain-count: 0",
+            &format!("source-domain-count: {}", MAX_SCHEDULED_SOURCE_DOMAINS + 1),
+        );
+        assert!(ScheduledJob::from_markdown(&oversized_job).is_err());
+        let mut job_for_save = job;
+        job_for_save.source_domains = vec!["example.com".into(); MAX_SCHEDULED_SOURCE_DOMAINS + 1];
+        assert!(
+            ScheduledJobStore::new(temp_child("source-domain-limit"))
+                .save(&job_for_save)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn base_categories_and_multi_source_threads_round_trip() {
         let mut base = KnowledgeBase::new("Research", Timestamp::from_unix_seconds(1)).unwrap();
         base.categories = vec![

@@ -334,6 +334,7 @@ impl fmt::Display for PageId {
 
 pub const DEFAULT_KNOWLEDGE_BASE_NAME: &str = "Default";
 pub const MAX_KNOWLEDGE_BASE_CATEGORIES: usize = 256;
+pub const MAX_CITED_SOURCES: usize = 1_024;
 pub const MAX_RELEVANT_PAGES: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -520,6 +521,11 @@ impl KnowledgePage {
     ) -> Result<Self, ValidationError> {
         let title = title.into();
         validate_text("page title", &title, true)?;
+        if sources.len() > MAX_CITED_SOURCES {
+            return Err(ValidationError::new(format!(
+                "knowledge page cannot have more than {MAX_CITED_SOURCES} cited sources"
+            )));
+        }
         if analyzed_at < added_at {
             return Err(ValidationError::new("analysis cannot predate capture"));
         }
@@ -622,6 +628,13 @@ impl KnowledgeStore {
     }
 
     pub fn save(&self, page: &KnowledgePage) -> Result<PathBuf, StoreError> {
+        if page.sources.len() > MAX_CITED_SOURCES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("knowledge page cannot have more than {MAX_CITED_SOURCES} cited sources"),
+            )
+            .into());
+        }
         fs::create_dir_all(&self.root)?;
         let destination = self.path_for(&page.id);
         let temporary = self.root.join(format!(".{}.tmp", page.id));
@@ -1063,7 +1076,10 @@ impl<'a> Parser<'a> {
             .number_field("cited-source-count")?
             .try_into()
             .map_err(|_| ValidationError::new("cited source count is too large"))?;
-        let mut sources = Vec::with_capacity(cited_count.min(1_024));
+        if cited_count > MAX_CITED_SOURCES {
+            return Err(ValidationError::new("cited source count is too large"));
+        }
+        let mut sources = Vec::with_capacity(cited_count);
         for index in 0..cited_count {
             let source_title = self.string_field(&format!("cited-{index}-title"))?;
             let url = SourceUrl::parse(self.string_field(&format!("cited-{index}-url"))?)?;

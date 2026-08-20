@@ -72,6 +72,9 @@ impl ThreadRole {
     }
 }
 
+pub const MAX_THREAD_MESSAGES: usize = 1_024;
+pub const MAX_THREAD_SOURCE_BASES: usize = 256;
+
 impl FromStr for ThreadRole {
     type Err = ValidationError;
 
@@ -158,6 +161,11 @@ impl Thread {
     }
 
     pub fn push(&mut self, message: ThreadMessage) -> Result<(), ValidationError> {
+        if self.messages.len() >= MAX_THREAD_MESSAGES {
+            return Err(ValidationError::new(format!(
+                "thread cannot have more than {MAX_THREAD_MESSAGES} messages"
+            )));
+        }
         if message.generation.is_some() && message.role != ThreadRole::Assistant {
             return Err(ValidationError::new(
                 "generation telemetry belongs only to assistant messages",
@@ -254,7 +262,7 @@ impl Thread {
                 .number("source-knowledge-base-count")?
                 .try_into()
                 .map_err(|_| ValidationError::new("source base count is too large"))?;
-            if count == 0 || count > 256 {
+            if count == 0 || count > MAX_THREAD_SOURCE_BASES {
                 return Err(ValidationError::new("source base count is invalid"));
             }
             let mut ids = Vec::with_capacity(count);
@@ -278,8 +286,11 @@ impl Thread {
             .number("message-count")?
             .try_into()
             .map_err(|_| ValidationError::new("message count is too large"))?;
+        if count > MAX_THREAD_MESSAGES {
+            return Err(ValidationError::new("thread message count is too large"));
+        }
         parser.exact("---")?;
-        let mut messages = Vec::with_capacity(count.min(1_024));
+        let mut messages = Vec::with_capacity(count);
         let mut last = created_at;
         for index in 0..count {
             parser.exact("")?;
@@ -355,6 +366,20 @@ impl ThreadStore {
     }
 
     pub fn save(&self, thread: &Thread) -> Result<PathBuf, ThreadStoreError> {
+        if thread.messages.len() > MAX_THREAD_MESSAGES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("thread cannot have more than {MAX_THREAD_MESSAGES} messages"),
+            )
+            .into());
+        }
+        if thread.source_knowledge_base_ids.len() > MAX_THREAD_SOURCE_BASES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("thread cannot have more than {MAX_THREAD_SOURCE_BASES} source bases"),
+            )
+            .into());
+        }
         fs::create_dir_all(&self.root)?;
         let destination = self.path_for(&thread.id);
         let temporary = self.root.join(format!(".{}.tmp", thread.id));

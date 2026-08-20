@@ -70,6 +70,8 @@ pub struct ScheduledJob {
     pub last_thread_id: Option<String>,
 }
 
+pub const MAX_SCHEDULED_SOURCE_DOMAINS: usize = 32;
+
 impl ScheduledJob {
     pub fn new(
         title: String,
@@ -84,10 +86,10 @@ impl ScheduledJob {
             return Err(ValidationError::new("scheduled job text is too long"));
         }
         validate_schedule(&schedule)?;
-        if source_domains.len() > 32 {
-            return Err(ValidationError::new(
-                "scheduled job has too many source domains",
-            ));
+        if source_domains.len() > MAX_SCHEDULED_SOURCE_DOMAINS {
+            return Err(ValidationError::new(format!(
+                "scheduled job cannot have more than {MAX_SCHEDULED_SOURCE_DOMAINS} source domains"
+            )));
         }
         let mut domains = Vec::new();
         for domain in source_domains {
@@ -194,7 +196,12 @@ impl ScheduledJob {
         let count: usize = prefixed(&mut lines, "source-domain-count: ")?
             .parse()
             .map_err(|_| ValidationError::new("scheduled job source count is invalid"))?;
-        let mut domains = Vec::with_capacity(count.min(32));
+        if count > MAX_SCHEDULED_SOURCE_DOMAINS {
+            return Err(ValidationError::new(
+                "scheduled job source count is too large",
+            ));
+        }
+        let mut domains = Vec::with_capacity(count);
         for index in 0..count {
             domains.push(field_value(&mut lines, &format!("source-domain-{index}"))?);
         }
@@ -309,6 +316,15 @@ impl ScheduledJobStore {
     }
 
     pub fn save(&self, job: &ScheduledJob) -> Result<(), ScheduledJobStoreError> {
+        if job.source_domains.len() > MAX_SCHEDULED_SOURCE_DOMAINS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "scheduled job cannot have more than {MAX_SCHEDULED_SOURCE_DOMAINS} source domains"
+                ),
+            )
+            .into());
+        }
         fs::create_dir_all(&self.root)?;
         let destination = self.path_for(&job.id);
         let temporary = self.root.join(format!(".{}.tmp", job.id));
