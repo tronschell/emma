@@ -42,8 +42,9 @@ cargo run --locked -p emma-desktop
 
 Command-Shift-Space opens the compact agent surface. Threads are saved under
 `~/Library/Application Support/Emma`; set `EMMA_DATA_DIR` for an isolated
-store. Knowledge pages are created only by **Save & Analyze** and remain plain
-Markdown.
+store. Every thread selects one named knowledge base (the stable **Default**
+base is used by older data). **Save & Analyze** and provider knowledge actions
+create or update exportable Markdown pages inside that selected base.
 
 Without a provider, Emma uses its deterministic local fallback. To use an
 OpenAI-compatible local or hosted endpoint, set all three host settings; the

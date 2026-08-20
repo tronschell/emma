@@ -3,8 +3,8 @@ use crate::{
     ShowThreads,
 };
 use emma_core::{
-    AppPreferences, KnowledgePage, LiveClient, LiveSnapshot, OverlayPlacement, PageId, Thread,
-    ThreadId, ThreadRole,
+    AppPreferences, KnowledgeBase, KnowledgeBaseId, KnowledgePage, LiveClient, LiveSnapshot,
+    OverlayPlacement, PageId, Thread, ThreadId, ThreadRole,
 };
 use gpui::{
     AppContext as _, Context, FocusHandle, Focusable, FontWeight, MouseButton, Render, Role,
@@ -22,16 +22,20 @@ enum Destination {
 pub struct LibraryView {
     live: LiveClient,
     threads: Vec<Thread>,
+    knowledge_bases: Vec<KnowledgeBase>,
     pages: Vec<KnowledgePage>,
     selected_thread: Option<ThreadId>,
+    selected_knowledge_base: KnowledgeBaseId,
     selected_page: Option<PageId>,
     prompt: gpui::Entity<InputState>,
+    base_name: gpui::Entity<InputState>,
     root_focus: FocusHandle,
     new_focus: FocusHandle,
     threads_focus: FocusHandle,
     knowledge_focus: FocusHandle,
     send_focus: FocusHandle,
     save_focus: FocusHandle,
+    create_base_focus: FocusHandle,
     destination: Destination,
     status: String,
     busy: bool,
@@ -66,24 +70,50 @@ impl LibraryView {
                 }
             },
         );
+        let base_name = cx.new(|cx| {
+            let mut state = InputState::new(window, cx)
+                .placeholder("New base name…")
+                .submit_on_enter(true);
+            state.set_editor_style(InputEditorStyle {
+                foreground: rgb(0xf3f3f3).into(),
+                muted_foreground: rgb(0x777777).into(),
+                selection: gpui::hsla(0.1, 0.11, 0.39, 0.55),
+                caret: rgb(0xf3f3f3).into(),
+                ..InputEditorStyle::default()
+            });
+            state
+        });
+        let base_subscription = cx.subscribe_in(
+            &base_name,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                    this.create_knowledge_base(window, cx);
+                }
+            },
+        );
         let mut view = Self {
             live,
             threads: Vec::new(),
+            knowledge_bases: vec![KnowledgeBase::default_base()],
             pages: Vec::new(),
             selected_thread: None,
+            selected_knowledge_base: KnowledgeBaseId::default_id(),
             selected_page: None,
             prompt,
+            base_name,
             root_focus: cx.focus_handle(),
             new_focus: cx.focus_handle(),
             threads_focus,
             knowledge_focus: cx.focus_handle(),
             send_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
+            create_base_focus: cx.focus_handle(),
             destination: Destination::Threads,
             status: "Loading durable library…".into(),
             busy: true,
             preferences: AppPreferences::default(),
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription, base_subscription],
             task: None,
         };
         view.load(cx);
@@ -111,7 +141,9 @@ impl LibraryView {
     }
 
     fn replace_snapshot(&mut self, snapshot: LiveSnapshot) {
+        let previous_thread = self.selected_thread.clone();
         self.threads = snapshot.threads;
+        self.knowledge_bases = snapshot.knowledge_bases;
         self.pages = snapshot.pages;
         if !self
             .selected_thread
@@ -120,13 +152,47 @@ impl LibraryView {
         {
             self.selected_thread = self.threads.first().map(|thread| thread.id.clone());
         }
-        if !self
-            .selected_page
-            .as_ref()
-            .is_some_and(|id| self.pages.iter().any(|page| &page.id == id))
+        if self.selected_thread != previous_thread
+            && let Some(thread_id) = self.selected_thread.clone()
         {
-            self.selected_page = self.pages.first().map(|page| page.id.clone());
+            self.select_thread_locally(thread_id);
         }
+        if !self
+            .knowledge_bases
+            .iter()
+            .any(|base| base.id == self.selected_knowledge_base)
+        {
+            self.selected_knowledge_base = KnowledgeBaseId::default_id();
+        }
+        if !self.selected_page.as_ref().is_some_and(|id| {
+            self.pages.iter().any(|page| {
+                &page.id == id && page.knowledge_base_id == self.selected_knowledge_base
+            })
+        }) {
+            self.selected_page = self
+                .pages
+                .iter()
+                .find(|page| page.knowledge_base_id == self.selected_knowledge_base)
+                .map(|page| page.id.clone());
+        }
+    }
+
+    fn select_thread_locally(&mut self, thread_id: ThreadId) {
+        self.selected_thread = Some(thread_id.clone());
+        let Some(base_id) = self
+            .threads
+            .iter()
+            .find(|thread| thread.id == thread_id)
+            .map(|thread| thread.knowledge_base_id.clone())
+        else {
+            return;
+        };
+        self.selected_knowledge_base = base_id;
+        self.selected_page = self
+            .pages
+            .iter()
+            .find(|page| page.knowledge_base_id == self.selected_knowledge_base)
+            .map(|page| page.id.clone());
     }
 
     fn new_thread(&mut self, _: &NewThread, window: &mut Window, cx: &mut Context<Self>) {
@@ -145,8 +211,9 @@ impl LibraryView {
                 this.busy = false;
                 match result {
                     Ok(thread) => {
-                        this.selected_thread = Some(thread.id.clone());
+                        let thread_id = thread.id.clone();
                         this.threads.insert(0, thread);
+                        this.select_thread_locally(thread_id);
                         this.status = "New thread ready".into();
                     }
                     Err(error) => this.status = format!("Create failed: {error}"),
@@ -154,6 +221,118 @@ impl LibraryView {
                 cx.notify();
             });
         }));
+        cx.notify();
+    }
+
+    fn create_knowledge_base(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(thread_id) = self.selected_thread.clone() else {
+            self.status = "Create or select a thread first".into();
+            cx.notify();
+            return;
+        };
+        let name = self.base_name.read(cx).value().trim().to_owned();
+        if name.is_empty() {
+            self.status = "Enter a knowledge base name".into();
+            cx.notify();
+            return;
+        }
+        self.busy = true;
+        self.status = "Creating knowledge base…".into();
+        let live = self.live.clone();
+        let background = cx.background_spawn(async move {
+            let result: Result<_, emma_core::LiveError> = (|| {
+                let base = live.create_knowledge_base(name)?;
+                let thread = live.select_thread_knowledge_base(thread_id, base.id.clone())?;
+                Ok((base, thread))
+            })();
+            let snapshot = result.as_ref().err().and_then(|_| live.snapshot().ok());
+            (result, snapshot)
+        });
+        self.task = Some(cx.spawn(async move |view, cx| {
+            let (result, snapshot) = background.await;
+            let _ = view.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok((base, thread)) => {
+                        this.knowledge_bases.push(base.clone());
+                        if let Some(existing) = this
+                            .threads
+                            .iter_mut()
+                            .find(|existing| existing.id == thread.id)
+                        {
+                            *existing = thread;
+                        }
+                        this.selected_knowledge_base = base.id;
+                        this.selected_page = None;
+                        this.status = format!("Created and selected {}", base.name);
+                    }
+                    Err(error) => {
+                        if let Some(snapshot) = snapshot {
+                            this.replace_snapshot(snapshot);
+                        }
+                        this.status = format!("Create failed: {error}");
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn select_thread_knowledge_base(&mut self, base_id: KnowledgeBaseId, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(thread_id) = self.selected_thread.clone() else {
+            return;
+        };
+        self.busy = true;
+        self.status = "Selecting knowledge base…".into();
+        let live = self.live.clone();
+        let selected_id = base_id.clone();
+        let background = cx.background_spawn(async move {
+            live.select_thread_knowledge_base(thread_id, selected_id)
+        });
+        self.task = Some(cx.spawn(async move |view, cx| {
+            let result = background.await;
+            let _ = view.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(thread) => {
+                        if let Some(existing) = this
+                            .threads
+                            .iter_mut()
+                            .find(|existing| existing.id == thread.id)
+                        {
+                            *existing = thread;
+                        }
+                        this.selected_knowledge_base = base_id;
+                        this.selected_page = this
+                            .pages
+                            .iter()
+                            .find(|page| page.knowledge_base_id == this.selected_knowledge_base)
+                            .map(|page| page.id.clone());
+                        this.status = "Knowledge base selected".into();
+                    }
+                    Err(error) => this.status = format!("Selection failed: {error}"),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn select_knowledge_view_base(&mut self, base_id: KnowledgeBaseId, cx: &mut Context<Self>) {
+        self.selected_knowledge_base = base_id;
+        self.selected_page = self
+            .pages
+            .iter()
+            .find(|page| page.knowledge_base_id == self.selected_knowledge_base)
+            .map(|page| page.id.clone());
+        self.status = "Knowledge base selected".into();
         cx.notify();
     }
 
@@ -189,7 +368,7 @@ impl LibraryView {
         let live = self.live.clone();
         let background = cx.background_spawn(async move {
             let result = live.send_message(thread_id, content);
-            let snapshot = result.as_ref().err().and_then(|_| live.snapshot().ok());
+            let snapshot = live.snapshot().ok();
             (result, snapshot)
         });
         self.task = Some(cx.spawn(async move |view, cx| {
@@ -198,9 +377,13 @@ impl LibraryView {
                 this.busy = false;
                 match result {
                     Ok(thread) => {
-                        this.threads.retain(|item| item.id != thread.id);
                         this.selected_thread = Some(thread.id.clone());
-                        this.threads.insert(0, thread);
+                        if let Some(snapshot) = snapshot {
+                            this.replace_snapshot(snapshot);
+                        } else {
+                            this.threads.retain(|item| item.id != thread.id);
+                            this.threads.insert(0, thread);
+                        }
                         this.status = "Response saved".into();
                     }
                     Err(error) => {
@@ -235,6 +418,7 @@ impl LibraryView {
                     Ok(page) => {
                         this.pages.retain(|item| item.id != page.id);
                         this.selected_page = Some(page.id.clone());
+                        this.selected_knowledge_base = page.knowledge_base_id.clone();
                         this.pages.insert(0, page);
                         this.destination = Destination::Knowledge;
                         this.status = "Analysis saved to Knowledge Base".into();
@@ -254,7 +438,9 @@ impl LibraryView {
 
     fn selected_page(&self) -> Option<&KnowledgePage> {
         let id = self.selected_page.as_ref()?;
-        self.pages.iter().find(|page| &page.id == id)
+        self.pages
+            .iter()
+            .find(|page| &page.id == id && page.knowledge_base_id == self.selected_knowledge_base)
     }
 
     fn can_save(&self) -> bool {
@@ -277,6 +463,8 @@ impl LibraryView {
             self.submit(window, cx);
         } else if self.save_focus.is_focused(window) {
             self.save(&SaveToKnowledgeBase, window, cx);
+        } else if self.create_base_focus.is_focused(window) {
+            self.create_knowledge_base(window, cx);
         }
     }
 
@@ -294,6 +482,14 @@ impl Render for LibraryView {
         let is_threads = self.destination == Destination::Threads;
         let selected_thread = self.selected_thread().cloned();
         let selected_page = self.selected_page().cloned();
+        let selected_thread_base = selected_thread
+            .as_ref()
+            .map(|thread| thread.knowledge_base_id.clone());
+        let visible_pages = self
+            .pages
+            .iter()
+            .filter(|page| page.knowledge_base_id == self.selected_knowledge_base)
+            .collect::<Vec<_>>();
         let can_send = !self.busy && selected_thread.is_some();
         let can_save = !self.busy && self.can_save();
         let placement = match self.preferences.overlay_placement {
@@ -347,13 +543,13 @@ impl Render for LibraryView {
                         .when(selected, |row| row.bg(rgb(0x171717)))
                         .cursor_pointer()
                         .on_action(cx.listener(move |this, _: &ActivateFocused, _, cx| {
-                            this.selected_thread = Some(action_id.clone());
+                            this.select_thread_locally(action_id.clone());
                             this.status = "Thread selected".into();
                             cx.stop_propagation();
                             cx.notify();
                         }))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.selected_thread = Some(id.clone());
+                            this.select_thread_locally(id.clone());
                             this.status = "Thread selected".into();
                             cx.notify();
                         }))
@@ -378,7 +574,7 @@ impl Render for LibraryView {
                 }))
         } else {
             recent
-                .when(self.pages.is_empty(), |list| {
+                .when(visible_pages.is_empty(), |list| {
                     list.child(
                         div()
                             .px(px(9.0))
@@ -388,7 +584,7 @@ impl Render for LibraryView {
                             .child("Nothing saved yet."),
                     )
                 })
-                .children(self.pages.iter().map(|page| {
+                .children(visible_pages.into_iter().map(|page| {
                     let id = page.id.clone();
                     let action_id = id.clone();
                     let selected = self.selected_page.as_ref() == Some(&id);
@@ -443,6 +639,34 @@ impl Render for LibraryView {
                         )
                 }))
         };
+
+        let knowledge_base_switcher = div()
+            .id("knowledge-base-switcher")
+            .role(Role::Group)
+            .aria_label("Knowledge bases")
+            .max_h(px(144.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .children(self.knowledge_bases.iter().map(|base| {
+                let id = base.id.clone();
+                let action_id = id.clone();
+                let selected = id == self.selected_knowledge_base;
+                base_button(
+                    format!("knowledge-view-base-{}", id.as_str()),
+                    base.name.clone(),
+                    selected,
+                    true,
+                )
+                .on_action(cx.listener(move |this, _: &ActivateFocused, _, cx| {
+                    this.select_knowledge_view_base(action_id.clone(), cx);
+                    cx.stop_propagation();
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_knowledge_view_base(id.clone(), cx);
+                }))
+            }));
 
         let content = div()
             .id("library-content-scroll")
@@ -537,13 +761,85 @@ impl Render for LibraryView {
         } else {
             content.child(empty_state(
                 "KNOWLEDGE IS EXPLICIT",
-                "Pages appear only after Save & Analyze.",
+                "Save & Analyze or an agent knowledge action creates a page here.",
             ))
         };
 
         let prompt = self.prompt.clone();
         let prompt_for_mouse = prompt.clone();
         let prompt_focused = prompt.read(cx).focus_handle(cx).is_focused(window);
+        let base_name = self.base_name.clone();
+        let base_name_for_mouse = base_name.clone();
+        let base_name_focused = base_name.read(cx).focus_handle(cx).is_focused(window);
+        let can_edit_base = !self.busy && selected_thread.is_some();
+        let thread_base_picker = div()
+            .id("thread-knowledge-base-picker")
+            .role(Role::Group)
+            .aria_label("Thread knowledge base")
+            .max_h(px(132.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .children(self.knowledge_bases.iter().map(|base| {
+                let id = base.id.clone();
+                let action_id = id.clone();
+                let selected = selected_thread_base.as_ref() == Some(&id);
+                base_button(
+                    format!("thread-base-{}", id.as_str()),
+                    base.name.clone(),
+                    selected,
+                    can_edit_base,
+                )
+                .on_action(cx.listener(move |this, _: &ActivateFocused, _, cx| {
+                    this.select_thread_knowledge_base(action_id.clone(), cx);
+                    cx.stop_propagation();
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_thread_knowledge_base(id.clone(), cx);
+                }))
+            }));
+        let base_creator = div()
+            .id("knowledge-base-creator")
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(0x292929))
+            .bg(rgb(0x151515))
+            .p(px(5.0))
+            .child(
+                InputBase::new("knowledge-base-name")
+                    .accessibility_label("New knowledge base name")
+                    .focused(base_name_focused)
+                    .disabled(!can_edit_base)
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(32.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x151515))
+                    .styles(|styles| styles.focused(|style| style.bg(rgb(0x1d1d1d))))
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        base_name_for_mouse.update(cx, |input, cx| input.focus(window, cx));
+                    })
+                    .child(Input::new(&base_name)),
+            )
+            .child(
+                action_button(
+                    "create-knowledge-base",
+                    "Create",
+                    can_edit_base,
+                    &self.create_base_focus,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.create_base_focus.focus(window, cx);
+                    this.create_knowledge_base(window, cx);
+                })),
+            );
         let title = if is_threads {
             selected_thread
                 .as_ref()
@@ -593,6 +889,9 @@ impl Render for LibraryView {
                             ("SAVED PAGES", linked_pages.to_string()),
                         ],
                     ))
+                    .child(meta_label("KNOWLEDGE BASE"))
+                    .child(thread_base_picker)
+                    .child(base_creator)
                     .child(
                         div()
                             .mt_auto()
@@ -603,7 +902,9 @@ impl Render for LibraryView {
                             .text_size(px(11.0))
                             .line_height(px(17.0))
                             .text_color(rgb(0x777777))
-                            .child("Nothing enters Knowledge until you choose Save & Analyze."),
+                            .child(
+                                "Save & Analyze and agent knowledge actions write only to this base.",
+                            ),
                     )
             } else {
                 inspector.child(empty_state("NO CONTEXT", "Select a thread to inspect it."))
@@ -764,6 +1065,17 @@ impl Render for LibraryView {
                             this.show_knowledge(&ShowKnowledgeBase, window, cx);
                         })),
                     )
+                    .when(!is_threads, |sidebar| {
+                        sidebar
+                            .child(
+                                div()
+                                    .mt(px(14.0))
+                                    .mb(px(5.0))
+                                    .px(px(9.0))
+                                    .child(meta_label("KNOWLEDGE BASES")),
+                            )
+                            .child(knowledge_base_switcher)
+                    })
                     .child(div().mt(px(14.0)).mb(px(5.0)).px(px(9.0)).child(meta_label(
                         if is_threads {
                             "RECENT THREADS"
@@ -1027,6 +1339,56 @@ fn action_button(
         .py(px(9.0))
         .when(enabled, |button| button.cursor_pointer())
         .child(label)
+}
+
+fn base_button(
+    id: String,
+    label: String,
+    selected: bool,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let accessibility_id = format!("emma.{id}");
+    let accessible_label = if !enabled {
+        format!("{label}, unavailable")
+    } else if selected {
+        format!("{label}, selected")
+    } else {
+        label.clone()
+    };
+    div()
+        .id(id)
+        .accessibility_id(accessibility_id)
+        .key_context("LibraryButton")
+        .focusable()
+        .tab_stop(enabled)
+        .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
+        .role(Role::Button)
+        .aria_label(accessible_label)
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(if selected {
+            rgb(0x39352f)
+        } else {
+            rgb(0x181818)
+        })
+        .bg(if selected {
+            rgb(0x181714)
+        } else {
+            rgb(0x0c0c0c)
+        })
+        .text_color(if selected {
+            rgb(0xf3f3f3)
+        } else if enabled {
+            rgb(0x9c9c9c)
+        } else {
+            rgb(0x5d5d5d)
+        })
+        .font_family("Menlo")
+        .text_size(px(9.0))
+        .px(px(9.0))
+        .py(px(7.0))
+        .when(enabled, |button| button.cursor_pointer())
+        .child(format!("{}  {label}", if selected { "◆" } else { "◇" }))
 }
 
 fn meta_label(label: &str) -> gpui::Div {

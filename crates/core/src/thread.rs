@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{Timestamp, ValidationError, quote, unquote, validate_text};
+use crate::{KnowledgeBaseId, Timestamp, ValidationError, quote, unquote, validate_text};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ThreadId(String);
@@ -110,6 +110,7 @@ impl ThreadMessage {
 pub struct Thread {
     pub id: ThreadId,
     pub title: String,
+    pub knowledge_base_id: KnowledgeBaseId,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub messages: Vec<ThreadMessage>,
@@ -122,6 +123,7 @@ impl Thread {
         Ok(Self {
             id: ThreadId::generate(created_at),
             title,
+            knowledge_base_id: KnowledgeBaseId::default_id(),
             created_at,
             updated_at: created_at,
             messages: Vec::new(),
@@ -139,10 +141,19 @@ impl Thread {
         Ok(())
     }
 
+    pub fn select_knowledge_base(&mut self, id: KnowledgeBaseId) {
+        self.knowledge_base_id = id;
+    }
+
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-thread-format: 1\n");
+        let mut output = String::from("---\nemma-thread-format: 2\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
+        field(
+            &mut output,
+            "knowledge-base-id",
+            self.knowledge_base_id.as_str(),
+        );
         field(&mut output, "created-at", &self.created_at.to_string());
         field(&mut output, "updated-at", &self.updated_at.to_string());
         output.push_str(&format!("message-count: {}\n---\n", self.messages.len()));
@@ -159,10 +170,19 @@ impl Thread {
     pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
         let mut parser = Parser::new(markdown);
         parser.exact("---")?;
-        parser.exact("emma-thread-format: 1")?;
+        let legacy = match parser.next()? {
+            "emma-thread-format: 1" => true,
+            "emma-thread-format: 2" => false,
+            _ => return Err(ValidationError::new("unsupported thread format")),
+        };
         let id = ThreadId::parse(parser.field("id")?)?;
         let title = parser.field("title")?;
         validate_text("thread title", &title, true)?;
+        let knowledge_base_id = if legacy {
+            KnowledgeBaseId::default_id()
+        } else {
+            KnowledgeBaseId::parse(parser.field("knowledge-base-id")?)?
+        };
         let created_at = parser.field("created-at")?.parse()?;
         let updated_at = parser.field("updated-at")?.parse()?;
         let count: usize = parser
@@ -202,6 +222,7 @@ impl Thread {
         Ok(Self {
             id,
             title,
+            knowledge_base_id,
             created_at,
             updated_at,
             messages,

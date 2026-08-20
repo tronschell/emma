@@ -304,9 +304,139 @@ impl fmt::Display for PageId {
     }
 }
 
+pub const DEFAULT_KNOWLEDGE_BASE_NAME: &str = "Default";
+pub const MAX_RELEVANT_PAGES: usize = 4;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KnowledgeBaseId(String);
+
+impl KnowledgeBaseId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValidationError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 96
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(ValidationError::new(
+                "knowledge base ID is not a safe filename",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn default_id() -> Self {
+        Self("default".into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn generate(now: Timestamp) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        Self(format!(
+            "base-{}-{:x}-{:x}-{sequence:x}",
+            now.unix_seconds(),
+            std::process::id(),
+            nanos
+        ))
+    }
+}
+
+impl Default for KnowledgeBaseId {
+    fn default() -> Self {
+        Self::default_id()
+    }
+}
+
+impl fmt::Display for KnowledgeBaseId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnowledgeBase {
+    pub id: KnowledgeBaseId,
+    pub name: String,
+    pub created_at: Timestamp,
+}
+
+impl KnowledgeBase {
+    pub fn new(name: impl Into<String>, created_at: Timestamp) -> Result<Self, ValidationError> {
+        let name = name.into().trim().to_owned();
+        validate_text("knowledge base name", &name, true)?;
+        if name.len() > 128 {
+            return Err(ValidationError::new(
+                "knowledge base name cannot exceed 128 bytes",
+            ));
+        }
+        Ok(Self {
+            id: KnowledgeBaseId::generate(created_at),
+            name,
+            created_at,
+        })
+    }
+
+    pub fn default_base() -> Self {
+        Self {
+            id: KnowledgeBaseId::default_id(),
+            name: DEFAULT_KNOWLEDGE_BASE_NAME.into(),
+            created_at: Timestamp::from_unix_seconds(0),
+        }
+    }
+
+    pub fn to_markdown(&self) -> String {
+        let mut output = String::from("---\nemma-knowledge-base-format: 1\n");
+        field(&mut output, "id", self.id.as_str());
+        field(&mut output, "name", &self.name);
+        field(&mut output, "created-at", &self.created_at.to_string());
+        output.push_str("---\n");
+        output
+    }
+
+    pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
+        let mut parser = Parser::new(markdown);
+        parser.exact("---")?;
+        parser.exact("emma-knowledge-base-format: 1")?;
+        let id = KnowledgeBaseId::parse(parser.string_field("id")?)?;
+        if id == KnowledgeBaseId::default_id() {
+            return Err(ValidationError::new(
+                "the default knowledge base is built in",
+            ));
+        }
+        let name = parser.string_field("name")?.trim().to_owned();
+        validate_text("knowledge base name", &name, true)?;
+        if name.len() > 128 {
+            return Err(ValidationError::new(
+                "knowledge base name cannot exceed 128 bytes",
+            ));
+        }
+        let created_at = parser.string_field("created-at")?.parse()?;
+        parser.exact("---")?;
+        if parser.lines.next().is_some() {
+            return Err(ValidationError::new(
+                "unexpected content after knowledge base metadata",
+            ));
+        }
+        Ok(Self {
+            id,
+            name,
+            created_at,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnowledgePage {
     pub id: PageId,
+    pub knowledge_base_id: KnowledgeBaseId,
     pub title: String,
     pub category: Category,
     pub context: CapturedContext,
@@ -337,6 +467,7 @@ impl KnowledgePage {
         }
         Ok(Self {
             id: PageId::generate(added_at),
+            knowledge_base_id: KnowledgeBaseId::default_id(),
             title,
             category,
             context,
@@ -354,11 +485,21 @@ impl KnowledgePage {
         self
     }
 
+    pub fn in_knowledge_base(mut self, knowledge_base_id: KnowledgeBaseId) -> Self {
+        self.knowledge_base_id = knowledge_base_id;
+        self
+    }
+
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-format: 1\n");
+        let mut output = String::from("---\nemma-format: 2\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(&mut output, "category", self.category.as_str());
+        field(
+            &mut output,
+            "knowledge-base-id",
+            self.knowledge_base_id.as_str(),
+        );
         field(&mut output, "added-at", &self.added_at.to_string());
         field(&mut output, "analyzed-at", &self.analyzed_at.to_string());
         field(&mut output, "model", &self.telemetry.model);
@@ -426,20 +567,96 @@ impl KnowledgeStore {
         fs::create_dir_all(&self.root)?;
         let destination = self.path_for(&page.id);
         let temporary = self.root.join(format!(".{}.tmp", page.id));
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
-            file.write_all(page.to_markdown().as_bytes())?;
-            file.sync_all()?;
-            fs::rename(&temporary, &destination)?;
-            Ok(destination)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        atomic_write(&temporary, &destination, page.to_markdown().as_bytes())?;
+        Ok(destination)
+    }
+
+    pub fn save_base(&self, base: &KnowledgeBase) -> Result<PathBuf, StoreError> {
+        let root = self.base_root();
+        fs::create_dir_all(&root)?;
+        let destination = root.join(format!("{}.md", base.id));
+        let temporary = root.join(format!(".{}.tmp", base.id));
+        atomic_write(&temporary, &destination, base.to_markdown().as_bytes())?;
+        Ok(destination)
+    }
+
+    pub fn load_base(&self, id: &KnowledgeBaseId) -> Result<KnowledgeBase, StoreError> {
+        if id == &KnowledgeBaseId::default_id() {
+            return Ok(KnowledgeBase::default_base());
         }
-        result.map_err(StoreError::Io)
+        let path = self.base_root().join(format!("{id}.md"));
+        let markdown = fs::read_to_string(&path)?;
+        let base = KnowledgeBase::from_markdown(&markdown).map_err(|error| {
+            StoreError::Malformed(MalformedPage {
+                path: path.clone(),
+                reason: error.to_string(),
+            })
+        })?;
+        if &base.id != id {
+            return Err(StoreError::Malformed(MalformedPage {
+                path,
+                reason: "knowledge base ID does not match filename".into(),
+            }));
+        }
+        Ok(base)
+    }
+
+    pub fn list_bases(&self) -> Result<KnowledgeBaseListing, StoreError> {
+        let mut listing = KnowledgeBaseListing {
+            bases: vec![KnowledgeBase::default_base()],
+            malformed: Vec::new(),
+        };
+        let root = self.base_root();
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(listing),
+            Err(error) => return Err(StoreError::Io(error)),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                listing.malformed.push(MalformedPage {
+                    path,
+                    reason: "filename is not UTF-8".into(),
+                });
+                continue;
+            };
+            let id = match KnowledgeBaseId::parse(stem) {
+                Ok(id) if id != KnowledgeBaseId::default_id() => id,
+                Ok(_) => {
+                    listing.malformed.push(MalformedPage {
+                        path,
+                        reason: "the default knowledge base is built in".into(),
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    listing.malformed.push(MalformedPage {
+                        path,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            match self.load_base(&id) {
+                Ok(base) => listing.bases.push(base),
+                Err(StoreError::Malformed(base)) => listing.malformed.push(base),
+                Err(StoreError::Io(error)) => return Err(StoreError::Io(error)),
+            }
+        }
+        listing.bases[1..].sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        listing
+            .malformed
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(listing)
     }
 
     pub fn load(&self, id: &PageId) -> Result<KnowledgePage, StoreError> {
@@ -508,14 +725,97 @@ impl KnowledgeStore {
         Ok(listing)
     }
 
+    pub fn relevant_pages(
+        &self,
+        base_id: &KnowledgeBaseId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgePage>, StoreError> {
+        // ponytail: This deterministic O(n) scan is enough for local Markdown;
+        // add an index only when real base sizes make the measured latency matter.
+        let mut scored = self
+            .list()?
+            .pages
+            .into_iter()
+            .filter(|page| &page.knowledge_base_id == base_id)
+            .filter_map(|page| {
+                let score = lexical_score(query, &page);
+                (score != 0).then_some((score, page))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| right.analyzed_at.cmp(&left.analyzed_at))
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        Ok(scored
+            .into_iter()
+            .take(limit.min(MAX_RELEVANT_PAGES))
+            .map(|(_, page)| page)
+            .collect())
+    }
+
     fn path_for(&self, id: &PageId) -> PathBuf {
         self.root.join(format!("{id}.md"))
     }
+
+    fn base_root(&self) -> PathBuf {
+        self.root.join("bases")
+    }
+}
+
+fn atomic_write(temporary: &Path, destination: &Path, contents: &[u8]) -> io::Result<()> {
+    match fs::remove_file(temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temporary)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        fs::rename(temporary, destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+fn lexical_score(query: &str, page: &KnowledgePage) -> usize {
+    let mut terms = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    terms.sort_unstable();
+    terms.dedup();
+    let title = page.title.to_lowercase();
+    let summary = page.analysis.summary.to_lowercase();
+    let body = page.analysis.body.to_lowercase();
+    terms
+        .into_iter()
+        .map(|term| {
+            usize::from(title.contains(&term)) * 4
+                + usize::from(summary.contains(&term)) * 2
+                + usize::from(body.contains(&term))
+        })
+        .sum()
 }
 
 #[derive(Debug, Default)]
 pub struct StoreListing {
     pub pages: Vec<KnowledgePage>,
+    pub malformed: Vec<MalformedPage>,
+}
+
+#[derive(Debug, Default)]
+pub struct KnowledgeBaseListing {
+    pub bases: Vec<KnowledgeBase>,
     pub malformed: Vec<MalformedPage>,
 }
 
@@ -743,10 +1043,19 @@ impl<'a> Parser<'a> {
 
     fn parse(mut self) -> Result<KnowledgePage, ValidationError> {
         self.exact("---")?;
-        self.exact("emma-format: 1")?;
+        let legacy = match self.next()? {
+            "emma-format: 1" => true,
+            "emma-format: 2" => false,
+            _ => return Err(ValidationError::new("unsupported knowledge page format")),
+        };
         let id = PageId::parse(self.string_field("id")?)?;
         let title = self.string_field("title")?;
         let category = self.string_field("category")?.parse()?;
+        let knowledge_base_id = if legacy {
+            KnowledgeBaseId::default_id()
+        } else {
+            KnowledgeBaseId::parse(self.string_field("knowledge-base-id")?)?
+        };
         let added_at = self.string_field("added-at")?.parse()?;
         let analyzed_at = self.string_field("analyzed-at")?.parse()?;
         let model = self.string_field("model")?;
@@ -797,6 +1106,7 @@ impl<'a> Parser<'a> {
         }
         Ok(KnowledgePage {
             id,
+            knowledge_base_id,
             title,
             category,
             context: CapturedContext::new(text, source_application, source_url)?,

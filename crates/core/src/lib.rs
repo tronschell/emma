@@ -82,6 +82,40 @@ mod tests {
     }
 
     #[test]
+    fn v1_page_and_thread_markdown_map_to_the_default_base() {
+        let original_page = page(1_700_000_000, "legacy page");
+        let page_v1 = original_page
+            .to_markdown()
+            .replacen("emma-format: 2", "emma-format: 1", 1)
+            .lines()
+            .filter(|line| !line.starts_with("knowledge-base-id: "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let migrated_page = KnowledgePage::from_markdown(&page_v1).unwrap();
+        assert_eq!(
+            migrated_page.knowledge_base_id,
+            KnowledgeBaseId::default_id()
+        );
+
+        let original_thread =
+            Thread::new("legacy thread", Timestamp::from_unix_seconds(10)).unwrap();
+        let thread_v1 = original_thread
+            .to_markdown()
+            .replacen("emma-thread-format: 2", "emma-thread-format: 1", 1)
+            .lines()
+            .filter(|line| !line.starts_with("knowledge-base-id: "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let migrated_thread = Thread::from_markdown(&thread_v1).unwrap();
+        assert_eq!(
+            migrated_thread.knowledge_base_id,
+            KnowledgeBaseId::default_id()
+        );
+    }
+
+    #[test]
     fn unsafe_paths_urls_text_and_malformed_unicode_are_rejected() {
         for id in [
             "../../outside",
@@ -129,6 +163,39 @@ mod tests {
         assert_eq!(fs::read_to_string(&malformed_path).unwrap(), "not a page");
         assert!(!root.join(format!(".{}.tmp", old.id)).exists());
         assert!(old_path.starts_with(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retrieval_is_base_scoped_deterministic_and_bounded() {
+        let root = temp_child("retrieval");
+        let store = KnowledgeStore::new(root.clone());
+        let research = KnowledgeBase::new("Research", Timestamp::from_unix_seconds(1)).unwrap();
+        let personal = KnowledgeBase::new("Personal", Timestamp::from_unix_seconds(2)).unwrap();
+        store.save_base(&research).unwrap();
+        store.save_base(&personal).unwrap();
+        for index in 0..7 {
+            store
+                .save(
+                    &page(10 + index, &format!("Satellite clock note {index}"))
+                        .in_knowledge_base(research.id.clone()),
+                )
+                .unwrap();
+        }
+        store
+            .save(&page(100, "Satellite clock private").in_knowledge_base(personal.id.clone()))
+            .unwrap();
+
+        let found = store
+            .relevant_pages(&research.id, "satellite clock", usize::MAX)
+            .unwrap();
+        assert_eq!(found.len(), MAX_RELEVANT_PAGES);
+        assert!(
+            found
+                .iter()
+                .all(|page| page.knowledge_base_id == research.id)
+        );
+        assert_eq!(found[0].title, "Satellite clock note 6");
         fs::remove_dir_all(root).unwrap();
     }
 

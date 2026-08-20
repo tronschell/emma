@@ -1,11 +1,12 @@
 const std = @import("std");
 const openai = @import("openai_compatible.zig");
 
-const max_line_bytes = 128 * 1024;
+const max_line_bytes = 256 * 1024;
 const max_text_bytes = openai.max_content_bytes;
 const max_tools = 256;
 const max_imported_messages = 256;
 const max_imported_content_bytes = 96 * 1024;
+const max_relevant_pages = 4;
 
 const RequestError = error{
     InvalidRequest,
@@ -173,20 +174,27 @@ const State = struct {
         const content = try requiredString(object, "content", max_text_bytes);
         if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidField;
         const provider = try parseProvider(object.get("provider"));
+        var knowledge_buffer: [max_relevant_pages]openai.KnowledgePage = undefined;
+        const knowledge = try parseKnowledge(object.get("knowledge"), &knowledge_buffer);
         const thread = self.findThread(thread_id) orelse return error.ThreadNotFound;
         var model: []const u8 = "local-fallback";
-        var input_tokens = (content.len + 3) / 4;
+        var input_bytes = content.len;
+        for (knowledge) |page| input_bytes += page.id.len + page.title.len + page.summary.len + page.body.len;
+        var input_tokens = (input_bytes + 3) / 4;
         var output_tokens: usize = undefined;
+        var knowledge_mutation: ?openai.KnowledgeMutation = null;
+        defer if (knowledge_mutation) |mutation| mutation.deinit(alloc);
         const assistant_content = if (provider) |config| content: {
-            const payload = try openai.buildRequest(alloc, config.model, thread.messages.items, content);
+            const payload = try openai.buildRequest(alloc, config.model, thread.messages.items, content, knowledge);
             defer alloc.free(payload);
             const reply = try self.provider_transport.send(alloc, config, payload);
             model = config.model;
             input_tokens = reply.input_tokens;
             output_tokens = reply.output_tokens;
+            knowledge_mutation = reply.knowledge_mutation;
             break :content reply.content;
         } else content: {
-            const reply = try fallbackReply(alloc, content);
+            const reply = try fallbackReply(alloc, content, knowledge);
             output_tokens = (reply.len + 3) / 4;
             break :content reply;
         };
@@ -210,12 +218,30 @@ const State = struct {
         try writeMessage(&out.writer, .{ .id = assistant_id, .role = "assistant", .content = assistant_content });
         try out.writer.writeAll(",\"model\":");
         try jsonString(&out.writer, model);
-        try out.writer.writeAll(",\"events\":[],\"tool_calls\":[],\"permission_requests\":[],\"input_tokens\":");
+        try out.writer.writeAll(",\"events\":[],\"tool_calls\":[],\"permission_requests\":[]");
+        if (knowledge_mutation) |mutation| {
+            try out.writer.writeAll(",\"knowledge_mutation\":{\"type\":");
+            try jsonString(&out.writer, switch (mutation.kind) {
+                .create_page => "create_page",
+                .update_page => "update_page",
+            });
+            try out.writer.writeAll(",\"arguments\":");
+            try out.writer.writeAll(mutation.arguments_json);
+            try out.writer.writeByte('}');
+        }
+        try out.writer.writeAll(",\"input_tokens\":");
         try out.writer.print("{d},\"output_tokens\":{d}", .{ input_tokens, output_tokens });
         try out.writer.writeAll("}}\n");
         const response = try out.toOwnedSlice();
         thread.messages.appendAssumeCapacity(.{ .id = user_id, .role = "user", .content = user_content });
-        thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
+        if (assistant_content.len == 0) {
+            // The host persists the useful success/failure result after applying
+            // the mutation; do not send an invalid empty assistant message later.
+            alloc.free(assistant_id);
+            alloc.free(assistant_content);
+        } else {
+            thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
+        }
         return response;
     }
 
@@ -401,7 +427,7 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const line = readLine(alloc, &reader.interface) catch |err| {
             if (err == error.LineTooLarge) {
-                const response = try responseError(alloc, null, "line_too_large", "NDJSON line exceeds 131072 bytes");
+                const response = try responseError(alloc, null, "line_too_large", "NDJSON line exceeds 262144 bytes");
                 defer alloc.free(response);
                 try std.Io.File.stdout().writeStreamingAll(io, response);
                 continue;
@@ -479,6 +505,27 @@ fn parseProvider(value: ?std.json.Value) RequestError!?openai.Config {
     return config;
 }
 
+fn parseKnowledge(
+    value: ?std.json.Value,
+    buffer: *[max_relevant_pages]openai.KnowledgePage,
+) RequestError![]const openai.KnowledgePage {
+    const pages = value orelse return buffer[0..0];
+    if (pages != .array or pages.array.items.len > max_relevant_pages) return error.InvalidField;
+    for (pages.array.items, 0..) |page, index| {
+        if (page != .object) return error.InvalidField;
+        buffer[index] = .{
+            .id = try requiredString(page.object, "id", 96),
+            .title = try requiredString(page.object, "title", 256),
+            .summary = try requiredString(page.object, "summary", 4 * 1024),
+            .body = try requiredString(page.object, "body", max_text_bytes),
+        };
+        if (!std.unicode.utf8ValidateSlice(buffer[index].title) or
+            !std.unicode.utf8ValidateSlice(buffer[index].summary) or
+            !std.unicode.utf8ValidateSlice(buffer[index].body)) return error.InvalidField;
+    }
+    return buffer[0..pages.array.items.len];
+}
+
 fn importMessages(alloc: std.mem.Allocator, thread: *Thread, value: std.json.Value) !void {
     if (value != .array or value.array.items.len > max_imported_messages) return error.InvalidField;
     try thread.messages.ensureUnusedCapacity(alloc, value.array.items.len);
@@ -533,13 +580,27 @@ fn classify(text: []const u8) []const u8 {
     return "general";
 }
 
-fn fallbackReply(alloc: std.mem.Allocator, content: []const u8) ![]u8 {
+fn fallbackReply(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    knowledge: []const openai.KnowledgePage,
+) ![]u8 {
     const subject = titleFrom(content);
-    return std.fmt.allocPrint(
-        alloc,
-        "I received your message about \"{s}\". This local fallback keeps the conversation in this thread; connect a provider for a model-generated answer.",
-        .{subject},
-    );
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try out.writer.print("I received your message about \"{s}\".", .{subject});
+    if (knowledge.len != 0) {
+        try out.writer.print(" I found {d} relevant knowledge page", .{knowledge.len});
+        if (knowledge.len != 1) try out.writer.writeByte('s');
+        try out.writer.writeAll(": ");
+        for (knowledge, 0..) |page, index| {
+            if (index != 0) try out.writer.writeAll(", ");
+            try out.writer.print("\"{s}\"", .{page.title});
+        }
+        try out.writer.writeByte('.');
+    }
+    try out.writer.writeAll(" This local fallback keeps the conversation in this thread; connect a provider for a model-generated answer.");
+    return out.toOwnedSlice();
 }
 
 fn matches(tool: Tool, query: []const u8) bool {
@@ -651,16 +712,60 @@ test "thread messages persist user and general assistant roles" {
     const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\",\"title\":\"General\"}");
     defer std.testing.allocator.free(created);
     try expectValidResponse(created);
-    const turn = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"What should I do next?\"}");
+    const turn = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"What should I do next?\",\"knowledge\":[{\"id\":\"page-00000000000\",\"title\":\"Release checklist\",\"summary\":\"Ship safely\",\"body\":\"Run every check\"}]}");
     defer std.testing.allocator.free(turn);
     try expectValidResponse(turn);
     try std.testing.expect(std.mem.indexOf(u8, turn, "\"role\":\"assistant\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, turn, "\"tool_calls\":[]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "found 1 relevant knowledge page") != null);
     const fetched = try state.handle(std.testing.allocator, "{\"id\":\"3\",\"type\":\"thread_get\",\"thread_id\":\"thread-1\"}");
     defer std.testing.allocator.free(fetched);
     try expectValidResponse(fetched);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"user\""));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"assistant\""));
+}
+
+test "provider request exposes knowledge tools and parses one mutation" {
+    const Fixture = struct {
+        fn send(_: ?*anyopaque, alloc: std.mem.Allocator, _: openai.Config, payload: []const u8) anyerror!openai.Reply {
+            var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+            defer parsed.deinit();
+            const tools = parsed.value.object.get("tools").?.array.items;
+            try std.testing.expectEqual(@as(usize, 2), tools.len);
+            try std.testing.expectEqualStrings(
+                "create_knowledge_page",
+                tools[0].object.get("function").?.object.get("name").?.string,
+            );
+            try std.testing.expectEqualStrings(
+                "update_knowledge_page",
+                tools[1].object.get("function").?.object.get("name").?.string,
+            );
+            const messages = parsed.value.object.get("messages").?.array.items;
+            try std.testing.expectEqualStrings("system", messages[0].object.get("role").?.string);
+            try std.testing.expect(std.mem.indexOf(u8, messages[0].object.get("content").?.string, "page-00000000000") != null);
+
+            return openai.parseResponse(
+                alloc,
+                "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"update_knowledge_page\",\"arguments\":\"{\\\"page_id\\\":\\\"page-00000000000\\\",\\\"body\\\":\\\"Updated\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":13,\"completion_tokens\":4}}",
+            );
+        }
+    };
+
+    var state: State = .{ .provider_transport = .{ .send_fn = Fixture.send } };
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\"}");
+    defer std.testing.allocator.free(created);
+    const turn = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Update it\",\"knowledge\":[{\"id\":\"page-00000000000\",\"title\":\"Page\",\"summary\":\"Summary\",\"body\":\"Body\"}],\"provider\":{\"base_url\":\"http://localhost:9999/v1\",\"model\":\"fixture\",\"credential_env\":\"EMMA_FIXTURE_KEY\"}}");
+    defer std.testing.allocator.free(turn);
+    try expectValidResponse(turn);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"type\":\"update_page\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"body\":\"Updated\"") != null);
+
+    const two_calls = "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{},{}]},\"finish_reason\":\"tool_calls\"}]}";
+    try std.testing.expectError(
+        error.InvalidProviderResponse,
+        openai.parseResponse(std.testing.allocator, two_calls),
+    );
 }
 
 test "provider fixture receives thread history and returns parsed content and usage" {

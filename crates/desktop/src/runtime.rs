@@ -7,8 +7,8 @@ use std::{
 };
 
 use emma_core::{
-    AgentAnalysis, AgentMessage, AgentRequest, AgentResponse, AgentSource, LiveClient, LiveError,
-    Thread, ThreadId, ThreadRole, start_live_runtime,
+    AgentAnalysis, AgentKnowledgeMutation, AgentMessage, AgentRequest, AgentResponse, AgentSource,
+    LiveClient, LiveError, Thread, ThreadId, ThreadRole, start_live_runtime,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -97,6 +97,7 @@ impl Sidecar {
             AgentRequest::ThreadMessage {
                 mut thread,
                 content,
+                knowledge,
             } => {
                 if thread.messages.last().is_some_and(|message| {
                     message.role == ThreadRole::User && message.content == content
@@ -106,20 +107,27 @@ impl Sidecar {
                 let thread_id = self.sidecar_thread(&thread)?;
                 let id = self.request_id();
                 let provider = self.provider.clone();
+                let knowledge = knowledge
+                    .iter()
+                    .map(|page| WireKnowledgePage {
+                        id: &page.id,
+                        title: &page.title,
+                        summary: &page.summary,
+                        body: &page.body,
+                    })
+                    .collect::<Vec<_>>();
                 let request = ThreadMessageRequest {
                     id: &id,
                     kind: "thread_message",
                     thread_id: &thread_id,
                     content: &content,
+                    knowledge: &knowledge,
                     provider: provider.as_ref(),
                 };
                 let response: ThreadMessageResult = self.exchange(&id, &request)?;
-                Ok(AgentResponse::Message(AgentMessage {
-                    content: response.message.content,
-                    model: response.model,
-                    input_tokens: response.input_tokens,
-                    output_tokens: response.output_tokens,
-                }))
+                Ok(AgentResponse::Message(
+                    self.finish_thread_message(&thread.id, response)?,
+                ))
             }
             AgentRequest::Analyze { thread, text } => {
                 let thread_id = self.sidecar_thread(&thread)?;
@@ -178,6 +186,26 @@ impl Sidecar {
                 }))
             }
         }
+    }
+
+    fn finish_thread_message(
+        &mut self,
+        thread_id: &ThreadId,
+        response: ThreadMessageResult,
+    ) -> Result<AgentMessage, LiveError> {
+        if response.knowledge_mutation.is_some() {
+            self.thread_ids.remove(thread_id);
+        }
+        Ok(AgentMessage {
+            content: response.message.content,
+            model: response.model,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+            knowledge_mutation: response
+                .knowledge_mutation
+                .map(translate_knowledge_mutation)
+                .transpose()?,
+        })
     }
 
     fn sidecar_thread(&mut self, thread: &Thread) -> Result<String, LiveError> {
@@ -370,8 +398,17 @@ struct ThreadMessageRequest<'a> {
     kind: &'static str,
     thread_id: &'a str,
     content: &'a str,
+    knowledge: &'a [WireKnowledgePage<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<&'a ProviderConfig>,
+}
+
+#[derive(Serialize)]
+struct WireKnowledgePage<'a> {
+    id: &'a str,
+    title: &'a str,
+    summary: &'a str,
+    body: &'a str,
 }
 
 #[derive(Serialize)]
@@ -409,11 +446,83 @@ struct ThreadMessageResult {
     model: String,
     input_tokens: u64,
     output_tokens: u64,
+    #[serde(default)]
+    knowledge_mutation: Option<WireKnowledgeMutation>,
 }
 
 #[derive(Deserialize)]
 struct WireMessage {
     content: String,
+}
+
+#[derive(Deserialize)]
+struct WireKnowledgeMutation {
+    #[serde(rename = "type")]
+    kind: String,
+    arguments: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatePageArguments {
+    title: String,
+    #[serde(default)]
+    category: Option<String>,
+    summary: String,
+    body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdatePageArguments {
+    page_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+fn translate_knowledge_mutation(
+    mutation: WireKnowledgeMutation,
+) -> Result<AgentKnowledgeMutation, LiveError> {
+    match mutation.kind.as_str() {
+        "create_page" => {
+            let arguments: CreatePageArguments = serde_json::from_value(mutation.arguments)
+                .map_err(|error| {
+                    LiveError::new(format!(
+                        "Emma agent returned invalid create-page arguments: {error}"
+                    ))
+                })?;
+            Ok(AgentKnowledgeMutation::Create {
+                title: arguments.title,
+                category: arguments.category,
+                summary: arguments.summary,
+                body: arguments.body,
+            })
+        }
+        "update_page" => {
+            let arguments: UpdatePageArguments = serde_json::from_value(mutation.arguments)
+                .map_err(|error| {
+                    LiveError::new(format!(
+                        "Emma agent returned invalid update-page arguments: {error}"
+                    ))
+                })?;
+            Ok(AgentKnowledgeMutation::Update {
+                page_id: arguments.page_id,
+                title: arguments.title,
+                category: arguments.category,
+                summary: arguments.summary,
+                body: arguments.body,
+            })
+        }
+        _ => Err(LiveError::new(
+            "Emma agent returned an unknown knowledge action",
+        )),
+    }
 }
 
 #[derive(Deserialize)]
@@ -464,10 +573,67 @@ mod tests {
             kind: "thread_message",
             thread_id: "thread-1",
             content: "hello",
+            knowledge: &[],
             provider: Some(&provider),
         };
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["provider"]["model"], "model");
         assert_eq!(json["provider"]["credential_env"], "EMMA_API_KEY");
+    }
+
+    #[test]
+    fn knowledge_mutations_translate_without_loosening_the_core_boundary() {
+        let mutation = translate_knowledge_mutation(WireKnowledgeMutation {
+            kind: "update_page".into(),
+            arguments: serde_json::json!({
+                "page_id": "page-00000000000",
+                "body": "replacement"
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            mutation,
+            AgentKnowledgeMutation::Update {
+                page_id: "page-00000000000".into(),
+                title: None,
+                category: None,
+                summary: None,
+                body: Some("replacement".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_knowledge_mutation_invalidates_the_cached_sidecar_thread() {
+        let mut sidecar = Sidecar::new(PathBuf::from("unused"), None);
+        let thread_id = ThreadId::parse("thread-0000000000").unwrap();
+        sidecar
+            .thread_ids
+            .insert(thread_id.clone(), "zig-thread".into());
+
+        let message = sidecar
+            .finish_thread_message(
+                &thread_id,
+                ThreadMessageResult {
+                    message: WireMessage {
+                        content: "I saved that.".into(),
+                    },
+                    model: "fixture".into(),
+                    input_tokens: 4,
+                    output_tokens: 2,
+                    knowledge_mutation: Some(WireKnowledgeMutation {
+                        kind: "create_page".into(),
+                        arguments: serde_json::json!({
+                            "title": "Clock notes",
+                            "summary": "Timing matters",
+                            "body": "Durable details"
+                        }),
+                    }),
+                },
+            )
+            .unwrap();
+
+        assert!(message.knowledge_mutation.is_some());
+        assert!(!sidecar.thread_ids.contains_key(&thread_id));
     }
 }

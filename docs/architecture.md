@@ -2,10 +2,12 @@
 
 ## Source of truth
 
-Every ordinary interaction belongs to a durable thread. A thread can answer a
-question, edit files, run commands, call tools, or coordinate work without
-creating knowledge-base content. Each explicitly saved knowledge page is one
-exportable Markdown file and may reference its source thread.
+Every ordinary interaction belongs to a durable thread attached to one named
+knowledge base. A thread can answer a question, edit files, run commands, call
+tools, or coordinate work without creating knowledge-base content. Each saved
+or agent-authored knowledge page is one exportable Markdown file, carries its
+base association, and may reference its source thread. Version-1 Markdown maps
+to the stable default base when loaded.
 
 `emma-core` owns thread/page parsing, atomic persistence, and domain invariants.
 GPUI entities hold a live projection only. The Zig sidecar owns transient agent
@@ -26,9 +28,10 @@ Hidden -> Capturing -> Ready -> Analyzing -> Saved
 The surface shows captured app/title/URL/screenshot metadata before submission.
 Enter submits to the thread, Escape cancels the innermost transient state, and
 Tab/Shift-Tab visit visible controls. A separate Save/Analyze action creates a
-knowledge page. Closing returns focus to the prior application where the
-platform permits it. Pointer, keyboard, and accessibility actions route through
-the same typed intent.
+knowledge page in the selected base. Provider turns can request one create or
+update action; core validates and applies it within that same base. Closing
+returns focus to the prior application where the platform permits it. Pointer,
+keyboard, and accessibility actions route through the same typed intent.
 
 ## Library information architecture
 

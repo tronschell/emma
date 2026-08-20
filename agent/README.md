@@ -3,7 +3,7 @@
 `emma-agent` is Emma's small Zig 0.16 sidecar. It reads one JSON object per
 line from stdin and writes one response per line to stdout. Request IDs are
 echoed unchanged. Errors use `{ "ok": false, "error": { "code", "message" } }`.
-Lines are limited to 128 KiB and analysis text to 64 KiB.
+Lines are limited to 256 KiB and analysis text to 64 KiB.
 
 Build and test:
 
@@ -51,16 +51,17 @@ same URL/profile path without vendor login code. Requests and responses are
 each capped at 1 MiB, redirects are not followed, and requests time out after
 60 seconds.
 
-This first transport is non-streaming and accepts assistant text plus standard
-`prompt_tokens`/`completion_tokens` usage. Provider tool calls return a
-structured unsupported error instead of being discarded. Native Anthropic and
-Gemini wire formats are not supported; those services need an
-OpenAI-compatible gateway for this slice.
+This transport is non-streaming and accepts assistant text plus standard
+`prompt_tokens`/`completion_tokens` usage. Provider turns advertise explicit
+`create_knowledge_page` and `update_knowledge_page` tools, parse at most one
+knowledge action, and return it to the host for selected-base validation and
+atomic Markdown persistence. Native Anthropic and Gemini wire formats are not
+supported; those services need an OpenAI-compatible gateway for this slice.
 
 `thread_message` reserves `events`, `tool_calls`, and `permission_requests` in
 its result so shell, file, web, skill, and MCP activity can use the ordinary
-agent turn without becoming knowledge-base content. This slice does not
-execute those tools.
+agent turn without becoming knowledge-base content. A bounded `knowledge`
+array supplies only relevant pages from the thread's selected base.
 
 Knowledge analysis is an explicit action layered onto an existing thread.
 `save_to_knowledge` and its `analyze` alias return a destination-tagged
