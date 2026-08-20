@@ -2,14 +2,20 @@
 
 ## Source of truth
 
-Each knowledge page is one exportable Markdown file. `emma-core` owns parsing,
-atomic persistence, and domain invariants. GPUI entities hold a live projection
-only. The Zig sidecar owns transient agent runs, tool selection, and usage
-accounting; it cannot mutate the library without an explicit host command.
+Every ordinary interaction belongs to a durable thread. A thread can answer a
+question, edit files, run commands, call tools, or coordinate work without
+creating knowledge-base content. Each explicitly saved knowledge page is one
+exportable Markdown file and may reference its source thread.
+
+`emma-core` owns thread/page parsing, atomic persistence, and domain invariants.
+GPUI entities hold a live projection only. The Zig sidecar owns transient agent
+runs, tool selection, and usage accounting; it cannot mutate either store
+without an explicit host command.
 
 ## Capture flow
 
-`Command-Shift-Space` requests the agent surface. Its state machine is:
+`Command-Shift-Space` requests the agent surface and targets a new or selected
+thread. Its state machine is:
 
 ```text
 Hidden -> Capturing -> Ready -> Analyzing -> Saved
@@ -18,10 +24,20 @@ Hidden -> Capturing -> Ready -> Analyzing -> Saved
 ```
 
 The surface shows captured app/title/URL/screenshot metadata before submission.
-Enter submits from the prompt, Escape cancels the innermost transient state,
-and Tab/Shift-Tab visit visible controls. Closing returns focus to the prior
-application where the platform permits it. Pointer, keyboard, and accessibility
-actions route through the same typed intent.
+Enter submits to the thread, Escape cancels the innermost transient state, and
+Tab/Shift-Tab visit visible controls. A separate Save/Analyze action creates a
+knowledge page. Closing returns focus to the prior application where the
+platform permits it. Pointer, keyboard, and accessibility actions route through
+the same typed intent.
+
+## Library information architecture
+
+The normal window uses a restrained three-pane desktop layout: persistent
+navigation, a thread/page list, and a flexible content surface with an optional
+inspector. The primary destinations are New Thread, Threads, and Knowledge
+Base. Knowledge Base is always visibly separate from the thread transcript.
+The inspector shows sources and run metadata without stealing width at the
+minimum supported window size.
 
 ## Windows and material
 
@@ -52,4 +68,3 @@ that schema on the next step.
 The first extension mechanism is this command/tool protocol plus skills on
 disk. A general UI/plugin SDK is deferred until two concrete extensions prove
 the lifecycle, permission, versioning, and rendering contracts.
-

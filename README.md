@@ -1,14 +1,14 @@
 # Emma
 
-Emma is a lightweight macOS agent surface and exportable knowledge base. A
-global shortcut opens a compact surface near the display notch, captures only
-user-approved context, asks a Zig agent to analyze it, and saves the result as
-portable Markdown.
+Emma is a lightweight macOS agent and exportable knowledge base. A global
+shortcut opens a compact surface near the display notch and starts or continues
+a normal agent thread with user-approved context. Saving an analyzed result as
+portable Markdown is an explicit action, not the default for every turn.
 
 This repository currently targets one production vertical slice:
 
 ```text
-hotkey -> inspect context -> analyze -> save Markdown -> render in GPUI
+hotkey -> inspect context -> agent thread -> optional knowledge page
 ```
 
 ## Workspace
@@ -29,4 +29,3 @@ the development toolchains.
 `dev.local.emma` is the provisional development identity. A publisher-owned
 bundle ID, minimum supported macOS version, signing identity, distribution,
 and update owner remain release blockers.
-
