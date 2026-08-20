@@ -27,6 +27,7 @@ export interface UserSettings {
 
 export type OverlayPlacement = "below" | "rails";
 export type OverlayPreferences = Pick<UserSettings, "overlayPlacement" | "notchGap">;
+export type KnowledgeBaseReference = { id: string; name: string };
 
 const action = (label: string, prompt: string): QuickAction => ({ label, prompt, destinationKnowledgeBaseId: "", category: "", saveToKnowledge: false });
 
@@ -40,6 +41,22 @@ export const defaultSettings: UserSettings = {
   localModels: [],
   selectedModel: "fallback",
 };
+
+export function resolveQuickActionDestination(destination: string, bases: readonly KnowledgeBaseReference[]): string | undefined {
+  if (!destination) return undefined;
+  return bases.find((base) => base.id === destination)?.id ?? bases.find((base) => base.name === destination)?.id;
+}
+
+export function migrateQuickActionDestinations(settings: UserSettings, bases: readonly KnowledgeBaseReference[]): UserSettings {
+  let changed = false;
+  const quickActions = settings.quickActions.map((action) => {
+    const destination = resolveQuickActionDestination(action.destinationKnowledgeBaseId, bases);
+    if (!destination || destination === action.destinationKnowledgeBaseId) return action;
+    changed = true;
+    return { ...action, destinationKnowledgeBaseId: destination };
+  }) as UserSettings["quickActions"];
+  return changed ? { ...settings, quickActions } : settings;
+}
 
 export function validateSettings(value: unknown): UserSettings {
   if (!value || typeof value !== "object") throw new Error("Settings are invalid");

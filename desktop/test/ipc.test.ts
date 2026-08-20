@@ -8,7 +8,7 @@ import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
 import { activityDays } from "../src/activity";
 import { deriveAgentInsights } from "../src/agent-insights";
-import { canRemoveLocalModel, defaultSettings, localEndpoint, localModelEndpoint, normalizeLocalModelEndpoint, validateOverlayPreferences, validateSettings } from "../shared/settings";
+import { canRemoveLocalModel, defaultSettings, localEndpoint, localModelEndpoint, migrateQuickActionDestinations, normalizeLocalModelEndpoint, resolveQuickActionDestination, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { overlayBounds } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
@@ -106,6 +106,16 @@ test("settings require three actions and local-only transcription", () => {
   assert.equal(localEndpoint("http://127.0.0.1:8080/v1/audio/transcriptions")?.hostname, "127.0.0.1");
   assert.equal(localEndpoint("https://api.openai.com/v1/audio/transcriptions"), null);
   assert.throws(() => validateSettings({ ...defaultSettings, quickActions: [] }), /three/);
+});
+
+test("quick action destinations use base IDs and migrate legacy names", () => {
+  const bases = [{ id: "kb-research-opaque", name: "Research" }, { id: "kb-writing-opaque", name: "Writing" }];
+  const legacy = validateSettings({ ...defaultSettings, quickActions: defaultSettings.quickActions.map((action, index) => index === 0 ? { ...action, destinationKnowledgeBaseId: "Research" } : action) });
+  const migrated = migrateQuickActionDestinations(legacy, bases);
+  assert.equal(migrated.quickActions[0].destinationKnowledgeBaseId, "kb-research-opaque");
+  assert.equal(resolveQuickActionDestination("kb-writing-opaque", bases), "kb-writing-opaque");
+  assert.equal(resolveQuickActionDestination("removed-base", bases), undefined);
+  assert.equal(migrated.quickActions[0].prompt, legacy.quickActions[0].prompt);
 });
 
 test("local model profiles stay loopback-only and support keyless servers", () => {
