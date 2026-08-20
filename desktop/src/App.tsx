@@ -26,7 +26,7 @@ function BrandIcon({ brand, className }: { brand?: BrandDefinition; className: s
 const LAYOUT_KEY = "emma.layout.v1";
 const IMPORTS_SEEN_KEY = "emma.importsSeen.v1";
 const readLayout = () => {
-  try { return validatePaneLayout(JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null")); }
+  try { return validatePaneLayout(JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null"), window.innerWidth); }
   catch { return defaultPaneLayout; }
 };
 
@@ -180,7 +180,12 @@ function Workspace() {
     addEventListener("emma-settings-changed", reload);
     return () => { removeEventListener("storage", reload); removeEventListener("emma-settings-changed", reload); };
   }, []);
-  const pane = (change: Partial<PaneLayout>) => setLayout((current) => validatePaneLayout({ ...current, ...change }));
+  useEffect(() => {
+    const fit = () => setLayout((current) => validatePaneLayout(current, window.innerWidth));
+    addEventListener("resize", fit);
+    return () => removeEventListener("resize", fit);
+  }, []);
+  const pane = (change: Partial<PaneLayout>) => setLayout((current) => validatePaneLayout({ ...current, ...change }, window.innerWidth));
   const shellStyle = {
     "--nav-width": `${layout.navCollapsed ? 46 : layout.navWidth}px`,
     "--list-width": `${layout.listCollapsed ? 30 : layout.listWidth}px`,

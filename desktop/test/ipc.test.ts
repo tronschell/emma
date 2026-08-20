@@ -163,4 +163,7 @@ test("pane layout restores only bounded persisted values", () => {
     inspectorWidth: 241,
     navCollapsed: true,
   });
+  const fitted = validatePaneLayout({ navWidth: 260, listWidth: 380, inspectorWidth: 360 }, 1040);
+  assert.deepEqual([fitted.navWidth, fitted.listWidth, fitted.inspectorWidth], [194, 260, 265]);
+  assert.ok(1040 - fitted.navWidth - fitted.listWidth - fitted.inspectorWidth >= 320);
 });
