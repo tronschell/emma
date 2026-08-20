@@ -213,6 +213,17 @@ impl Sidecar {
             AgentRequest::SelectOpenRouterModel { model_id } => self
                 .select_openrouter_model(model_id)
                 .map(AgentResponse::OpenRouterModelSelected),
+            AgentRequest::SelectLocalModel {
+                base_url,
+                model_id,
+                credential_env,
+            } => self
+                .select_local_model(base_url, model_id, credential_env)
+                .map(AgentResponse::LocalModelSelected),
+            AgentRequest::SelectFallbackModel => {
+                self.provider = None;
+                Ok(AgentResponse::FallbackModelSelected)
+            }
         }
     }
 
@@ -287,6 +298,18 @@ impl Sidecar {
         } else {
             self.provider = Some(ProviderConfig::openrouter(model_id.clone()));
         }
+        Ok(model_id)
+    }
+
+    fn select_local_model(
+        &mut self,
+        base_url: String,
+        model_id: String,
+        credential_env: String,
+    ) -> Result<String, LiveError> {
+        let provider = ProviderConfig::local(base_url, model_id, credential_env)?;
+        let model_id = provider.model.clone();
+        self.provider = Some(provider);
         Ok(model_id)
     }
 
@@ -403,6 +426,24 @@ impl ProviderConfig {
     fn is_openrouter(&self) -> bool {
         is_openrouter_base_url(&self.base_url)
     }
+
+    fn local(base_url: String, model: String, credential_env: String) -> Result<Self, LiveError> {
+        if !is_local_base_url(&base_url)
+            || model.trim().is_empty()
+            || model.len() > 128
+            || (!credential_env.is_empty() && !valid_env_name(&credential_env))
+        {
+            return Err(LiveError::new(
+                "local models must use an HTTP localhost endpoint and a model ID; credentials are optional but the environment variable name must be valid",
+            ));
+        }
+        Ok(Self {
+            base_url,
+            model,
+            credential_env,
+            protect_data: false,
+        })
+    }
 }
 
 fn is_openrouter_base_url(base_url: &str) -> bool {
@@ -414,6 +455,36 @@ fn is_openrouter_base_url(base_url: &str) -> bool {
     ]
     .iter()
     .any(|known| base_url.eq_ignore_ascii_case(known))
+}
+
+fn is_local_base_url(base_url: &str) -> bool {
+    let normalized = base_url.to_ascii_lowercase();
+    let Some(rest) = normalized.strip_prefix("http://") else {
+        return false;
+    };
+    if rest.is_empty()
+        || ['@', '?', '#']
+            .iter()
+            .any(|character| rest.contains(*character))
+        || rest.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']'))
+        .map_or(
+            authority.split(':').next().unwrap_or_default(),
+            |(host, _)| host,
+        );
+    matches!(host, "localhost" | "localhost." | "127.0.0.1" | "::1")
+}
+
+fn valid_env_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('_' | 'a'..='z' | 'A'..='Z'))
+        && chars.all(|char| char == '_' || char.is_ascii_alphanumeric())
 }
 
 fn validate_openrouter_model(model: &WireOpenRouterModel) -> Result<(), LiveError> {
@@ -708,6 +779,58 @@ mod tests {
         .unwrap();
         assert!(openrouter.protect_data);
         assert!(is_openrouter_base_url("https://OPENROUTER.AI/api/v1"));
+    }
+
+    #[test]
+    fn local_model_profiles_are_loopback_only() {
+        let provider = ProviderConfig::local(
+            "http://127.0.0.1:1234/v1".into(),
+            "qwen".into(),
+            "LOCAL_API_KEY".into(),
+        )
+        .unwrap();
+        assert!(!provider.protect_data);
+        assert!(
+            ProviderConfig::local(
+                "https://api.example.test/v1".into(),
+                "qwen".into(),
+                "LOCAL_API_KEY".into(),
+            )
+            .is_err()
+        );
+        assert!(
+            ProviderConfig::local(
+                "http://localhost.evil/v1".into(),
+                "qwen".into(),
+                "LOCAL_API_KEY".into(),
+            )
+            .is_err()
+        );
+        assert!(
+            ProviderConfig::local(
+                "http://localhost:1234/v1".into(),
+                "qwen".into(),
+                "bad-key".into(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn fallback_selection_clears_the_active_runtime_provider() {
+        let mut sidecar = Sidecar::new(
+            PathBuf::from("unused"),
+            Some(
+                ProviderConfig::local("http://localhost:1234/v1".into(), "qwen".into(), "".into())
+                    .unwrap(),
+            ),
+        );
+
+        assert!(matches!(
+            sidecar.call(AgentRequest::SelectFallbackModel).unwrap(),
+            AgentResponse::FallbackModelSelected
+        ));
+        assert!(sidecar.provider.is_none());
     }
 
     #[test]

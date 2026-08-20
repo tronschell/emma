@@ -49,6 +49,14 @@ struct ModelParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalModelParams {
+    base_url: String,
+    model_id: String,
+    credential_env: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SourcesParams {
     thread_id: String,
     knowledge_base_ids: String,
@@ -319,6 +327,15 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 let params: ModelParams = params(request)?;
                 encode(call(live.select_openrouter_model(params.model_id))?)
             }
+            "selectLocalModel" => {
+                let params: LocalModelParams = params(request)?;
+                encode(call(live.select_local_model(
+                    params.base_url,
+                    params.model_id,
+                    params.credential_env,
+                ))?)
+            }
+            "selectFallbackModel" => encode(call(live.select_fallback_model())?),
             _ => Err("method is not allowed".into()),
         }
     })()

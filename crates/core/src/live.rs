@@ -34,6 +34,12 @@ pub enum AgentRequest {
     SelectOpenRouterModel {
         model_id: String,
     },
+    SelectLocalModel {
+        base_url: String,
+        model_id: String,
+        credential_env: String,
+    },
+    SelectFallbackModel,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -93,6 +99,8 @@ pub enum AgentResponse {
     Analysis(AgentAnalysis),
     OpenRouterCatalog(OpenRouterCatalog),
     OpenRouterModelSelected(String),
+    LocalModelSelected(String),
+    FallbackModelSelected,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -172,6 +180,13 @@ enum Command {
         model_id: String,
         reply: Reply<String>,
     },
+    SelectLocalModel {
+        base_url: String,
+        model_id: String,
+        credential_env: String,
+        reply: Reply<String>,
+    },
+    SelectFallbackModel(Reply<()>),
 }
 
 /// Blocking handle to the typed runtime worker. Call these methods only from a
@@ -355,6 +370,38 @@ impl LiveClient {
             .recv()
             .map_err(|_| LiveError::new("Emma runtime stopped while selecting the model"))?
     }
+
+    pub fn select_local_model(
+        &self,
+        base_url: String,
+        model_id: String,
+        credential_env: String,
+    ) -> Result<String, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SelectLocalModel {
+                base_url,
+                model_id,
+                credential_env,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before selecting the local model"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while selecting the local model"))?
+    }
+
+    pub fn select_fallback_model(&self) -> Result<(), LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SelectFallbackModel(reply))
+            .map_err(|_| {
+                LiveError::new("Emma runtime stopped before selecting the local fallback")
+            })?;
+        result.recv().map_err(|_| {
+            LiveError::new("Emma runtime stopped while selecting the local fallback")
+        })?
+    }
 }
 
 pub fn start_live_runtime<A>(
@@ -461,6 +508,17 @@ where
             Command::SelectOpenRouterModel { model_id, reply } => {
                 let _ = reply.send(self.select_openrouter_model(model_id));
             }
+            Command::SelectLocalModel {
+                base_url,
+                model_id,
+                credential_env,
+                reply,
+            } => {
+                let _ = reply.send(self.select_local_model(base_url, model_id, credential_env));
+            }
+            Command::SelectFallbackModel(reply) => {
+                let _ = reply.send(self.select_fallback_model());
+            }
         }
     }
 
@@ -478,6 +536,33 @@ where
             AgentResponse::OpenRouterModelSelected(model_id) => Ok(model_id),
             _ => Err(LiveError::new(
                 "agent returned an unexpected response after selecting an OpenRouter model",
+            )),
+        }
+    }
+
+    fn select_local_model(
+        &mut self,
+        base_url: String,
+        model_id: String,
+        credential_env: String,
+    ) -> Result<String, LiveError> {
+        match (self.agent)(AgentRequest::SelectLocalModel {
+            base_url,
+            model_id,
+            credential_env,
+        })? {
+            AgentResponse::LocalModelSelected(model_id) => Ok(model_id),
+            _ => Err(LiveError::new(
+                "agent returned an unexpected response after selecting the local model",
+            )),
+        }
+    }
+
+    fn select_fallback_model(&mut self) -> Result<(), LiveError> {
+        match (self.agent)(AgentRequest::SelectFallbackModel)? {
+            AgentResponse::FallbackModelSelected => Ok(()),
+            _ => Err(LiveError::new(
+                "agent returned an unexpected response after selecting the local fallback",
             )),
         }
     }
@@ -877,7 +962,10 @@ mod tests {
                     subagent_count: 0,
                 }))
             }
-            AgentRequest::ListOpenRouterModels | AgentRequest::SelectOpenRouterModel { .. } => {
+            AgentRequest::ListOpenRouterModels
+            | AgentRequest::SelectOpenRouterModel { .. }
+            | AgentRequest::SelectLocalModel { .. }
+            | AgentRequest::SelectFallbackModel => {
                 unreachable!()
             }
         };

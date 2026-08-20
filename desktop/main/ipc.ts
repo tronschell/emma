@@ -17,6 +17,8 @@ export const methods = [
   "saveToKnowledge",
   "listOpenRouterModels",
   "selectOpenRouterModel",
+  "selectLocalModel",
+  "selectFallbackModel",
 ] as const;
 
 export type Method = (typeof methods)[number];
@@ -35,6 +37,8 @@ const fields: Record<Method, readonly string[]> = {
   saveToKnowledge: ["threadId"],
   listOpenRouterModels: [],
   selectOpenRouterModel: ["modelId"],
+  selectLocalModel: ["baseUrl", "modelId", "credentialEnv"],
+  selectFallbackModel: [],
 };
 
 export function validateRequest(value: unknown): Request {
@@ -54,7 +58,8 @@ export function validateRequest(value: unknown): Request {
   }
   for (const key of expected) {
     const text = params[key] as string;
-    if (text.length > 65_536 || (!["body", "content"].includes(key) && !text.trim())) throw new Error("Invalid parameters");
+    const optionalCredential = method === "selectLocalModel" && key === "credentialEnv";
+    if (text.length > 65_536 || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {
     throw new Error("Request is too large");

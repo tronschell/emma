@@ -512,11 +512,21 @@ fn parseProvider(value: ?std.json.Value) RequestError!?openai.Config {
     const config: openai.Config = .{
         .base_url = try requiredString(provider.object, "base_url", 2048),
         .model = try requiredString(provider.object, "model", 128),
-        .credential_env = try requiredString(provider.object, "credential_env", 128),
+        .credential_env = try optionalCredentialEnv(provider.object.get("credential_env")),
         .protect_data = try optionalBool(provider.object.get("protect_data"), false),
     };
     openai.validateConfig(config) catch return error.InvalidField;
     return config;
+}
+
+fn optionalCredentialEnv(value: ?std.json.Value) RequestError![]const u8 {
+    const credential = value orelse return "";
+    if (credential == .null) return "";
+    if (credential != .string or credential.string.len > 128 or !std.unicode.utf8ValidateSlice(credential.string)) return error.InvalidField;
+    if (credential.string.len == 0) return "";
+    if (!std.ascii.isAlphabetic(credential.string[0]) and credential.string[0] != '_') return error.InvalidField;
+    for (credential.string[1..]) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '_') return error.InvalidField;
+    return credential.string;
 }
 
 fn optionalBool(value: ?std.json.Value, default: bool) RequestError!bool {

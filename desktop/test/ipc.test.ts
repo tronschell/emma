@@ -7,7 +7,7 @@ import { externalUrl, trustedSender, validJpegDataUrl, validateRequest } from ".
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
 import { activityDays } from "../src/activity";
-import { defaultSettings, localEndpoint, validateOverlayPreferences, validateSettings } from "../shared/settings";
+import { canRemoveLocalModel, defaultSettings, localEndpoint, localModelEndpoint, normalizeLocalModelEndpoint, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { overlayBounds } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
@@ -22,6 +22,7 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.throws(() => validateRequest({ method: "shell", params: {} }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
+  assert.deepEqual(validateRequest({ method: "selectLocalModel", params: { baseUrl: "http://127.0.0.1:1234/v1", modelId: "qwen3:8b", credentialEnv: "" } }).params, { baseUrl: "http://127.0.0.1:1234/v1", modelId: "qwen3:8b", credentialEnv: "" });
   assert.equal(validateRequest({ method: "updatePage", params: { pageId: "p", title: "x", category: "c", summary: "x", body: "" } }).params.body, "");
   assert.throws(() => validateRequest({ method: "updatePage", params: { pageId: "p", title: "x".repeat(65_536), category: "c", summary: "x".repeat(65_536), body: "x".repeat(65_536) } }), /too large/);
 });
@@ -82,6 +83,18 @@ test("settings require three actions and local-only transcription", () => {
   assert.equal(localEndpoint("http://127.0.0.1:8080/v1/audio/transcriptions")?.hostname, "127.0.0.1");
   assert.equal(localEndpoint("https://api.openai.com/v1/audio/transcriptions"), null);
   assert.throws(() => validateSettings({ ...defaultSettings, quickActions: [] }), /three/);
+});
+
+test("local model profiles stay loopback-only and support keyless servers", () => {
+  assert.equal(localModelEndpoint("HTTP://LOCALHOST:1234/v1")?.hostname, "localhost");
+  assert.equal(normalizeLocalModelEndpoint("HTTP://LOCALHOST:1234/v1/"), "http://localhost:1234/v1");
+  const settings = validateSettings({ ...defaultSettings, localModels: [{ id: "local-qwen", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "HTTP://LOCALHOST:1234/v1/", credentialEnv: "" }], selectedModel: "local:local-qwen" });
+  assert.equal(settings.localModels[0].baseUrl, "http://localhost:1234/v1");
+  assert.equal(settings.localModels[0].credentialEnv, "");
+  assert.equal(canRemoveLocalModel(settings, "local-qwen"), false);
+  assert.equal(canRemoveLocalModel(settings, "other"), true);
+  assert.equal(localModelEndpoint("http://localhost.evil/v1"), null);
+  assert.throws(() => validateSettings({ ...defaultSettings, localModels: [{ id: "local-bad", name: "Bad", modelId: "bad", baseUrl: "https://api.example.test/v1", credentialEnv: "" }] }), /profile/);
 });
 
 test("overlay settings migrate old values and keep calibration bounded", () => {

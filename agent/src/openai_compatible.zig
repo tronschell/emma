@@ -76,9 +76,9 @@ pub const HttpContext = struct {
 };
 
 pub fn validateConfig(config: Config) error{InvalidProviderConfig}!void {
-    if (config.base_url.len == 0 or config.model.len == 0 or config.credential_env.len == 0) return error.InvalidProviderConfig;
+    if (config.base_url.len == 0 or config.model.len == 0) return error.InvalidProviderConfig;
     if (!std.unicode.utf8ValidateSlice(config.base_url) or !std.unicode.utf8ValidateSlice(config.model)) return error.InvalidProviderConfig;
-    if (!validEnvName(config.credential_env)) return error.InvalidProviderConfig;
+    if (config.credential_env.len > 0 and !validEnvName(config.credential_env)) return error.InvalidProviderConfig;
 
     const uri = std.Uri.parse(config.base_url) catch return error.InvalidProviderConfig;
     if (uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null) return error.InvalidProviderConfig;
@@ -94,7 +94,9 @@ pub fn validateConfig(config: Config) error{InvalidProviderConfig}!void {
     if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") or config.protect_data) return error.InvalidProviderConfig;
     if (!std.ascii.eqlIgnoreCase(host, "localhost") and
         !std.ascii.eqlIgnoreCase(host, "localhost.") and
-        !std.mem.eql(u8, host, "127.0.0.1")) return error.InvalidProviderConfig;
+        !std.mem.eql(u8, host, "127.0.0.1") and
+        !std.mem.eql(u8, host, "::1") and
+        !std.mem.eql(u8, host, "[::1]")) return error.InvalidProviderConfig;
 }
 
 pub fn buildRequest(
@@ -363,14 +365,13 @@ fn deinitRace(alloc: std.mem.Allocator, race: Race) void {
 }
 
 fn fetchHttpDirect(context: *HttpContext, alloc: std.mem.Allocator, config: Config, endpoint: []const u8, method: std.http.Method, payload: ?[]const u8) !HttpResponse {
-    const credential = context.environ.get(config.credential_env) orelse return error.ProviderCredentialUnavailable;
-    if (!validCredential(credential)) return error.ProviderCredentialUnavailable;
-
-    const authorization = try std.mem.concat(alloc, u8, &.{ "Bearer ", credential });
-    defer {
-        std.crypto.secureZero(u8, authorization);
-        alloc.free(authorization);
-    }
+    const credential = if (config.credential_env.len == 0) null else context.environ.get(config.credential_env) orelse return error.ProviderCredentialUnavailable;
+    if (credential) |value| if (!validCredential(value)) return error.ProviderCredentialUnavailable;
+    const authorization = if (credential) |value| try std.mem.concat(alloc, u8, &.{ "Bearer ", value }) else null;
+    defer if (authorization) |value| {
+        std.crypto.secureZero(u8, value);
+        alloc.free(value);
+    };
     const response_buffer = try alloc.alloc(u8, max_response_bytes + 1);
     defer alloc.free(response_buffer);
     var response_writer = std.Io.Writer.fixed(response_buffer);
@@ -378,27 +379,47 @@ fn fetchHttpDirect(context: *HttpContext, alloc: std.mem.Allocator, config: Conf
     var client: std.http.Client = .{ .allocator = alloc, .io = context.io };
     defer client.deinit();
     const extra_headers = [_]std.http.Header{.{ .name = "Accept", .value = "application/json" }};
-    const result = (if (payload) |body| client.fetch(.{
-        .location = .{ .url = endpoint },
-        .method = method,
-        .payload = body,
-        .keep_alive = false,
-        .redirect_behavior = .unhandled,
-        .response_writer = &response_writer,
-        .headers = .{
-            .authorization = .{ .override = authorization },
-            .content_type = .{ .override = "application/json" },
-        },
-        .extra_headers = &extra_headers,
-    }) else client.fetch(.{
-        .location = .{ .url = endpoint },
-        .method = method,
-        .keep_alive = false,
-        .redirect_behavior = .unhandled,
-        .response_writer = &response_writer,
-        .headers = .{ .authorization = .{ .override = authorization } },
-        .extra_headers = &extra_headers,
-    })) catch |err| switch (err) {
+    const result = (if (authorization) |auth|
+        (if (payload) |body| client.fetch(.{
+            .location = .{ .url = endpoint },
+            .method = method,
+            .payload = body,
+            .keep_alive = false,
+            .redirect_behavior = .unhandled,
+            .response_writer = &response_writer,
+            .headers = .{
+                .authorization = .{ .override = auth },
+                .content_type = .{ .override = "application/json" },
+            },
+            .extra_headers = &extra_headers,
+        }) else client.fetch(.{
+            .location = .{ .url = endpoint },
+            .method = method,
+            .keep_alive = false,
+            .redirect_behavior = .unhandled,
+            .response_writer = &response_writer,
+            .headers = .{ .authorization = .{ .override = auth } },
+            .extra_headers = &extra_headers,
+        }))
+    else
+        (if (payload) |body| client.fetch(.{
+            .location = .{ .url = endpoint },
+            .method = method,
+            .payload = body,
+            .keep_alive = false,
+            .redirect_behavior = .unhandled,
+            .response_writer = &response_writer,
+            .headers = .{ .content_type = .{ .override = "application/json" } },
+            .extra_headers = &extra_headers,
+        }) else client.fetch(.{
+            .location = .{ .url = endpoint },
+            .method = method,
+            .keep_alive = false,
+            .redirect_behavior = .unhandled,
+            .response_writer = &response_writer,
+            .headers = .{},
+            .extra_headers = &extra_headers,
+        }))) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.WriteFailed => if (response_writer.end == response_buffer.len)
             return error.ProviderResponseTooLarge
@@ -451,6 +472,18 @@ test "OpenRouter requests enforce privacy and catalog only free tool models" {
         .credential_env = "OPENROUTER_API_KEY",
         .protect_data = false,
     }));
+    try validateConfig(.{
+        .base_url = "http://127.0.0.1:1234/v1",
+        .model = "qwen3:8b",
+        .credential_env = "",
+        .protect_data = false,
+    });
+    try validateConfig(.{
+        .base_url = "http://[::1]:1234/v1",
+        .model = "qwen3:8b",
+        .credential_env = "",
+        .protect_data = false,
+    });
 
     const Message = struct { role: []const u8, content: []const u8 };
     const request = try buildRequest(std.testing.allocator, config, &[_]Message{}, "hello", &.{});

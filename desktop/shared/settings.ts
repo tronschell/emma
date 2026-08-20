@@ -6,6 +6,14 @@ export interface QuickAction {
   saveToKnowledge: boolean;
 }
 
+export interface LocalModelProfile {
+  id: string;
+  name: string;
+  modelId: string;
+  baseUrl: string;
+  credentialEnv: string;
+}
+
 export interface UserSettings {
   quickActions: [QuickAction, QuickAction, QuickAction];
   overlayPlacement: OverlayPlacement;
@@ -13,6 +21,8 @@ export interface UserSettings {
   transcriptionEnabled: boolean;
   transcriptionEndpoint: string;
   transcriptionModel: string;
+  localModels: LocalModelProfile[];
+  selectedModel: string;
 }
 
 export type OverlayPlacement = "below" | "rails";
@@ -27,6 +37,8 @@ export const defaultSettings: UserSettings = {
   transcriptionEnabled: false,
   transcriptionEndpoint: "http://127.0.0.1:8080/v1/audio/transcriptions",
   transcriptionModel: "whisper-1",
+  localModels: [],
+  selectedModel: "fallback",
 };
 
 export function validateSettings(value: unknown): UserSettings {
@@ -45,7 +57,17 @@ export function validateSettings(value: unknown): UserSettings {
   if (!["below", "rails"].includes(overlayPlacement) || !Number.isInteger(notchGap) || notchGap < 120 || notchGap > 260) throw new Error("Overlay settings are invalid");
   if (typeof settings.transcriptionEnabled !== "boolean" || typeof settings.transcriptionEndpoint !== "string" || typeof settings.transcriptionModel !== "string" || !settings.transcriptionModel.trim()) throw new Error("Transcription settings are invalid");
   if (settings.transcriptionEnabled && !localEndpoint(settings.transcriptionEndpoint)) throw new Error("Transcription endpoint must be local");
-  return { quickActions, overlayPlacement, notchGap, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel };
+  const localModels = settings.localModels ?? [];
+  if (!Array.isArray(localModels)) throw new Error("Local model profiles are invalid");
+  const validatedLocalModels = localModels.map((item) => {
+    if (!item || typeof item !== "object") throw new Error("Local model profile is invalid");
+    const profile = item as Partial<LocalModelProfile>;
+    if (typeof profile.id !== "string" || typeof profile.name !== "string" || typeof profile.modelId !== "string" || typeof profile.baseUrl !== "string" || typeof profile.credentialEnv !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(profile.id) || !profile.name.trim() || profile.name.length > 64 || !profile.modelId.trim() || profile.modelId.length > 128 || !localModelEndpoint(profile.baseUrl) || (profile.credentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.credentialEnv))) throw new Error("Local model profile is invalid");
+    return { id: profile.id, name: profile.name.trim(), modelId: profile.modelId.trim(), baseUrl: normalizeLocalModelEndpoint(profile.baseUrl)!, credentialEnv: profile.credentialEnv };
+  });
+  const selectedModel = settings.selectedModel ?? defaultSettings.selectedModel;
+  if (typeof selectedModel !== "string" || selectedModel.length > 256) throw new Error("Selected model is invalid");
+  return { quickActions, overlayPlacement, notchGap, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, localModels: validatedLocalModels, selectedModel };
 }
 
 export function validateOverlayPreferences(value: unknown): OverlayPreferences {
@@ -60,4 +82,19 @@ export function localEndpoint(value: string): URL | null {
     const url = new URL(value);
     return ["http:", "https:"].includes(url.protocol) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ? url : null;
   } catch { return null; }
+}
+
+export function localModelEndpoint(value: string): URL | null {
+  const url = localEndpoint(value);
+  if (!url || url.protocol !== "http:" || url.username || url.password || url.search || url.hash) return null;
+  const host = url.hostname.toLowerCase();
+  return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(host) ? url : null;
+}
+
+export function normalizeLocalModelEndpoint(value: string): string | null {
+  return localModelEndpoint(value)?.toString().replace(/\/$/, "") ?? null;
+}
+
+export function canRemoveLocalModel(settings: Pick<UserSettings, "selectedModel">, profileId: string): boolean {
+  return settings.selectedModel !== `local:${profileId}`;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentImportSource, KnowledgePage, OpenRouterCatalog, Snapshot, Thread } from "./types";
 import { activityDays } from "./activity";
-import { defaultSettings, validateSettings, type UserSettings } from "../shared/settings";
+import { canRemoveLocalModel, defaultSettings, validateSettings, type LocalModelProfile, type UserSettings } from "../shared/settings";
 import { defaultPaneLayout, validatePaneLayout, type PaneLayout } from "./layout";
 import { hasPersistedPrompt } from "./drafts";
 
@@ -145,13 +145,22 @@ function Workspace() {
   const [importsOpen, setImportsOpen] = useState(() => !localStorage.getItem(IMPORTS_SEEN_KEY));
   const [layout, setLayout] = useState<PaneLayout>(readLayout);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("actions");
+  const [settings, setSettings] = useState(readSettings);
   const [interactionLocked, setInteractionLocked] = useState(false);
   const actionInFlight = useRef(false);
+  const restoredModel = useRef(false);
   const thread = snapshot.threads.find((item) => item.id === threadId) ?? snapshot.threads[0];
   const page = snapshot.pages.find((item) => item.id === pageId) ?? snapshot.pages[0];
   const uiBusy = busy || interactionLocked;
+  const modelLabel = useMemo(() => selectedModelLabel(settings), [settings]);
   useEffect(() => { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); }, [layout]);
   useEffect(() => { syncOverlayPreferences(readSettings()); }, []);
+  useEffect(() => {
+    const reload = () => setSettings(readSettings());
+    addEventListener("storage", reload);
+    addEventListener("emma-settings-changed", reload);
+    return () => { removeEventListener("storage", reload); removeEventListener("emma-settings-changed", reload); };
+  }, []);
   const pane = (change: Partial<PaneLayout>) => setLayout((current) => validatePaneLayout({ ...current, ...change }));
   const shellStyle = {
     "--nav-width": `${layout.navCollapsed ? 46 : layout.navWidth}px`,
@@ -175,6 +184,45 @@ function Workspace() {
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (restoredModel.current) return;
+    restoredModel.current = true;
+    if (settings.selectedModel === "fallback") {
+      try {
+        if ((JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "null") as Partial<UserSettings> | null)?.selectedModel !== "fallback") return;
+      } catch { return; }
+      void window.emma.request("selectFallbackModel").catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      return;
+    }
+    void (async () => {
+      try {
+        if (settings.selectedModel.startsWith("local:")) {
+          const profile = settings.localModels.find((item) => item.id === settings.selectedModel.slice("local:".length));
+          if (!profile) throw new Error("The saved local model profile is missing");
+          await window.emma.request("selectLocalModel", { baseUrl: profile.baseUrl, modelId: profile.modelId, credentialEnv: profile.credentialEnv });
+          return;
+        }
+        if (settings.selectedModel.startsWith("openrouter:")) {
+          const modelId = settings.selectedModel.slice("openrouter:".length);
+          const catalog = await window.emma.request<OpenRouterCatalog>("listOpenRouterModels");
+          if (!catalog.models.some((model) => model.id === modelId)) throw new Error("The saved OpenRouter model is no longer in the protected free catalog");
+          await window.emma.request("selectOpenRouterModel", { modelId });
+          return;
+        }
+        throw new Error("The saved model selection is invalid");
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        let resetFailure = "";
+        await window.emma.request("selectFallbackModel").catch((resetReason) => {
+          resetFailure = resetReason instanceof Error ? resetReason.message : String(resetReason);
+        });
+        setError(`Saved model unavailable; using local fallback. ${message}${resetFailure ? ` Runtime reset failed: ${resetFailure}` : ""}`);
+        const next = persistSettings({ ...settings, selectedModel: "fallback" });
+        setSettings(next);
+      }
+    })();
+  }, [settings, setError]);
 
   const createThread = async (sourceIds: string[] = []) => {
     const created = await act("createThread") as Thread | undefined;
@@ -223,10 +271,10 @@ function Workspace() {
         {!layout.listCollapsed && <ResizeHandle label="Resize item list" value={layout.listWidth} min={190} max={380} onChange={(listWidth) => pane({ listWidth })} />}
       </aside>
       <main id="content" className="content">
-        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} onSendingChange={setInteractionLocked} openModels={() => { setError(""); setModelsOpen(true); }} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} /> : <SettingsView snapshot={snapshot} page={settingsPage} />}
+        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} onSendingChange={setInteractionLocked} openModels={() => { setError(""); setModelsOpen(true); }} modelLabel={modelLabel} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} /> : <SettingsView snapshot={snapshot} page={settingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
-      {modelsOpen && <ModelDialog close={() => setModelsOpen(false)} act={act} workspaceError={error} busy={uiBusy} />}
+      {modelsOpen && <ModelDialog close={() => setModelsOpen(false)} act={act} workspaceError={error} busy={uiBusy} onSettingsChanged={setSettings} onManage={() => { setModelsOpen(false); setView("settings"); setSettingsPage("models"); }} />}
       {newThreadOpen && <NewThreadDialog bases={snapshot.knowledgeBases} close={() => setNewThreadOpen(false)} create={createThread} error={error} />}
       {importsOpen && <ImportDialog close={() => { localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setImportsOpen(false); }} />}
     </div>
@@ -298,7 +346,7 @@ function SourceChecks({ thread, snapshot, act, busy }: { thread: Thread; snapsho
   return <div className="source-checks">{snapshot.knowledgeBases.map((base) => <label key={base.id}><input type="checkbox" checked={thread.sourceKnowledgeBaseIds.includes(base.id)} disabled={busy || base.id === thread.knowledgeBaseId} onChange={(event) => select(base.id, event.target.checked)} />{base.name}{base.id === thread.knowledgeBaseId && <small>destination</small>}</label>)}</div>;
 }
 
-function ThreadView({ thread, snapshot, busy, act, onSendingChange, openModels, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; onSendingChange: (busy: boolean) => void; openModels: () => void } & PaneProps) {
+function ThreadView({ thread, snapshot, busy, act, onSendingChange, openModels, modelLabel, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; onSendingChange: (busy: boolean) => void; openModels: () => void; modelLabel: string } & PaneProps) {
   const [message, setMessage] = useState("");
   const [newBase, setNewBase] = useState("");
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -345,13 +393,13 @@ function ThreadView({ thread, snapshot, busy, act, onSendingChange, openModels, 
   };
   return <div className="thread-layout">
     <section className="conversation" aria-label={`Thread: ${thread.title}`}>
-      <header className="content-head"><div><span>THREAD / {thread.id.slice(-8).toUpperCase()}</span><h2>{thread.title}</h2></div><div className="thread-actions"><button className="agent-button" onClick={() => setAgentOpen(true)}>⌁ AGENT</button><button className="model-button" disabled={locked} onClick={openModels}><i /> MODEL ROUTING⌄</button></div></header>
+      <header className="content-head"><div><span>THREAD / {thread.id.slice(-8).toUpperCase()}</span><h2>{thread.title}</h2></div><div className="thread-actions"><button className="agent-button" onClick={() => setAgentOpen(true)}>⌁ AGENT</button><button className="model-button" disabled={locked} onClick={openModels}><i /> {modelLabel}⌄</button></div></header>
       <div className="transcript">
         {!thread.messages.length && <div className="welcome"><Mark /><h3>What are we working on?</h3><p>Ask Emma to research, plan, write, or think. Nothing enters knowledge unless you choose it.</p></div>}
         {thread.messages.map((item, index) => <article className={`message ${item.role}`} key={`${item.timestamp}-${index}`}><header><span>{item.role === "user" ? "YOU" : "EMMA"}</span><time dateTime={item.timestamp}>{time(item.timestamp)}</time></header><p>{item.content}</p>{item.generation && <footer className="generation-rate" title={`${item.generation.outputTokens} output tokens in ${item.generation.durationMilliseconds} ms`}>{(item.generation.outputTokens / item.generation.durationMilliseconds * 1000).toFixed(1)} TOKENS/S</footer>}</article>)}
         <div ref={end} />
       </div>
-      <form className="composer" onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label><textarea id="message" value={message} disabled={locked} maxLength={65_536} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Ask Emma to continue…" rows={2} /><div><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><span>↵ SEND · ⇧↵ NEW LINE</span></div><button disabled={locked || !message.trim()} aria-label="Send message">↑</button></div>{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button autoFocus type="button" aria-label="Close add menu" onClick={closeSources}>×</button></header><div className="add-row"><b>◇</b><div><strong>Knowledge bases</strong><small>Attach one or more read-only sources to this thread</small></div></div><div className="add-sources"><SourceChecks thread={thread} snapshot={snapshot} act={act} busy={locked} /></div><span className="add-section">Built-in plugins</span><button type="button" className="add-row" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent sidecar</strong><small>Inspect Emma's Zig runtime and headless entry point</small></div></button><div className="add-row muted"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div><div className="add-row muted"><b>＋</b><div><strong>More actions come from plugins</strong><small>Imported skills and MCPs appear here after permission review</small></div></div></section>}</form>
+      <form className="composer" onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label><textarea id="message" value={message} disabled={locked} maxLength={65_536} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Ask Emma to continue…" rows={2} /><div><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><button type="button" className="model-button composer-model" disabled={locked} onClick={openModels} aria-label={`Select model, currently ${modelLabel}`}><i />{modelLabel}<span aria-hidden="true">⌄</span></button><span>↵ SEND · ⇧↵ NEW LINE</span></div><button disabled={locked || !message.trim()} aria-label="Send message">↑</button></div>{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button autoFocus type="button" aria-label="Close add menu" onClick={closeSources}>×</button></header><div className="add-row"><b>◇</b><div><strong>Knowledge bases</strong><small>Attach one or more read-only sources to this thread</small></div></div><div className="add-sources"><SourceChecks thread={thread} snapshot={snapshot} act={act} busy={locked} /></div><span className="add-section">Built-in plugins</span><button type="button" className="add-row" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent sidecar</strong><small>Inspect Emma's Zig runtime and headless entry point</small></div></button><div className="add-row muted"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div><div className="add-row muted"><b>＋</b><div><strong>More actions come from plugins</strong><small>Imported skills and MCPs appear here after permission review</small></div></div></section>}</form>
     </section>
     <aside className={`inspector ${layout.inspectorCollapsed ? "collapsed" : ""}`}>
       {!layout.inspectorCollapsed && <ResizeHandle label="Resize thread inspector" value={layout.inspectorWidth} min={210} max={360} direction={-1} onChange={(inspectorWidth) => pane({ inspectorWidth })} />}
@@ -412,6 +460,20 @@ function readSettings(): UserSettings {
   try { return validateSettings(JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "null")); } catch { return structuredClone(defaultSettings); }
 }
 
+function persistSettings(settings: UserSettings): UserSettings {
+  const valid = validateSettings(settings);
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(valid));
+  dispatchEvent(new Event("emma-settings-changed"));
+  return valid;
+}
+
+function selectedModelLabel(settings: UserSettings): string {
+  if (settings.selectedModel === "fallback") return "LOCAL FALLBACK";
+  if (settings.selectedModel.startsWith("openrouter:")) return settings.selectedModel.slice("openrouter:".length).split("/").at(-1) ?? "OPENROUTER";
+  if (settings.selectedModel.startsWith("local:")) return settings.localModels.find((profile) => profile.id === settings.selectedModel.slice("local:".length))?.name ?? "LOCAL MODEL";
+  return "MODEL";
+}
+
 function syncOverlayPreferences(settings: UserSettings) {
   window.emma.setOverlayPreferences({ overlayPlacement: settings.overlayPlacement, notchGap: settings.notchGap });
 }
@@ -440,16 +502,45 @@ function SettingsNavigation({ page, onSelect, busy }: { page: SettingsPage; onSe
   return <><ListHeader title="Settings" meta="LOCAL FIRST" /><nav className="settings-nav" aria-label="Settings sections">{settingsPages.map((item) => <button key={item.id} disabled={busy} className={page === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><strong>{item.label}</strong><span>{item.copy}</span></button>)}</nav></>;
 }
 
-function SettingsView({ snapshot, page }: { snapshot: Snapshot; page: SettingsPage }) {
+function SettingsView({ snapshot, page, act, busy, onModelChanged }: { snapshot: Snapshot; page: SettingsPage; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean; onModelChanged: (settings: UserSettings) => void }) {
   const [settings, setSettings] = useState(readSettings);
   const [saved, setSaved] = useState(false);
   const updateAction = (index: number, field: string, value: string | boolean) => setSettings((current) => ({ ...current, quickActions: current.quickActions.map((action, actionIndex) => actionIndex === index ? { ...action, [field]: value } : action) as UserSettings["quickActions"] }));
-  const save = (event: FormEvent) => { event.preventDefault(); try { const valid = validateSettings(settings); localStorage.setItem(SETTINGS_KEY, JSON.stringify(valid)); syncOverlayPreferences(valid); setSaved(true); } catch { setSaved(false); } };
-  if (page === "models") return <section className="settings-view"><header><span>SETTINGS / LOCAL PROVIDERS</span><h2>Models & voice</h2><p>Emma keeps model routing explicit. Provider profiles come from the host environment; voice remains local-only and off by default.</p></header><div className="settings-lines"><section><div><span>AGENT MODEL</span><h3>Local / OpenAI-compatible profile</h3><p>Configure with `EMMA_PROVIDER_*` environment variables. Without a provider, Emma uses its deterministic local fallback.</p></div><strong className="status-live"><i /> AVAILABLE</strong></section><section><div><span>VOICE / LOCAL ONLY</span><h3>OpenAI-compatible transcription</h3><p>The seam targets local Whisper or Parakeet-style `/v1/audio/transcriptions` servers. Microphone transport is disabled in this build because its sandbox approval boundary is not authorized; no audio is captured or uploaded.</p></div><div className="voice-values"><label>ENDPOINT<input disabled value={settings.transcriptionEndpoint} aria-label="Local transcription endpoint" readOnly /></label><label>MODEL<input disabled value={settings.transcriptionModel} aria-label="Transcription model" readOnly /></label><small>DEFAULT OFF · LOCALHOST ONLY</small></div></section></div><ProviderMarks /></section>;
+  const save = (event: FormEvent) => { event.preventDefault(); try { const valid = persistSettings(settings); setSettings(valid); syncOverlayPreferences(valid); onModelChanged(valid); setSaved(true); } catch { setSaved(false); } };
+  const saveModelSettings = (next: UserSettings) => { const valid = persistSettings(next); setSettings(valid); onModelChanged(valid); };
+  if (page === "models") return <section className="settings-view"><header><span>SETTINGS / LOCAL PROVIDERS</span><h2>Models & voice</h2><p>Emma keeps model routing explicit. OpenRouter free models are privacy-protected; local profiles stay on this Mac and use the existing credential environment convention.</p></header><LocalModelSettings settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><div className="settings-lines"><section><div><span>AGENT FALLBACK</span><h3>Local deterministic profile</h3><p>Without a selected provider, Emma uses its deterministic local fallback. Configure an environment-backed provider with `EMMA_PROVIDER_*` only when you need a remote OpenAI-compatible route.</p></div><strong className="status-live"><i /> AVAILABLE</strong></section><section><div><span>VOICE / LOCAL ONLY</span><h3>OpenAI-compatible transcription</h3><p>The seam targets local Whisper or Parakeet-style `/v1/audio/transcriptions` servers. Microphone transport is disabled in this build because its sandbox approval boundary is not authorized; no audio is captured or uploaded.</p></div><div className="voice-values"><label>ENDPOINT<input disabled value={settings.transcriptionEndpoint} aria-label="Local transcription endpoint" readOnly /></label><label>MODEL<input disabled value={settings.transcriptionModel} aria-label="Transcription model" readOnly /></label><small>DEFAULT OFF · LOCALHOST ONLY</small></div></section></div><ProviderMarks /></section>;
   if (page === "imports") return <section className="settings-view"><header><span>SETTINGS / EXTENSIONS</span><h2>Imports & plugins</h2><p>Register skills and MCP configuration from other agents' default folders. Emma records paths only; it never copies or renders config secrets.</p></header><AgentImports /></section>;
   if (page === "privacy") return <section className="settings-view"><header><span>SETTINGS / DATA BOUNDARIES</span><h2>Privacy</h2><p>Clear boundaries for durable files, provider traffic, and explicit knowledge creation.</p></header><div className="settings-lines prose-lines"><section><div><span>DURABLE STORAGE</span><h3>Threads and knowledge stay local</h3><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><span>SCREEN MARKUP</span><h3>Annotated screens remain local</h3><p>The yellow pen captures and compresses a screen image locally. Provider transfer stays disabled until you explicitly authorize sending full-screen images to the selected model endpoint.</p></div></section><section><div><span>OPENROUTER</span><h3>Protected routing remains enforced</h3><p>Selected-model turns request no provider data collection and zero retention. OpenRouter account-level logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><span>KNOWLEDGE</span><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. Creating or updating knowledge always requires an explicit user action or a quick action configured to save.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>SETTINGS / ABOUT</span><h2>Emma</h2><p>A local-first macOS workspace for durable threads and analyzed knowledge.</p></header><div className="settings-lines prose-lines"><section><div><span>DESKTOP</span><h3>Electron + React</h3><p>The sandboxed renderer uses a narrow preload API. Electron owns native windows and a bundled macOS listener owns the Quick Ask gesture.</p></div></section><section><div><span>DURABLE CORE</span><h3>Rust + Markdown</h3><p>The Rust host reuses emma-core for thread, knowledge, and provenance rules; Zig remains the agent sidecar.</p></div></section></div></section>;
   return <form className="settings-view" onSubmit={save}><header><span>SETTINGS / LOCAL TO THIS MAC</span><h2>Quick actions</h2><p>Double-tap the left Option key to open Quick Ask; macOS Accessibility access is required. Each of its three shortcuts runs an ordinary durable request, and knowledge saving stays explicit per action.</p></header><section className="notch-settings"><div><span>NOTCH PLACEMENT</span><h3>Choose the compact surface shape</h3><p>Electron cannot read the camera housing bounds. Split mode reserves a calibrated center gap beside it; adjust the gap to your Mac.</p></div><div className="notch-values"><label>PLACEMENT<select value={settings.overlayPlacement} onChange={(event) => setSettings((current) => ({ ...current, overlayPlacement: event.target.value as UserSettings["overlayPlacement"] }))}><option value="below">Directly below notch</option><option value="rails">Split left / right rails</option></select></label><label>NOTCH GAP · 120–260 PT<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section><div className="quick-settings">{settings.quickActions.map((action, index) => <section className="quick-action-row" key={index}><div className="shortcut"><kbd>⌘{index + 1}</kbd><span>OVERLAY ACTION</span></div><div className="quick-fields"><label>LABEL<input value={action.label} maxLength={40} onChange={(event) => updateAction(index, "label", event.target.value)} /></label><label className="prompt-field">PROMPT<textarea value={action.prompt} maxLength={4096} rows={2} onChange={(event) => updateAction(index, "prompt", event.target.value)} /></label><label>DESTINATION<select value={action.destinationKnowledgeBaseId} onChange={(event) => updateAction(index, "destinationKnowledgeBaseId", event.target.value)}><option value="">Default</option>{snapshot.knowledgeBases.map((base) => <option key={base.id} value={base.name}>{base.name}</option>)}</select></label><label>CATEGORY<input value={action.category} placeholder="optional" onChange={(event) => updateAction(index, "category", event.target.value)} /></label><label className="check"><input type="checkbox" checked={action.saveToKnowledge} onChange={(event) => updateAction(index, "saveToKnowledge", event.target.checked)} /> Save analyzed result</label></div></section>)}</div><button className="save-settings">{saved ? "Saved ✓" : "Save settings"}</button></form>;
+}
+
+function LocalModelSettings({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
+  const [draft, setDraft] = useState({ name: "", modelId: "", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "" });
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const update = (field: keyof typeof draft, value: string) => setDraft((current) => ({ ...current, [field]: value }));
+  const add = (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    setStatus("");
+    try {
+      const profile: LocalModelProfile = { id: `local-${Date.now().toString(36)}`, ...draft };
+      const next = validateSettings({ ...settings, localModels: [...settings.localModels, profile] });
+      onChange(next);
+      setDraft({ name: "", modelId: "", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "" });
+      setStatus(`${profile.name} added. Choose Use to route the next turn.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const select = async (profile: LocalModelProfile) => {
+    setError("");
+    const result = await act("selectLocalModel", { baseUrl: profile.baseUrl, modelId: profile.modelId, credentialEnv: profile.credentialEnv });
+    if (result === undefined) return;
+    onChange({ ...settings, selectedModel: `local:${profile.id}` });
+    setStatus(`${profile.name} is active for new turns.`);
+  };
+  const remove = (profile: LocalModelProfile) => { if (canRemoveLocalModel(settings, profile.id)) onChange({ ...settings, localModels: settings.localModels.filter((item) => item.id !== profile.id) }); };
+  return <section className="local-model-settings"><header><div><span>LOCAL OPENAI-COMPATIBLE MODELS</span><h3>Import a local profile</h3><p>Store a friendly name, model ID, loopback `/v1` endpoint, and optionally the environment variable that holds its credential. Emma never stores the secret.</p></div><strong>LOCAL ONLY</strong></header><form className="local-model-form" onSubmit={add}><label>NAME<input required maxLength={64} value={draft.name} onChange={(event) => update("name", event.target.value)} placeholder="Qwen local" /></label><label>MODEL ID<input required maxLength={128} value={draft.modelId} onChange={(event) => update("modelId", event.target.value)} placeholder="qwen3:8b" /></label><label>BASE URL<input required maxLength={2048} value={draft.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} placeholder="http://127.0.0.1:1234/v1" /></label><label>CREDENTIAL ENV<input maxLength={128} value={draft.credentialEnv} onChange={(event) => update("credentialEnv", event.target.value)} placeholder="Optional · LOCAL_API_KEY" /></label><button disabled={busy}>Add local model</button></form>{(error || status) && <p className={error ? "local-model-error" : "local-model-status"} role="status">{error || status}</p>}<div className="local-model-list">{settings.localModels.map((profile) => <div className={`local-model-row ${settings.selectedModel === `local:${profile.id}` ? "selected" : ""}`} key={profile.id}><div><strong>{profile.name}</strong><span>{profile.modelId} · {profile.baseUrl}</span><small>{profile.credentialEnv || "NO CREDENTIAL · LOOPBACK ONLY"}</small></div><div><button type="button" disabled={busy} onClick={() => void select(profile)}>{settings.selectedModel === `local:${profile.id}` ? "Active" : "Use"}</button><button type="button" disabled={busy || !canRemoveLocalModel(settings, profile.id)} title={settings.selectedModel === `local:${profile.id}` ? "Select another model before removing the active profile" : "Remove local profile"} onClick={() => remove(profile)}>Remove</button></div></div>)}{!settings.localModels.length && <p className="local-model-empty">No local profiles yet.</p>}</div></section>;
 }
 
 function AgentImports({ done }: { done?: () => void }) {
@@ -481,8 +572,9 @@ function ImportDialog({ close }: { close: () => void }) {
   return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="import-title" onCancel={(event) => { event.preventDefault(); close(); }}><section className="import-dialog"><header><div><span>FIRST LAUNCH / OPTIONAL</span><h2 id="import-title">Bring your agent setup</h2><p>Emma can find Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf, and Devin defaults on this Mac.</p></div><button type="button" onClick={close} aria-label="Skip agent imports">×</button></header><AgentImports done={close} /><button className="import-later" type="button" onClick={close}>Not now</button></section></dialog>;
 }
 
-function ModelDialog({ close, act, workspaceError, busy }: { close: () => void; act: (method: string, params?: Record<string, string>) => Promise<unknown>; workspaceError: string; busy: boolean }) {
+function ModelDialog({ close, act, workspaceError, busy, onSettingsChanged, onManage }: { close: () => void; act: (method: string, params?: Record<string, string>) => Promise<unknown>; workspaceError: string; busy: boolean; onSettingsChanged: (settings: UserSettings) => void; onManage: () => void }) {
   const [catalog, setCatalog] = useState<OpenRouterCatalog>();
+  const [settings, setSettings] = useState(readSettings);
   const [error, setError] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
@@ -491,8 +583,28 @@ function ModelDialog({ close, act, workspaceError, busy }: { close: () => void; 
     try { setCatalog(await window.emma.request<OpenRouterCatalog>("listOpenRouterModels")); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  const select = async (modelId: string) => { if (!busy && await act("selectOpenRouterModel", { modelId }) !== undefined) dismiss(); };
-  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="model-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}><section className="model-dialog"><header><div><span>MODEL ROUTING</span><h2 id="model-title">Choose a provider</h2></div><button type="button" onClick={dismiss} aria-label="Close model dialog">×</button></header><div className="local-profile"><i /><div><strong>Local / OpenAI-compatible profile</strong><p>Uses EMMA_PROVIDER_* settings, or Emma’s deterministic local fallback.</p></div><span>ACTIVE</span></div><div className="policy-warning"><strong>OpenRouter data policy</strong><p>Emma requests no provider data collection and zero retention on every selected-model turn. Your OpenRouter account logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review provider settings ↗</a></div><button type="button" className="load-models" disabled={busy} onClick={() => void load()}>Load live free + tool-capable models</button>{(error || workspaceError) && <p className="dialog-error" role="alert">{error || workspaceError}</p>}<div className="model-list">{catalog?.models.map((model) => <button type="button" key={model.id} disabled={busy} onClick={() => void select(model.id)}><span><strong>{model.name}</strong><small>{model.id}</small></span><em>{Math.round(model.contextLength / 1000)}K CTX</em></button>)}</div></section></dialog>;
+  const selectOpenRouter = async (modelId: string) => {
+    if (busy || await act("selectOpenRouterModel", { modelId }) === undefined) return;
+    const next = persistSettings({ ...settings, selectedModel: `openrouter:${modelId}` });
+    setSettings(next);
+    onSettingsChanged(next);
+    dismiss();
+  };
+  const selectLocal = async (profile: LocalModelProfile) => {
+    if (busy || await act("selectLocalModel", { baseUrl: profile.baseUrl, modelId: profile.modelId, credentialEnv: profile.credentialEnv }) === undefined) return;
+    const next = persistSettings({ ...settings, selectedModel: `local:${profile.id}` });
+    setSettings(next);
+    onSettingsChanged(next);
+    dismiss();
+  };
+  const selectFallback = async () => {
+    if (busy || await act("selectFallbackModel") === undefined) return;
+    const next = persistSettings({ ...settings, selectedModel: "fallback" });
+    setSettings(next);
+    onSettingsChanged(next);
+    dismiss();
+  };
+  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="model-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}><section className="model-dialog"><header><div><span>MODEL ROUTING</span><h2 id="model-title">Choose a model</h2></div><button type="button" onClick={dismiss} aria-label="Close model dialog">×</button></header><button type="button" className={`local-profile model-profile-button ${settings.selectedModel === "fallback" ? "selected" : ""}`} disabled={busy} onClick={() => void selectFallback()}><i /><div><strong>Deterministic local fallback</strong><p>No provider request; useful for private drafts and offline routing.</p></div><span>{settings.selectedModel === "fallback" ? "ACTIVE" : "READY"}</span></button>{settings.localModels.length > 0 && <><span className="model-section-label">SAVED LOCAL PROFILES</span><div className="model-list local-model-options">{settings.localModels.map((profile) => <button type="button" key={profile.id} disabled={busy} className={settings.selectedModel === `local:${profile.id}` ? "selected" : ""} onClick={() => void selectLocal(profile)}><span><strong>{profile.name}</strong><small>{profile.modelId} · {profile.baseUrl}</small></span><em>{settings.selectedModel === `local:${profile.id}` ? "ACTIVE" : "LOCAL"}</em></button>)}</div></>}<button type="button" className="manage-models" onClick={onManage}>Manage local profiles in Settings ↗</button><div className="policy-warning"><strong>OpenRouter data policy</strong><p>Emma requests no provider data collection and zero retention on every selected-model turn. Your OpenRouter account logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review provider settings ↗</a></div><button type="button" className="load-models" disabled={busy} onClick={() => void load()}>Load live free + tool-capable models</button>{(error || workspaceError) && <p className="dialog-error" role="alert">{error || workspaceError}</p>}<span className="model-section-label">OPENROUTER / FREE + TOOL-CAPABLE</span><div className="model-list">{catalog?.models.map((model) => <button type="button" key={model.id} disabled={busy} className={settings.selectedModel === `openrouter:${model.id}` ? "selected" : ""} onClick={() => void selectOpenRouter(model.id)}><span><strong>{model.name}</strong><small>{model.id}</small></span><em>{settings.selectedModel === `openrouter:${model.id}` ? "ACTIVE" : `${Math.round(model.contextLength / 1000)}K CTX`}</em></button>)}{catalog && !catalog.models.length && <p className="model-empty">No free tool-capable models were returned.</p>}</div></section></dialog>;
 }
 
 const OVERLAY_DRAFT_KEY = "emma.overlayDraft.v1";
