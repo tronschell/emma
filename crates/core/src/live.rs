@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::{
-    AnalysisContent, CapturedContext, Category, CitedSource, KnowledgeBase, KnowledgeBaseId,
-    KnowledgePage, KnowledgeStore, PageId, RunTelemetry, SourceUrl, StoreError, Thread, ThreadId,
-    ThreadMessage, ThreadRole, ThreadStore, Timestamp, validate_text,
+    AnalysisContent, CapturedContext, Category, CitedSource, GenerationTelemetry, KnowledgeBase,
+    KnowledgeBaseId, KnowledgePage, KnowledgeStore, PageId, RunTelemetry, SourceUrl, StoreError,
+    Thread, ThreadId, ThreadMessage, ThreadRole, ThreadStore, Timestamp, validate_text,
 };
 use serde::Serialize;
 
@@ -65,6 +65,7 @@ pub struct AgentMessage {
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub duration_milliseconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -703,11 +704,19 @@ where
         };
         let AgentMessage {
             content: assistant_content,
+            output_tokens,
+            duration_milliseconds,
             ..
         } = response;
         let timestamp = Timestamp::now().max(thread.updated_at);
-        let message = ThreadMessage::new(ThreadRole::Assistant, assistant_content, timestamp)
+        let message = ThreadMessage::new(ThreadRole::Assistant, assistant_content, timestamp);
+        let mut message = message
             .map_err(|error| LiveError::new(format!("assistant response is invalid: {error}")))?;
+        message.generation = Some(
+            GenerationTelemetry::new(output_tokens, duration_milliseconds).map_err(|error| {
+                LiveError::new(format!("generation telemetry is invalid: {error}"))
+            })?,
+        );
         thread
             .push(message)
             .map_err(|error| LiveError::new(format!("could not append response: {error}")))?;
@@ -851,6 +860,7 @@ mod tests {
                     model: "fake".into(),
                     input_tokens: 2,
                     output_tokens: 4,
+                    duration_milliseconds: 200,
                 }))
             }
             AgentRequest::Analyze { thread, text } => {
@@ -898,6 +908,13 @@ mod tests {
 
         assert_eq!(updated.id, created.id);
         assert_eq!(updated.messages.len(), 2);
+        assert_eq!(
+            updated.messages[1]
+                .generation
+                .as_ref()
+                .map(|generation| (generation.output_tokens, generation.duration_milliseconds)),
+            Some((4, 200))
+        );
         assert_eq!(runtime.threads.load(&created.id).unwrap(), updated);
         assert!(!stale_temp.exists());
         assert!(runtime.knowledge.list().unwrap().pages.is_empty());

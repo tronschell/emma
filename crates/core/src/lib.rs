@@ -81,7 +81,7 @@ mod tests {
             Thread::new("legacy thread", Timestamp::from_unix_seconds(10)).unwrap();
         let thread_v1 = original_thread
             .to_markdown()
-            .replacen("emma-thread-format: 3", "emma-thread-format: 1", 1)
+            .replacen("emma-thread-format: 4", "emma-thread-format: 1", 1)
             .lines()
             .filter(|line| {
                 !line.starts_with("knowledge-base-id: ")
@@ -286,15 +286,29 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        old.push(
-            ThreadMessage::new(
-                ThreadRole::Assistant,
-                "answer",
-                Timestamp::from_unix_seconds(12),
-            )
-            .unwrap(),
+        let mut assistant = ThreadMessage::new(
+            ThreadRole::Assistant,
+            "answer",
+            Timestamp::from_unix_seconds(12),
         )
         .unwrap();
+        assistant.generation = Some(GenerationTelemetry::new(24, 500).unwrap());
+        old.push(assistant).unwrap();
+        let version_three = old
+            .to_markdown()
+            .replacen("emma-thread-format: 4", "emma-thread-format: 3", 1)
+            .replace("\nGeneration: none\n\n", "\n")
+            .replace(
+                "\nGeneration: present\nOutput-Tokens: 24\nDuration-Milliseconds: 500\n\n",
+                "\n",
+            );
+        assert!(
+            Thread::from_markdown(&version_three)
+                .unwrap()
+                .messages
+                .iter()
+                .all(|message| message.generation.is_none())
+        );
         let new = Thread::new("new", Timestamp::from_unix_seconds(20)).unwrap();
         assert_eq!(Thread::from_markdown(&old.to_markdown()).unwrap(), old);
         store.save(&old).unwrap();

@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    time::Instant,
 };
 
 use emma_core::{
@@ -135,12 +136,19 @@ impl Sidecar {
                     knowledge: &knowledge,
                     provider: provider.as_ref(),
                 };
+                let started = Instant::now();
                 let response: ThreadMessageResult = self.exchange(&id, &request)?;
                 Ok(AgentResponse::Message(AgentMessage {
                     content: response.message.content,
                     model: response.model,
                     input_tokens: response.input_tokens,
                     output_tokens: response.output_tokens,
+                    duration_milliseconds: started
+                        .elapsed()
+                        .as_millis()
+                        .max(1)
+                        .try_into()
+                        .unwrap_or(u64::MAX),
                 }))
             }
             AgentRequest::Analyze { thread, text } => {

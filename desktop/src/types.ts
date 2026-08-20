@@ -4,6 +4,7 @@ export interface Message {
   role: ThreadRole;
   content: string;
   timestamp: string;
+  generation?: { outputTokens: number; durationMilliseconds: number } | null;
 }
 
 export interface Thread {

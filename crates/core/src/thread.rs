@@ -87,10 +87,30 @@ impl FromStr for ThreadRole {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GenerationTelemetry {
+    pub output_tokens: u64,
+    pub duration_milliseconds: u64,
+}
+
+impl GenerationTelemetry {
+    pub fn new(output_tokens: u64, duration_milliseconds: u64) -> Result<Self, ValidationError> {
+        if duration_milliseconds == 0 {
+            return Err(ValidationError::new("generation duration must be positive"));
+        }
+        Ok(Self {
+            output_tokens,
+            duration_milliseconds,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreadMessage {
     pub role: ThreadRole,
     pub content: String,
     pub timestamp: Timestamp,
+    pub generation: Option<GenerationTelemetry>,
 }
 
 impl ThreadMessage {
@@ -105,6 +125,7 @@ impl ThreadMessage {
             role,
             content,
             timestamp,
+            generation: None,
         })
     }
 }
@@ -137,6 +158,11 @@ impl Thread {
     }
 
     pub fn push(&mut self, message: ThreadMessage) -> Result<(), ValidationError> {
+        if message.generation.is_some() && message.role != ThreadRole::Assistant {
+            return Err(ValidationError::new(
+                "generation telemetry belongs only to assistant messages",
+            ));
+        }
         if message.timestamp < self.updated_at {
             return Err(ValidationError::new(
                 "thread messages must be chronological",
@@ -164,7 +190,7 @@ impl Thread {
     }
 
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-thread-format: 3\n");
+        let mut output = String::from("---\nemma-thread-format: 4\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(
@@ -186,6 +212,17 @@ impl Thread {
             output.push_str(&format!("\n## Message {}\n\n", index + 1));
             output.push_str(&format!("Role: {}\n\n", message.role.as_str()));
             output.push_str(&format!("Time: {}\n\n", message.timestamp));
+            if let Some(generation) = &message.generation {
+                output.push_str("Generation: present\n");
+                output.push_str(&format!("Output-Tokens: {}\n", generation.output_tokens));
+                output.push_str(&format!(
+                    "Duration-Milliseconds: {}\n",
+                    generation.duration_milliseconds
+                ));
+            } else {
+                output.push_str("Generation: none\n");
+            }
+            output.push('\n');
             output.push_str(&quote(&message.content));
             output.push('\n');
         }
@@ -199,6 +236,7 @@ impl Thread {
             "emma-thread-format: 1" => 1,
             "emma-thread-format: 2" => 2,
             "emma-thread-format: 3" => 3,
+            "emma-thread-format: 4" => 4,
             _ => return Err(ValidationError::new("unsupported thread format")),
         };
         let id = ThreadId::parse(parser.field("id")?)?;
@@ -251,6 +289,20 @@ impl Thread {
             parser.exact("")?;
             let timestamp: Timestamp = parser.prefixed("Time: ")?.parse()?;
             parser.exact("")?;
+            let generation = if format < 4 {
+                None
+            } else {
+                let generation = match parser.prefixed("Generation: ")? {
+                    "none" => None,
+                    "present" => Some(GenerationTelemetry::new(
+                        parser.number("Output-Tokens")?,
+                        parser.number("Duration-Milliseconds")?,
+                    )?),
+                    _ => return Err(ValidationError::new("unknown generation telemetry state")),
+                };
+                parser.exact("")?;
+                generation
+            };
             let content = unquote(parser.next()?)?;
             validate_text("thread message", &content, true)?;
             if timestamp < last {
@@ -258,11 +310,17 @@ impl Thread {
                     "thread messages must be chronological",
                 ));
             }
+            if generation.is_some() && role != ThreadRole::Assistant {
+                return Err(ValidationError::new(
+                    "generation telemetry belongs only to assistant messages",
+                ));
+            }
             last = timestamp;
             messages.push(ThreadMessage {
                 role,
                 content,
                 timestamp,
+                generation,
             });
         }
         if parser.lines.next().is_some() || updated_at != last {

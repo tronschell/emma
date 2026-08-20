@@ -30,10 +30,13 @@ Ordinary work belongs to a durable thread. Each thread has one destination
 knowledge base for explicit writes and a deduplicated set of read-only source
 bases for bounded retrieval. Saving remains explicit. A saved page is an
 editable, exportable Markdown document with category, source-thread provenance,
-added/analyzed timestamps, model, token counts, and subagent count.
+added/analyzed timestamps, model, token counts, and subagent count. Each new
+assistant message also keeps its output-token count and elapsed generation time
+so the transcript can show that response's tokens-per-second rate.
 
-Thread format 3 stores the destination and sources; formats 1–2 migrate to the
-destination as their sole source. Knowledge-base format 2 stores user category
+Thread format 4 adds per-message generation telemetry; format 3 stores the
+destination and sources, while formats 1–2 migrate to the destination as their
+sole source. Knowledge-base format 2 stores user category
 slugs; format 1 migrates with none. Learned categories are derived from pages.
 Removing a user category never removes a page. The activity heatmap is computed
 from durable message and page timestamps.

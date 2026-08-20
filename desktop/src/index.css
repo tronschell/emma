@@ -119,6 +119,7 @@ i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; backgrou
 .message.user { padding: 9px 11px; border: 1px solid #30312d; border-radius: 5px; background: #181916; }
 .message.assistant { position: relative; padding-left: 30px; }
 .message.assistant::before { content: "◇"; position: absolute; left: 0; top: 2px; display: grid; place-items: center; width: 21px; height: 21px; color: var(--taupe); border: 1px solid #3d3c36; border-radius: 5px; font-size: 12px; }
+.generation-rate { margin-top: 6px; color: #65645d; font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .08em; }
 .composer { position: relative; margin: 0 clamp(12px, 3vw, 36px) 12px; padding: 8px; border: 1px solid #393a34; border-radius: 6px; background: #151614; box-shadow: 0 18px 45px #0008; }
 .composer textarea, .overlay textarea { width: 100%; resize: none; padding: 1px 2px 7px; border: 0; outline: 0; color: #e9e6de; background: transparent; font-size: 11px; line-height: 1.5; }
 .composer > div, .overlay form > div { display: flex; align-items: center; justify-content: space-between; }
