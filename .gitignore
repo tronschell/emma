@@ -3,4 +3,7 @@
 /zig-out
 /.emma-data
 .DS_Store
-
+/desktop/node_modules
+/desktop/dist-main
+/desktop/dist-renderer
+/desktop/release

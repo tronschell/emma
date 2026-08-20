@@ -11,6 +11,7 @@ use crate::{
     KnowledgePage, KnowledgeStore, PageId, RunTelemetry, SourceUrl, StoreError, Thread, ThreadId,
     ThreadMessage, ThreadRole, ThreadStore, Timestamp, validate_text,
 };
+use serde::Serialize;
 
 const MAX_AGENT_TITLE_BYTES: usize = 256;
 const MAX_AGENT_SUMMARY_BYTES: usize = 4 * 1024;
@@ -35,14 +36,16 @@ pub enum AgentRequest {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenRouterModel {
     pub id: String,
     pub name: String,
     pub context_length: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenRouterCatalog {
     pub selected_model: Option<String>,
     pub models: Vec<OpenRouterModel>,
@@ -57,29 +60,11 @@ pub struct AgentKnowledgePage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentKnowledgeMutation {
-    Create {
-        title: String,
-        category: Option<String>,
-        summary: String,
-        body: String,
-    },
-    Update {
-        page_id: String,
-        title: Option<String>,
-        category: Option<String>,
-        summary: Option<String>,
-        body: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentMessage {
     pub content: String,
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub knowledge_mutation: Option<AgentKnowledgeMutation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,7 +94,8 @@ pub enum AgentResponse {
     OpenRouterModelSelected(String),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveSnapshot {
     pub threads: Vec<Thread>,
     pub knowledge_bases: Vec<KnowledgeBase>,
@@ -148,6 +134,29 @@ enum Command {
         knowledge_base_id: KnowledgeBaseId,
         reply: Reply<Thread>,
     },
+    SelectThreadSources {
+        thread_id: ThreadId,
+        knowledge_base_ids: Vec<KnowledgeBaseId>,
+        reply: Reply<Thread>,
+    },
+    AddKnowledgeBaseCategory {
+        knowledge_base_id: KnowledgeBaseId,
+        category: String,
+        reply: Reply<KnowledgeBase>,
+    },
+    RemoveKnowledgeBaseCategory {
+        knowledge_base_id: KnowledgeBaseId,
+        category: String,
+        reply: Reply<KnowledgeBase>,
+    },
+    UpdatePage {
+        page_id: PageId,
+        title: String,
+        category: String,
+        summary: String,
+        body: String,
+        reply: Reply<KnowledgePage>,
+    },
     SendMessage {
         thread_id: ThreadId,
         content: String,
@@ -165,7 +174,7 @@ enum Command {
 }
 
 /// Blocking handle to the typed runtime worker. Call these methods only from a
-/// background executor, never while rendering GPUI.
+/// background executor, never from a UI event loop.
 #[derive(Clone)]
 pub struct LiveClient {
     commands: Sender<Command>,
@@ -222,6 +231,84 @@ impl LiveClient {
         result.recv().map_err(|_| {
             LiveError::new("Emma runtime stopped while selecting the knowledge base")
         })?
+    }
+
+    pub fn select_thread_sources(
+        &self,
+        thread_id: ThreadId,
+        knowledge_base_ids: Vec<KnowledgeBaseId>,
+    ) -> Result<Thread, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SelectThreadSources {
+                thread_id,
+                knowledge_base_ids,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before selecting source bases"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while selecting source bases"))?
+    }
+
+    pub fn add_knowledge_base_category(
+        &self,
+        knowledge_base_id: KnowledgeBaseId,
+        category: String,
+    ) -> Result<KnowledgeBase, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::AddKnowledgeBaseCategory {
+                knowledge_base_id,
+                category,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before adding the category"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while adding the category"))?
+    }
+
+    pub fn remove_knowledge_base_category(
+        &self,
+        knowledge_base_id: KnowledgeBaseId,
+        category: String,
+    ) -> Result<KnowledgeBase, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::RemoveKnowledgeBaseCategory {
+                knowledge_base_id,
+                category,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before removing the category"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while removing the category"))?
+    }
+
+    pub fn update_page(
+        &self,
+        page_id: PageId,
+        title: String,
+        category: String,
+        summary: String,
+        body: String,
+    ) -> Result<KnowledgePage, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::UpdatePage {
+                page_id,
+                title,
+                category,
+                summary,
+                body,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before updating the page"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while updating the page"))?
     }
 
     pub fn send_message(&self, thread_id: ThreadId, content: String) -> Result<Thread, LiveError> {
@@ -325,6 +412,37 @@ where
                 reply,
             } => {
                 let _ = reply.send(self.select_thread_knowledge_base(thread_id, knowledge_base_id));
+            }
+            Command::SelectThreadSources {
+                thread_id,
+                knowledge_base_ids,
+                reply,
+            } => {
+                let _ = reply.send(self.select_thread_sources(thread_id, knowledge_base_ids));
+            }
+            Command::AddKnowledgeBaseCategory {
+                knowledge_base_id,
+                category,
+                reply,
+            } => {
+                let _ = reply.send(self.change_category(knowledge_base_id, category, true));
+            }
+            Command::RemoveKnowledgeBaseCategory {
+                knowledge_base_id,
+                category,
+                reply,
+            } => {
+                let _ = reply.send(self.change_category(knowledge_base_id, category, false));
+            }
+            Command::UpdatePage {
+                page_id,
+                title,
+                category,
+                summary,
+                body,
+                reply,
+            } => {
+                let _ = reply.send(self.update_page(page_id, title, category, summary, body));
             }
             Command::SendMessage {
                 thread_id,
@@ -456,6 +574,78 @@ where
         Ok(thread)
     }
 
+    fn select_thread_sources(
+        &self,
+        thread_id: ThreadId,
+        ids: Vec<KnowledgeBaseId>,
+    ) -> Result<Thread, LiveError> {
+        if ids.len() > 64 {
+            return Err(LiveError::new(
+                "a thread cannot use more than 64 source bases",
+            ));
+        }
+        for id in &ids {
+            self.load_base(id)?;
+        }
+        let mut thread = self.threads.load(&thread_id).map_err(|error| {
+            LiveError::new(format!("could not load thread {thread_id}: {error}"))
+        })?;
+        thread.select_source_knowledge_bases(ids);
+        self.threads
+            .save(&thread)
+            .map_err(|error| LiveError::new(format!("could not save source bases: {error}")))?;
+        Ok(thread)
+    }
+
+    fn change_category(
+        &self,
+        id: KnowledgeBaseId,
+        value: String,
+        add: bool,
+    ) -> Result<KnowledgeBase, LiveError> {
+        let category = Category::parse(value)
+            .map_err(|error| LiveError::new(format!("category is invalid: {error}")))?;
+        let mut base = self.load_base(&id)?;
+        if add {
+            if !base.categories.contains(&category) {
+                base.categories.push(category);
+                base.categories.sort();
+            }
+        } else {
+            base.categories.retain(|existing| existing != &category);
+        }
+        self.knowledge
+            .save_base(&base)
+            .map_err(|error| LiveError::new(format!("could not save categories: {error}")))?;
+        Ok(base)
+    }
+
+    fn update_page(
+        &self,
+        id: PageId,
+        title: String,
+        category: String,
+        summary: String,
+        body: String,
+    ) -> Result<KnowledgePage, LiveError> {
+        validate_agent_text("page title", &title, true, MAX_AGENT_TITLE_BYTES)?;
+        validate_agent_text("analysis summary", &summary, true, MAX_AGENT_SUMMARY_BYTES)?;
+        validate_agent_text("analysis body", &body, false, MAX_AGENT_BODY_BYTES)?;
+        let mut page = self
+            .knowledge
+            .load(&id)
+            .map_err(|error| LiveError::new(format!("could not load page {id}: {error}")))?;
+        page.title = title;
+        page.category = Category::parse(category)
+            .map_err(|error| LiveError::new(format!("category is invalid: {error}")))?;
+        page.analysis = AnalysisContent::new(summary, body)
+            .map_err(|error| LiveError::new(format!("page content is invalid: {error}")))?;
+        self.knowledge
+            .save(&page)
+            .map_err(|error| LiveError::new(format!("could not update page: {error}")))?;
+        Ok(page)
+    }
+
     fn send_message(&mut self, thread_id: ThreadId, content: String) -> Result<Thread, LiveError> {
         validate_agent_text("prompt", &content, true, MAX_AGENT_MESSAGE_BYTES)?;
         let mut thread = self.threads.load(&thread_id).map_err(|error| {
@@ -464,14 +654,29 @@ where
         let timestamp = Timestamp::now().max(thread.updated_at);
         let message = ThreadMessage::new(ThreadRole::User, content.clone(), timestamp)
             .map_err(|error| LiveError::new(format!("prompt is invalid: {error}")))?;
-        let selected_base = self.load_base(&thread.knowledge_base_id)?;
-        let knowledge = self
-            .knowledge
-            .relevant_pages(&selected_base.id, &content, crate::MAX_RELEVANT_PAGES)
-            .map_err(|error| {
-                LiveError::new(format!("could not retrieve relevant knowledge: {error}"))
-            })?
+        let mut relevant = Vec::new();
+        for base_id in &thread.source_knowledge_base_ids {
+            self.load_base(base_id)?;
+            let pages = self
+                .knowledge
+                .relevant_pages(base_id, &content, crate::MAX_RELEVANT_PAGES)
+                .map_err(|error| {
+                    LiveError::new(format!("could not retrieve relevant knowledge: {error}"))
+                })?;
+            for (rank, page) in pages.into_iter().enumerate() {
+                relevant.push((rank, base_id.clone(), page));
+            }
+        }
+        relevant.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.id.cmp(&right.2.id))
+        });
+        let knowledge = relevant
             .into_iter()
+            .take(crate::MAX_RELEVANT_PAGES)
+            .map(|(_, _, page)| page)
             .map(|page| AgentKnowledgePage {
                 id: page.id.as_str().to_owned(),
                 title: bounded(&page.title, MAX_AGENT_TITLE_BYTES),
@@ -498,36 +703,8 @@ where
         };
         let AgentMessage {
             content: assistant_content,
-            model,
-            input_tokens,
-            output_tokens,
-            knowledge_mutation,
+            ..
         } = response;
-        let mutation_result = knowledge_mutation.map(|mutation| {
-            self.apply_knowledge_mutation(
-                &thread,
-                &selected_base,
-                &content,
-                mutation,
-                &model,
-                input_tokens,
-                output_tokens,
-            )
-        });
-        let assistant_content = match (assistant_content.trim().is_empty(), mutation_result) {
-            (false, Some(Ok(message))) => format!("{assistant_content}\n\n{message}"),
-            (false, Some(Err(error))) => {
-                format!("{assistant_content}\n\nKnowledge update failed: {error}")
-            }
-            (false, None) => assistant_content,
-            (true, Some(Ok(message))) => message,
-            (true, Some(Err(error))) => format!("Knowledge update failed: {error}"),
-            (true, None) => {
-                return Err(LiveError::new(
-                    "agent returned neither assistant text nor a knowledge action",
-                ));
-            }
-        };
         let timestamp = Timestamp::now().max(thread.updated_at);
         let message = ThreadMessage::new(ThreadRole::Assistant, assistant_content, timestamp)
             .map_err(|error| LiveError::new(format!("assistant response is invalid: {error}")))?;
@@ -610,113 +787,6 @@ where
             error => LiveError::new(format!("could not load selected knowledge base: {error}")),
         })
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_knowledge_mutation(
-        &self,
-        thread: &Thread,
-        base: &KnowledgeBase,
-        prompt: &str,
-        mutation: AgentKnowledgeMutation,
-        model: &str,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> Result<String, LiveError> {
-        let telemetry = || {
-            RunTelemetry::new(model, input_tokens, output_tokens, 0).map_err(|error| {
-                LiveError::new(format!("knowledge action telemetry is invalid: {error}"))
-            })
-        };
-        match mutation {
-            AgentKnowledgeMutation::Create {
-                title,
-                category,
-                summary,
-                body,
-            } => {
-                validate_agent_text("page title", &title, true, MAX_AGENT_TITLE_BYTES)?;
-                validate_agent_text("analysis summary", &summary, true, MAX_AGENT_SUMMARY_BYTES)?;
-                validate_agent_text("analysis body", &body, false, MAX_AGENT_BODY_BYTES)?;
-                let timestamp = Timestamp::now().max(thread.updated_at);
-                let page = KnowledgePage::new(
-                    title,
-                    Category::parse(category.unwrap_or_else(|| "general".into())).map_err(
-                        |error| LiveError::new(format!("page category is invalid: {error}")),
-                    )?,
-                    CapturedContext::new(prompt, Some("Emma agent".into()), None).map_err(
-                        |error| LiveError::new(format!("page context is invalid: {error}")),
-                    )?,
-                    AnalysisContent::new(summary, body).map_err(|error| {
-                        LiveError::new(format!("page content is invalid: {error}"))
-                    })?,
-                    Vec::new(),
-                    timestamp,
-                    timestamp,
-                    telemetry()?,
-                )
-                .map_err(|error| LiveError::new(format!("knowledge page is invalid: {error}")))?
-                .with_source_thread(thread.id.clone())
-                .in_knowledge_base(base.id.clone());
-                self.knowledge.save(&page).map_err(|error| {
-                    LiveError::new(format!("could not create knowledge page: {error}"))
-                })?;
-                Ok(format!("Created “{}” in {}.", page.title, base.name))
-            }
-            AgentKnowledgeMutation::Update {
-                page_id,
-                title,
-                category,
-                summary,
-                body,
-            } => {
-                if title.is_none() && category.is_none() && summary.is_none() && body.is_none() {
-                    return Err(LiveError::new("update did not include any page changes"));
-                }
-                let page_id = PageId::parse(page_id)
-                    .map_err(|error| LiveError::new(format!("page ID is invalid: {error}")))?;
-                let mut page = self.knowledge.load(&page_id).map_err(|error| match error {
-                    StoreError::Io(error) if error.kind() == io::ErrorKind::NotFound => {
-                        LiveError::new(format!("page {page_id} does not exist"))
-                    }
-                    error => LiveError::new(format!("could not load page {page_id}: {error}")),
-                })?;
-                if page.knowledge_base_id != base.id {
-                    return Err(LiveError::new(format!(
-                        "page {page_id} is outside the selected knowledge base"
-                    )));
-                }
-                if let Some(title) = title {
-                    validate_agent_text("page title", &title, true, MAX_AGENT_TITLE_BYTES)?;
-                    page.title = title;
-                }
-                if let Some(category) = category {
-                    page.category = Category::parse(category).map_err(|error| {
-                        LiveError::new(format!("page category is invalid: {error}"))
-                    })?;
-                }
-                if summary.is_some() || body.is_some() {
-                    let summary = summary.unwrap_or_else(|| page.analysis.summary.clone());
-                    let body = body.unwrap_or_else(|| page.analysis.body.clone());
-                    validate_agent_text(
-                        "analysis summary",
-                        &summary,
-                        true,
-                        MAX_AGENT_SUMMARY_BYTES,
-                    )?;
-                    validate_agent_text("analysis body", &body, false, MAX_AGENT_BODY_BYTES)?;
-                    page.analysis = AnalysisContent::new(summary, body).map_err(|error| {
-                        LiveError::new(format!("page content is invalid: {error}"))
-                    })?;
-                }
-                page.analyzed_at = Timestamp::now().max(page.analyzed_at);
-                page.telemetry = telemetry()?;
-                self.knowledge.save(&page).map_err(|error| {
-                    LiveError::new(format!("could not update knowledge page: {error}"))
-                })?;
-                Ok(format!("Updated “{}” in {}.", page.title, base.name))
-            }
-        }
-    }
 }
 
 fn validate_agent_text(
@@ -750,10 +820,7 @@ fn bounded(value: &str, max_bytes: usize) -> String {
 mod tests {
     use super::*;
     use std::{
-        cell::RefCell,
-        collections::VecDeque,
         fs,
-        rc::Rc,
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -784,7 +851,6 @@ mod tests {
                     model: "fake".into(),
                     input_tokens: 2,
                     output_tokens: 4,
-                    knowledge_mutation: None,
                 }))
             }
             AgentRequest::Analyze { thread, text } => {
@@ -842,11 +908,37 @@ mod tests {
         assert_eq!(runtime.knowledge.list().unwrap().pages, [page]);
 
         let project = runtime.create_knowledge_base("Project".into()).unwrap();
+        let project = runtime
+            .change_category(project.id, "research".into(), true)
+            .unwrap();
+        assert_eq!(project.categories, [Category::parse("research").unwrap()]);
         runtime
             .select_thread_knowledge_base(updated.id.clone(), project.id.clone())
             .unwrap();
         let project_page = runtime.save_to_knowledge(updated.id.clone()).unwrap();
         assert_eq!(project_page.knowledge_base_id, project.id);
+        let edited = runtime
+            .update_page(
+                project_page.id.clone(),
+                "Edited page".into(),
+                "research".into(),
+                "Edited summary".into(),
+                "Edited body".into(),
+            )
+            .unwrap();
+        assert_eq!(edited.source_thread_id, project_page.source_thread_id);
+        assert_eq!(edited.telemetry, project_page.telemetry);
+        let extra = runtime.create_knowledge_base("Extra".into()).unwrap();
+        let sourced = runtime
+            .select_thread_sources(
+                updated.id.clone(),
+                vec![extra.id.clone(), project.id.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            sourced.source_knowledge_base_ids,
+            [project.id.clone(), extra.id]
+        );
 
         let page_count = runtime.knowledge.list().unwrap().pages.len();
         let mut orphaned = runtime.threads.load(&updated.id).unwrap();
@@ -860,131 +952,6 @@ mod tests {
                 .contains("does not exist")
         );
         assert_eq!(runtime.knowledge.list().unwrap().pages.len(), page_count);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn named_base_selection_and_agent_mutations_stay_inside_the_selected_base() {
-        let root = temp_child();
-        let responses = Rc::new(RefCell::new(VecDeque::<AgentMessage>::new()));
-        let seen_knowledge = Rc::new(RefCell::new(Vec::<Vec<AgentKnowledgePage>>::new()));
-        let queued = responses.clone();
-        let seen = seen_knowledge.clone();
-        let agent = move |request| match request {
-            AgentRequest::ThreadMessage { knowledge, .. } => {
-                seen.borrow_mut().push(knowledge);
-                Ok(AgentResponse::Message(
-                    queued.borrow_mut().pop_front().unwrap(),
-                ))
-            }
-            AgentRequest::Analyze { .. } => unreachable!(),
-            AgentRequest::ListOpenRouterModels | AgentRequest::SelectOpenRouterModel { .. } => {
-                unreachable!()
-            }
-        };
-        let mut runtime = Runtime::new(root.join("threads"), root.join("knowledge"), agent);
-        let research = runtime.create_knowledge_base("Research".into()).unwrap();
-        let personal = runtime.create_knowledge_base("Personal".into()).unwrap();
-        assert!(runtime.create_knowledge_base("research".into()).is_err());
-        assert_eq!(
-            runtime.knowledge.list_bases().unwrap().bases[0],
-            KnowledgeBase::default_base()
-        );
-
-        let thread = runtime.create_thread().unwrap();
-        let thread = runtime
-            .select_thread_knowledge_base(thread.id, research.id.clone())
-            .unwrap();
-        assert_eq!(thread.knowledge_base_id, research.id);
-        responses.borrow_mut().push_back(AgentMessage {
-            content: "I saved that.".into(),
-            model: "fixture".into(),
-            input_tokens: 4,
-            output_tokens: 2,
-            knowledge_mutation: Some(AgentKnowledgeMutation::Create {
-                title: "Satellite clock".into(),
-                category: Some("research".into()),
-                summary: "Clock drift matters".into(),
-                body: "Satellite timing details".into(),
-            }),
-        });
-        let thread = runtime
-            .send_message(thread.id, "remember satellite timing".into())
-            .unwrap();
-        assert!(
-            thread
-                .messages
-                .last()
-                .unwrap()
-                .content
-                .starts_with("I saved that.")
-        );
-        assert!(
-            thread
-                .messages
-                .last()
-                .unwrap()
-                .content
-                .contains("Created “Satellite clock” in Research")
-        );
-        let page = runtime.knowledge.list().unwrap().pages.pop().unwrap();
-        assert_eq!(page.knowledge_base_id, research.id);
-
-        responses.borrow_mut().push_back(AgentMessage {
-            content: String::new(),
-            model: "fixture".into(),
-            input_tokens: 6,
-            output_tokens: 3,
-            knowledge_mutation: Some(AgentKnowledgeMutation::Update {
-                page_id: page.id.as_str().into(),
-                title: None,
-                category: None,
-                summary: None,
-                body: Some("Updated satellite timing details".into()),
-            }),
-        });
-        let thread = runtime
-            .send_message(thread.id, "update satellite details".into())
-            .unwrap();
-        assert_eq!(seen_knowledge.borrow()[1][0].id, page.id.as_str());
-        assert_eq!(
-            runtime.knowledge.load(&page.id).unwrap().analysis.body,
-            "Updated satellite timing details"
-        );
-
-        let thread = runtime
-            .select_thread_knowledge_base(thread.id, personal.id)
-            .unwrap();
-        for page_id in [page.id.as_str(), "missing-page-0000"] {
-            responses.borrow_mut().push_back(AgentMessage {
-                content: String::new(),
-                model: "fixture".into(),
-                input_tokens: 2,
-                output_tokens: 1,
-                knowledge_mutation: Some(AgentKnowledgeMutation::Update {
-                    page_id: page_id.into(),
-                    title: None,
-                    category: None,
-                    summary: Some("must not apply".into()),
-                    body: None,
-                }),
-            });
-            let failed = runtime
-                .send_message(thread.id.clone(), "update satellite".into())
-                .unwrap();
-            assert!(
-                failed
-                    .messages
-                    .last()
-                    .unwrap()
-                    .content
-                    .starts_with("Knowledge update failed:")
-            );
-        }
-        assert_eq!(
-            runtime.knowledge.load(&page.id).unwrap().analysis.summary,
-            "Clock drift matters"
-        );
         fs::remove_dir_all(root).unwrap();
     }
 }

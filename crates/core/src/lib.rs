@@ -6,20 +6,6 @@ pub use knowledge::*;
 pub use live::*;
 pub use thread::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum OverlayPlacement {
-    LeftOfNotch,
-    RightOfNotch,
-    #[default]
-    UnderNotch,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AppPreferences {
-    pub overlay_placement: OverlayPlacement,
-    pub capture_screenshot: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,13 +50,6 @@ mod tests {
     }
 
     #[test]
-    fn privacy_defaults_do_not_capture_the_screen() {
-        let preferences = AppPreferences::default();
-        assert!(!preferences.capture_screenshot);
-        assert_eq!(preferences.overlay_placement, OverlayPlacement::UnderNotch);
-    }
-
-    #[test]
     fn knowledge_markdown_round_trips_without_structure_injection() {
         let thread = Thread::new("source", Timestamp::from_unix_seconds(1)).unwrap();
         let original =
@@ -102,9 +81,13 @@ mod tests {
             Thread::new("legacy thread", Timestamp::from_unix_seconds(10)).unwrap();
         let thread_v1 = original_thread
             .to_markdown()
-            .replacen("emma-thread-format: 2", "emma-thread-format: 1", 1)
+            .replacen("emma-thread-format: 3", "emma-thread-format: 1", 1)
             .lines()
-            .filter(|line| !line.starts_with("knowledge-base-id: "))
+            .filter(|line| {
+                !line.starts_with("knowledge-base-id: ")
+                    && !line.starts_with("source-knowledge-base-count: ")
+                    && !line.starts_with("source-0-id: ")
+            })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
@@ -113,6 +96,76 @@ mod tests {
             migrated_thread.knowledge_base_id,
             KnowledgeBaseId::default_id()
         );
+        assert_eq!(
+            migrated_thread.source_knowledge_base_ids,
+            [KnowledgeBaseId::default_id()]
+        );
+    }
+
+    #[test]
+    fn base_categories_and_multi_source_threads_round_trip() {
+        let mut base = KnowledgeBase::new("Research", Timestamp::from_unix_seconds(1)).unwrap();
+        base.categories = vec![
+            Category::parse("papers").unwrap(),
+            Category::parse("reviews").unwrap(),
+        ];
+        assert_eq!(
+            KnowledgeBase::from_markdown(&base.to_markdown()).unwrap(),
+            base
+        );
+        let legacy = base
+            .to_markdown()
+            .replacen(
+                "emma-knowledge-base-format: 2",
+                "emma-knowledge-base-format: 1",
+                1,
+            )
+            .lines()
+            .filter(|line| !line.starts_with("category-count:") && !line.starts_with("category-"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        assert!(
+            KnowledgeBase::from_markdown(&legacy)
+                .unwrap()
+                .categories
+                .is_empty()
+        );
+
+        let mut thread = Thread::new("sources", Timestamp::from_unix_seconds(2)).unwrap();
+        thread.select_knowledge_base(base.id.clone());
+        thread.select_source_knowledge_bases(vec![KnowledgeBaseId::default_id(), base.id.clone()]);
+        assert_eq!(
+            Thread::from_markdown(&thread.to_markdown()).unwrap(),
+            thread
+        );
+        assert_eq!(thread.source_knowledge_base_ids.len(), 2);
+        assert_eq!(thread.source_knowledge_base_ids[0], base.id);
+    }
+
+    #[test]
+    fn knowledge_base_category_limit_is_enforced_before_save() {
+        let root = temp_child("base-category-limit");
+        let store = KnowledgeStore::new(root.clone());
+        let mut base = KnowledgeBase::new("Research", Timestamp::from_unix_seconds(1)).unwrap();
+        base.categories = (0..MAX_KNOWLEDGE_BASE_CATEGORIES)
+            .map(|index| Category::parse(format!("category-{index}")).unwrap())
+            .collect();
+
+        store.save_base(&base).unwrap();
+        assert_eq!(
+            store.load_base(&base.id).unwrap().categories.len(),
+            MAX_KNOWLEDGE_BASE_CATEGORIES
+        );
+
+        base.categories
+            .push(Category::parse("category-overflow").unwrap());
+        assert!(store.save_base(&base).is_err());
+        assert_eq!(
+            store.load_base(&base.id).unwrap().categories.len(),
+            MAX_KNOWLEDGE_BASE_CATEGORIES
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -216,34 +269,6 @@ mod tests {
             Timestamp::from(std::time::UNIX_EPOCH - std::time::Duration::from_millis(1)),
             Timestamp::from_unix_seconds(-1)
         );
-    }
-
-    #[test]
-    fn lifecycle_covers_success_failure_cancel_and_invalid_transitions() {
-        let context = CapturedContext::new("text", None, None).unwrap();
-        let saving = CaptureLifecycle::Ready
-            .start()
-            .unwrap()
-            .captured(context)
-            .unwrap()
-            .analyzed(page(100, "saved"))
-            .unwrap();
-        assert!(matches!(
-            saving.clone().saved(),
-            Ok(CaptureLifecycle::Saved(_))
-        ));
-        assert_eq!(
-            saving.fail("disk full").unwrap(),
-            CaptureLifecycle::Failed {
-                stage: LifecycleStage::Save,
-                message: "disk full".into()
-            }
-        );
-        assert_eq!(
-            CaptureLifecycle::Ready.start().unwrap().cancel().unwrap(),
-            CaptureLifecycle::Cancelled
-        );
-        assert!(CaptureLifecycle::Ready.saved().is_err());
     }
 
     #[test]

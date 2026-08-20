@@ -1,0 +1,395 @@
+import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, nativeImage, screen, session, shell, systemPreferences, type Display } from "electron";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import path from "node:path";
+import { externalUrl, MAX_SCREEN_CONTEXT_CHARS, trustedSender, validJpegDataUrl, validateRequest } from "./ipc";
+import { discoverImports, saveImportManifest } from "./imports";
+import { loadUiPlugins } from "./plugins";
+import { overlayBounds } from "./overlay";
+import { BoundedLines, parseHostResponse } from "./ndjson";
+import { defaultSettings, validateOverlayPreferences, type OverlayPreferences } from "../shared/settings";
+
+// ponytail: whole snapshots cap at 16 MiB; paginate the host protocol before raising it.
+const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+class Host {
+  private child: ChildProcessWithoutNullStreams;
+  private lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
+  private nextId = 1;
+  private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private failure: Error | null = null;
+
+  constructor(binary: string, agent: string) {
+    this.child = spawn(binary, [], { env: { ...process.env, EMMA_AGENT_BIN: agent }, stdio: ["pipe", "pipe", "pipe"] });
+    this.child.stdout.on("data", (data: Buffer) => {
+      try { for (const line of this.lines.push(data)) { if (this.failure) break; this.receive(line); } }
+      catch (error) { this.abort(error instanceof Error ? error : new Error("Emma host protocol error")); }
+    });
+    this.child.stdout.on("end", () => { try { this.lines.end(); } catch (error) { this.abort(error as Error); } });
+    this.child.stderr.on("data", (data) => console.error(String(data).trim()));
+    this.child.once("error", (error) => this.fail(error));
+    this.child.stdin.on("error", (error) => this.fail(error));
+    this.child.once("exit", () => this.fail(new Error("Emma host stopped")));
+  }
+
+  request(request: { method: string; params: Record<string, string> }): Promise<unknown> {
+    if (this.failure) return Promise.reject(this.failure);
+    const id = String(this.nextId++);
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.child.stdin.write(`${JSON.stringify({ id, ...request })}\n`, (error) => {
+        if (error) this.fail(error);
+      });
+    });
+  }
+
+  close() {
+    this.fail(new Error("Emma host closed"));
+    if (!this.child.stdin.destroyed) this.child.stdin.end();
+    if (!this.child.killed) this.child.kill();
+  }
+
+  private receive(line: string) {
+    try {
+      const response = parseHostResponse(line);
+      const request = this.pending.get(response.id);
+      if (!request) throw new Error("Unexpected host response ID");
+      this.pending.delete(response.id);
+      if (response.ok) request.resolve(response.result);
+      else request.reject(new Error(response.error));
+    } catch (error) {
+      this.abort(error instanceof Error ? error : new Error("Emma host protocol error"));
+    }
+  }
+
+  private abort(error: Error) {
+    this.fail(error);
+    if (!this.child.killed) this.child.kill();
+  }
+
+  private fail(error: Error) {
+    this.failure ??= error;
+    for (const request of this.pending.values()) request.reject(this.failure);
+    this.pending.clear();
+  }
+}
+
+let host: Host | undefined;
+let mainWindow: BrowserWindow | null = null;
+let overlay: BrowserWindow | null = null;
+let annotation: BrowserWindow | null = null;
+let annotationFrame: { image: string; width: number; height: number } | null = null;
+let annotationAttachment: { id: string; image: string } | null = null;
+let annotating = false;
+let overlayPreferences: OverlayPreferences = { overlayPlacement: defaultSettings.overlayPlacement, notchGap: defaultSettings.notchGap };
+let overlayPreferencesReady = false;
+let queuedOverlayToggle = false;
+let overlayBusy = false;
+let closeOverlayWhenIdle = false;
+
+const preload = path.join(__dirname, "preload.js");
+const renderer = path.join(app.getAppPath(), "dist-renderer/index.html");
+
+function binary(name: string) {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, name)
+    : path.join(app.getAppPath(), "..", name === "emma-host" ? "target/debug/emma-host" : "agent/zig-out/bin/emma-agent");
+}
+
+function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
+  const window = new BrowserWindow({
+    backgroundColor: "#090a09",
+    show: false,
+    ...options,
+    webPreferences: {
+      preload,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const safe = externalUrl(url);
+    if (safe) void shell.openExternal(safe.toString());
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    const current = window.webContents.getURL();
+    if (url !== current) event.preventDefault();
+  });
+  return window;
+}
+
+async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotation" = "main") {
+  try {
+    const dev = process.env.EMMA_DEV_SERVER_URL;
+    const query = mode === "main" ? "" : `?${mode}=1`;
+    if (dev) await window.loadURL(`${dev}${query}`);
+    else await window.loadFile(renderer, mode === "main" ? undefined : { query: { [mode]: "1" } });
+    if (!window.isDestroyed()) window.show();
+  } catch (error) {
+    if (!window.isDestroyed()) console.error("Emma window failed to load", error);
+  }
+}
+
+function openMain() {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  mainWindow = secureWindow({
+    width: 1380,
+    height: 860,
+    minWidth: 1040,
+    minHeight: 680,
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 17 },
+    vibrancy: "under-window",
+    visualEffectState: "active",
+  });
+  mainWindow.on("closed", () => (mainWindow = null));
+  void load(mainWindow);
+}
+
+function closeOverlay(window: BrowserWindow) {
+  if (annotating) {
+    window.hide();
+    return;
+  }
+  if (overlayBusy) {
+    closeOverlayWhenIdle = true;
+    window.hide();
+  } else if (!window.isDestroyed()) {
+    window.destroy();
+  }
+}
+
+function toggleOverlay() {
+  if (annotating) {
+    closeAnnotation();
+    return;
+  }
+  if (!overlayPreferencesReady) {
+    queuedOverlayToggle = true;
+    return;
+  }
+  if (overlay) {
+    closeOverlay(overlay);
+    return;
+  }
+  overlayBusy = false;
+  closeOverlayWhenIdle = false;
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const bounds = overlayBounds(display, overlayPreferences);
+  const window = secureWindow({
+    ...bounds,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    roundedCorners: overlayPreferences.overlayPlacement === "below",
+  });
+  overlay = window;
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.on("blur", () => { if (!annotating) closeOverlay(window); });
+  window.on("closed", () => {
+    if (overlay === window) overlay = null;
+    overlayBusy = false;
+    closeOverlayWhenIdle = false;
+  });
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.key === "Escape") {
+      event.preventDefault();
+      closeOverlay(window);
+    }
+  });
+  void load(window, "overlay");
+}
+
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function captureDisplay(display: Display) {
+  if (process.platform === "darwin" && ["denied", "restricted"].includes(systemPreferences.getMediaAccessStatus("screen"))) {
+    throw new Error("Screen Recording permission is required. Enable Emma in System Settings → Privacy & Security → Screen Recording.");
+  }
+  const width = Math.min(2560, Math.round(display.bounds.width * display.scaleFactor));
+  const height = Math.min(1600, Math.round(display.bounds.height * display.scaleFactor));
+  const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width, height }, fetchWindowIcons: false });
+  const source = sources.find((item) => item.display_id === String(display.id));
+  if (!source || source.thumbnail.isEmpty()) throw new Error("Emma could not capture this display. Check Screen Recording permission and try again.");
+  const size = source.thumbnail.getSize();
+  return { image: `data:image/jpeg;base64,${source.thumbnail.toJPEG(82).toString("base64")}`, width: size.width, height: size.height };
+}
+
+function compactScreenContext(value: unknown) {
+  if (!validJpegDataUrl(value)) throw new Error("Annotated screen is invalid or too large");
+  const image = nativeImage.createFromDataURL(value);
+  const size = image.getSize();
+  if (image.isEmpty() || size.width < 1 || size.height < 1 || size.width > 10_000 || size.height > 10_000) throw new Error("Annotated screen dimensions are invalid");
+  for (const width of [Math.min(size.width, 1440), 1200, 960, 720]) {
+    for (const quality of [68, 54, 42, 32]) {
+      const jpeg = image.resize({ width, quality: "good" }).toJPEG(quality);
+      const dataUrl = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+      if (validJpegDataUrl(dataUrl, MAX_SCREEN_CONTEXT_CHARS)) return dataUrl;
+    }
+  }
+  throw new Error("Annotated screen could not be compressed safely");
+}
+
+function restoreOverlay() {
+  if (!overlay || overlay.isDestroyed()) return;
+  overlay.show();
+  overlay.focus();
+}
+
+function closeAnnotation() {
+  annotating = false;
+  annotationFrame = null;
+  if (annotation && !annotation.isDestroyed()) annotation.destroy();
+  else restoreOverlay();
+}
+
+async function startAnnotation() {
+  if (!overlay || overlay.isDestroyed() || annotating) return;
+  annotating = true;
+  overlay.hide();
+  try {
+    await pause(100);
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const frame = await captureDisplay(display);
+    if (!annotating) return;
+    annotationFrame = frame;
+    const window = secureWindow({
+      ...display.bounds,
+      frame: false,
+      backgroundColor: "#050605",
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      movable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+    });
+    annotation = window;
+    window.setAlwaysOnTop(true, "screen-saver");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    window.on("closed", () => {
+      if (annotation === window) annotation = null;
+      annotating = false;
+      annotationFrame = null;
+      restoreOverlay();
+    });
+    void load(window, "annotation");
+  } catch (error) {
+    annotating = false;
+    annotationFrame = null;
+    restoreOverlay();
+    throw error;
+  }
+}
+
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+else app.on("second-instance", () => { void app.whenReady().then(openMain); });
+
+if (primaryInstance) app.whenReady().then(() => {
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  host = new Host(binary("emma-host"), binary("emma-agent"));
+  ipcMain.handle("emma:request", async (event, value: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {
+      throw new Error("IPC sender is not allowed");
+    }
+    const request = validateRequest(value);
+    const result = await host!.request(request);
+    if (!["snapshot", "listOpenRouterModels"].includes(request.method)) {
+      for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:changed");
+    }
+    return result;
+  });
+  ipcMain.handle("emma:discover-agent-imports", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Import discovery sender is not allowed");
+    return discoverImports(homedir());
+  });
+  ipcMain.handle("emma:import-agent-sources", (event, value: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents || !Array.isArray(value) || value.length > 8 || value.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
+    return saveImportManifest(app.getPath("userData"), homedir(), value);
+  });
+  ipcMain.handle("emma:load-ui-plugins", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) throw new Error("UI plugin sender is not allowed");
+    return loadUiPlugins(app.getPath("userData"));
+  });
+  ipcMain.handle("emma:start-screen-annotation", async (event) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents) throw new Error("Screen annotation is available only from the quick overlay");
+    await startAnnotation();
+  });
+  ipcMain.handle("emma:get-screen-annotation-frame", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== annotation?.webContents || !annotationFrame) throw new Error("Screen annotation frame is unavailable");
+    return annotationFrame;
+  });
+  ipcMain.handle("emma:finish-screen-annotation", (event, value: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== annotation?.webContents) throw new Error("Screen annotation sender is not allowed");
+    annotationAttachment = { id: randomUUID(), image: compactScreenContext(value) };
+    closeAnnotation();
+  });
+  ipcMain.handle("emma:cancel-screen-annotation", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== annotation?.webContents) throw new Error("Screen annotation sender is not allowed");
+    closeAnnotation();
+  });
+  ipcMain.handle("emma:screen-annotation-status", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents) throw new Error("Screen annotation sender is not allowed");
+    return annotationAttachment ? { id: annotationAttachment.id } : null;
+  });
+  ipcMain.handle("emma:clear-screen-annotation", (event, id: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents || typeof id !== "string") throw new Error("Screen annotation sender is not allowed");
+    if (annotationAttachment?.id === id) annotationAttachment = null;
+  });
+  ipcMain.on("emma:set-overlay-preferences", (event, value: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {
+      return;
+    }
+    try {
+      overlayPreferences = validateOverlayPreferences(value);
+      overlayPreferencesReady = true;
+      if (queuedOverlayToggle) {
+        queuedOverlayToggle = false;
+        toggleOverlay();
+      }
+    }
+    catch { console.error("Emma: invalid overlay settings"); }
+  });
+  ipcMain.on("emma:set-overlay-mouse-passthrough", (event, value: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents || typeof value !== "boolean") return;
+    overlay.setIgnoreMouseEvents(value && overlayPreferences.overlayPlacement === "rails", { forward: true });
+  });
+  ipcMain.on("emma:set-overlay-busy", (event, value: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents || typeof value !== "boolean") return;
+    overlayBusy = value;
+    if (!overlayBusy && closeOverlayWhenIdle && overlay) {
+      closeOverlayWhenIdle = false;
+      overlay.destroy();
+    }
+  });
+  openMain();
+  if (!globalShortcut.register("CommandOrControl+Shift+Space", toggleOverlay)) {
+    console.error("Emma: Command-Shift-Space is already registered");
+  }
+  app.on("activate", openMain);
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  host?.close();
+});

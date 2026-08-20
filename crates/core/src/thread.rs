@@ -10,8 +10,9 @@ use std::{
 };
 
 use crate::{KnowledgeBaseId, Timestamp, ValidationError, quote, unquote, validate_text};
+use serde::Serialize;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct ThreadId(String);
 
 impl ThreadId {
@@ -53,7 +54,8 @@ impl fmt::Display for ThreadId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ThreadRole {
     User,
     Assistant,
@@ -83,7 +85,8 @@ impl FromStr for ThreadRole {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreadMessage {
     pub role: ThreadRole,
     pub content: String,
@@ -106,11 +109,13 @@ impl ThreadMessage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: ThreadId,
     pub title: String,
     pub knowledge_base_id: KnowledgeBaseId,
+    pub source_knowledge_base_ids: Vec<KnowledgeBaseId>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub messages: Vec<ThreadMessage>,
@@ -124,6 +129,7 @@ impl Thread {
             id: ThreadId::generate(created_at),
             title,
             knowledge_base_id: KnowledgeBaseId::default_id(),
+            source_knowledge_base_ids: vec![KnowledgeBaseId::default_id()],
             created_at,
             updated_at: created_at,
             messages: Vec::new(),
@@ -142,11 +148,23 @@ impl Thread {
     }
 
     pub fn select_knowledge_base(&mut self, id: KnowledgeBaseId) {
-        self.knowledge_base_id = id;
+        self.knowledge_base_id = id.clone();
+        if !self.source_knowledge_base_ids.contains(&id) {
+            self.source_knowledge_base_ids.push(id);
+        }
+    }
+
+    pub fn select_source_knowledge_bases(&mut self, ids: Vec<KnowledgeBaseId>) {
+        self.source_knowledge_base_ids.clear();
+        for id in std::iter::once(self.knowledge_base_id.clone()).chain(ids) {
+            if !self.source_knowledge_base_ids.contains(&id) {
+                self.source_knowledge_base_ids.push(id);
+            }
+        }
     }
 
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-thread-format: 2\n");
+        let mut output = String::from("---\nemma-thread-format: 3\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(
@@ -154,6 +172,13 @@ impl Thread {
             "knowledge-base-id",
             self.knowledge_base_id.as_str(),
         );
+        output.push_str(&format!(
+            "source-knowledge-base-count: {}\n",
+            self.source_knowledge_base_ids.len()
+        ));
+        for (index, id) in self.source_knowledge_base_ids.iter().enumerate() {
+            field(&mut output, &format!("source-{index}-id"), id.as_str());
+        }
         field(&mut output, "created-at", &self.created_at.to_string());
         field(&mut output, "updated-at", &self.updated_at.to_string());
         output.push_str(&format!("message-count: {}\n---\n", self.messages.len()));
@@ -170,18 +195,44 @@ impl Thread {
     pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
         let mut parser = Parser::new(markdown);
         parser.exact("---")?;
-        let legacy = match parser.next()? {
-            "emma-thread-format: 1" => true,
-            "emma-thread-format: 2" => false,
+        let format = match parser.next()? {
+            "emma-thread-format: 1" => 1,
+            "emma-thread-format: 2" => 2,
+            "emma-thread-format: 3" => 3,
             _ => return Err(ValidationError::new("unsupported thread format")),
         };
         let id = ThreadId::parse(parser.field("id")?)?;
         let title = parser.field("title")?;
         validate_text("thread title", &title, true)?;
-        let knowledge_base_id = if legacy {
+        let knowledge_base_id = if format == 1 {
             KnowledgeBaseId::default_id()
         } else {
             KnowledgeBaseId::parse(parser.field("knowledge-base-id")?)?
+        };
+        let source_knowledge_base_ids = if format < 3 {
+            vec![knowledge_base_id.clone()]
+        } else {
+            let count: usize = parser
+                .number("source-knowledge-base-count")?
+                .try_into()
+                .map_err(|_| ValidationError::new("source base count is too large"))?;
+            if count == 0 || count > 256 {
+                return Err(ValidationError::new("source base count is invalid"));
+            }
+            let mut ids = Vec::with_capacity(count);
+            for index in 0..count {
+                let id = KnowledgeBaseId::parse(parser.field(&format!("source-{index}-id"))?)?;
+                if ids.contains(&id) {
+                    return Err(ValidationError::new("source base IDs must be unique"));
+                }
+                ids.push(id);
+            }
+            if !ids.contains(&knowledge_base_id) {
+                return Err(ValidationError::new(
+                    "destination base must also be a source",
+                ));
+            }
+            ids
         };
         let created_at = parser.field("created-at")?.parse()?;
         let updated_at = parser.field("updated-at")?.parse()?;
@@ -223,6 +274,7 @@ impl Thread {
             id,
             title,
             knowledge_base_id,
+            source_knowledge_base_ids,
             created_at,
             updated_at,
             messages,

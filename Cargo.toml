@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/ui", "crates/desktop"]
-default-members = ["crates/desktop"]
+members = ["crates/core", "crates/host"]
+default-members = ["crates/host"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,9 +12,3 @@ publish = false
 
 [workspace.dependencies]
 emma-core = { path = "crates/core" }
-emma-ui = { path = "crates/ui" }
-# gpui-base inherits an unqualified Zed git source. Cargo treats a direct
-# `?rev=` source as distinct and rejects a same-source patch, so Cargo.lock and
-# every repository command pin the unified graph to 7733b9922665f103abda7c6a3fde6b9dfdc8eba9.
-gpui = { git = "https://github.com/zed-industries/zed", default-features = false }
-gpui-base = { git = "https://github.com/longbridge/gpui-component", rev = "7b3426db7b357fd7fa77729ebc4dcbcb25656026" }

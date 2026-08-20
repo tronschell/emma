@@ -193,8 +193,6 @@ const State = struct {
         for (knowledge) |page| input_bytes += page.id.len + page.title.len + page.summary.len + page.body.len;
         var input_tokens = (input_bytes + 3) / 4;
         var output_tokens: usize = undefined;
-        var knowledge_mutation: ?openai.KnowledgeMutation = null;
-        defer if (knowledge_mutation) |mutation| mutation.deinit(alloc);
         const assistant_content = if (provider) |config| content: {
             const payload = try openai.buildRequest(alloc, config, thread.messages.items, content, knowledge);
             defer alloc.free(payload);
@@ -202,7 +200,6 @@ const State = struct {
             model = config.model;
             input_tokens = reply.input_tokens;
             output_tokens = reply.output_tokens;
-            knowledge_mutation = reply.knowledge_mutation;
             break :content reply.content;
         } else content: {
             const reply = try fallbackReply(alloc, content, knowledge);
@@ -230,29 +227,12 @@ const State = struct {
         try out.writer.writeAll(",\"model\":");
         try jsonString(&out.writer, model);
         try out.writer.writeAll(",\"events\":[],\"tool_calls\":[],\"permission_requests\":[]");
-        if (knowledge_mutation) |mutation| {
-            try out.writer.writeAll(",\"knowledge_mutation\":{\"type\":");
-            try jsonString(&out.writer, switch (mutation.kind) {
-                .create_page => "create_page",
-                .update_page => "update_page",
-            });
-            try out.writer.writeAll(",\"arguments\":");
-            try out.writer.writeAll(mutation.arguments_json);
-            try out.writer.writeByte('}');
-        }
         try out.writer.writeAll(",\"input_tokens\":");
         try out.writer.print("{d},\"output_tokens\":{d}", .{ input_tokens, output_tokens });
         try out.writer.writeAll("}}\n");
         const response = try out.toOwnedSlice();
         thread.messages.appendAssumeCapacity(.{ .id = user_id, .role = "user", .content = user_content });
-        if (assistant_content.len == 0) {
-            // The host persists the useful success/failure result after applying
-            // the mutation; do not send an invalid empty assistant message later.
-            alloc.free(assistant_id);
-            alloc.free(assistant_content);
-        } else {
-            thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
-        }
+        thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
         thread.trimHistory(alloc);
         return response;
     }
@@ -793,28 +773,20 @@ test "cached thread history stays inside rehydration limits" {
     try std.testing.expectEqualStrings("assistant", thread.messages.items[thread.messages.items.len - 1].role);
 }
 
-test "provider request exposes knowledge tools and parses one mutation" {
+test "provider request keeps retrieved knowledge read-only" {
     const Fixture = struct {
         fn send(_: ?*anyopaque, alloc: std.mem.Allocator, _: openai.Config, payload: []const u8) anyerror!openai.Reply {
             var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
             defer parsed.deinit();
-            const tools = parsed.value.object.get("tools").?.array.items;
-            try std.testing.expectEqual(@as(usize, 2), tools.len);
-            try std.testing.expectEqualStrings(
-                "create_knowledge_page",
-                tools[0].object.get("function").?.object.get("name").?.string,
-            );
-            try std.testing.expectEqualStrings(
-                "update_knowledge_page",
-                tools[1].object.get("function").?.object.get("name").?.string,
-            );
+            try std.testing.expect(parsed.value.object.get("tools") == null);
             const messages = parsed.value.object.get("messages").?.array.items;
             try std.testing.expectEqualStrings("system", messages[0].object.get("role").?.string);
             try std.testing.expect(std.mem.indexOf(u8, messages[0].object.get("content").?.string, "page-00000000000") != null);
+            try std.testing.expect(std.mem.indexOf(u8, messages[0].object.get("content").?.string, "read-only") != null);
 
             return openai.parseResponse(
                 alloc,
-                "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"update_knowledge_page\",\"arguments\":\"{\\\"page_id\\\":\\\"page-00000000000\\\",\\\"body\\\":\\\"Updated\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":13,\"completion_tokens\":4}}",
+                "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Read-only answer\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":13,\"completion_tokens\":4}}",
             );
         }
     };
@@ -826,13 +798,13 @@ test "provider request exposes knowledge tools and parses one mutation" {
     const turn = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Update it\",\"knowledge\":[{\"id\":\"page-00000000000\",\"title\":\"Page\",\"summary\":\"Summary\",\"body\":\"Body\"}],\"provider\":{\"base_url\":\"http://localhost:9999/v1\",\"model\":\"fixture\",\"credential_env\":\"EMMA_FIXTURE_KEY\"}}");
     defer std.testing.allocator.free(turn);
     try expectValidResponse(turn);
-    try std.testing.expect(std.mem.indexOf(u8, turn, "\"type\":\"update_page\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, turn, "\"body\":\"Updated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "Read-only answer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "knowledge_mutation") == null);
 
-    const two_calls = "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{},{}]},\"finish_reason\":\"tool_calls\"}]}";
+    const tool_call = "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"type\":\"function\"}]},\"finish_reason\":\"tool_calls\"}]}";
     try std.testing.expectError(
         error.InvalidProviderResponse,
-        openai.parseResponse(std.testing.allocator, two_calls),
+        openai.parseResponse(std.testing.allocator, tool_call),
     );
 }
 

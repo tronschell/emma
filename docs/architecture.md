@@ -1,76 +1,85 @@
-# Product and behavior contract
+# Product and architecture contract
 
-## Source of truth
-
-Every ordinary interaction belongs to a durable thread attached to one named
-knowledge base. A thread can answer a question, edit files, run commands, call
-tools, or coordinate work without creating knowledge-base content. Each saved
-or agent-authored knowledge page is one exportable Markdown file, carries its
-base association, and may reference its source thread. Version-1 Markdown maps
-to the stable default base when loaded.
-
-`emma-core` owns thread/page parsing, atomic persistence, and domain invariants.
-GPUI entities hold a live projection only. The Zig sidecar owns transient agent
-runs, tool selection, and usage accounting; it cannot mutate either store
-without an explicit host command.
-
-## Capture flow
-
-`Command-Shift-Space` requests the agent surface and targets a new or selected
-thread. Its state machine is:
+## Process boundary
 
 ```text
-Hidden -> Capturing -> Ready -> Analyzing -> Saved
-                    |         |           -> Failed
-                    +---------+------------> Cancelled -> Hidden
+sandboxed React renderer
+        | allowlisted IPC
+Electron main / preload
+        | newline-delimited JSON over stdio
+Rust host -> emma-core -> Markdown stores
+        |
+Zig agent -> OpenAI-compatible providers and lazy MCP tools
 ```
 
-The surface shows captured app/title/URL/screenshot metadata before submission.
-Enter submits to the thread, Escape cancels the innermost transient state, and
-Tab/Shift-Tab visit visible controls. A separate Save/Analyze action creates a
-knowledge page in the selected base. Provider turns can request one create or
-update action; core validates and applies it within that same base. Closing
-returns focus to the prior application where the platform permits it. Pointer,
-keyboard, and accessibility actions route through the same typed intent.
+The renderer holds a live projection only. Electron owns windows, the global
+shortcut, trusted-sender validation, and the narrow preload API. `emma-core`
+owns parsing, validation, atomic persistence, and domain invariants. The Zig
+sidecar owns transient agent runs, tool selection, and usage accounting; it can
+mutate durable data only through an explicit validated host command.
 
-## Library information architecture
+Both renderer windows use `sandbox: true`, `contextIsolation: true`, and
+`nodeIntegration: false`. A restrictive content-security policy is applied and
+unused Electron permissions are denied. New windows are denied; validated
+HTTP(S) links open in the system browser. Electron's single-instance lock keeps
+the Markdown stores under one host writer.
 
-The normal window uses a restrained three-pane desktop layout: persistent
-navigation, a thread/page list, and a flexible content surface with an optional
-inspector. The primary destinations are New Thread, Threads, and Knowledge
-Base. Knowledge Base is always visibly separate from the thread transcript.
-The inspector shows sources and run metadata without stealing width at the
-minimum supported window size.
+## Threads and knowledge
 
-## Windows and material
+Ordinary work belongs to a durable thread. Each thread has one destination
+knowledge base for explicit writes and a deduplicated set of read-only source
+bases for bounded retrieval. Saving remains explicit. A saved page is an
+editable, exportable Markdown document with category, source-thread provenance,
+added/analyzed timestamps, model, token counts, and subagent count.
 
-The library is a normal resizable window. The agent surface is a transient,
-topmost macOS window placed under, left of, or right of the display notch from
-one preference. The first implementation may use GPUI whole-window blur where
-the backend supports it; it is not described as native Liquid Glass. Reduced
-transparency and increased contrast use an opaque surface. Reduced motion
-removes travel and spring effects.
+Thread format 3 stores the destination and sources; formats 1–2 migrate to the
+destination as their sole source. Knowledge-base format 2 stores user category
+slugs; format 1 migrates with none. Learned categories are derived from pages.
+Removing a user category never removes a page. The activity heatmap is computed
+from durable message and page timestamps.
 
-## Privacy and failure
+## Windows and shortcuts
 
-Screen context is opt-in, previewed, and removable before a request. Raw
-screenshots, clipboard content, document text, URLs, prompts, API keys, and MCP
-arguments are excluded from diagnostics. Denied screen-recording or
-accessibility permission produces an actionable non-destructive error. Cancelled
-or stale analysis cannot overwrite a newer page.
+The library is a resizable three-pane workspace with independently collapsible,
+bounded, locally persisted rail widths. `Command-Shift-Space` toggles a compact
+always-on-top agent surface. Electron does not expose exact notch bounds, so
+settings offer a centered below-notch surface or top-edge split rails with a
+validated, click-through hardware-gap calibration. The original dither glow uses 24 discrete
+CSS animation steps per second and stops under reduced motion. Enter submits an
+ordinary thread message. The overlay exposes exactly three settings-backed
+quick actions on `Command-1/2/3`; each can choose a destination, category,
+prompt, and whether to save the analyzed result.
 
-## Agent and extensions
+The overlay BrowserWindow is created lazily and destroyed on dismissal so a
+hidden Chromium renderer is not retained. Its unsent draft remains in renderer
+local storage and is restored on the next activation. If dismissal occurs while
+a request is running, the hidden renderer is destroyed as soon as that request
+settles so successful prompts cannot replay.
 
-The sidecar uses newline-delimited JSON over stdio so UI and agent lifetimes are
-independent. Provider configuration is OpenAI-compatible base URL, model, and a
-credential reference supplied by the host; there is no Vercel login surface.
-The OpenRouter catalog is fetched lazily through the Zig network boundary.
-Only free tool-capable models with a ZDR endpoint are offered, and selected
-OpenRouter turns require both no provider data collection and zero retention.
-MCP servers remain disconnected until needed. The model first sees server/tool
-metadata, calls `mcp_search_tools`, selects one exact tool, and receives only
-that schema on the next step.
+## Models and extensions
 
-The first extension mechanism is this command/tool protocol plus skills on
-disk. A general UI/plugin SDK is deferred until two concrete extensions prove
-the lifecycle, permission, versioning, and rendering contracts.
+Provider configuration consists of an OpenAI-compatible base URL, model, and
+credential environment-variable name. There is no Vercel login surface. The
+OpenRouter catalog is fetched lazily through Zig and offers only free,
+tool-capable models advertising a zero-data-retention endpoint. Selected turns
+require no provider data collection and zero retention; otherwise they fail
+closed.
+
+MCP servers remain disconnected until needed. The model searches server/tool
+metadata first and receives only the selected tool schema. First launch and
+Settings can register existing agent skill/MCP locations without copying config
+secrets. Local CSS-only plugins provide an immediately useful UI-overhaul seam;
+remote resources are blocked. Executable extension behavior remains in selected
+skills and MCP tools so its permission and context boundaries stay visible. See
+`docs/plugins.md`.
+
+## Current limits
+
+The hotkey surface can capture a user-initiated display frame and draw yellow
+highlights locally. Provider transmission remains disabled until the user
+explicitly authorizes sending the whole visible frame to the selected endpoint.
+General files, recurring jobs, and a generalized quick-action executor are not
+implemented in this slice. Local Whisper/Parakeet-compatible
+endpoint settings are present, but microphone capture and audio transport remain
+disabled. Signing, notarization, VoiceOver verification, and non-macOS support
+are release work.

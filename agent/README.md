@@ -12,6 +12,36 @@ zig build test
 zig build -Doptimize=ReleaseSafe
 ```
 
+## Use Emma without the UI
+
+`emma-agent` is also a standalone headless agent. Keep one process alive for
+the lifetime of a coding thread and speak NDJSON over stdin/stdout; no login or
+Electron process is involved. This creates a thread and asks for a coding plan
+with the deterministic local fallback:
+
+```sh
+printf '%s\n' \
+  '{"id":"1","type":"thread_create","title":"Fix the parser"}' \
+  '{"id":"2","type":"thread_message","thread_id":"thread-1","content":"Inspect the parser design and propose the smallest safe fix."}' \
+  | ./zig-out/bin/emma-agent
+```
+
+For a real model-generated coding response, add an OpenAI-compatible provider
+to the message and place the credential in the named environment variable:
+
+```sh
+EMMA_OPENAI_API_KEY='your-key' ./zig-out/bin/emma-agent
+```
+
+Then send the same `thread_create` request followed by:
+
+```json
+{"id":"2","type":"thread_message","thread_id":"thread-1","content":"Review this coding task and return a patch plan.","provider":{"base_url":"https://api.openai.com/v1","model":"your-model","credential_env":"EMMA_OPENAI_API_KEY"}}
+```
+
+The sidecar keeps threads only for its process lifetime. Use `emma-host` when
+you also want Emma's durable Markdown thread and knowledge stores.
+
 Every ordinary interaction belongs to an in-process thread. The no-credential
 path still creates and persists both a `user` message and a general
 `assistant` reply:
@@ -64,16 +94,16 @@ Chat Completions requests:
 ```
 
 This transport is non-streaming and accepts assistant text plus standard
-`prompt_tokens`/`completion_tokens` usage. Provider turns advertise explicit
-`create_knowledge_page` and `update_knowledge_page` tools, parse at most one
-knowledge action, and return it to the host for selected-base validation and
-atomic Markdown persistence. Native Anthropic and Gemini wire formats are not
-supported; those services need an OpenAI-compatible gateway for this slice.
+`prompt_tokens`/`completion_tokens` usage. Ordinary provider turns receive
+retrieved knowledge as read-only context and cannot write pages; explicit
+`save_to_knowledge` remains the durable write path. Native Anthropic and Gemini
+wire formats are not supported; those services need an OpenAI-compatible
+gateway for this slice.
 
 `thread_message` reserves `events`, `tool_calls`, and `permission_requests` in
 its result so shell, file, web, skill, and MCP activity can use the ordinary
 agent turn without becoming knowledge-base content. A bounded `knowledge`
-array supplies only relevant pages from the thread's selected base.
+array supplies only relevant pages from the thread's selected source bases.
 
 Knowledge analysis is an explicit action layered onto an existing thread.
 `save_to_knowledge` and its `analyze` alias return a destination-tagged

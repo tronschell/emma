@@ -10,8 +10,10 @@ use std::{
 };
 
 use crate::ThreadId;
+use serde::{Serialize, Serializer};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CapturedContext {
     pub text: String,
     pub source_application: Option<String>,
@@ -37,7 +39,7 @@ impl CapturedContext {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Category(String);
 
 impl Category {
@@ -71,7 +73,8 @@ impl FromStr for Category {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnalysisContent {
     pub summary: String,
     pub body: String,
@@ -90,7 +93,8 @@ impl AnalysisContent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CitedSource {
     pub title: String,
     pub url: SourceUrl,
@@ -104,7 +108,7 @@ impl CitedSource {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceUrl(String);
 
 impl SourceUrl {
@@ -151,6 +155,15 @@ impl fmt::Display for SourceUrl {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timestamp(i64);
+
+impl Serialize for Timestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_iso8601())
+    }
+}
 
 impl Timestamp {
     pub fn now() -> Self {
@@ -235,7 +248,8 @@ impl FromStr for Timestamp {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunTelemetry {
     pub model: String,
     pub input_tokens: u64,
@@ -261,7 +275,7 @@ impl RunTelemetry {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct PageId(String);
 
 impl PageId {
@@ -305,9 +319,10 @@ impl fmt::Display for PageId {
 }
 
 pub const DEFAULT_KNOWLEDGE_BASE_NAME: &str = "Default";
+pub const MAX_KNOWLEDGE_BASE_CATEGORIES: usize = 256;
 pub const MAX_RELEVANT_PAGES: usize = 4;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct KnowledgeBaseId(String);
 
 impl KnowledgeBaseId {
@@ -361,11 +376,13 @@ impl fmt::Display for KnowledgeBaseId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeBase {
     pub id: KnowledgeBaseId,
     pub name: String,
     pub created_at: Timestamp,
+    pub categories: Vec<Category>,
 }
 
 impl KnowledgeBase {
@@ -381,6 +398,7 @@ impl KnowledgeBase {
             id: KnowledgeBaseId::generate(created_at),
             name,
             created_at,
+            categories: Vec::new(),
         })
     }
 
@@ -389,14 +407,19 @@ impl KnowledgeBase {
             id: KnowledgeBaseId::default_id(),
             name: DEFAULT_KNOWLEDGE_BASE_NAME.into(),
             created_at: Timestamp::from_unix_seconds(0),
+            categories: Vec::new(),
         }
     }
 
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-knowledge-base-format: 1\n");
+        let mut output = String::from("---\nemma-knowledge-base-format: 2\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "name", &self.name);
         field(&mut output, "created-at", &self.created_at.to_string());
+        output.push_str(&format!("category-count: {}\n", self.categories.len()));
+        for (index, category) in self.categories.iter().enumerate() {
+            field(&mut output, &format!("category-{index}"), category.as_str());
+        }
         output.push_str("---\n");
         output
     }
@@ -404,13 +427,12 @@ impl KnowledgeBase {
     pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
         let mut parser = Parser::new(markdown);
         parser.exact("---")?;
-        parser.exact("emma-knowledge-base-format: 1")?;
+        let format = match parser.next()? {
+            "emma-knowledge-base-format: 1" => 1,
+            "emma-knowledge-base-format: 2" => 2,
+            _ => return Err(ValidationError::new("unsupported knowledge base format")),
+        };
         let id = KnowledgeBaseId::parse(parser.string_field("id")?)?;
-        if id == KnowledgeBaseId::default_id() {
-            return Err(ValidationError::new(
-                "the default knowledge base is built in",
-            ));
-        }
         let name = parser.string_field("name")?.trim().to_owned();
         validate_text("knowledge base name", &name, true)?;
         if name.len() > 128 {
@@ -419,6 +441,26 @@ impl KnowledgeBase {
             ));
         }
         let created_at = parser.string_field("created-at")?.parse()?;
+        let categories = if format == 1 {
+            Vec::new()
+        } else {
+            let count: usize = parser
+                .number_field("category-count")?
+                .try_into()
+                .map_err(|_| ValidationError::new("category count is too large"))?;
+            if count > MAX_KNOWLEDGE_BASE_CATEGORIES {
+                return Err(ValidationError::new("category count is too large"));
+            }
+            let mut categories = Vec::with_capacity(count);
+            for index in 0..count {
+                let category = Category::parse(parser.string_field(&format!("category-{index}"))?)?;
+                if categories.contains(&category) {
+                    return Err(ValidationError::new("categories must be unique"));
+                }
+                categories.push(category);
+            }
+            categories
+        };
         parser.exact("---")?;
         if parser.lines.next().is_some() {
             return Err(ValidationError::new(
@@ -429,11 +471,13 @@ impl KnowledgeBase {
             id,
             name,
             created_at,
+            categories,
         })
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgePage {
     pub id: PageId,
     pub knowledge_base_id: KnowledgeBaseId,
@@ -572,6 +616,15 @@ impl KnowledgeStore {
     }
 
     pub fn save_base(&self, base: &KnowledgeBase) -> Result<PathBuf, StoreError> {
+        if base.categories.len() > MAX_KNOWLEDGE_BASE_CATEGORIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "knowledge base cannot have more than {MAX_KNOWLEDGE_BASE_CATEGORIES} categories"
+                ),
+            )
+            .into());
+        }
         let root = self.base_root();
         fs::create_dir_all(&root)?;
         let destination = root.join(format!("{}.md", base.id));
@@ -581,11 +634,17 @@ impl KnowledgeStore {
     }
 
     pub fn load_base(&self, id: &KnowledgeBaseId) -> Result<KnowledgeBase, StoreError> {
-        if id == &KnowledgeBaseId::default_id() {
-            return Ok(KnowledgeBase::default_base());
-        }
         let path = self.base_root().join(format!("{id}.md"));
-        let markdown = fs::read_to_string(&path)?;
+        let markdown = match fs::read_to_string(&path) {
+            Ok(markdown) => markdown,
+            Err(error)
+                if id == &KnowledgeBaseId::default_id()
+                    && error.kind() == io::ErrorKind::NotFound =>
+            {
+                return Ok(KnowledgeBase::default_base());
+            }
+            Err(error) => return Err(StoreError::Io(error)),
+        };
         let base = KnowledgeBase::from_markdown(&markdown).map_err(|error| {
             StoreError::Malformed(MalformedPage {
                 path: path.clone(),
@@ -603,7 +662,7 @@ impl KnowledgeStore {
 
     pub fn list_bases(&self) -> Result<KnowledgeBaseListing, StoreError> {
         let mut listing = KnowledgeBaseListing {
-            bases: vec![KnowledgeBase::default_base()],
+            bases: vec![self.load_base(&KnowledgeBaseId::default_id())?],
             malformed: Vec::new(),
         };
         let root = self.base_root();
@@ -626,13 +685,7 @@ impl KnowledgeStore {
             };
             let id = match KnowledgeBaseId::parse(stem) {
                 Ok(id) if id != KnowledgeBaseId::default_id() => id,
-                Ok(_) => {
-                    listing.malformed.push(MalformedPage {
-                        path,
-                        reason: "the default knowledge base is built in".into(),
-                    });
-                    continue;
-                }
+                Ok(_) => continue,
                 Err(error) => {
                     listing.malformed.push(MalformedPage {
                         path,
@@ -847,88 +900,6 @@ impl From<io::Error> for StoreError {
         Self::Io(error)
     }
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LifecycleStage {
-    Capture,
-    Analyze,
-    Save,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CaptureLifecycle {
-    Ready,
-    Capturing,
-    Analyzing(CapturedContext),
-    Saving(KnowledgePage),
-    Saved(KnowledgePage),
-    Failed {
-        stage: LifecycleStage,
-        message: String,
-    },
-    Cancelled,
-}
-
-impl CaptureLifecycle {
-    pub fn start(self) -> Result<Self, LifecycleError> {
-        match self {
-            Self::Ready => Ok(Self::Capturing),
-            _ => Err(LifecycleError),
-        }
-    }
-
-    pub fn captured(self, context: CapturedContext) -> Result<Self, LifecycleError> {
-        match self {
-            Self::Capturing => Ok(Self::Analyzing(context)),
-            _ => Err(LifecycleError),
-        }
-    }
-
-    pub fn analyzed(self, page: KnowledgePage) -> Result<Self, LifecycleError> {
-        match self {
-            Self::Analyzing(_) => Ok(Self::Saving(page)),
-            _ => Err(LifecycleError),
-        }
-    }
-
-    pub fn saved(self) -> Result<Self, LifecycleError> {
-        match self {
-            Self::Saving(page) => Ok(Self::Saved(page)),
-            _ => Err(LifecycleError),
-        }
-    }
-
-    pub fn fail(self, message: impl Into<String>) -> Result<Self, LifecycleError> {
-        let stage = match self {
-            Self::Capturing => LifecycleStage::Capture,
-            Self::Analyzing(_) => LifecycleStage::Analyze,
-            Self::Saving(_) => LifecycleStage::Save,
-            _ => return Err(LifecycleError),
-        };
-        Ok(Self::Failed {
-            stage,
-            message: message.into(),
-        })
-    }
-
-    pub fn cancel(self) -> Result<Self, LifecycleError> {
-        match self {
-            Self::Capturing | Self::Analyzing(_) | Self::Saving(_) => Ok(Self::Cancelled),
-            _ => Err(LifecycleError),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LifecycleError;
-
-impl fmt::Display for LifecycleError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("invalid capture lifecycle transition")
-    }
-}
-
-impl Error for LifecycleError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidationError(String);
