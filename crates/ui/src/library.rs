@@ -10,7 +10,10 @@ use gpui::{
     AppContext as _, Context, FocusHandle, Focusable, FontWeight, MouseButton, Render, Role,
     Subscription, Task, Window, div, prelude::*, px, rgb,
 };
-use gpui_base::input::{Input, InputBase, InputEditorStyle, InputEvent, InputState};
+use gpui_base::{
+    Button,
+    input::{Input, InputBase, InputEditorStyle, InputEvent, InputState},
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Destination {
@@ -480,8 +483,8 @@ impl LibraryView {
 impl Render for LibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_threads = self.destination == Destination::Threads;
-        let selected_thread = self.selected_thread().cloned();
-        let selected_page = self.selected_page().cloned();
+        let selected_thread = self.selected_thread();
+        let selected_page = self.selected_page();
         let selected_thread_base = selected_thread
             .as_ref()
             .map(|thread| thread.knowledge_base_id.clone());
@@ -1021,15 +1024,13 @@ impl Render for LibraryView {
                             .child(div().font_family("Menlo").text_size(px(11.0)).child("EMMA")),
                     )
                     .child(
-                        div()
-                            .id("new-thread")
+                        Button::new("new-thread")
                             .key_context("LibraryButton")
-                            .focusable()
+                            .disabled(self.busy)
                             .tab_stop(!self.busy)
                             .track_focus(&self.new_focus)
                             .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
-                            .role(Role::Button)
-                            .aria_label("New thread")
+                            .accessibility_label("New thread")
                             .rounded(px(4.0))
                             .border_1()
                             .border_color(rgb(0x303030))
@@ -1299,17 +1300,15 @@ fn action_button(
     label: &'static str,
     enabled: bool,
     focus: &FocusHandle,
-) -> gpui::Stateful<gpui::Div> {
+) -> Button {
     let secondary = label == "Save & Analyze";
-    div()
-        .id(id)
+    Button::new(id)
         .key_context("LibraryButton")
-        .focusable()
+        .disabled(!enabled)
         .tab_stop(enabled)
         .track_focus(focus)
         .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
-        .role(Role::Button)
-        .aria_label(if enabled {
+        .accessibility_label(if enabled {
             label.to_owned()
         } else {
             format!("{label}, unavailable")
@@ -1341,12 +1340,7 @@ fn action_button(
         .child(label)
 }
 
-fn base_button(
-    id: String,
-    label: String,
-    selected: bool,
-    enabled: bool,
-) -> gpui::Stateful<gpui::Div> {
+fn base_button(id: String, label: String, selected: bool, enabled: bool) -> Button {
     let accessibility_id = format!("emma.{id}");
     let accessible_label = if !enabled {
         format!("{label}, unavailable")
@@ -1355,15 +1349,13 @@ fn base_button(
     } else {
         label.clone()
     };
-    div()
-        .id(id)
+    Button::new(id)
         .accessibility_id(accessibility_id)
         .key_context("LibraryButton")
-        .focusable()
+        .disabled(!enabled)
         .tab_stop(enabled)
         .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
-        .role(Role::Button)
-        .aria_label(accessible_label)
+        .accessibility_label(accessible_label)
         .rounded(px(4.0))
         .border_1()
         .border_color(if selected {

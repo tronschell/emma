@@ -54,6 +54,16 @@ const Thread = struct {
         for (self.messages.items) |message| message.deinit(alloc);
         self.messages.deinit(alloc);
     }
+
+    fn trimHistory(self: *Thread, alloc: std.mem.Allocator) void {
+        var content_bytes: usize = 0;
+        for (self.messages.items) |message| content_bytes += message.content.len;
+        while ((self.messages.items.len > max_imported_messages or content_bytes > max_imported_content_bytes) and self.messages.items.len > 1) {
+            const removed = self.messages.orderedRemove(0);
+            content_bytes -= removed.content.len;
+            removed.deinit(alloc);
+        }
+    }
 };
 
 const State = struct {
@@ -242,6 +252,7 @@ const State = struct {
         } else {
             thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
         }
+        thread.trimHistory(alloc);
         return response;
     }
 
@@ -676,7 +687,6 @@ fn requestFailure(alloc: std.mem.Allocator, id: []const u8, err: anyerror) ![]u8
         error.ProviderUnavailable => responseError(alloc, id, "provider_unavailable", "provider could not be reached securely"),
         error.ProviderHttpError => responseError(alloc, id, "provider_http_error", "provider returned a non-success HTTP status"),
         error.InvalidProviderResponse => responseError(alloc, id, "invalid_provider_response", "provider returned an invalid or unsupported Chat Completions response"),
-        error.ProviderToolCallsUnsupported => responseError(alloc, id, "provider_tool_calls_unsupported", "provider requested tool calls, which are not supported in this slice"),
         else => err,
     };
 }
@@ -723,6 +733,35 @@ test "thread messages persist user and general assistant roles" {
     try expectValidResponse(fetched);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"user\""));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"assistant\""));
+}
+
+test "cached thread history stays inside rehydration limits" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\"}");
+    defer std.testing.allocator.free(created);
+
+    for (0..140) |index| {
+        const request = try std.fmt.allocPrint(std.testing.allocator, "{{\"id\":\"turn-{d}\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"hello\"}}", .{index});
+        defer std.testing.allocator.free(request);
+        const response = try state.handle(std.testing.allocator, request);
+        defer std.testing.allocator.free(response);
+    }
+    const large_content = try std.testing.allocator.alloc(u8, 60 * 1024);
+    defer std.testing.allocator.free(large_content);
+    @memset(large_content, 'x');
+    for (0..2) |index| {
+        const request = try std.fmt.allocPrint(std.testing.allocator, "{{\"id\":\"large-{d}\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"{s}\"}}", .{ index, large_content });
+        defer std.testing.allocator.free(request);
+        const response = try state.handle(std.testing.allocator, request);
+        defer std.testing.allocator.free(response);
+    }
+    const thread = state.findThread("thread-1").?;
+    var content_bytes: usize = 0;
+    for (thread.messages.items) |message| content_bytes += message.content.len;
+    try std.testing.expect(thread.messages.items.len <= max_imported_messages);
+    try std.testing.expect(content_bytes <= max_imported_content_bytes);
+    try std.testing.expectEqualStrings("assistant", thread.messages.items[thread.messages.items.len - 1].role);
 }
 
 test "provider request exposes knowledge tools and parses one mutation" {

@@ -1,13 +1,15 @@
 use crate::{
-    ActivateFocused, Analyze, Cancel, DismissAgentSurface, FocusNext, FocusPrevious,
-    ToggleAgentSurface,
+    ActivateFocused, Analyze, DismissAgentSurface, FocusNext, FocusPrevious, ToggleAgentSurface,
 };
 use emma_core::{LiveClient, OverlayPlacement, Thread, ThreadRole};
 use gpui::{
     AppContext as _, Context, FocusHandle, Focusable, FontWeight, MouseButton, Render, Role,
     Subscription, Task, Window, div, prelude::*, px, rgb, rgba,
 };
-use gpui_base::input::{Input, InputBase, InputEditorStyle, InputEvent, InputState};
+use gpui_base::{
+    Button,
+    input::{Input, InputBase, InputEditorStyle, InputEvent, InputState},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenRect {
@@ -261,13 +263,6 @@ impl AgentSurfaceView {
         self.submit(window, cx);
     }
 
-    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state != AgentSurfaceState::Analyzing {
-            self.prompt
-                .update(cx, |input, cx| input.set_value("", window, cx));
-        }
-    }
-
     fn dismiss(&mut self, _: &DismissAgentSurface, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.remove_window();
@@ -325,7 +320,6 @@ impl Render for AgentSurfaceView {
             .aria_label("Emma agent surface")
             .track_focus(&self.root_focus)
             .on_action(cx.listener(Self::analyze))
-            .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::toggle))
             .on_action(cx.listener(Self::activate))
@@ -439,16 +433,14 @@ impl Render for AgentSurfaceView {
                             .child(Input::new(&prompt)),
                     )
                     .child(
-                        div()
-                            .id("send-agent-message")
+                        Button::new("send-agent-message")
                             .accessibility_id("emma.agent.send")
                             .key_context("AgentSurfaceButton")
-                            .focusable()
+                            .disabled(working)
                             .tab_stop(!working)
                             .track_focus(&self.send_focus)
                             .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
-                            .role(Role::Button)
-                            .aria_label(if working {
+                            .accessibility_label(if working {
                                 "Send message, unavailable"
                             } else {
                                 "Send message"

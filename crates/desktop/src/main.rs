@@ -1,8 +1,8 @@
 use emma_core::LiveClient;
 use emma_ui::{
-    ActivateFocused, AgentSurfaceView, Analyze, Cancel, DismissAgentSurface, FocusNext,
-    FocusPrevious, LibraryView, OverlayPlacement, ScreenRect, SurfacePreferences,
-    ToggleAgentSurface, agent_surface_bounds,
+    ActivateFocused, AgentSurfaceView, Analyze, DismissAgentSurface, FocusNext, FocusPrevious,
+    LibraryView, OverlayPlacement, ScreenRect, SurfacePreferences, ToggleAgentSurface,
+    agent_surface_bounds,
 };
 use gpui::{
     App, AppContext, Bounds, KeyBinding, Menu, MenuItem, WindowBackgroundAppearance, WindowBounds,
@@ -128,7 +128,6 @@ fn main() {
             KeyBinding::new("tab", FocusNext, Some("AgentSurface")),
             KeyBinding::new("shift-tab", FocusPrevious, Some("AgentSurface")),
             KeyBinding::new("cmd-enter", Analyze, Some("AgentSurface")),
-            KeyBinding::new("cmd-period", Cancel, Some("AgentSurface")),
             KeyBinding::new("enter", ActivateFocused, Some("LibraryShell")),
             KeyBinding::new("space", ActivateFocused, Some("LibraryButton")),
             KeyBinding::new("tab", FocusNext, Some("LibraryShell")),

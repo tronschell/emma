@@ -27,7 +27,9 @@ path still creates and persists both a `user` message and a general
 After restarting the sidecar, the durable host can rehydrate a thread by
 passing optional `messages` to `thread_create`. Entries accept only `system`,
 `user`, or `assistant` roles, are limited to 256 messages and 96 KiB of total
-content, and default to an empty history when omitted:
+content, and default to an empty history when omitted. The same limits form the
+rolling in-process context window; the oldest whole messages are discarded as
+new turns arrive:
 
 ```json
 {"id":"create-2","type":"thread_create","title":"Release planning","messages":[{"role":"system","content":"Be concise."},{"role":"user","content":"What remains?"},{"role":"assistant","content":"Signing and distribution."}]}

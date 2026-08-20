@@ -16,6 +16,7 @@ const MAX_AGENT_TITLE_BYTES: usize = 256;
 const MAX_AGENT_SUMMARY_BYTES: usize = 4 * 1024;
 const MAX_AGENT_BODY_BYTES: usize = 64 * 1024;
 const MAX_AGENT_CONTEXT_BODY_BYTES: usize = 8 * 1024;
+const MAX_AGENT_MESSAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
 pub enum AgentRequest {
@@ -388,6 +389,7 @@ where
     }
 
     fn send_message(&mut self, thread_id: ThreadId, content: String) -> Result<Thread, LiveError> {
+        validate_agent_text("prompt", &content, true, MAX_AGENT_MESSAGE_BYTES)?;
         let mut thread = self.threads.load(&thread_id).map_err(|error| {
             LiveError::new(format!("could not load thread {thread_id}: {error}"))
         })?;
@@ -735,6 +737,22 @@ mod tests {
         let mut runtime = Runtime::new(thread_root.clone(), knowledge_root.clone(), agent);
 
         let created = runtime.create_thread().unwrap();
+        let oversized = "x".repeat(MAX_AGENT_MESSAGE_BYTES + 1);
+        assert!(
+            runtime
+                .send_message(created.id.clone(), oversized)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot exceed 65536 bytes")
+        );
+        assert!(
+            runtime
+                .threads
+                .load(&created.id)
+                .unwrap()
+                .messages
+                .is_empty()
+        );
         let stale_temp = thread_root.join(format!(".{}.tmp", created.id));
         fs::write(&stale_temp, "stale interrupted save").unwrap();
         let updated = runtime

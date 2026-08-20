@@ -12,6 +12,11 @@ use emma_core::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+const MAX_SIDECAR_TITLE_BYTES: usize = 256;
+const MAX_SIDECAR_MESSAGES: usize = 256;
+const MAX_SIDECAR_MESSAGE_BYTES: usize = 64 * 1024;
+const MAX_SIDECAR_HISTORY_BYTES: usize = 96 * 1024;
+
 pub fn start() -> Result<LiveClient, LiveError> {
     let data_root = match env::var_os("EMMA_DATA_DIR") {
         Some(path) => PathBuf::from(path),
@@ -126,7 +131,7 @@ impl Sidecar {
                 };
                 let response: ThreadMessageResult = self.exchange(&id, &request)?;
                 Ok(AgentResponse::Message(
-                    self.finish_thread_message(&thread.id, response)?,
+                    self.finish_thread_message(response)?,
                 ))
             }
             AgentRequest::Analyze { thread, text } => {
@@ -136,7 +141,7 @@ impl Sidecar {
                     id: &id,
                     kind: "analyze",
                     thread_id: &thread_id,
-                    text: &text,
+                    text: bounded_prefix(&text, MAX_SIDECAR_MESSAGE_BYTES),
                     sources: &[],
                 };
                 let response: AnalyzeResult = self.exchange(&id, &request)?;
@@ -190,11 +195,13 @@ impl Sidecar {
 
     fn finish_thread_message(
         &mut self,
-        thread_id: &ThreadId,
         response: ThreadMessageResult,
     ) -> Result<AgentMessage, LiveError> {
         if response.knowledge_mutation.is_some() {
-            self.thread_ids.remove(thread_id);
+            // The sidecar has no thread replacement command. Restarting keeps
+            // stale pre-mutation copies from accumulating in its bounded store.
+            self.io = None;
+            self.thread_ids.clear();
         }
         Ok(AgentMessage {
             content: response.message.content,
@@ -213,22 +220,11 @@ impl Sidecar {
             return Ok(id.clone());
         }
         let id = self.request_id();
-        let messages = thread
-            .messages
-            .iter()
-            .map(|message| ImportedMessage {
-                role: match message.role {
-                    ThreadRole::User => "user",
-                    ThreadRole::Assistant => "assistant",
-                    ThreadRole::System => "system",
-                },
-                content: &message.content,
-            })
-            .collect::<Vec<_>>();
+        let messages = sidecar_messages(thread);
         let request = ThreadCreateRequest {
             id: &id,
             kind: "thread_create",
-            title: &thread.title,
+            title: bounded_prefix(&thread.title, MAX_SIDECAR_TITLE_BYTES),
             messages: &messages,
         };
         let response: ThreadSummary = self.exchange(&id, &request)?;
@@ -262,6 +258,53 @@ impl Sidecar {
         }
         Ok(self.io.as_mut().expect("sidecar initialized"))
     }
+}
+
+fn sidecar_messages(thread: &Thread) -> Vec<ImportedMessage<'_>> {
+    let mut remaining = MAX_SIDECAR_HISTORY_BYTES;
+    let mut messages = Vec::new();
+    for message in thread.messages.iter().rev().take(MAX_SIDECAR_MESSAGES) {
+        let content = bounded_suffix(&message.content, remaining.min(MAX_SIDECAR_MESSAGE_BYTES));
+        if content.is_empty() {
+            break;
+        }
+        remaining -= content.len();
+        messages.push(ImportedMessage {
+            role: match message.role {
+                ThreadRole::User => "user",
+                ThreadRole::Assistant => "assistant",
+                ThreadRole::System => "system",
+            },
+            content,
+        });
+        if remaining == 0 {
+            break;
+        }
+    }
+    messages.reverse();
+    messages
+}
+
+fn bounded_prefix(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn bounded_suffix(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
 }
 
 #[derive(Clone, Serialize)]
@@ -548,6 +591,7 @@ struct WireArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use emma_core::{ThreadMessage, Timestamp};
 
     #[test]
     fn provider_profile_is_optional_but_not_partial() {
@@ -610,30 +654,118 @@ mod tests {
         sidecar
             .thread_ids
             .insert(thread_id.clone(), "zig-thread".into());
+        sidecar.thread_ids.insert(
+            ThreadId::parse("thread-1111111111").unwrap(),
+            "other-zig-thread".into(),
+        );
 
         let message = sidecar
-            .finish_thread_message(
-                &thread_id,
-                ThreadMessageResult {
-                    message: WireMessage {
-                        content: "I saved that.".into(),
-                    },
-                    model: "fixture".into(),
-                    input_tokens: 4,
-                    output_tokens: 2,
-                    knowledge_mutation: Some(WireKnowledgeMutation {
-                        kind: "create_page".into(),
-                        arguments: serde_json::json!({
-                            "title": "Clock notes",
-                            "summary": "Timing matters",
-                            "body": "Durable details"
-                        }),
-                    }),
+            .finish_thread_message(ThreadMessageResult {
+                message: WireMessage {
+                    content: "I saved that.".into(),
                 },
-            )
+                model: "fixture".into(),
+                input_tokens: 4,
+                output_tokens: 2,
+                knowledge_mutation: Some(WireKnowledgeMutation {
+                    kind: "create_page".into(),
+                    arguments: serde_json::json!({
+                        "title": "Clock notes",
+                        "summary": "Timing matters",
+                        "body": "Durable details"
+                    }),
+                }),
+            })
             .unwrap();
 
         assert!(message.knowledge_mutation.is_some());
-        assert!(!sidecar.thread_ids.contains_key(&thread_id));
+        assert!(sidecar.thread_ids.is_empty());
+    }
+
+    #[test]
+    fn sidecar_rehydration_keeps_a_bounded_recent_history() {
+        let mut thread = Thread::new("x".repeat(300), Timestamp::from_unix_seconds(1)).unwrap();
+        for index in 0..299 {
+            thread
+                .push(
+                    ThreadMessage::new(
+                        ThreadRole::User,
+                        format!("{index:03}-{}", "x".repeat(508)),
+                        Timestamp::from_unix_seconds(index + 2),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        thread
+            .push(
+                ThreadMessage::new(
+                    ThreadRole::Assistant,
+                    "y".repeat(MAX_SIDECAR_MESSAGE_BYTES + 1),
+                    Timestamp::from_unix_seconds(301),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let messages = sidecar_messages(&thread);
+        assert!(messages.len() <= MAX_SIDECAR_MESSAGES);
+        assert!(
+            messages
+                .iter()
+                .map(|message| message.content.len())
+                .sum::<usize>()
+                <= MAX_SIDECAR_HISTORY_BYTES
+        );
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.content.len() <= MAX_SIDECAR_MESSAGE_BYTES)
+        );
+        assert_eq!(
+            messages.last().unwrap().content.len(),
+            MAX_SIDECAR_MESSAGE_BYTES
+        );
+        assert_eq!(
+            bounded_prefix(&thread.title, MAX_SIDECAR_TITLE_BYTES).len(),
+            256
+        );
+    }
+
+    #[test]
+    fn sidecar_bounds_analysis_prefix_and_history_suffix_on_utf8_boundaries() {
+        let analysis = format!("{}tail", "é".repeat(MAX_SIDECAR_MESSAGE_BYTES / 2 + 1));
+        let analysis = bounded_prefix(&analysis, MAX_SIDECAR_MESSAGE_BYTES);
+        assert!(analysis.len() <= MAX_SIDECAR_MESSAGE_BYTES);
+        assert!(analysis.starts_with('é'));
+        assert!(!analysis.ends_with("tail"));
+
+        let mut thread = Thread::new("history", Timestamp::from_unix_seconds(1)).unwrap();
+        thread
+            .push(
+                ThreadMessage::new(
+                    ThreadRole::User,
+                    format!("head-{}-tail", "é".repeat(40_000)),
+                    Timestamp::from_unix_seconds(2),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        thread
+            .push(
+                ThreadMessage::new(
+                    ThreadRole::Assistant,
+                    "z".repeat(MAX_SIDECAR_MESSAGE_BYTES),
+                    Timestamp::from_unix_seconds(3),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let messages = sidecar_messages(&thread);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].content.len() <= 32 * 1024);
+        assert!(messages[0].content.ends_with("-tail"));
+        assert!(!messages[0].content.starts_with("head-"));
     }
 }

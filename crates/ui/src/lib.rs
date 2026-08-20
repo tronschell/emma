@@ -14,7 +14,6 @@ actions!(
         ToggleAgentSurface,
         DismissAgentSurface,
         Analyze,
-        Cancel,
         ActivateFocused,
         FocusNext,
         FocusPrevious,
