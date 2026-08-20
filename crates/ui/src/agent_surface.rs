@@ -7,7 +7,7 @@ use gpui::{
     AppContext as _, Context, FocusHandle, Focusable, FontWeight, MouseButton, Render, Role,
     Subscription, Task, Window, div, prelude::*, px, rgb, rgba,
 };
-use gpui_base::input::{Input, InputBase, InputEvent, InputState};
+use gpui_base::input::{Input, InputBase, InputEditorStyle, InputEvent, InputState};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenRect {
@@ -92,24 +92,24 @@ impl SurfaceTokens {
     fn for_preferences(preferences: SurfacePreferences) -> Self {
         if preferences.increase_contrast {
             Self {
-                background: rgba(0x090b0fff),
-                panel: rgba(0x171b21ff),
+                background: rgba(0x080808ff),
+                panel: rgba(0x101010ff),
                 border: rgba(0xffffffff),
-                secondary: rgba(0xd8dde5ff),
+                secondary: rgba(0xd8d8d8ff),
             }
         } else if preferences.reduce_transparency {
             Self {
-                background: rgba(0x11151aff),
-                panel: rgba(0x1d232bff),
-                border: rgba(0x59616dff),
-                secondary: rgba(0xaab2bdff),
+                background: rgba(0x080808ff),
+                panel: rgba(0x191919ff),
+                border: rgba(0x3a3a3aff),
+                secondary: rgba(0x9c9c9cff),
             }
         } else {
             Self {
-                background: rgba(0x11151aeb),
-                panel: rgba(0x252b34d9),
-                border: rgba(0xffffff24),
-                secondary: rgba(0xb7bec9ff),
+                background: rgba(0x080808f0),
+                panel: rgba(0x191919e8),
+                border: rgba(0xffffff20),
+                secondary: rgba(0x9c9c9cff),
             }
         }
     }
@@ -136,9 +136,17 @@ impl AgentSurfaceView {
         cx: &mut Context<Self>,
     ) -> Self {
         let prompt = cx.new(|cx| {
-            InputState::new(window, cx)
+            let mut state = InputState::new(window, cx)
                 .placeholder("Ask Emma…")
-                .submit_on_enter(true)
+                .submit_on_enter(true);
+            state.set_editor_style(InputEditorStyle {
+                foreground: rgb(0xf3f3f3).into(),
+                muted_foreground: rgb(0x9c9c9c).into(),
+                selection: gpui::hsla(0.1, 0.11, 0.39, 0.55),
+                caret: rgb(0xf3f3f3).into(),
+                ..InputEditorStyle::default()
+            });
+            state
         });
         let subscription = cx.subscribe_in(
             &prompt,
@@ -324,33 +332,66 @@ impl Render for AgentSurfaceView {
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
             .size_full()
-            .p(px(12.0))
+            .p(px(14.0))
             .bg(tokens.background)
-            .text_color(rgb(0xf7f8fa))
+            .text_color(rgb(0xf3f3f3))
             .flex()
             .flex_col()
-            .gap(px(9.0))
+            .gap(px(10.0))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Emma"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .size(px(24.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(tokens.border)
+                                    .text_color(rgb(0x6f6759))
+                                    .child("◇"),
+                            )
+                            .child(
+                                div()
+                                    .font_family("Menlo")
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("EMMA"),
+                            ),
+                    )
                     .child(
                         div()
                             .id("agent-status")
                             .role(Role::Status)
                             .aria_label(self.status.clone())
-                            .text_size(px(12.0))
-                            .text_color(tokens.secondary)
+                            .flex()
+                            .items_center()
+                            .gap(px(7.0))
+                            .font_family("Menlo")
+                            .text_size(px(9.0))
+                            .child(div().size(px(5.0)).rounded_full().bg(if working {
+                                rgb(0x6f6759)
+                            } else {
+                                rgb(0x98ff38)
+                            }))
                             .child(self.status.clone()),
                     ),
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .font_family("Menlo")
+                    .text_size(px(9.0))
                     .text_color(tokens.secondary)
-                    .child(thread_summary),
+                    .child(thread_summary.to_uppercase()),
             )
             .child(
                 div()
@@ -359,12 +400,13 @@ impl Render for AgentSurfaceView {
                     .aria_label("Latest assistant response")
                     .flex_1()
                     .min_h_0()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(tokens.border)
-                    .bg(tokens.panel)
-                    .p(px(10.0))
+                    .border_l_1()
+                    .border_color(rgba(0x6f6759ff))
+                    .pl(px(12.0))
+                    .py(px(4.0))
                     .text_size(px(12.0))
+                    .line_height(px(18.0))
+                    .text_color(rgb(0xd0d0d0))
                     .child(latest),
             )
             .child(
@@ -372,23 +414,25 @@ impl Render for AgentSurfaceView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(tokens.border)
+                    .bg(tokens.panel)
+                    .p(px(5.0))
                     .child(
                         InputBase::new("surface-prompt")
                             .accessibility_label("Agent prompt")
                             .focused(prompt_focused)
                             .disabled(working)
                             .flex_1()
-                            .h(px(38.0))
+                            .h(px(36.0))
                             .px(px(10.0))
                             .flex()
                             .items_center()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(tokens.border)
+                            .rounded(px(4.0))
                             .bg(tokens.panel)
-                            .styles(|styles| {
-                                styles.focused(|style| style.border_color(rgb(0x8fc7ff)))
-                            })
+                            .text_color(tokens.secondary)
+                            .styles(|styles| styles.focused(|style| style.bg(rgba(0xffffff0d))))
                             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                                 prompt_for_mouse.update(cx, |input, cx| input.focus(window, cx));
                             })
@@ -402,21 +446,34 @@ impl Render for AgentSurfaceView {
                             .focusable()
                             .tab_stop(!working)
                             .track_focus(&self.send_focus)
-                            .focus_visible(|style| style.border_2().border_color(rgb(0xffffff)))
+                            .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
                             .role(Role::Button)
                             .aria_label(if working {
                                 "Send message, unavailable"
                             } else {
                                 "Send message"
                             })
-                            .rounded(px(8.0))
-                            .bg(if working {
-                                rgb(0x3a414b)
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(if working {
+                                rgb(0x2a2a2a)
                             } else {
-                                rgb(0x2f80ed)
+                                rgb(0x444444)
                             })
-                            .px(px(14.0))
-                            .py(px(9.0))
+                            .bg(if working {
+                                rgb(0x202020)
+                            } else {
+                                rgb(0xf3f3f3)
+                            })
+                            .text_color(if working {
+                                rgb(0x666666)
+                            } else {
+                                rgb(0x080808)
+                            })
+                            .font_family("Menlo")
+                            .text_size(px(9.0))
+                            .px(px(12.0))
+                            .py(px(8.0))
                             .when(!working, |button| button.cursor_pointer())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.send_focus.focus(window, cx);
