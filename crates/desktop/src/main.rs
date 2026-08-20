@@ -91,13 +91,7 @@ fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
 }
 
-mod global_hotkey {
-    /// The pinned GPUI revision exposes no maintained public bridge from a
-    /// system hotkey callback back onto its application thread.
-    pub fn install_command_shift_space() -> Result<(), &'static str> {
-        Err("global hotkey unavailable; typed in-app shortcut remains active")
-    }
-}
+mod global_hotkey;
 
 pub mod capture {
     use std::process::Command;
@@ -149,8 +143,8 @@ fn main() {
         })
         .detach();
 
-        if let Err(reason) = global_hotkey::install_command_shift_space() {
-            eprintln!("Emma: {reason}");
+        if let Err(reason) = global_hotkey::install_command_shift_space(cx) {
+            eprintln!("Emma: {reason}; typed in-app shortcut remains active");
         }
         open_library(cx);
         cx.activate(true);
