@@ -1,8 +1,11 @@
 const std = @import("std");
+const openai = @import("openai_compatible.zig");
 
 const max_line_bytes = 128 * 1024;
-const max_text_bytes = 64 * 1024;
+const max_text_bytes = openai.max_content_bytes;
 const max_tools = 256;
+const max_imported_messages = 256;
+const max_imported_content_bytes = 96 * 1024;
 
 const RequestError = error{
     InvalidRequest,
@@ -57,6 +60,7 @@ const State = struct {
     last_results: std.ArrayList([]const u8) = .empty,
     threads: std.ArrayList(Thread) = .empty,
     next_thread_id: usize = 1,
+    provider_transport: openai.Transport = openai.Transport.unavailable_transport,
 
     fn deinit(self: *State, alloc: std.mem.Allocator) void {
         self.clearTools(alloc);
@@ -118,11 +122,10 @@ const State = struct {
             alloc.free(thread_id);
             return err;
         };
-        self.threads.append(alloc, .{ .id = thread_id, .title = owned_title }) catch |err| {
-            alloc.free(thread_id);
-            alloc.free(owned_title);
-            return err;
-        };
+        var thread: Thread = .{ .id = thread_id, .title = owned_title };
+        errdefer thread.deinit(alloc);
+        if (object.get("messages")) |messages| try importMessages(alloc, &thread, messages);
+        try self.threads.append(alloc, thread);
         self.next_thread_id += 1;
 
         var out: std.Io.Writer.Allocating = .init(alloc);
@@ -169,43 +172,51 @@ const State = struct {
         const thread_id = try requiredString(object, "thread_id", 128);
         const content = try requiredString(object, "content", max_text_bytes);
         if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidField;
-        try validateProvider(object.get("provider"));
+        const provider = try parseProvider(object.get("provider"));
         const thread = self.findThread(thread_id) orelse return error.ThreadNotFound;
+        var model: []const u8 = "local-fallback";
+        var input_tokens = (content.len + 3) / 4;
+        var output_tokens: usize = undefined;
+        const assistant_content = if (provider) |config| content: {
+            const payload = try openai.buildRequest(alloc, config.model, thread.messages.items, content);
+            defer alloc.free(payload);
+            const reply = try self.provider_transport.send(alloc, config, payload);
+            model = config.model;
+            input_tokens = reply.input_tokens;
+            output_tokens = reply.output_tokens;
+            break :content reply.content;
+        } else content: {
+            const reply = try fallbackReply(alloc, content);
+            output_tokens = (reply.len + 3) / 4;
+            break :content reply;
+        };
+        errdefer alloc.free(assistant_content);
         const user_id = try std.fmt.allocPrint(alloc, "message-{d}", .{thread.messages.items.len + 1});
+        errdefer alloc.free(user_id);
         const user_content = alloc.dupe(u8, content) catch |err| {
-            alloc.free(user_id);
             return err;
         };
+        errdefer alloc.free(user_content);
         const assistant_id = std.fmt.allocPrint(alloc, "message-{d}", .{thread.messages.items.len + 2}) catch |err| {
-            alloc.free(user_id);
-            alloc.free(user_content);
             return err;
         };
-        const assistant_content = fallbackReply(alloc, content) catch |err| {
-            alloc.free(user_id);
-            alloc.free(user_content);
-            alloc.free(assistant_id);
-            return err;
-        };
-        thread.messages.ensureUnusedCapacity(alloc, 2) catch |err| {
-            alloc.free(user_id);
-            alloc.free(user_content);
-            alloc.free(assistant_id);
-            alloc.free(assistant_content);
-            return err;
-        };
-        thread.messages.appendAssumeCapacity(.{ .id = user_id, .role = "user", .content = user_content });
-        thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
+        errdefer alloc.free(assistant_id);
+        try thread.messages.ensureUnusedCapacity(alloc, 2);
 
         var out: std.Io.Writer.Allocating = .init(alloc);
         errdefer out.deinit();
         try responseStart(&out.writer, id);
         try out.writer.writeAll("{\"message\":");
-        try writeMessage(&out.writer, thread.messages.items[thread.messages.items.len - 1]);
-        try out.writer.writeAll(",\"model\":\"local-fallback\",\"events\":[],\"tool_calls\":[],\"permission_requests\":[],\"input_tokens\":");
-        try out.writer.print("{d},\"output_tokens\":{d}", .{ (content.len + 3) / 4, (assistant_content.len + 3) / 4 });
+        try writeMessage(&out.writer, .{ .id = assistant_id, .role = "assistant", .content = assistant_content });
+        try out.writer.writeAll(",\"model\":");
+        try jsonString(&out.writer, model);
+        try out.writer.writeAll(",\"events\":[],\"tool_calls\":[],\"permission_requests\":[],\"input_tokens\":");
+        try out.writer.print("{d},\"output_tokens\":{d}", .{ input_tokens, output_tokens });
         try out.writer.writeAll("}}\n");
-        return out.toOwnedSlice();
+        const response = try out.toOwnedSlice();
+        thread.messages.appendAssumeCapacity(.{ .id = user_id, .role = "user", .content = user_content });
+        thread.messages.appendAssumeCapacity(.{ .id = assistant_id, .role = "assistant", .content = assistant_content });
+        return response;
     }
 
     fn analyze(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
@@ -213,7 +224,7 @@ const State = struct {
         if (self.findThread(thread_id) == null) return error.ThreadNotFound;
         const text = try requiredString(object, "text", max_text_bytes);
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidField;
-        try validateProvider(object.get("provider"));
+        _ = try parseProvider(object.get("provider"));
         const sources = try validateSources(object.get("sources"));
         const title = titleFrom(text);
         const category = classify(text);
@@ -378,16 +389,13 @@ const State = struct {
     }
 };
 
-pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-    var io_backend: std.Io.Threaded = .init_single_threaded;
-    defer io_backend.deinit();
-    const io = io_backend.io();
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.gpa;
+    const io = init.io;
     var read_buffer: [4096]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &read_buffer);
-    var state: State = .{};
+    var http_context: openai.HttpContext = .{ .io = io, .environ = init.environ_map };
+    var state: State = .{ .provider_transport = .http(&http_context) };
     defer state.deinit(alloc);
 
     while (true) {
@@ -459,20 +467,44 @@ fn optionalLimit(value: ?std.json.Value) RequestError!usize {
     return @intCast(limit.integer);
 }
 
-fn validateProvider(value: ?std.json.Value) RequestError!void {
-    const provider = value orelse return;
+fn parseProvider(value: ?std.json.Value) RequestError!?openai.Config {
+    const provider = value orelse return null;
     if (provider != .object) return error.InvalidField;
-    const base_url = try requiredString(provider.object, "base_url", 2048);
-    _ = try requiredString(provider.object, "model", 128);
-    const env_name = try requiredString(provider.object, "credential_env", 128);
-    if (!std.mem.startsWith(u8, base_url, "https://") and !std.mem.startsWith(u8, base_url, "http://")) return error.InvalidField;
-    if (!validEnvName(env_name)) return error.InvalidField;
+    const config: openai.Config = .{
+        .base_url = try requiredString(provider.object, "base_url", 2048),
+        .model = try requiredString(provider.object, "model", 128),
+        .credential_env = try requiredString(provider.object, "credential_env", 128),
+    };
+    openai.validateConfig(config) catch return error.InvalidField;
+    return config;
 }
 
-fn validEnvName(name: []const u8) bool {
-    if (name.len == 0 or !(std.ascii.isAlphabetic(name[0]) or name[0] == '_')) return false;
-    for (name[1..]) |byte| if (!(std.ascii.isAlphanumeric(byte) or byte == '_')) return false;
-    return true;
+fn importMessages(alloc: std.mem.Allocator, thread: *Thread, value: std.json.Value) !void {
+    if (value != .array or value.array.items.len > max_imported_messages) return error.InvalidField;
+    try thread.messages.ensureUnusedCapacity(alloc, value.array.items.len);
+    var total_bytes: usize = 0;
+    for (value.array.items) |entry| {
+        if (entry != .object) return error.InvalidField;
+        const role = try canonicalRole(try requiredString(entry.object, "role", 16));
+        const content = try requiredString(entry.object, "content", max_text_bytes);
+        if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidField;
+        total_bytes = std.math.add(usize, total_bytes, content.len) catch return error.InvalidField;
+        if (total_bytes > max_imported_content_bytes) return error.InvalidField;
+
+        const message_id = try std.fmt.allocPrint(alloc, "message-{d}", .{thread.messages.items.len + 1});
+        const owned_content = alloc.dupe(u8, content) catch |err| {
+            alloc.free(message_id);
+            return err;
+        };
+        thread.messages.appendAssumeCapacity(.{ .id = message_id, .role = role, .content = owned_content });
+    }
+}
+
+fn canonicalRole(role: []const u8) RequestError![]const u8 {
+    if (std.mem.eql(u8, role, "user")) return "user";
+    if (std.mem.eql(u8, role, "assistant")) return "assistant";
+    if (std.mem.eql(u8, role, "system")) return "system";
+    return error.InvalidField;
 }
 
 fn validateSources(value: ?std.json.Value) RequestError![]const std.json.Value {
@@ -574,6 +606,16 @@ fn requestFailure(alloc: std.mem.Allocator, id: []const u8, err: anyerror) ![]u8
         error.ToolNotFound => responseError(alloc, id, "tool_not_found", "selected tool is no longer available"),
         error.ThreadNotFound => responseError(alloc, id, "thread_not_found", "thread does not exist in this process"),
         error.InvalidRequest, error.InvalidField => responseError(alloc, id, "invalid_field", "request contains a missing, invalid, or oversized field"),
+        error.ProviderRequestTooLarge => responseError(alloc, id, "provider_request_too_large", "thread history exceeds the provider request limit"),
+        error.ProviderResponseTooLarge => responseError(alloc, id, "provider_response_too_large", "provider response exceeds the configured limit"),
+        error.ProviderCredentialUnavailable => responseError(alloc, id, "provider_credential_unavailable", "provider credential environment variable is missing, empty, or invalid"),
+        error.ProviderAuthenticationFailed => responseError(alloc, id, "provider_authentication_failed", "provider rejected the configured credential"),
+        error.ProviderRateLimited => responseError(alloc, id, "provider_rate_limited", "provider rate limit was reached"),
+        error.ProviderTimeout => responseError(alloc, id, "provider_timeout", "provider request exceeded 60 seconds"),
+        error.ProviderUnavailable => responseError(alloc, id, "provider_unavailable", "provider could not be reached securely"),
+        error.ProviderHttpError => responseError(alloc, id, "provider_http_error", "provider returned a non-success HTTP status"),
+        error.InvalidProviderResponse => responseError(alloc, id, "invalid_provider_response", "provider returned an invalid or unsupported Chat Completions response"),
+        error.ProviderToolCallsUnsupported => responseError(alloc, id, "provider_tool_calls_unsupported", "provider requested tool calls, which are not supported in this slice"),
         else => err,
     };
 }
@@ -619,6 +661,56 @@ test "thread messages persist user and general assistant roles" {
     try expectValidResponse(fetched);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"user\""));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, fetched, "\"role\":\"assistant\""));
+}
+
+test "provider fixture receives thread history and returns parsed content and usage" {
+    const Fixture = struct {
+        calls: usize = 0,
+
+        fn send(raw_context: ?*anyopaque, alloc: std.mem.Allocator, config: openai.Config, payload: []const u8) anyerror!openai.Reply {
+            const fixture: *@This() = @ptrCast(@alignCast(raw_context.?));
+            fixture.calls += 1;
+            try std.testing.expectEqualStrings("fixture-model", config.model);
+            try std.testing.expect(std.mem.indexOf(u8, payload, config.credential_env) == null);
+
+            var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+            defer parsed.deinit();
+            const messages = parsed.value.object.get("messages").?.array.items;
+            try std.testing.expectEqual(@as(usize, 4), messages.len);
+            try std.testing.expectEqualStrings("system", messages[0].object.get("role").?.string);
+            try std.testing.expectEqualStrings("Keep it brief", messages[0].object.get("content").?.string);
+            try std.testing.expectEqualStrings("user", messages[1].object.get("role").?.string);
+            try std.testing.expectEqualStrings("Start here", messages[1].object.get("content").?.string);
+            try std.testing.expectEqualStrings("assistant", messages[2].object.get("role").?.string);
+            try std.testing.expectEqualStrings("Prior answer", messages[2].object.get("content").?.string);
+            try std.testing.expectEqualStrings("user", messages[3].object.get("role").?.string);
+            try std.testing.expectEqualStrings("Continue", messages[3].object.get("content").?.string);
+
+            return openai.parseResponse(
+                alloc,
+                "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Fixture answer\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}",
+            );
+        }
+    };
+
+    var fixture: Fixture = .{};
+    var state: State = .{ .provider_transport = .{ .context = &fixture, .send_fn = Fixture.send } };
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\",\"title\":\"Provider\",\"messages\":[{\"role\":\"system\",\"content\":\"Keep it brief\"},{\"role\":\"user\",\"content\":\"Start here\"},{\"role\":\"assistant\",\"content\":\"Prior answer\"}]}");
+    defer std.testing.allocator.free(created);
+    try std.testing.expect(std.mem.indexOf(u8, created, "\"message_count\":3") != null);
+    const turn = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Continue\",\"provider\":{\"base_url\":\"http://127.0.0.1:9999/v1\",\"model\":\"fixture-model\",\"credential_env\":\"EMMA_FIXTURE_KEY\"}}");
+    defer std.testing.allocator.free(turn);
+    try expectValidResponse(turn);
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"content\":\"Fixture answer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"model\":\"fixture-model\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turn, "\"input_tokens\":11,\"output_tokens\":7") != null);
+
+    const rejected = try state.handle(std.testing.allocator, "{\"id\":\"3\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"No plaintext remote request\",\"provider\":{\"base_url\":\"http://example.test/v1\",\"model\":\"fixture-model\",\"credential_env\":\"EMMA_FIXTURE_KEY\"}}");
+    defer std.testing.allocator.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "\"code\":\"invalid_field\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
 }
 
 test "search returns compact metadata without schemas" {
