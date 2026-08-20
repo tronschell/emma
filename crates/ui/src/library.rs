@@ -4,7 +4,7 @@ use crate::{
 };
 use emma_core::{
     AppPreferences, KnowledgeBase, KnowledgeBaseId, KnowledgePage, LiveClient, LiveSnapshot,
-    OverlayPlacement, PageId, Thread, ThreadId, ThreadRole,
+    OpenRouterModel, OverlayPlacement, PageId, Thread, ThreadId, ThreadRole,
 };
 use gpui::{
     AppContext as _, Context, FocusHandle, Focusable, FontWeight, MouseButton, Render, Role,
@@ -14,6 +14,8 @@ use gpui_base::{
     Button,
     input::{Input, InputBase, InputEditorStyle, InputEvent, InputState},
 };
+
+const FREE_MODEL_PRIVACY_WARNING: &str = "Some routed providers may otherwise retain prompts or train on them. Emma requires data_collection: deny and ZDR; the request fails if no compliant endpoint exists. Your OpenRouter account logging/data-use settings still apply. Review openrouter.ai/settings/privacy.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Destination {
@@ -39,10 +41,14 @@ pub struct LibraryView {
     send_focus: FocusHandle,
     save_focus: FocusHandle,
     create_base_focus: FocusHandle,
+    load_models_focus: FocusHandle,
     destination: Destination,
     status: String,
     busy: bool,
     preferences: AppPreferences,
+    openrouter_models: Vec<OpenRouterModel>,
+    selected_openrouter_model: Option<String>,
+    models_loaded: bool,
     _subscriptions: Vec<Subscription>,
     task: Option<Task<()>>,
 }
@@ -112,10 +118,14 @@ impl LibraryView {
             send_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
             create_base_focus: cx.focus_handle(),
+            load_models_focus: cx.focus_handle(),
             destination: Destination::Threads,
             status: "Loading durable library…".into(),
             busy: true,
             preferences: AppPreferences::default(),
+            openrouter_models: Vec::new(),
+            selected_openrouter_model: None,
+            models_loaded: false,
             _subscriptions: vec![subscription, base_subscription],
             task: None,
         };
@@ -434,6 +444,61 @@ impl LibraryView {
         cx.notify();
     }
 
+    fn load_openrouter_models(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.status = "Loading privacy-filtered OpenRouter models…".into();
+        let live = self.live.clone();
+        let background = cx.background_spawn(async move { live.list_openrouter_models() });
+        self.task = Some(cx.spawn(async move |view, cx| {
+            let result = background.await;
+            let _ = view.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(catalog) => {
+                        this.models_loaded = true;
+                        this.openrouter_models = catalog.models;
+                        this.selected_openrouter_model = catalog.selected_model;
+                        this.status = format!(
+                            "{} privacy-filtered free OpenRouter models",
+                            this.openrouter_models.len()
+                        );
+                    }
+                    Err(error) => this.status = format!("OpenRouter load failed: {error}"),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn select_openrouter_model(&mut self, model_id: String, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.status = "Selecting OpenRouter model…".into();
+        let live = self.live.clone();
+        let background = cx.background_spawn(async move { live.select_openrouter_model(model_id) });
+        self.task = Some(cx.spawn(async move |view, cx| {
+            let result = background.await;
+            let _ = view.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(model_id) => {
+                        this.status = format!("Selected {model_id}");
+                        this.selected_openrouter_model = Some(model_id);
+                    }
+                    Err(error) => this.status = format!("Model selection failed: {error}"),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn selected_thread(&self) -> Option<&Thread> {
         let id = self.selected_thread.as_ref()?;
         self.threads.iter().find(|thread| &thread.id == id)
@@ -468,6 +533,8 @@ impl LibraryView {
             self.save(&SaveToKnowledgeBase, window, cx);
         } else if self.create_base_focus.is_focused(window) {
             self.create_knowledge_base(window, cx);
+        } else if self.load_models_focus.is_focused(window) {
+            self.load_openrouter_models(cx);
         }
     }
 
@@ -843,6 +910,106 @@ impl Render for LibraryView {
                     this.create_knowledge_base(window, cx);
                 })),
             );
+        let openrouter_model_picker = div()
+            .id("openrouter-model-picker")
+            .role(Role::Group)
+            .aria_label("Privacy-filtered free OpenRouter models")
+            .max_h(px(190.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .when(
+                self.models_loaded && self.openrouter_models.is_empty(),
+                |picker| {
+                    picker.child(
+                        div()
+                            .py(px(7.0))
+                            .text_size(px(10.0))
+                            .text_color(rgb(0x777777))
+                            .child("No free tool-capable ZDR models are available."),
+                    )
+                },
+            )
+            .children(self.openrouter_models.iter().map(|model| {
+                let id = model.id.clone();
+                let action_id = id.clone();
+                let selected = self.selected_openrouter_model.as_ref() == Some(&id);
+                openrouter_model_button(model, selected, !self.busy)
+                    .on_action(cx.listener(move |this, _: &ActivateFocused, _, cx| {
+                        this.select_openrouter_model(action_id.clone(), cx);
+                        cx.stop_propagation();
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_openrouter_model(id.clone(), cx);
+                    }))
+            }));
+        let selected_free_model = self
+            .selected_openrouter_model
+            .as_deref()
+            .is_some_and(is_free_openrouter_model);
+        let model_selector = div()
+            .id("openrouter-model-selector")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(0x2b2b2b))
+            .bg(rgb(0x151515))
+            .p(px(10.0))
+            .child(meta_label("OPENROUTER / FREE + ZDR"))
+            .child(
+                div()
+                    .font_family("Menlo")
+                    .text_size(px(9.0))
+                    .line_height(px(14.0))
+                    .text_color(rgb(0x9c9c9c))
+                    .child(
+                        self.selected_openrouter_model
+                            .clone()
+                            .unwrap_or_else(|| "Not selected".into()),
+                    ),
+            )
+            .child(
+                action_button(
+                    "load-openrouter-models",
+                    if self.models_loaded {
+                        "Refresh models"
+                    } else {
+                        "Load free models"
+                    },
+                    !self.busy,
+                    &self.load_models_focus,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.load_models_focus.focus(window, cx);
+                    this.load_openrouter_models(cx);
+                })),
+            )
+            .when(self.models_loaded, |selector| {
+                selector.child(openrouter_model_picker)
+            })
+            .when(selected_free_model, |selector| {
+                selector.child(
+                    div()
+                        .id("openrouter-free-model-privacy-warning")
+                        .role(Role::Status)
+                        .aria_label(FREE_MODEL_PRIVACY_WARNING)
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(rgb(0x5a4427))
+                        .bg(rgb(0x211a11))
+                        .p(px(9.0))
+                        .font_family("Menlo")
+                        .text_size(px(9.0))
+                        .line_height(px(14.0))
+                        .text_color(rgb(0xd8ad68))
+                        .child(format!(
+                            "FREE MODEL PRIVACY\n\n{FREE_MODEL_PRIVACY_WARNING}"
+                        )),
+                )
+            });
         let title = if is_threads {
             selected_thread
                 .as_ref()
@@ -857,6 +1024,8 @@ impl Render for LibraryView {
             .id("library-inspector")
             .w(px(246.0))
             .h_full()
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(16.0))
@@ -892,6 +1061,8 @@ impl Render for LibraryView {
                             ("SAVED PAGES", linked_pages.to_string()),
                         ],
                     ))
+                    .child(meta_label("MODEL"))
+                    .child(model_selector)
                     .child(meta_label("KNOWLEDGE BASE"))
                     .child(thread_base_picker)
                     .child(base_creator)
@@ -1383,6 +1554,73 @@ fn base_button(id: String, label: String, selected: bool, enabled: bool) -> Butt
         .child(format!("{}  {label}", if selected { "◆" } else { "◇" }))
 }
 
+fn openrouter_model_button(model: &OpenRouterModel, selected: bool, enabled: bool) -> Button {
+    let context = format_context_length(model.context_length);
+    let accessibility_label = format!(
+        "{}, free OpenRouter model, {context} token context{}",
+        model.name,
+        if selected { ", selected" } else { "" }
+    );
+    Button::new(format!("openrouter-model-{}", model.id))
+        .key_context("LibraryButton")
+        .disabled(!enabled)
+        .tab_stop(enabled)
+        .focus_visible(|style| style.border_1().border_color(rgb(0x98ff38)))
+        .accessibility_label(accessibility_label)
+        .w_full()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(if selected {
+            rgb(0x5a4427)
+        } else {
+            rgb(0x292929)
+        })
+        .bg(if selected {
+            rgb(0x211a11)
+        } else {
+            rgb(0x101010)
+        })
+        .px(px(8.0))
+        .py(px(7.0))
+        .when(enabled, |button| button.cursor_pointer())
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(10.0))
+                        .text_color(if selected {
+                            rgb(0xf0c27b)
+                        } else {
+                            rgb(0xc8c8c8)
+                        })
+                        .child(model.name.clone()),
+                )
+                .child(
+                    div()
+                        .mt(px(3.0))
+                        .font_family("Menlo")
+                        .text_size(px(8.0))
+                        .text_color(rgb(0x777777))
+                        .child(format!("{context} CONTEXT")),
+                ),
+        )
+}
+
+fn is_free_openrouter_model(model_id: &str) -> bool {
+    model_id.ends_with(":free") || model_id == "openrouter/free"
+}
+
+fn format_context_length(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else {
+        format!("{}K", tokens / 1_000)
+    }
+}
+
 fn meta_label(label: &str) -> gpui::Div {
     div()
         .font_family("Menlo")
@@ -1427,4 +1665,17 @@ fn inspector_card(label: &str, facts: Vec<(&'static str, String)>) -> gpui::Div 
                     .child(value),
             )
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_model_labels_are_compact_and_explicit() {
+        assert!(is_free_openrouter_model("openai/gpt-oss-20b:free"));
+        assert!(!is_free_openrouter_model("openai/gpt-oss-20b"));
+        assert_eq!(format_context_length(131_072), "131K");
+        assert_eq!(format_context_length(1_048_576), "1.0M");
+    }
 }

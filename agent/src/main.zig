@@ -106,6 +106,7 @@ const State = struct {
         if (std.mem.eql(u8, kind, "thread_get")) return self.threadGet(alloc, id, object) catch |err| requestFailure(alloc, id, err);
         if (std.mem.eql(u8, kind, "thread_message")) return self.threadMessage(alloc, id, object) catch |err| requestFailure(alloc, id, err);
         if (std.mem.eql(u8, kind, "analyze") or std.mem.eql(u8, kind, "save_to_knowledge")) return self.analyze(alloc, id, object) catch |err| requestFailure(alloc, id, err);
+        if (std.mem.eql(u8, kind, "openrouter_models")) return self.openrouterModels(alloc, id, object) catch |err| requestFailure(alloc, id, err);
         if (std.mem.eql(u8, kind, "mcp_catalog")) return self.catalog(alloc, id, object) catch |err| requestFailure(alloc, id, err);
         if (std.mem.eql(u8, kind, "mcp_search_tools")) return self.search(alloc, id, object) catch |err| requestFailure(alloc, id, err);
         if (std.mem.eql(u8, kind, "mcp_select_tool")) return self.select(alloc, id, object) catch |err| requestFailure(alloc, id, err);
@@ -121,7 +122,7 @@ const State = struct {
             "{d},\"tool_count\":{d}",
             .{ self.threads.items.len, self.tools.items.len },
         );
-        try out.writer.writeAll(",\"requests\":[\"health\",\"thread_create\",\"thread_list\",\"thread_get\",\"thread_message\",\"analyze\",\"save_to_knowledge\",\"mcp_catalog\",\"mcp_search_tools\",\"mcp_select_tool\"]}}\n");
+        try out.writer.writeAll(",\"requests\":[\"health\",\"thread_create\",\"thread_list\",\"thread_get\",\"thread_message\",\"analyze\",\"save_to_knowledge\",\"openrouter_models\",\"mcp_catalog\",\"mcp_search_tools\",\"mcp_select_tool\"]}}\n");
         return out.toOwnedSlice();
     }
 
@@ -195,7 +196,7 @@ const State = struct {
         var knowledge_mutation: ?openai.KnowledgeMutation = null;
         defer if (knowledge_mutation) |mutation| mutation.deinit(alloc);
         const assistant_content = if (provider) |config| content: {
-            const payload = try openai.buildRequest(alloc, config.model, thread.messages.items, content, knowledge);
+            const payload = try openai.buildRequest(alloc, config, thread.messages.items, content, knowledge);
             defer alloc.free(payload);
             const reply = try self.provider_transport.send(alloc, config, payload);
             model = config.model;
@@ -291,6 +292,27 @@ const State = struct {
             .{ input_tokens, output_tokens },
         );
         try out.writer.writeAll("}}}\n");
+        return out.toOwnedSlice();
+    }
+
+    fn openrouterModels(self: *State, alloc: std.mem.Allocator, id: []const u8, object: std.json.ObjectMap) ![]u8 {
+        const config = (try parseProvider(object.get("provider"))) orelse return error.InvalidField;
+        const models = try self.provider_transport.listModels(alloc, config);
+        defer models.deinit(alloc);
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        try responseStart(&out.writer, id);
+        try out.writer.writeAll("{\"models\":[");
+        for (models.models, 0..) |model, index| {
+            if (index != 0) try out.writer.writeByte(',');
+            try out.writer.writeAll("{\"id\":");
+            try jsonString(&out.writer, model.id);
+            try out.writer.writeAll(",\"name\":");
+            try jsonString(&out.writer, model.name);
+            try out.writer.print(",\"context_length\":{d}}}", .{model.context_length});
+        }
+        try out.writer.writeAll("]}}\n");
         return out.toOwnedSlice();
     }
 
@@ -511,9 +533,16 @@ fn parseProvider(value: ?std.json.Value) RequestError!?openai.Config {
         .base_url = try requiredString(provider.object, "base_url", 2048),
         .model = try requiredString(provider.object, "model", 128),
         .credential_env = try requiredString(provider.object, "credential_env", 128),
+        .protect_data = try optionalBool(provider.object.get("protect_data"), false),
     };
     openai.validateConfig(config) catch return error.InvalidField;
     return config;
+}
+
+fn optionalBool(value: ?std.json.Value, default: bool) RequestError!bool {
+    const boolean = value orelse return default;
+    if (boolean != .bool) return error.InvalidField;
+    return boolean.bool;
 }
 
 fn parseKnowledge(
@@ -677,7 +706,7 @@ fn requestFailure(alloc: std.mem.Allocator, id: []const u8, err: anyerror) ![]u8
         error.NoSearchResult => responseError(alloc, id, "tool_not_searched", "select an exact result from the preceding search"),
         error.ToolNotFound => responseError(alloc, id, "tool_not_found", "selected tool is no longer available"),
         error.ThreadNotFound => responseError(alloc, id, "thread_not_found", "thread does not exist in this process"),
-        error.InvalidRequest, error.InvalidField => responseError(alloc, id, "invalid_field", "request contains a missing, invalid, or oversized field"),
+        error.InvalidRequest, error.InvalidField, error.InvalidProviderConfig => responseError(alloc, id, "invalid_field", "request contains a missing, invalid, or oversized field"),
         error.ProviderRequestTooLarge => responseError(alloc, id, "provider_request_too_large", "thread history exceeds the provider request limit"),
         error.ProviderResponseTooLarge => responseError(alloc, id, "provider_response_too_large", "provider response exceeds the configured limit"),
         error.ProviderCredentialUnavailable => responseError(alloc, id, "provider_credential_unavailable", "provider credential environment variable is missing, empty, or invalid"),
@@ -805,6 +834,25 @@ test "provider request exposes knowledge tools and parses one mutation" {
         error.InvalidProviderResponse,
         openai.parseResponse(std.testing.allocator, two_calls),
     );
+}
+
+test "OpenRouter model catalog stays behind the provider transport" {
+    const Fixture = struct {
+        fn list(_: ?*anyopaque, alloc: std.mem.Allocator, config: openai.Config) !openai.ModelCatalog {
+            try std.testing.expect(config.protect_data);
+            try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", config.base_url);
+            return openai.parseModelCatalog(alloc,
+                \\{"data":[{"id":"openai/gpt-oss-20b:free","name":"OpenAI: gpt-oss-20b (free)","context_length":131072,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}
+            );
+        }
+    };
+    var state: State = .{ .provider_transport = .{ .list_models_fn = Fixture.list } };
+    defer state.deinit(std.testing.allocator);
+    const response = try state.handle(std.testing.allocator, "{\"id\":\"models-1\",\"type\":\"openrouter_models\",\"provider\":{\"base_url\":\"https://openrouter.ai/api/v1\",\"model\":\"openrouter/free\",\"credential_env\":\"OPENROUTER_API_KEY\",\"protect_data\":true}}");
+    defer std.testing.allocator.free(response);
+    try expectValidResponse(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"openai/gpt-oss-20b:free\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"context_length\":131072") != null);
 }
 
 test "provider fixture receives thread history and returns parsed content and usage" {

@@ -53,6 +53,16 @@ same URL/profile path without vendor login code. Requests and responses are
 each capped at 1 MiB, redirects are not followed, and requests time out after
 60 seconds.
 
+`openrouter_models` lazily fetches OpenRouter's live free catalog, restricted
+to tool-capable models with a ZDR endpoint. OpenRouter profiles set
+`protect_data: true`; the sidecar accepts that flag only for OpenRouter HTTPS
+hosts and adds `provider.data_collection: "deny"` plus `provider.zdr: true` to
+Chat Completions requests:
+
+```json
+{"id":"models-1","type":"openrouter_models","provider":{"base_url":"https://openrouter.ai/api/v1","model":"openrouter/free","credential_env":"OPENROUTER_API_KEY","protect_data":true}}
+```
+
 This transport is non-streaming and accepts assistant text plus standard
 `prompt_tokens`/`completion_tokens` usage. Provider turns advertise explicit
 `create_knowledge_page` and `update_knowledge_page` tools, parse at most one

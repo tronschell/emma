@@ -29,6 +29,23 @@ pub enum AgentRequest {
         thread: Thread,
         text: String,
     },
+    ListOpenRouterModels,
+    SelectOpenRouterModel {
+        model_id: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenRouterModel {
+    pub id: String,
+    pub name: String,
+    pub context_length: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenRouterCatalog {
+    pub selected_model: Option<String>,
+    pub models: Vec<OpenRouterModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +105,8 @@ pub struct AgentAnalysis {
 pub enum AgentResponse {
     Message(AgentMessage),
     Analysis(AgentAnalysis),
+    OpenRouterCatalog(OpenRouterCatalog),
+    OpenRouterModelSelected(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -137,6 +156,11 @@ enum Command {
     SaveToKnowledge {
         thread_id: ThreadId,
         reply: Reply<KnowledgePage>,
+    },
+    ListOpenRouterModels(Reply<OpenRouterCatalog>),
+    SelectOpenRouterModel {
+        model_id: String,
+        reply: Reply<String>,
     },
 }
 
@@ -223,6 +247,26 @@ impl LiveClient {
             .recv()
             .map_err(|_| LiveError::new("Emma runtime stopped while saving the analysis"))?
     }
+
+    pub fn list_openrouter_models(&self) -> Result<OpenRouterCatalog, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::ListOpenRouterModels(reply))
+            .map_err(|_| LiveError::new("Emma runtime stopped before loading OpenRouter models"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while loading OpenRouter models"))?
+    }
+
+    pub fn select_openrouter_model(&self, model_id: String) -> Result<String, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SelectOpenRouterModel { model_id, reply })
+            .map_err(|_| LiveError::new("Emma runtime stopped before selecting the model"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while selecting the model"))?
+    }
 }
 
 pub fn start_live_runtime<A>(
@@ -292,6 +336,30 @@ where
             Command::SaveToKnowledge { thread_id, reply } => {
                 let _ = reply.send(self.save_to_knowledge(thread_id));
             }
+            Command::ListOpenRouterModels(reply) => {
+                let _ = reply.send(self.list_openrouter_models());
+            }
+            Command::SelectOpenRouterModel { model_id, reply } => {
+                let _ = reply.send(self.select_openrouter_model(model_id));
+            }
+        }
+    }
+
+    fn list_openrouter_models(&mut self) -> Result<OpenRouterCatalog, LiveError> {
+        match (self.agent)(AgentRequest::ListOpenRouterModels)? {
+            AgentResponse::OpenRouterCatalog(catalog) => Ok(catalog),
+            _ => Err(LiveError::new(
+                "agent returned an unexpected response for the OpenRouter catalog",
+            )),
+        }
+    }
+
+    fn select_openrouter_model(&mut self, model_id: String) -> Result<String, LiveError> {
+        match (self.agent)(AgentRequest::SelectOpenRouterModel { model_id })? {
+            AgentResponse::OpenRouterModelSelected(model_id) => Ok(model_id),
+            _ => Err(LiveError::new(
+                "agent returned an unexpected response after selecting an OpenRouter model",
+            )),
         }
     }
 
@@ -733,6 +801,9 @@ mod tests {
                     subagent_count: 0,
                 }))
             }
+            AgentRequest::ListOpenRouterModels | AgentRequest::SelectOpenRouterModel { .. } => {
+                unreachable!()
+            }
         };
         let mut runtime = Runtime::new(thread_root.clone(), knowledge_root.clone(), agent);
 
@@ -807,6 +878,9 @@ mod tests {
                 ))
             }
             AgentRequest::Analyze { .. } => unreachable!(),
+            AgentRequest::ListOpenRouterModels | AgentRequest::SelectOpenRouterModel { .. } => {
+                unreachable!()
+            }
         };
         let mut runtime = Runtime::new(root.join("threads"), root.join("knowledge"), agent);
         let research = runtime.create_knowledge_base("Research".into()).unwrap();

@@ -64,6 +64,9 @@ or stale analysis cannot overwrite a newer page.
 The sidecar uses newline-delimited JSON over stdio so UI and agent lifetimes are
 independent. Provider configuration is OpenAI-compatible base URL, model, and a
 credential reference supplied by the host; there is no Vercel login surface.
+The OpenRouter catalog is fetched lazily through the Zig network boundary.
+Only free tool-capable models with a ZDR endpoint are offered, and selected
+OpenRouter turns require both no provider data collection and zero retention.
 MCP servers remain disconnected until needed. The model first sees server/tool
 metadata, calls `mcp_search_tools`, selects one exact tool, and receives only
 that schema on the next step.

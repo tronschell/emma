@@ -8,7 +8,8 @@ use std::{
 
 use emma_core::{
     AgentAnalysis, AgentKnowledgeMutation, AgentMessage, AgentRequest, AgentResponse, AgentSource,
-    LiveClient, LiveError, Thread, ThreadId, ThreadRole, start_live_runtime,
+    LiveClient, LiveError, OpenRouterCatalog, OpenRouterModel, Thread, ThreadId, ThreadRole,
+    start_live_runtime,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -16,6 +17,9 @@ const MAX_SIDECAR_TITLE_BYTES: usize = 256;
 const MAX_SIDECAR_MESSAGES: usize = 256;
 const MAX_SIDECAR_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_SIDECAR_HISTORY_BYTES: usize = 96 * 1024;
+const MAX_OPENROUTER_MODELS: usize = 64;
+const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const OPENROUTER_CREDENTIAL_ENV: &str = "OPENROUTER_API_KEY";
 
 pub fn start() -> Result<LiveClient, LiveError> {
     let data_root = match env::var_os("EMMA_DATA_DIR") {
@@ -58,6 +62,7 @@ fn provider_config_from_values(
     match (base_url, model, credential_env) {
         (None, None, None) => Ok(None),
         (Some(base_url), Some(model), Some(credential_env)) => Ok(Some(ProviderConfig {
+            protect_data: is_openrouter_base_url(&base_url),
             base_url,
             model,
             credential_env,
@@ -83,6 +88,7 @@ struct Sidecar {
     provider: Option<ProviderConfig>,
     io: Option<SidecarIo>,
     thread_ids: HashMap<ThreadId, String>,
+    openrouter_models: Vec<OpenRouterModel>,
     next_request_id: u64,
 }
 
@@ -93,6 +99,7 @@ impl Sidecar {
             provider,
             io: None,
             thread_ids: HashMap::new(),
+            openrouter_models: Vec::new(),
             next_request_id: 1,
         }
     }
@@ -190,7 +197,87 @@ impl Sidecar {
                     subagent_count: artifact.subagent_count,
                 }))
             }
+            AgentRequest::ListOpenRouterModels => self
+                .list_openrouter_models()
+                .map(AgentResponse::OpenRouterCatalog),
+            AgentRequest::SelectOpenRouterModel { model_id } => self
+                .select_openrouter_model(model_id)
+                .map(AgentResponse::OpenRouterModelSelected),
         }
+    }
+
+    fn list_openrouter_models(&mut self) -> Result<OpenRouterCatalog, LiveError> {
+        let id = self.request_id();
+        let mut provider = ProviderConfig::openrouter("openrouter/free");
+        if let Some(configured) = self
+            .provider
+            .as_ref()
+            .filter(|provider| provider.is_openrouter())
+        {
+            provider
+                .credential_env
+                .clone_from(&configured.credential_env);
+        }
+        let request = OpenRouterModelsRequest {
+            id: &id,
+            kind: "openrouter_models",
+            provider: &provider,
+        };
+        let response: OpenRouterModelsResult = self.exchange(&id, &request)?;
+        if response.models.len() > MAX_OPENROUTER_MODELS {
+            return Err(LiveError::new(
+                "OpenRouter returned more free models than Emma accepts",
+            ));
+        }
+        let mut models = Vec::with_capacity(response.models.len());
+        for model in response.models {
+            validate_openrouter_model(&model)?;
+            if models
+                .iter()
+                .any(|existing: &OpenRouterModel| existing.id == model.id)
+            {
+                return Err(LiveError::new(
+                    "OpenRouter returned a duplicate free model ID",
+                ));
+            }
+            models.push(OpenRouterModel {
+                id: model.id,
+                name: model.name,
+                context_length: model.context_length,
+            });
+        }
+        models.sort_by(|left, right| left.name.cmp(&right.name));
+        self.openrouter_models.clone_from(&models);
+        Ok(OpenRouterCatalog {
+            selected_model: self
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.is_openrouter().then(|| provider.model.clone())),
+            models,
+        })
+    }
+
+    fn select_openrouter_model(&mut self, model_id: String) -> Result<String, LiveError> {
+        if !self
+            .openrouter_models
+            .iter()
+            .any(|model| model.id == model_id)
+        {
+            return Err(LiveError::new(
+                "reload the OpenRouter catalog before selecting that model",
+            ));
+        }
+        if let Some(provider) = self
+            .provider
+            .as_mut()
+            .filter(|provider| provider.is_openrouter())
+        {
+            provider.model.clone_from(&model_id);
+            provider.protect_data = true;
+        } else {
+            self.provider = Some(ProviderConfig::openrouter(model_id.clone()));
+        }
+        Ok(model_id)
     }
 
     fn finish_thread_message(
@@ -312,6 +399,57 @@ struct ProviderConfig {
     base_url: String,
     model: String,
     credential_env: String,
+    protect_data: bool,
+}
+
+impl ProviderConfig {
+    fn openrouter(model: impl Into<String>) -> Self {
+        Self {
+            base_url: OPENROUTER_BASE_URL.into(),
+            model: model.into(),
+            credential_env: OPENROUTER_CREDENTIAL_ENV.into(),
+            protect_data: true,
+        }
+    }
+
+    fn is_openrouter(&self) -> bool {
+        is_openrouter_base_url(&self.base_url)
+    }
+}
+
+fn is_openrouter_base_url(base_url: &str) -> bool {
+    let base_url = base_url.trim_end_matches('/');
+    [
+        "https://openrouter.ai/api/v1",
+        "https://eu.openrouter.ai/api/v1",
+        "https://us.openrouter.ai/api/v1",
+    ]
+    .iter()
+    .any(|known| base_url.eq_ignore_ascii_case(known))
+}
+
+fn validate_openrouter_model(model: &WireOpenRouterModel) -> Result<(), LiveError> {
+    let valid_id = model.id.len() <= 128
+        && model.id.split_once('/').is_some_and(|(author, slug)| {
+            !author.is_empty()
+                && !slug.is_empty()
+                && !slug.contains('/')
+                && model.id.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':')
+                })
+        })
+        && (model.id.ends_with(":free") || model.id == "openrouter/free");
+    if !valid_id
+        || model.name.trim().is_empty()
+        || model.name.len() > 256
+        || model.name.chars().any(char::is_control)
+        || !(1..=100_000_000).contains(&model.context_length)
+    {
+        return Err(LiveError::new(
+            "OpenRouter returned invalid free model metadata",
+        ));
+    }
+    Ok(())
 }
 
 fn bullets(items: &[String]) -> String {
@@ -464,6 +602,14 @@ struct AnalyzeRequest<'a> {
     sources: &'a [&'a str],
 }
 
+#[derive(Serialize)]
+struct OpenRouterModelsRequest<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    provider: &'a ProviderConfig,
+}
+
 #[derive(Deserialize)]
 struct Envelope<T> {
     id: Option<String>,
@@ -481,6 +627,18 @@ struct WireError {
 #[derive(Deserialize)]
 struct ThreadSummary {
     id: String,
+}
+
+#[derive(Deserialize)]
+struct OpenRouterModelsResult {
+    models: Vec<WireOpenRouterModel>,
+}
+
+#[derive(Deserialize)]
+struct WireOpenRouterModel {
+    id: String,
+    name: String,
+    context_length: u64,
 }
 
 #[derive(Deserialize)]
@@ -612,6 +770,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(provider.credential_env, "EMMA_API_KEY");
+        assert!(!provider.protect_data);
         let request = ThreadMessageRequest {
             id: "test",
             kind: "thread_message",
@@ -623,6 +782,64 @@ mod tests {
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["provider"]["model"], "model");
         assert_eq!(json["provider"]["credential_env"], "EMMA_API_KEY");
+
+        let openrouter = provider_config_from_values(
+            Some("https://openrouter.ai/api/v1/".into()),
+            Some("openai/gpt-oss-20b:free".into()),
+            Some("OPENROUTER_API_KEY".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(openrouter.protect_data);
+        assert!(is_openrouter_base_url("https://OPENROUTER.AI/api/v1"));
+    }
+
+    #[test]
+    fn only_catalogued_free_openrouter_models_can_be_selected() {
+        let mut sidecar = Sidecar::new(PathBuf::from("unused"), None);
+        assert!(
+            sidecar
+                .select_openrouter_model("vendor/paid".into())
+                .is_err()
+        );
+        let model = OpenRouterModel {
+            id: "openai/gpt-oss-20b:free".into(),
+            name: "OpenAI: gpt-oss-20b (free)".into(),
+            context_length: 131_072,
+        };
+        sidecar.openrouter_models.push(model.clone());
+        assert_eq!(
+            sidecar.select_openrouter_model(model.id.clone()).unwrap(),
+            model.id
+        );
+        let provider = sidecar.provider.unwrap();
+        assert!(provider.protect_data);
+        assert_eq!(provider.base_url, OPENROUTER_BASE_URL);
+        assert_eq!(provider.credential_env, OPENROUTER_CREDENTIAL_ENV);
+
+        let mut regional = Sidecar::new(
+            PathBuf::from("unused"),
+            Some(ProviderConfig {
+                base_url: "https://eu.openrouter.ai/api/v1".into(),
+                model: "vendor/old:free".into(),
+                credential_env: "EMMA_EU_OPENROUTER_KEY".into(),
+                protect_data: true,
+            }),
+        );
+        regional.openrouter_models.push(model.clone());
+        regional.select_openrouter_model(model.id).unwrap();
+        let provider = regional.provider.unwrap();
+        assert_eq!(provider.base_url, "https://eu.openrouter.ai/api/v1");
+        assert_eq!(provider.credential_env, "EMMA_EU_OPENROUTER_KEY");
+
+        assert!(
+            validate_openrouter_model(&WireOpenRouterModel {
+                id: "vendor/model".into(),
+                name: "Paid".into(),
+                context_length: 1,
+            })
+            .is_err()
+        );
     }
 
     #[test]

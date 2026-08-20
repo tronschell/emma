@@ -57,6 +57,22 @@ export EMMA_PROVIDER_CREDENTIAL_ENV=EMMA_API_KEY
 export EMMA_API_KEY=your-key-or-local-placeholder
 ```
 
+For OpenRouter, set its standard key and use the model picker in a thread's
+right inspector. Emma loads the live free, tool-capable catalog and limits it
+to models advertising a zero-data-retention endpoint:
+
+```sh
+export OPENROUTER_API_KEY=your-openrouter-key
+```
+
+Selecting a free model shows a privacy warning. Emma sends OpenRouter's
+`provider.data_collection: "deny"` and `provider.zdr: true` controls on every
+model turn, so a request fails instead of falling back to a provider that may
+collect the prompt or retain it. OpenRouter account-level input/output logging
+and product-improvement settings still apply; review them at
+`https://openrouter.ai/settings/privacy`. Model selection currently lasts for
+the running app session.
+
 This checkout has only Xcode Command Line Tools, so native shader compilation
 cannot find `metal`. Install full Xcode for the standard command, or use
 `--features gpui_platform/runtime_shaders` for local validation.
