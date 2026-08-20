@@ -1,3 +1,5 @@
+import { matchesLocalAlias } from "./brand-data";
+
 export type BrandSurface = "importer" | "provider";
 export type ModelSource = "openrouter" | "local";
 
@@ -141,10 +143,4 @@ export function brandForModel(modelId: string, source?: ModelSource): BrandDefin
   if (openRouterBrand) return openRouterBrand;
   if (source === "openrouter" || (!source && value.includes("/"))) return undefined;
   return providerBrands.find((brand) => brand.localAliases?.some((alias) => matchesLocalAlias(value, alias)));
-}
-
-function matchesLocalAlias(value: string, alias: string): boolean {
-  if (value === alias) return true;
-  if (!value.startsWith(alias)) return false;
-  return /^(?:[0-9]|[-:._])/.test(value.slice(alias.length));
 }

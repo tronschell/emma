@@ -14,6 +14,17 @@ import { overlayBounds } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
 import type { Snapshot } from "../src/types";
 import { BoundedLines, parseHostResponse } from "../main/ndjson";
+import { brandRenderData, matchesLocalAlias } from "../src/brand-data";
+
+test("brand matching keeps versioned local IDs bounded and render data has a neutral fallback", () => {
+  assert.equal(matchesLocalAlias("qwen3:8b", "qwen"), true);
+  assert.equal(matchesLocalAlias("llama3.2", "llama"), true);
+  assert.equal(matchesLocalAlias("gemma3", "gemma"), true);
+  assert.equal(matchesLocalAlias("ernie4.5", "ernie"), true);
+  assert.equal(matchesLocalAlias("gemmatic", "gemma"), false);
+  assert.deepEqual(brandRenderData(undefined), { src: undefined, fallback: "◇" });
+  assert.deepEqual(brandRenderData({ fallback: "Q", asset: { src: "/qwen.svg" } }), { src: "/qwen.svg", fallback: "Q" });
+});
 
 test("IPC accepts only exact allowlisted payloads", () => {
   assert.deepEqual(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello" } }), {
