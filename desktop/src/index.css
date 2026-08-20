@@ -87,7 +87,7 @@ i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; backgrou
 .activity header, .activity footer { display: flex; justify-content: space-between; color: #737169; font: 6px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .08em; }
 .activity header b { color: #9d9588; }
 .activity-scroll { overflow-x: auto; padding: 7px 0 6px; scrollbar-width: thin; }
-.heatmap { display: flex; gap: 2px; width: max-content; min-width: 100%; }
+.heatmap { display: flex; justify-content: space-between; gap: 2px; width: 100%; min-width: max-content; }
 .heat { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 1px; background: #242521; }
 .heat-1 { background: #374d47; }.heat-2 { background: #536d72; }.heat-3 { background: #7b6d92; }.heat-4 { background: #ac8357; }
 .activity footer { justify-content: flex-start; gap: 9px; }
