@@ -178,6 +178,20 @@ impl Timestamp {
         self.0
     }
 
+    pub(crate) fn utc_components(self) -> (u32, u32, u32, u32, u32) {
+        let days = self.0.div_euclid(86_400);
+        let seconds = self.0.rem_euclid(86_400);
+        let (_, month, day) = civil_from_days(days);
+        let weekday = (days + 4).rem_euclid(7) as u32;
+        (
+            seconds as u32 / 3_600,
+            seconds as u32 / 60 % 60,
+            day,
+            month,
+            weekday,
+        )
+    }
+
     pub fn to_iso8601(self) -> String {
         let days = self.0.div_euclid(86_400);
         let seconds = self.0.rem_euclid(86_400);

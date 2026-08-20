@@ -41,6 +41,15 @@ slugs; format 1 migrates with none. Learned categories are derived from pages.
 Removing a user category never removes a page. The activity heatmap is computed
 from durable message and page timestamps.
 
+The Agent dashboard is a deterministic 60-day projection of those same local
+records. It ranks collected source domains and repeated base/category mappings,
+keeps page titles as expandable evidence, and never writes on its own. An
+approved discovery proposal creates an atomic Markdown scheduled-job record.
+The Rust worker evaluates its validated five-field UTC cron expression while
+Emma is running, claims each occurrence before starting work, and opens a normal
+durable thread for the result. Jobs never save knowledge or create skills
+silently; enable/disable changes cross the same validated host boundary.
+
 ## Dynamic knowledge artifacts
 
 A knowledge page is an ordered, agent-authored artifact document, not a flat
@@ -104,8 +113,9 @@ highlights locally. Provider transmission remains disabled until the user
 explicitly authorizes sending the whole visible frame to the selected endpoint.
 This slice still stores a page as summary/body/sources rather than ordered
 artifact blocks; generalized file/web capture and the artifact-renderer SDK are
-not implemented yet. Recurring jobs and a generalized quick-action executor are
-also outside this slice. Local Whisper/Parakeet-compatible
+not implemented yet. Scheduled jobs run only while Emma is open; missed
+occurrences coalesce into one due run when Emma next starts. A generalized
+quick-action executor is outside this slice. Local Whisper/Parakeet-compatible
 endpoint settings are present, but microphone capture and audio transport remain
 disabled. Signing, notarization, VoiceOver verification, and non-macOS support
 are release work.

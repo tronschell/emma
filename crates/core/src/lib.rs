@@ -1,9 +1,11 @@
 mod knowledge;
 mod live;
+mod scheduled;
 mod thread;
 
 pub use knowledge::*;
 pub use live::*;
+pub use scheduled::*;
 pub use thread::*;
 
 #[cfg(test)]

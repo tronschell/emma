@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentImportSource, KnowledgePage, OpenRouterCatalog, Snapshot, Thread } from "./types";
 import { activityDays } from "./activity";
+import { deriveAgentInsights } from "./agent-insights";
 import { canRemoveLocalModel, defaultSettings, validateSettings, type LocalModelProfile, type UserSettings } from "../shared/settings";
 import { defaultPaneLayout, validatePaneLayout, type PaneLayout } from "./layout";
 import { hasPersistedPrompt } from "./drafts";
 
-const empty: Snapshot = { threads: [], knowledgeBases: [], pages: [], warnings: [] };
+const empty: Snapshot = { threads: [], knowledgeBases: [], pages: [], scheduledJobs: [], warnings: [] };
+const SNAPSHOT_REFRESH_MS = 60_000;
+const AgentView = lazy(() => import("./AgentView"));
 const date = (value: string) => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 const time = (value: string) => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 
@@ -125,7 +128,15 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   useEffect(() => {
     queueMicrotask(() => void load());
     const listener = window.emma.onChanged(() => void load());
-    return () => window.emma.offChanged(listener);
+    const refresh = () => void load();
+    const refreshVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", refresh);
+    const interval = window.setInterval(refreshVisible, SNAPSHOT_REFRESH_MS);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      window.emma.offChanged(listener);
+    };
   }, [load]);
   return { snapshot, load, error, setError };
 }
@@ -138,7 +149,7 @@ function Workspace() {
     setPageId((current) => next.pages.some((item) => item.id === current) ? current : (next.pages[0]?.id ?? ""));
   }, []);
   const { snapshot, load, error, setError } = useSnapshot(pinSelections);
-  const [view, setView] = useState<"threads" | "knowledge" | "settings">("threads");
+  const [view, setView] = useState<"threads" | "knowledge" | "agent" | "scheduled" | "settings">("threads");
   const [busy, setBusy] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [newThreadOpen, setNewThreadOpen] = useState(false);
@@ -250,6 +261,8 @@ function Workspace() {
         <nav>
           <button title="Threads" disabled={uiBusy} className={view === "threads" ? "active" : ""} onClick={() => setView("threads")}><span>◫</span><span className="nav-label">Threads</span><b>{snapshot.threads.length}</b></button>
           <button title="Knowledge Base" disabled={uiBusy} className={view === "knowledge" ? "active" : ""} onClick={() => setView("knowledge")}><span>◇</span><span className="nav-label">Knowledge Base</span><b>{snapshot.pages.length}</b></button>
+          <button title="Agent" disabled={uiBusy} className={view === "agent" ? "active" : ""} onClick={() => setView("agent")}><span>⌁</span><span className="nav-label">Agent</span><b>60D</b></button>
+          <button title="Scheduled" disabled={uiBusy} className={view === "scheduled" ? "active" : ""} onClick={() => setView("scheduled")}><span>◷</span><span className="nav-label">Scheduled</span><b>{snapshot.scheduledJobs.length}</b></button>
           <button title="Settings" disabled={uiBusy} className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}><span>⚙</span><span className="nav-label">Settings</span><b>5</b></button>
         </nav>
         <div className="nav-foot"><span><i /> AGENT ONLINE</span><small>LEFT ⌥ ×2 · QUICK ASK</small></div>
@@ -267,11 +280,13 @@ function Workspace() {
           </>
         ) : view === "knowledge" ? (
           <KnowledgeList snapshot={snapshot} selected={page?.id} onSelect={setPageId} act={act} busy={uiBusy} />
-        ) : <SettingsNavigation page={settingsPage} onSelect={setSettingsPage} busy={uiBusy} />)}
+        ) : view === "agent" ? <AgentSummary snapshot={snapshot} />
+        : view === "scheduled" ? <ScheduledSummary snapshot={snapshot} />
+        : <SettingsNavigation page={settingsPage} onSelect={setSettingsPage} busy={uiBusy} />)}
         {!layout.listCollapsed && <ResizeHandle label="Resize item list" value={layout.listWidth} min={190} max={380} onChange={(listWidth) => pane({ listWidth })} />}
       </aside>
       <main id="content" className="content">
-        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} onSendingChange={setInteractionLocked} openModels={() => { setError(""); setModelsOpen(true); }} modelLabel={modelLabel} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} /> : <SettingsView snapshot={snapshot} page={settingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
+        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} onSendingChange={setInteractionLocked} openModels={() => { setError(""); setModelsOpen(true); }} modelLabel={modelLabel} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} /> : <SettingsView snapshot={snapshot} page={settingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
       {modelsOpen && <ModelDialog close={() => setModelsOpen(false)} act={act} workspaceError={error} busy={uiBusy} onSettingsChanged={setSettings} onManage={() => { setModelsOpen(false); setView("settings"); setSettingsPage("models"); }} />}
@@ -287,6 +302,23 @@ function ListHeader({ title, meta }: { title: string; meta: string }) {
 
 function Empty({ copy }: { copy: string }) {
   return <div className="empty"><Mark /><p>{copy}</p></div>;
+}
+
+function AgentLoading() {
+  return <div className="content-empty" role="status" aria-live="polite"><Mark /><p>Loading local Agent charts…</p></div>;
+}
+
+function AgentSummary({ snapshot }: { snapshot: Snapshot }) {
+  const insights = deriveAgentInsights(snapshot);
+  return <><ListHeader title="Agent" meta="LOCAL EVIDENCE" /><div className="agent-summary"><span>LEARNING WINDOW</span><strong>Last {insights.window.days} days</strong><p>{snapshot.pages.length} durable pages available; {insights.domains.reduce((sum, item) => sum + item.count, 0)} recent site signals.</p></div><div className="items insight-items">{insights.domains.slice(0, 5).map((item) => <div className="insight-item" key={item.domain}><strong>{item.domain}</strong><span>{item.count} collected page{item.count === 1 ? "" : "s"}</span></div>)}{!insights.domains.length && <Empty copy="Save web-backed knowledge and Emma will surface transparent patterns here." />}</div></>;
+}
+
+function ScheduledSummary({ snapshot }: { snapshot: Snapshot }) {
+  return <><ListHeader title="Scheduled" meta={`${snapshot.scheduledJobs.length} APPROVED`} /><div className="items scheduled-items">{snapshot.scheduledJobs.map((job) => <div className="insight-item" key={job.id}><strong>{job.title}</strong><span>{job.schedule} · {job.enabled ? "enabled" : "paused"}</span></div>)}{!snapshot.scheduledJobs.length && <Empty copy="No recurring jobs. Emma only creates one after you approve a proposal." />}</div></>;
+}
+
+function ScheduledView({ snapshot, act, busy }: { snapshot: Snapshot; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
+  return <section className="scheduled-view"><header><span>SCHEDULED / USER APPROVED</span><h2>Recurring jobs</h2><p>Each due run opens an ordinary durable thread; knowledge saving remains explicit. Pause or resume any job here.</p></header><div className="job-list">{snapshot.scheduledJobs.map((job) => <article key={job.id}><header><div><span>{job.enabled ? "ENABLED" : "PAUSED"}</span><h3>{job.title}</h3></div><label className="job-toggle"><input type="checkbox" checked={job.enabled} disabled={busy} onChange={(event) => void act("setScheduledJobEnabled", { jobId: job.id, enabled: String(event.target.checked) })} /><span>{job.enabled ? "On" : "Off"}</span></label></header><dl><div><dt>CRON · UTC</dt><dd>{job.schedule}</dd></div><div><dt>NEXT RUN</dt><dd>{date(job.nextRunAt)} · {time(job.nextRunAt)}</dd></div><div><dt>LAST RUN</dt><dd>{job.lastRunAt ? `${date(job.lastRunAt)} · ${time(job.lastRunAt)}` : "Not yet"}</dd></div><div><dt>SOURCES</dt><dd>{job.sourceDomains.join(", ") || "No domain restriction"}</dd></div></dl><p>{job.prompt}</p></article>)}{!snapshot.scheduledJobs.length && <Empty copy="Nothing is scheduled. Review Agent proposals and explicitly approve the ones you want." />}</div></section>;
 }
 
 function Activity({ snapshot }: { snapshot: Snapshot }) {

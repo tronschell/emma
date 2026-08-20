@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, Read, Write};
 
-use emma_core::{KnowledgeBaseId, LiveClient, PageId, ThreadId};
+use emma_core::{KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ThreadId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -77,6 +77,22 @@ struct UpdatePageParams {
     category: String,
     summary: String,
     body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateScheduledJobParams {
+    title: String,
+    schedule: String,
+    prompt: String,
+    source_domains: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetScheduledJobEnabledParams {
+    job_id: String,
+    enabled: String,
 }
 
 fn main() {
@@ -320,6 +336,29 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 let params: ThreadParams = params(request)?;
                 encode(call(live.save_to_knowledge(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
+            "createScheduledJob" => {
+                let params: CreateScheduledJobParams = params(request)?;
+                let source_domains: Vec<String> = serde_json::from_str(&params.source_domains)
+                    .map_err(|_| "scheduled job source domains are invalid".to_string())?;
+                encode(call(live.create_scheduled_job(
+                    params.title,
+                    params.schedule,
+                    params.prompt,
+                    source_domains,
+                ))?)
+            }
+            "setScheduledJobEnabled" => {
+                let params: SetScheduledJobEnabledParams = params(request)?;
+                let enabled = match params.enabled.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("scheduled job enabled state is invalid".into()),
+                };
+                encode(call(live.set_scheduled_job_enabled(
+                    ScheduledJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                    enabled,
                 ))?)
             }
             "listOpenRouterModels" => encode(call(live.list_openrouter_models())?),

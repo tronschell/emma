@@ -38,10 +38,24 @@ export interface KnowledgePage {
   sourceThreadId?: string;
 }
 
+export interface ScheduledJob {
+  id: string;
+  title: string;
+  schedule: string;
+  prompt: string;
+  sourceDomains: string[];
+  enabled: boolean;
+  createdAt: string;
+  nextRunAt: string;
+  lastRunAt?: string;
+  lastThreadId?: string;
+}
+
 export interface Snapshot {
   threads: Thread[];
   knowledgeBases: KnowledgeBase[];
   pages: KnowledgePage[];
+  scheduledJobs: ScheduledJob[];
   warnings: string[];
 }
 
