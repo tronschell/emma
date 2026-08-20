@@ -1,0 +1,6 @@
+/target
+/zig-cache
+/zig-out
+/.emma-data
+.DS_Store
+
