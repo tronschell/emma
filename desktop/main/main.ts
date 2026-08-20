@@ -1,4 +1,5 @@
 import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, screen, session, shell, systemPreferences, type Display } from "electron";
+import { Buffer } from "node:buffer";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -9,6 +10,7 @@ import { loadUiPlugins } from "./plugins";
 import { overlayBounds } from "./overlay";
 import { BoundedLines, parseHostResponse } from "./ndjson";
 import { defaultSettings, validateOverlayPreferences, type OverlayPreferences } from "../shared/settings";
+import { ScreenContextStore, validateScreenStrokes, type ScreenStroke } from "../shared/screen-context";
 
 // ponytail: whole snapshots cap at 16 MiB; paginate the host protocol before raising it.
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -81,7 +83,7 @@ let mainWindow: BrowserWindow | null = null;
 let overlay: BrowserWindow | null = null;
 let annotation: BrowserWindow | null = null;
 let annotationFrame: { image: string; width: number; height: number } | null = null;
-let annotationAttachment: { id: string; image: string } | null = null;
+const annotationAttachment = new ScreenContextStore();
 let annotating = false;
 let overlayPreferences: OverlayPreferences = { overlayPlacement: defaultSettings.overlayPlacement, notchGap: defaultSettings.notchGap };
 let overlayPreferencesReady = false;
@@ -230,6 +232,7 @@ function toggleOverlay() {
   window.on("blur", () => { if (!annotating) closeOverlay(window); });
   window.on("closed", () => {
     if (overlay === window) overlay = null;
+    annotationAttachment.clearAll();
     overlayBusy = false;
     closeOverlayWhenIdle = false;
   });
@@ -254,14 +257,23 @@ async function captureDisplay(display: Display) {
   const source = sources.find((item) => item.display_id === String(display.id));
   if (!source || source.thumbnail.isEmpty()) throw new Error("Emma could not capture this display. Check Screen Recording permission and try again.");
   const size = source.thumbnail.getSize();
-  return { image: `data:image/jpeg;base64,${source.thumbnail.toJPEG(82).toString("base64")}`, width: size.width, height: size.height };
+  const image = `data:image/jpeg;base64,${source.thumbnail.toJPEG(82).toString("base64")}`;
+  if (!validJpegDataUrl(image)) throw new Error("Emma captured an invalid screen frame");
+  return { image, width: size.width, height: size.height };
 }
 
-function compactScreenContext(value: unknown) {
-  if (!validJpegDataUrl(value)) throw new Error("Annotated screen is invalid or too large");
-  const image = nativeImage.createFromDataURL(value);
+function composeScreenContext(strokes: unknown) {
+  const frame = annotationFrame;
+  if (!frame || !validJpegDataUrl(frame.image)) throw new Error("Annotated screen frame is unavailable");
+  const paths = validateScreenStrokes(strokes, frame.width, frame.height).map((stroke: ScreenStroke) => {
+    const [first, ...rest] = stroke;
+    return `<path d="M ${first.x} ${first.y} ${rest.map((point) => `L ${point.x} ${point.y}`).join(" ")}" fill="none" stroke="#ffe84f" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>`;
+  }).join("");
+  const encodedFrame = frame.image.slice("data:image/jpeg;base64,".length);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${frame.width}" height="${frame.height}" viewBox="0 0 ${frame.width} ${frame.height}"><defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><image href="data:image/jpeg;base64,${encodedFrame}" width="${frame.width}" height="${frame.height}"/><g>${paths}</g></svg>`;
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  if (image.isEmpty()) throw new Error("Annotated screen could not be composited");
   const size = image.getSize();
-  if (image.isEmpty() || size.width < 1 || size.height < 1 || size.width > 10_000 || size.height > 10_000) throw new Error("Annotated screen dimensions are invalid");
   for (const width of [Math.min(size.width, 1440), 1200, 960, 720]) {
     for (const quality of [68, 54, 42, 32]) {
       const jpeg = image.resize({ width, quality: "good" }).toJPEG(quality);
@@ -336,12 +348,29 @@ if (primaryInstance) app.whenReady().then(() => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {
       throw new Error("IPC sender is not allowed");
     }
-    const request = validateRequest(value);
-    const result = await host!.request(request);
-    if (!["snapshot", "listOpenRouterModels"].includes(request.method)) {
-      for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:changed");
+    let request = validateRequest(value);
+    let screenContextId: string | undefined;
+    if (request.method === "sendMessage" && request.params.screenContextId !== undefined) {
+      if (event.sender !== overlay?.webContents) throw new Error("Screen context sender is not allowed");
+      screenContextId = request.params.screenContextId;
+      const attachment = annotationAttachment.claim(screenContextId);
+      request = {
+        method: request.method,
+        params: { threadId: request.params.threadId, content: request.params.content, screenContext: attachment.image },
+      };
     }
-    return result;
+    let delivered = false;
+    try {
+      const result = await host!.request(request);
+      delivered = true;
+      if (screenContextId) annotationAttachment.finish(screenContextId, true);
+      if (!(["snapshot", "listOpenRouterModels"] as string[]).includes(request.method)) {
+        for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:changed");
+      }
+      return result;
+    } finally {
+      if (screenContextId && !delivered) annotationAttachment.finish(screenContextId, false);
+    }
   });
   ipcMain.handle("emma:discover-agent-imports", (event) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Import discovery sender is not allowed");
@@ -365,7 +394,7 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:finish-screen-annotation", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== annotation?.webContents) throw new Error("Screen annotation sender is not allowed");
-    annotationAttachment = { id: randomUUID(), image: compactScreenContext(value) };
+    annotationAttachment.put({ id: randomUUID(), image: composeScreenContext(value) });
     closeAnnotation();
   });
   ipcMain.handle("emma:cancel-screen-annotation", (event) => {
@@ -374,11 +403,11 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:screen-annotation-status", (event) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents) throw new Error("Screen annotation sender is not allowed");
-    return annotationAttachment ? { id: annotationAttachment.id } : null;
+    return annotationAttachment.status();
   });
   ipcMain.handle("emma:clear-screen-annotation", (event, id: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents || typeof id !== "string") throw new Error("Screen annotation sender is not allowed");
-    if (annotationAttachment?.id === id) annotationAttachment = null;
+    annotationAttachment.clear(id);
   });
   ipcMain.on("emma:set-overlay-preferences", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {

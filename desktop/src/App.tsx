@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import type { AgentImportSource, KnowledgePage, OpenRouterCatalog, Snapshot, Thread } from "./types";
+import type { AgentImportSource, KnowledgePage, OpenRouterCatalog, ScreenStroke, Snapshot, Thread } from "./types";
 import { activityDays } from "./activity";
 import { deriveAgentInsights } from "./agent-insights";
 import { canRemoveLocalModel, defaultSettings, migrateQuickActionDestinations, resolveQuickActionDestination, validateSettings, type LocalModelProfile, type UserSettings } from "../shared/settings";
@@ -7,6 +7,7 @@ import { defaultPaneLayout, validatePaneLayout, type PaneLayout } from "./layout
 import { hasPersistedPrompt } from "./drafts";
 import { brandForImporter, brandForModel, brandForProvider, type BrandDefinition } from "./brands";
 import { brandRenderData } from "./brand-data";
+import { authorizedScreenContextId } from "../shared/screen-context";
 
 const empty: Snapshot = { threads: [], knowledgeBases: [], pages: [], scheduledJobs: [], warnings: [] };
 const SNAPSHOT_REFRESH_MS = 60_000;
@@ -62,15 +63,17 @@ function App() {
 
 function ScreenAnnotation() {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const background = useRef<HTMLImageElement | null>(null);
   const drawing = useRef(false);
+  const strokes = useRef<ScreenStroke[]>([]);
+  const dimensions = useRef<{ width: number; height: number } | null>(null);
+  const [image, setImage] = useState("");
   const [drawn, setDrawn] = useState(false);
   const [error, setError] = useState("");
-  const redraw = useCallback(() => {
+  const clear = useCallback(() => {
     const target = canvas.current;
-    const image = background.current;
-    if (!target || !image) return;
-    target.getContext("2d")?.drawImage(image, 0, 0, target.width, target.height);
+    if (!target) return;
+    target.getContext("2d")?.clearRect(0, 0, target.width, target.height);
+    strokes.current = [];
     setDrawn(false);
   }, []);
   useEffect(() => {
@@ -81,12 +84,11 @@ function ScreenAnnotation() {
       if (!target) return;
       target.width = frame.width;
       target.height = frame.height;
-      const image = new Image();
-      image.onload = () => { background.current = image; redraw(); };
-      image.src = frame.image;
+      dimensions.current = { width: frame.width, height: frame.height };
+      setImage(frame.image);
     }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     return () => removeEventListener("keydown", cancel);
-  }, [redraw]);
+  }, []);
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const target = event.currentTarget;
     const rect = target.getBoundingClientRect();
@@ -94,9 +96,10 @@ function ScreenAnnotation() {
   };
   const begin = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const context = event.currentTarget.getContext("2d");
-    if (!context || !background.current) return;
+    if (!context || !dimensions.current) return;
     const { x, y, scale } = point(event);
     drawing.current = true;
+    strokes.current.push([{ x, y }]);
     event.currentTarget.setPointerCapture(event.pointerId);
     context.beginPath(); context.moveTo(x, y);
     context.lineCap = "round"; context.lineJoin = "round"; context.lineWidth = 5 * scale;
@@ -107,16 +110,21 @@ function ScreenAnnotation() {
     const context = event.currentTarget.getContext("2d");
     if (!context) return;
     const { x, y } = point(event);
+    strokes.current.at(-1)?.push({ x, y });
     context.lineTo(x, y); context.stroke();
     setDrawn(true);
   };
+  const endStroke = () => {
+    drawing.current = false;
+    if (strokes.current.at(-1)?.length === 1) strokes.current.pop();
+    setDrawn(strokes.current.length > 0);
+  };
   const finish = async () => {
-    const target = canvas.current;
-    if (!target || !drawn) return;
-    try { await window.emma.finishScreenAnnotation(target.toDataURL("image/jpeg", .84)); }
+    if (!drawn || !strokes.current.length) return;
+    try { await window.emma.finishScreenAnnotation(strokes.current); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <main className="screen-annotation"><canvas ref={canvas} aria-label="Draw yellow screen highlights" onPointerDown={begin} onPointerMove={draw} onPointerUp={() => { drawing.current = false; }} onPointerCancel={() => { drawing.current = false; }} /><div className="annotation-toolbar"><div><strong>YELLOW HIGHLIGHT</strong><span>Draw over the screen · Esc cancels</span></div><small>LOCAL PREVIEW · PROVIDER TRANSFER NOT AUTHORIZED</small><button type="button" onClick={redraw} disabled={!drawn}>Clear</button><button type="button" onClick={() => void window.emma.cancelScreenAnnotation()}>Cancel</button><button type="button" className="annotation-done" onClick={() => void finish()} disabled={!drawn}>Keep locally</button></div>{error && <p className="annotation-error" role="alert">{error}</p>}</main>;
+  return <main className="screen-annotation"><img src={image} alt="Captured screen" /><canvas ref={canvas} aria-label="Draw yellow screen highlights" onPointerDown={begin} onPointerMove={draw} onPointerUp={endStroke} onPointerCancel={endStroke} /><div className="annotation-toolbar"><div><strong>YELLOW HIGHLIGHT</strong><span>Draw over the screen · Esc cancels</span></div><small>LOCAL PREVIEW · PROVIDER TRANSFER OFF UNTIL CHECKED</small><button type="button" onClick={clear} disabled={!drawn}>Clear</button><button type="button" onClick={() => void window.emma.cancelScreenAnnotation()}>Cancel</button><button type="button" className="annotation-done" onClick={() => void finish()} disabled={!drawn}>Keep locally</button></div>{error && <p className="annotation-error" role="alert">{error}</p>}</main>;
 }
 
 function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
@@ -669,8 +677,10 @@ function Overlay() {
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(readSettings);
   const [annotationId, setAnnotationId] = useState("");
+  const [attachAnnotation, setAttachAnnotation] = useState(false);
   const thread = snapshot.threads[0];
   const recent = useMemo(() => thread?.messages.at(-1), [thread]);
+  const screenContextId = authorizedScreenContextId(annotationId, attachAnnotation);
   useEffect(() => {
     if (message) localStorage.setItem(OVERLAY_DRAFT_KEY, message);
     else localStorage.removeItem(OVERLAY_DRAFT_KEY);
@@ -685,9 +695,11 @@ function Overlay() {
     setBusy(true); setError("");
     let active = thread;
     const previousMessageCount = active?.messages.length ?? 0;
+    const usedAnnotation = Boolean(annotationId && attachAnnotation);
     try {
       active ??= await window.emma.request<Thread>("createThread");
-      await window.emma.request("sendMessage", { threadId: active.id, content });
+      await window.emma.request("sendMessage", { threadId: active.id, content, ...(screenContextId ? { screenContextId } : {}) });
+      if (usedAnnotation) { setAnnotationId(""); setAttachAnnotation(false); }
       await load();
     } catch (reason) {
       const latest = await window.emma.request<Snapshot>("snapshot").catch(() => undefined);
@@ -707,12 +719,14 @@ function Overlay() {
     if (!action || busy) return;
     window.emma.setOverlayBusy(true);
     setBusy(true); setError("");
+    const usedAnnotation = Boolean(annotationId && attachAnnotation);
     try {
       const created = await window.emma.request<Thread>("createThread");
       const destination = resolveQuickActionDestination(action.destinationKnowledgeBaseId, snapshot.knowledgeBases) || snapshot.knowledgeBases[0]?.id || "default";
       await window.emma.request("selectThreadKnowledgeBase", { threadId: created.id, knowledgeBaseId: destination });
       await window.emma.request("selectThreadSources", { threadId: created.id, knowledgeBaseIds: JSON.stringify([destination]) });
-      await window.emma.request("sendMessage", { threadId: created.id, content: action.prompt });
+      await window.emma.request("sendMessage", { threadId: created.id, content: action.prompt, ...(screenContextId ? { screenContextId } : {}) });
+      if (usedAnnotation) { setAnnotationId(""); setAttachAnnotation(false); }
       if (action.saveToKnowledge) {
         const page = await window.emma.request<KnowledgePage>("saveToKnowledge", { threadId: created.id });
         if (action.category) {
@@ -723,11 +737,14 @@ function Overlay() {
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { window.emma.setOverlayBusy(false); setBusy(false); }
-  }, [busy, load, setError, settings, snapshot.knowledgeBases]);
+  }, [annotationId, attachAnnotation, busy, load, screenContextId, setError, settings, snapshot.knowledgeBases]);
   useEffect(() => { const listener = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && /^[123]$/.test(event.key)) { event.preventDefault(); void runAction(Number(event.key) - 1); } }; addEventListener("keydown", listener); return () => removeEventListener("keydown", listener); }, [runAction]);
   useEffect(() => { const reload = () => setSettings(readSettings()); addEventListener("storage", reload); addEventListener("focus", reload); return () => { removeEventListener("storage", reload); removeEventListener("focus", reload); }; }, []);
   useEffect(() => {
-    const refresh = () => void window.emma.screenAnnotationStatus().then((status) => setAnnotationId(status?.id ?? "")).catch(() => setAnnotationId(""));
+    const refresh = () => void window.emma.screenAnnotationStatus().then((status) => {
+      const next = status?.id ?? "";
+      setAnnotationId((current) => { if (current !== next) setAttachAnnotation(false); return next; });
+    }).catch(() => { setAnnotationId(""); setAttachAnnotation(false); });
     refresh(); addEventListener("focus", refresh); return () => removeEventListener("focus", refresh);
   }, []);
   useEffect(() => {
@@ -743,8 +760,8 @@ function Overlay() {
   }, [settings.notchGap, settings.overlayPlacement]);
   const overlayStyle = { "--notch-gap": `${settings.notchGap}px` } as CSSProperties;
   const startDrawing = async () => { try { await window.emma.startScreenAnnotation(); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } };
-  const clearDrawing = async () => { if (!annotationId) return; await window.emma.clearScreenAnnotation(annotationId); setAnnotationId(""); };
-  return <main className="overlay" data-placement={settings.overlayPlacement} style={overlayStyle} role="dialog" aria-label="Emma quick thread"><div className="notch-glow" aria-hidden="true" /><header><div className="brand"><Mark /><strong>EMMA</strong></div><span><i /> QUICK THREAD</span></header><div className="quick-strip">{settings.quickActions.map((action, index) => <button key={index} onClick={() => void runAction(index)} disabled={busy}><kbd>⌘{index + 1}</kbd>{action.label}</button>)}</div>{recent && <p className="overlay-recent"><b>{recent.role === "assistant" ? "Emma" : "You"}:</b> {recent.content}</p>}{annotationId && <div className="annotation-chip"><span>✦ SCREEN MARKUP READY · LOCAL ONLY</span><button type="button" onClick={() => void clearDrawing()} aria-label="Discard screen markup">×</button></div>}<form onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="quick-message">Ask Emma</label><textarea autoFocus disabled={busy} id="quick-message" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Ask Emma anything…" rows={2} /><div><span>NORMAL THREAD · NOTHING SAVED TO KB</span><div className="overlay-actions"><button type="button" onClick={() => void startDrawing()} disabled={busy} title="Draw yellow highlights over the screen" aria-label="Draw on screen">✎</button><button type="button" disabled title="Local voice transport is disabled in this build" aria-label="Voice input unavailable">●</button><button disabled={busy || !message.trim()}>{busy ? "···" : "↑"}</button></div></div></form>{error && <button className="overlay-error" onClick={() => setError("")}>{error} ×</button>}</main>;
+  const clearDrawing = async () => { if (!annotationId) return; await window.emma.clearScreenAnnotation(annotationId); setAnnotationId(""); setAttachAnnotation(false); };
+  return <main className="overlay" data-placement={settings.overlayPlacement} style={overlayStyle} role="dialog" aria-label="Emma quick thread"><div className="notch-glow" aria-hidden="true" /><header><div className="brand"><Mark /><strong>EMMA</strong></div><span><i /> QUICK THREAD</span></header><div className="quick-strip">{settings.quickActions.map((action, index) => <button key={index} onClick={() => void runAction(index)} disabled={busy}><kbd>⌘{index + 1}</kbd>{action.label}</button>)}</div>{recent && <p className="overlay-recent"><b>{recent.role === "assistant" ? "Emma" : "You"}:</b> {recent.content}</p>}{annotationId && <div className="annotation-chip"><label><input type="checkbox" checked={attachAnnotation} onChange={(event) => setAttachAnnotation(event.currentTarget.checked)} /> SEND FULL VISIBLE SCREEN TO SELECTED MODEL ENDPOINT ON NEXT ASK</label><button type="button" onClick={() => void clearDrawing()} aria-label="Discard screen markup">×</button></div>}<form onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="quick-message">Ask Emma</label><textarea autoFocus disabled={busy} id="quick-message" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Ask Emma anything…" rows={2} /><div><span>NORMAL THREAD · NOTHING SAVED TO KB</span><div className="overlay-actions"><button type="button" onClick={() => void startDrawing()} disabled={busy} title="Draw yellow highlights over the screen" aria-label="Draw on screen">✎</button><button type="button" disabled title="Local voice transport is disabled in this build" aria-label="Voice input unavailable">●</button><button disabled={busy || !message.trim()}>{busy ? "···" : "↑"}</button></div></div></form>{error && <button className="overlay-error" onClick={() => setError("")}>{error} ×</button>}</main>;
 }
 
 export default App;

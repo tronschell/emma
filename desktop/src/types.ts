@@ -1,3 +1,5 @@
+import type { ScreenPoint, ScreenStroke } from "../shared/screen-context";
+
 export type ThreadRole = "user" | "assistant" | "system";
 
 export interface Message {
@@ -80,6 +82,8 @@ export interface UiPlugin {
   css: string;
 }
 
+export type { ScreenPoint, ScreenStroke };
+
 declare global {
   interface Window {
     emma: {
@@ -89,7 +93,7 @@ declare global {
       setOverlayBusy(value: boolean): void;
       startScreenAnnotation(): Promise<void>;
       getScreenAnnotationFrame(): Promise<{ image: string; width: number; height: number }>;
-      finishScreenAnnotation(value: string): Promise<void>;
+      finishScreenAnnotation(strokes: ScreenStroke[]): Promise<void>;
       cancelScreenAnnotation(): Promise<void>;
       screenAnnotationStatus(): Promise<{ id: string } | null>;
       clearScreenAnnotation(id: string): Promise<void>;

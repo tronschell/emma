@@ -111,6 +111,7 @@ impl Sidecar {
                 mut thread,
                 content,
                 knowledge,
+                screen_context,
             } => {
                 if thread.messages.last().is_some_and(|message| {
                     message.role == ThreadRole::User && message.content == content
@@ -135,6 +136,9 @@ impl Sidecar {
                     thread_id: &thread_id,
                     content: &content,
                     knowledge: &knowledge,
+                    screen_context: screen_context
+                        .as_ref()
+                        .map(|context| context.jpeg_data_url.as_str()),
                     provider: provider.as_ref(),
                 };
                 let started = Instant::now();
@@ -641,6 +645,8 @@ struct ThreadMessageRequest<'a> {
     content: &'a str,
     knowledge: &'a [WireKnowledgePage<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
+    screen_context: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<&'a ProviderConfig>,
 }
 
@@ -737,7 +743,7 @@ struct WireArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use emma_core::{ThreadMessage, Timestamp};
+    use emma_core::{ScreenContext, Thread, ThreadMessage, Timestamp};
 
     #[test]
     fn provider_profile_is_optional_but_not_partial() {
@@ -765,11 +771,27 @@ mod tests {
             thread_id: "thread-1",
             content: "hello",
             knowledge: &[],
+            screen_context: None,
             provider: Some(&provider),
         };
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["provider"]["model"], "model");
         assert_eq!(json["provider"]["credential_env"], "EMMA_API_KEY");
+
+        let context = ScreenContext::new("data:image/jpeg;base64,/9j/".into()).unwrap();
+        let request = ThreadMessageRequest {
+            id: "test",
+            kind: "thread_message",
+            thread_id: "thread-1",
+            content: "hello",
+            knowledge: &[],
+            screen_context: Some(&context.jpeg_data_url),
+            provider: None,
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap()["screen_context"],
+            "data:image/jpeg;base64,/9j/"
+        );
 
         let openrouter = provider_config_from_values(
             Some("https://openrouter.ai/api/v1/".into()),

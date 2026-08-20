@@ -2,7 +2,8 @@ import { Buffer } from "node:buffer";
 
 const MAX_HOST_REQUEST_BYTES = 128 * 1024;
 export const MAX_ANNOTATION_INPUT_CHARS = 16 * 1024 * 1024;
-export const MAX_SCREEN_CONTEXT_CHARS = 240 * 1024;
+// Keep the encoded image below the host's 128 KiB NDJSON request ceiling.
+export const MAX_SCREEN_CONTEXT_CHARS = 96 * 1024;
 
 export const methods = [
   "snapshot",
@@ -45,6 +46,10 @@ const fields: Record<Method, readonly string[]> = {
   selectFallbackModel: [],
 };
 
+const optionalFields: Partial<Record<Method, readonly string[]>> = {
+  sendMessage: ["screenContextId"],
+};
+
 export function validateRequest(value: unknown): Request {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid request");
   const request = value as Record<string, unknown>;
@@ -57,13 +62,15 @@ export function validateRequest(value: unknown): Request {
   const method = request.method as Method;
   const params = request.params as Record<string, unknown>;
   const expected = fields[method];
-  if (Object.keys(params).length !== expected.length || expected.some((key) => typeof params[key] !== "string")) {
+  const optional = optionalFields[method] ?? [];
+  const keys = Object.keys(params);
+  if (keys.length < expected.length || keys.length > expected.length + optional.length || expected.some((key) => typeof params[key] !== "string") || keys.some((key) => !expected.includes(key) && !optional.includes(key) || typeof params[key] !== "string")) {
     throw new Error("Invalid parameters");
   }
-  for (const key of expected) {
+  for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
     const optionalCredential = method === "selectLocalModel" && key === "credentialEnv";
-    if (text.length > 65_536 || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
+    if (text.length > (key === "screenContextId" ? 128 : 65_536) || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {
     throw new Error("Request is too large");

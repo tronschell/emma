@@ -7,6 +7,8 @@ const max_tools = 256;
 const max_imported_messages = 256;
 const max_imported_content_bytes = 96 * 1024;
 const max_relevant_pages = 4;
+const max_screen_context_bytes = 96 * 1024;
+const jpeg_data_url_prefix = "data:image/jpeg;base64,";
 
 const RequestError = error{
     InvalidRequest,
@@ -185,6 +187,7 @@ const State = struct {
         const content = try requiredString(object, "content", max_text_bytes);
         if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidField;
         const provider = try parseProvider(object.get("provider"));
+        const screen_context = try parseScreenContext(object.get("screen_context"));
         var knowledge_buffer: [max_relevant_pages]openai.KnowledgePage = undefined;
         const knowledge = try parseKnowledge(object.get("knowledge"), &knowledge_buffer);
         const thread = self.findThread(thread_id) orelse return error.ThreadNotFound;
@@ -194,7 +197,7 @@ const State = struct {
         var input_tokens = (input_bytes + 3) / 4;
         var output_tokens: usize = undefined;
         const assistant_content = if (provider) |config| content: {
-            const payload = try openai.buildRequest(alloc, config, thread.messages.items, content, knowledge);
+            const payload = try openai.buildRequest(alloc, config, thread.messages.items, content, knowledge, screen_context);
             defer alloc.free(payload);
             const reply = try self.provider_transport.send(alloc, config, payload);
             model = config.model;
@@ -202,7 +205,7 @@ const State = struct {
             output_tokens = reply.output_tokens;
             break :content reply.content;
         } else content: {
-            const reply = try fallbackReply(alloc, content, knowledge);
+            const reply = try fallbackReply(alloc, content, knowledge, screen_context);
             output_tokens = (reply.len + 3) / 4;
             break :content reply;
         };
@@ -535,6 +538,26 @@ fn optionalBool(value: ?std.json.Value, default: bool) RequestError!bool {
     return boolean.bool;
 }
 
+fn parseScreenContext(value: ?std.json.Value) RequestError!?[]const u8 {
+    const context = value orelse return null;
+    if (context != .string or context.string.len > max_screen_context_bytes or !std.unicode.utf8ValidateSlice(context.string)) return error.InvalidField;
+    if (!std.mem.startsWith(u8, context.string, jpeg_data_url_prefix)) return error.InvalidField;
+    const encoded = context.string[jpeg_data_url_prefix.len..];
+    if (encoded.len == 0 or encoded.len % 4 != 0) return error.InvalidField;
+    var padding: usize = 0;
+    for (encoded, 0..) |byte, index| {
+        switch (byte) {
+            'A'...'Z', 'a'...'z', '0'...'9', '+', '/' => if (padding != 0) return error.InvalidField,
+            '=' => {
+                padding += 1;
+                if (padding > 2 or index < encoded.len - 2) return error.InvalidField;
+            },
+            else => return error.InvalidField,
+        }
+    }
+    return context.string;
+}
+
 fn parseKnowledge(
     value: ?std.json.Value,
     buffer: *[max_relevant_pages]openai.KnowledgePage,
@@ -614,6 +637,7 @@ fn fallbackReply(
     alloc: std.mem.Allocator,
     content: []const u8,
     knowledge: []const openai.KnowledgePage,
+    screen_context: ?[]const u8,
 ) ![]u8 {
     const subject = titleFrom(content);
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -629,6 +653,7 @@ fn fallbackReply(
         }
         try out.writer.writeByte('.');
     }
+    if (screen_context != null) try out.writer.writeAll(" A local yellow screen annotation is attached to this turn; it was not sent to a provider.");
     try out.writer.writeAll(" This local fallback keeps the conversation in this thread; connect a provider for a model-generated answer.");
     return out.toOwnedSlice();
 }
@@ -846,6 +871,7 @@ test "provider fixture receives thread history and returns parsed content and us
             fixture.calls += 1;
             try std.testing.expectEqualStrings("fixture-model", config.model);
             try std.testing.expect(std.mem.indexOf(u8, payload, config.credential_env) == null);
+            try std.testing.expect(std.mem.indexOf(u8, payload, "image_url") == null);
 
             var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
             defer parsed.deinit();
@@ -885,6 +911,51 @@ test "provider fixture receives thread history and returns parsed content and us
     defer std.testing.allocator.free(rejected);
     try std.testing.expect(std.mem.indexOf(u8, rejected, "\"code\":\"invalid_field\"") != null);
     try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+}
+
+test "screen context stays local without a provider" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\"}");
+    defer std.testing.allocator.free(created);
+    const local = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Look\",\"screen_context\":\"data:image/jpeg;base64,/9j/\"}");
+    defer std.testing.allocator.free(local);
+    try std.testing.expect(std.mem.indexOf(u8, local, "local yellow screen annotation") != null);
+}
+
+test "provider payload includes screen context only when explicitly attached" {
+    const Fixture = struct {
+        calls: usize = 0,
+
+        fn send(raw_context: ?*anyopaque, alloc: std.mem.Allocator, _: openai.Config, payload: []const u8) anyerror!openai.Reply {
+            const fixture: *@This() = @ptrCast(@alignCast(raw_context.?));
+            fixture.calls += 1;
+            var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+            defer parsed.deinit();
+            const messages = parsed.value.object.get("messages").?.array.items;
+            const user = messages[messages.len - 1].object;
+            if (fixture.calls == 1) {
+                try std.testing.expect(user.get("content").? == .array);
+                const parts = user.get("content").?.array.items;
+                try std.testing.expectEqualStrings("image_url", parts[1].object.get("type").?.string);
+                try std.testing.expectEqualStrings("data:image/jpeg;base64,/9j/", parts[1].object.get("image_url").?.object.get("url").?.string);
+            } else {
+                try std.testing.expect(user.get("content").? == .string);
+            }
+            return openai.parseResponse(alloc, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        }
+    };
+
+    var fixture: Fixture = .{};
+    var state: State = .{ .provider_transport = .{ .context = &fixture, .send_fn = Fixture.send } };
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\"}");
+    defer std.testing.allocator.free(created);
+    const attached = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Look\",\"screen_context\":\"data:image/jpeg;base64,/9j/\",\"provider\":{\"base_url\":\"http://127.0.0.1:9999/v1\",\"model\":\"fixture\",\"credential_env\":\"EMMA_FIXTURE_KEY\"}}");
+    defer std.testing.allocator.free(attached);
+    const ordinary = try state.handle(std.testing.allocator, "{\"id\":\"3\",\"type\":\"thread_message\",\"thread_id\":\"thread-1\",\"content\":\"Again\",\"provider\":{\"base_url\":\"http://127.0.0.1:9999/v1\",\"model\":\"fixture\",\"credential_env\":\"EMMA_FIXTURE_KEY\"}}");
+    defer std.testing.allocator.free(ordinary);
+    try std.testing.expectEqual(@as(usize, 2), fixture.calls);
 }
 
 test "search returns compact metadata without schemas" {

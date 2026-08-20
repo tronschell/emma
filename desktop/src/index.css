@@ -367,6 +367,7 @@ i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; backgrou
 .overlay-actions { display: flex; gap: 5px; }.overlay-actions button:not(:last-child) { color: #817e73; background: #2a2b26; font-size: 10px; }
 .overlay-actions button:first-child { color: #f0d952; text-shadow: 0 0 9px #ffe94d88; }
 .annotation-chip { position: absolute; z-index: 4; right: 18px; bottom: 88px; display: flex; align-items: center; gap: 6px; padding: 5px 7px; color: #ebd95e; border: 1px solid #665d25; border-radius: 3px; background: #24210ee8; font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .07em; }
+.annotation-chip label { display: flex; align-items: center; gap: 5px; max-width: 280px; line-height: 1.3; }
 .annotation-chip button { padding: 0; color: #a59b52; background: transparent; font-size: 12px; }
 .notch-glow { position: absolute; z-index: 2; top: 0; left: 50%; width: 160px; height: 14px; pointer-events: none; opacity: .82; background: radial-gradient(circle at 18% 55%, #80cbbd 0 1px, transparent 1.5px) 0 0 / 6px 5px, radial-gradient(circle at 68% 45%, #ad8acc 0 1px, transparent 1.5px) 2px 1px / 7px 6px, linear-gradient(90deg, transparent, #72bbaa 18%, #a17cc1 48%, #d2a15d 74%, transparent); box-shadow: 0 3px 11px #9d7cc766, 0 2px 15px #78c5aa55; mask-image: linear-gradient(90deg, transparent, #000 14% 86%, transparent), linear-gradient(#000, transparent); animation: notch-glow 1s steps(24, end) infinite; will-change: transform; }
 @keyframes notch-glow { 0%, 100% { transform: translateX(-50%) scaleX(.94); } 34% { transform: translateX(calc(-50% - 3px)) scaleX(1); } 67% { transform: translateX(calc(-50% + 3px)) scaleX(.97); } }
@@ -383,7 +384,8 @@ i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; backgrou
 .overlay[data-placement="rails"] .annotation-chip { right: 13px; bottom: 7px; max-width: calc((100% - var(--notch-gap)) / 2 - 26px); }
 
 .screen-annotation { position: fixed; inset: 0; overflow: hidden; background: #050605; }
-.screen-annotation canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; touch-action: none; }
+.screen-annotation img { position: absolute; inset: 0; display: block; width: 100vw; height: 100vh; object-fit: fill; }
+.screen-annotation canvas { position: absolute; inset: 0; display: block; width: 100vw; height: 100vh; cursor: crosshair; touch-action: none; }
 .annotation-toolbar { position: fixed; z-index: 3; top: 15px; left: 50%; display: flex; align-items: center; gap: 9px; min-height: 45px; padding: 7px 8px 7px 12px; transform: translateX(-50%); color: #e7e4dc; border: 1px solid #44443b; border-radius: 7px; background: #11120fee; box-shadow: 0 14px 45px #000b, 0 0 24px #ffe84f1c; backdrop-filter: blur(20px); }
 .annotation-toolbar > div { display: grid; gap: 4px; min-width: 170px; }
 .annotation-toolbar strong, .annotation-toolbar small { color: #e9d757; font: 7px/1 "Departure Mono", ui-monospace, monospace; letter-spacing: .08em; }

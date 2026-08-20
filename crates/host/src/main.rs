@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, Read, Write};
 
-use emma_core::{KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ThreadId};
+use emma_core::{KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ScreenContext, ThreadId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -32,6 +32,7 @@ struct ThreadParams {
 struct MessageParams {
     thread_id: String,
     content: String,
+    screen_context: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -326,10 +327,25 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 ))?)
             }
             "sendMessage" => {
+                if request
+                    .params
+                    .get("screenContext")
+                    .is_some_and(|value| !value.is_string())
+                {
+                    return Err(
+                        "invalid sendMessage parameters: screen context must be a string".into(),
+                    );
+                }
                 let params: MessageParams = params(request)?;
+                let screen_context = params
+                    .screen_context
+                    .map(ScreenContext::new)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
                 encode(call(live.send_message(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                     params.content,
+                    screen_context,
                 ))?)
             }
             "saveToKnowledge" => {

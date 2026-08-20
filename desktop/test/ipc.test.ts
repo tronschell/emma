@@ -15,6 +15,7 @@ import { hasPersistedPrompt } from "../src/drafts";
 import type { Snapshot } from "../src/types";
 import { BoundedLines, parseHostResponse } from "../main/ndjson";
 import { brandRenderData, matchesLocalAlias } from "../src/brand-data";
+import { ScreenContextStore, authorizedScreenContextId, validateScreenStrokes } from "../shared/screen-context";
 
 test("brand matching keeps versioned local IDs bounded and render data has a neutral fallback", () => {
   assert.equal(matchesLocalAlias("qwen3:8b", "qwen"), true);
@@ -31,6 +32,8 @@ test("IPC accepts only exact allowlisted payloads", () => {
     method: "sendMessage",
     params: { threadId: "thread-123456789", content: "hello" },
   });
+  assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", screenContextId: "context-1" } }).params.screenContextId, "context-1");
+  assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", screenContext: "data:image/jpeg;base64,/9j/" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "shell", params: {} }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
@@ -56,6 +59,24 @@ test("screen context accepts only bounded JPEG data URLs", () => {
   assert.equal(validJpegDataUrl("data:image/jpeg;base64,/9j/"), true);
   assert.equal(validJpegDataUrl("data:image/png;base64,iVBORw0="), false);
   assert.equal(validJpegDataUrl("data:image/jpeg;base64,not base64"), false);
+});
+
+test("screen context strokes and delivery stay bounded and one-shot", () => {
+  assert.deepEqual(validateScreenStrokes([[{ x: 1, y: 2 }, { x: 3, y: 4 }]], 10, 10), [[{ x: 1, y: 2 }, { x: 3, y: 4 }]]);
+  assert.throws(() => validateScreenStrokes([[{ x: 1, y: 2, extra: 3 }, { x: 3, y: 4 }]], 10, 10), /invalid/);
+  assert.throws(() => validateScreenStrokes([[{ x: Number.NaN, y: 2 }, { x: 3, y: 4 }]], 10, 10), /invalid/);
+  const store = new ScreenContextStore();
+  store.put({ id: "context-1", image: "data:image/jpeg;base64,/9j/" });
+  assert.deepEqual(store.status(), { id: "context-1" });
+  assert.equal(authorizedScreenContextId("context-1", false), undefined);
+  assert.equal(authorizedScreenContextId("context-1", true), "context-1");
+  assert.equal(store.claim("context-1").image, "data:image/jpeg;base64,/9j/");
+  assert.throws(() => store.claim("context-1"), /unavailable/);
+  store.finish("context-1", false);
+  assert.deepEqual(store.status(), { id: "context-1" });
+  store.claim("context-1");
+  store.finish("context-1", true);
+  assert.equal(store.status(), null);
 });
 
 test("agent import discovery returns metadata without reading config contents", async () => {

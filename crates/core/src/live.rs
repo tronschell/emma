@@ -20,6 +20,8 @@ const MAX_AGENT_SUMMARY_BYTES: usize = 4 * 1024;
 const MAX_AGENT_BODY_BYTES: usize = 64 * 1024;
 const MAX_AGENT_CONTEXT_BODY_BYTES: usize = 8 * 1024;
 const MAX_AGENT_MESSAGE_BYTES: usize = 64 * 1024;
+pub const MAX_SCREEN_CONTEXT_BYTES: usize = 96 * 1024;
+const JPEG_DATA_URL_PREFIX: &str = "data:image/jpeg;base64,";
 
 #[derive(Clone, Debug)]
 pub enum AgentRequest {
@@ -27,6 +29,7 @@ pub enum AgentRequest {
         thread: Thread,
         content: String,
         knowledge: Vec<AgentKnowledgePage>,
+        screen_context: Option<ScreenContext>,
     },
     Analyze {
         thread: Thread,
@@ -65,6 +68,32 @@ pub struct AgentKnowledgePage {
     pub title: String,
     pub summary: String,
     pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenContext {
+    pub jpeg_data_url: String,
+}
+
+impl ScreenContext {
+    pub fn new(jpeg_data_url: String) -> Result<Self, LiveError> {
+        let encoded = jpeg_data_url
+            .strip_prefix(JPEG_DATA_URL_PREFIX)
+            .ok_or_else(|| LiveError::new("screen context must be a JPEG data URL"))?;
+        let content_len = encoded.trim_end_matches('=').len();
+        let padding = encoded.len() - content_len;
+        if jpeg_data_url.len() > MAX_SCREEN_CONTEXT_BYTES
+            || encoded.is_empty()
+            || !encoded.len().is_multiple_of(4)
+            || padding > 2
+            || !encoded[..content_len]
+                .bytes()
+                .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/'))
+        {
+            return Err(LiveError::new("screen context is invalid or too large"));
+        }
+        Ok(Self { jpeg_data_url })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +201,7 @@ enum Command {
     SendMessage {
         thread_id: ThreadId,
         content: String,
+        screen_context: Option<ScreenContext>,
         reply: Reply<Thread>,
     },
     SaveToKnowledge {
@@ -342,12 +372,18 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while updating the page"))?
     }
 
-    pub fn send_message(&self, thread_id: ThreadId, content: String) -> Result<Thread, LiveError> {
+    pub fn send_message(
+        &self,
+        thread_id: ThreadId,
+        content: String,
+        screen_context: Option<ScreenContext>,
+    ) -> Result<Thread, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
             .send(Command::SendMessage {
                 thread_id,
                 content,
+                screen_context,
                 reply,
             })
             .map_err(|_| LiveError::new("Emma runtime stopped before sending the message"))?;
@@ -566,9 +602,10 @@ where
             Command::SendMessage {
                 thread_id,
                 content,
+                screen_context,
                 reply,
             } => {
-                let _ = reply.send(self.send_message(thread_id, content));
+                let _ = reply.send(self.send_message(thread_id, content, screen_context));
             }
             Command::SaveToKnowledge { thread_id, reply } => {
                 let _ = reply.send(self.save_to_knowledge(thread_id));
@@ -627,7 +664,7 @@ where
             }
             job.last_thread_id = Some(thread.id.to_string());
             let _ = self.scheduled.save(&job);
-            let _ = self.send_message(thread.id, job.prompt.clone());
+            let _ = self.send_message(thread.id, job.prompt.clone(), None);
         }
     }
 
@@ -884,7 +921,12 @@ where
         Ok(page)
     }
 
-    fn send_message(&mut self, thread_id: ThreadId, content: String) -> Result<Thread, LiveError> {
+    fn send_message(
+        &mut self,
+        thread_id: ThreadId,
+        content: String,
+        screen_context: Option<ScreenContext>,
+    ) -> Result<Thread, LiveError> {
         validate_agent_text("prompt", &content, true, MAX_AGENT_MESSAGE_BYTES)?;
         let mut thread = self.threads.load(&thread_id).map_err(|error| {
             LiveError::new(format!("could not load thread {thread_id}: {error}"))
@@ -933,6 +975,7 @@ where
             thread: thread.clone(),
             content: content.clone(),
             knowledge,
+            screen_context,
         })?;
         let AgentResponse::Message(response) = response else {
             return Err(LiveError::new(
@@ -1090,9 +1133,11 @@ mod tests {
                 thread,
                 content,
                 knowledge,
+                screen_context,
             } => {
                 assert_eq!(thread.messages.len(), 1);
                 assert!(knowledge.is_empty());
+                assert!(screen_context.is_none());
                 Ok(AgentResponse::Message(AgentMessage {
                     content: format!("Fake reply to {content}"),
                     model: "fake".into(),
@@ -1133,7 +1178,7 @@ mod tests {
         let oversized = "x".repeat(MAX_AGENT_MESSAGE_BYTES + 1);
         assert!(
             runtime
-                .send_message(created.id.clone(), oversized)
+                .send_message(created.id.clone(), oversized, None)
                 .unwrap_err()
                 .to_string()
                 .contains("cannot exceed 65536 bytes")
@@ -1149,7 +1194,7 @@ mod tests {
         let stale_temp = thread_root.join(format!(".{}.tmp", created.id));
         fs::write(&stale_temp, "stale interrupted save").unwrap();
         let updated = runtime
-            .send_message(created.id.clone(), "hello".into())
+            .send_message(created.id.clone(), "hello".into(), None)
             .unwrap();
 
         assert_eq!(updated.id, created.id);

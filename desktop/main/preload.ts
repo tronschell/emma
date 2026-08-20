@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("emma", {
   setOverlayBusy: (value: boolean) => ipcRenderer.send("emma:set-overlay-busy", value),
   startScreenAnnotation: () => ipcRenderer.invoke("emma:start-screen-annotation"),
   getScreenAnnotationFrame: () => ipcRenderer.invoke("emma:get-screen-annotation-frame"),
-  finishScreenAnnotation: (value: string) => ipcRenderer.invoke("emma:finish-screen-annotation", value),
+  finishScreenAnnotation: (strokes: unknown) => ipcRenderer.invoke("emma:finish-screen-annotation", strokes),
   cancelScreenAnnotation: () => ipcRenderer.invoke("emma:cancel-screen-annotation"),
   screenAnnotationStatus: () => ipcRenderer.invoke("emma:screen-annotation-status"),
   clearScreenAnnotation: (id: string) => ipcRenderer.invoke("emma:clear-screen-annotation", id),

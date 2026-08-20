@@ -105,18 +105,19 @@ pub fn buildRequest(
     history: anytype,
     pending_user_content: []const u8,
     knowledge: []const KnowledgePage,
+    screen_context: ?[]const u8,
 ) ![]u8 {
     const knowledge_prompt = if (knowledge.len == 0) null else try buildKnowledgePrompt(alloc, knowledge);
     defer if (knowledge_prompt) |prompt| alloc.free(prompt);
     const buffer = try alloc.alloc(u8, max_request_bytes + 1);
     errdefer alloc.free(buffer);
     var writer = std.Io.Writer.fixed(buffer);
-    writeRequest(&writer, config, history, pending_user_content, knowledge_prompt) catch return error.ProviderRequestTooLarge;
+    writeRequest(&writer, config, history, pending_user_content, knowledge_prompt, screen_context) catch return error.ProviderRequestTooLarge;
     if (writer.end > max_request_bytes) return error.ProviderRequestTooLarge;
     return try alloc.realloc(buffer, writer.end);
 }
 
-fn writeRequest(writer: *std.Io.Writer, config: Config, history: anytype, pending_user_content: []const u8, knowledge_prompt: ?[]const u8) !void {
+fn writeRequest(writer: *std.Io.Writer, config: Config, history: anytype, pending_user_content: []const u8, knowledge_prompt: ?[]const u8, screen_context: ?[]const u8) !void {
     try writer.writeAll("{\"model\":");
     try std.json.Stringify.value(config.model, .{}, writer);
     try writer.writeAll(",\"messages\":[");
@@ -131,7 +132,7 @@ fn writeRequest(writer: *std.Io.Writer, config: Config, history: anytype, pendin
         emitted = true;
     }
     if (emitted) try writer.writeByte(',');
-    try writeMessage(writer, "user", pending_user_content);
+    try writeUserMessage(writer, pending_user_content, screen_context);
     try writer.writeByte(']');
     if (config.protect_data) try writer.writeAll(",\"provider\":{\"data_collection\":\"deny\",\"zdr\":true,\"require_parameters\":true}");
     try writer.writeAll(",\"stream\":false}");
@@ -156,6 +157,18 @@ fn writeMessage(writer: *std.Io.Writer, role: []const u8, content: []const u8) !
     try writer.writeAll(",\"content\":");
     try std.json.Stringify.value(content, .{}, writer);
     try writer.writeByte('}');
+}
+
+fn writeUserMessage(writer: *std.Io.Writer, content: []const u8, screen_context: ?[]const u8) !void {
+    if (screen_context) |image| {
+        try writer.writeAll("{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":");
+        try std.json.Stringify.value(content, .{}, writer);
+        try writer.writeAll("},{\"type\":\"image_url\",\"image_url\":{\"url\":");
+        try std.json.Stringify.value(image, .{}, writer);
+        try writer.writeAll("}}]}");
+        return;
+    }
+    try writeMessage(writer, "user", content);
 }
 
 pub fn parseResponse(alloc: std.mem.Allocator, body: []const u8) !Reply {
@@ -486,7 +499,7 @@ test "OpenRouter requests enforce privacy and catalog only free tool models" {
     });
 
     const Message = struct { role: []const u8, content: []const u8 };
-    const request = try buildRequest(std.testing.allocator, config, &[_]Message{}, "hello", &.{});
+    const request = try buildRequest(std.testing.allocator, config, &[_]Message{}, "hello", &.{}, null);
     defer std.testing.allocator.free(request);
     var parsed_request = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, request, .{});
     defer parsed_request.deinit();
