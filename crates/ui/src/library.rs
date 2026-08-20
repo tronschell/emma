@@ -320,16 +320,27 @@ impl Render for LibraryView {
             })
             .children(self.threads.iter().enumerate().map(|(index, thread)| {
                 let id = thread.id.clone();
+                let action_id = id.clone();
                 let selected = self.selected_thread.as_ref() == Some(&id);
                 div()
                     .id(("thread-row", index))
                     .accessibility_id(format!("emma.thread.{}", id.as_str()))
+                    .key_context("LibraryButton")
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_2().border_color(rgb(0x8fc7ff)))
                     .role(Role::Button)
                     .aria_label(format!("{}, updated {}", thread.title, thread.updated_at))
                     .rounded(px(7.0))
                     .p(px(9.0))
                     .when(selected, |row| row.bg(rgb(0x292d33)))
                     .cursor_pointer()
+                    .on_action(cx.listener(move |this, _: &ActivateFocused, _, cx| {
+                        this.selected_thread = Some(action_id.clone());
+                        this.status = "Thread selected".into();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_thread = Some(id.clone());
                         this.status = "Thread selected".into();
@@ -355,16 +366,27 @@ impl Render for LibraryView {
             })
             .children(self.pages.iter().enumerate().map(|(index, page)| {
                 let id = page.id.clone();
+                let action_id = id.clone();
                 let selected = self.selected_page.as_ref() == Some(&id);
                 div()
                     .id(("page-row", index))
                     .accessibility_id(format!("emma.page.{}", id.as_str()))
+                    .key_context("LibraryButton")
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_2().border_color(rgb(0x8fc7ff)))
                     .role(Role::Button)
                     .aria_label(format!("{}, {}", page.title, page.category.as_str()))
                     .rounded(px(7.0))
                     .p(px(9.0))
                     .when(selected, |row| row.bg(rgb(0x292d33)))
                     .cursor_pointer()
+                    .on_action(cx.listener(move |this, _: &ActivateFocused, _, cx| {
+                        this.selected_page = Some(action_id.clone());
+                        this.status = "Knowledge page selected".into();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_page = Some(id.clone());
                         this.status = "Knowledge page selected".into();
@@ -447,9 +469,13 @@ impl Render for LibraryView {
                         .text_size(px(12.0))
                         .text_color(rgb(0x7f8792))
                         .child(format!(
-                            "Saved {} · {} · {} sources",
+                            "Added {} · analyzed {} · {} · {} input / {} output tokens · {} subagents · {} sources",
                             page.added_at,
+                            page.analyzed_at,
                             page.telemetry.model,
+                            page.telemetry.input_tokens,
+                            page.telemetry.output_tokens,
+                            page.telemetry.subagent_count,
                             page.sources.len()
                         )),
                 )

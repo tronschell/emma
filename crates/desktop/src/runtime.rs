@@ -18,12 +18,49 @@ pub fn start() -> Result<LiveClient, LiveError> {
         None => default_data_root()?,
     };
     let agent_path = env::var_os("EMMA_AGENT_BIN").map_or_else(default_agent_path, PathBuf::from);
-    let mut sidecar = Sidecar::new(agent_path);
+    let mut sidecar = Sidecar::new(agent_path, provider_config()?);
     start_live_runtime(
         data_root.join("threads"),
         data_root.join("knowledge"),
         move |request| sidecar.call(request),
     )
+}
+
+fn provider_config() -> Result<Option<ProviderConfig>, LiveError> {
+    provider_config_from_values(
+        optional_env("EMMA_PROVIDER_BASE_URL")?,
+        optional_env("EMMA_PROVIDER_MODEL")?,
+        optional_env("EMMA_PROVIDER_CREDENTIAL_ENV")?,
+    )
+}
+
+fn optional_env(name: &str) -> Result<Option<String>, LiveError> {
+    match env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(value)),
+        Ok(_) => Err(LiveError::new(format!("{name} must not be empty"))),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(LiveError::new(format!("{name} must be valid Unicode")))
+        }
+    }
+}
+
+fn provider_config_from_values(
+    base_url: Option<String>,
+    model: Option<String>,
+    credential_env: Option<String>,
+) -> Result<Option<ProviderConfig>, LiveError> {
+    match (base_url, model, credential_env) {
+        (None, None, None) => Ok(None),
+        (Some(base_url), Some(model), Some(credential_env)) => Ok(Some(ProviderConfig {
+            base_url,
+            model,
+            credential_env,
+        })),
+        _ => Err(LiveError::new(
+            "set all of EMMA_PROVIDER_BASE_URL, EMMA_PROVIDER_MODEL, and EMMA_PROVIDER_CREDENTIAL_ENV",
+        )),
+    }
 }
 
 fn default_data_root() -> Result<PathBuf, LiveError> {
@@ -38,15 +75,17 @@ fn default_agent_path() -> PathBuf {
 
 struct Sidecar {
     path: PathBuf,
+    provider: Option<ProviderConfig>,
     io: Option<SidecarIo>,
     thread_ids: HashMap<ThreadId, String>,
     next_request_id: u64,
 }
 
 impl Sidecar {
-    fn new(path: PathBuf) -> Self {
+    fn new(path: PathBuf, provider: Option<ProviderConfig>) -> Self {
         Self {
             path,
+            provider,
             io: None,
             thread_ids: HashMap::new(),
             next_request_id: 1,
@@ -66,11 +105,13 @@ impl Sidecar {
                 }
                 let thread_id = self.sidecar_thread(&thread)?;
                 let id = self.request_id();
+                let provider = self.provider.clone();
                 let request = ThreadMessageRequest {
                     id: &id,
                     kind: "thread_message",
                     thread_id: &thread_id,
                     content: &content,
+                    provider: provider.as_ref(),
                 };
                 let response: ThreadMessageResult = self.exchange(&id, &request)?;
                 Ok(AgentResponse::Message(AgentMessage {
@@ -193,6 +234,13 @@ impl Sidecar {
         }
         Ok(self.io.as_mut().expect("sidecar initialized"))
     }
+}
+
+#[derive(Clone, Serialize)]
+struct ProviderConfig {
+    base_url: String,
+    model: String,
+    credential_env: String,
 }
 
 fn bullets(items: &[String]) -> String {
@@ -322,6 +370,8 @@ struct ThreadMessageRequest<'a> {
     kind: &'static str,
     thread_id: &'a str,
     content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a ProviderConfig>,
 }
 
 #[derive(Serialize)]
@@ -384,4 +434,40 @@ struct WireArtifact {
     input_tokens: u64,
     output_tokens: u64,
     subagent_count: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_profile_is_optional_but_not_partial() {
+        assert!(
+            provider_config_from_values(None, None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            provider_config_from_values(Some("http://localhost:1234/v1".into()), None, None)
+                .is_err()
+        );
+        let provider = provider_config_from_values(
+            Some("https://api.example.test/v1".into()),
+            Some("model".into()),
+            Some("EMMA_API_KEY".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(provider.credential_env, "EMMA_API_KEY");
+        let request = ThreadMessageRequest {
+            id: "test",
+            kind: "thread_message",
+            thread_id: "thread-1",
+            content: "hello",
+            provider: Some(&provider),
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["provider"]["model"], "model");
+        assert_eq!(json["provider"]["credential_env"], "EMMA_API_KEY");
+    }
 }
