@@ -10,7 +10,8 @@ use std::{
 };
 
 use crate::ThreadId;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::{Value, json};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -336,6 +337,10 @@ pub const DEFAULT_KNOWLEDGE_BASE_NAME: &str = "Default";
 pub const MAX_KNOWLEDGE_BASE_CATEGORIES: usize = 256;
 pub const MAX_CITED_SOURCES: usize = 1_024;
 pub const MAX_RELEVANT_PAGES: usize = 4;
+pub const MAX_ARTIFACT_BLOCKS: usize = 64;
+pub const MAX_ARTIFACT_PAYLOAD_BYTES: usize = 32 * 1024;
+pub const MAX_ARTIFACT_FALLBACK_BYTES: usize = 64 * 1024;
+pub const MAX_ARTIFACT_DOCUMENT_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct KnowledgeBaseId(String);
@@ -491,6 +496,227 @@ impl KnowledgeBase {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactSource {
+    pub source_thread_id: Option<String>,
+    pub source_url: Option<String>,
+}
+
+impl ArtifactSource {
+    pub fn new(
+        source_thread_id: Option<String>,
+        source_url: Option<String>,
+    ) -> Result<Self, ValidationError> {
+        if let Some(id) = &source_thread_id {
+            ThreadId::parse(id.clone())?;
+        }
+        if let Some(url) = &source_url {
+            SourceUrl::parse(url.clone())?;
+        }
+        Ok(Self {
+            source_thread_id,
+            source_url,
+        })
+    }
+
+    fn validate(&self) -> Result<(), ValidationError> {
+        Self::new(self.source_thread_id.clone(), self.source_url.clone()).map(|_| ())
+    }
+
+    pub fn from_thread(thread_id: Option<&ThreadId>) -> Self {
+        Self {
+            source_thread_id: thread_id.map(|id| id.as_str().to_owned()),
+            source_url: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactBlock {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub version: u32,
+    pub source: ArtifactSource,
+    pub payload: Value,
+    pub fallback: String,
+}
+
+impl ArtifactBlock {
+    pub fn new(
+        id: impl Into<String>,
+        block_type: impl Into<String>,
+        version: u32,
+        source: ArtifactSource,
+        payload: Value,
+        fallback: impl Into<String>,
+    ) -> Result<Self, ValidationError> {
+        let block = Self {
+            id: id.into(),
+            block_type: block_type.into(),
+            version,
+            source,
+            payload,
+            fallback: fallback.into(),
+        };
+        block.validate()?;
+        Ok(block)
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_artifact_identifier("artifact block ID", &self.id)?;
+        validate_artifact_identifier("artifact block type", &self.block_type)?;
+        if self.version == 0 {
+            return Err(ValidationError::new(
+                "artifact block version must be positive",
+            ));
+        }
+        self.source.validate()?;
+        if self.payload.is_null() {
+            return Err(ValidationError::new(
+                "artifact block payload cannot be null",
+            ));
+        }
+        let payload = serde_json::to_vec(&self.payload)
+            .map_err(|_| ValidationError::new("artifact block payload is not valid JSON"))?;
+        if payload.len() > MAX_ARTIFACT_PAYLOAD_BYTES {
+            return Err(ValidationError::new(format!(
+                "artifact block payload cannot exceed {MAX_ARTIFACT_PAYLOAD_BYTES} bytes"
+            )));
+        }
+        validate_text("artifact block fallback", &self.fallback, true)?;
+        if self.fallback.len() > MAX_ARTIFACT_FALLBACK_BYTES {
+            return Err(ValidationError::new(format!(
+                "artifact block fallback cannot exceed {MAX_ARTIFACT_FALLBACK_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn validate_artifact_identifier(name: &str, value: &str) -> Result<(), ValidationError> {
+    if value.is_empty()
+        || value.len() > 96
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_uppercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
+    {
+        return Err(ValidationError::new(format!(
+            "{name} must contain only ASCII letters, numbers, '-', '_', '.', ':', or '/'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_artifacts(artifacts: &[ArtifactBlock]) -> Result<(), ValidationError> {
+    if artifacts.len() > MAX_ARTIFACT_BLOCKS {
+        return Err(ValidationError::new(format!(
+            "knowledge page cannot have more than {MAX_ARTIFACT_BLOCKS} artifact blocks"
+        )));
+    }
+    let mut total = 0usize;
+    for (index, block) in artifacts.iter().enumerate() {
+        block.validate().map_err(|error| {
+            ValidationError::new(format!("artifact block {index} is invalid: {error}"))
+        })?;
+        if artifacts[..index]
+            .iter()
+            .any(|existing| existing.id == block.id)
+        {
+            return Err(ValidationError::new("artifact block IDs must be unique"));
+        }
+        total = total
+            .saturating_add(block.id.len())
+            .saturating_add(block.block_type.len())
+            .saturating_add(block.fallback.len())
+            .saturating_add(
+                serde_json::to_vec(&block.payload)
+                    .map_err(|_| ValidationError::new("artifact block payload is not valid JSON"))?
+                    .len(),
+            );
+    }
+    if total > MAX_ARTIFACT_DOCUMENT_BYTES {
+        return Err(ValidationError::new(format!(
+            "artifact document cannot exceed {MAX_ARTIFACT_DOCUMENT_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn bounded_artifact_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+fn portable_fallback(value: &str) -> String {
+    value
+        .trim_end()
+        .lines()
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn legacy_artifacts(
+    analysis: &AnalysisContent,
+    sources: &[CitedSource],
+    source_thread_id: Option<&ThreadId>,
+) -> Result<Vec<ArtifactBlock>, ValidationError> {
+    let source = ArtifactSource::from_thread(source_thread_id);
+    let summary = bounded_artifact_text(&analysis.summary, MAX_ARTIFACT_PAYLOAD_BYTES / 2);
+    let body = bounded_artifact_text(&analysis.body, MAX_ARTIFACT_PAYLOAD_BYTES / 2);
+    let mut artifacts = vec![
+        ArtifactBlock::new(
+            "summary",
+            "rich-text",
+            1,
+            source.clone(),
+            json!({"markdown": summary}),
+            bounded_artifact_text(&analysis.summary, MAX_ARTIFACT_FALLBACK_BYTES),
+        )?,
+        ArtifactBlock::new(
+            "body",
+            "rich-text",
+            1,
+            source.clone(),
+            json!({"markdown": body}),
+            bounded_artifact_text(&analysis.body, MAX_ARTIFACT_FALLBACK_BYTES),
+        )?,
+    ];
+    if !sources.is_empty() {
+        let items = sources
+            .iter()
+            .map(|source| json!({"title": source.title, "url": source.url.as_str()}))
+            .collect::<Vec<_>>();
+        let fallback = sources
+            .iter()
+            .map(|source| format!("- [{}]({})", source.title, source.url))
+            .collect::<Vec<_>>()
+            .join("\n");
+        artifacts.push(ArtifactBlock::new(
+            "citations",
+            "citations",
+            1,
+            source,
+            json!({"items": items}),
+            bounded_artifact_text(&fallback, MAX_ARTIFACT_FALLBACK_BYTES),
+        )?);
+    }
+    validate_artifacts(&artifacts)?;
+    Ok(artifacts)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnowledgePage {
@@ -505,6 +731,7 @@ pub struct KnowledgePage {
     pub analyzed_at: Timestamp,
     pub telemetry: RunTelemetry,
     pub source_thread_id: Option<ThreadId>,
+    pub artifacts: Vec<ArtifactBlock>,
 }
 
 impl KnowledgePage {
@@ -529,7 +756,7 @@ impl KnowledgePage {
         if analyzed_at < added_at {
             return Err(ValidationError::new("analysis cannot predate capture"));
         }
-        Ok(Self {
+        let mut page = Self {
             id: PageId::generate(added_at),
             knowledge_base_id: KnowledgeBaseId::default_id(),
             title,
@@ -541,11 +768,19 @@ impl KnowledgePage {
             analyzed_at,
             telemetry,
             source_thread_id: None,
-        })
+            artifacts: Vec::new(),
+        };
+        page.artifacts = legacy_artifacts(&page.analysis, &page.sources, None)?;
+        Ok(page)
     }
 
     pub fn with_source_thread(mut self, thread_id: ThreadId) -> Self {
-        self.source_thread_id = Some(thread_id);
+        self.source_thread_id = Some(thread_id.clone());
+        for block in &mut self.artifacts {
+            if block.source.source_thread_id.is_none() {
+                block.source.source_thread_id = Some(thread_id.as_str().to_owned());
+            }
+        }
         self
     }
 
@@ -554,8 +789,29 @@ impl KnowledgePage {
         self
     }
 
+    pub fn with_artifacts(
+        mut self,
+        artifacts: Vec<ArtifactBlock>,
+    ) -> Result<Self, ValidationError> {
+        self.replace_artifacts(artifacts)?;
+        Ok(self)
+    }
+
+    pub fn replace_artifacts(
+        &mut self,
+        artifacts: Vec<ArtifactBlock>,
+    ) -> Result<(), ValidationError> {
+        validate_artifacts(&artifacts)?;
+        self.artifacts = artifacts;
+        Ok(())
+    }
+
+    pub fn validate_artifacts(&self) -> Result<(), ValidationError> {
+        validate_artifacts(&self.artifacts)
+    }
+
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-format: 2\n");
+        let mut output = String::from("---\nemma-format: 3\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(&mut output, "category", self.category.as_str());
@@ -598,13 +854,51 @@ impl KnowledgePage {
                 source.url.as_str(),
             );
         }
+        number_field(&mut output, "artifact-count", self.artifacts.len() as u64);
+        for (index, block) in self.artifacts.iter().enumerate() {
+            field(&mut output, &format!("artifact-{index}-id"), &block.id);
+            field(
+                &mut output,
+                &format!("artifact-{index}-type"),
+                &block.block_type,
+            );
+            number_field(
+                &mut output,
+                &format!("artifact-{index}-version"),
+                u64::from(block.version),
+            );
+            optional_field(
+                &mut output,
+                &format!("artifact-{index}-source-thread-id"),
+                block.source.source_thread_id.as_deref(),
+            );
+            optional_field(
+                &mut output,
+                &format!("artifact-{index}-source-url"),
+                block.source.source_url.as_deref(),
+            );
+            let payload = serde_json::to_string(&block.payload).unwrap_or_else(|_| "null".into());
+            field(&mut output, &format!("artifact-{index}-payload"), &payload);
+            field(
+                &mut output,
+                &format!("artifact-{index}-fallback"),
+                &block.fallback,
+            );
+        }
         output.push_str("---\n\n## Captured context\n\n");
         output.push_str(&quote(&self.context.text));
         output.push_str("\n\n## Analysis summary\n\n");
         output.push_str(&quote(&self.analysis.summary));
         output.push_str("\n\n## Analysis\n\n");
         output.push_str(&quote(&self.analysis.body));
-        output.push('\n');
+        output.push_str("\n\n## Artifact document\n\n");
+        for block in &self.artifacts {
+            output.push_str("### ");
+            output.push_str(&block.id);
+            output.push_str("\n\n");
+            output.push_str(&portable_fallback(&block.fallback));
+            output.push_str("\n\n");
+        }
         output
     }
 
@@ -635,6 +929,8 @@ impl KnowledgeStore {
             )
             .into());
         }
+        page.validate_artifacts()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
         fs::create_dir_all(&self.root)?;
         let destination = self.path_for(&page.id);
         let temporary = self.root.join(format!(".{}.tmp", page.id));
@@ -1041,11 +1337,13 @@ impl<'a> Parser<'a> {
 
     fn parse(mut self) -> Result<KnowledgePage, ValidationError> {
         self.exact("---")?;
-        let legacy = match self.next()? {
-            "emma-format: 1" => true,
-            "emma-format: 2" => false,
+        let format = match self.next()? {
+            "emma-format: 1" => 1,
+            "emma-format: 2" => 2,
+            "emma-format: 3" => 3,
             _ => return Err(ValidationError::new("unsupported knowledge page format")),
         };
+        let legacy = format == 1;
         let id = PageId::parse(self.string_field("id")?)?;
         let title = self.string_field("title")?;
         let category = self.string_field("category")?.parse()?;
@@ -1085,6 +1383,44 @@ impl<'a> Parser<'a> {
             let url = SourceUrl::parse(self.string_field(&format!("cited-{index}-url"))?)?;
             sources.push(CitedSource::new(source_title, url)?);
         }
+        let artifacts = if format == 3 {
+            let count: usize = self
+                .number_field("artifact-count")?
+                .try_into()
+                .map_err(|_| ValidationError::new("artifact count is too large"))?;
+            if count > MAX_ARTIFACT_BLOCKS {
+                return Err(ValidationError::new("artifact count is too large"));
+            }
+            let mut artifacts = Vec::with_capacity(count);
+            for index in 0..count {
+                let id = self.string_field(&format!("artifact-{index}-id"))?;
+                let block_type = self.string_field(&format!("artifact-{index}-type"))?;
+                let version = self
+                    .number_field(&format!("artifact-{index}-version"))?
+                    .try_into()
+                    .map_err(|_| ValidationError::new("artifact block version is too large"))?;
+                let source_thread_id =
+                    self.optional_field(&format!("artifact-{index}-source-thread-id"))?;
+                let source_url = self.optional_field(&format!("artifact-{index}-source-url"))?;
+                let payload = serde_json::from_str::<Value>(
+                    &self.string_field(&format!("artifact-{index}-payload"))?,
+                )
+                .map_err(|_| ValidationError::new("artifact block payload is not valid JSON"))?;
+                let fallback = self.string_field(&format!("artifact-{index}-fallback"))?;
+                artifacts.push(ArtifactBlock::new(
+                    id,
+                    block_type,
+                    version,
+                    ArtifactSource::new(source_thread_id, source_url)?,
+                    payload,
+                    fallback,
+                )?);
+            }
+            validate_artifacts(&artifacts)?;
+            artifacts
+        } else {
+            Vec::new()
+        };
         self.exact("---")?;
         self.exact("")?;
         self.exact("## Captured context")?;
@@ -1098,25 +1434,33 @@ impl<'a> Parser<'a> {
         self.exact("## Analysis")?;
         self.exact("")?;
         let body = unquote(self.next()?)?;
-        if self.lines.next().is_some() {
+        if format != 3 && self.lines.next().is_some() {
             return Err(ValidationError::new("unexpected content after page body"));
         }
         validate_text("page title", &title, true)?;
         if analyzed_at < added_at {
             return Err(ValidationError::new("analysis cannot predate capture"));
         }
+        let context = CapturedContext::new(text, source_application, source_url)?;
+        let analysis = AnalysisContent::new(summary, body)?;
+        let artifacts = if format == 3 {
+            artifacts
+        } else {
+            legacy_artifacts(&analysis, &sources, source_thread_id.as_ref())?
+        };
         Ok(KnowledgePage {
             id,
             knowledge_base_id,
             title,
             category,
-            context: CapturedContext::new(text, source_application, source_url)?,
-            analysis: AnalysisContent::new(summary, body)?,
+            context,
+            analysis,
             sources,
             added_at,
             analyzed_at,
             telemetry: RunTelemetry::new(model, input_tokens, output_tokens, subagent_count)?,
             source_thread_id,
+            artifacts,
         })
     }
 

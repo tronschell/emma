@@ -11,6 +11,7 @@ pub use thread::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::{
         fs,
         path::PathBuf,
@@ -63,10 +64,86 @@ mod tests {
     }
 
     #[test]
+    fn artifact_blocks_round_trip_in_order_and_keep_unknown_fallbacks() {
+        let source = ArtifactSource::new(
+            Some("thread-123456789012".into()),
+            Some("https://example.com/source".into()),
+        )
+        .unwrap();
+        let page = page(1_700_000_000, "artifact page")
+            .with_artifacts(vec![
+                ArtifactBlock::new(
+                    "summary",
+                    "rich-text",
+                    1,
+                    source.clone(),
+                    json!({"markdown": "A summary"}),
+                    "A summary",
+                )
+                .unwrap(),
+                ArtifactBlock::new(
+                    "plugin-view",
+                    "plugin.example/view",
+                    7,
+                    source,
+                    json!({"value": [1, 2, 3]}),
+                    "Unsupported plugin view; showing its portable fallback.",
+                )
+                .unwrap(),
+            ])
+            .unwrap();
+        let markdown = page.to_markdown();
+        let restored = KnowledgePage::from_markdown(&markdown).unwrap();
+        assert_eq!(restored, page);
+        assert_eq!(restored.artifacts[1].block_type, "plugin.example/view");
+        assert!(markdown.contains("Unsupported plugin view"));
+    }
+
+    #[test]
+    fn artifact_limits_are_enforced_before_persistence() {
+        assert!(
+            ArtifactBlock::new(
+                "too-large",
+                "rich-text",
+                1,
+                ArtifactSource::default(),
+                json!({"markdown": "x".repeat(MAX_ARTIFACT_PAYLOAD_BYTES)}),
+                "fallback",
+            )
+            .is_err()
+        );
+        let blocks = (0..=MAX_ARTIFACT_BLOCKS)
+            .map(|index| {
+                ArtifactBlock::new(
+                    format!("block-{index}"),
+                    "list",
+                    1,
+                    ArtifactSource::default(),
+                    json!({"items": [format!("Item {index}")]}),
+                    "- item",
+                )
+                .unwrap()
+            })
+            .collect();
+        let mut bounded = page(1_700_000_000, "bounded");
+        assert!(bounded.replace_artifacts(blocks).is_err());
+    }
+
+    #[test]
     fn v1_page_and_thread_markdown_map_to_the_default_base() {
         let original_page = page(1_700_000_000, "legacy page");
-        let page_v1 = original_page
+        let page_v2 = original_page
             .to_markdown()
+            .replacen("emma-format: 3", "emma-format: 2", 1)
+            .lines()
+            .take_while(|line| *line != "## Artifact document")
+            .filter(|line| !line.starts_with("artifact-"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_owned()
+            + "\n";
+        let page_v1 = page_v2
             .replacen("emma-format: 2", "emma-format: 1", 1)
             .lines()
             .filter(|line| !line.starts_with("knowledge-base-id: "))

@@ -111,9 +111,11 @@ skills and MCP tools so its permission and context boundaries stay visible. See
 The hotkey surface can capture a user-initiated display frame and draw yellow
 highlights locally. Provider transmission remains disabled until the user
 explicitly authorizes sending the whole visible frame to the selected endpoint.
-This slice still stores a page as summary/body/sources rather than ordered
-artifact blocks; generalized file/web capture and the artifact-renderer SDK are
-not implemented yet. Scheduled jobs run only while Emma is open; missed
+Pages now persist bounded ordered declarative artifact blocks with rich-text,
+list, citations/table, and chart/data payloads plus portable fallbacks; v1/v2
+pages migrate on load. Plugin renderer execution and a generalized artifact
+renderer SDK are not implemented yet, so unknown blocks use their fallback.
+Generalized file/web capture is still outside this slice. Scheduled jobs run only while Emma is open; missed
 occurrences coalesce into one due run when Emma next starts. A generalized
 quick-action executor is outside this slice. Local Whisper/Parakeet-compatible
 endpoint settings are present, but microphone capture and audio transport remain
