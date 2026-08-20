@@ -494,6 +494,7 @@ fn titleFrom(text: []const u8) []const u8 {
 
 fn classify(text: []const u8) []const u8 {
     // ponytail: Keyword fallback is context-blind; replace it when provider-backed analysis lands.
+    if (containsIgnoreCase(text, "arxiv") or containsIgnoreCase(text, "paper") or containsIgnoreCase(text, "research") or containsIgnoreCase(text, "study")) return "research";
     if (containsIgnoreCase(text, "bug") or containsIgnoreCase(text, "code") or containsIgnoreCase(text, "software")) return "technology";
     if (containsIgnoreCase(text, "money") or containsIgnoreCase(text, "market") or containsIgnoreCase(text, "finance")) return "finance";
     if (containsIgnoreCase(text, "health") or containsIgnoreCase(text, "medical")) return "health";
@@ -647,4 +648,15 @@ test "selection requires the preceding search and advertises exactly one schema"
     defer std.testing.allocator.free(selected);
     try expectValidResponse(selected);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, selected, "inputSchema"));
+}
+
+test "analysis classifies research before its broader domain" {
+    var state: State = .{};
+    defer state.deinit(std.testing.allocator);
+    const created = try state.handle(std.testing.allocator, "{\"id\":\"1\",\"type\":\"thread_create\",\"title\":\"Research\"}");
+    defer std.testing.allocator.free(created);
+    const response = try state.handle(std.testing.allocator, "{\"id\":\"2\",\"type\":\"analyze\",\"thread_id\":\"thread-1\",\"text\":\"A software research paper\"}");
+    defer std.testing.allocator.free(response);
+    try expectValidResponse(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"category\":\"research\"") != null);
 }

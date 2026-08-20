@@ -37,24 +37,29 @@ impl CapturedContext {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Category {
-    Insight,
-    Reference,
-    Decision,
-    Action,
-    Other,
-}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Category(String);
 
 impl Category {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Insight => "insight",
-            Self::Reference => "reference",
-            Self::Decision => "decision",
-            Self::Action => "action",
-            Self::Other => "other",
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValidationError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 64
+            || value.starts_with('-')
+            || value.ends_with('-')
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(ValidationError::new(
+                "category must be a lowercase slug no longer than 64 bytes",
+            ));
         }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -62,14 +67,7 @@ impl FromStr for Category {
     type Err = ValidationError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "insight" => Ok(Self::Insight),
-            "reference" => Ok(Self::Reference),
-            "decision" => Ok(Self::Decision),
-            "action" => Ok(Self::Action),
-            "other" => Ok(Self::Other),
-            _ => Err(ValidationError::new("unknown category")),
-        }
+        Self::parse(value)
     }
 }
 

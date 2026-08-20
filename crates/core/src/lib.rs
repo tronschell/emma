@@ -30,7 +30,7 @@ mod tests {
     fn page(at: i64, title: &str) -> KnowledgePage {
         KnowledgePage::new(
             title,
-            Category::Insight,
+            Category::parse("insight").unwrap(),
             CapturedContext::new(
                 "capture\n---\n# forged",
                 Some("Browser".into()),
