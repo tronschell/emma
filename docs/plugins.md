@@ -28,3 +28,10 @@ or lazily searched MCP tool, where permission and context boundaries are visible
 Imported skills and MCP files are inactive references until selected. This keeps
 first launch safe and prevents config credentials or every tool schema from
 entering model context.
+
+The planned knowledge-artifact seam follows the same boundary: plugins register
+versioned block types and render validated declarative payloads in a sandbox.
+Each block must provide a portable Markdown/data fallback. Filesystem, network,
+model, and connector access remain explicit capabilities rather than ambient
+renderer privileges. This renderer SDK is a product contract, not part of the
+current vertical slice.

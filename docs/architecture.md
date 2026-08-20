@@ -41,6 +41,26 @@ slugs; format 1 migrates with none. Learned categories are derived from pages.
 Removing a user category never removes a page. The activity heatmap is computed
 from durable message and page timestamps.
 
+## Dynamic knowledge artifacts
+
+A knowledge page is an ordered, agent-authored artifact document, not a flat
+note. One page can interleave captured source material, summaries, citations,
+tables, graphs, generated visuals, and plugin-defined interactive views. Every
+artifact block keeps its type, version, source provenance, and a portable
+Markdown/data fallback so export never depends on Emma or a particular plugin.
+
+Capture may start from a browser page, selected text, a file or folder, a
+screenshot or annotation, or context explicitly shared from another app. The
+user's capture/save action authorizes a durable write; sending that material to
+a model or connector remains a separate permission boundary. The agent may add,
+edit, remove, and reorder blocks through validated host commands, including when
+it revisits research and produces a better visualization or synthesis.
+
+Built-in blocks stay declarative. A plugin renderer receives only its validated
+artifact payload and declared capabilities, never ambient filesystem access,
+provider credentials, or the full knowledge store. Unknown or unavailable block
+types render their portable fallback instead of making the page unreadable.
+
 ## Windows and shortcuts
 
 The library is a resizable three-pane workspace with independently collapsible,
@@ -82,8 +102,10 @@ skills and MCP tools so its permission and context boundaries stay visible. See
 The hotkey surface can capture a user-initiated display frame and draw yellow
 highlights locally. Provider transmission remains disabled until the user
 explicitly authorizes sending the whole visible frame to the selected endpoint.
-General files, recurring jobs, and a generalized quick-action executor are not
-implemented in this slice. Local Whisper/Parakeet-compatible
+This slice still stores a page as summary/body/sources rather than ordered
+artifact blocks; generalized file/web capture and the artifact-renderer SDK are
+not implemented yet. Recurring jobs and a generalized quick-action executor are
+also outside this slice. Local Whisper/Parakeet-compatible
 endpoint settings are present, but microphone capture and audio transport remain
 disabled. Signing, notarization, VoiceOver verification, and non-macOS support
 are release work.
