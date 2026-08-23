@@ -86,13 +86,14 @@ const KIND_OPTIONS = (Object.keys(KIND_LABELS) as TriggerKind[]).map((kind) => (
 const MONTH_OPTIONS = MONTH_NAMES.map((name, index) => ({ value: index + 1, label: name }));
 
 const two = (value: number) => String(value).padStart(2, "0");
+const hintFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
 const clockValue = (trigger: Trigger) => `${two(trigger.hour)}:${two(trigger.minute)}`;
 
 /** The same instant in the reader's own zone, so a UTC cron is not a puzzle. */
 function localHint(hour: number, minute: number): string {
   const now = new Date();
   const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute));
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(at);
+  return hintFormat.format(at);
 }
 
 export function TriggerPicker({ value, onChange, disabled }: { value: string; onChange: (trigger: string) => void; disabled: boolean }) {

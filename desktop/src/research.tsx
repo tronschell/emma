@@ -14,7 +14,8 @@ import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const chart = { grid: token("--border"), axis: token("--text-3"), line: token("--teal"), keep: token("--lime"), crash: token("--rose"), mark: token("--orange") };
 
-const stamp = (value: string) => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
+const stampFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const stamp = (value: string) => stampFormat.format(new Date(value));
 const num = (value: number | null) => value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 6 });
 const pct = (value: number | null) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 // $1 = 1_000_000 micro-dollars. A cent is 10_000, so a run that has spent less

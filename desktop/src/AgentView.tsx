@@ -26,7 +26,8 @@ import type { Snapshot } from "./types";
 const RECENT_THREADS = 40;
 const WINDOW_DAYS = 30;
 
-const day = (at: number) => at ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(at)) : "—";
+const dayFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const day = (at: number) => at ? dayFormat.format(new Date(at)) : "—";
 const per = (value: number) => value.toFixed(2);
 const Empty = ({ copy }: { copy: string }) => <div className="empty"><span className="mark" aria-hidden="true">◇</span><p>{copy}</p></div>;
 

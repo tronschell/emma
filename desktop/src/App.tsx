@@ -53,8 +53,10 @@ const SNAPSHOT_REFRESH_MS = 60_000;
 const AgentView = lazy(() => import("./AgentView"));
 const ResearchView = lazy(() => import("./research"));
 const ChartArtifact = lazy(() => import("./chart-artifact"));
-const date = (value: string) => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
-const time = (value: string) => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+const dateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const date = (value: string) => dateFormat.format(new Date(value));
+const time = (value: string) => timeFormat.format(new Date(value));
 
 function Mark() {
   return <span className="mark" aria-hidden="true">◇</span>;
