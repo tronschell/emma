@@ -115,6 +115,8 @@ pub const Config = acp_runner.Config;
 pub const OutboundKind = enum {
     permission,
     elicitation,
+    /// A tool the client owns and runs on our behalf. See `EmmaToolResponder`.
+    client_tool,
 };
 
 pub const OutboundResponse = struct {

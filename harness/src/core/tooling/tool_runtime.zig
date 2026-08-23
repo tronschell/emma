@@ -193,6 +193,7 @@ pub const Context = struct {
     mcp_call_feature: ?tool_mcp_runtime.FeatureCallFn = null,
     mcp_access: tool_mcp_runtime.Access = .unrestricted,
     mcp_input_responder: ?tool_mcp_runtime.InputResponder = null,
+    emma_tool_responder: ?tool_dispatch.EmmaToolResponder = null,
     mcp_progress_ctx: ?*anyopaque = null,
     on_mcp_progress: ?*const fn (*anyopaque, types.ToolLifecycleId, []const u8) void = null,
     advertised_dynamic_tool_names: []const []const u8 = &.{},
@@ -902,6 +903,8 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         .mcp_call_feature = ctx.mcp_call_feature,
         .mcp_access = ctx.mcp_access,
         .mcp_input_responder = ctx.mcp_input_responder,
+        .emma_tool_responder = ctx.emma_tool_responder,
+        .tool_registry = ctx.tool_registry,
         .mcp_permission_rules = if (ctx.permission_mode == .yolo)
             .{}
         else
@@ -2141,6 +2144,7 @@ const TestRuntime = struct {
     mcp_tool_schema: ?tool_mcp_runtime.ToolSchemaFn = null,
     mcp_call_feature: ?tool_mcp_runtime.FeatureCallFn = null,
     mcp_input_responder: ?tool_mcp_runtime.InputResponder = null,
+    emma_tool_responder: ?tool_dispatch.EmmaToolResponder = null,
     advertised_dynamic_tool_names: []const []const u8 = &.{},
     auto_classifier: permission_auto_classifier.Classifier = .disabled(),
     web_search_runtime_ready: bool = false,
@@ -2214,6 +2218,7 @@ const TestRuntime = struct {
             .mcp_tool_schema = self.mcp_tool_schema,
             .mcp_call_feature = self.mcp_call_feature,
             .mcp_input_responder = self.mcp_input_responder,
+            .emma_tool_responder = self.emma_tool_responder,
             .advertised_dynamic_tool_names = self.advertised_dynamic_tool_names,
             .auto_classifier = self.auto_classifier,
             .permission_review_turn = testReviewTurn(),

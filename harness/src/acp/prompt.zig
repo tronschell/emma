@@ -435,6 +435,148 @@ const AcpElicitationResponderContext = struct {
     }
 };
 
+/// Runs one of Emma's own tools by asking the client to run it.
+///
+/// The harness owns the turn but not the tool: Emma's stores live in Electron.
+/// So a call becomes an outbound `_emma/callTool` request on the same channel
+/// permission and elicitation already use, and the turn blocks on the answer.
+/// The only way out other than a reply is the user cancelling — an Emma tool
+/// has no honest deadline, since connecting a folder or running a thread can
+/// legitimately take minutes.
+const AcpEmmaToolResponderContext = struct {
+    acp: *AcpContext,
+    tool_call_id: []const u8,
+    operation_cancel_flag: ?*const std.atomic.Value(bool),
+
+    fn responder(self: *AcpEmmaToolResponderContext) tool_dispatch.EmmaToolResponder {
+        return .{ .context = @ptrCast(self), .call_fn = callEmmaTool };
+    }
+};
+
+const AcpEmmaToolWait = union(enum) {
+    response: ?server.OutboundResponse,
+    cancelled: anyerror!void,
+};
+
+fn callEmmaTool(
+    raw_ctx: *anyopaque,
+    out_alloc: Allocator,
+    name: []const u8,
+    arguments_json: []const u8,
+) anyerror![]u8 {
+    const self: *AcpEmmaToolResponderContext = @ptrCast(@alignCast(raw_ctx));
+    const state = self.acp.state;
+    const alloc = state.alloc;
+
+    const outbound_id = try server.beginOutboundRequest(state, .client_tool) orelse
+        return error.TooManyPendingRequests;
+    var awaiting = true;
+    defer if (awaiting) server.cancelOutboundRequest(state, outbound_id);
+
+    const params = try emmaToolParamsJson(
+        alloc,
+        self.acp.session_id,
+        self.tool_call_id,
+        name,
+        arguments_json,
+    );
+    defer alloc.free(params);
+    try state.writer.writeRequest(
+        alloc,
+        .{ .integer = @intCast(outbound_id) },
+        "_emma/callTool",
+        params,
+    );
+
+    const maybe_response = try awaitEmmaToolResponse(state, outbound_id, self.operation_cancel_flag);
+    awaiting = false;
+    var response = maybe_response orelse return error.Cancelled;
+    defer response.deinit(alloc);
+    if (response.cancelled) return error.Cancelled;
+    if (response.error_json != null) return error.EmmaToolFailed;
+    const result_json = response.result_json orelse return error.EmmaToolFailed;
+    return emmaToolOutput(out_alloc, result_json);
+}
+
+fn emmaToolParamsJson(
+    alloc: Allocator,
+    session_id: []const u8,
+    tool_call_id: []const u8,
+    name: []const u8,
+    arguments_json: []const u8,
+) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try out.writer.writeAll("{\"sessionId\":");
+    try std.json.Stringify.value(session_id, .{}, &out.writer);
+    try out.writer.writeAll(",\"toolCallId\":");
+    try std.json.Stringify.value(tool_call_id, .{}, &out.writer);
+    try out.writer.writeAll(",\"name\":");
+    try std.json.Stringify.value(name, .{}, &out.writer);
+    // Already validated as a JSON object by the bridge decode, so it is embedded
+    // rather than re-encoded: the client sees exactly what the model wrote.
+    try out.writer.writeAll(",\"arguments\":");
+    try out.writer.writeAll(arguments_json);
+    try out.writer.writeByte('}');
+    return try out.toOwnedSlice();
+}
+
+/// Takes `output` out of the client's result. A reply that is not shaped that
+/// way is the client's bug, and the model cannot fix it by retrying.
+fn emmaToolOutput(alloc: Allocator, result_json: []const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, result_json, .{}) catch
+        return error.EmmaToolFailed;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.EmmaToolFailed;
+    const output = parsed.value.object.get("output") orelse return error.EmmaToolFailed;
+    if (output != .string) return error.EmmaToolFailed;
+    return alloc.dupe(u8, output.string);
+}
+
+fn awaitEmmaToolResponse(
+    state: *server.ServerState,
+    id: u64,
+    operation_cancel_flag: ?*const std.atomic.Value(bool),
+) !?server.OutboundResponse {
+    const Cleanup = struct {
+        fn drain(state_alloc: Allocator, select: *std.Io.Select(AcpEmmaToolWait)) void {
+            while (select.cancel()) |item| switch (item) {
+                .response => |maybe_response| if (maybe_response) |owned| {
+                    var response = owned;
+                    response.deinit(state_alloc);
+                },
+                .cancelled => {},
+            };
+        }
+    };
+
+    var select_buffer: [2]AcpEmmaToolWait = undefined;
+    var select: std.Io.Select(AcpEmmaToolWait) = .init(io_mod.getIo(), &select_buffer);
+    try select.concurrent(.response, server.awaitOutboundResponse, .{ state, id, server.OutboundKind.client_tool });
+    select.concurrent(.cancelled, waitForAcpElicitationCancellation, .{
+        @as(?*const std.atomic.Value(bool), null),
+        operation_cancel_flag,
+    }) catch |err| {
+        Cleanup.drain(state.alloc, &select);
+        return err;
+    };
+    const event = select.await() catch |err| {
+        Cleanup.drain(state.alloc, &select);
+        return err;
+    };
+    return switch (event) {
+        .response => |response| result: {
+            Cleanup.drain(state.alloc, &select);
+            break :result response;
+        },
+        .cancelled => result: {
+            server.cancelOutboundRequest(state, id);
+            Cleanup.drain(state.alloc, &select);
+            break :result null;
+        },
+    };
+}
+
 const Osc8Link = struct {
     uri: []const u8,
     end: usize,
@@ -1589,6 +1731,12 @@ fn executeToolCall(
     };
     defer elicitation_responder.deinit();
     tool_ctx.mcp_input_responder = elicitation_responder.responder();
+    var emma_responder = AcpEmmaToolResponderContext{
+        .acp = ctx,
+        .tool_call_id = acp_id,
+        .operation_cancel_flag = tool_ctx.cancel_flag,
+    };
+    tool_ctx.emma_tool_responder = emma_responder.responder();
     tool_ctx.root_user_intent_context = request.root_user_intent_context;
     tool_ctx.root_user_messages = request.root_user_messages;
     tool_ctx.root_user_evidence_complete = request.root_user_evidence_complete;

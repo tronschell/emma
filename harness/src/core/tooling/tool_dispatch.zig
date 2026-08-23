@@ -110,6 +110,27 @@ pub const VisionProvider = struct {
     }
 };
 
+/// Runs a tool the ACP client owns rather than the harness.
+///
+/// Emma's own tools live in the Electron host: they read and write its durable
+/// stores, so the harness cannot execute them and does not try. It advertises
+/// them, decodes nothing, and hands the raw arguments back over the wire. A
+/// tool that fails answers with text; the error set here is the transport's.
+pub const EmmaToolResponder = struct {
+    context: *anyopaque,
+    call_fn: *const fn (*anyopaque, Allocator, []const u8, []const u8) anyerror![]u8,
+
+    /// Returns the tool's own text output, allocated with `alloc`.
+    pub fn call(
+        self: EmmaToolResponder,
+        alloc: Allocator,
+        name: []const u8,
+        arguments_json: []const u8,
+    ) anyerror![]u8 {
+        return self.call_fn(self.context, alloc, name, arguments_json);
+    }
+};
+
 pub const SelectedDynamicToolSinkFn = *const fn (
     ?*anyopaque,
     []const u8,
@@ -252,6 +273,10 @@ pub const DispatchContext = struct {
     mcp_call_feature: ?tool_mcp_runtime.FeatureCallFn = null,
     mcp_access: tool_mcp_runtime.Access = .unrestricted,
     mcp_input_responder: ?tool_mcp_runtime.InputResponder = null,
+    emma_tool_responder: ?EmmaToolResponder = null,
+    /// The set a tool may look itself up in. `CallFn` never sees the registry
+    /// the call was dispatched from, and search and select are about the set.
+    tool_registry: Registry = .{},
     mcp_call_options: tool_mcp_runtime.CallOptions = .{},
     mcp_call_status_sink: ?*?tool_mcp_runtime.CallStatus = null,
     mcp_execution_error_sink: ?*?anyerror = null,
@@ -392,12 +417,20 @@ pub const ExecutorKind = enum {
     mcp_features,
     ask_user_question,
     vision,
+    /// Executed by the ACP client, not here. See `EmmaToolResponder`.
+    emma,
 };
 
 pub const ApprovalPolicy = enum {
     standard,
     ask_only,
     auto_deny_on_ask,
+};
+
+pub const Advertisement = enum {
+    always,
+    on_select,
+    never,
 };
 
 pub const RuntimeProviderKind = enum {
@@ -431,6 +464,14 @@ pub const Tool = struct {
     /// never reaches a call-time permission check, so advertisement is its only
     /// enforcement point and requires an already-settled allow.
     provider_executed: bool = false,
+    /// Where this tool's schema enters the prompt. `.always` is every tool that
+    /// predates lazy discovery. `.on_select` is found through `search_tools` and
+    /// spliced in by `select_tool`. `.never` is reachable only by name.
+    ///
+    /// This is a prompt-cost mechanism, not a security boundary: a hidden tool
+    /// is still registered, so a model that names one without selecting it runs
+    /// it, under exactly the permission rules it would have had when advertised.
+    advertisement: Advertisement = .always,
     executor_kind: ExecutorKind = .list_files,
     activity_kind: core_types.ToolActivityKind = .read,
     requires_approval: bool = false,

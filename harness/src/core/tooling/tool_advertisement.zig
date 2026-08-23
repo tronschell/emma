@@ -580,6 +580,7 @@ const test_vision = blk: {
         .name = "vision",
         .description = spec.description,
     };
+    spec.advertisement = .never;
     spec.executor_kind = .vision;
     spec.activity_kind = .read;
     spec.requires_approval = true;
@@ -872,7 +873,7 @@ fn writeBuiltinTool(
 ) !void {
     if (!includeBuiltinForKind(tool.name, kind, tool_set)) return;
     if (std.mem.eql(u8, tool.name, "subagent") and !options.subagent_available) return;
-    if (std.mem.eql(u8, tool.name, "vision")) return;
+    if (tool.advertisement != .always) return;
     if (options.permission_mode != .yolo) {
         if (tool.provider_executed and !providerExecutionIsAllowed(tool.name, options.permission_rules)) return;
         if (permissions.rulesDenyAllTargetsForTool(options.permission_rules, tool.name)) return;
@@ -1305,7 +1306,33 @@ test "full advertisement uses active structured builtin schemas" {
         builtin_count += 1;
     }
 
+    // Minus vision, which is `.never`, and web_search, whose provider schema is
+    // swapped in by its own advertisement writer.
     try std.testing.expectEqual(test_all_tools.len - 2, builtin_count);
+}
+
+test "a tool hidden behind search never enters a projection it was not selected into" {
+    const alloc = std.testing.allocator;
+    const hidden = blk: {
+        var spec = test_read_file;
+        spec.name = "emma_hidden";
+        spec.description = "Hidden until selected.";
+        spec.gateway_schema = .{ .name = "emma_hidden", .description = spec.description };
+        spec.advertisement = .on_select;
+        break :blk spec;
+    };
+    const tools = test_all_tools ++ [_]tool_dispatch.Tool{hidden};
+
+    for ([_]BuildKind{ .full, .read_only }) |kind| {
+        var projection = try buildToolProjection(
+            alloc,
+            testToolSetForRegistry(tools[0..]),
+            kind,
+            .{ .subagent_available = true },
+        );
+        defer projection.deinit(alloc);
+        try std.testing.expect(std.mem.find(u8, projection.tools_json, "emma_hidden") == null);
+    }
 }
 
 test "MCP dynamic tools are deferred from the base gateway advertisement" {

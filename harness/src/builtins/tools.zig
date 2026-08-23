@@ -1,6 +1,7 @@
 const std = @import("std");
 const std_builtin = @import("builtin");
 const builtin_gateway = @import("gateway.zig");
+const emma_tools = @import("emma_tools.zig");
 const terminal_contracts = @import("../core/terminal/contracts.zig");
 const terminal_monitor = @import("../core/terminal/monitor.zig");
 const gateway_schema = @import("../core/tooling/gateway_schema.zig");
@@ -1300,6 +1301,9 @@ pub const vision = ToolSpec{
             .max_properties = 2,
         },
     },
+    // Routed to by the provider rather than advertised, so its schema never
+    // enters the prompt. This replaces a name check in `writeBuiltinTool`.
+    .advertisement = .never,
     .executor_kind = .vision,
     .activity_kind = .read,
     .requires_approval = true,
@@ -1375,7 +1379,7 @@ pub const all = [_]tool_dispatch.Tool{
     ask_user_question,
     vision,
     read_tool_result,
-};
+} ++ emma_tools.all;
 
 pub const registry = tool_dispatch.Registry{ .tools = all[0..] };
 
@@ -1933,9 +1937,14 @@ test "built-in tools register exact active local order" {
         "read_tool_result",
     };
 
-    try std.testing.expectEqual(expected_names.len, all.len);
-    for (expected_names, all) |expected, tool| {
+    // fx's own tools come first and in this order; Emma's are appended after and
+    // pinned by their own test, so adding one never edits this list.
+    try std.testing.expectEqual(expected_names.len + emma_tools.all.len, all.len);
+    for (expected_names, all[0..expected_names.len]) |expected, tool| {
         try std.testing.expectEqualStrings(expected, tool.name);
+    }
+    for (emma_tools.all, all[expected_names.len..]) |expected, tool| {
+        try std.testing.expectEqualStrings(expected.name, tool.name);
     }
 }
 
