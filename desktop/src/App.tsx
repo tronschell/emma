@@ -50,7 +50,6 @@ import { takeBootSnapshot } from "./boot";
 
 const empty: Snapshot = { threads: [], knowledgeBases: [], pages: [], scheduledJobs: [], researchJobs: [], warnings: [] };
 const SNAPSHOT_REFRESH_MS = 60_000;
-const SNAPSHOT_COALESCE_MS = 120;
 const AgentView = lazy(() => import("./AgentView"));
 const ResearchView = lazy(() => import("./research"));
 const ChartArtifact = lazy(() => import("./chart-artifact"));
@@ -534,17 +533,12 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
     queueMicrotask(() => void load());
     const refresh = () => { skipped.current = false; void load(); };
     const refreshVisible = () => { if (document.visibilityState === "visible") refresh(); else skipped.current = true; };
-    let coalesce = 0;
-    const listener = window.emma.onChanged(() => {
-      window.clearTimeout(coalesce);
-      coalesce = window.setTimeout(refreshVisible, SNAPSHOT_COALESCE_MS);
-    });
+    const listener = window.emma.onChanged(refreshVisible);
     const shown = () => { if (document.visibilityState === "visible" && skipped.current) refresh(); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", shown);
     const interval = window.setInterval(refreshVisible, SNAPSHOT_REFRESH_MS);
     return () => {
-      window.clearTimeout(coalesce);
       window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", shown);
