@@ -5,9 +5,9 @@ const run = (command, args, env = process.env) => spawn(command, args, { stdio: 
 const native = run("npm", ["run", "build:host"]);
 native.on("exit", (code) => {
   if (code) process.exit(code);
-  const hotkey = run("npm", ["run", "build:hotkey"]);
-  hotkey.on("exit", (hotkeyCode) => {
-    if (hotkeyCode) process.exit(hotkeyCode);
+  const helpers = run("npm", ["run", "build:native"]);
+  helpers.on("exit", (helperCode) => {
+    if (helperCode) process.exit(helperCode);
     const main = run("npm", ["run", "build:main"]);
     main.on("exit", (mainCode) => {
       if (mainCode) process.exit(mainCode);

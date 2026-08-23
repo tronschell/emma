@@ -1,0 +1,91 @@
+/* What conversation.css does not already cover for a rendered message. Prose,
+   code, quotes, rules and links are styled there under .message-body and stay
+   there — this file is only the four things markdown.tsx adds: a table, a fence
+   with its language, a strikethrough, and the two heading steps a model can
+   reach that the prose rules stop short of. */
+
+/* A table is drawn with rules, not a grid of boxes: one strong rule under the
+   header, a quiet one under each row, nothing around the outside. */
+.md-table { max-width: 100%; overflow-x: auto; }
+.message-body table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.message-body th, .message-body td { padding: var(--s-2) var(--s-3) var(--s-2) 0; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.message-body th { border-bottom-color: var(--border-strong); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.message-body tr:last-child td { border-bottom: 0; }
+
+/* The fence keeps conversation.css's left-rule <pre>, which already scrolls
+   sideways rather than wrapping. The language sits above it as a label so it
+   does not scroll away with the code. */
+.md-code pre { margin: 0; }
+.md-code-lang { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* The label and the block's buttons share one line above the fence: copy always,
+   play when the fence is a shell and the thread can run it. The buttons sit at
+   the end of that line, where the eye already is once it has read the command. */
+.md-code-bar { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-1); margin-bottom: var(--s-1); padding-left: var(--s-3); }
+.md-code-bar .md-code-lang { margin-right: auto; }
+.md-code-button { display: inline-flex; align-items: center; justify-content: center; padding: 3px; color: var(--text-3); background: transparent; border: 0; cursor: pointer; }
+.md-code-button:hover, .md-code-button:focus-visible { color: var(--text-1); }
+
+/* What the command printed, under the command. A terminal, not prose: mono, its
+   own scroll, and a header that says where it ran and how it ended. */
+.md-run { margin-top: var(--s-2); border: 1px solid var(--border); }
+.md-run > header { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-1) var(--s-2); border-bottom: 1px solid var(--border); font-size: var(--fs-2xs); }
+.md-run-state { color: var(--text-2); font-family: var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.md-run[data-status="running"] .md-run-state { color: var(--accent); }
+.md-run-where { margin-right: auto; overflow: hidden; color: var(--text-3); font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.md-run > header button { padding: 2px var(--s-2); color: var(--text-2); background: transparent; border: 1px solid var(--border); font-size: var(--fs-2xs); cursor: pointer; }
+.md-run > header button:hover { color: var(--text-1); border-color: var(--border-strong); }
+.md-run-output { max-height: 18em; margin: 0; padding: var(--s-2); overflow: auto; border: 0; color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); white-space: pre-wrap; }
+
+/* Highlighting is six colours off the shared palette, no theme of its own: the
+   block still reads as one piece of text with some parts turned up. */
+.md-code .tok-comment { color: var(--text-3); font-style: italic; }
+.md-code .tok-string { color: var(--lime); }
+.md-code .tok-number { color: var(--orange); }
+.md-code .tok-keyword { color: var(--violet); }
+.md-code .tok-tag { color: var(--blue); }
+.md-code .tok-attr { color: var(--teal); }
+
+/* A path is a code span that does something, so it keeps the code face and
+   picks up the affordance a link has. */
+.message-body .md-path { cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--violet) 40%, transparent); text-underline-offset: 2px; }
+.message-body .md-path:hover, .message-body .md-path:focus-visible { color: var(--accent); text-decoration-color: currentColor; }
+
+/* The file behind a clicked path, shown in Emma. Wider than a decision dialog
+   because it holds a document, and banded like one so it still reads as a
+   dialog: header, location, body. */
+.preview-dialog { display: grid; grid-template-rows: auto auto minmax(0, 1fr); width: min(860px, 100%); max-height: 85vh; }
+.preview-dialog > header { gap: var(--s-2); }
+.preview-toggle { align-self: center; padding: 2px var(--s-2); color: var(--text-3); background: transparent; border: 1px solid var(--border); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.preview-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+/* The location is the answer to "where is this", so it is the whole width and
+   clicking it is the reveal. */
+.preview-location { display: block; width: 100%; padding: var(--s-2) var(--s-4); overflow: hidden; color: var(--text-3); background: transparent; border-bottom: 1px solid var(--border); font: var(--fs-xs)/1.4 var(--font-code); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.preview-location:hover { color: var(--accent); }
+.preview-empty { margin: 0; padding: var(--s-3) var(--s-4); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.preview-body { min-height: 0; overflow: auto; padding: var(--s-4); }
+.preview-prose { font-size: var(--fs-md); }
+.preview-code { margin: 0; padding: 0; overflow-x: auto; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font-code); white-space: pre; }
+.preview-code .tok-comment { color: var(--text-3); font-style: italic; }
+.preview-code .tok-string { color: var(--lime); }
+.preview-code .tok-number { color: var(--orange); }
+.preview-code .tok-keyword { color: var(--violet); }
+.preview-code .tok-tag { color: var(--blue); }
+.preview-code .tok-attr { color: var(--teal); }
+/* A rendered page is the file's own document, on its own white: it is a picture
+   of the file, not part of Emma's surface. */
+.preview-frame { display: block; width: 100%; height: min(60vh, 640px); background: #fff; border: 1px solid var(--border); }
+
+.message-body del { color: var(--text-3); }
+
+/* Tailwind's preflight unstyles every list in the app, which is right for the
+   ones built out of <li> chrome and wrong for a list the model actually wrote:
+   conversation.css indents these but nothing puts the marker back. The second
+   level takes the hollow marker, so one level of nesting reads as nested. */
+.message-body ul { list-style: disc; }
+.message-body ol { list-style: decimal; }
+.message-body li > ul { list-style: circle; }
+
+/* Headings are demoted by two, so a model's ### and beyond land here. */
+.message-body h5, .message-body h6 { font-size: var(--fs-md); font-weight: 500; letter-spacing: -.01em; line-height: 1.35; }
+.message-body * + h5, .message-body * + h6 { margin-top: var(--s-5); }

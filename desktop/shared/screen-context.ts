@@ -1,36 +1,16 @@
-export type ScreenPoint = { x: number; y: number };
-export type ScreenStroke = ScreenPoint[];
-export type ScreenContextAttachment = Readonly<{ id: string; image: string }>;
+export type ScreenContextAttachment = Readonly<{ id: string; image: string; source?: FrontApplication }>;
 
-export const MAX_SCREEN_STROKES = 64;
-export const MAX_SCREEN_POINTS = 4096;
+/** The app the user had in front when the screen was captured, as the agent is told it. */
+export type FrontApplication = Readonly<{ application: string; window: string }>;
 
-export function validateScreenStrokes(value: unknown, width: number, height: number): ScreenStroke[] {
-  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || !Array.isArray(value) || value.length < 1 || value.length > MAX_SCREEN_STROKES) {
-    throw new Error("Screen annotation strokes are invalid");
-  }
-  let points = 0;
-  return value.map((stroke) => {
-    if (!Array.isArray(stroke) || stroke.length < 2 || stroke.length > MAX_SCREEN_POINTS) throw new Error("Screen annotation stroke is invalid");
-    points += stroke.length;
-    if (points > MAX_SCREEN_POINTS) throw new Error("Screen annotation is too detailed");
-    return stroke.map((point) => {
-      if (!point || typeof point !== "object" || Array.isArray(point)) throw new Error("Screen annotation point is invalid");
-      const candidate = point as Record<string, unknown>;
-      if (Object.keys(candidate).length !== 2 || typeof candidate.x !== "number" || typeof candidate.y !== "number" || !Number.isFinite(candidate.x) || !Number.isFinite(candidate.y) || candidate.x < 0 || candidate.x > width || candidate.y < 0 || candidate.y > height) {
-        throw new Error("Screen annotation point is invalid");
-      }
-      return { x: candidate.x, y: candidate.y };
-    });
-  });
+export function frontApplicationNote(source: FrontApplication | undefined) {
+  if (!source?.application) return "";
+  const window = source.window && source.window !== source.application ? `, window “${source.window}”` : "";
+  return `The attached screen capture is the user's own screen. The app they had in front was “${source.application}”${window}.`;
 }
 
 export function validScreenContextId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128 && /^[a-z0-9-]+$/.test(value);
-}
-
-export function authorizedScreenContextId(value: unknown, authorized: boolean): string | undefined {
-  return authorized && validScreenContextId(value) ? value : undefined;
 }
 
 export class ScreenContextStore {
@@ -43,8 +23,11 @@ export class ScreenContextStore {
     this.claimedId = undefined;
   }
 
+  /** The overlay shows what is attached, so the image travels with the id. */
   status() {
-    return this.attachment ? { id: this.attachment.id } : null;
+    if (!this.attachment) return null;
+    const { id, image, source } = this.attachment;
+    return { id, image, ...(source ? { source } : {}) };
   }
 
   claim(id: string) {

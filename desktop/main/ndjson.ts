@@ -34,10 +34,34 @@ export class BoundedLines {
 
 export type HostResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
-export function parseHostResponse(line: string): HostResponse {
+/// Assistant text streamed while the turn that produces it is still in flight.
+/// Tagged by thread rather than request ID: it resolves nothing, and the window
+/// that has to render it is chosen by thread anyway.
+export type HostDelta = { threadId: string; delta: string };
+
+/// A scheduled job the host just fired — by the clock, by hand, or because the job
+/// upstream of it finished — with its thread already saved. Pushed rather than
+/// replied to, and carrying the mode the job was saved with, the graph to walk and
+/// the variables to walk it with, because all of that runs in this process.
+export type HostDueJob = { dueJob: { jobId: string; threadId: string; title: string; prompt: string; nodes: string; variables: string; permissionMode: string; depth: number } };
+
+const DUE_JOB_FIELDS = ["jobId", "threadId", "title", "prompt", "nodes", "variables", "permissionMode"] as const;
+
+export function parseHostLine(line: string): HostResponse | HostDelta | HostDueJob {
   const value: unknown = JSON.parse(line);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid host response");
   const response = value as Record<string, unknown>;
+  if (Object.hasOwn(response, "dueJob")) {
+    const job = response.dueJob as Record<string, unknown>;
+    if (!job || typeof job !== "object" || typeof job.depth !== "number" || DUE_JOB_FIELDS.some((field) => typeof job[field] !== "string")) {
+      throw new Error("Invalid host due job envelope");
+    }
+    return { dueJob: job as unknown as HostDueJob["dueJob"] };
+  }
+  if (typeof response.threadId === "string") {
+    if (typeof response.delta !== "string") throw new Error("Invalid host delta envelope");
+    return { threadId: response.threadId, delta: response.delta };
+  }
   if (typeof response.id !== "string" || typeof response.ok !== "boolean") throw new Error("Invalid host response");
   if (response.ok) {
     if (!Object.hasOwn(response, "result")) throw new Error("Invalid host response envelope");

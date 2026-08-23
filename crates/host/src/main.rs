@@ -1,8 +1,12 @@
-use std::io::{self, BufRead, Read, Write};
+use std::{
+    io::{self, BufRead, Read, Write},
+    sync::{Arc, Mutex},
+};
 
 use emma_core::{
-    ArtifactBlock, KnowledgeBaseId, LiveClient, PageId, ScheduledJobId, ScreenContext,
-    SkillContext, ThreadId,
+    AgentTool, AgentToolResult, ArtifactBlock, DueJob, KnowledgeBaseId, LiveClient,
+    MAX_AGENT_TOOLS, PageId, ResearchJobId, ScheduledJobId, ScreenContext, SkillContext, ThreadId,
+    ThreadKind,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -31,6 +35,22 @@ struct ThreadParams {
     thread_id: String,
 }
 
+/// All three fields are main's to set: the renderer's allowlist carries none of
+/// them, so a compromised window cannot graft a thread onto someone else's agent
+/// tree, nor hide one from the projects list by calling it a subagent's.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateThreadParams {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    parent_thread_id: Option<String>,
+    /// `"subagent"` for a delegated `task` transcript. Anything else is a thread
+    /// the user talks to, which is the safe default for a missing field.
+    #[serde(default)]
+    kind: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MessageParams {
@@ -38,6 +58,93 @@ struct MessageParams {
     content: String,
     screen_context: Option<String>,
     skill_context: Option<String>,
+    /// JSON array of tool definitions. Present only for a granted computer-use
+    /// run; an ordinary turn advertises nothing.
+    tools: Option<String>,
+}
+
+/// A turn the coding harness already ran, on its way into the durable thread.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecordTurnParams {
+    thread_id: String,
+    prompt: String,
+    response: String,
+    /// The protocol carries every parameter as a string, numbers included.
+    output_tokens: Option<String>,
+    duration_milliseconds: Option<String>,
+    /// Everything the provider billed as input: system prompt, tool schemas and
+    /// history included. Absent when the harness reported no usage.
+    input_tokens: Option<String>,
+    /// Which model answered, as the composer's picker named it. Absent from an
+    /// older client; the turn then records no model rather than being refused.
+    model: Option<String>,
+}
+
+/// One finished turn's execution trace, already rendered by
+/// `desktop/shared/trace.ts`. Core clamps it again before it lands on the thread.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecordTraceParams {
+    thread_id: String,
+    trace: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolResultParams {
+    thread_id: String,
+    results: String,
+    screen_context: Option<String>,
+    skill_context: Option<String>,
+    tools: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireToolDefinition {
+    name: String,
+    description: String,
+    input_schema: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireToolResult {
+    id: String,
+    content: String,
+}
+
+fn agent_tools(value: Option<String>) -> Result<Vec<AgentTool>, String> {
+    let Some(raw) = value else {
+        return Ok(Vec::new());
+    };
+    let parsed: Vec<WireToolDefinition> =
+        serde_json::from_str(&raw).map_err(|_| "tool definitions are invalid JSON".to_string())?;
+    if parsed.len() > MAX_AGENT_TOOLS {
+        return Err("too many tools for one turn".into());
+    }
+    parsed
+        .into_iter()
+        .map(|tool| {
+            AgentTool::new(tool.name, tool.description, tool.input_schema)
+                .map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+fn agent_tool_results(raw: &str) -> Result<Vec<AgentToolResult>, String> {
+    let parsed: Vec<WireToolResult> =
+        serde_json::from_str(raw).map_err(|_| "tool results are invalid JSON".to_string())?;
+    if parsed.is_empty() || parsed.len() > MAX_AGENT_TOOLS {
+        return Err("tool results are invalid".into());
+    }
+    parsed
+        .into_iter()
+        .map(|result| {
+            AgentToolResult::new(result.id, result.content).map_err(|error| error.to_string())
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -51,6 +158,20 @@ struct SelectBaseParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ModelParams {
     model_id: String,
+    /// The thinking mode to run the model in; absent leaves the model's own default.
+    #[serde(default)]
+    effort: String,
+}
+
+/// One thread's own model — what a subagent runs on. An empty `modelId` clears it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadModelParams {
+    thread_id: String,
+    #[serde(default)]
+    model_id: String,
+    #[serde(default)]
+    effort: String,
 }
 
 #[derive(Deserialize)]
@@ -98,11 +219,184 @@ struct UpdatePageDocumentParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateScheduledJobParams {
+struct CaptureParams {
+    knowledge_base_id: String,
+    category: String,
     title: String,
+    text: String,
+    source_url: Option<String>,
+    source_application: Option<String>,
+    image: Option<String>,
+    /// A JSON array of data URLs, for captures that keep more than one picture.
+    images: Option<String>,
+    /// The page this re-read replaces, instead of filing a second copy of one URL.
+    page_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PageParams {
+    page_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AnalyzeParams {
+    page_id: String,
+    /// "true" builds the document but leaves the page where it is filed.
+    keep_category: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PageVersionParams {
+    page_id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PageChatParams {
+    page_id: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PageReviseParams {
+    page_id: String,
+    instruction: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AssetParams {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveScheduledJobParams {
+    /// Empty creates; anything else rewrites that job in place.
+    #[serde(default)]
+    job_id: String,
+    title: String,
+    /// Cron, `manual`, `after <job-id>`, or `on <event>`.
     schedule: String,
     prompt: String,
+    /// The workflow graph as JSON, or empty for a job that is one step on `prompt`.
+    #[serde(default)]
+    nodes: String,
     source_domains: String,
+    /// The mode this job runs under, forever. An unattended run has nobody to ask.
+    permission_mode: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScheduledJobParams {
+    job_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunScheduledJobParams {
+    job_id: String,
+    /// A JSON object the run starts with, or empty.
+    #[serde(default)]
+    variables: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FinishScheduledJobParams {
+    job_id: String,
+    outputs: String,
+    depth: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FireScheduledEventParams {
+    event: String,
+    #[serde(default)]
+    variables: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveResearchJobParams {
+    /// Absent creates; present rewrites that job in place.
+    job_id: Option<String>,
+    title: String,
+    project_dir: String,
+    metric_name: String,
+    /// `grep` reads the number out of the run's output; `judge` scores it.
+    metric_kind: String,
+    /// The judge's rubric. Absent for a grep metric, which takes none.
+    metric_prompt: Option<String>,
+    direction: String,
+    eval_command: String,
+    /// What the user wants the proposer to try, in the composer's "/" and "@"
+    /// grammar. Absent is a job steered by the loop's own instructions alone.
+    prompt: Option<String>,
+    proposer_model: String,
+    permission_mode: String,
+    /// The three budgets, `0` for no limit.
+    max_seconds: String,
+    max_tokens: String,
+    max_micro_dollars: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResearchJobParams {
+    job_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetResearchJobStatusParams {
+    job_id: String,
+    status: String,
+    /// Which budget ran out, or what failed. Absent when nothing needs saying.
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetResearchJobThreadParams {
+    job_id: String,
+    thread_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecordResearchIterationParams {
+    job_id: String,
+    outcome: String,
+    duration_milliseconds: String,
+    input_tokens: String,
+    output_tokens: String,
+    micro_dollars: String,
+    /// Absent when the run crashed and produced no number at all.
+    value: Option<String>,
+    note: Option<String>,
+    commit: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetThreadArchivedParams {
+    thread_id: String,
+    archived: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameThreadParams {
+    thread_id: String,
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -120,13 +414,40 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let live = runtime::start().map_err(|error| error.to_string())?;
-    serve(io::stdin().lock(), io::stdout().lock(), &live)
+    // One lock over stdout, shared with the runtime thread. `serve` only holds
+    // it to write a finished response, and it is blocked in `dispatch` for the
+    // whole span a turn is streaming, so the two never contend in practice.
+    let out = Arc::new(Mutex::new(io::stdout()));
+    let sink = Arc::clone(&out);
+    let jobs = Arc::clone(&out);
+    let live = runtime::start(
+        Arc::new(move |thread_id: &str, text: &str| {
+            // A dropped chunk is a missed repaint; the turn's own response line still
+            // carries the whole message, so nothing here is worth failing the host over.
+            if let Ok(mut writer) = sink.lock() {
+                let line = json!({ "threadId": thread_id, "delta": text });
+                let _ = serde_json::to_writer(&mut *writer, &line);
+                let _ = writer.write_all(b"\n");
+                let _ = writer.flush();
+            }
+        }),
+        Arc::new(move |job: DueJob| {
+            // Pushed, not replied to: nothing asked for this, the clock did.
+            if let Ok(mut writer) = jobs.lock() {
+                let line = json!({ "dueJob": job });
+                let _ = serde_json::to_writer(&mut *writer, &line);
+                let _ = writer.write_all(b"\n");
+                let _ = writer.flush();
+            }
+        }),
+    )
+    .map_err(|error| error.to_string())?;
+    serve(io::stdin().lock(), &out, &live)
 }
 
 fn serve(
     mut reader: impl BufRead,
-    mut writer: impl Write,
+    writer: &Mutex<impl Write>,
     live: &LiveClient,
 ) -> Result<(), String> {
     let mut line = Vec::with_capacity(MAX_REQUEST_BYTES);
@@ -137,7 +458,10 @@ fn serve(
             Ok((id, result)) => json!({ "id": id, "ok": true, "result": result }),
             Err((id, error)) => json!({ "id": id, "ok": false, "error": error }),
         };
-        serde_json::to_writer(&mut writer, &response)
+        let mut writer = writer
+            .lock()
+            .map_err(|_| "Emma host output lock was poisoned".to_string())?;
+        serde_json::to_writer(&mut *writer, &response)
             .map_err(|error| format!("could not encode response: {error}"))?;
         writer
             .write_all(b"\n")
@@ -293,7 +617,24 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
     let result = (|| -> Result<Value, String> {
         match request.method.as_str() {
             "snapshot" => encode(call(live.snapshot())?),
-            "createThread" => encode(call(live.create_thread())?),
+            "createThread" => {
+                // The renderer sends this one with no params at all, which arrives as null.
+                let params: CreateThreadParams = if request.params.is_null() {
+                    CreateThreadParams::default()
+                } else {
+                    params(request)?
+                };
+                let parent = params
+                    .parent_thread_id
+                    .map(ThreadId::parse)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                let kind = match params.kind.as_deref() {
+                    Some("subagent") => ThreadKind::Subagent,
+                    _ => ThreadKind::Main,
+                };
+                encode(call(live.create_thread(params.title, parent, kind))?)
+            }
             "createKnowledgeBase" => {
                 let params: NameParams = params(request)?;
                 encode(call(live.create_knowledge_base(params.name))?)
@@ -320,6 +661,25 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 encode(call(live.select_thread_sources(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                     ids,
+                ))?)
+            }
+            "setThreadArchived" => {
+                let params: SetThreadArchivedParams = params(request)?;
+                let archived = match params.archived.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("thread archived state is invalid".into()),
+                };
+                encode(call(live.set_thread_archived(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    archived,
+                ))?)
+            }
+            "renameThread" => {
+                let params: RenameThreadParams = params(request)?;
+                encode(call(live.rename_thread(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    params.title,
                 ))?)
             }
             "addKnowledgeBaseCategory" | "removeKnowledgeBaseCategory" => {
@@ -384,6 +744,64 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     params.content,
                     screen_context,
                     skill_context,
+                    agent_tools(params.tools)?,
+                ))?)
+            }
+            "recordTurn" => {
+                let params: RecordTurnParams = params(request)?;
+                encode(call(
+                    live.record_turn(
+                        ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                        params.prompt,
+                        params.response,
+                        params
+                            .output_tokens
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or_default(),
+                        params
+                            .duration_milliseconds
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or_default(),
+                        params
+                            .input_tokens
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or_default(),
+                        params.model.unwrap_or_default(),
+                    ),
+                )?)
+            }
+            "recordTrace" => {
+                let params: RecordTraceParams = params(request)?;
+                call(live.record_trace(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    params.trace,
+                ))?;
+                Ok(json!({ "recorded": true }))
+            }
+            "readTrace" => {
+                let params: ThreadParams = params(request)?;
+                encode(call(live.read_trace(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
+            "submitToolResult" => {
+                let params: ToolResultParams = params(request)?;
+                let screen_context = params
+                    .screen_context
+                    .map(ScreenContext::new)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                let skill_context = params
+                    .skill_context
+                    .map(SkillContext::new)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                encode(call(live.submit_tool_result(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    agent_tool_results(&params.results)?,
+                    screen_context,
+                    skill_context,
+                    agent_tools(params.tools)?,
                 ))?)
             }
             "saveToKnowledge" => {
@@ -392,19 +810,129 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                 ))?)
             }
-            "createScheduledJob" => {
-                let params: CreateScheduledJobParams = params(request)?;
+            "captureToKnowledge" => {
+                let params: CaptureParams = params(request)?;
+                let mut images: Vec<String> = params.image.into_iter().collect();
+                if let Some(list) = params.images {
+                    let parsed: Vec<String> = serde_json::from_str(&list)
+                        .map_err(|_| "captured images are invalid JSON".to_string())?;
+                    images.extend(parsed);
+                }
+                let page_id = params
+                    .page_id
+                    .map(PageId::parse)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                encode(call(
+                    live.capture_to_knowledge(
+                        KnowledgeBaseId::parse(params.knowledge_base_id)
+                            .map_err(|error| error.to_string())?,
+                        params.category,
+                        params.title,
+                        params.text,
+                        params.source_url,
+                        params.source_application,
+                        images,
+                        page_id,
+                    ),
+                )?)
+            }
+            "analyzePage" => {
+                let params: AnalyzeParams = params(request)?;
+                let keep_category = match params.keep_category.as_deref() {
+                    None | Some("false") => false,
+                    Some("true") => true,
+                    _ => return Err("keepCategory must be \"true\" or \"false\"".into()),
+                };
+                encode(call(live.analyze_page(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
+                    keep_category,
+                ))?)
+            }
+            "listPageVersions" => {
+                let params: PageParams = params(request)?;
+                encode(call(live.list_page_versions(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
+            "restorePageVersion" => {
+                let params: PageVersionParams = params(request)?;
+                encode(call(live.restore_page_version(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
+                    params.name,
+                ))?)
+            }
+            "chatAboutPage" => {
+                let params: PageChatParams = params(request)?;
+                encode(call(live.chat_about_page(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
+                    params.content,
+                ))?)
+            }
+            "revisePageDocument" => {
+                let params: PageReviseParams = params(request)?;
+                encode(call(live.revise_page_document(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
+                    params.instruction,
+                ))?)
+            }
+            "readPageAsset" => {
+                let params: AssetParams = params(request)?;
+                encode(call(live.read_page_asset(params.name))?)
+            }
+            "saveScheduledJob" => {
+                let params: SaveScheduledJobParams = params(request)?;
                 let source_domains: Vec<String> = serde_json::from_str(&params.source_domains)
                     .map_err(|_| "scheduled job source domains are invalid".to_string())?;
-                encode(call(live.create_scheduled_job(
+                let job_id = match params.job_id.as_str() {
+                    "" => None,
+                    value => Some(ScheduledJobId::parse(value).map_err(|error| error.to_string())?),
+                };
+                encode(call(live.save_scheduled_job(
+                    job_id,
                     params.title,
                     params.schedule,
                     params.prompt,
+                    params.nodes,
                     source_domains,
+                    params.permission_mode,
                 ))?)
+            }
+            "deleteScheduledJob" => {
+                let params: ScheduledJobParams = params(request)?;
+                encode(call(live.delete_scheduled_job(
+                    ScheduledJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
+            "runScheduledJob" => {
+                let params: RunScheduledJobParams = params(request)?;
+                encode(call(live.run_scheduled_job(
+                    ScheduledJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                    params.variables,
+                ))?)
+            }
+            "finishScheduledJob" => {
+                let params: FinishScheduledJobParams = params(request)?;
+                let depth: u32 = params
+                    .depth
+                    .parse()
+                    .map_err(|_| "trigger depth is invalid".to_string())?;
+                encode(call(live.finish_scheduled_job(
+                    ScheduledJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                    params.outputs,
+                    depth,
+                ))?)
+            }
+            "fireScheduledEvent" => {
+                let params: FireScheduledEventParams = params(request)?;
+                encode(call(
+                    live.fire_scheduled_event(params.event, params.variables),
+                )?)
             }
             "setScheduledJobEnabled" => {
                 let params: SetScheduledJobEnabledParams = params(request)?;
+                // ponytail: enabled arrives as text like every other param; the host
+                // protocol is string-valued and this is the one boolean in it.
                 let enabled = match params.enabled.as_str() {
                     "true" => true,
                     "false" => false,
@@ -415,10 +943,84 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     enabled,
                 ))?)
             }
+            "saveResearchJob" => {
+                let params: SaveResearchJobParams = params(request)?;
+                let job_id = params
+                    .job_id
+                    .map(ResearchJobId::parse)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                encode(call(live.save_research_job(
+                    job_id,
+                    params.title,
+                    params.project_dir,
+                    params.metric_name,
+                    params.metric_kind,
+                    params.metric_prompt.unwrap_or_default(),
+                    params.direction,
+                    params.eval_command,
+                    params.prompt.unwrap_or_default(),
+                    params.proposer_model,
+                    params.permission_mode,
+                    whole_number("maxSeconds", &params.max_seconds)?,
+                    whole_number("maxTokens", &params.max_tokens)?,
+                    whole_number("maxMicroDollars", &params.max_micro_dollars)?,
+                ))?)
+            }
+            "deleteResearchJob" => {
+                let params: ResearchJobParams = params(request)?;
+                encode(call(live.delete_research_job(
+                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
+            "setResearchJobStatus" => {
+                let params: SetResearchJobStatusParams = params(request)?;
+                encode(call(live.set_research_job_status(
+                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                    params.status,
+                    params.note.unwrap_or_default(),
+                ))?)
+            }
+            "setResearchJobThread" => {
+                let params: SetResearchJobThreadParams = params(request)?;
+                encode(call(live.set_research_job_thread(
+                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
+            "recordResearchIteration" => {
+                let params: RecordResearchIterationParams = params(request)?;
+                let value = params
+                    .value
+                    .map(|value| measurement("value", &value))
+                    .transpose()?;
+                encode(call(live.record_research_iteration(
+                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
+                    value,
+                    params.outcome,
+                    params.note.unwrap_or_default(),
+                    params.commit.unwrap_or_default(),
+                    whole_number("durationMilliseconds", &params.duration_milliseconds)?,
+                    whole_number("inputTokens", &params.input_tokens)?,
+                    whole_number("outputTokens", &params.output_tokens)?,
+                    whole_number("microDollars", &params.micro_dollars)?,
+                ))?)
+            }
             "listOpenRouterModels" => encode(call(live.list_openrouter_models())?),
             "selectOpenRouterModel" => {
                 let params: ModelParams = params(request)?;
-                encode(call(live.select_openrouter_model(params.model_id))?)
+                encode(call(
+                    live.select_openrouter_model(params.model_id, params.effort),
+                )?)
+            }
+            "setThreadModel" => {
+                let params: ThreadModelParams = params(request)?;
+                call(live.set_thread_model(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    params.model_id,
+                    params.effort,
+                ))?;
+                Ok(json!({ "set": true }))
             }
             "selectLocalModel" => {
                 let params: LocalModelParams = params(request)?;
@@ -439,6 +1041,19 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
 fn params<T: for<'de> Deserialize<'de>>(request: &Request) -> Result<T, String> {
     serde_json::from_value(request.params.clone())
         .map_err(|error| format!("invalid {} parameters: {error}", request.method))
+}
+
+fn whole_number(name: &str, value: &str) -> Result<u64, String> {
+    value.parse().map_err(|_| format!("{name} is not a number"))
+}
+
+/// A measured metric. NaN and infinity are refused here as well as in core, because
+/// a graph line and a "did it improve" comparison are both meaningless against them.
+fn measurement(name: &str, value: &str) -> Result<f64, String> {
+    match value.parse::<f64>() {
+        Ok(number) if number.is_finite() => Ok(number),
+        _ => Err(format!("{name} is not a number")),
+    }
 }
 
 fn encode(value: impl serde::Serialize) -> Result<Value, String> {

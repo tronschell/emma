@@ -1,48 +1,62 @@
 const features = [
   {
     id: "01",
-    title: "Work that keeps its context",
-    copy: "Research, write, plan, code, and coordinate in durable Threads. Close Emma, come back later, and the work is still where you left it.",
-    label: "GENERAL AGENT WORK",
+    title: "The composer is the agent",
+    copy: "Emma reads and writes the folders you attach, searches them with the bundled ripgrep, runs shell commands, keeps long ones alive in the background, calls connected MCP tools, runs your other coding CLIs, and spawns subagents. Type / to name a capability, @ to name a file.",
+    label: "EVERY TURN IS AN AGENT TURN",
   },
   {
     id: "02",
     title: "Knowledge, only on purpose",
-    copy: "A conversation is not automatically a memory. Save or analyze an artifact explicitly, and Emma turns it into inspectable Knowledge Base material.",
+    copy: "A turn is not a memory. Save & analyze writes one page into the named knowledge base the thread points at, with its category, source thread, model, and token counts. Editing that page is a separate, explicit action.",
     label: "EXPLICIT CAPTURE",
   },
   {
     id: "03",
-    title: "Your models, your choice",
-    copy: "Connect local or cloud models through OpenAI-compatible endpoints. Keep fast work nearby and call larger models when the task earns it.",
-    label: "MODEL ROUTING",
+    title: "Every run leaves a record",
+    copy: "Threads are durable Markdown you can close and come back to. The inspector carries the turn as a span waterfall, a ledger of what the prompt actually carried, a Git tab for the connected folder, and a +N −M diff of Emma’s own writes with a revert per file.",
+    label: "INSPECTABLE RUNS",
   },
+];
+
+const modes = [
+  ["PLAN", "Only tools that cannot change this Mac are advertised."],
+  ["ASK", "Every write, command, and click asks first. This is the default."],
+  [
+    "ACCEPT EDITS",
+    "Files are written and searched without asking. Commands and the pointer still ask.",
+  ],
+  [
+    "AUTO",
+    "A separate verifier model reads each gated call. Anything it will not clear comes back to you.",
+  ],
+  ["FULL", "Nothing asks. Escape still stops a run."],
 ];
 
 const capabilities = [
   [
-    "Skills on demand",
-    "Emma searches skills, CLI tools, and MCP servers lazily—loading the right capability when the work asks for it.",
+    "The notch surfaces",
+    "Quick Ask is one island centered on the real camera housing, opened by a double-tap of the left Option key. While Emma is idle a click-through sliver sits over the housing and reveals a sparkle wave on hover.",
   ],
   [
-    "Integrations in context",
-    "Bring external tools into a Thread without turning the product into a wall of permanent dashboards.",
+    "Quick actions, three ways",
+    "Three saved actions hang under the island as orbs, orbit the cursor in a ring of up to eight, and run from Command-1, 2, and 3 at any time. Every ring command is validated in the main process against a fixed catalog.",
   ],
   [
-    "Inspectable capture",
-    "See what was saved, where it came from, and what Emma derived. Private context stays legible instead of disappearing into a black box.",
+    "Save the front page",
+    "Emma reads the page out of whichever whitelisted browser is in front, keeps its favicon and lead pictures, and writes it up as a document. It files that page into a category by itself once one of your categories has five examples to learn from.",
   ],
   [
-    "Run telemetry",
-    "Follow tool calls, model use, timing, and outcomes while work is running—or inspect the trace after it finishes.",
+    "Subagents and sub threads",
+    "A live subagent gets its own color in the sidebar and its own tab, where you can steer it, stop it, and read its model, rate, tokens, and tool calls. A new thread instead starts a full agent nested under its parent.",
   ],
   [
-    "Scheduled synthesis",
-    "Ask Emma to revisit saved material on a schedule and produce a brief, digest, or updated view of what changed.",
+    "Skills and MCP, imported",
+    "Register the skill and MCP locations you already have in Codex, Claude, Cursor, Windsurf, and others, without copying their config. Emma can install a skill or an MCP server for herself mid-turn and use it in that same turn.",
   ],
   [
-    "macOS at the surface",
-    "A compact notch surface keeps quick capture close; the full desktop workspace gives deeper work room to breathe.",
+    "Dictation that stays here",
+    "Off until you turn it on. Recording happens locally, a local transcription endpoint does the words, and an optional local model rewrites them as written English. Emma enforces that both endpoints are local.",
   ],
 ];
 
@@ -65,8 +79,8 @@ function AppMockup() {
     >
       <div className="notch-card">
         <span className="live-dot" />
-        <span>EMMA IS READY</span>
-        <span className="keys">⌘ ↵</span>
+        <span>QUICK ASK</span>
+        <span className="keys">⌥ ⌥</span>
       </div>
       <div className="window">
         <div className="window-bar">
@@ -88,30 +102,32 @@ function AppMockup() {
               <span>Launch research</span>
               <small>NOW</small>
             </div>
+            <div className="thread sub">
+              <span>
+                <i /> Read the pricing pages
+              </span>
+              <small>SUBAGENT</small>
+            </div>
             <div className="thread">
               <span>Q3 planning</span>
               <small>2H</small>
             </div>
             <div className="thread">
-              <span>Model evaluation</span>
+              <span>Tokenizer sweep</span>
               <small>MON</small>
-            </div>
-            <div className="thread">
-              <span>Reading queue</span>
-              <small>FRI</small>
             </div>
           </aside>
           <section className="conversation" aria-label="Thread preview">
             <header>
               <div>
-                <small>THREAD 084</small>
+                <small>THREAD 084 / RESEARCH</small>
                 <h3>Launch research</h3>
               </div>
-              <span className="model-pill">LOCAL / QWEN</span>
+              <span className="model-pill">OPENROUTER</span>
             </header>
             <div className="message user-message">
-              Compare the launch notes with our saved positioning and flag
-              contradictions.
+              Compare the launch notes in ~/work/launch with our saved
+              positioning and flag contradictions.
             </div>
             <div className="agent-line">
               <Mark small />
@@ -123,8 +139,16 @@ function AppMockup() {
                 <div className="tool-call">
                   <span>↳</span>
                   <div>
-                    <small>KNOWLEDGE SEARCH</small>
-                    <p>12 artifacts inspected · 3 cited</p>
+                    <small>RIPGREP</small>
+                    <p>~/work/launch · 34 matches</p>
+                  </div>
+                  <b>0.4s</b>
+                </div>
+                <div className="tool-call">
+                  <span>↳</span>
+                  <div>
+                    <small>TASK / SUBAGENT</small>
+                    <p>Read the pricing pages · running</p>
                   </div>
                   <b>0.8s</b>
                 </div>
@@ -132,25 +156,28 @@ function AppMockup() {
             </div>
             <div className="composer">
               <span>Ask Emma to continue…</span>
-              <kbd>⌘ ↵</kbd>
+              <span className="composer-controls">
+                <b className="mode-chip">◈ ASK</b>
+                <kbd>⌘ ↵</kbd>
+              </span>
             </div>
           </section>
           <aside className="knowledge-pane">
-            <p className="pane-label">KNOWLEDGE BASE</p>
-            <div className="kb-search">⌕ Search saved knowledge</div>
+            <p className="pane-label">KNOWLEDGE / RESEARCH</p>
+            <div className="kb-search">⌕ Search saved pages</div>
             <p className="mini-label">USED IN THIS THREAD</p>
             <article>
               <span className="file-icon">◇</span>
               <div>
                 <h4>Positioning principles</h4>
-                <p>ANALYZED NOTE · 8 SOURCES</p>
+                <p>ANALYZED PAGE · 8 SOURCES</p>
               </div>
             </article>
             <article>
               <span className="file-icon">□</span>
               <div>
                 <h4>Launch notes v4</h4>
-                <p>SAVED DOCUMENT · TODAY</p>
+                <p>SAVED PAGE · TODAY</p>
               </div>
             </article>
             <div className="capture-note">
@@ -158,7 +185,7 @@ function AppMockup() {
               <p>
                 <b>Nothing saves silently.</b>
                 <br />
-                You choose what enters knowledge.
+                Saved pages mirror to ~/Documents/Emma Knowledge.
               </p>
             </div>
           </aside>
@@ -167,9 +194,9 @@ function AppMockup() {
           <span>
             <i /> EXAMPLE RUN
           </span>
-          <span>3 TOOLS</span>
-          <span>1,842 TOKENS</span>
-          <span>12.4s</span>
+          <span>5 TOOL CALLS</span>
+          <span>1 SUBAGENT</span>
+          <span>SPAN TRACE</span>
         </div>
       </div>
     </div>
@@ -190,8 +217,8 @@ function App() {
           </a>
           <div className="nav-links">
             <a href="#product">PRODUCT</a>
+            <a href="#control">CONTROL</a>
             <a href="#capabilities">CAPABILITIES</a>
-            <a href="#principles">PRINCIPLES</a>
           </div>
           <a className="nav-cta" href="#preview">
             EXPLORE EMMA <span>↗</span>
@@ -208,7 +235,8 @@ function App() {
           </div>
           <div className="shell hero-content">
             <p className="eyebrow">
-              <span className="live-dot" /> MACOS-FIRST / BUILT FOR REAL WORK
+              <span className="live-dot" /> MACOS-FIRST / ONE LOOP, EVERY
+              SURFACE
             </p>
             <h1>
               Your everything agent.
@@ -216,9 +244,9 @@ function App() {
               <span>Nothing you didn’t ask for.</span>
             </h1>
             <p className="hero-copy">
-              Emma carries work across durable Threads, calls the right tools
-              when needed, and builds knowledge only when you explicitly save
-              it.
+              Emma is a macOS agent workspace and an exportable knowledge base.
+              The composer, the notch, a quick action, and a scheduled job all
+              run the same agent loop, under a permission mode you choose.
             </p>
             <div className="actions">
               <a className="primary" href="#preview">
@@ -230,9 +258,9 @@ function App() {
             </div>
           </div>
           <div className="shell status-strip" aria-label="Product principles">
-            <span>01 / DURABLE THREADS</span>
+            <span>01 / PERMISSION MODES</span>
             <span>02 / EXPLICIT KNOWLEDGE</span>
-            <span>03 / INSPECTABLE RUNS</span>
+            <span>03 / PLAIN MARKDOWN</span>
           </div>
         </section>
 
@@ -245,8 +273,9 @@ function App() {
               Deep on the desktop.
             </h2>
             <p>
-              Capture a thought without breaking stride, then open the full
-              workspace when the job needs sources, tools, and a durable record.
+              Double-tap the left Option key and Quick Ask opens on the real
+              notch. Open the full workspace when the job needs folders, tools,
+              subagents, and a durable record.
             </p>
           </div>
           <AppMockup />
@@ -254,7 +283,7 @@ function App() {
 
         <section className="feature-section section shell" id="product">
           <div className="section-heading-row">
-            <p className="eyebrow">WHAT EMMA HOLDS</p>
+            <p className="eyebrow">WHAT A TURN CAN DO</p>
             <p>ONE SYSTEM / THREE CLEAR BOUNDARIES</p>
           </div>
           <div className="feature-grid">
@@ -274,7 +303,62 @@ function App() {
           </div>
         </section>
 
-        <section className="model-section section" id="principles">
+        <section className="section" id="control">
+          <div className="shell split">
+            <div>
+              <p className="eyebrow">PERMISSION MODES</p>
+              <h2>
+                You decide how much
+                <br />
+                Emma does alone.
+              </h2>
+              <div className="mode-list">
+                {modes.map(([name, copy]) => (
+                  <div className="mode-row" key={name}>
+                    <span>{name}</span>
+                    <p>{copy}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="model-copy">
+              <p>
+                One table decides what each mode advertises and what it stops to
+                ask about, so the picker beside ＋ and the check that enforces
+                it cannot drift. A scheduled job fires under the mode it was
+                saved with. The terminal command reads the same names.
+              </p>
+              <div className="schedule-card">
+                <div className="schedule-head">
+                  <span>CONTROL THIS MAC</span>
+                  <b>＋ MENU</b>
+                </div>
+                <dl>
+                  <div>
+                    <dt>APPROVAL</dt>
+                    <dd>Per run, before it starts</dd>
+                  </div>
+                  <div>
+                    <dt>CEILINGS</dt>
+                    <dd>20 steps / 10 minutes</dd>
+                  </div>
+                  <div>
+                    <dt>STOP</dt>
+                    <dd>Escape, from anywhere</dd>
+                  </div>
+                  <div>
+                    <dt>BANNER</dt>
+                    <dd>
+                      <i /> Above every app
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="model-section section" id="models">
           <div className="shell split">
             <div>
               <p className="eyebrow">MODEL FREEDOM</p>
@@ -287,19 +371,26 @@ function App() {
             <div className="model-copy">
               <p>
                 Emma speaks the OpenAI-compatible protocol, so the workspace is
-                not fused to one inference path.
+                not fused to one inference path. A pasted key is encrypted with
+                the OS keychain and reaches the agent through its spawn
+                environment; the interface only ever gets a mask back.
               </p>
               <div className="endpoint">
                 <span>
                   <i /> LOCAL
                 </span>
-                <b>http://localhost:11434/v1</b>
-                <em>PRIVATE / FAST</em>
+                <b>http://127.0.0.1:1234/v1</b>
+                <em>BASE URL / MODEL / KEY NAME</em>
               </div>
               <div className="endpoint">
-                <span>☁ CLOUD</span>
-                <b>api.openai.com/v1</b>
-                <em>CONNECTED</em>
+                <span>☁ OPENROUTER</span>
+                <b>Live tool-capable catalog</b>
+                <em>BROWSING NEEDS NO KEY</em>
+              </div>
+              <div className="endpoint">
+                <span>◈ ZERO RETENTION</span>
+                <b>Fail closed, never fall back</b>
+                <em>OFF BY DEFAULT</em>
               </div>
             </div>
           </div>
@@ -331,51 +422,93 @@ function App() {
           </div>
         </section>
 
-        <section className="synthesis section">
+        <section className="synthesis section" id="jobs">
           <div className="shell synthesis-grid">
             <div>
               <p className="eyebrow">
-                <span className="live-dot" /> SCHEDULED SYNTHESIS
+                <span className="live-dot" /> JOBS THAT RUN WITHOUT YOU
               </p>
               <h2>
-                Let saved knowledge
+                Schedule a workflow.
                 <br />
-                keep doing work.
+                Or run an experiment.
               </h2>
               <p>
-                Schedule a recurring pass over chosen artifacts. Emma can
-                surface changes and connections without quietly expanding what
-                it remembers.
+                A scheduled job is a workflow: one trigger — UTC cron, manual,
+                after another job, or an app event — and a graph of agent, set,
+                and branch nodes. It opens a normal thread under the mode it was
+                saved with, and never saves knowledge or writes a skill
+                silently. An autoresearch job points at a git project instead:
+                Emma proposes one change, runs your eval command, reads the
+                metric, and keeps or reverts the commit until a budget stops it.
+                The metric cannot be edited while the job lives.
               </p>
             </div>
             <div className="schedule-card">
               <div className="schedule-head">
-                <span>NEXT SYNTHESIS</span>
-                <b>MON / 08:00</b>
+                <span>AUTORESEARCH</span>
+                <b>ITERATION 24</b>
               </div>
               <div className="orbit" aria-hidden="true">
                 <span>
-                  WEEKLY
+                  METRIC
                   <br />
-                  BRIEF
+                  LOCKED
                 </span>
               </div>
               <dl>
                 <div>
-                  <dt>SCOPE</dt>
-                  <dd>12 saved artifacts</dd>
+                  <dt>EVAL</dt>
+                  <dd>uv run train.py</dd>
                 </div>
                 <div>
-                  <dt>OUTPUT</dt>
-                  <dd>Thread + citations</dd>
+                  <dt>BUDGET</dt>
+                  <dd>Time / tokens / spend</dd>
                 </div>
                 <div>
-                  <dt>STATUS</dt>
+                  <dt>LAST</dt>
                   <dd>
-                    <i /> Scheduled
+                    <i /> Kept the commit
                   </dd>
                 </div>
               </dl>
+            </div>
+          </div>
+        </section>
+
+        <section className="section shell" id="knowledge">
+          <div className="split">
+            <div>
+              <p className="eyebrow">PLAIN MARKDOWN</p>
+              <h2>
+                A knowledge base you
+                <br />
+                can read without Emma.
+              </h2>
+            </div>
+            <div className="model-copy">
+              <p>
+                Every thread points at one named knowledge base. Each saved page
+                is mirrored as ordinary Markdown — YAML front matter and the
+                document Emma built — into your Documents folder, where you and
+                any other agent on this Mac can read it without knowing Emma’s
+                storage format. The mirror is derived: Emma never reads it back.
+              </p>
+              <div className="endpoint">
+                <span>◇ MIRROR</span>
+                <b>~/Documents/Emma Knowledge</b>
+                <em>MOVE IT OR TURN IT OFF</em>
+              </div>
+              <div className="endpoint">
+                <span>▸ TERMINAL</span>
+                <b>emma “your prompt”</b>
+                <em>SAME AGENT, HEADLESS</em>
+              </div>
+              <div className="endpoint">
+                <span>◈ MODE</span>
+                <b>EMMA_MODE=acceptEdits</b>
+                <em>SAME GATES ON THE TTY</em>
+              </div>
             </div>
           </div>
         </section>
@@ -405,8 +538,9 @@ function App() {
           <p>A macOS-first everything agent.</p>
           <nav aria-label="Footer navigation">
             <a href="#product">PRODUCT</a>
+            <a href="#control">CONTROL</a>
             <a href="#capabilities">CAPABILITIES</a>
-            <a href="#principles">PRINCIPLES</a>
+            <a href="#knowledge">KNOWLEDGE</a>
           </nav>
           <p className="copyright">© {new Date().getFullYear()} EMMA</p>
         </div>

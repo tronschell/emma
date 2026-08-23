@@ -1,0 +1,166 @@
+/* The context bar's two layouts per widget, and the page that arranges them.
+
+   Two regions, and they are deliberately the same drawing twice: the widgets
+   read the `data-orientation` their settings gave them wherever they are
+   mounted, and the arranger mounts the real ones inside a real `.inspector` at
+   the real width. Nothing here restyles a widget for the preview — if it looks
+   different in Settings than it does in a thread, that is a bug in this file.
+
+   Same rules as everywhere else: 1px lines, no fills for grouping, --accent for
+   the thing you are on and the thing you can press, mono for every label. */
+
+/* ------------------------------------------------- widget orientations -- */
+
+/* Stats. Horizontal is the 2-up tile grid panels.css already draws. Vertical
+   trades the tiles for one metric a line — the number where the eye scans for
+   a value, the label carrying the width — which is a third of the height and
+   the shape that survives the column being dragged down to 210px. */
+.context-stats[data-orientation="vertical"] .agent-metrics { grid-template-columns: minmax(0, 1fr); gap: 0; background: transparent; }
+.context-stats[data-orientation="vertical"] .agent-metrics span { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: var(--s-2); min-height: 24px; padding: var(--s-1) 0; background: transparent; }
+.context-stats[data-orientation="vertical"] .agent-metrics span + span { border-top: 1px solid var(--border); }
+.context-stats[data-orientation="vertical"] .agent-metrics b { order: 2; font-size: var(--fs-md); }
+/* The toggle sits inline at the end of its row rather than floating in a tile corner. */
+.context-stats[data-orientation="vertical"] .metric-rate { grid-template-columns: minmax(0, 1fr) auto auto; }
+.context-stats[data-orientation="vertical"] .rate-toggle { position: static; order: 3; }
+
+/* Ledger. Horizontal wraps the legend into swatches — kind, then tokens, no
+   share column — so eight segments cost three lines instead of eight. The bar
+   above it is unchanged: it is the picture, and the legend is the index. */
+.context-usage[data-orientation="horizontal"] .context-legend { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-3); }
+.context-usage[data-orientation="horizontal"] .context-legend li { flex: 0 1 auto; max-width: 100%; font-size: var(--fs-2xs); }
+.context-usage[data-orientation="horizontal"] .context-legend span { flex: 0 1 auto; }
+.context-usage[data-orientation="horizontal"] .context-legend em { display: none; }
+
+/* Subagents. Horizontal drops the model column and wraps the squares, so a
+   thread that fanned out to eight of them is one strip rather than eight rows. */
+.subagents[data-orientation="horizontal"] .subagent-list { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-2); }
+.subagents[data-orientation="horizontal"] .subagent { grid-template-columns: 10px minmax(0, 1fr); width: auto; max-width: 100%; padding: var(--s-1) var(--s-2); border: 1px solid var(--border); }
+.subagents[data-orientation="horizontal"] .subagent em { display: none; }
+
+/* Sub threads. Same wrap, and the stop stays: it is the only control on the row
+   that a chip cannot say in words. */
+.subthreads[data-orientation="horizontal"] .subthread-list { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-2); }
+.subthreads[data-orientation="horizontal"] .subthread-list li { width: auto; max-width: 100%; }
+.subthreads[data-orientation="horizontal"] .subthread { grid-template-columns: 12px minmax(0, 1fr); width: auto; max-width: 100%; padding: var(--s-1) var(--s-2); border: 1px solid var(--border); }
+.subthreads[data-orientation="horizontal"] .subthread em { display: none; }
+
+/* ------------------------------------------------------- the arranger -- */
+
+/* Settings is one 720px column; this page is a palette beside a 288px bar, and
+   at 720 the palette's cards wrap their own copy onto three lines. */
+.settings-view.settings-wide { --content-column: 980px; }
+
+.bar-editor { display: grid; gap: var(--s-5); align-content: start; }
+
+/* Every control below is scoped under `.bar-editor`, and every hover carries
+   `:not(:disabled)`. Settings draws an outlined 26px small-caps box on every
+   button on the page — `.settings-view button` and its `:hover:not(:disabled)`
+   twin — and both outrank a bare `.bar-…`, so the tab strip, the delete band and
+   the three glyphs in a card's header all came out as bordered slabs taller than
+   the rows they sit on. The page's rule is left alone; these just clear it. */
+
+/* Pages, as the same tab strip the bar wears — arranging a page and finding it
+   later should be one gesture, not two vocabularies. */
+.bar-pages { border: 1px solid var(--border-strong); }
+.bar-pages > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.bar-pages > header > span { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.bar-page-tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.bar-editor .bar-page-tabs button { min-height: 32px; padding: 0 var(--s-4); color: var(--text-3); border: 0; border-right: 1px solid var(--border); background: transparent; font: var(--fs-sm)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), background-color var(--t); }
+.bar-editor .bar-page-tabs button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+/* Fill means state, and the rule under it is the same one the bar's own tabs take. */
+.bar-editor .bar-page-tabs button[aria-selected="true"] { color: var(--text); background: var(--surface-3); box-shadow: inset 0 -2px 0 var(--accent); }
+.bar-page-fields { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); }
+.bar-page-fields label { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.bar-page-fields input { min-height: 28px; padding: 0 var(--s-2); color: var(--text); border: 1px solid var(--border); background: var(--bg); font: var(--fs-sm)/1 var(--font-mono); }
+.bar-page-fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bar-editor .bar-page-remove { min-height: 28px; padding: 0 var(--s-3); color: var(--danger); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: border-color var(--t), background-color var(--t); }
+.bar-editor .bar-page-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--danger-surface); }
+.bar-editor .bar-page-remove:disabled { color: var(--text-3); }
+
+/* Palette on the left, the bar itself on the right and pinned, so dragging a
+   card down a long palette never loses sight of where it is going. */
+.bar-workbench { display: grid; grid-template-columns: minmax(0, 1fr) 288px; align-items: start; gap: var(--s-5); }
+
+.bar-palette { display: grid; align-content: start; border: 1px solid var(--border-strong); }
+.bar-palette > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.bar-palette > header small { color: var(--accent); }
+.bar-palette-card { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); transition: background-color var(--t); }
+.bar-palette-card:last-child { border-bottom: 0; }
+.bar-palette-card:hover { background: var(--surface-2); }
+.bar-palette-card > b { color: var(--accent); font: var(--fs-lg)/1 var(--font-mono); font-weight: 400; text-align: center; }
+.bar-palette-card > div { display: grid; gap: 2px; min-width: 0; }
+.bar-palette-card strong { color: var(--text); font: var(--fs-sm)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.bar-palette-card small { color: var(--text-3); font: var(--fs-sm)/1.45 var(--font); }
+/* Already placed: the card stays legible and stops being an offer. */
+.bar-palette-card[data-disabled] { background: transparent; }
+.bar-palette-card[data-disabled] > b, .bar-palette-card[data-disabled] strong { color: var(--text-3); }
+.bar-palette-on { grid-column: 3 / -1; padding: 0 var(--s-2); color: var(--text-3); border: 1px solid var(--border); font: var(--fs-2xs)/1.7 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* The card is dragging: what the pointer carries is the ghost, so the original dims. */
+.bar-palette-card[data-dragging] { opacity: .35; }
+
+.bar-editor .bar-grip { display: grid; place-items: center; width: 22px; height: 26px; padding: 0; color: var(--text-3); border: 0; background: transparent; cursor: grab; touch-action: none; transition: color var(--t); }
+.bar-editor .bar-grip:hover:not(:disabled) { color: var(--text); background: transparent; }
+.bar-editor .bar-grip:active { cursor: grabbing; }
+.bar-editor .bar-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The one control here that stays boxed: in the palette it is an offer, beside a
+   grip that is not. */
+.bar-editor .bar-add { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: var(--accent); border: 1px solid var(--border); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: border-color var(--t), background-color var(--t); }
+.bar-editor .bar-add:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.bar-stage { display: grid; gap: var(--s-2); position: sticky; top: 0; }
+.bar-stage > header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.bar-stage > header > span { color: var(--text); }
+/* The real bar: `.inspector` brings every rule the thread pane draws it with,
+   and the only thing added is the fourth edge, since here it is not against a
+   window. Height is bounded so the palette beside it stays reachable. */
+.bar-preview { height: min(60vh, 560px); border: 1px solid var(--border-strong); }
+.bar-preview .inspector-body { display: grid; align-content: start; gap: 0; }
+/* The drop target lights its own edge — the canvas is the affordance, not a
+   dashed rectangle that appears from nowhere mid-drag. */
+.bar-preview .inspector-body[data-over] { box-shadow: inset 0 0 0 1px var(--accent); }
+.bar-preview .inspector-body > header button { color: var(--text-3); }
+
+/* A placed widget: a handle row that owns every press, then the component. */
+.bar-widget { position: relative; z-index: 0; margin: 0 calc(var(--s-4) * -1); border-bottom: 1px solid var(--border); background: var(--chrome); }
+.bar-widget[data-dragging] { z-index: 2; opacity: .9; box-shadow: inset 0 0 0 1px var(--accent), var(--shadow-md); }
+.bar-widget > header { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-1); min-height: 26px; padding-right: var(--s-2); background: var(--surface-2); }
+.bar-widget > header > span { min-width: 0; overflow: hidden; color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.bar-widget:hover > header { background: var(--surface-3); }
+.bar-editor .bar-flip, .bar-editor .bar-drop { display: grid; place-items: center; width: 22px; height: 22px; min-height: 0; padding: 0; color: var(--text-3); border: 0; background: transparent; font: var(--fs-sm)/1 var(--font-mono); transition: color var(--t); }
+.bar-editor .bar-flip:hover:not(:disabled), .bar-editor .bar-drop:hover:not(:disabled) { color: var(--text); background: transparent; }
+.bar-editor .bar-drop:hover:not(:disabled) { color: var(--danger); }
+.bar-editor .bar-flip[aria-pressed="true"]:not(:disabled) { color: var(--accent); }
+/* The widget itself, inert: it draws, it does not answer. The padding is the
+   inspector's own, given back after the card pulled it off. */
+.bar-widget-body { padding: 0 var(--s-4); }
+/* index.css's button reset, restated where the Settings page's own reaches: a
+   waterfall span, a subagent row and the rate toggle are all <button>, and
+   `.settings-view button` boxed every one of them into a bordered 10px small-caps
+   slab the bar never draws. Same specificity as that rule and later, so it clears
+   it; a component that wants more than a bare button still outranks this with one
+   class, exactly as it does in a real thread. */
+.bar-widget-body button { min-height: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: 0; text-transform: none; }
+.bar-widget-body > section:last-child, .bar-widget-body > .git-panel:last-child { border-bottom: 0; }
+/* The band's own 12px above and below is right in the bar, where sections butt
+   against each other. Under a header row that already separates the card it read
+   as a gap at both ends, so inside a card the band is a step tighter. */
+.bar-widget-body > section, .bar-widget-body > .git-panel { padding-block: var(--s-3); }
+/* Each of these draws its own label row, which the card header has just printed
+   above it. Only the label goes: the readout beside it — the ledger's token
+   count, the timeline's duration — is the piece the header does not carry, and
+   the subagent count is the list directly under it. */
+.bar-widget-body .context-title, .bar-widget-body .trace-title, .bar-widget-body .subagents > span, .bar-widget-body .subthreads > span, .bar-widget-body .plan-widget > span { display: none; }
+
+.bar-empty { padding: var(--s-5) 0; color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); text-wrap: pretty; }
+
+/* What the pointer carries. A clone of a 288px panel dragged over a 980px page
+   reads as a bug; its name and its glyph read as a thing being moved. */
+.bar-ghost { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); color: var(--text); border: 1px solid var(--accent); background: var(--surface-3); box-shadow: var(--shadow-md); cursor: grabbing; font: var(--fs-sm)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.bar-ghost b { color: var(--accent); font-weight: 400; }
+
+@media (max-width: 900px) {
+  /* The bar goes under the palette rather than shrinking: 288px is the point. */
+  .bar-workbench { grid-template-columns: minmax(0, 1fr); }
+  .bar-stage { position: static; justify-items: start; }
+  .bar-preview { width: 288px; }
+}

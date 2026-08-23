@@ -1,0 +1,114 @@
+/* The one place colours, spacing, radii, and type sizes are defined.
+   See docs/design-system.md. Region stylesheets consume these, never raw hex. */
+:root {
+  /* Paper. Warm-neutral near-black; the steps exist for elevation only, and
+     most of the app should sit on --bg with rules doing the separating. */
+  --bg: #0e0e10;
+  --surface: #131316;
+  --surface-2: #17171a;
+  --surface-3: #1c1c20;
+  --surface-4: #232327;
+
+  /* Ink. One warm off-white at three opacities, so every step composites
+     correctly over any surface instead of drifting cool on the dark ones.
+     Verified AA: --text-2 is 6.56:1 and --text-3 is 4.80:1 on --surface-4,
+     the lightest ground. --text-3 is the floor; do not thin it further. */
+  --text: #e8e6df;
+  --text-2: #e8e6dfad;
+  --text-3: #e8e6df8c;
+
+  /* Rules. The primary structural device: this app is drawn with lines, not
+     filled boxes. --border is the quiet grid; --border-strong outlines a
+     region or separates its bands. Never both on the same edge. */
+  --border: #e8e6df26;
+  --border-strong: #e8e6df47;
+
+  /* Window-edge chrome: the titlebar and the sidebar. The value is the opaque
+     step; the titlebar takes it as-is, and the sidebar mixes it down to 35% over
+     `vibrancy: "sidebar"` so the nav pane is glass and nothing else is. Whole-window
+     translucency was the old `under-window` shape and it ended in a hard blurred
+     edge at the window boundary — one pane of glass against opaque content doesn't. */
+  --chrome: var(--surface);
+
+  /* The categorical palette. Each hue means something — a knowledge category, a
+     chart series, a section, a state — and never decorates. Every one clears AA
+     as text on every surface. Reaching for a seventh is a design decision, not
+     a convenience: six is already enough to over-apply. */
+  --rose: #ed7a9b;
+  --orange: #ff6a3d;
+  --lime: #c3d64b;
+  --teal: #3fd8c0;
+  --blue: #6faee6;
+  --violet: #ae78f0;
+
+  /* Orange leads: primary action, active state, focus ring, checked control,
+     and any literal quantity the user is meant to read as data. */
+  --accent: var(--orange);
+  --accent-soft: color-mix(in srgb, var(--orange) 14%, transparent);
+
+  --danger: var(--rose);
+  --danger-surface: #2a1620;
+
+  /* Light-on-dark primary action pair. */
+  --solid: #e8e6df;
+  --solid-hover: #f4f2ec;
+  --fg-invert: #0e0e10;
+
+  /* Corners are square. The app is drawn with sharp 1px rules — a rounded
+     corner breaks the grid and reads as a different product. --r-full exists
+     only for things that are genuinely circular (a status dot); there is no
+     token for a rounded rectangle because there are no rounded rectangles.
+     The --r-* aliases stay so region files keep compiling; new rules should
+     simply omit border-radius. */
+  --r-sm: 0;
+  --r-md: 0;
+  --r-lg: 0;
+  --r-xl: 0;
+  --r-full: 999px;
+
+  /* Emma is a dense tool, not a marketing page. The scale is deliberately tight;
+     reach for the next step down before the next step up. */
+  --s-1: 4px;
+  --s-2: 6px;
+  --s-3: 8px;
+  --s-4: 12px;
+  --s-5: 16px;
+  --s-6: 20px;
+  --s-7: 24px;
+  --s-8: 32px;
+
+  /* The bottom three steps are the accessibility floor and do not move: body
+     text never below --fs-sm, metadata never below --fs-2xs. Hierarchy comes
+     from rules, case, and colour — not from size, so the top end stays close
+     to the body and headings read as labels rather than as billboards. */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 15px;
+  --fs-2xl: 17px;
+  --fs-3xl: 20px;
+
+  /* Uppercase mono needs tracking to stop the caps from colliding. Applied to
+     every small-caps label; never to sentence-case text. */
+  --ls-caps: .08em;
+
+  --font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Departure Mono is the interface face: labels, values, nav, buttons, counts,
+     headers — anything on a grid. --font is for prose the user reads in
+     sentences. --font-code is for text that must survive being copied out. */
+  --font-mono: "Departure Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-code: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Only surfaces that genuinely float get a shadow. On-page regions are
+     separated by rules, so they cast nothing. */
+  --shadow-sm: 0 1px 2px #0006;
+  --shadow-md: 0 8px 24px #0007;
+  --shadow-lg: 0 24px 60px #000b;
+
+  --t: 120ms ease;
+
+  --content-gutter: clamp(12px, 3vw, 28px);
+  --content-column: 720px;
+}

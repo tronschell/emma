@@ -1,12 +1,14 @@
 export interface ActivityDay { date: string; count: number }
 
+/// Count-plus-noun strips read "1 pages" without this. Regular -s only; nothing here is irregular.
+export const plural = (count: number, noun: string, many = `${noun}s`) => count === 1 ? noun : many;
+
 export function activityDays(timestamps: string[], now = new Date()): ActivityDay[] {
   const valid = timestamps.map((value) => new Date(value)).filter((value) => !Number.isNaN(value.valueOf()));
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  end.setDate(end.getDate() + (6 - end.getDay()));
-  const first = valid.length ? new Date(Math.min(...valid.map(Number))) : now;
-  const start = new Date(first.getFullYear(), first.getMonth(), first.getDate());
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   start.setDate(start.getDate() - start.getDay());
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
   const counts = new Map<string, number>();
   const key = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
   for (const value of valid) { const day = key(value); counts.set(day, (counts.get(day) ?? 0) + 1); }

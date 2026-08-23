@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { open, readdir, realpath } from "node:fs/promises";
+import { mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 import { BoundedLines } from "./ndjson";
@@ -11,6 +11,9 @@ const MAX_SKILL_BYTES = 64 * 1024;
 const MAX_SKILL_ROOTS = 16;
 const MAX_SKILLS_PER_ROOT = 128;
 const MAX_SKILL_RESULTS = 32;
+const MAX_TOOL_BYTES = 64 * 1024;
+const MAX_TOOL_DESCRIPTION_BYTES = 1024;
+const MAX_EMMA_TOOLS = 64;
 const MAX_MCP_FILES = 16;
 const MAX_MCP_SERVERS = 32;
 const MAX_MCP_TOOLS = 256;
@@ -115,14 +118,189 @@ function parseManifest(value: unknown): ImportManifest {
   return { version: 1, sources };
 }
 
+export function learnedSkillRoot(userData: string) {
+  return path.join(userData, "skills");
+}
+
+/** The one MCP config file Emma owns and writes, alongside the ones she only reads. */
+export function learnedMcpFile(userData: string) {
+  return path.join(userData, "mcp.json");
+}
+
+/// Emma's own skills and MCP servers are always readable. The source is implicit
+/// because `saveImportManifest` rewrites imports.json from the selection alone, so
+/// a persisted entry would be dropped on the next re-import.
+function withEmmaSource(userData: string, manifest: ImportManifest): ImportManifest {
+  return {
+    version: 1,
+    sources: [...manifest.sources.filter((source) => source.id !== "emma"), { id: "emma", skillRoots: [learnedSkillRoot(userData)], mcpFiles: [learnedMcpFile(userData)] }],
+  };
+}
+
 async function loadManifest(userData: string) {
   try {
     const text = await readBounded(path.join(userData, "imports.json"), MAX_MANIFEST_BYTES);
-    return parseManifest(JSON.parse(text));
+    return withEmmaSource(userData, parseManifest(JSON.parse(text)));
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, sources: [] };
-    throw new Error("Imported manifest is invalid", { cause: error });
+    if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return withEmmaSource(userData, { version: 1, sources: [] });
+    // Every skill and every / entry disappears when this file cannot be read, so the
+    // message has to say which file and how to rebuild it.
+    throw new Error("Emma's imported-skill list (imports.json) could not be read — run /import again to rebuild it.", { cause: error });
   }
+}
+
+export function learnedSkillSlug(value: unknown) {
+  if (typeof value !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value)) throw new Error("Skill name is invalid");
+  return value;
+}
+
+/// Writes one learned skill as `<userData>/skills/<slug>/SKILL.md`. Rewriting an
+/// existing slug is how the agent corrects a lesson it got wrong.
+export async function writeLearnedSkill(userData: string, name: unknown, instructions: unknown) {
+  const slug = learnedSkillSlug(name);
+  const content = boundedString(instructions, MAX_SKILL_BYTES, "Skill content");
+  if (!content.trim()) throw new Error("Skill content is invalid");
+  const root = learnedSkillRoot(userData);
+  const directory = path.join(root, slug);
+  let existing: string[] = [];
+  try { existing = (await readdir(root)).slice(0, MAX_SKILLS_PER_ROOT + 1); } catch { /* first skill creates the root */ }
+  if (!existing.includes(slug) && existing.length >= MAX_SKILLS_PER_ROOT) throw new Error("Emma already holds the maximum number of learned skills");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, `.SKILL.md.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
+    await rename(temporary, path.join(directory, "SKILL.md"));
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  return { id: skillId("emma", 0, slug), source: "emma", name: slug } satisfies ImportedSkill;
+}
+
+export type EmmaTool = { name: string; description: string; run: string };
+
+/// The tools Emma writes for herself, one directory each beside the skills she
+/// writes: `run` is the executable, `about.txt` is the line she reads when she
+/// lists them. A skill is a lesson and an MCP server is someone else's program;
+/// this is the third case — a script of her own, kept between threads.
+export function emmaToolRoot(userData: string) {
+  return path.join(userData, "tools");
+}
+
+/// Writes one tool. Rewriting an existing slug replaces it, which is how a tool
+/// that turned out wrong gets fixed — the same as re-writing a skill.
+export async function writeEmmaTool(userData: string, name: unknown, description: unknown, code: unknown): Promise<EmmaTool> {
+  const slug = learnedSkillSlug(name);
+  const about = boundedString(description, MAX_TOOL_DESCRIPTION_BYTES, "Tool description");
+  const body = boundedString(code, MAX_TOOL_BYTES, "Tool code");
+  // Emma's own loop runs this file directly rather than through a shell, so the
+  // interpreter has to be in the file. Refused here, where the message still
+  // reaches the model, rather than as an exec failure later.
+  if (!body.startsWith("#!")) throw new Error("Tool code must start with a #! line naming its interpreter");
+  const root = emmaToolRoot(userData);
+  let existing: string[] = [];
+  try { existing = (await readdir(root)).slice(0, MAX_EMMA_TOOLS + 1); } catch { /* the first tool creates the root */ }
+  if (!existing.includes(slug) && existing.length >= MAX_EMMA_TOOLS) throw new Error("Emma already holds the maximum number of tools");
+  const directory = path.join(root, slug);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, `.run.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, body, { encoding: "utf8", mode: 0o700 });
+    // Rename rather than write in place: a tool being rewritten while an earlier
+    // call still has it open must not become half a script mid-run.
+    await rename(temporary, path.join(directory, "run"));
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  await writeFile(path.join(directory, "about.txt"), about, { encoding: "utf8", mode: 0o600 });
+  return { name: slug, description: about, run: path.join(directory, "run") };
+}
+
+/// Every tool Emma has written, with the description she gave it. A directory
+/// missing its `about.txt` is half-written, not an error worth failing the list.
+export async function listEmmaTools(userData: string): Promise<EmmaTool[]> {
+  const root = emmaToolRoot(userData);
+  let entries: string[];
+  try { entries = (await readdir(root)).slice(0, MAX_EMMA_TOOLS); } catch { return []; }
+  const tools: EmmaTool[] = [];
+  for (const name of entries) {
+    try {
+      const description = await readBounded(path.join(root, name, "about.txt"), MAX_TOOL_DESCRIPTION_BYTES);
+      tools.push({ name, description, run: path.join(root, name, "run") });
+    } catch { /* not a tool directory */ }
+  }
+  return tools;
+}
+
+/// The skills Emma ships with, copied into her own root at every launch so they
+/// are there before any import and always say what this build says. Rewritten
+/// rather than merged: a bundled skill is the app's, not a lesson to preserve.
+/// The harness reads its own `$HOME/.fx/skills`, so it gets a copy too.
+///
+/// A name in `preserve` is the exception — one the user is meant to tailor — so
+/// their copy stands and the harness is mirrored from theirs, not from the bundle.
+export async function seedBuiltinSkills(builtinRoot: string, userData: string, harnessHome: string, preserve: readonly string[] = []) {
+  let names: string[];
+  try { names = (await readdir(builtinRoot)).slice(0, MAX_SKILLS_PER_ROOT); } catch { return []; }
+  const seeded: string[] = [];
+  for (const name of names) {
+    try {
+      const mine = preserve.includes(name) ? await readBounded(path.join(learnedSkillRoot(userData), name, "SKILL.md"), MAX_SKILL_BYTES).catch(() => "") : "";
+      const content = mine.trim() ? mine : await readBounded(path.join(builtinRoot, name, "SKILL.md"), MAX_SKILL_BYTES);
+      const slug = mine.trim() ? learnedSkillSlug(name) : (await writeLearnedSkill(userData, name, content)).name;
+      const directory = path.join(harnessHome, ".fx", "skills", slug);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(directory, "SKILL.md"), content, { encoding: "utf8", mode: 0o600 });
+      seeded.push(slug);
+    } catch (error) {
+      console.warn(`Emma skipped the built-in skill ${name}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return seeded;
+}
+
+/**
+ * Copies every skill Emma can see into the harness's own skill root.
+ *
+ * The harness discovers skills from its `$HOME`, which Emma points at a profile
+ * of its own — so it saw only the five bundled skills that `seedBuiltinSkills`
+ * happened to write there. Everything the user imported and everything the agent
+ * wrote for itself was invisible on that path.
+ *
+ * Copied, not symlinked: the harness drops symlinked skill directories.
+ *
+ * `disabled` is honoured here because the harness has no notion of a skill being
+ * switched off in Settings — the only way to withhold one is not to write it.
+ */
+export async function mirrorSkillsToHarness(userData: string, harnessHome: string, disabled: string[] = []) {
+  const skills = await enumerateSkills(await loadManifest(userData));
+  const root = path.join(harnessHome, ".fx", "skills");
+  const blocked = new Set(disabled);
+  const mirrored: string[] = [];
+  for (const skill of skills) {
+    if (blocked.has(skill.id) || blocked.has(skill.name)) continue;
+    try {
+      const content = await readBounded(path.join(skill.root, skill.name, "SKILL.md"), MAX_SKILL_BYTES);
+      if (!content.trim()) continue;
+      const directory = path.join(root, skill.name);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      // The harness's catalog is description-driven, and a skill with no
+      // description is advertised with an empty one and effectively never
+      // chosen. Emma stores no description, so the first line stands in.
+      await writeFile(path.join(directory, "SKILL.md"), withFrontmatter(skill.name, content), { encoding: "utf8", mode: 0o600 });
+      mirrored.push(skill.name);
+    } catch { /* one unreadable skill does not stop the rest */ }
+  }
+  return mirrored;
+}
+
+/** Gives a skill the `name`/`description` header the harness's catalog reads. */
+function withFrontmatter(name: string, content: string) {
+  if (content.startsWith("---\n")) return content;
+  const summary = content.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("#")) ?? name;
+  const description = summary.replace(/"/g, "'").slice(0, 200);
+  return `---\nname: ${name}\ndescription: "${description}"\n---\n\n${content}`;
 }
 
 function skillId(source: string, rootIndex: number, name: string) {
@@ -164,7 +342,9 @@ function searchText(query: string, ...values: string[]) {
 }
 
 export async function searchImportedSkills(userData: string, query: string, limit = 16) {
-  boundedString(query, 256, "skill search");
+  // Empty means "list them all" — what the composer's "/" menu asks for, and what
+  // searchText already answers. The length ceiling is what this guard is for.
+  if (typeof query !== "string" || query.length > 256 || Buffer.byteLength(query, "utf8") > 256) throw new Error("skill search is invalid");
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SKILL_RESULTS) throw new Error("skill result limit is invalid");
   const skills = await enumerateSkills(await loadManifest(userData));
   return skills.filter((skill) => searchText(query, skill.name, skill.source)).slice(0, limit).map(toSkillMetadata);
@@ -173,7 +353,7 @@ export async function searchImportedSkills(userData: string, query: string, limi
 export async function loadImportedSkill(userData: string, id: string) {
   boundedString(id, 256, "skill selection");
   const skill = (await enumerateSkills(await loadManifest(userData))).find((candidate) => candidate.id === id);
-  if (!skill) throw new Error("Selected skill is unavailable");
+  if (!skill) throw new Error("That skill is no longer installed — run /import again to bring it back.");
   const root = await realpath(skill.root);
   const directory = await realpath(path.join(skill.root, skill.name));
   if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Selected skill is outside its imported root");
@@ -355,6 +535,40 @@ export function parseMcpConfig(text: string, fileName = "config.json", source = 
   return servers;
 }
 
+export type McpServerDefinition = { name: string; command: string; args: string[]; env: Record<string, string> };
+
+/**
+ * Writes one server into `<userData>/mcp.json`, the only MCP config Emma owns.
+ * `enumerateMcpServers` re-reads every config on each call, so an entry written
+ * here is listable immediately — no relaunch, and no import step.
+ *
+ * Rewriting an existing name replaces it, which is how a wrong command gets
+ * fixed. The file is parsed back before it lands, so an entry the enumerator
+ * would reject can never be written and leave an invisible server behind.
+ */
+export async function writeLearnedMcpServer(userData: string, server: McpServerDefinition) {
+  const file = learnedMcpFile(userData);
+  let servers: Record<string, unknown> = {};
+  try {
+    const existing: unknown = JSON.parse(await readBounded(file, MAX_CONFIG_BYTES));
+    if (existing && typeof existing === "object" && !Array.isArray(existing)) servers = { ...configRoots(existing as Record<string, unknown>) };
+  } catch { /* a missing or corrupt file is replaced by the one being written */ }
+  servers[server.name] = { command: server.command, args: server.args, env: server.env };
+  const text = `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
+  const written = parseMcpConfig(text, "mcp.json", "emma", 0).find((candidate) => candidate.name === server.name);
+  if (!written) throw new Error("That MCP server definition is not valid.");
+  await mkdir(userData, { recursive: true });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
+    await rename(temporary, file);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  return written.id;
+}
+
 async function enumerateMcpServers(manifest: ImportManifest) {
   const servers: InternalMcpServer[] = [];
   for (const source of manifest.sources) {
@@ -393,6 +607,47 @@ export async function listImportedMcpServers(userData: string) {
   return (await enumerateMcpServers(await loadManifest(userData))).map(serverMetadata);
 }
 
+/**
+ * The same servers, in the shape the harness's `session/new` wants them.
+ *
+ * Two differences from Emma's own record, both of which the harness enforces:
+ * the command must be absolute — a bare `npx` is rejected outright — and the
+ * environment is a list of pairs rather than an object.
+ *
+ * A server whose command cannot be resolved is dropped rather than sent, since
+ * the harness fails the whole `session/new` on one bad entry and taking the
+ * thread down over a stale config is worse than losing that one server.
+ */
+export async function harnessMcpServers(userData: string) {
+  const servers = await enumerateMcpServers(await loadManifest(userData));
+  const resolved = await Promise.all(servers.map(async (server) => {
+    const command = await absoluteCommand(server.command);
+    if (!command) return undefined;
+    return {
+      type: "stdio" as const,
+      name: server.name,
+      command,
+      args: server.args,
+      env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+    };
+  }));
+  return resolved.filter((server): server is NonNullable<typeof server> => server !== undefined);
+}
+
+/** Resolves a command against PATH, because the harness will not take a bare name. */
+async function absoluteCommand(command: string) {
+  if (path.isAbsolute(command)) return command;
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, command);
+    try {
+      await realpath(candidate);
+      return candidate;
+    } catch { /* not on this leg of PATH */ }
+  }
+  return undefined;
+}
+
 function validRpcObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -411,23 +666,27 @@ class McpStdio {
   private nextId = 1;
   private failure: Error | undefined;
   private closed = false;
+  /** Named in every failure below: "an MCP server stopped" leaves the user with
+      nothing to go and look at, and they usually have several connected. */
+  private readonly label: string;
 
   constructor(server: InternalMcpServer) {
+    this.label = server.name;
     const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...server.env };
     this.child = spawn(server.command, server.args, { env, stdio: ["pipe", "pipe", "pipe"] });
     this.child.stdout.on("data", (data: Buffer) => {
       try {
         for (const line of this.lines.push(data)) this.push(line);
       } catch (error) {
-        this.fail(error instanceof Error ? error : new Error("MCP output is invalid"));
+        this.fail(error instanceof Error ? error : new Error(`The "${this.label}" MCP server sent something Emma could not read.`));
       }
     });
     this.child.stdout.once("end", () => {
-      try { this.lines.end(); this.fail(new Error("MCP server closed stdout")); } catch (error) { this.fail(error as Error); }
+      try { this.lines.end(); this.fail(new Error(`The "${this.label}" MCP server closed its connection — check that its command still runs.`)); } catch (error) { this.fail(error as Error); }
     });
     this.child.stderr.on("data", () => undefined);
     this.child.once("error", (error) => this.fail(error));
-    this.child.once("exit", () => this.fail(new Error("MCP server stopped")));
+    this.child.once("exit", () => this.fail(new Error(`The "${this.label}" MCP server stopped — check that its command still runs.`)));
   }
 
   private push(line: string) {
@@ -455,15 +714,16 @@ class McpStdio {
       const timer = setTimeout(() => {
         const index = this.waiters.findIndex((waiter) => waiter.resolve === onResolve);
         if (index >= 0) this.waiters.splice(index, 1);
-        reject(new Error("MCP request timed out"));
-        this.fail(new Error("MCP request timed out"));
+        const timeout = new Error(`The "${this.label}" MCP server did not answer in time — it may be slow to start, or asking for a login.`);
+        reject(timeout);
+        this.fail(timeout);
       }, timeout);
       this.waiters.push({ resolve: onResolve, reject });
     });
   }
 
   private async write(value: string) {
-    if (this.failure || this.closed) throw this.failure ?? new Error("MCP server is closed");
+    if (this.failure || this.closed) throw this.failure ?? new Error(`The "${this.label}" MCP server is no longer connected.`);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         const error = new Error("MCP write timed out");
@@ -630,6 +890,32 @@ export class ImportedCapabilityRuntime {
     return { server: this.session.server, tools: this.session.tools.length };
   }
 
+  /** Whether a user-approved server is live, which is what makes `mcp_tool` offerable. */
+  get connected() {
+    return this.session !== undefined;
+  }
+
+  /**
+   * Installs one server and connects it in the same call, so the tools it carries
+   * are usable in the turn that asked for them rather than after a relaunch. The
+   * permission ask that gated `install_mcp` is the review: it carries the same
+   * command, arguments and environment keys the panel's review token covers.
+   *
+   * The new session starts before the old one is dropped, so a command that does
+   * not run leaves whatever was already connected alone.
+   *
+   * ponytail: one live session is the existing ceiling, so this replaces it. Key
+   * `session` by server id if two servers ever have to be up at once.
+   */
+  async installMcpServer(definition: McpServerDefinition) {
+    const id = await writeLearnedMcpServer(this.userData, definition);
+    const started = await McpSession.start(await this.findServer(id));
+    const replaced = this.session;
+    this.session = started;
+    await replaced?.close();
+    return { id, tools: started.tools.length, replaced: replaced?.server.name };
+  }
+
   searchTools(query: string, limit = 16) {
     if (!this.session) throw new Error("Review and connect one MCP server first");
     return this.session.search(query, limit);
@@ -675,13 +961,15 @@ export class SkillAttachmentStore {
 
   put(attachment: SkillAttachment, threadId: string) {
     if (!/^skill:[a-z0-9-]{1,64}:\d+:[a-zA-Z0-9._-]{1,96}$/.test(attachment.id)) throw new Error("Skill attachment ID is invalid");
-    if (!/^thread-[a-z0-9-]{1,128}$/.test(threadId)) throw new Error("Skill attachment thread is invalid");
+    // Core's shape, not a `thread-` prefix — see `ThreadId::parse` in crates/core/src/thread.rs.
+    if (!/^[a-z0-9][a-z0-9-]{0,95}$/.test(threadId)) throw new Error("Skill attachment thread is invalid");
     this.attachment = { ...attachment, threadId };
     this.claimedId = undefined;
   }
 
   status() {
-    return this.attachment ? { id: this.attachment.id, source: this.attachment.source, name: this.attachment.name, threadId: this.attachment.threadId } : null;
+    // chars is what the instructions weigh in the turn — the inspector's context ledger reads it.
+    return this.attachment ? { id: this.attachment.id, source: this.attachment.source, name: this.attachment.name, threadId: this.attachment.threadId, chars: this.attachment.instructions.length } : null;
   }
 
   claim(id: string, threadId: string) {

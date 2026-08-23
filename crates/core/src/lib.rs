@@ -1,10 +1,12 @@
 mod knowledge;
 mod live;
+mod research;
 mod scheduled;
 mod thread;
 
 pub use knowledge::*;
 pub use live::*;
+pub use research::*;
 pub use scheduled::*;
 pub use thread::*;
 
@@ -50,6 +52,125 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn traces_round_trip_are_bounded_and_a_pre_trace_thread_still_loads() {
+        let mut thread = Thread::new("traced", Timestamp::from_unix_seconds(1)).unwrap();
+        thread.record_trace(
+            ThreadTrace::new(
+                Timestamp::from_unix_seconds(2),
+                "trace v1 spans=1\n#1 bash 1.20s failed\n   in {\"command\":\"npm ci\"}",
+            )
+            .unwrap(),
+        );
+        let markdown = thread.to_markdown();
+        // A trace is one quoted line, so nothing in it can forge a second frame.
+        assert_eq!(markdown.matches("\n---\n").count(), 1);
+        assert_eq!(Thread::from_markdown(&markdown).unwrap(), thread);
+
+        // A runaway turn loses the middle of its trace, never the whole turn.
+        let runaway = (0..4_096)
+            .map(|index| format!("#{index} bash 1ms ok"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let clamped = ThreadTrace::new(Timestamp::from_unix_seconds(3), &runaway).unwrap();
+        assert!(clamped.text.len() <= MAX_TRACE_BYTES);
+        assert!(clamped.text.starts_with("#0 bash"));
+        assert!(clamped.text.ends_with("#4095 bash 1ms ok"));
+        assert!(clamped.text.contains("lines elided"));
+
+        // And the thread keeps only the most recent runs.
+        for index in 0..MAX_THREAD_TRACES + 4 {
+            thread.record_trace(
+                ThreadTrace::new(Timestamp::from_unix_seconds(4), &format!("run {index}")).unwrap(),
+            );
+        }
+        assert_eq!(thread.traces.len(), MAX_THREAD_TRACES);
+        assert_eq!(thread.traces[MAX_THREAD_TRACES - 1].text, "run 67");
+
+        // A file written before the bump has no trace count and still loads.
+        let older = Thread::new("older", Timestamp::from_unix_seconds(5)).unwrap();
+        let legacy = older
+            .to_markdown()
+            .replacen("emma-thread-format: 11", "emma-thread-format: 7", 1)
+            .lines()
+            .filter(|line| {
+                !line.starts_with("trace-count:")
+                    && !line.starts_with("kind: ")
+                    && !line.starts_with("scheduled-job-id: ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(Thread::from_markdown(&legacy).unwrap(), older);
+    }
+
+    #[test]
+    fn an_owned_thread_round_trips_its_kind_and_refuses_to_be_its_own_parent() {
+        let parent = Thread::new("root", Timestamp::from_unix_seconds(1)).unwrap();
+        let mut child = Thread::new("subagent", Timestamp::from_unix_seconds(2)).unwrap();
+        child.parent_thread_id = Some(parent.id.clone());
+        child.kind = ThreadKind::Subagent;
+        let markdown = child.to_markdown();
+        assert_eq!(Thread::from_markdown(&markdown).unwrap(), child);
+
+        // Same parent, different kind: a sub thread is a main agent of its own.
+        let mut sub = child.clone();
+        sub.kind = ThreadKind::Main;
+        assert_eq!(Thread::from_markdown(&sub.to_markdown()).unwrap(), sub);
+
+        // Every owned thread written before the bump was a subagent's transcript.
+        let legacy = child
+            .to_markdown()
+            .replacen("emma-thread-format: 11", "emma-thread-format: 8", 1)
+            .replace("kind: \"subagent\"\n", "")
+            .replace("scheduled-job-id: \"\"\n", "");
+        assert_eq!(Thread::from_markdown(&legacy).unwrap(), child);
+
+        // A subagent with nothing to belong to is not a shape that exists.
+        let orphan = child.to_markdown().replace(
+            &format!("parent-thread-id: \"{}\"", parent.id),
+            "parent-thread-id: \"\"",
+        );
+        assert!(
+            Thread::from_markdown(&orphan)
+                .unwrap_err()
+                .to_string()
+                .contains("must have a parent")
+        );
+
+        // A root stays parentless, and a file written before the bump still loads.
+        let root = Thread::new("root", Timestamp::from_unix_seconds(3)).unwrap();
+        assert_eq!(
+            Thread::from_markdown(&root.to_markdown())
+                .unwrap()
+                .parent_thread_id,
+            None
+        );
+        let older = root
+            .to_markdown()
+            .replacen("emma-thread-format: 11", "emma-thread-format: 5", 1)
+            .lines()
+            .filter(|line| {
+                !line.starts_with("parent-thread-id:")
+                    && !line.starts_with("trace-count:")
+                    && !line.starts_with("kind: ")
+                    && !line.starts_with("scheduled-job-id: ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(Thread::from_markdown(&older).unwrap(), root);
+
+        let looped = child.to_markdown().replace(
+            &format!("parent-thread-id: \"{}\"", parent.id),
+            &format!("parent-thread-id: \"{}\"", child.id),
+        );
+        assert!(
+            Thread::from_markdown(&looped)
+                .unwrap_err()
+                .to_string()
+                .contains("its own parent")
+        );
     }
 
     #[test]
@@ -134,10 +255,12 @@ mod tests {
         let original_page = page(1_700_000_000, "legacy page");
         let page_v2 = original_page
             .to_markdown()
-            .replacen("emma-format: 3", "emma-format: 2", 1)
+            .replacen("emma-format: 4", "emma-format: 2", 1)
             .lines()
             .take_while(|line| *line != "## Artifact document")
-            .filter(|line| !line.starts_with("artifact-"))
+            .filter(|line| {
+                !line.starts_with("artifact-") && !line.starts_with("conversation-thread-id: ")
+            })
             .collect::<Vec<_>>()
             .join("\n")
             .trim_end()
@@ -160,12 +283,17 @@ mod tests {
             Thread::new("legacy thread", Timestamp::from_unix_seconds(10)).unwrap();
         let thread_v1 = original_thread
             .to_markdown()
-            .replacen("emma-thread-format: 4", "emma-thread-format: 1", 1)
+            .replacen("emma-thread-format: 11", "emma-thread-format: 1", 1)
             .lines()
             .filter(|line| {
-                !line.starts_with("knowledge-base-id: ")
+                !line.starts_with("archived-at: ")
+                    && !line.starts_with("parent-thread-id: ")
+                    && !line.starts_with("knowledge-base-id: ")
                     && !line.starts_with("source-knowledge-base-count: ")
                     && !line.starts_with("source-0-id: ")
+                    && !line.starts_with("trace-count: ")
+                    && !line.starts_with("kind: ")
+                    && !line.starts_with("scheduled-job-id: ")
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -219,7 +347,9 @@ mod tests {
             "bounded".into(),
             "0 9 * * 1".into(),
             "prompt".into(),
+            String::new(),
             vec![],
+            "ask".into(),
             Timestamp::from_unix_seconds(1_700_000_000),
         )
         .unwrap();
@@ -355,6 +485,37 @@ mod tests {
     }
 
     #[test]
+    fn saving_mirrors_the_page_as_plain_markdown_anyone_can_read() {
+        let root = temp_child("knowledge-export");
+        let export = temp_child("knowledge-export-plain");
+        let store = KnowledgeStore::new(root.clone()).with_export(export.clone());
+        let mut saved = page(10, "Satellite clocks: drift & repair");
+        store.save(&saved).unwrap();
+
+        let named = export.join(format!("satellite-clocks-drift-repair--{}.md", saved.id));
+        let written = fs::read_to_string(&named).unwrap();
+        assert!(written.starts_with("---\ntitle: \"Satellite clocks: drift & repair\"\n"));
+        assert!(written.contains("source: \"https://example.com/a?q=1\"\n"));
+        assert!(written.contains("\n---\n\n# Satellite clocks: drift & repair\n\n"));
+        // The document itself, in its portable form, not Emma's escaped storage.
+        assert!(written.contains("\nanalysis\n"));
+
+        // Retitling renames the copy instead of leaving a stale one behind.
+        saved.title = "Satellite clocks".into();
+        store.save(&saved).unwrap();
+        assert!(!named.exists());
+        let renamed = export.join(format!("satellite-clocks--{}.md", saved.id));
+        assert!(renamed.exists());
+
+        // The mirror is derived: an unwritable export folder never fails a save.
+        let store = KnowledgeStore::new(root.clone()).with_export(renamed);
+        assert!(store.save(&page(20, "still saved")).is_ok());
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(export).unwrap();
+    }
+
+    #[test]
     fn retrieval_is_base_scoped_deterministic_and_bounded() {
         let root = temp_child("retrieval");
         let store = KnowledgeStore::new(root.clone());
@@ -431,10 +592,14 @@ mod tests {
         old.push(assistant).unwrap();
         let version_three = old
             .to_markdown()
-            .replacen("emma-thread-format: 4", "emma-thread-format: 3", 1)
+            .replacen("emma-thread-format: 11", "emma-thread-format: 3", 1)
+            .replace("archived-at: \"\"\n", "")
+            .replace("parent-thread-id: \"\"\n", "")
+            .replace("trace-count: 0\n", "")
+            .replace("kind: \"main\"\n", "").replace("scheduled-job-id: \"\"\n", "")
             .replace("\nGeneration: none\n\n", "\n")
             .replace(
-                "\nGeneration: present\nOutput-Tokens: 24\nDuration-Milliseconds: 500\n\n",
+                "\nGeneration: present\nOutput-Tokens: 24\nDuration-Milliseconds: 500\nInput-Tokens: 0\nModel: \"\"\n\n",
                 "\n",
             );
         assert!(

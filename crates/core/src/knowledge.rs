@@ -341,6 +341,8 @@ pub const MAX_ARTIFACT_BLOCKS: usize = 64;
 pub const MAX_ARTIFACT_PAYLOAD_BYTES: usize = 32 * 1024;
 pub const MAX_ARTIFACT_FALLBACK_BYTES: usize = 64 * 1024;
 pub const MAX_ARTIFACT_DOCUMENT_BYTES: usize = 512 * 1024;
+pub const MAX_PAGE_VERSIONS: usize = 50;
+pub const MAX_ASSET_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct KnowledgeBaseId(String);
@@ -668,7 +670,7 @@ fn portable_fallback(value: &str) -> String {
         .join("\n")
 }
 
-fn legacy_artifacts(
+pub(crate) fn legacy_artifacts(
     analysis: &AnalysisContent,
     sources: &[CitedSource],
     source_thread_id: Option<&ThreadId>,
@@ -731,6 +733,9 @@ pub struct KnowledgePage {
     pub analyzed_at: Timestamp,
     pub telemetry: RunTelemetry,
     pub source_thread_id: Option<ThreadId>,
+    /// Durable thread holding the conversation the user has *about* this
+    /// document, distinct from `source_thread_id`, which is where it came from.
+    pub conversation_thread_id: Option<ThreadId>,
     pub artifacts: Vec<ArtifactBlock>,
 }
 
@@ -768,10 +773,16 @@ impl KnowledgePage {
             analyzed_at,
             telemetry,
             source_thread_id: None,
+            conversation_thread_id: None,
             artifacts: Vec::new(),
         };
         page.artifacts = legacy_artifacts(&page.analysis, &page.sources, None)?;
         Ok(page)
+    }
+
+    pub fn with_conversation_thread(mut self, thread_id: ThreadId) -> Self {
+        self.conversation_thread_id = Some(thread_id);
+        self
     }
 
     pub fn with_source_thread(mut self, thread_id: ThreadId) -> Self {
@@ -811,7 +822,7 @@ impl KnowledgePage {
     }
 
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-format: 3\n");
+        let mut output = String::from("---\nemma-format: 4\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(&mut output, "category", self.category.as_str());
@@ -844,6 +855,11 @@ impl KnowledgePage {
             &mut output,
             "source-thread-id",
             self.source_thread_id.as_ref().map(ThreadId::as_str),
+        );
+        optional_field(
+            &mut output,
+            "conversation-thread-id",
+            self.conversation_thread_id.as_ref().map(ThreadId::as_str),
         );
         number_field(&mut output, "cited-source-count", self.sources.len() as u64);
         for (index, source) in self.sources.iter().enumerate() {
@@ -910,11 +926,20 @@ impl KnowledgePage {
 #[derive(Debug)]
 pub struct KnowledgeStore {
     root: PathBuf,
+    export: Option<PathBuf>,
 }
 
 impl KnowledgeStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, export: None }
+    }
+
+    /// Mirror every saved page into `export` as ordinary Markdown, so the
+    /// knowledge base is readable by the user and by any other agent on this
+    /// Mac without knowing Emma's storage format.
+    pub fn with_export(mut self, export: PathBuf) -> Self {
+        self.export = Some(export);
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -935,7 +960,188 @@ impl KnowledgeStore {
         let destination = self.path_for(&page.id);
         let temporary = self.root.join(format!(".{}.tmp", page.id));
         atomic_write(&temporary, &destination, page.to_markdown().as_bytes())?;
+        // The mirror is derived and never read back, so a folder Emma may not
+        // write to (macOS asks before ~/Documents) costs the copy, not the save.
+        if let Err(error) = self.export_plain(page) {
+            eprintln!("emma: could not export page {} as Markdown: {error}", page.id);
+        }
         Ok(destination)
+    }
+
+    fn export_plain(&self, page: &KnowledgePage) -> io::Result<()> {
+        let Some(root) = &self.export else {
+            return Ok(());
+        };
+        fs::create_dir_all(root)?;
+        // The name carries the title, so retitling a page renames its file:
+        // the ID suffix is what identifies the older copy to clear away.
+        let suffix = format!("--{}.md", page.id);
+        let name = format!("{}{suffix}", slug(&page.title));
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            let stale = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|existing| existing.ends_with(&suffix) && existing != name);
+            if stale {
+                fs::remove_file(path)?;
+            }
+        }
+        atomic_write(
+            &root.join(format!(".{name}.tmp")),
+            &root.join(&name),
+            plain_markdown(page).as_bytes(),
+        )
+    }
+
+    /// Snapshots whatever is on disk, then writes `page`. Every durable edit
+    /// routes through here so the document the user replaced stays recoverable.
+    pub fn save_versioned(&self, page: &KnowledgePage) -> Result<PathBuf, StoreError> {
+        self.snapshot_version(&page.id)?;
+        self.save(page)
+    }
+
+    fn snapshot_version(&self, id: &PageId) -> Result<(), StoreError> {
+        let current = match fs::read(self.path_for(id)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(StoreError::Io(error)),
+        };
+        let root = self.version_root(id);
+        fs::create_dir_all(&root)?;
+        let name = version_name();
+        atomic_write(
+            &root.join(format!(".{name}.tmp")),
+            &root.join(format!("{name}.md")),
+            &current,
+        )?;
+        self.prune_versions(id)
+    }
+
+    fn prune_versions(&self, id: &PageId) -> Result<(), StoreError> {
+        let mut names = self.version_names(id)?;
+        if names.len() <= MAX_PAGE_VERSIONS {
+            return Ok(());
+        }
+        names.sort();
+        let root = self.version_root(id);
+        for name in &names[..names.len() - MAX_PAGE_VERSIONS] {
+            fs::remove_file(root.join(format!("{name}.md")))?;
+        }
+        Ok(())
+    }
+
+    fn version_names(&self, id: &PageId) -> Result<Vec<String>, StoreError> {
+        let entries = match fs::read_dir(self.version_root(id)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(StoreError::Io(error)),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("md") {
+                continue;
+            }
+            if let Some(name) = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|name| parse_version_name(name).is_some())
+            {
+                names.push(name.to_owned());
+            }
+        }
+        Ok(names)
+    }
+
+    /// Newest first. Each entry is a complete page, so a restore is a plain load.
+    pub fn list_versions(&self, id: &PageId) -> Result<Vec<PageVersion>, StoreError> {
+        let mut names = self.version_names(id)?;
+        names.sort_by(|left, right| right.cmp(left));
+        // ponytail: parses every version to show its title; 50 small local files.
+        let mut versions = Vec::with_capacity(names.len());
+        for name in names {
+            let Some(saved_at) = parse_version_name(&name) else {
+                continue;
+            };
+            let title = self
+                .load_version(id, &name)
+                .map_or_else(|_| "Unreadable version".to_owned(), |page| page.title);
+            versions.push(PageVersion {
+                name,
+                saved_at,
+                title,
+            });
+        }
+        Ok(versions)
+    }
+
+    pub fn load_version(&self, id: &PageId, name: &str) -> Result<KnowledgePage, StoreError> {
+        if parse_version_name(name).is_none() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "version name is invalid").into(),
+            );
+        }
+        let path = self.version_root(id).join(format!("{name}.md"));
+        let markdown = fs::read_to_string(&path)?;
+        let page = KnowledgePage::from_markdown(&markdown).map_err(|error| {
+            StoreError::Malformed(MalformedPage {
+                path: path.clone(),
+                reason: error.to_string(),
+            })
+        })?;
+        if &page.id != id {
+            return Err(StoreError::Malformed(MalformedPage {
+                path,
+                reason: "version page ID does not match its page".into(),
+            }));
+        }
+        Ok(page)
+    }
+
+    /// Binary attachments live beside the Markdown so a page stays small and
+    /// stays plain text. Returns the generated file name.
+    pub fn save_asset(
+        &self,
+        page_id: &PageId,
+        extension: &str,
+        bytes: &[u8],
+    ) -> Result<String, StoreError> {
+        if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("asset must be between 1 and {MAX_ASSET_BYTES} bytes"),
+            )
+            .into());
+        }
+        if extension.is_empty()
+            || extension.len() > 8
+            || !extension.bytes().all(|byte| byte.is_ascii_lowercase())
+        {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "asset extension is invalid").into(),
+            );
+        }
+        let root = self.asset_root();
+        fs::create_dir_all(&root)?;
+        let name = format!("{page_id}-{}.{extension}", version_name());
+        atomic_write(&root.join(format!(".{name}.tmp")), &root.join(&name), bytes)?;
+        Ok(name)
+    }
+
+    pub fn load_asset(&self, name: &str) -> Result<Vec<u8>, StoreError> {
+        if !valid_asset_name(name) {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "asset name is invalid").into(),
+            );
+        }
+        let bytes = fs::read(self.asset_root().join(name))?;
+        if bytes.len() > MAX_ASSET_BYTES {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "asset is too large to read").into(),
+            );
+        }
+        Ok(bytes)
     }
 
     pub fn save_base(&self, base: &KnowledgeBase) -> Result<PathBuf, StoreError> {
@@ -1139,6 +1345,111 @@ impl KnowledgeStore {
     fn base_root(&self) -> PathBuf {
         self.root.join("bases")
     }
+
+    fn version_root(&self, id: &PageId) -> PathBuf {
+        self.root.join("versions").join(id.as_str())
+    }
+
+    fn asset_root(&self) -> PathBuf {
+        self.root.join("assets")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageVersion {
+    pub name: String,
+    pub saved_at: Timestamp,
+    pub title: String,
+}
+
+/// The page as a file anyone can read: YAML front matter every tool already
+/// understands, then the document Emma built, in its portable form.
+pub fn plain_markdown(page: &KnowledgePage) -> String {
+    let mut output = String::from("---\n");
+    field(&mut output, "title", &page.title);
+    field(&mut output, "category", page.category.as_str());
+    optional_field(
+        &mut output,
+        "source",
+        page.context.source_url.as_ref().map(SourceUrl::as_str),
+    );
+    optional_field(
+        &mut output,
+        "application",
+        page.context.source_application.as_deref(),
+    );
+    field(&mut output, "saved", &page.added_at.to_string());
+    field(&mut output, "emma-page", page.id.as_str());
+    output.push_str("---\n\n# ");
+    output.push_str(&page.title);
+    output.push_str("\n\n");
+    if page.artifacts.is_empty() {
+        output.push_str(page.analysis.body.trim_end());
+        output.push('\n');
+        return output;
+    }
+    for block in &page.artifacts {
+        output.push_str(block.fallback.trim_end());
+        output.push_str("\n\n");
+    }
+    output
+}
+
+/// A readable filename from a title. Non-ASCII titles fall back to `page`,
+/// which the ID suffix still makes unique.
+fn slug(title: &str) -> String {
+    let mut slug = String::new();
+    for character in title.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 60 {
+            break;
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "page".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// `{unix seconds}-{nanos}` in fixed width, so a lexical sort is chronological.
+fn version_name() -> String {
+    let now = SystemTime::now();
+    let nanos = now
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos());
+    format!(
+        "{:010}-{nanos:09}",
+        Timestamp::from(now).unix_seconds().max(0)
+    )
+}
+
+fn parse_version_name(name: &str) -> Option<Timestamp> {
+    let (seconds, nanos) = name.split_once('-')?;
+    if seconds.len() != 10 || nanos.len() != 9 || !nanos.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    seconds.parse().ok().map(Timestamp::from_unix_seconds)
+}
+
+fn valid_asset_name(name: &str) -> bool {
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty()
+        && name.len() <= 128
+        && !extension.is_empty()
+        && extension.len() <= 8
+        && extension.bytes().all(|byte| byte.is_ascii_lowercase())
+        && stem
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn atomic_write(temporary: &Path, destination: &Path, contents: &[u8]) -> io::Result<()> {
@@ -1341,6 +1652,7 @@ impl<'a> Parser<'a> {
             "emma-format: 1" => 1,
             "emma-format: 2" => 2,
             "emma-format: 3" => 3,
+            "emma-format: 4" => 4,
             _ => return Err(ValidationError::new("unsupported knowledge page format")),
         };
         let legacy = format == 1;
@@ -1370,6 +1682,13 @@ impl<'a> Parser<'a> {
             .optional_field("source-thread-id")?
             .map(ThreadId::parse)
             .transpose()?;
+        let conversation_thread_id = if format >= 4 {
+            self.optional_field("conversation-thread-id")?
+                .map(ThreadId::parse)
+                .transpose()?
+        } else {
+            None
+        };
         let cited_count: usize = self
             .number_field("cited-source-count")?
             .try_into()
@@ -1383,7 +1702,7 @@ impl<'a> Parser<'a> {
             let url = SourceUrl::parse(self.string_field(&format!("cited-{index}-url"))?)?;
             sources.push(CitedSource::new(source_title, url)?);
         }
-        let artifacts = if format == 3 {
+        let artifacts = if format >= 3 {
             let count: usize = self
                 .number_field("artifact-count")?
                 .try_into()
@@ -1434,7 +1753,7 @@ impl<'a> Parser<'a> {
         self.exact("## Analysis")?;
         self.exact("")?;
         let body = unquote(self.next()?)?;
-        if format != 3 && self.lines.next().is_some() {
+        if format < 3 && self.lines.next().is_some() {
             return Err(ValidationError::new("unexpected content after page body"));
         }
         validate_text("page title", &title, true)?;
@@ -1443,7 +1762,7 @@ impl<'a> Parser<'a> {
         }
         let context = CapturedContext::new(text, source_application, source_url)?;
         let analysis = AnalysisContent::new(summary, body)?;
-        let artifacts = if format == 3 {
+        let artifacts = if format >= 3 {
             artifacts
         } else {
             legacy_artifacts(&analysis, &sources, source_thread_id.as_ref())?
@@ -1460,6 +1779,7 @@ impl<'a> Parser<'a> {
             analyzed_at,
             telemetry: RunTelemetry::new(model, input_tokens, output_tokens, subagent_count)?,
             source_thread_id,
+            conversation_thread_id,
             artifacts,
         })
     }

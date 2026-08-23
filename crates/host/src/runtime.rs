@@ -4,34 +4,60 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::Arc,
     time::Instant,
 };
 
 use emma_core::{
-    AgentAnalysis, AgentMessage, AgentRequest, AgentResponse, AgentSource, LiveClient, LiveError,
-    OpenRouterCatalog, OpenRouterModel, Thread, ThreadId, ThreadRole, start_live_runtime,
+    AgentAnalysis, AgentBlock, AgentMessage, AgentRequest, AgentResponse, AgentSource, AgentTool,
+    AgentToolCall, JobSink, LiveClient, LiveError, MAX_AGENT_TOOLS, OpenRouterCatalog,
+    OpenRouterModel, Thread, ThreadId, ThreadRole, start_live_runtime,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
 
 const MAX_SIDECAR_TITLE_BYTES: usize = 256;
 const MAX_SIDECAR_MESSAGES: usize = 256;
 const MAX_SIDECAR_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_SIDECAR_HISTORY_BYTES: usize = 96 * 1024;
-const MAX_OPENROUTER_MODELS: usize = 64;
+const MAX_OPENROUTER_MODELS: usize = 2048;
+/// Threads that may be pinned to a model of their own at once — one per subagent
+/// a session has spawned, which no real session comes near.
+const MAX_PINNED_THREADS: usize = 512;
+const MAX_SIDECAR_CATEGORIES: usize = 64;
+const MAX_SIDECAR_DOCUMENT_BLOCKS: usize = 64;
+/// Mirrors `MAX_AGENT_TOOLS` and the sidecar's own `max_advertised_tools`, both 32.
+/// Anything lower silently drops the tail of the table — every tool past the cut
+/// is a tool the model is never told it has.
+const MAX_SIDECAR_TOOLS: usize = MAX_AGENT_TOOLS;
+/// What one response may ask for at once. Mirrors `MAX_CALLS_PER_STEP` in the
+/// desktop loop, which refuses a turn carrying more.
+const MAX_SIDECAR_TOOL_CALLS: usize = 8;
+/// Mirrors core's own description ceiling, which `AgentTool::new` already refuses past.
+const MAX_SIDECAR_TOOL_DESCRIPTION_BYTES: usize = 4 * 1024;
+const MAX_SIDECAR_TOOL_RESULT_BYTES: usize = 16 * 1024;
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const OPENROUTER_CREDENTIAL_ENV: &str = "OPENROUTER_API_KEY";
 
-pub fn start() -> Result<LiveClient, LiveError> {
+/// Called with `(thread_id, text)` for each chunk of assistant text the sidecar
+/// streams, while the turn that produced it is still in flight. Runs on the live
+/// runtime thread, so it must not block on anything the runtime itself drives.
+pub type DeltaSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+pub fn start(delta_sink: DeltaSink, job_sink: JobSink) -> Result<LiveClient, LiveError> {
     let data_root = match env::var_os("EMMA_DATA_DIR") {
         Some(path) => PathBuf::from(path),
         None => default_data_root()?,
     };
     let agent_path = env::var_os("EMMA_AGENT_BIN").map_or_else(default_agent_path, PathBuf::from);
-    let mut sidecar = Sidecar::new(agent_path, provider_config()?);
+    let mut sidecar = Sidecar::new(agent_path, provider_config()?, delta_sink);
     start_live_runtime(
         data_root.join("threads"),
         data_root.join("knowledge"),
+        knowledge_export_root(),
         data_root.join("scheduled"),
+        data_root.join("research"),
+        job_sink,
         move |request| sidecar.call(request),
     )
 }
@@ -64,9 +90,12 @@ fn provider_config_from_values(
         (None, None, None) => Ok(None),
         (Some(base_url), Some(model), Some(credential_env)) => Ok(Some(ProviderConfig {
             protect_data: is_openrouter_base_url(&base_url),
+            zero_retention: env::var_os("EMMA_OPENROUTER_ZDR").is_some(),
             base_url,
             model,
             credential_env,
+            reasoning_effort: String::new(),
+            context_length: 0,
         })),
         _ => Err(LiveError::new(
             "set all of EMMA_PROVIDER_BASE_URL, EMMA_PROVIDER_MODEL, and EMMA_PROVIDER_CREDENTIAL_ENV",
@@ -80,6 +109,19 @@ fn default_data_root() -> Result<PathBuf, LiveError> {
     Ok(PathBuf::from(home).join("Library/Application Support/Emma"))
 }
 
+/// Where the knowledge base is readable by everything else on this Mac: a plain
+/// folder of Markdown, not the app's own storage. `EMMA_KNOWLEDGE_DIR` moves it;
+/// an empty value turns the mirror off.
+fn knowledge_export_root() -> Option<PathBuf> {
+    match env::var_os("EMMA_KNOWLEDGE_DIR") {
+        Some(path) if path.is_empty() => None,
+        Some(path) => Some(PathBuf::from(path)),
+        None => {
+            env::var_os("HOME").map(|home| PathBuf::from(home).join("Documents/Emma Knowledge"))
+        }
+    }
+}
+
 fn default_agent_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agent/zig-out/bin/emma-agent")
 }
@@ -89,23 +131,43 @@ struct Sidecar {
     provider: Option<ProviderConfig>,
     io: Option<SidecarIo>,
     thread_ids: HashMap<ThreadId, String>,
+    /// Threads pinned to a model of their own — a subagent runs its whole life on
+    /// the one its parent chose, whatever the app's selection does meanwhile.
+    thread_providers: HashMap<ThreadId, ProviderConfig>,
     openrouter_models: Vec<OpenRouterModel>,
     next_request_id: u64,
+    delta_sink: DeltaSink,
+    /// The thread whose turn is on the wire. The sidecar tags its deltas with
+    /// its own request id, which means nothing outside this process; this is
+    /// what turns them into something a window can route. `None` for every
+    /// request that is not a model turn, which is what drops their deltas.
+    streaming_thread: Option<String>,
 }
 
 impl Sidecar {
-    fn new(path: PathBuf, provider: Option<ProviderConfig>) -> Self {
+    fn new(path: PathBuf, provider: Option<ProviderConfig>, delta_sink: DeltaSink) -> Self {
         Self {
             path,
             provider,
             io: None,
             thread_ids: HashMap::new(),
+            thread_providers: HashMap::new(),
             openrouter_models: Vec::new(),
             next_request_id: 1,
+            delta_sink,
+            streaming_thread: None,
         }
     }
 
     fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, LiveError> {
+        // Set once, here, rather than per branch: the turn arms have several
+        // early returns each, and a tag left over from a previous request would
+        // route the next turn's text to the wrong window.
+        self.streaming_thread = match &request {
+            AgentRequest::ThreadMessage { thread, .. }
+            | AgentRequest::ToolResult { thread, .. } => Some(thread.id.as_str().to_owned()),
+            _ => None,
+        };
         match request {
             AgentRequest::ThreadMessage {
                 mut thread,
@@ -113,15 +175,13 @@ impl Sidecar {
                 knowledge,
                 screen_context,
                 skill_context,
+                tools,
             } => {
                 if thread.messages.last().is_some_and(|message| {
                     message.role == ThreadRole::User && message.content == content
                 }) {
                     thread.messages.pop();
                 }
-                let thread_id = self.sidecar_thread(&thread)?;
-                let id = self.request_id();
-                let provider = self.provider.clone();
                 let knowledge = knowledge
                     .iter()
                     .map(|page| WireKnowledgePage {
@@ -131,44 +191,103 @@ impl Sidecar {
                         body: &page.body,
                     })
                     .collect::<Vec<_>>();
-                let request = ThreadMessageRequest {
-                    id: &id,
-                    kind: "thread_message",
-                    thread_id: &thread_id,
-                    content: &content,
-                    knowledge: &knowledge,
-                    screen_context: screen_context
-                        .as_ref()
-                        .map(|context| context.jpeg_data_url.as_str()),
-                    skill_context: skill_context
-                        .as_ref()
-                        .map(|context| context.instructions.as_str()),
-                    provider: provider.as_ref(),
-                };
+                let tools = wire_tools(&tools);
                 let started = Instant::now();
-                let response: ThreadMessageResult = self.exchange(&id, &request)?;
-                Ok(AgentResponse::Message(AgentMessage {
-                    content: response.message.content,
-                    model: response.model,
-                    input_tokens: response.input_tokens,
-                    output_tokens: response.output_tokens,
-                    duration_milliseconds: started
-                        .elapsed()
-                        .as_millis()
-                        .max(1)
-                        .try_into()
-                        .unwrap_or(u64::MAX),
-                }))
+                let mut failure = None;
+                for provider in self.chain_for(&thread.id) {
+                    // A failed exchange resets the sidecar, so the thread is re-created per try.
+                    let thread_id = self.sidecar_thread(&thread)?;
+                    let id = self.request_id();
+                    let request = ThreadMessageRequest {
+                        id: &id,
+                        kind: "thread_message",
+                        thread_id: &thread_id,
+                        content: &content,
+                        knowledge: &knowledge,
+                        screen_context: screen_context
+                            .as_ref()
+                            .map(|context| context.jpeg_data_url.as_str()),
+                        skill_context: skill_context
+                            .as_ref()
+                            .map(|context| context.instructions.as_str()),
+                        tools: &tools,
+                        provider: provider.as_ref(),
+                    };
+                    match self.exchange::<_, ThreadMessageResult>(&id, &request) {
+                        Ok(response) => return agent_message(response, started),
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                        }
+                    }
+                }
+                Err(failure
+                    .unwrap_or_else(|| LiveError::new("no model is selected — pick one from the model menu")))
             }
-            AgentRequest::Analyze { thread, text } => {
+            AgentRequest::ToolResult {
+                thread,
+                results,
+                screen_context,
+                skill_context,
+                tools,
+            } => {
+                let tools = wire_tools(&tools);
+                let results = results
+                    .iter()
+                    .map(|result| WireToolResult {
+                        id: &result.id,
+                        content: bounded_prefix(&result.content, MAX_SIDECAR_TOOL_RESULT_BYTES),
+                    })
+                    .collect::<Vec<_>>();
+                let started = Instant::now();
+                let mut failure = None;
+                for provider in self.chain_for(&thread.id) {
+                    let thread_id = self.sidecar_thread(&thread)?;
+                    let id = self.request_id();
+                    let request = ToolResultRequest {
+                        id: &id,
+                        kind: "thread_tool_result",
+                        thread_id: &thread_id,
+                        results: &results,
+                        screen_context: screen_context
+                            .as_ref()
+                            .map(|context| context.jpeg_data_url.as_str()),
+                        skill_context: skill_context
+                            .as_ref()
+                            .map(|context| context.instructions.as_str()),
+                        tools: &tools,
+                        provider: provider.as_ref(),
+                    };
+                    match self.exchange::<_, ThreadMessageResult>(&id, &request) {
+                        Ok(response) => return agent_message(response, started),
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                        }
+                    }
+                }
+                Err(failure
+                    .unwrap_or_else(|| LiveError::new("no model is selected — pick one from the model menu")))
+            }
+            AgentRequest::Analyze {
+                thread,
+                text,
+                categories,
+            } => {
                 let thread_id = self.sidecar_thread(&thread)?;
                 let id = self.request_id();
+                let provider = self.provider.clone();
+                let categories = categories
+                    .iter()
+                    .take(MAX_SIDECAR_CATEGORIES)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
                 let request = AnalyzeRequest {
                     id: &id,
                     kind: "analyze",
                     thread_id: &thread_id,
                     text: bounded_prefix(&text, MAX_SIDECAR_MESSAGE_BYTES),
                     sources: &[],
+                    categories: &categories,
+                    provider: provider.as_ref(),
                 };
                 let response: AnalyzeResult = self.exchange(&id, &request)?;
                 if response.destination != "knowledge" {
@@ -212,17 +331,47 @@ impl Sidecar {
                     interesting_points: artifact.interesting_points,
                     counterarguments: artifact.counterarguments,
                     sources,
+                    blocks: agent_blocks(artifact.blocks)?,
                     model: artifact.model,
                     input_tokens: artifact.input_tokens,
                     output_tokens: artifact.output_tokens,
                     subagent_count: artifact.subagent_count,
                 }))
             }
+            AgentRequest::ReviseDocument {
+                thread,
+                instruction,
+                document,
+            } => {
+                let thread_id = self.sidecar_thread(&thread)?;
+                let id = self.request_id();
+                let provider = self.provider.clone();
+                let document = document
+                    .iter()
+                    .map(|block| WireBlock {
+                        id: block.id.clone(),
+                        block_type: block.block_type.clone(),
+                        payload: block.payload.clone(),
+                        fallback: bounded_prefix(&block.fallback, MAX_SIDECAR_MESSAGE_BYTES)
+                            .to_owned(),
+                    })
+                    .collect::<Vec<_>>();
+                let request = ReviseRequest {
+                    id: &id,
+                    kind: "revise_document",
+                    thread_id: &thread_id,
+                    instruction: bounded_prefix(&instruction, MAX_SIDECAR_MESSAGE_BYTES),
+                    document: &document,
+                    provider: provider.as_ref(),
+                };
+                let response: ReviseResult = self.exchange(&id, &request)?;
+                Ok(AgentResponse::Document(agent_blocks(response.blocks)?))
+            }
             AgentRequest::ListOpenRouterModels => self
                 .list_openrouter_models()
                 .map(AgentResponse::OpenRouterCatalog),
-            AgentRequest::SelectOpenRouterModel { model_id } => self
-                .select_openrouter_model(model_id)
+            AgentRequest::SelectOpenRouterModel { model_id, effort } => self
+                .select_openrouter_model(model_id, effort)
                 .map(AgentResponse::OpenRouterModelSelected),
             AgentRequest::SelectLocalModel {
                 base_url,
@@ -231,6 +380,13 @@ impl Sidecar {
             } => self
                 .select_local_model(base_url, model_id, credential_env)
                 .map(AgentResponse::LocalModelSelected),
+            AgentRequest::SetThreadModel {
+                thread_id,
+                model_id,
+                effort,
+            } => self
+                .set_thread_model(thread_id, model_id, effort)
+                .map(|()| AgentResponse::ThreadModelSet),
             AgentRequest::SelectFallbackModel => {
                 self.provider = None;
                 Ok(AgentResponse::FallbackModelSelected)
@@ -256,27 +412,11 @@ impl Sidecar {
             provider: &provider,
         };
         let response: OpenRouterModelsResult = self.exchange(&id, &request)?;
-        if response.models.len() > MAX_OPENROUTER_MODELS {
+        let mut models = accepted_openrouter_models(response.models);
+        if models.is_empty() {
             return Err(LiveError::new(
-                "OpenRouter returned more free models than Emma accepts",
+                "OpenRouter listed no models Emma can use — check your connection and try again",
             ));
-        }
-        let mut models = Vec::with_capacity(response.models.len());
-        for model in response.models {
-            validate_openrouter_model(&model)?;
-            if models
-                .iter()
-                .any(|existing: &OpenRouterModel| existing.id == model.id)
-            {
-                return Err(LiveError::new(
-                    "OpenRouter returned a duplicate free model ID",
-                ));
-            }
-            models.push(OpenRouterModel {
-                id: model.id,
-                name: model.name,
-                context_length: model.context_length,
-            });
         }
         models.sort_by(|left, right| left.name.cmp(&right.name));
         self.openrouter_models.clone_from(&models);
@@ -289,16 +429,116 @@ impl Sidecar {
         })
     }
 
-    fn select_openrouter_model(&mut self, model_id: String) -> Result<String, LiveError> {
-        if !self
-            .openrouter_models
-            .iter()
-            .any(|model| model.id == model_id)
+    /// Routes a turn tries in order: the selected model, then Emma's deterministic local reply.
+    /// Substituting another vendor's model was worse than no answer — the reply came back in a
+    /// different model's voice with nothing on screen saying the route had changed.
+    fn fallback_chain(&self) -> Vec<Option<ProviderConfig>> {
+        match self.provider.clone() {
+            Some(selected) => vec![Some(selected), None],
+            None => vec![None],
+        }
+    }
+
+    /// The same chain for a thread that was pinned to its own model, with that model
+    /// in front of the app's selection. A subagent runs where its parent said, and
+    /// still falls back to the local reply rather than to another vendor's voice.
+    fn chain_for(&self, thread_id: &ThreadId) -> Vec<Option<ProviderConfig>> {
+        match self.thread_providers.get(thread_id) {
+            Some(pinned) => vec![Some(pinned.clone()), None],
+            None => self.fallback_chain(),
+        }
+    }
+
+    /// Pins one thread to an OpenRouter model, or clears the pin when the ID is empty.
+    /// The model and its thinking mode are checked against the catalog exactly as a
+    /// whole-app selection is — a route the model would 400 on is refused here.
+    fn set_thread_model(
+        &mut self,
+        thread_id: ThreadId,
+        model_id: String,
+        effort: String,
+    ) -> Result<(), LiveError> {
+        if model_id.is_empty() {
+            self.thread_providers.remove(&thread_id);
+            return Ok(());
+        }
+        // ponytail: pins are only dropped by being cleared, so the ceiling is what
+        // keeps a long-lived host from holding one per subagent it ever ran. Tie them
+        // to the thread's life if that ever bites.
+        if self.thread_providers.len() >= MAX_PINNED_THREADS
+            && !self.thread_providers.contains_key(&thread_id)
         {
             return Err(LiveError::new(
-                "reload the OpenRouter catalog before selecting that model",
+                "Emma is tracking model pins for too many threads — restart Emma to clear them",
             ));
         }
+        let mut provider = ProviderConfig::openrouter(model_id);
+        provider.reasoning_effort = effort;
+        provider.context_length = self.checked_openrouter_route(&provider)?;
+        if let Some(configured) = self
+            .provider
+            .as_ref()
+            .filter(|configured| configured.is_openrouter())
+        {
+            provider.credential_env.clone_from(&configured.credential_env);
+            provider.zero_retention = configured.zero_retention;
+        }
+        self.thread_providers.insert(thread_id, provider);
+        Ok(())
+    }
+
+    /// The model's context window, once its ID and thinking mode are known to be ones
+    /// the catalog published. The same two refusals `select_openrouter_model` makes.
+    fn checked_openrouter_route(&self, provider: &ProviderConfig) -> Result<u64, LiveError> {
+        let Some(model) = self
+            .openrouter_models
+            .iter()
+            .find(|model| model.id == provider.model)
+        else {
+            return Err(LiveError::new(
+                "Emma's model list is out of date — refresh it in Settings, then pin that model again",
+            ));
+        };
+        match provider.reasoning_effort.as_str() {
+            "" => {}
+            "off" if !model.reasoning_mandatory => {}
+            other if model.reasoning_efforts.iter().any(|value| value == other) => {}
+            _ => {
+                return Err(LiveError::new(
+                    "that model does not offer that thinking mode — pick another mode, or another model",
+                ));
+            }
+        }
+        Ok(model.context_length)
+    }
+
+    fn select_openrouter_model(
+        &mut self,
+        model_id: String,
+        effort: String,
+    ) -> Result<String, LiveError> {
+        let Some(model) = self
+            .openrouter_models
+            .iter()
+            .find(|model| model.id == model_id)
+        else {
+            return Err(LiveError::new(
+                "Emma's model list is out of date — refresh it in Settings, then pick that model again",
+            ));
+        };
+        let context_length = model.context_length;
+        // A model only takes the efforts it publishes, and a mandatory reasoner cannot be
+        // turned off: sending anything else is a 400 the user never asked for.
+        let effort = match effort.as_str() {
+            "" => String::new(),
+            "off" if !model.reasoning_mandatory => effort,
+            other if model.reasoning_efforts.iter().any(|value| value == other) => effort,
+            _ => {
+                return Err(LiveError::new(
+                    "that model does not offer that thinking mode — pick another mode, or another model",
+                ));
+            }
+        };
         if let Some(provider) = self
             .provider
             .as_mut()
@@ -306,8 +546,13 @@ impl Sidecar {
         {
             provider.model.clone_from(&model_id);
             provider.protect_data = true;
+            provider.reasoning_effort.clone_from(&effort);
+            provider.context_length = context_length;
         } else {
-            self.provider = Some(ProviderConfig::openrouter(model_id.clone()));
+            let mut provider = ProviderConfig::openrouter(model_id.clone());
+            provider.reasoning_effort = effort;
+            provider.context_length = context_length;
+            self.provider = Some(provider);
         }
         Ok(model_id)
     }
@@ -353,7 +598,22 @@ impl Sidecar {
         Q: Serialize,
         R: DeserializeOwned,
     {
-        let result = exchange_once(self.io()?, request_id, request);
+        // Split the borrow: `exchange_once` needs `&mut io` while the sink needs
+        // the thread tag, and both live on `self`.
+        let sink = self.delta_sink.clone();
+        let thread = self.streaming_thread.clone();
+        // A fallback attempt starts the reply over, so tell the renderer to drop
+        // whatever the failed one streamed. An empty delta means exactly that: a
+        // provider never sends one, the sidecar drops it if it does.
+        if let Some(thread_id) = thread.as_deref() {
+            sink(thread_id, "");
+        }
+        let io = self.io()?;
+        let result = exchange_once(io, request_id, request, &mut |text| {
+            if let Some(thread_id) = thread.as_deref() {
+                sink(thread_id, text);
+            }
+        });
         if result.is_err() {
             self.io = None;
             self.thread_ids.clear();
@@ -422,6 +682,15 @@ struct ProviderConfig {
     model: String,
     credential_env: String,
     protect_data: bool,
+    zero_retention: bool,
+    /// The thinking effort to ask for, from the set the selected model publishes.
+    /// Empty leaves the model on its own default.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    reasoning_effort: String,
+    /// The selected model's context window, so the sidecar knows when a thread is 70% of
+    /// the way through it and has to be compacted. `0` means unknown — a local model has
+    /// no catalog entry — and leaves the sidecar trimming the way it always did.
+    context_length: u64,
 }
 
 impl ProviderConfig {
@@ -431,6 +700,10 @@ impl ProviderConfig {
             model: model.into(),
             credential_env: OPENROUTER_CREDENTIAL_ENV.into(),
             protect_data: true,
+            // OpenRouter serves no free endpoint under zero retention, so the desktop app opts in.
+            zero_retention: env::var_os("EMMA_OPENROUTER_ZDR").is_some(),
+            reasoning_effort: String::new(),
+            context_length: 0,
         }
     }
 
@@ -453,6 +726,9 @@ impl ProviderConfig {
             model,
             credential_env,
             protect_data: false,
+            zero_retention: false,
+            reasoning_effort: String::new(),
+            context_length: 0,
         })
     }
 }
@@ -492,13 +768,24 @@ fn is_local_base_url(base_url: &str) -> bool {
     matches!(host, "localhost" | "localhost." | "127.0.0.1" | "::1")
 }
 
+/// OpenRouter's reasoning efforts, plus "off" for a request that asks for no thinking at
+/// all. Which of these a given model actually takes comes from its catalog entry.
+fn is_effort(value: &str) -> bool {
+    matches!(
+        value,
+        "off" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+    )
+}
+
 fn valid_env_name(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some('_' | 'a'..='z' | 'A'..='Z'))
         && chars.all(|char| char == '_' || char.is_ascii_alphanumeric())
 }
 
-fn validate_openrouter_model(model: &WireOpenRouterModel) -> Result<(), LiveError> {
+/// Whether Emma can publish this row. Nothing here is shown to anyone: a row that
+/// fails is simply left out of the catalog.
+fn openrouter_model_is_readable(model: &WireOpenRouterModel) -> bool {
     let valid_id = model.id.len() <= 128
         && model.id.split_once('/').is_some_and(|(author, slug)| {
             !author.is_empty()
@@ -507,19 +794,17 @@ fn validate_openrouter_model(model: &WireOpenRouterModel) -> Result<(), LiveErro
                 && model.id.bytes().all(|byte| {
                     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':')
                 })
-        })
-        && (model.id.ends_with(":free") || model.id == "openrouter/free");
-    if !valid_id
-        || model.name.trim().is_empty()
-        || model.name.len() > 256
-        || model.name.chars().any(char::is_control)
-        || !(1..=100_000_000).contains(&model.context_length)
-    {
-        return Err(LiveError::new(
-            "OpenRouter returned invalid free model metadata",
-        ));
-    }
-    Ok(())
+        });
+    valid_id
+        && !model.name.trim().is_empty()
+        && model.name.len() <= 256
+        && !model.name.chars().any(char::is_control)
+        && (1..=100_000_000).contains(&model.context_length)
+        && model
+            .input_modalities
+            .iter()
+            .all(|modality| matches!(modality.as_str(), "image" | "file" | "audio"))
+        && model.reasoning_efforts.iter().all(|effort| is_effort(effort))
 }
 
 fn bullets(items: &[String]) -> String {
@@ -530,59 +815,120 @@ fn bullets(items: &[String]) -> String {
         .join("\n")
 }
 
-fn exchange_once<Q, R>(io: &mut SidecarIo, request_id: &str, request: &Q) -> Result<R, LiveError>
+/// One line the sidecar may emit before the response: a chunk of assistant text
+/// for the request still in flight. `deny_unknown_fields` is what keeps it from
+/// swallowing a real envelope, which always carries `ok`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeltaLine {
+    id: String,
+    delta: String,
+}
+
+fn exchange_once<Q, R>(
+    io: &mut SidecarIo,
+    request_id: &str,
+    request: &Q,
+    on_delta: &mut dyn FnMut(&str),
+) -> Result<R, LiveError>
 where
     Q: Serialize,
     R: DeserializeOwned,
 {
     serde_json::to_writer(&mut io.stdin, request)
-        .map_err(|error| LiveError::new(format!("could not encode agent request: {error}")))?;
+        .map_err(|error| agent_fault(format!("could not encode agent request: {error}")))?;
     io.stdin
         .write_all(b"\n")
         .and_then(|()| io.stdin.flush())
-        .map_err(|error| LiveError::new(format!("could not write to Emma agent: {error}")))?;
+        .map_err(|error| agent_fault(format!("could not write to Emma agent: {error}")))?;
 
     const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
     let mut line = String::new();
-    let read = (&mut io.stdout)
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_line(&mut line)
-        .map_err(|error| LiveError::new(format!("could not read from Emma agent: {error}")))?;
-    if read == 0 {
-        let status = io
-            .child
-            .try_wait()
-            .ok()
-            .flatten()
-            .map_or_else(|| "without a status".into(), |status| status.to_string());
-        return Err(LiveError::new(format!(
-            "Emma agent exited {status}; rebuild it with `zig build --build-file agent/build.zig`"
-        )));
-    }
-    if read as u64 > MAX_RESPONSE_BYTES || !line.ends_with('\n') {
-        return Err(LiveError::new(
-            "Emma agent response exceeded 256 KiB or was not newline terminated",
-        ));
-    }
-    let envelope: Envelope<R> = serde_json::from_str(&line)
-        .map_err(|error| LiveError::new(format!("Emma agent returned invalid JSON: {error}")))?;
+    let envelope: Envelope<R> = loop {
+        line.clear();
+        let read = (&mut io.stdout)
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_line(&mut line)
+            .map_err(|error| agent_fault(format!("could not read from Emma agent: {error}")))?;
+        if read == 0 {
+            let status = io
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .map_or_else(|| "without a status".into(), |status| status.to_string());
+            return Err(agent_fault(format!("Emma agent exited {status}")));
+        }
+        if read as u64 > MAX_RESPONSE_BYTES || !line.ends_with('\n') {
+            return Err(LiveError::new(
+                "the reply was too large for Emma to read — ask for a shorter answer, or narrow what the tool returns",
+            ));
+        }
+        // A delta belonging to some other request is a protocol error, not
+        // something to pass on: the sidecar answers one request at a time.
+        if let Ok(chunk) = serde_json::from_str::<DeltaLine>(&line) {
+            if chunk.id != request_id {
+                return Err(agent_fault("Emma agent streamed a mismatched request ID"));
+            }
+            on_delta(&chunk.delta);
+            continue;
+        }
+        break serde_json::from_str(&line)
+            .map_err(|error| agent_fault(format!("Emma agent returned invalid JSON: {error}")))?;
+    };
     if envelope.id.as_deref() != Some(request_id) {
-        return Err(LiveError::new(
-            "Emma agent response ID did not match the request",
-        ));
+        return Err(agent_fault("Emma agent response ID did not match the request"));
     }
     if envelope.ok {
         envelope
             .result
-            .ok_or_else(|| LiveError::new("Emma agent omitted a successful result"))
+            .ok_or_else(|| agent_fault("Emma agent omitted a successful result"))
     } else if let Some(error) = envelope.error {
-        Err(LiveError::new(format!(
-            "Emma agent {}: {}",
-            error.code, error.message
-        )))
+        // The agent's message is already written for the person reading it; its code is
+        // for whoever is reading stderr, and led every provider failure with jargon.
+        eprintln!("emma-agent error code: {}", error.code);
+        Err(LiveError::new(error.message))
     } else {
-        Err(LiveError::new("Emma agent returned an unspecified error"))
+        Err(agent_fault("Emma agent returned an unspecified error"))
     }
+}
+
+/// OpenRouter's list, narrowed to the rows Emma can publish. A row it cannot read, a
+/// repeat of one it already has, and everything past the ceiling are dropped rather
+/// than refused: one bad row used to empty the whole model picker and read as if Emma
+/// were broken, when every other model on the list was fine.
+fn accepted_openrouter_models(wire: Vec<WireOpenRouterModel>) -> Vec<OpenRouterModel> {
+    let mut models: Vec<OpenRouterModel> = Vec::with_capacity(wire.len().min(MAX_OPENROUTER_MODELS));
+    for model in wire {
+        if models.len() == MAX_OPENROUTER_MODELS {
+            break;
+        }
+        if !openrouter_model_is_readable(&model)
+            || models.iter().any(|existing| existing.id == model.id)
+        {
+            continue;
+        }
+        models.push(OpenRouterModel {
+            id: model.id,
+            name: model.name,
+            context_length: model.context_length,
+            input_modalities: model.input_modalities,
+            reasoning_efforts: model.reasoning_efforts,
+            reasoning_mandatory: model.reasoning_mandatory,
+            free: model.free,
+            prompt_micro_usd_per_mtok: model.prompt_micro_usd_per_mtok,
+            completion_micro_usd_per_mtok: model.completion_micro_usd_per_mtok,
+        });
+    }
+    models
+}
+
+/// The sidecar broke its own protocol or died. Which of those it was matters to
+/// whoever is reading stderr and to nobody else: every one of them is the same
+/// thing to a person mid-sentence, and the same thing to do about it.
+fn agent_fault(detail: impl std::fmt::Display) -> LiveError {
+    eprintln!("emma-agent fault: {detail}");
+    LiveError::new("Emma's agent stopped responding — try again, and restart Emma if it keeps happening")
 }
 
 struct SidecarIo {
@@ -599,19 +945,19 @@ impl SidecarIo {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|error| {
-                LiveError::new(format!(
-                    "could not start Emma agent at {}: {error}; build it with `zig build --build-file agent/build.zig` or set EMMA_AGENT_BIN",
-                    path.display()
-                ))
+                eprintln!("could not start Emma agent at {}: {error}", path.display());
+                LiveError::new(
+                    "Emma's agent component would not start — reinstall Emma, or set EMMA_AGENT_BIN if you built it yourself",
+                )
             })?;
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| LiveError::new("Emma agent stdin was unavailable"))?;
+            .ok_or_else(|| agent_fault("Emma agent stdin was unavailable"))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| LiveError::new("Emma agent stdout was unavailable"))?;
+            .ok_or_else(|| agent_fault("Emma agent stdout was unavailable"))?;
         Ok(Self {
             child,
             stdin: BufWriter::new(stdin),
@@ -654,8 +1000,88 @@ struct ThreadMessageRequest<'a> {
     screen_context: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     skill_context: Option<&'a str>,
+    #[serde(skip_serializing_if = "no_tools")]
+    tools: &'a [WireTool<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<&'a ProviderConfig>,
+}
+
+#[derive(Serialize)]
+struct ToolResultRequest<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    thread_id: &'a str,
+    results: &'a [WireToolResult<'a>],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    screen_context: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skill_context: Option<&'a str>,
+    #[serde(skip_serializing_if = "no_tools")]
+    tools: &'a [WireTool<'a>],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a ProviderConfig>,
+}
+
+#[derive(Serialize)]
+struct WireTool<'a> {
+    name: &'a str,
+    description: &'a str,
+    input_schema: &'a Value,
+}
+
+#[derive(Serialize)]
+struct WireToolResult<'a> {
+    id: &'a str,
+    content: &'a str,
+}
+
+fn no_tools(tools: &&[WireTool<'_>]) -> bool {
+    tools.is_empty()
+}
+
+fn wire_tools(tools: &[AgentTool]) -> Vec<WireTool<'_>> {
+    tools
+        .iter()
+        .take(MAX_SIDECAR_TOOLS)
+        .map(|tool| WireTool {
+            name: &tool.name,
+            description: bounded_prefix(&tool.description, MAX_SIDECAR_TOOL_DESCRIPTION_BYTES),
+            input_schema: &tool.input_schema,
+        })
+        .collect()
+}
+
+fn agent_message(
+    response: ThreadMessageResult,
+    started: Instant,
+) -> Result<AgentResponse, LiveError> {
+    if response.tool_calls.len() > MAX_SIDECAR_TOOL_CALLS {
+        return Err(LiveError::new(
+            "the model asked to run too many tools at once — ask it to work in smaller steps",
+        ));
+    }
+    Ok(AgentResponse::Message(AgentMessage {
+        content: response.message.content,
+        model: response.model,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+        duration_milliseconds: started
+            .elapsed()
+            .as_millis()
+            .max(1)
+            .try_into()
+            .unwrap_or(u64::MAX),
+        tool_calls: response
+            .tool_calls
+            .into_iter()
+            .map(|call| AgentToolCall {
+                id: call.id,
+                name: call.name,
+                arguments: call.arguments,
+            })
+            .collect(),
+    }))
 }
 
 #[derive(Serialize)]
@@ -674,6 +1100,54 @@ struct AnalyzeRequest<'a> {
     thread_id: &'a str,
     text: &'a str,
     sources: &'a [&'a str],
+    categories: &'a [&'a str],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a ProviderConfig>,
+}
+
+#[derive(Serialize)]
+struct ReviseRequest<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    thread_id: &'a str,
+    instruction: &'a str,
+    document: &'a [WireBlock],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a ProviderConfig>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct WireBlock {
+    id: String,
+    #[serde(rename = "type")]
+    block_type: String,
+    payload: Value,
+    fallback: String,
+}
+
+#[derive(Deserialize)]
+struct ReviseResult {
+    blocks: Vec<WireBlock>,
+}
+
+/// Agent-authored blocks are untrusted structure; bound them here and let
+/// `emma_core` reject anything that is not a valid artifact.
+fn agent_blocks(blocks: Vec<WireBlock>) -> Result<Vec<AgentBlock>, LiveError> {
+    if blocks.len() > MAX_SIDECAR_DOCUMENT_BLOCKS {
+        return Err(LiveError::new(
+            "Emma agent returned more document blocks than Emma accepts",
+        ));
+    }
+    Ok(blocks
+        .into_iter()
+        .map(|block| AgentBlock {
+            id: block.id,
+            block_type: block.block_type,
+            payload: block.payload,
+            fallback: block.fallback,
+        })
+        .collect())
 }
 
 #[derive(Serialize)]
@@ -713,6 +1187,20 @@ struct WireOpenRouterModel {
     id: String,
     name: String,
     context_length: u64,
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    reasoning_mandatory: bool,
+    #[serde(default)]
+    free: bool,
+    /// Dollars per million tokens, in micro-dollars, as the sidecar read them off the
+    /// catalog. `0` is either a free model or a price OpenRouter did not publish.
+    #[serde(default)]
+    prompt_micro_usd_per_mtok: u64,
+    #[serde(default)]
+    completion_micro_usd_per_mtok: u64,
 }
 
 #[derive(Deserialize)]
@@ -721,6 +1209,15 @@ struct ThreadMessageResult {
     model: String,
     input_tokens: u64,
     output_tokens: u64,
+    #[serde(default)]
+    tool_calls: Vec<WireToolCall>,
+}
+
+#[derive(Deserialize)]
+struct WireToolCall {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 #[derive(Deserialize)]
@@ -742,6 +1239,8 @@ struct WireArtifact {
     interesting_points: Vec<String>,
     counterarguments: Vec<String>,
     cited_sources: Vec<String>,
+    #[serde(default)]
+    blocks: Vec<WireBlock>,
     model: String,
     input_tokens: u64,
     output_tokens: u64,
@@ -752,6 +1251,11 @@ struct WireArtifact {
 mod tests {
     use super::*;
     use emma_core::{ScreenContext, Thread, ThreadMessage, Timestamp};
+
+    /// None of these tests spawn the sidecar, so no delta ever reaches the sink.
+    fn quiet() -> DeltaSink {
+        Arc::new(|_: &str, _: &str| {})
+    }
 
     #[test]
     fn provider_profile_is_optional_but_not_partial() {
@@ -774,6 +1278,7 @@ mod tests {
         assert_eq!(provider.credential_env, "EMMA_API_KEY");
         assert!(!provider.protect_data);
         let request = ThreadMessageRequest {
+            tools: &[],
             id: "test",
             kind: "thread_message",
             thread_id: "thread-1",
@@ -789,6 +1294,7 @@ mod tests {
 
         let context = ScreenContext::new("data:image/jpeg;base64,/9j/".into()).unwrap();
         let request = ThreadMessageRequest {
+            tools: &[],
             id: "test",
             kind: "thread_message",
             thread_id: "thread-1",
@@ -806,6 +1312,7 @@ mod tests {
         let skill =
             emma_core::SkillContext::new("Use the selected review procedure.".into()).unwrap();
         let request = ThreadMessageRequest {
+            tools: &[],
             id: "test",
             kind: "thread_message",
             thread_id: "thread-1",
@@ -874,6 +1381,7 @@ mod tests {
                 ProviderConfig::local("http://localhost:1234/v1".into(), "qwen".into(), "".into())
                     .unwrap(),
             ),
+            quiet(),
         );
 
         assert!(matches!(
@@ -884,27 +1392,142 @@ mod tests {
     }
 
     #[test]
-    fn only_catalogued_free_openrouter_models_can_be_selected() {
-        let mut sidecar = Sidecar::new(PathBuf::from("unused"), None);
+    fn a_failing_route_falls_back_to_the_local_reply_and_never_to_another_model() {
+        let mut sidecar = Sidecar::new(PathBuf::from("unused"), None, quiet());
+        // Local-only selection: no escalation to a provider, ever.
+        let local_only = sidecar.fallback_chain();
+        assert_eq!(local_only.len(), 1);
+        assert!(local_only[0].is_none());
+
+        sidecar.openrouter_models = vec![
+            OpenRouterModel {
+                id: "openai/gpt-oss-20b:free".into(),
+                name: "gpt-oss".into(),
+                context_length: 131_072,
+                input_modalities: vec![],
+                reasoning_efforts: vec![],
+                reasoning_mandatory: false,
+                free: true,
+                prompt_micro_usd_per_mtok: 0,
+                completion_micro_usd_per_mtok: 0,
+            },
+            OpenRouterModel {
+                id: "google/gemma-4-31b-it:free".into(),
+                name: "gemma".into(),
+                context_length: 262_144,
+                input_modalities: vec![],
+                reasoning_efforts: vec![],
+                reasoning_mandatory: false,
+                free: true,
+                prompt_micro_usd_per_mtok: 0,
+                completion_micro_usd_per_mtok: 0,
+            },
+        ];
+        sidecar
+            .select_openrouter_model("openai/gpt-oss-20b:free".into(), String::new())
+            .unwrap();
+        let chain = sidecar.fallback_chain();
+        // The selected model, then Emma's own reply: a catalogued sibling is never substituted,
+        // because the answer would arrive in another vendor's voice with no sign of the swap.
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].as_ref().unwrap().model, "openai/gpt-oss-20b:free");
+        assert!(chain[1].is_none());
+
+        // A local profile retries itself, then Emma's local reply — no remote hop.
+        sidecar.provider = Some(
+            ProviderConfig::local("http://localhost:1234/v1".into(), "qwen".into(), "".into())
+                .unwrap(),
+        );
+        let chain = sidecar.fallback_chain();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].as_ref().unwrap().model, "qwen");
+        assert!(chain[1].is_none());
+    }
+
+    #[test]
+    fn a_pinned_thread_routes_to_its_own_model_and_leaves_the_selection_alone() {
+        let mut sidecar = Sidecar::new(PathBuf::from("unused"), None, quiet());
+        sidecar.openrouter_models = vec![OpenRouterModel {
+            id: "vendor/thinker".into(),
+            name: "Thinker".into(),
+            context_length: 200_000,
+            input_modalities: vec![],
+            reasoning_efforts: vec!["low".into(), "high".into()],
+            reasoning_mandatory: false,
+            free: false,
+            prompt_micro_usd_per_mtok: 0,
+            completion_micro_usd_per_mtok: 0,
+        }];
+        let subagent = ThreadId::parse("2026-08-21-subagent-aaaa").unwrap();
+        let parent = ThreadId::parse("2026-08-21-parent-bbbbbb").unwrap();
+
+        // Uncatalogued models and efforts the model does not publish are refused here,
+        // not sent for the provider to 400 on.
         assert!(
             sidecar
-                .select_openrouter_model("vendor/paid".into())
+                .set_thread_model(subagent.clone(), "vendor/unknown".into(), String::new())
+                .is_err()
+        );
+        assert!(
+            sidecar
+                .set_thread_model(subagent.clone(), "vendor/thinker".into(), "max".into())
+                .is_err()
+        );
+
+        sidecar
+            .set_thread_model(subagent.clone(), "vendor/thinker".into(), "high".into())
+            .unwrap();
+        let chain = sidecar.chain_for(&subagent);
+        let pinned = chain[0].as_ref().unwrap();
+        assert_eq!(pinned.model, "vendor/thinker");
+        assert_eq!(pinned.reasoning_effort, "high");
+        // The window comes off the catalog, so a pinned thread compacts like any other.
+        assert_eq!(pinned.context_length, 200_000);
+        // Still the local reply behind it, and never another vendor's model.
+        assert!(chain[1].is_none());
+        // The pin is one thread's: the app's own selection never moved.
+        assert!(sidecar.provider.is_none());
+        assert!(sidecar.chain_for(&parent)[0].is_none());
+
+        // An empty model puts the thread back on whatever the app is on.
+        sidecar
+            .set_thread_model(subagent.clone(), String::new(), String::new())
+            .unwrap();
+        assert!(sidecar.chain_for(&subagent)[0].is_none());
+    }
+
+    #[test]
+    fn only_catalogued_openrouter_models_can_be_selected() {
+        let mut sidecar = Sidecar::new(PathBuf::from("unused"), None, quiet());
+        assert!(
+            sidecar
+                .select_openrouter_model("vendor/paid".into(), String::new())
                 .is_err()
         );
         let model = OpenRouterModel {
             id: "openai/gpt-oss-20b:free".into(),
             name: "OpenAI: gpt-oss-20b (free)".into(),
             context_length: 131_072,
+            input_modalities: vec!["image".into()],
+            reasoning_efforts: vec!["low".into(), "high".into()],
+            reasoning_mandatory: false,
+            free: true,
+            prompt_micro_usd_per_mtok: 0,
+            completion_micro_usd_per_mtok: 0,
         };
         sidecar.openrouter_models.push(model.clone());
         assert_eq!(
-            sidecar.select_openrouter_model(model.id.clone()).unwrap(),
+            sidecar
+                .select_openrouter_model(model.id.clone(), "high".into())
+                .unwrap(),
             model.id
         );
         let provider = sidecar.provider.unwrap();
         assert!(provider.protect_data);
         assert_eq!(provider.base_url, OPENROUTER_BASE_URL);
         assert_eq!(provider.credential_env, OPENROUTER_CREDENTIAL_ENV);
+        // The window travels with the selection: it is what the sidecar compacts against.
+        assert_eq!(provider.context_length, 131_072);
 
         let mut regional = Sidecar::new(
             PathBuf::from("unused"),
@@ -913,22 +1536,73 @@ mod tests {
                 model: "vendor/old:free".into(),
                 credential_env: "EMMA_EU_OPENROUTER_KEY".into(),
                 protect_data: true,
+                zero_retention: false,
+                reasoning_effort: String::new(),
+                context_length: 0,
             }),
+            quiet(),
         );
         regional.openrouter_models.push(model.clone());
-        regional.select_openrouter_model(model.id).unwrap();
+        regional
+            .select_openrouter_model(model.id, String::new())
+            .unwrap();
         let provider = regional.provider.unwrap();
         assert_eq!(provider.base_url, "https://eu.openrouter.ai/api/v1");
         assert_eq!(provider.credential_env, "EMMA_EU_OPENROUTER_KEY");
 
+        // Paid models are catalogued too — a key gates running one, not seeing it.
         assert!(
-            validate_openrouter_model(&WireOpenRouterModel {
+            openrouter_model_is_readable(&WireOpenRouterModel {
                 id: "vendor/model".into(),
                 name: "Paid".into(),
                 context_length: 1,
+                input_modalities: vec![],
+                reasoning_efforts: vec![],
+                reasoning_mandatory: false,
+                free: false,
+                prompt_micro_usd_per_mtok: 0,
+                completion_micro_usd_per_mtok: 0,
             })
-            .is_err()
         );
+        assert!(
+            !openrouter_model_is_readable(&WireOpenRouterModel {
+                id: "no-author".into(),
+                name: "Malformed".into(),
+                context_length: 1,
+                input_modalities: vec![],
+                reasoning_efforts: vec![],
+                reasoning_mandatory: false,
+                free: false,
+                prompt_micro_usd_per_mtok: 0,
+                completion_micro_usd_per_mtok: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn one_unreadable_row_does_not_empty_the_model_catalog() {
+        let row = |id: &str, context_length: u64| WireOpenRouterModel {
+            id: id.into(),
+            name: id.into(),
+            context_length,
+            input_modalities: vec![],
+            reasoning_efforts: vec![],
+            reasoning_mandatory: false,
+            free: false,
+            prompt_micro_usd_per_mtok: 0,
+            completion_micro_usd_per_mtok: 0,
+        };
+        let accepted = accepted_openrouter_models(vec![
+            row("vendor/good", 8_192),
+            // Unreadable: no author, and a context length outside the accepted range.
+            row("malformed", 8_192),
+            row("vendor/zero", 0),
+            // A repeat of a row already taken.
+            row("vendor/good", 8_192),
+            row("vendor/other", 4_096),
+        ]);
+        let ids: Vec<&str> = accepted.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["vendor/good", "vendor/other"]);
     }
 
     #[test]
@@ -1016,5 +1690,30 @@ mod tests {
         assert!(messages[0].content.len() <= 32 * 1024);
         assert!(messages[0].content.ends_with("-tail"));
         assert!(!messages[0].content.starts_with("head-"));
+    }
+
+    /// A tool the wire drops is a tool the model is never told it has, and nothing
+    /// upstream notices: core already refuses a table over `MAX_AGENT_TOOLS`, so
+    /// everything that gets this far must survive the trip whole.
+    #[test]
+    fn every_advertised_tool_reaches_the_sidecar() {
+        let tools: Vec<AgentTool> = (0..MAX_AGENT_TOOLS)
+            .map(|index| {
+                AgentTool::new(
+                    format!("tool_{index}"),
+                    "x".repeat(MAX_SIDECAR_TOOL_DESCRIPTION_BYTES),
+                    serde_json::json!({"type": "object"}),
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let wired = wire_tools(&tools);
+        assert_eq!(wired.len(), tools.len());
+        assert_eq!(wired.last().unwrap().name, "tool_31");
+        assert_eq!(
+            wired[0].description.len(),
+            MAX_SIDECAR_TOOL_DESCRIPTION_BYTES
+        );
     }
 }

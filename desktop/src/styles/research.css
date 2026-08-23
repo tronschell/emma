@@ -1,0 +1,117 @@
+/* The Autoresearch section: the list of experiments, the progress graph, the
+   numbers panel and the iteration log.
+
+   Same grammar as panels.css — rules, not boxes; mono is the interface face;
+   fill only ever means state. The list itself is .job-list and the form is
+   .task-fields, both borrowed whole from there. Only what has no counterpart
+   yet is defined here: the graph, its tooltip, the log table and the metric
+   chooser.
+
+   The one deliberate exception to "no fill for grouping" is .research-graph. A
+   plot needs a ground for its gridlines to sit on, and the reference this was
+   drawn from is a card; it is the only filled region in the section. */
+
+.research-view { height: 100%; overflow-y: auto; padding: var(--s-5) var(--content-gutter) var(--s-8); }
+/* The graph is the one thing allowed to run the full width of the window; every
+   band of prose stays on the reading column. */
+.research-head, .research-view > .job-list, .research-view > .research-actions, .research-view > .content-empty { max-width: var(--content-column); }
+.research-head > span { display: block; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.research-head h2 { margin-top: var(--s-2); color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.research-head p { max-width: 68ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.research-head code { color: var(--violet); font: var(--fs-xs)/1.4 var(--font-code); }
+.research-back { display: block; margin-bottom: var(--s-3); padding: 0; color: var(--text-3); background: transparent; font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t); }
+.research-back:hover { color: var(--text); }
+
+.research-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-4); }
+.research-actions button, .research-play {
+  min-height: 28px; padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: transparent; color: var(--accent); font: var(--fs-xs)/1 var(--font-mono);
+  letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap;
+  transition: color var(--t), border-color var(--t), background-color var(--t);
+}
+.research-actions button:hover:not(:disabled), .research-play:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.research-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.research-danger:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-surface); }
+/* The job title is the way into a job, so it is a button — but it is still the
+   card's heading and reads as one. */
+.research-open { padding: 0; color: inherit; background: transparent; font: inherit; letter-spacing: inherit; text-transform: inherit; transition: color var(--t); }
+.research-open:hover:not(:disabled) { color: var(--accent); }
+/* Which budget stopped a run is the whole point of the note, so it is a warmed
+   band with a rule at its leading edge, not a line in the details list. */
+.research-note { margin-top: var(--s-3); padding: var(--s-2) var(--s-3); border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.research-note b { color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* ---------- The progress graph ---------- */
+
+.research-graph { margin: var(--s-5) 0 0; padding: var(--s-4); border: 1px solid var(--border-strong); background: var(--surface); }
+.research-graph figcaption { margin-bottom: var(--s-4); padding-bottom: var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.research-empty { padding: var(--s-7) 0; color: var(--text-3); font: var(--fs-sm)/1.6 var(--font); text-align: center; }
+/* Recharts paints its own chrome from props: its axis lines come in brighter than
+   any rule on the page and its <text> inherits Inter from :root. Both are pulled
+   back onto the grid here; the colours themselves stay in research.tsx's token map. */
+.research-graph .recharts-cartesian-axis-line, .research-graph .recharts-cartesian-axis-tick-line { stroke: var(--border); }
+.research-graph .recharts-text { font-family: var(--font-mono); }
+.research-graph .recharts-tooltip-wrapper { z-index: 3; }
+
+/* The floating card: one big number, then the receipts and what was tried. */
+.research-tip { display: grid; gap: var(--s-1); max-width: 320px; padding: var(--s-3); border: 1px solid var(--border-strong); background: var(--surface-2); box-shadow: var(--shadow-md); }
+.research-tip b { color: var(--orange); font: var(--fs-3xl)/1.1 var(--font-mono); font-weight: 400; }
+.research-tip span { color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); }
+.research-tip time { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.research-tip p { margin-top: var(--s-1); padding-top: var(--s-2); border-top: 1px solid var(--border); color: var(--text-2); font: var(--fs-sm)/1.5 var(--font); }
+
+/* Glyph, word, hue — three signals, so the outcome never rests on colour. */
+.research-outcome { white-space: nowrap; }
+.research-outcome.keep { color: var(--lime); }
+.research-outcome.discard { color: var(--text-3); }
+.research-outcome.crash { color: var(--rose); }
+
+/* ---------- Numbers and the log ---------- */
+
+/* .agent-metrics does the strip; only the budget line under each number is new. */
+.research-numbers span { align-content: start; }
+.research-numbers small { display: block; margin-top: var(--s-1); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+
+.research-log { width: 100%; margin-top: var(--s-6); border-collapse: collapse; }
+.research-log caption { padding-bottom: var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-align: left; text-transform: uppercase; }
+.research-log th, .research-log td { padding: var(--s-2) var(--s-3) var(--s-2) 0; border-bottom: 1px solid var(--border); color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; text-align: left; vertical-align: top; white-space: nowrap; }
+.research-log thead th { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.research-log tbody th { color: var(--text-3); }
+.research-log .research-note-cell { min-width: 20ch; color: var(--text-2); font: var(--fs-sm)/1.5 var(--font); white-space: normal; }
+
+/* ---------- The form ---------- */
+
+.research-edit { margin-top: var(--s-6); }
+.research-edit > summary { display: inline-flex; align-items: center; color: var(--text-3); font: var(--fs-2xs)/1.6 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; list-style: none; }
+.research-edit > summary::-webkit-details-marker { display: none; }
+.research-edit > summary::before { content: "▸ "; }
+.research-edit[open] > summary::before { content: "▾ "; }
+.research-form { max-width: var(--content-column); margin-top: var(--s-4); padding: 0; border: 1px solid var(--border); }
+.research-form > * { margin: var(--s-4); }
+.research-form select { min-height: 28px; padding: 0 var(--s-2); border: 1px solid var(--border); background: var(--bg); color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); transition: border-color var(--t); }
+.research-form select:hover:not(:disabled) { border-color: var(--border-strong); }
+/* A frozen metric field is announced by its description; the dashed rule is so it
+   also reads as fixed at a glance. */
+.research-form input:read-only { border-style: dashed; color: var(--text-3); }
+.research-form .task-actions { display: flex; gap: var(--s-2); }
+.research-form .task-actions button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: transparent; color: var(--accent); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: border-color var(--t), background-color var(--t); }
+.research-form .task-actions button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+
+/* Two choices side by side, each carrying its own worked example: the kind is the
+   one field a job can never change, so the form argues it out before it is set. */
+.research-kind { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s-3); }
+.research-kind button { display: grid; align-content: start; gap: var(--s-1); padding: var(--s-3); border: 1px solid var(--border); background: transparent; text-align: left; transition: border-color var(--t), background-color var(--t); }
+.research-kind button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-2); }
+/* Selected is marked at the leading edge and by the ◆/◇ in the label, so the fill
+   never has to carry it alone. */
+.research-kind button.active { border-color: var(--border-strong); background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent); }
+.research-kind button.active:disabled { opacity: 1; }
+.research-kind b { color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.research-kind span { color: var(--text-2); font: var(--fs-sm)/1.5 var(--font); }
+.research-kind small { color: var(--text-3); font: var(--fs-xs)/1.5 var(--font); }
+.research-kind pre { margin: var(--s-2) 0 0; padding-top: var(--s-2); border-top: 1px solid var(--border); overflow-x: auto; color: var(--violet); font: var(--fs-2xs)/1.6 var(--font-code); }
+
+.research-frozen { max-width: 68ch; color: var(--text-3); font: var(--fs-xs)/1.55 var(--font); }
+.research-frozen b { color: var(--text-2); font-weight: 400; }
+/* Before it is set, that the metric is permanent is a warning, not a footnote. */
+.research-frozen.research-warn { color: var(--accent); }

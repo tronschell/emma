@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <!-- emma-artifact: is script-src as well as frame-src because a region Emma
+         wrote is imported into this realm as a module; only /module.js on a mounted
+         artifact is served as JavaScript. connect-src carries it too: a dynamic
+         import is a fetch. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' emma-artifact:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' emma-artifact: ws://127.0.0.1:* ws://localhost:*; frame-src 'self' emma-artifact:; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Emma</title>
