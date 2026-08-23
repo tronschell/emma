@@ -230,7 +230,6 @@
 /* The pressed step's own boxes. Paged, not scrolled: a step of forty tasks would
    otherwise push the two rails below it off the panel. */
 .plan-tasks { display: grid; gap: var(--s-1); padding-top: var(--s-2); border-top: 1px solid var(--border); }
-.plan-step-name { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 /* The nodes are numbered, not labelled — this line is where the pressed one says its name. */
 .plan-step-title { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s-2); color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
 .plan-step-title b { color: var(--text-3); font-weight: 400; }

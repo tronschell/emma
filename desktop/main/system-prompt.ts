@@ -5,14 +5,19 @@
    landed on, which changes per turn — that rides the turn's skill context. */
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { platform, release } from "node:os";
 import path from "node:path";
 import { mergeSkillContext } from "../shared/folders";
+import { familiesOf, familyLabel, resolvePrompt, type PromptPreset, type PromptVariables } from "../shared/prompts";
 import { MAX_SYSTEM_PROMPT_CHARS, systemPromptBlock } from "../shared/settings";
+import { toolDefinitions } from "./tools";
+import type { PermissionMode } from "../shared/permissions";
 import { lessonBlock, type AppliedImprovements, type Arm } from "../shared/improvement";
 import { connectionsBlock } from "./connections";
 import type { TurnRequest } from "./agent-loop";
 
 let prompt = "";
+let presets: PromptPreset[] = [];
 let connections = "";
 let written: string | undefined;
 let improvements: AppliedImprovements = { kept: { instructions: "", verifier: "" } };
@@ -20,6 +25,11 @@ let improvements: AppliedImprovements = { kept: { instructions: "", verifier: ""
 /** Remembers what Settings last saved. Bounded here too: this is renderer text. */
 export function setSystemPrompt(value: string) {
   prompt = value.slice(0, MAX_SYSTEM_PROMPT_CHARS);
+}
+
+/** The conditional prompts Settings last saved, already validated on the way in. */
+export function setPrompts(value: readonly PromptPreset[]) {
+  presets = [...value];
 }
 
 /**
@@ -31,8 +41,40 @@ export function setConnections(ids: readonly string[]) {
   void connectionsBlock(ids).then((block) => { connections = block; }).catch(() => { connections = ""; });
 }
 
+/**
+ * What a turn's system context is filled from: the model that answers it and the
+ * folder it runs in. A conditional prompt is chosen by the model, and the
+ * variables a prompt writes as `{model}` or `{workspace}` are filled from here.
+ */
+export interface PromptContext {
+  model?: string;
+  workspace?: string;
+  mode?: PermissionMode;
+  disabledTools?: readonly string[];
+}
+
+function promptVariables(context: PromptContext): PromptVariables {
+  const model = context.model ?? "";
+  const mode = context.mode ?? "ask";
+  const families = familiesOf(model).map(familyLabel);
+  return {
+    available_tools: toolDefinitions(mode, { folders: true, computer: true }, context.disabledTools ?? []).map((tool) => tool.name).join(", "),
+    model: model || "the local fallback",
+    model_family: families.join(" and ") || "unknown",
+    workspace: context.workspace || "no folder",
+    os: `${platform()} ${release()}`,
+    date: new Date().toISOString().slice(0, 10),
+    mode,
+    connections: connections || "none",
+  };
+}
+
 /** Everything Emma adds to a turn's system context from Settings, in one block. */
-const settingsBlock = () => [systemPromptBlock(prompt), connections, improvements.kept.instructions].filter(Boolean).join("\n\n");
+const settingsBlock = (context: PromptContext) => [
+  systemPromptBlock(resolvePrompt(prompt, presets, context.model ?? "", promptVariables(context))),
+  connections,
+  improvements.kept.instructions,
+].filter(Boolean).join("\n\n");
 
 export const systemPrompt = () => prompt;
 
@@ -116,8 +158,8 @@ export function withTrialArm(turn: TurnRequest): TurnRequest {
  * that already gathered its context keeps the old text until the next session.
  * Send it over ACP instead if a mid-session change ever has to take effect.
  */
-export function writeHarnessPrompt(home: string) {
-  const block = settingsBlock();
+export function writeHarnessPrompt(home: string, context: PromptContext = {}) {
+  const block = settingsBlock(context);
   if (written === block) return;
   const file = path.join(home, ".fx", "AGENTS.md");
   mkdirSync(path.dirname(file), { recursive: true });

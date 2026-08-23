@@ -406,7 +406,8 @@ Validated by `validateSettings` in
   "contextPages": [],
   "keybinds": {},
   "requireZeroRetention": false,
-  "systemPrompt": "",
+  "systemPrompt": "# Emma\n\nYou are Emma, …",
+  "prompts": [],
   "interfaceFont": "departure",
   "agentFont": "inter",
   "thinkingLevel": ""
@@ -414,7 +415,8 @@ Validated by `validateSettings` in
 ```
 
 Ceilings: `quickActions` is exactly 3, `favoriteModels` at most 6, `notchGap`
-between 120 and 260, `systemPrompt` at most 4096 characters, secrets at most
+between 120 and 260, `systemPrompt` and each entry in `prompts` at most 8192 characters, `prompts`
+at most 32 entries, secrets at most
 512, connections at most 32, cursor orbs at most 8.
 
 ### `mcp.json`

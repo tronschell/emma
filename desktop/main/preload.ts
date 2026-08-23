@@ -142,7 +142,7 @@ contextBridge.exposeInMainWorld("emma", {
   listFolderFiles: (id: string) => ipcRenderer.invoke("emma:list-folder-files", id),
   gitStatus: (id: string) => ipcRenderer.invoke("emma:git-status", id),
   listEditors: () => ipcRenderer.invoke("emma:list-editors"),
-  openInEditor: (value: { folderId: string; path: string; editorId: string }) => ipcRenderer.invoke("emma:open-in-editor", value),
+  openInEditor: (value: { folderId?: string; path: string; editorId: string }) => ipcRenderer.invoke("emma:open-in-editor", value),
   setWorktree: (value: { folderId: string; name: string; on: boolean }) => ipcRenderer.invoke("emma:set-worktree", value),
   setBranch: (value: { folderId: string; branch: string; create: boolean }) => ipcRenderer.invoke("emma:set-branch", value),
   readFolderFile: (value: { folderId: string; path: string }) => ipcRenderer.invoke("emma:read-folder-file", value),

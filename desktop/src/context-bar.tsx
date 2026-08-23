@@ -27,7 +27,7 @@ import type { GitSnapshot } from "../shared/git";
 import { countCalls, decodeSpans, type TraceSpan } from "../shared/trace";
 import type { Thread } from "./types";
 import { buildLedger, NO_EXPERIMENTS, type ExperimentTally, type Ledger } from "./context";
-import { plural } from "./activity";
+import { plural } from "./plural";
 import { since, threadLabel } from "./threads";
 import { brandForModel } from "./brands";
 import { BrandIcon, ExpandIcon } from "./icons";
@@ -305,9 +305,54 @@ function Widget({ widget, context }: { widget: ContextWidget; context: WidgetCon
   return context.git ? <GitPanel snapshot={context.git} onOpen={context.onOpenGit} /> : null;
 }
 
-/** One page of the bar, in order. */
-export function ContextWidgets({ page, context }: { page: ContextPage; context: WidgetContext }) {
-  return <>{page.widgets.map((widget) => <Widget key={widget.type} widget={widget} context={context} />)}</>;
+/**
+ * One page of the bar, in order — and, under Edit, the arranger for it.
+ *
+ * The same page Settings arranges is arrangeable where you read it: Edit swaps
+ * every widget for the handle-and-body card the settings stage already draws, so
+ * dragging, flipping and dropping a component are one set of controls in two
+ * places rather than two. `onChange` writes straight to settings, so a move here
+ * is the permanent one — there is no local copy of the page to fall out of step.
+ */
+export function ContextWidgets({ page, context, onChange }: { page: ContextPage; context: WidgetContext; onChange: (widgets: ContextWidget[]) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const sensors = useBarSensors();
+  const spare = CONTEXT_WIDGETS.filter((definition) => !page.widgets.some((widget) => widget.type === definition.type));
+  const dropped = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const from = page.widgets.findIndex((widget) => widget.type === active.id);
+    const to = page.widgets.findIndex((widget) => widget.type === over.id);
+    if (from < 0 || to < 0) return;
+    onChange(arrayMove(page.widgets, from, to));
+  };
+  return <>
+    {editing
+      ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={dropped}>
+        <SortableContext items={page.widgets.map((widget) => widget.type)} strategy={verticalListSortingStrategy}>
+          {page.widgets.map((widget) => <PlacedWidget
+            key={widget.type}
+            widget={widget}
+            context={context}
+            onRemove={() => onChange(page.widgets.filter((item) => item.type !== widget.type))}
+            onFlip={() => onChange(page.widgets.map((item) => item.type === widget.type ? { ...item, orientation: item.orientation === "horizontal" ? "vertical" : "horizontal" } : item))}
+          />)}
+        </SortableContext>
+      </DndContext>
+      : page.widgets.map((widget) => <Widget key={widget.type} widget={widget} context={context} />)}
+    {!page.widgets.length && <p className="bar-empty">Nothing on this page — press ＋ to put a component back.</p>}
+    {/* The list of what is left, opened by the ＋ under it. A popover would need
+        somewhere to go in a 288px column; the rows are the column's own width. */}
+    {adding && <div className="inspector-add">
+      {spare.map((definition) => <button key={definition.type} type="button" title={definition.blurb} onClick={() => { onChange([...page.widgets, { type: definition.type, orientation: "vertical" }]); setAdding(false); }}>
+        <b aria-hidden="true">{definition.glyph}</b>{definition.label}
+      </button>)}
+    </div>}
+    <footer className="inspector-arrange">
+      <button type="button" className="bar-add" disabled={!spare.length} aria-expanded={adding} aria-label="Add a component to this page" title={spare.length ? "Add a component" : "Every component is already on this page"} onClick={() => setAdding((open) => !open)}>＋</button>
+      <button type="button" className="bar-edit" aria-pressed={editing} title={editing ? "Stop arranging" : "Reorder, flip and remove the components on this page"} onClick={() => { setEditing((on) => !on); setAdding(false); }}>{editing ? "Done" : "Edit"}</button>
+    </footer>
+  </>;
 }
 
 /* Which page the bar is on. Kept out of settings on purpose: it is where you are
@@ -430,6 +475,9 @@ function usePreviewContext(): WidgetContext {
   };
 }
 
+/** 4px of slop before a drag starts, so a press on a widget is still a press. */
+const useBarSensors = () => useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+
 /** dnd-kit ids. A palette card and a placed widget can share a type, so the side is in the id. */
 const paletteId = (type: ContextWidgetType) => `add:${type}`;
 const placedType = (id: string) => id.replace(/^add:/, "") as ContextWidgetType;
@@ -485,7 +533,7 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
   const context = usePreviewContext();
   const nameField = useId();
   const page = pages.find((item) => item.id === active) ?? pages[0];
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const sensors = useBarSensors();
   const { setNodeRef: setCanvasRef, isOver } = useDroppable({ id: "bar-canvas" });
 
   const writePage = useCallback((widgets: ContextWidget[]) => {

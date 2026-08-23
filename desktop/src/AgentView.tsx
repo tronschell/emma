@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { compare, draftProposal, frictionOf, leverNames, metricNames, readTurn, resultLine, MIN_ARM_TURNS, type Comparison, type Friction, type Improvement, type Lever, type Metric, type Stat, type Turn } from "../shared/improvement";
 import { readImprovements, saveImprovements } from "./improvements";
-import { plural } from "./activity";
+import { plural } from "./plural";
 import { InfoDot } from "./icons";
 import { reasonText } from "./errors";
 import type { Snapshot } from "./types";

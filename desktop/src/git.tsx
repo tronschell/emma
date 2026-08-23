@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MAX_DIFF_LINES, parseDiff, type GitSnapshot } from "../shared/git";
 import { ChangeCount } from "./agents";
 import { OpenIn } from "./editors";
-import { plural } from "./activity";
+import { plural } from "./plural";
 
 /* The mark beside each path. Every file in assets/filetypes is either a Simple
    Icons mark (CC0, recoloured #fff like the brand marks — the trademark stays

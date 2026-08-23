@@ -404,6 +404,7 @@ pub const ExecutorKind = enum {
     file_info,
     memory,
     semantic_search,
+    lsp,
     open_file,
     web_fetch,
     web_search,

@@ -284,7 +284,8 @@ declare global {
       /** Shows a file the model named in Finder. False when nothing is there. */
       revealPath(path: string): Promise<boolean>;
       /** The file behind a path, for the in-app preview. Null when nothing is there; null text when it is outside every grant. */
-      previewPath(path: string): Promise<{ path: string; text: string | null } | null>;
+      /** `image` is set for a picture, which the preview draws instead of quoting. */
+      previewPath(path: string): Promise<{ path: string; text: string | null; image?: string | null } | null>;
       /** Everything on the Artifacts page, newest-updated first. Metadata only — a card reads its own content. */
       listArtifacts(): Promise<ArtifactMeta[]>;
       readArtifact(id: string): Promise<Artifact>;
@@ -326,7 +327,8 @@ declare global {
       gitStatus(id: string): Promise<GitSnapshot | null>;
       /** Code editors installed on this Mac, each with its own app icon as a data URL. */
       listEditors(): Promise<EditorApp[]>;
-      openInEditor(value: { folderId: string; path: string; editorId: string }): Promise<void>;
+      /** Without a folder the path must be one the user attached; with one it resolves inside that grant. */
+      openInEditor(value: { folderId?: string; path: string; editorId: string }): Promise<void>;
       /** Puts the thread's folder on a worktree of its repo, or back on the main checkout. */
       setWorktree(value: { folderId: string; name: string; on: boolean }): Promise<{ folders: FolderGrant[]; folderId: string }>;
       /** Checks out a branch in the thread's folder, creating it from HEAD when asked. */

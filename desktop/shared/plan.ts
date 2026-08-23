@@ -193,24 +193,37 @@ const LANE = 6; // nodes on one line before a wide wave folds onto a second
 
 export type PlanSpot = { x: number; y: number; wave: number };
 
-/**
- * A place for every step in the drawn graph: x as a percentage so one graph fits
- * both the 210px inspector column and the 360px one, y in px so a node is the
- * same size in either.
- *
- * ponytail: a wave wider than `LANE` folds onto more lines rather than shrinking
- * its nodes — 24 steps abreast would leave them 8px apart in that column.
- */
-export function planLayout(waves: string[][]): { spots: Map<string, PlanSpot>; height: number } {
+const PULL = 0.4;
+
+export function planLayout(waves: string[][], steps: PlanStep[] = []): { spots: Map<string, PlanSpot>; height: number } {
   const spots = new Map<string, PlanSpot>();
+  const needsOf = new Map(steps.map((step) => [step.id, step.needs]));
+  const branch = (id: string) => steps.filter((step) => step.needs.length === 1 && step.needs[0] === id).map((step) => step.id);
+  const middle = (ids: string[]) => {
+    const xs = ids.map((id) => spots.get(id)?.x).filter((x): x is number => x !== undefined);
+    return xs.length ? xs.reduce((total, x) => total + x, 0) / xs.length : undefined;
+  };
+  const lines: string[][] = [];
   let y = PLAN_PAD;
   waves.forEach((wave, index) => {
-    for (let at = 0; at < wave.length; at += LANE) {
-      const lane = wave.slice(at, at + LANE);
-      lane.forEach((id, i) => spots.set(id, { x: ((i + 1) / (lane.length + 1)) * 100, y, wave: index }));
+    const under = wave
+      .map((id, at) => ({ id, at, x: middle(needsOf.get(id) ?? []) ?? 50 }))
+      .sort((left, right) => left.x - right.x || left.at - right.at);
+    for (let at = 0; at < under.length; at += LANE) {
+      const line = under.slice(at, at + LANE).map((item) => item.id);
+      line.forEach((id, i) => spots.set(id, { x: ((i + 1) / (line.length + 1)) * 100, y, wave: index }));
+      lines.push(line);
       y += PLAN_ROW;
     }
   });
+  for (const line of lines.reverse()) {
+    const slot = 100 / (line.length + 1);
+    line.forEach((id, i) => {
+      const mid = middle(branch(id));
+      if (mid === undefined) return;
+      spots.set(id, { ...spots.get(id)!, x: Math.min(Math.max(mid, (i + 1 - PULL) * slot), (i + 1 + PULL) * slot) });
+    });
+  }
   return { spots, height: spots.size ? y - PLAN_ROW + PLAN_PAD : 0 };
 }
 
@@ -218,7 +231,8 @@ export function planLayout(waves: string[][]): { spots: Map<string, PlanSpot>; h
 export function planProblems(plan: Plan): string[] {
   const problems: string[] = [];
   if (!plan.steps.length) problems.push("This plan has no steps.");
-  const placed = new Set(planRows(plan.steps).flat());
+  const rows = planRows(plan.steps);
+  const placed = new Set(rows.flat());
   for (const step of plan.steps) {
     if (!step.brief.trim() && !step.tasks.length) problems.push(`Step "${step.id}" says nothing for its subagent to do.`);
     if (step.needs.some((need) => !placed.has(need)) || step.needs.includes(step.id)) problems.push(`Step "${step.id}" waits on itself.`);
@@ -227,6 +241,7 @@ export function planProblems(plan: Plan): string[] {
   // left as steps that quietly never run.
   const cycle = plan.steps.filter((step) => step.needs.some((need) => waitsOn(plan.steps, need, step.id)));
   if (cycle.length) problems.push(`These steps wait on each other and can never start: ${cycle.map((step) => step.id).join(", ")}.`);
+  if (plan.steps.length && rows.every((row) => row.length < 2)) problems.push("Nothing here runs at once — every step waits on the one before it. A subagent starts from its brief and one line per step it waited on, never from your context, so a chain of them is worth less than doing the work in this turn or handing the whole job to one subagent.");
   return problems;
 }
 
@@ -338,6 +353,7 @@ export function parsePlanSteps(json: string): { steps: PlanStep[]; errors: strin
  */
 export function stepBrief(plan: Plan, step: PlanStep): string {
   const done = plan.steps.filter((item) => item.status === "done" && item.result);
+  const failed = plan.steps.filter((item) => item.status === "failed" && item.result);
   return [
     `You are one step of Emma's plan "${plan.title}". Other subagents are working on the other steps of this same wave right now.`,
     plan.goal.trim() ? `\nThe plan as a whole:\n${plan.goal.trim()}` : "",
@@ -345,6 +361,7 @@ export function stepBrief(plan: Plan, step: PlanStep): string {
     step.brief.trim(),
     step.tasks.length ? `\nWhat it covers:\n${step.tasks.map((task) => `- ${task.text}`).join("\n")}` : "",
     done.length ? `\nWhat earlier steps already found:\n${done.map((item) => `- ${item.id}: ${item.result}`).join("\n")}` : "",
+    failed.length ? `\nWhat has already gone wrong, so you do not walk into it again:\n${failed.map((item) => `- ${item.id}: ${item.result}`).join("\n")}` : "",
     `\nTick your tasks off as you finish them with plan {"action":"update","id":"${plan.id}","step":"${step.id}","check":<the task's number>}. Do not touch any other step — they belong to the other subagents.`,
     "Answer with one line saying what you did and anything the next step has to know. That line is written back into the plan.",
   ].filter(Boolean).join("\n");

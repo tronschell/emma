@@ -68,7 +68,7 @@
 /* Every settings group is an outline with no fill. Padding lives on the bands
    below, never here, so every internal rule runs edge to edge. */
 
-.settings-lines, .quick-settings, .notch-settings, .orb-settings, .prompt-settings,
+.settings-lines, .quick-settings, .notch-settings, .orb-settings,
 .model-catalog, .local-model-settings, .provider-keys,
 .import-sources, .connection-list { border: 1px solid var(--border-strong); }
 
@@ -154,12 +154,12 @@
 /* These two are single-band regions, so they take the band's padding but not its
    rule — that rule was repainting their own --border-strong bottom edge in
    --border, leaving a region with three strong sides and one weak one. */
-.notch-settings, .orb-settings, .prompt-settings { padding: var(--s-3) var(--s-4); }
+.notch-settings, .orb-settings { padding: var(--s-3) var(--s-4); }
 .orb-settings { grid-template-columns: minmax(0, 1fr) 260px; }
 .settings-lines > section:hover { background: var(--surface); }
-.settings-lines > section > div, .notch-settings > div:first-child, .orb-settings > div:first-child, .prompt-settings > div:first-child { display: grid; gap: var(--s-2); min-width: 0; }
-.settings-lines h3, .notch-settings h3, .orb-settings h3, .prompt-settings h3 { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.settings-lines p, .notch-settings p, .orb-settings p, .prompt-settings p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.settings-lines > section > div, .notch-settings > div:first-child, .orb-settings > div:first-child { display: grid; gap: var(--s-2); min-width: 0; }
+.settings-lines h3, .notch-settings h3, .orb-settings h3 { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-lines p, .notch-settings p, .orb-settings p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
 .settings-lines a { justify-self: start; }
 /* About and Privacy are prose, not controls: rules only, no hover affordance,
    and the copy takes the whole width because there is no control column. */
@@ -180,20 +180,77 @@
 .voice-values small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
 /* Field label over control, the one stacked-field shape used across settings. */
-.notch-values label, .quick-fields label:not(.check), .voice-values label, .font-values label, .orb-fields label, .local-model-form label, .provider-key-add label, .prompt-settings label {
+.notch-values label, .quick-fields label:not(.check), .voice-values label, .font-values label, .orb-fields label, .local-model-form label, .provider-key-add label {
   display: grid; gap: var(--s-1); min-width: 0;
   color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase;
 }
 .notch-values { display: grid; gap: var(--s-3); min-width: 0; }
 
-/* ------------------------------------------------- standing instructions -- */
+/* ---------------------------------------------------------- system prompt -- */
 
-/* One column, unlike the other bands: what the user writes here is a paragraph,
-   and the 232px control column would only squeeze it. */
-.prompt-settings { grid-template-columns: minmax(0, 1fr); }
-.prompt-settings textarea { min-height: 128px; }
-.prompt-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
-.prompt-footer small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* One card per prompt: the global one, then whatever is pinned to a family or a
+   model. Same outline as every other settings region, stacked by the view's gap. */
+.prompt-card { display: grid; border: 1px solid var(--border-strong); }
+/* The card whose condition the selected model already meets wears the accent edge,
+   so "which of these is live right now" is answered by looking rather than reading. */
+.prompt-card.prompt-live { border-color: var(--accent); }
+.prompt-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.prompt-card > header > div:first-child { display: grid; gap: var(--s-2); min-width: 0; }
+.prompt-card h3 { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.prompt-card p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.prompt-card > footer { padding: var(--s-2) var(--s-4); border-top: 1px solid var(--border); }
+.prompt-card > footer small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.prompt-card-actions { display: flex; gap: var(--s-2); flex: 0 0 auto; }
+.prompt-name { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.prompt-name > input { width: auto; min-width: 220px; }
+.prompt-name .status-live { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.prompt-name .status-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+/* The editor is two stacked layers on one grid cell: a mirror that paints the
+   `{variables}` in colour, and the real textarea over it with transparent ink.
+   Both have to agree on every metric that moves a glyph, so the font, the
+   padding and the wrapping are declared once for the pair. */
+.prompt-editor { display: grid; gap: var(--s-2); padding: var(--s-3) var(--s-4); }
+.prompt-canvas { position: relative; background: var(--surface-2); border: 1px solid var(--border-strong); transition: border-color var(--t); }
+.prompt-canvas:focus-within { border-color: var(--accent); }
+.prompt-canvas > .prompt-highlight, .settings-view .prompt-canvas > textarea {
+  padding: var(--s-2); font: var(--fs-sm)/1.6 var(--font-code); white-space: pre-wrap; overflow-wrap: break-word; word-break: normal;
+}
+.prompt-highlight { position: absolute; inset: 0; overflow: hidden; color: var(--text); pointer-events: none; }
+.settings-view .prompt-canvas > textarea {
+  position: relative; display: block; min-height: 0; color: transparent; background: transparent; border: 0; caret-color: var(--accent); resize: vertical;
+}
+.settings-view .prompt-canvas > textarea:focus-visible { outline: 0; }
+
+/* A variable is a token, not prose: the same hue ladder the composer paints
+   slash commands with, so one palette covers both fields. */
+.prompt-token { color: var(--teal); }
+.prompt-token[data-hue="1"] { color: var(--violet); }
+.prompt-token[data-hue="2"] { color: var(--lime); }
+.prompt-token[data-hue="3"] { color: var(--blue); }
+.prompt-token[data-hue="4"] { color: var(--rose); }
+.prompt-token[data-hue="5"] { color: var(--accent); }
+/* Braces Emma will not fill stay literal text, and say so by staying dim. */
+.prompt-token-unknown { color: var(--text-3); }
+
+.prompt-variables { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.settings-view .prompt-variables button { min-height: 24px; padding: 0 var(--s-2); border: 1px solid var(--border); background: var(--surface-2); font: var(--fs-2xs)/1.4 var(--font-code); letter-spacing: normal; text-transform: none; }
+.settings-view .prompt-variables button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-3); }
+
+/* The condition, as marks rather than a dropdown: every family is one glyph, and
+   the last mark opens the composer's own model picker for pinning to a single model. */
+.scope-picker { display: grid; gap: var(--s-2); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.scope-marks { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.settings-view .scope-mark { display: inline-flex; align-items: center; gap: var(--s-2); min-height: 26px; padding: 0 var(--s-2); color: var(--text-3); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-view .scope-mark:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+.settings-view .scope-mark[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--surface-4); }
+.scope-mark .model-brand { width: 14px; height: 14px; flex: 0 0 auto; }
+/* The composer's own picker, inline instead of in a popover: `.model-menu` is
+   the whole two-column box, so only the frame and the height are set here. */
+.scope-models { max-height: 320px; border: 1px solid var(--border-strong); background: var(--bg); }
+
+.prompt-add { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.prompt-add small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
 /* ------------------------------------------------------------- keybinds -- */
 

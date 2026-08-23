@@ -97,14 +97,14 @@
 /* The card is dragging: what the pointer carries is the ghost, so the original dims. */
 .bar-palette-card[data-dragging] { opacity: .35; }
 
-.bar-editor .bar-grip { display: grid; place-items: center; width: 22px; height: 26px; padding: 0; color: var(--text-3); border: 0; background: transparent; cursor: grab; touch-action: none; transition: color var(--t); }
-.bar-editor .bar-grip:hover:not(:disabled) { color: var(--text); background: transparent; }
-.bar-editor .bar-grip:active { cursor: grabbing; }
-.bar-editor .bar-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+:is(.bar-editor, .inspector-body) .bar-grip { display: grid; place-items: center; width: 22px; height: 26px; padding: 0; color: var(--text-3); border: 0; background: transparent; cursor: grab; touch-action: none; transition: color var(--t); }
+:is(.bar-editor, .inspector-body) .bar-grip:hover:not(:disabled) { color: var(--text); background: transparent; }
+:is(.bar-editor, .inspector-body) .bar-grip:active { cursor: grabbing; }
+:is(.bar-editor, .inspector-body) .bar-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* The one control here that stays boxed: in the palette it is an offer, beside a
    grip that is not. */
-.bar-editor .bar-add { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: var(--accent); border: 1px solid var(--border); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: border-color var(--t), background-color var(--t); }
-.bar-editor .bar-add:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+:is(.bar-editor, .inspector-body) .bar-add { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: var(--accent); border: 1px solid var(--border); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: border-color var(--t), background-color var(--t); }
+:is(.bar-editor, .inspector-body) .bar-add:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
 .bar-stage { display: grid; gap: var(--s-2); position: sticky; top: 0; }
 .bar-stage > header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
@@ -125,10 +125,10 @@
 .bar-widget > header { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-1); min-height: 26px; padding-right: var(--s-2); background: var(--surface-2); }
 .bar-widget > header > span { min-width: 0; overflow: hidden; color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .bar-widget:hover > header { background: var(--surface-3); }
-.bar-editor .bar-flip, .bar-editor .bar-drop { display: grid; place-items: center; width: 22px; height: 22px; min-height: 0; padding: 0; color: var(--text-3); border: 0; background: transparent; font: var(--fs-sm)/1 var(--font-mono); transition: color var(--t); }
-.bar-editor .bar-flip:hover:not(:disabled), .bar-editor .bar-drop:hover:not(:disabled) { color: var(--text); background: transparent; }
-.bar-editor .bar-drop:hover:not(:disabled) { color: var(--danger); }
-.bar-editor .bar-flip[aria-pressed="true"]:not(:disabled) { color: var(--accent); }
+:is(.bar-editor, .inspector-body) .bar-flip, :is(.bar-editor, .inspector-body) .bar-drop { display: grid; place-items: center; width: 22px; height: 22px; min-height: 0; padding: 0; color: var(--text-3); border: 0; background: transparent; font: var(--fs-sm)/1 var(--font-mono); transition: color var(--t); }
+:is(.bar-editor, .inspector-body) .bar-flip:hover:not(:disabled), :is(.bar-editor, .inspector-body) .bar-drop:hover:not(:disabled) { color: var(--text); background: transparent; }
+:is(.bar-editor, .inspector-body) .bar-drop:hover:not(:disabled) { color: var(--danger); }
+:is(.bar-editor, .inspector-body) .bar-flip[aria-pressed="true"]:not(:disabled) { color: var(--accent); }
 /* The widget itself, inert: it draws, it does not answer. The padding is the
    inspector's own, given back after the card pulled it off. */
 .bar-widget-body { padding: 0 var(--s-4); }
@@ -163,3 +163,26 @@
   .bar-stage { position: static; justify-items: start; }
   .bar-preview { width: 288px; }
 }
+
+/* ------------------------------------------- the bar's own arranger -- */
+
+/* The same cards, in the real column: Edit swaps the widgets for `.bar-widget`,
+   which is already drawn above, so all that is left here is the band under them.
+   It stays put whether or not the page is being edited — ＋ is how an emptied
+   page gets a component back, and a band that appears only once you are already
+   editing is a door behind the door it opens. */
+/* The band is the bar's last child now, so the widget above it is the one
+   `panels.css` used to close on `:last-child` — without this its edge and the
+   band's top rule stack into a 2px line. */
+.inspector-body > :is(section, .git-panel, .bar-widget):has(+ .inspector-arrange) { border-bottom: 0; }
+.inspector-arrange { display: flex; align-items: center; justify-content: center; gap: var(--s-2); margin: 0 calc(var(--s-4) * -1); padding: var(--s-3) var(--s-4) var(--s-4); border-top: 1px solid var(--border); }
+.inspector-body .bar-edit { min-height: 26px; padding: 0 var(--s-3); color: var(--text-3); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.inspector-body .bar-edit:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.inspector-body .bar-edit[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+/* What is left to add, as rows the width of the column — the palette's cards
+   without their blurbs, which at 288px would be three lines each. */
+.inspector-add { display: grid; gap: 1px; margin: 0 calc(var(--s-4) * -1); padding: var(--s-2) var(--s-4) 0; }
+.inspector-add button { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: var(--s-2); min-height: 26px; padding: 0 var(--s-2); color: var(--text-2); border: 1px solid var(--border); background: transparent; font: var(--fs-sm)/1.3 var(--font-mono); letter-spacing: var(--ls-caps); text-align: left; text-transform: uppercase; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.inspector-add button:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.inspector-add b { color: var(--accent); font-weight: 400; }

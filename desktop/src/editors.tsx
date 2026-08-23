@@ -22,9 +22,11 @@ function useEditors(): EditorApp[] {
 
 /** One button per editor this Mac has, wearing that app's own icon. With no `path`
     it hands over the granted folder itself, which is what an editor wants for a
-    project; with one, that file. Draws nothing when no known editor is installed,
-    so the bar it sits on is unchanged for someone who has none. */
-export function OpenIn({ folderId, path, label }: { folderId: string; path?: string; label?: boolean }) {
+    project; with one, that file. With no `folderId` the path stands on its own —
+    the preview names a file without knowing which folder, if any, holds it, and
+    main decides whether it is one Emma may open. Draws nothing when no known
+    editor is installed, so the bar it sits on is unchanged for someone who has none. */
+export function OpenIn({ folderId, path, label }: { folderId?: string; path?: string; label?: boolean }) {
   const editors = useEditors();
   if (!editors.length) return null;
   const named = path ?? "this folder";
@@ -32,7 +34,7 @@ export function OpenIn({ folderId, path, label }: { folderId: string; path?: str
     {label && <small>Open in</small>}
     {editors.map((editor) => <button
       type="button" key={editor.id} title={`Open ${named} in ${editor.label}`} aria-label={`Open ${named} in ${editor.label}`}
-      onClick={(event) => { event.preventDefault(); void window.emma.openInEditor({ folderId, path: path ?? ".", editorId: editor.id }).catch(() => undefined); }}>
+      onClick={(event) => { event.preventDefault(); void window.emma.openInEditor({ ...(folderId ? { folderId } : {}), path: path ?? ".", editorId: editor.id }).catch(() => undefined); }}>
       {editor.icon ? <img src={editor.icon} alt="" /> : <b>{editor.label.slice(0, 1)}</b>}
     </button>)}
   </span>;

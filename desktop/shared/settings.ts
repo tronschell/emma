@@ -1,6 +1,7 @@
 import { CLEANUP_ENDPOINT, DEFAULT_HOLD_TO_TALK_MS, HOLD_TO_TALK_MS, SPEECH_ENDPOINT, SPEECH_MODEL, TRANSCRIPTION_ENGINES, VOICE_MODEL, type TranscriptionEngine } from "./voice";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, type PermissionMode } from "./permissions";
 import { defaultContextPages, validateContextPages, type ContextPage } from "./context-bar";
+import { DEFAULT_SYSTEM_PROMPT, validatePrompts, type PromptPreset } from "./prompts";
 
 export interface QuickAction {
   label: string;
@@ -246,8 +247,10 @@ export interface UserSettings {
   favoriteModels: string[];
   /** Skips the computer-use approval dialog. Step, action, and rate ceilings, the run banner, and Escape still apply. */
   requireZeroRetention: boolean;
-  /** Standing instructions added to every turn's system context. Empty means the built-in prompt only. */
+  /** The global system prompt: the text every turn gets, whatever model answers it. */
   systemPrompt: string;
+  /** Extra prompts that ride only the turns whose model matches their condition. */
+  prompts: PromptPreset[];
   /** IDs of the third-party CLI connections switched on, from main's connection catalog. */
   connections: string[];
   /** Face for the interface itself (--font-mono): labels, rails, tabs, buttons. */
@@ -464,18 +467,10 @@ export function fontStack(id: FontChoice): string {
 
 export const MAX_FAVORITE_MODELS = 6;
 /** The same ceiling a quick action's prompt gets: this is free text that rides every request. */
-export const MAX_SYSTEM_PROMPT_CHARS = 4096;
+export const MAX_SYSTEM_PROMPT_CHARS = 8192;
 
-/**
- * The user's standing instructions as the block each agent path receives.
- *
- * It is added to what the model already gets, never a replacement: the built-in
- * prompt carries the tool contracts, and a user who wiped it would get an agent
- * that cannot work its own tools.
- */
 export function systemPromptBlock(prompt: string): string {
-  const text = prompt.trim().slice(0, MAX_SYSTEM_PROMPT_CHARS);
-  return text ? `The user's standing instructions, which apply to every turn:\n\n${text}` : "";
+  return prompt.trim().slice(0, MAX_SYSTEM_PROMPT_CHARS);
 }
 
 /** Everything a cursor orb may do. Quick actions are addressed by index, as the overlay runs them. */
@@ -754,7 +749,7 @@ export function validateConnections(value: unknown): string[] {
 /* The standing instructions and the connections travel with the overlay preferences
    because that is the one settings message main already receives; a second channel
    would need a second preload method for the same save. */
-export type OverlayPreferences = Pick<UserSettings, "notchGap" | "cursorOrbsEnabled" | "notchConcurrency"> & Partial<Pick<UserSettings, "systemPrompt" | "connections">>;
+export type OverlayPreferences = Pick<UserSettings, "notchGap" | "cursorOrbsEnabled" | "notchConcurrency"> & Partial<Pick<UserSettings, "systemPrompt" | "prompts" | "connections">>;
 export type KnowledgeBaseReference = { id: string; name: string };
 
 const action = (label: string, prompt: string): QuickAction => ({ label, prompt, destinationKnowledgeBaseId: "", category: "", saveToKnowledge: false });
@@ -785,7 +780,8 @@ export const defaultSettings: UserSettings = {
   favoriteModels: ["fallback"],
   // OpenRouter has no free zero-retention endpoint, so requiring it would block the whole free catalog.
   requireZeroRetention: false,
-  systemPrompt: "",
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  prompts: [],
   connections: [],
   interfaceFont: "departure",
   agentFont: "inter",
@@ -870,8 +866,12 @@ export function validateSettings(value: unknown): UserSettings {
   for (const key of favoriteModels) if (typeof key !== "string" || !key || key.length > 256 || favoriteModels.indexOf(key) !== favoriteModels.lastIndexOf(key)) throw new Error("Starred models are invalid");
   const requireZeroRetention = settings.requireZeroRetention ?? defaultSettings.requireZeroRetention;
   if (typeof requireZeroRetention !== "boolean") throw new Error("The zero-retention setting is invalid");
-  const systemPrompt = settings.systemPrompt ?? defaultSettings.systemPrompt;
+  /* Empty is treated as unset, not as a choice: this field used to be an addition
+     to a built-in prompt, so every store written before it was the whole prompt
+     holds "". Reset to default is the way back, so nothing is lost by seeding it. */
+  const systemPrompt = settings.systemPrompt || defaultSettings.systemPrompt;
   if (typeof systemPrompt !== "string" || systemPrompt.length > MAX_SYSTEM_PROMPT_CHARS) throw new Error(`Keep the system prompt under ${MAX_SYSTEM_PROMPT_CHARS} characters`);
+  const prompts = validatePrompts(settings.prompts, MAX_SYSTEM_PROMPT_CHARS);
   const connections = validateConnections(settings.connections);
   const interfaceFont = settings.interfaceFont ?? defaultSettings.interfaceFont;
   const agentFont = settings.agentFont ?? defaultSettings.agentFont;
@@ -880,7 +880,7 @@ export function validateSettings(value: unknown): UserSettings {
   if (!isThinkingLevel(thinkingLevel)) throw new Error("The thinking level is invalid");
   const keybinds = validateKeybinds(settings.keybinds);
   const contextPages = validateContextPages(settings.contextPages);
-  return { interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, localModels: validatedLocalModels, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, favoriteModels: [...favoriteModels], requireZeroRetention, systemPrompt, connections };
+  return { interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, localModels: validatedLocalModels, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, favoriteModels: [...favoriteModels], requireZeroRetention, systemPrompt, prompts, connections };
 }
 
 /** Star/unstar a model key; throws once the picker is full so the caller can surface the limit. */
@@ -972,10 +972,11 @@ export function validateOverlayPreferences(value: unknown): OverlayPreferences {
   // overlay must not stop working because it did not send a prompt.
   const systemPrompt = preferences.systemPrompt ?? "";
   if (typeof systemPrompt !== "string" || systemPrompt.length > MAX_SYSTEM_PROMPT_CHARS) throw new Error("Overlay settings are invalid");
+  const prompts = validatePrompts(preferences.prompts, MAX_SYSTEM_PROMPT_CHARS);
   const connections = validateConnections(preferences.connections);
   // Missing rather than invalid, for the same reason: an older renderer sends no behaviour.
   const notchConcurrency = NOTCH_CONCURRENCY.includes(preferences.notchConcurrency!) ? preferences.notchConcurrency! : defaultSettings.notchConcurrency;
-  return { notchGap: preferences.notchGap!, cursorOrbsEnabled: preferences.cursorOrbsEnabled, notchConcurrency, ...(systemPrompt ? { systemPrompt } : {}), ...(connections.length ? { connections } : {}) };
+  return { notchGap: preferences.notchGap!, cursorOrbsEnabled: preferences.cursorOrbsEnabled, notchConcurrency, ...(systemPrompt ? { systemPrompt } : {}), ...(prompts.length ? { prompts } : {}), ...(connections.length ? { connections } : {}) };
 }
 
 export function localEndpoint(value: string): URL | null {

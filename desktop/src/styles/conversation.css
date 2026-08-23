@@ -500,6 +500,11 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .composer-tile small { max-width: 100%; overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
 /* Revealed on hover, but always in the tab order — the tile is small and a
    permanent × on a thumbnail is a second thing to look at in every one. */
+/* The same tiles once the turn has been sent: above the message, in reading
+   order, and the whole tile is the way into the file. */
+.message-tray { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-3); }
+.message-tray .composer-tile { padding: 0 var(--s-1); cursor: pointer; transition: border-color var(--t); }
+.message-tray .composer-tile:hover, .message-tray .composer-tile:focus-visible { border-color: var(--border-strong); }
 .composer-tile button { position: absolute; top: 0; right: 0; display: grid; place-items: center; width: 16px; height: 16px; color: var(--text-2); background: var(--bg); font-size: var(--fs-sm); line-height: 1; opacity: 0; transition: opacity var(--t), color var(--t); }
 .composer-tile:hover button, .composer-tile button:focus-visible { opacity: 1; }
 .composer-tile button:hover:not(:disabled) { color: var(--text); }

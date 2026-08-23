@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ModePicker } from "./agents";
 import { PromptField, useTaskCommands } from "./schedule";
-import { plural } from "./activity";
+import { plural } from "./plural";
 import { DEFAULT_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
 import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
 

@@ -1,4 +1,4 @@
-/* Context panel, knowledge pages and artifacts, activity, agent and scheduled views,
+/* Context panel, knowledge pages and artifacts, agent and scheduled views,
    the notice toast, and every modal dialog.
 
    Drawn with rules, not boxes — see "Structure: rules, not boxes" in
@@ -91,7 +91,6 @@
 
 /* Small-caps labels and eyebrows: the same three declarations everywhere. */
 .inspector-body > header > span, .inspector-body label, .inspector-body section > span,
-.activity header span, .activity footer span, .agent-view > header > span,
 .scheduled-view > header > span, .tasks-view > header > span, .tasks-rail button > small, .task-fields label > span, .task-label, .trigger-field > span, .task-runs dt, .agent-metrics span, .evidence-table > header span,
 .agent-proposal > div > span, .job-list article header span, .job-list dt, .page-eyebrow > span,
 .artifact-heading, .artifact-block > header, .artifact-editor legend, .artifact-editor label,
@@ -273,24 +272,6 @@
 /* Back to the wall: quiet, first thing in the document header. */
 .page-back { padding: 0; border: 0; color: var(--text-3); background: none; font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .page-back:hover { color: var(--text); }
-
-/* Header metadata, not a widget: no box, ends flush with the content column so it
-   never floats over it. Cells also carry `title` text. */
-.activity { flex: 0 1 300px; display: grid; justify-items: end; gap: var(--s-2); min-width: 0; height: auto; padding: 0; border: 0; background: transparent; }
-.activity header { display: flex; align-items: baseline; justify-content: flex-end; gap: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); }
-.activity header span { color: var(--text-3); }
-.activity footer { display: flex; justify-content: flex-end; gap: var(--s-4); color: var(--text-3); font-size: var(--fs-2xs); }
-/* One hue, not three. "First, second, third" is not a category, a series or a state,
-   so the nth-child ramp was decoration; these are literal quantities read as data,
-   which is orange's duty — the same orange as the heatmap they sit under. */
-.activity header b, .activity footer b { color: var(--orange); font-family: var(--font-mono); font-weight: 400; letter-spacing: 0; }
-/* Seven cells, one week. Square, like everything else on the grid. */
-.heatmap { display: flex; justify-content: flex-end; gap: 2px; width: 100%; padding: 0; }
-.heat { flex: 1 1 auto; min-width: 0; max-width: 12px; height: 12px; background: var(--surface-3); }
-.heat-1 { background: color-mix(in srgb, var(--accent) 26%, var(--surface-3)); }
-.heat-2 { background: color-mix(in srgb, var(--accent) 50%, var(--surface-3)); }
-.heat-3 { background: color-mix(in srgb, var(--accent) 74%, var(--surface-3)); }
-.heat-4 { background: var(--accent); }
 
 /* ---------- Agent and scheduled views ---------- */
 

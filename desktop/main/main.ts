@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { externalUrl, publicUrl, runCommandRequest, trustedSender, validJpegDataUrl, validateRequest } from "./ipc";
@@ -30,7 +30,7 @@ import { addWorktree, gitSnapshot, mainCheckout, switchBranch } from "./git";
 import { installedEditors, openInEditor } from "./editors";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
 import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
-import { contextBlock, mergeSkillContext } from "../shared/folders";
+import { contextBlock, MAX_FILE_BYTES, mergeSkillContext } from "../shared/folders";
 import { mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
 import { defaultHarnessExperiments, defaultSettings, defaultToolSettings, defaultVerifier, FREE_ROUTER_KEY, freeRouterChain, holdBindings, isCursorCommand, isEnvName, isThinkingLevel, isKeybindAction, keybindCommands, normalizeLocalModelEndpoint, OPENROUTER_CHAT_ENDPOINT, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
@@ -41,7 +41,7 @@ import { AgentRuntime, lastAssistantMessage, OWN_TOOLS, type TurnRequest } from 
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
 import { cliHarness, describeRuns } from "../shared/cli";
-import { setConnections, setImprovements, setSystemPrompt, verifierLessons, withTrialArm, writeHarnessPrompt } from "./system-prompt";
+import { setConnections, setImprovements, setPrompts, setSystemPrompt, verifierLessons, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { detectConnections, isConnectionId, outdatedConnections, setUpConnection } from "./connections";
 import { Harness, describePath, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
 import { review } from "./verifier";
@@ -1065,6 +1065,17 @@ function held(attachment: Attachment): Attachment & { thumbnail?: string } {
   return frame.isEmpty() ? attachment : { ...attachment, thumbnail: frame.resize({ height: 112 }).toDataURL() };
 }
 
+/** Wide enough to fill the preview on a Retina panel, and short of the point where
+    the base64 of a phone photo costs more to cross than the picture shows. */
+const PREVIEW_IMAGE_WIDTH = 1600;
+
+/** A picture for the preview modal, drawn rather than quoted as bytes. */
+function previewImage(file: string): string | null {
+  const frame = nativeImage.createFromPath(file);
+  if (frame.isEmpty()) return null;
+  return (frame.getSize().width > PREVIEW_IMAGE_WIDTH ? frame.resize({ width: PREVIEW_IMAGE_WIDTH }) : frame).toDataURL();
+}
+
 /**
  * An image the `vision` tool names, as a data URL the second model will accept.
  *
@@ -1386,7 +1397,8 @@ async function planTool(args: Extract<ToolArgs, { name: "plan" }>, turn: TurnReq
     case "run": {
       const plan = await readPlan(userData, args.id!);
       const ready = readySteps(plan);
-      const wave = ready.slice(0, MAX_LIVE_SUBAGENTS);
+      const live = plan.steps.filter((step) => step.status === "running").length;
+      const wave = ready.slice(0, Math.max(0, MAX_LIVE_SUBAGENTS - live));
       if (!wave.length) {
         const left = plan.steps.filter((step) => step.status !== "done");
         if (!left.length) return `Every step of "${plan.title}" is done. Tell the user what it added up to.`;
@@ -1404,8 +1416,8 @@ async function planTool(args: Extract<ToolArgs, { name: "plan" }>, turn: TurnReq
         + `Then wait for each with subagent {"command":{"inspect":{"id":"<the id create gave you>","sections":["status","messages"],"wait":{"until":"settled","timeout_ms":60000}}}} — 60000 is the ceiling, so inspect again when one comes back wait_timed_out — `
         + `and write what it answered back with plan {"action":"update","id":"${plan.id}","step":"<step id>","status":"done","result":"<its answer in one line>"} — status "failed" for one that did not finish.\n\n`
         + wave.map((step) => `### ${step.id}\n${stepBrief(plan, step)}`).join("\n\n")
-        + (ready.length > wave.length ? `\n\n${ready.length - wave.length} more were ready but held back — a wave is at most ${MAX_LIVE_SUBAGENTS} subagents.` : "")
-        + `\n\nRun the next wave with plan {"action":"run","id":"${plan.id}"} once this one is recorded.`;
+        + (ready.length > wave.length ? `\n\n${ready.length - wave.length} more were ready but held back — at most ${MAX_LIVE_SUBAGENTS} steps run at once.` : "")
+        + `\n\nRecord each one as it lands and ask plan {"action":"run","id":"${plan.id}"} again straight away: whatever its result released starts then, without waiting for the rest of these.`;
     }
     case "update": {
       const plan = await editPlan(userData, args.id!, (current) => {
@@ -1430,7 +1442,11 @@ async function planTool(args: Extract<ToolArgs, { name: "plan" }>, turn: TurnReq
       plansChanged();
       const step = plan.steps.find((item) => item.id === args.step)!;
       const ticked = step.tasks.filter((task) => task.done).length;
-      return `${step.id} in "${plan.title}" is ${step.status}, ${ticked}/${step.tasks.length} tasks ticked.`;
+      const blocked = plan.steps.filter((item) => item.status !== "done" && item.needs.includes(step.id));
+      return `${step.id} in "${plan.title}" is ${step.status}, ${ticked}/${step.tasks.length} tasks ticked.`
+        + (step.status === "failed" && blocked.length
+          ? ` ${blocked.map((item) => item.id).join(", ")} waited on it and can never start now, nor can anything after them. Rewrite the plan with plan {"action":"write","id":"${plan.id}",…} around what went wrong — drop those steps, replace them, or route past them. The result line you just wrote is the only record of why.`
+          : "");
     }
     case "delete": {
       const plan = await readPlan(userData, args.id!);
@@ -2160,7 +2176,7 @@ async function driveTurn(turn: TurnRequest) {
     // The harness reads its standing instructions from a file — the user's
     // Settings text, written before the run rather than carried into it. Only
     // the Agent page's trial arm rides the turn, because it is decided per turn.
-    writeHarnessPrompt(path.join(app.getPath("userData"), "harness"));
+    writeHarnessPrompt(path.join(app.getPath("userData"), "harness"), { model: turn.model, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools });
     return await runOnHarness(harnessClient(cwd, key), cwd, withTrialArm(turn));
   } finally {
     if (key !== cwd) {
@@ -2950,9 +2966,16 @@ if (primaryInstance) app.whenReady().then(() => {
     const found = namedPath(value);
     if (!found) return null;
     const grant = folders!.list().find((folder) => found === folder.path || found.startsWith(folder.path + path.sep));
-    if (!grant) return { path: found, text: null };
+    // An attachment reads like a grant here. It is the user's own choice of file,
+    // and it is what lets a file handed to one message open again from that message.
+    const attached = !grant && attachments!.holds(found);
+    if (!grant && !attached) return { path: found, text: null };
     try {
-      return { path: found, text: folders!.read(grant.id, path.relative(grant.path, found)).text };
+      // A picture is drawn, not quoted: `folders.read` is text-only, so a .png in a
+      // connected folder used to come back as "Emma cannot read this" either way.
+      if (isImageAttachment(found)) return { path: found, text: null, image: previewImage(found) };
+      if (attached && statSync(found).size > MAX_FILE_BYTES) return { path: found, text: null };
+      return { path: found, text: attached ? readFileSync(found, "utf8") : folders!.read(grant!.id, path.relative(grant!.path, found)).text };
     } catch {
       // Binary, too large, or gone since it was named: still worth a reveal.
       return { path: found, text: null };
@@ -3121,10 +3144,22 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Editor request is invalid");
     const request = value as Record<string, unknown>;
+    const editorId = boundedCapabilityId(request.editorId, "Editor");
+    // No folder means no grant to resolve within, so the only path that opens is
+    // one the user attached themselves — the same key the preview turns.
+    if (request.folderId === undefined) {
+      const file = namedPath(request.path);
+      const grant = file && folders!.list().some((folder) => file === folder.path || file.startsWith(folder.path + path.sep));
+      // Attached, or inside a connected folder. The preview names a path without
+      // knowing which it is, so this asks exactly what the preview itself asks.
+      if (!file || (!grant && !attachments!.holds(file))) throw new Error("That file is not open to Emma.");
+      await openInEditor(editorId, file);
+      return;
+    }
     const folderId = boundedCapabilityId(request.folderId, "Folder");
     const root = folders!.directory(folderId);
     const relative = folders!.within(folderId, boundedCapabilityId(request.path, "File path"));
-    await openInEditor(boundedCapabilityId(request.editorId, "Editor"), path.join(root, relative));
+    await openInEditor(editorId, path.join(root, relative));
   });
   // Checks out a branch in the thread's folder, creating it from HEAD when asked. Work
   // in progress comes along, as it does on the command line; git refuses the move itself
@@ -3378,6 +3413,7 @@ if (primaryInstance) app.whenReady().then(() => {
       overlayPreferences = validateOverlayPreferences(value);
       overlayPreferencesReady = true;
       setSystemPrompt(overlayPreferences.systemPrompt ?? "");
+      setPrompts(overlayPreferences.prompts ?? []);
       setConnections(overlayPreferences.connections ?? []);
       if (queuedOverlayToggle) {
         const queued = queuedOverlayToggle;

@@ -189,11 +189,11 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     needs: "always",
     description:
       "Break a large job into steps, write them down in a durable markdown file, and hand each step to its own subagent. Steps that wait on nothing run at the same time, so a plan is how several subagents work in parallel instead of one doing everything in sequence. The user watches it in the thread's inspector.\n" +
-      "Reach for it when the work is more than one subagent's worth, when parts of it can go at once, or when the user asks for a plan. Spawn a subagent directly for a single self-contained job.\n" +
+      "Reach for it when the work is more than one subagent's worth, when parts of it can go at once, or when the user asks for a plan. Spawn a subagent directly for a single self-contained job, and write no plan at all for a job that never fans out — a straight chain of steps runs nothing in parallel and loses your context at every handover.\n" +
       "Actions:\n" +
       "read — with id, one plan as its markdown; without, every plan and how far along it is. Read before you update: the file is what the last wave left behind.\n" +
       "write — create the plan, or rewrite its whole shape. steps is a JSON array, as a string: id, title, brief, tasks, and needs naming the steps it waits on. Rewriting keeps what has already happened — a step that keeps its id keeps its status, a task that keeps its text keeps its tick — so restructuring halfway is safe.\n" +
-      "run — start the next wave: marks every step whose dependencies are done as running and hands you one brief per step. Spawn one subagent per brief, then wait for them and record what each answered with update.\n" +
+      "run — start whatever can start: marks every step whose dependencies are done as running and hands you one brief per step. Spawn one subagent per brief, record what each answered with update as it comes back, and run again straight away — a step starts as soon as its own needs are done, not when the rest of its wave is.\n" +
       "update — the state, not the shape: a step's status, its result, or check to tick its nth task off. This is how a subagent reports where it is inside its own step, and how you write a finished step's answer back.\n" +
       "delete — remove a finished plan.\n" +
       'Write the brief as if to a stranger, because it is one: the subagent has its own transcript and cannot see this conversation. Say which files, which folder, and what "done" looks like.',
@@ -206,7 +206,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
         goal: { type: "string", description: "What the whole plan is for, in a sentence or two. Every subagent is told it." },
         steps: {
           type: "string",
-          description: 'The steps, as a JSON array in a string: [{"id":"survey","title":"Survey the callers","brief":"Read every caller of send() in src/ and list what each expects.","tasks":["src/net","src/ui"],"needs":[]},{"id":"port","title":"Port the callers","brief":"…","needs":["survey"]}]. A step with no needs is in the first wave; two steps with the same needs run together.',
+          description: 'The steps, as a JSON array in a string: [{"id":"survey","title":"Survey the callers","brief":"Read every caller of send() in src/ and list what each expects.","tasks":["src/net","src/ui"],"needs":[]},{"id":"port","title":"Port the callers","brief":"…","needs":["survey"]}]. needs is the shape of the plan, and the shape is yours to pick: nothing for a step that can start now, one for a chain or a branch of a tree, several for a step that rejoins what fanned out. Two steps with the same needs run together.',
         },
         step: { type: "string", description: "Which step update is about, by its id." },
         status: { type: "string", enum: [...PLAN_STATUSES], description: "The step's new state. Set failed when a step cannot finish, so the plan stops rather than waiting forever." },

@@ -6,7 +6,6 @@ import path from "node:path";
 import { externalUrl, runCommandRequest, MAX_ARTIFACT_EDIT_CHARS, MAX_FETCHED_TEXT_CHARS, MAX_SCREEN_CONTEXT_CHARS, metaContent, readablePage, trustedSender, validJpegDataUrl, validateRequest } from "../main/ipc";
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
-import { activityDays } from "../src/activity";
 import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveLocalModel, defaultSettings, fontStack, forgetLocalModel, isEnvName, localEndpoint, localModelEndpoint, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, migrateQuickActionDestinations, normalizeLocalModelEndpoint, printableSecret, resolveQuickActionDestination, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
@@ -187,14 +186,6 @@ test("UI plugins are local CSS-only manifests with remote resources blocked", as
   } finally {
     await rm(userData, { recursive: true, force: true });
   }
-});
-
-test("activity covers the current week only", () => {
-  const days = activityDays(["2026-08-17T10:00:00Z", "2026-08-17T11:00:00Z", "2026-01-02T10:00:00Z"], new Date("2026-08-20T00:00:00Z"));
-  assert.equal(days.length, 7);
-  assert.equal(days[0].date, "2026-08-16");
-  assert.equal(days[1].count, 2);
-  assert.equal(days.at(-1)?.date, "2026-08-22");
 });
 
 test("settings require three actions and local-only transcription", () => {

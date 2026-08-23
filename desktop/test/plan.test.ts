@@ -75,12 +75,30 @@ test("the drawn graph puts a wave on a row, and folds one too wide to fit", () =
   assert.equal(planLayout([]).height, 0, "no steps, no canvas");
 });
 
+test("a tree draws as a tree: a step sits over the branch it fans out into", () => {
+  const steps = [step("root"), step("p2", ["root"]), step("c4", ["p2"]), step("p1", ["root"]), step("c1", ["p1"]), step("c2", ["p1"]), step("c3", ["p1"])];
+  const { spots } = planLayout(planRows(steps), steps);
+  const x = (id: string) => spots.get(id)!.x;
+  const mid = (...ids: string[]) => ids.reduce((total, id) => total + x(id), 0) / ids.length;
+  assert.deepEqual([x("c4"), x("c1"), x("c2"), x("c3")], [20, 40, 60, 80], "a row is ordered by where each step's parent sits, so a branch stays together");
+  assert.equal(x("p1"), mid("c1", "c2", "c3"), "over the middle of its three children");
+  assert.equal(x("p2"), mid("c4"), "over its only one");
+  assert.equal(x("root"), mid("p1", "p2"), "over the middle of the two branches");
+
+  const web = [step("a"), step("b"), step("c"), step("join", ["b", "c"])];
+  const spread = planLayout(planRows(web), web).spots;
+  assert.deepEqual([spread.get("a")!.x, spread.get("b")!.x, spread.get("c")!.x], [25, 50, 75], "the parents of a shared step keep their own places rather than piling onto it");
+});
+
 test("a cycle is named, not left as steps that quietly never run", () => {
   const rows = planRows([step("a", ["b"]), step("b", ["a"])]);
   assert.deepEqual(rows.flat().sort(), ["a", "b"], "stranded steps still land on the canvas");
   const problems = planProblems(plan([step("a", ["b"]), step("b", ["a"])]));
   assert.ok(problems.some((problem) => problem.includes("wait on each other")), problems.join("; "));
   assert.deepEqual(planProblems(plan([])), ["This plan has no steps."]);
+  const chain = planProblems(plan([step("a"), step("b", ["a"]), step("c", ["b"])]));
+  assert.ok(chain.some((problem) => problem.includes("runs at once")), chain.join("; "));
+  assert.deepEqual(planProblems(plan([step("a"), step("b"), step("c", ["a", "b"])])), [], "a plan that fans out anywhere is worth writing");
   assert.ok(planProblems(plan([step("a", [], { brief: "", tasks: [] })]))[0].includes("says nothing"));
 });
 
@@ -147,6 +165,12 @@ test("the subagent is told everything it cannot see for itself", () => {
   assert.ok(brief.includes("The parser is in shared/plan.ts."), "what the earlier wave found");
   assert.ok(brief.includes("write the view"), "its own tasks");
   assert.ok(brief.includes('"action":"update"'), "how to tick a box");
+
+  const after = stepBrief(plan([
+    step("step-1", [], { status: "failed", result: "The endpoint 404s — it moved to /v2." }),
+    step("step-2", [], { tasks: [] }),
+  ]), step("step-2", [], { tasks: [] }));
+  assert.ok(after.includes("The endpoint 404s — it moved to /v2."), "and what a failed step already walked into");
 });
 
 test("the tool refuses a call it could only half-do", () => {

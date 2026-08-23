@@ -1,10 +1,11 @@
 /* The plan this thread is working through, as a component of the inspector.
 
-   A plan is a graph of subagents, so it is drawn as one: a row per wave of
-   `planRows`, edges from what each step waits on, and every node coloured by
-   where that step has got to. Pressing a node lights its whole wave — the wave
-   is the parallelism, and "what is running right now" is the question the panel
-   exists to answer.
+   A plan is a web of subagents, so it is drawn as one: a row per wave of
+   `planRows`, each node sitting over the branch it fans out into, edges from
+   what each step waits on, and every node coloured by where that step has got
+   to. A chain draws as a chain, a fan-out as a tree, a rejoin as a diamond.
+   Pressing a node lights its whole wave — the wave is the parallelism, and
+   "what is running right now" is the question the panel exists to answer.
 
    Read-only, like the two rails below it. Every node here moves because a
    subagent said so; the file it says it into is under Emma's data folder and
@@ -12,7 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PLAN_ROW, planEdges, planLayout, planProgress, planRows, readySteps, renderPlan, type Plan, type PlanStep } from "../shared/plan";
-import { plural } from "./activity";
+import { plural } from "./plural";
 import { ExpandIcon } from "./icons";
 import type { LiveAgent } from "../shared/agents";
 
@@ -55,7 +56,7 @@ export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: strin
   const plan = plans.find((item) => item.id === pick) ?? plans[0];
   const progress = plan ? planProgress(plan) : undefined;
   const waves = useMemo(() => plan ? planRows(plan.steps) : [], [plan]);
-  const { spots, height } = useMemo(() => planLayout(waves), [waves]);
+  const { spots, height } = useMemo(() => planLayout(waves, plan?.steps ?? []), [waves, plan]);
   // A step is `waiting` rather than `ready` when something it needs has not landed
   // yet — the same test the runner uses to pick the next wave, so the colours and
   // the delegation can never disagree.
@@ -135,7 +136,7 @@ export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: strin
     <div className="plan-key">
       {keys.map((name) => <span key={name} data-status={name}><i aria-hidden="true" />{name}</span>)}
     </div>
-    {step && wave !== undefined && <PlanTasks key={`${plan.id}:${step.id}`} step={step} at={plan.steps.indexOf(step) + 1} wave={wave + 1} abreast={waves[wave]?.length ?? 1} agent={workingOn(agents, step)} />}
+    {step && <PlanTasks key={`${plan.id}:${step.id}`} step={step} at={plan.steps.indexOf(step) + 1} agent={workingOn(agents, step)} />}
     {reading && <PlanFile plan={plan} close={() => setReading(false)} />}
   </section>;
 }
@@ -158,13 +159,12 @@ function PlanFile({ plan, close }: { plan: Plan; close: () => void }) {
 }
 
 /** The pressed step's own boxes, a page at a time — a plan is where the work is written down. */
-function PlanTasks({ step, at, wave, abreast, agent }: { step: PlanStep; at: number; wave: number; abreast: number; agent?: LiveAgent }) {
+function PlanTasks({ step, at, agent }: { step: PlanStep; at: number; agent?: LiveAgent }) {
   const [page, setPage] = useState(0);
   const pages = Math.max(1, Math.ceil(step.tasks.length / TASKS_PER_PAGE));
   const on = Math.min(page, pages - 1);
   const shown = step.tasks.slice(on * TASKS_PER_PAGE, on * TASKS_PER_PAGE + TASKS_PER_PAGE);
   return <div className="plan-tasks">
-    <span className="plan-step-name">Wave {wave}{abreast > 1 ? ` · ${abreast} at once` : ""}</span>
     {/* The nodes are numbered, not labelled — this is where the pressed one says its name. */}
     <p className="plan-step-title"><b>{at}</b><span>{step.title}</span></p>
     {agent && <p className="plan-live"><i aria-hidden="true" />{agent.activity || "working"}</p>}

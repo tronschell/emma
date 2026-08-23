@@ -31,6 +31,7 @@ const read_file_impl = @import("../tools/filesystem/read_file.zig");
 const rename_file_impl = @import("../tools/filesystem/rename_file.zig");
 const copy_file_impl = @import("../tools/filesystem/copy_file.zig");
 const semantic_search_impl = @import("../tools/filesystem/semantic_search.zig");
+const lsp_impl = @import("../tools/lsp/lsp.zig");
 const write_file_impl = @import("../tools/filesystem/write_file.zig");
 const memory_impl = @import("../tools/memory/memory.zig");
 const read_tool_result_impl = @import("../tools/session/read_tool_result.zig");
@@ -78,6 +79,8 @@ const memory_description =
     "Save, list, or clear durable user preferences for future fx sessions. When to use: the user explicitly asks to remember, forget, save, or recall a preference. When NOT to use: store task notes, secrets, project facts, temporary context, or anything the user did not ask to persist.";
 const semantic_search_description =
     "Lexically search workspace files for concept keywords when exact symbols are unknown, ranking likely files for follow-up reads. This is not embedding or true semantic search. When to use: explore unfamiliar concepts, features, or responsibilities. When NOT to use: exact symbols, literal text, file names, counts, or narrow known-path inspection.";
+const lsp_description =
+    "Ask an installed language server about one file: diagnostics, definition, type_definition, implementation, references, hover, document_symbols, or workspace_symbols. Use action=servers to see which servers are installed and the command that installs the rest. Positions are 1-based: give line plus symbol (preferred) or character. When to use: check a file for real compiler errors after editing it, or resolve a symbol exactly instead of guessing from search hits. When NOT to use: literal text search, filename lookup, whole-project builds, or files whose language has no installed server.";
 const open_file_description =
     "Open a file in the operating system default app for the user to view. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: the user explicitly asks to open a local file. When NOT to use: inspect contents for yourself, edit files, verify changes, browse web pages, or open unapproved external paths.";
 const web_fetch_description =
@@ -910,6 +913,40 @@ pub const semantic_search = ToolSpec{
     .irreversible_fn = semantic_search_impl.isIrreversible,
 };
 
+pub const lsp = ToolSpec{
+    .advertisement = .on_select,
+    .name = "lsp",
+    .description = lsp_description,
+    .gateway_schema = .{
+        .name = "lsp",
+        .description = lsp_description,
+        .input_schema = .{
+            .properties = &.{
+                .{ .name = "action", .json_type = .string, .shape = &.{ .enum_values = &.{ "diagnostics", "definition", "type_definition", "implementation", "references", "hover", "document_symbols", "workspace_symbols", "servers" } }, .description = "Language server request to make." },
+                .{ .name = "path", .json_type = .string, .description = "File the request is about, workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Required for every action except servers." },
+                .{ .name = "line", .json_type = .integer, .minimum = 1, .description = "1-based line of the symbol. Required for definition, type_definition, implementation, references, and hover." },
+                .{ .name = "symbol", .json_type = .string, .description = "Symbol text to locate on that line, and the query for workspace_symbols." },
+                .{ .name = "character", .json_type = .integer, .minimum = 1, .description = "1-based column on that line, used when symbol is omitted." },
+                .{ .name = "timeout_ms", .json_type = .integer, .minimum = 1, .description = "Optional answer timeout. Defaults to 20000 and is capped at 120000; raise it while a large project is still indexing." },
+            },
+            .required = &.{"action"},
+        },
+    },
+    .executor_kind = .lsp,
+    .activity_kind = .read,
+    .requires_approval = false,
+    .action_label = "Asking",
+    .completed_action_label = "Asked",
+    .label_arg_kind = .path,
+    .label_arg_default = "language server",
+    .permission_target_kind = .path_optional_existing,
+    .decode = lsp_impl.decode,
+    .validate = lsp_impl.validate,
+    .call = lsp_impl.call,
+    .reads_only_fn = lsp_impl.readsOnly,
+    .irreversible_fn = lsp_impl.isIrreversible,
+};
+
 pub const open_file = ToolSpec{
     .advertisement = .on_select,
     .name = "open_file",
@@ -1472,6 +1509,7 @@ pub const all = [_]tool_dispatch.Tool{
     create_folder,
     file_info,
     semantic_search,
+    lsp,
     open_file,
     web_fetch,
     terminal,
@@ -2046,6 +2084,7 @@ test "built-in tools register exact active local order" {
         "create_folder",
         "file_info",
         "semantic_search",
+        "lsp",
         "open_file",
         "web_fetch",
         "terminal",

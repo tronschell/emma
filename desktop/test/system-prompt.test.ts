@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setImprovements, setSystemPrompt, withTrialArm, writeHarnessPrompt } from "../main/system-prompt";
+import { setImprovements, setPrompts, setSystemPrompt, withTrialArm, writeHarnessPrompt } from "../main/system-prompt";
+import { DEFAULT_SYSTEM_PROMPT, familiesOf, forkPreset, promptSegments, resolvePrompt, validatePrompts, type PromptPreset } from "../shared/prompts";
 import { assertCatalog, CONNECTIONS, describeConnections, detectConnections, outdatedConnections, setUpConnection } from "../main/connections";
 import { defaultSettings, MAX_CONNECTIONS, MAX_SYSTEM_PROMPT_CHARS, validateConnections, validateOverlayPreferences, validateSettings } from "../shared/settings";
 
@@ -35,13 +36,94 @@ test("the harness gets the same block as its global instructions file", () => {
   assert.equal(readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8"), "");
 });
 
+test("a conditional prompt reaches the harness only on the models it names", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "emma-harness-scope-"));
+  const read = () => readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8");
+  setSystemPrompt("Answer in French.");
+  setPrompts([
+    { id: "opus", name: "Opus", body: "Plan before you edit.", scope: "family:opus", enabled: true },
+    { id: "one", name: "One model", body: "Keep it terse.", scope: "model:openrouter:deepseek/deepseek-chat", enabled: true },
+    { id: "off", name: "Off", body: "Never sent.", scope: "", enabled: false },
+  ]);
+  writeHarnessPrompt(home, { model: "anthropic/claude-opus-4.5" });
+  assert.match(read(), /Answer in French\.[\s\S]*Plan before you edit\./);
+  assert.doesNotMatch(read(), /Keep it terse\.|Never sent\./);
+  writeHarnessPrompt(home, { model: "deepseek/deepseek-chat" });
+  assert.match(read(), /Keep it terse\./);
+  assert.doesNotMatch(read(), /Plan before you edit\./);
+  // Nothing matches, so the global text is the whole of it.
+  writeHarnessPrompt(home, { model: "meta-llama/llama-4" });
+  assert.equal(read().trim(), "Answer in French.");
+  setPrompts([]);
+  setSystemPrompt("");
+});
+
+test("the variables a prompt writes are filled from the turn, and unknown braces are left alone", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "emma-harness-vars-"));
+  setSystemPrompt("Model {model}, family {model_family}, in {workspace} on {mode}. Tools: {available_tools}. Left {alone}.");
+  writeHarnessPrompt(home, { model: "anthropic/claude-sonnet-4.5", workspace: "/tmp/work", mode: "ask" });
+  const written = readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8");
+  assert.match(written, /Model anthropic\/claude-sonnet-4\.5, family Sonnet, in \/tmp\/work on ask\./);
+  assert.match(written, /Tools: [a-z_]+(, [a-z_]+)+\./);
+  assert.match(written, /Left \{alone\}\./);
+  setSystemPrompt("");
+});
+
+test("a family is read off the model id, whatever route names it", () => {
+  assert.deepEqual(familiesOf("openrouter:anthropic/claude-opus-4.5"), ["opus"]);
+  assert.deepEqual(familiesOf("local:qwen3-coder"), ["qwen"]);
+  assert.deepEqual(familiesOf("deepseek/deepseek-r1"), ["deepseek"]);
+  assert.deepEqual(familiesOf("some/unknown-model"), []);
+});
+
+test("the narrower prompt is read last, so it wins where the two disagree", () => {
+  const presets: PromptPreset[] = [
+    { id: "pinned", name: "Pinned", body: "third", scope: "model:anthropic/claude-opus-4.5", enabled: true },
+    { id: "every", name: "Every", body: "second", scope: "", enabled: true },
+    { id: "family", name: "Family", body: "middle", scope: "family:opus", enabled: true },
+  ];
+  assert.equal(resolvePrompt("first", presets, "anthropic/claude-opus-4.5"), "first\n\nsecond\n\nmiddle\n\nthird");
+});
+
+test("a fork copies the body and lands switched off, so it cannot change a turn by being made", () => {
+  const preset: PromptPreset = { id: "src", name: "Opus", body: "Plan first.", scope: "family:opus", enabled: true };
+  const fork = forkPreset(preset, "copy1");
+  assert.deepEqual(fork, { id: "copy1", name: "Opus copy", body: "Plan first.", scope: "family:opus", enabled: false });
+});
+
+test("a variable is painted, a brace Emma cannot fill is not", () => {
+  const segments = promptSegments("use {model} not {nope}");
+  assert.deepEqual(segments.map((segment) => segment.text), ["use ", "{model}", " not ", "{nope}"]);
+  assert.equal(typeof segments[1].hue, "number");
+  assert.equal(segments[3].unknown, true);
+});
+
+test("a corrupt prompt list is refused rather than half-loaded", () => {
+  assert.deepEqual(validatePrompts(undefined, 100), []);
+  assert.equal(validatePrompts([{ id: "abc", name: " Named ", body: "x" }], 100)[0].name, "Named");
+  // Missing means on: a prompt written before this field existed still rides.
+  assert.equal(validatePrompts([{ id: "abc", name: "Named", body: "x" }], 100)[0].enabled, true);
+  assert.throws(() => validatePrompts([{ id: "abc", name: "A", body: "x" }, { id: "abc", name: "B", body: "y" }], 100));
+  assert.throws(() => validatePrompts([{ id: "abc", name: "A", body: "x".repeat(101) }], 100));
+  assert.throws(() => validatePrompts([{ id: "abc", name: "A", body: "x", scope: "family:nope" }], 100));
+  assert.throws(() => validatePrompts([{ id: "abc", name: "A", body: "x", scope: "whatever" }], 100));
+  assert.throws(() => validatePrompts([{ id: "abc", name: "", body: "x" }], 100));
+});
+
 test("an over-long prompt is refused on the way in, and a missing one falls back to the default", () => {
   const settings = { ...defaultSettings, systemPrompt: "x".repeat(MAX_SYSTEM_PROMPT_CHARS + 1) };
   assert.throws(() => validateSettings(settings));
-  assert.equal(validateSettings({ ...defaultSettings, systemPrompt: undefined }).systemPrompt, "");
+  assert.equal(validateSettings({ ...defaultSettings, systemPrompt: undefined }).systemPrompt, DEFAULT_SYSTEM_PROMPT);
+  // A store written while this field was an addition holds "", which is not a choice to keep.
+  assert.equal(validateSettings({ ...defaultSettings, systemPrompt: "" }).systemPrompt, DEFAULT_SYSTEM_PROMPT);
   assert.throws(() => validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, systemPrompt: "x".repeat(MAX_SYSTEM_PROMPT_CHARS + 1) }));
   assert.equal(validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true }).systemPrompt, undefined);
   assert.equal(validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, systemPrompt: "Answer in French." }).systemPrompt, "Answer in French.");
+  // The conditional prompts ride the same message, so they are held to the same validation.
+  const carried = validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, prompts: [{ id: "abc", name: "Opus", body: "Plan first.", scope: "family:opus", enabled: true }] });
+  assert.deepEqual(carried.prompts, [{ id: "abc", name: "Opus", body: "Plan first.", scope: "family:opus", enabled: true }]);
+  assert.equal(validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true }).prompts, undefined);
+  assert.throws(() => validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, prompts: [{ id: "abc", name: "Opus", body: "x", scope: "family:nope" }] }));
 });
 
 test("every catalogued connection is a bare name, so the probe never needs quoting", () => {

@@ -183,7 +183,9 @@ turn over with its trial arm attached.
 
 `writeHarnessPrompt` puts the user's Settings text at
 `<userData>/harness/.fx/AGENTS.md`; the harness loads `$HOME/.fx/AGENTS.md` from
-the HOME Emma gives it. Only the A/B arm rides the turn itself, because the arm
+the HOME Emma gives it. It is handed the turn's model, folder and mode, because
+the text is resolved per turn: the global prompt, then whatever conditional
+prompts that model matches, with each `{variable}` filled in. Only the A/B arm rides the turn itself, because the arm
 is a coin flip per turn — see
 [`desktop/main/system-prompt.ts`](../desktop/main/system-prompt.ts).
 
@@ -429,9 +431,25 @@ composer to resolve its tokens, so `resolveMentions` in
 run's thread, and every named artifact, knowledge page and folder file is read
 into the same block, looked up in that order.
 
-Everything Emma adds — the standing instructions from Settings, the connections
+Everything Emma adds — the resolved system prompt from Settings, the connections
 block, and any kept lesson from the Agent page — is written to
-`<userData>/harness/.fx/AGENTS.md`, bounded by `MAX_SYSTEM_PROMPT_CHARS`.
+`<userData>/harness/.fx/AGENTS.md`, each bounded by `MAX_SYSTEM_PROMPT_CHARS`.
+
+### System prompt
+
+Settings → System prompt is the whole text, not an addition to one: a global
+prompt that rides every turn, plus any number of prompts in
+[`desktop/shared/prompts.ts`](../desktop/shared/prompts.ts) pinned to a model
+family (`family:opus`) or a single model (`model:openrouter:…`). The matching
+ones are read after the global, narrowest last, so a pinned prompt wins where
+the two disagree. `{available_tools}`, `{model}`, `{model_family}`,
+`{workspace}`, `{os}`, `{date}`, `{mode}` and `{connections}` are filled from
+the turn; anything else in braces is left as written.
+
+The harness's own prompt in
+[`harness/src/builtins/context.zig`](../harness/src/builtins/context.zig) still
+sits underneath this one — it carries the tool contracts, so the tools keep
+working however the Settings text is rewritten.
 
 ### Screen context
 

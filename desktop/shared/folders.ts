@@ -13,10 +13,12 @@ export type ContextPick =
   /** An artifact carries its own title: unlike a page it is not in the snapshot,
       so there is nothing to look one up in when the chip is drawn. */
   | { kind: "artifact"; id: string; title: string }
-  /** A file dropped, pasted or picked into the composer. Main holds the path
-      behind the id; the chip carries the name, and a thumbnail when it is an
-      image, because neither is in any snapshot to look up. */
-  | { kind: "attachment"; id: string; name: string; thumbnail?: string }
+  /** A file dropped, pasted or picked into the composer. The turn reaches it by
+      id; the chip carries the name, the path and a thumbnail when it is an image,
+      because none of the three is in any snapshot to look up — and the path is
+      what reopens the file from the turn it was handed to, long after the id has
+      stopped meaning anything to this window. */
+  | { kind: "attachment"; id: string; name: string; path: string; thumbnail?: string }
   | { kind: "page"; id: string };
 
 export const MAX_FOLDERS = 16;

@@ -10,7 +10,7 @@ import { tagName } from "../shared/settings";
 import type { LiveAgent } from "../shared/agents";
 import type { KnowledgePage, Message, Snapshot, Thread } from "./types";
 import type { Block } from "./runs";
-import { plural } from "./activity";
+import { plural } from "./plural";
 import { reasonText } from "./errors";
 
 // ponytail: thread → folder lives in localStorage, not in the durable thread file.
@@ -102,6 +102,83 @@ export function rememberBlocks(threadId: string, turns: Record<string, Block[]>)
     for (const key of Object.keys(localStorage)) if (key.startsWith(BLOCKS_KEY) && key !== BLOCKS_KEY + threadId) localStorage.removeItem(key);
     try { localStorage.setItem(BLOCKS_KEY + threadId, text); } catch { /* one turn too big for storage: it reads flat, as it did before. */ }
   }
+}
+
+/* Files handed to one turn, kept so the turn still shows them. The host stores a
+   turn as its text, so what rode along with it only ever lived in the composer:
+   scrolling back — or relaunching — showed the question without the screenshot it
+   was asking about.
+
+   Written when the turn is sent, which is before its message exists, so a turn is
+   named the way a pending prompt is: by where the thread stood when it was typed
+   and by what was typed. Resolving that to a message is `turnAttachments` below.
+
+   ponytail: localStorage, capped per thread. The thumbnails are what take the
+   room, so they go first and the tiles stay — a tile without its picture still
+   names its file and still opens it. */
+const ATTACHED_KEY = "emma.threadAttachments.v1.";
+const KEPT_ATTACHED_TURNS = 60;
+const KEPT_ATTACHED_BYTES = 1024 * 1024;
+
+/** One attached file as a landed turn draws it: enough to show it and to open it. */
+export type TurnAttachment = { name: string; path: string; thumbnail?: string };
+
+/** One sent turn's files, against the prompt that carried them. */
+type AttachedTurn = { after: number; content: string; items: TurnAttachment[] };
+
+/// Same rule as the blocks above: only what this wrote reads back.
+function isAttachedTurn(value: unknown): value is AttachedTurn {
+  const turn = value as AttachedTurn;
+  if (!turn || typeof turn !== "object" || typeof turn.after !== "number" || typeof turn.content !== "string") return false;
+  return Array.isArray(turn.items) && turn.items.length > 0
+    && turn.items.every((item) => !!item && typeof item.name === "string" && typeof item.path === "string");
+}
+
+function storedAttachments(threadId: string): AttachedTurn[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(ATTACHED_KEY + threadId) ?? "[]") as unknown;
+    return Array.isArray(stored) ? stored.filter(isAttachedTurn) : [];
+  } catch { return []; }
+}
+
+/** Called as a turn is sent, with where the thread stood when it was typed. */
+export function rememberTurnAttachments(threadId: string, after: number, content: string, items: TurnAttachment[]): void {
+  if (!items.length) return;
+  let kept = [...storedAttachments(threadId), { after, content, items }].slice(-KEPT_ATTACHED_TURNS);
+  let text = JSON.stringify(kept);
+  // Pictures before turns: a thread of screenshots would otherwise drop whole
+  // turns to keep a handful of thumbnails nobody is looking at.
+  if (text.length > KEPT_ATTACHED_BYTES) {
+    kept = kept.map((turn) => ({ ...turn, items: turn.items.map(({ thumbnail: _picture, ...rest }) => rest) }));
+    text = JSON.stringify(kept);
+  }
+  while (text.length > KEPT_ATTACHED_BYTES && kept.length > 1) {
+    kept = kept.slice(1);
+    text = JSON.stringify(kept);
+  }
+  try { localStorage.setItem(ATTACHED_KEY + threadId, text); }
+  catch {
+    // As the blocks store does: every other thread's copy goes before this one's.
+    for (const key of Object.keys(localStorage)) if (key.startsWith(ATTACHED_KEY) && key !== ATTACHED_KEY + threadId) localStorage.removeItem(key);
+    try { localStorage.setItem(ATTACHED_KEY + threadId, text); } catch { /* no room: the turn reads without its tiles, as it did before. */ }
+  }
+}
+
+/** What each turn of this thread carried, by the position of its message. A turn
+    matches the first message at or after where the thread stood that says what was
+    typed — and never one an earlier turn already claimed, so the same prompt sent
+    twice keeps its two sets of files apart rather than showing one twice. */
+export function turnAttachments(threadId: string, messages: Message[]): Record<number, TurnAttachment[]> {
+  const byIndex: Record<number, TurnAttachment[]> = {};
+  const claimed = new Set<number>();
+  for (const turn of storedAttachments(threadId)) {
+    const at = messages.findIndex((message, index) =>
+      index >= turn.after && !claimed.has(index) && message.role === "user" && message.content === turn.content);
+    if (at < 0) continue;
+    claimed.add(at);
+    byIndex[at] = turn.items;
+  }
+  return byIndex;
 }
 
 /* The composer's permission picker, remembered per thread. Main keeps its own copy

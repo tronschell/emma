@@ -45,8 +45,7 @@ Thread format 4 adds per-message generation telemetry; format 3 stores the
 destination and sources, while formats 1–2 migrate to the destination as their
 sole source. Knowledge-base format 2 stores user category
 slugs; format 1 migrates with none. Learned categories are derived from pages.
-Removing a user category never removes a page. The activity heatmap is computed
-from durable message and page timestamps.
+Removing a user category never removes a page.
 
 The Agent dashboard is a deterministic 60-day projection of those same local
 records. It ranks collected source domains and repeated base/category mappings,

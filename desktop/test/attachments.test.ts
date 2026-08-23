@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AttachmentStore } from "../main/attachments";
@@ -27,7 +27,7 @@ test("a dropped file is written under userData and named by its own basename", (
   const held = store.save("../../escape.md", new TextEncoder().encode("# notes"));
   assert.equal(held.name, "escape.md");
   assert.equal(path.dirname(held.path), path.join(root, "attachments"));
-  assert.deepEqual(readdirSync(path.join(root, "attachments")), [`${held.id}-escape.md`]);
+  assert.deepEqual(readdirSync(path.join(root, "attachments")).filter((entry) => entry !== "held.json"), [`${held.id}-escape.md`]);
   assert.equal(store.read(held.id).text, "# notes");
 });
 
@@ -39,4 +39,23 @@ test("a picture carries its path instead of its bytes, and a binary file is refu
   assert.equal(store.read(image.id).path, image.path);
   const binary = store.save("blob.bin", new Uint8Array([1, 0, 2]));
   assert.throws(() => store.read(binary.id), /not a text file/);
+});
+
+test("what was attached is still attached after a relaunch, unless the file is gone", () => {
+  const root = userData();
+  const moved = path.join(root, "moved.md");
+  writeFileSync(moved, "# here for now");
+  const first = new AttachmentStore(root);
+  const dropped = first.save("notes.md", new TextEncoder().encode("# notes"));
+  const picked = first.hold(moved);
+
+  // A new store is a new launch: the preview and the editor doors both ask `holds`
+  // before they open a bare path, so this is what keeps an old turn's tiles working.
+  const relaunched = new AttachmentStore(root);
+  assert.equal(relaunched.holds(dropped.path), true);
+  assert.equal(relaunched.holds(picked.path), true);
+  assert.equal(relaunched.read(dropped.id).text, "# notes");
+
+  rmSync(moved);
+  assert.equal(new AttachmentStore(root).holds(picked.path), false);
 });

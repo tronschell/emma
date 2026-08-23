@@ -217,6 +217,29 @@ This is a prompt-cost mechanism, **not** a security boundary. A hidden tool is s
 
 The mechanism only works if the model knows about it, and the base prompt in [`builtins/context.zig`](../harness/src/builtins/context.zig) used to work against it: three lines hedged file, search and command access with *when those capabilities are available*, so a model that read its two-tool advertisement literally concluded they were not, said it could not reach the workspace, and reached for `terminal` instead of the tool it should have selected. The hedges are gone and "Tools and verification" now states the invariant — the list starts nearly empty by design, a missing capability is loadable rather than absent, `search_tools` then `select_tool` before answering that something is out of reach. Naming those two is safe where naming `run_command` would not be: they are the only tools guaranteed to be advertised, which is what `gateway_system_prompt: static guidance is capability-neutral` protects.
 
+## Language servers
+
+`lsp` is a native harness tool ([`tools/lsp/lsp.zig`](../harness/src/tools/lsp/lsp.zig)) that asks a real language server about one file instead of guessing from text. Nine actions: `diagnostics`, `definition`, `type_definition`, `implementation`, `references`, `hover`, `document_symbols`, `workspace_symbols`, and `servers`. It is `.on_select` like everything else, read-only, and runs in parallel with other read-only calls.
+
+Positions are given the way a human reads them: `line` is 1-based, and `symbol` finds the column so the model does not have to count. `character` is accepted as an override and is also 1-based; both are converted to LSP's 0-based line and UTF-16 code unit column before the request goes out.
+
+The registry in [`core/lsp/servers.zig`](../harness/src/core/lsp/servers.zig) is pure data — about fifty servers, each with the extensions and exact filenames it claims, its argv, and the command that installs it. A file picks its server by exact filename first (`Dockerfile`, `CMakeLists.txt`, `go.mod`), then by extension. Installation is a PATH lookup and nothing more, so a server the user has not installed answers with the install command rather than a spawn error, and `action=servers` lists the whole table split into installed and missing.
+
+[`core/lsp/client.zig`](../harness/src/core/lsp/client.zig) is the JSON-RPC client: `Content-Length` framing over the child's stdio, a reader thread that resolves pending requests by id, and answers for the server-to-client requests that block initialization if nobody replies (`workspace/configuration`, `workspace/workspaceFolders`, the `client/registerCapability` family, `window/workDoneProgress/create`). Frames are capped at 16 MiB. [`core/lsp/pool.zig`](../harness/src/core/lsp/pool.zig) keeps one process per (server, workspace root) for the life of the CLI process, so only the first call in a session pays for `initialize`, and `main.zig` shuts the pool down on every exit path.
+
+Two waits make the answers trustworthy rather than empty:
+
+- **Warm-up.** A server that has just started answers `hover` with an empty string and `references` with an empty array while it is still loading the project. After `initialize` the pool waits for `$/progress` to begin and then go quiet — rust-analyzer on this repository runs `Fetching`, `Building CrateGraph`, `Loading proc-macros` and `cachePriming` in the first three seconds, and a request sent before priming ends comes back blank. A server that reports no progress at all costs one second, once.
+- **Diagnostics.** `textDocument/diagnostic` is tried first and `publishDiagnostics` is the fallback. The push route needs a settle window: typescript-language-server publishes an empty array the instant the document opens and the real list a moment later, so the client stamps each publish and takes the latest one after 1.5 s of quiet, bounded by the call's own timeout.
+
+Each call opens the document, asks, and closes it. There is no incremental sync — the file is read fresh from disk every time, which is correct for an agent that edits through `write_file` and never holds an editor buffer.
+
+Known limits:
+
+- A TypeScript project needs `typescript` installed in the workspace. typescript-language-server refuses to start without it, and the tool reports the server's own message. The global fallback only works if the installed `typescript` still ships `tsserver.js`.
+- rust-analyzer's diagnostics come from flycheck, which by default runs on save, so `diagnostics` on a Rust file is usually empty even when `cargo check` would complain. `hover` and `references` are the useful actions there.
+- PATH detection cannot tell a real binary from a rustup proxy for a component that is not installed. The spawn succeeds, the server exits immediately, and the failure surfaces as the server's own error text.
+
 ## Limits the code enforces
 
 | Limit | Value | Where |
@@ -249,9 +272,9 @@ Skills work the same way. `mirrorSkillsToHarness` in [capabilities.ts](../deskto
 | --- | --- |
 | `acp/` | The JSON-RPC server. `server.zig` (dispatch, session state, outbound registry), `prompt.zig` (one turn, 4600 lines), `sessions.zig` (new/load/resume/list/remove), `types.zig` (update writers, stop reasons), `jsonrpc.zig` (framing), `mcp_servers.zig` (parsing `mcpServers`). |
 | `builtins/` | The registries. `tools.zig` (the tool table and `advertisement_set`), `emma_tools.zig` + `emma/` (Emma's twenty-two), `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (the system prompt and `AGENTS.md`), `providers.zig`, `gateway.zig`. |
-| `core/` | Everything with state. `agent/` (the loop: `runtime/orchestrator.zig`, `runtime/gateway_step.zig`, `runtime/context_experiments.zig`), `tooling/` (dispatch, admission, advertisement, result limits, MCP and native discovery), `permissions/`, `session/`, `mcp/`, `skills/`, `hooks/`, `subagent/`, `config/`, `modes/`, `gateway/`, `cli/` (`acp_runner.zig`, `cli_ask.zig`, `cli_surface.zig`, `doctor_runtime.zig`), `workspace/`, `background/`, `terminal/`, `execution/`, `auth/`, `output/`, `shared/`, plus smaller ones. |
+| `core/` | Everything with state. `agent/` (the loop: `runtime/orchestrator.zig`, `runtime/gateway_step.zig`, `runtime/context_experiments.zig`), `tooling/` (dispatch, admission, advertisement, result limits, MCP and native discovery), `permissions/`, `session/`, `mcp/`, `lsp/` (language server client, pool and registry), `skills/`, `hooks/`, `subagent/`, `config/`, `modes/`, `gateway/`, `cli/` (`acp_runner.zig`, `cli_ask.zig`, `cli_surface.zig`, `doctor_runtime.zig`), `workspace/`, `background/`, `terminal/`, `execution/`, `auth/`, `output/`, `shared/`, plus smaller ones. |
 | `gateway/` | Provider transport only. `emma_openai.zig` is the OpenAI-compatible Chat Completions client and holds `default_chat_url` and `chat_url_env`; also `client.zig`, `web_search.zig`, `generation_usage.zig`, and the JS-host stream and catalog providers for the WASM build. |
-| `tools/` | Tool implementations: `filesystem/`, `shell/`, `web/`, `terminal/`, `agent/` (`subagent.zig`, `vision.zig`, `ask_user_question.zig`), `skills/`, `session/`, `memory/`, and `emma/bridge.zig`. Specs live in `builtins/tools.zig`, not here. |
+| `tools/` | Tool implementations: `filesystem/`, `shell/`, `web/`, `terminal/`, `lsp/`, `agent/` (`subagent.zig`, `vision.zig`, `ask_user_question.zig`), `skills/`, `session/`, `memory/`, and `emma/bridge.zig`. Specs live in `builtins/tools.zig`, not here. |
 | `ui/` | The terminal front end, and no product state: `render_engine/`, `transcript/`, `footer/`, `input/`, `terminal/`, `assistant/`, `subagent/`. Emma never sees any of it. |
 
 Top level: `main.zig` is the composition root and holds no leaf feature logic. `wasm_core_main.zig`, `wasm_term_main.zig` and `napi_core_main.zig` are the SDK entry points.

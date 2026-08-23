@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
+const lsp_pool = @import("core/lsp/pool.zig");
 
 pub const version = "0.0.4";
 
@@ -2893,8 +2894,10 @@ fn runNonBenchmark(raw_args: []const [*:0]const u8, raw_env: RawEnviron, cli_arg
             var owned_launch = launch;
             defer owned_launch.deinit(alloc);
             defer debug_trace.shutdown();
+            defer lsp_pool.shutdownAll();
 
             const outcome = try app_entry_runtime.runInteractive(App, alloc, &owned_launch);
+            lsp_pool.shutdownAll();
             switch (outcome) {
                 .returned => return,
                 .exit => |code| std.process.exit(code),
@@ -3048,6 +3051,7 @@ fn writeStderrFast(text: []const u8) !void {
 }
 
 fn exitFast(code: u8) noreturn {
+    lsp_pool.shutdownAll();
     if (comptime builtin.link_libc and builtin.os.tag != .windows and builtin.os.tag != .wasi) {
         std.c._exit(@intCast(code));
     }
@@ -3838,6 +3842,10 @@ test {
     _ = @import("tools/web/html_to_markdown.zig");
     _ = @import("tools/filesystem/read_file.zig");
     _ = @import("tools/filesystem/semantic_search.zig");
+    _ = @import("tools/lsp/lsp.zig");
+    _ = @import("core/lsp/client.zig");
+    _ = @import("core/lsp/pool.zig");
+    _ = @import("core/lsp/servers.zig");
     _ = @import("tools/skills/install_skill.zig");
     _ = @import("tools/skills/skill.zig");
     _ = @import("core/upgrade/upgrade_helpers.zig");

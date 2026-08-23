@@ -3,7 +3,7 @@ import type { AgentImportSource, ArtifactBlock, Connection, CredentialSummary, H
 import { describeRun, describeTrigger, parseVariables, parseWorkflow, runWorkflow, triggerProblem } from "../shared/workflow";
 import { PluginsView } from "./plugins";
 import { PromptField, TriggerPicker, useTaskCommands, WorkflowGraph } from "./schedule";
-import { activityDays, plural } from "./activity";
+import { plural } from "./plural";
 import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
@@ -16,6 +16,7 @@ import { hasPersistedPrompt } from "./drafts";
 import { dropQueued, groupBlocks, pairBlocks, sendTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { brandForConnection, brandForImporter, brandForModel, brandForProvider, providerBrands, type BrandDefinition } from "./brands";
+import { DEFAULT_SYSTEM_PROMPT, forkPreset, MAX_PROMPTS, MAX_PROMPT_NAME_CHARS, MODEL_FAMILIES, newPresetId, promptApplies, promptSegments, PROMPT_VARIABLES, type PromptPreset } from "../shared/prompts";
 import { validScreenContextId } from "../shared/screen-context";
 import { CAPTURE_MODEL, isRawClip, pageForUrl } from "../shared/knowledge";
 import { highlightSegments, insertCommand, KIND_LABELS, matchCommands, mentions, MENU_MAX, slashQuery, type SlashCommand } from "../shared/slash";
@@ -27,11 +28,11 @@ import { MAX_CONTEXT_PAGES, type ContextPage } from "../shared/context-bar";
 import { documentGroups, parseMarkdown, type Inline } from "./document";
 import { Markdown } from "./markdown";
 import { RunContext } from "./run-block";
-import { PreviewHost } from "./preview";
+import { openPreview, PreviewHost } from "./preview";
 import { ArtifactCard, ArtifactsView } from "./artifacts";
 import { Region } from "./regions";
 import { ARTIFACT_LABELS, artifactWritten, type Artifact, type ArtifactMeta } from "../shared/artifacts";
-import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, UNFILED_CATEGORY } from "./context";
+import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
 import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeMenu, ModePicker, ModeTrigger, PermissionPrompt, TabStrip, ThreadCard, useAgents, type AgentTab } from "./agents";
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
@@ -162,7 +163,7 @@ function TranscriptRail({ messages, scroller }: { messages: Message[]; scroller:
   </nav>;
 }
 
-function Turn({ item, blocks, index }: { item: Message; blocks?: Block[]; index?: number }) {
+function Turn({ item, blocks, index, attached }: { item: Message; blocks?: Block[]; index?: number; attached?: TurnAttachment[] }) {
   // Read off the turn, never off the picker: the picker is where the *next* turn
   // will go, so a thread the user switched models midway through would otherwise
   // claim every earlier answer came from whatever is selected now.
@@ -177,6 +178,14 @@ function Turn({ item, blocks, index }: { item: Message; blocks?: Block[]; index?
   const thought = item.role !== "assistant" ? "" : blocks?.length ? thinkingOf(blocks) : splitThinking(body).thinking;
   return <article className={`message ${item.role}`} data-turn={index}>
     {thought && <Thought text={thought} ms={item.generation?.durationMilliseconds ?? 0} tokens={thoughtTokens(thought)} />}
+    {/* The files the turn was handed, above the words it was handed them with —
+        the composer's own tiles, minus the × that took one back. Clicking one
+        opens the same modal a path in a reply opens. */}
+    {!!attached?.length && <div className="message-tray">{attached.map((file) => <button
+      type="button" className="composer-tile" key={file.path} title={file.name} aria-label={`Open ${file.name}`}
+      onClick={() => openPreview(file.path, file.name)}>
+      {file.thumbnail ? <img src={file.thumbnail} alt="" /> : <><FileMark path={file.name} /><small>{file.name}</small></>}
+    </button>)}</div>}
     {blocks?.length ? <Blocks blocks={blocks} /> : <Body content={item.role === "assistant" ? splitThinking(body).answer : body} />}
     <footer className="message-meta"><span>{item.role === "user" ? from ? `thread ${from} messaged:` : "You" : "Emma"}</span><CopyTurn text={item.role === "assistant" ? splitThinking(item.content).answer : body} />{model && <span className="message-model" title={`Answered by ${model}`}><BrandIcon brand={brandForModel(model)} className="message-model-mark" /><span>{model}</span></span>}<time dateTime={item.timestamp}>{time(item.timestamp)}</time>{item.generation && <span className="generation-rate" title={`${item.generation.outputTokens} output tokens in ${item.generation.durationMilliseconds} ms`}>{Math.round(item.generation.outputTokens / item.generation.durationMilliseconds * 1000).toLocaleString()} tok/s</span>}</footer>
   </article>;
@@ -999,7 +1008,7 @@ function Workspace() {
       </aside>
       </Region>
       <main id="content" className="content">
-        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={() => { setError(""); void createThread(); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={settings.selectedModel} modelLabel={modelLabel} modelTag={modelTag} modelBrand={modelBrand} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} selected={page?.id} onSelect={setPageId} openThread={openThread} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <PluginsView busy={uiBusy} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView snapshot={snapshot} page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
+        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={() => { setError(""); void createThread(); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={settings.selectedModel} modelLabel={modelLabel} modelTag={modelTag} modelBrand={modelBrand} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} onContextPages={(contextPages) => setSettings(persistSettings({ ...settings, contextPages }))} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} selected={page?.id} onSelect={setPageId} openThread={openThread} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <PluginsView busy={uiBusy} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView snapshot={snapshot} page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
       {/* The tag field is the whole of manual filing, and the only way back from a
@@ -1268,15 +1277,6 @@ function ArchiveView({ threads, busy, restore }: { threads: Thread[]; busy: bool
   return <section className="scheduled-view"><header><span>Archive · auto-discard</span><h2>Archived threads</h2><p>Right-click any thread in the sidebar to archive it. Archived threads are deleted permanently {ARCHIVE_RETENTION_DAYS} days after they are archived.</p></header>{!threads.length && <div className="content-empty"><span className="mark" aria-hidden="true">◇</span><h2>Nothing archived</h2><p>Archived threads appear here until they are discarded.</p></div>}<div className="job-list">{threads.map((item) => <article key={item.id}><header><div><span className="job-state">Archived</span><h3>{threadLabel(item)}</h3></div><button type="button" disabled={busy} onClick={() => restore(item.id)}>Restore</button></header><dl><div><dt>Archived</dt><dd>{date(item.archivedAt ?? "")} · {time(item.archivedAt ?? "")}</dd></div><div><dt>Messages</dt><dd>{item.messages.length} {plural(item.messages.length, "message")}</dd></div></dl></article>)}</div></section>;
 }
 
-function Activity({ snapshot }: { snapshot: Snapshot }) {
-  const timestamps = [...snapshot.threads.flatMap((thread) => thread.messages.map((message) => message.timestamp)), ...snapshot.pages.flatMap((page) => [page.addedAt, page.analyzedAt])];
-  const days = activityDays(timestamps);
-  const active = days.filter((day) => day.count).length;
-  const messages = snapshot.threads.reduce((sum, thread) => sum + thread.messages.length, 0);
-  const pages = snapshot.pages.length;
-  return <section className="activity" aria-label="Durable activity"><header><b>{active} {plural(active, "active day")}</b></header><div className="heatmap">{days.map((day) => <span key={day.date} className={`heat heat-${Math.min(day.count, 4)}`} title={`${day.date}: ${day.count} durable ${plural(day.count, "event")}`} />)}</div><footer><span><b>{messages}</b> {plural(messages, "message")}</span><span><b>{pages}</b> {plural(pages, "page")}</span><span><b>{pages}</b> analyzed</span></footer></section>;
-}
-
 function CategoryEditor({ baseId, categories, act, busy }: { baseId: string; categories: string[]; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
   const [value, setValue] = useState("");
   return <details><summary>Manage</summary><div className="category-pop"><form onSubmit={(event) => { event.preventDefault(); if (!busy && value.trim()) void act("addKnowledgeBaseCategory", { knowledgeBaseId: baseId, category: value.trim().toLowerCase().replace(/\s+/g, "-") }).then((result) => { if (result !== undefined) setValue(""); }); }}><input value={value} disabled={busy} onChange={(event) => setValue(event.target.value)} placeholder="research" aria-label="New category" /><button disabled={busy}>Add</button></form>{categories.map((item) => <button key={item} disabled={busy} onClick={() => void act("removeKnowledgeBaseCategory", { knowledgeBaseId: baseId, category: item })}>{item} ×</button>)}</div></details>;
@@ -1452,7 +1452,7 @@ function KnowledgeBoard({ snapshot, onSelect, act, busy }: { snapshot: Snapshot;
     onDrop: (event: ReactDragEvent) => { event.preventDefault(); setOver(""); void refile(event.dataTransfer.getData("text/plain"), item); },
   });
   return <section className="knowledge-board">
-    <header className="knowledge-head"><h1>Knowledge</h1><Activity snapshot={snapshot} /></header>
+    <header className="knowledge-head"><h1>Knowledge</h1></header>
     <div className="knowledge-toolbar">
       <div className="base-toolbar">
         <button className={`shelf-chip ${baseId === "all" ? "on" : ""}`} onClick={() => { setBaseId("all"); setCategory("all"); }}>All knowledge</button>
@@ -1683,7 +1683,7 @@ function TagPicker({ threadId }: { threadId: string }) {
   </div>;
 }
 
-function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, defaultMode, contextTokens, contextPages, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: () => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[] } & PaneProps) {
+function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, defaultMode, contextTokens, contextPages, onContextPages, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: () => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[]; onContextPages: (pages: ContextPage[]) => void } & PaneProps) {
   // ThreadView is keyed by thread id, so a thread opened from the Artifacts page
   // mounts this fresh and the seeded question is what the composer starts with.
   // Read here and cleared in the effect, never taken in the initializer, which
@@ -1898,6 +1898,9 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     rememberBlocks(thread.id, Object.fromEntries(thread.messages.flatMap((item, index) =>
       paired[index] && wrote(item.content, paired[index]!) ? [[item.timestamp, paired[index]!]] : [])));
   }, [thread, run.landed]);
+  /// Files handed to past turns, resolved to the messages those turns wrote. A
+  /// turn sent a moment ago lands here on the render its message arrives on.
+  const attachedTurns = useMemo(() => thread ? turnAttachments(thread.id, thread.messages) : {}, [thread]);
   if (!thread) return <div className="content-empty"><Mark /><h2>Start a durable thread</h2><p>Normal agent work stays here until you explicitly save it to knowledge.</p><button type="button" disabled={busy} onClick={newThread}>New thread</button></div>;
   /// A running turn no longer counts: the composer stays live so the next prompt
   /// can be typed and queued, or sent into the run as steering.
@@ -1928,7 +1931,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   /// so nothing else here has to know where they came from — only the composer
   /// draws them differently, as tiles above the message rather than a band under it.
   const holdAttachments = (held: HeldAttachment[]) =>
-    held.forEach((item) => addPick({ kind: "attachment", id: item.id, name: item.name, ...(item.thumbnail ? { thumbnail: item.thumbnail } : {}) }));
+    held.forEach((item) => addPick({ kind: "attachment", id: item.id, name: item.name, path: item.path, ...(item.thumbnail ? { thumbnail: item.thumbnail } : {}) }));
   /// A drop or a paste. The browser hands over contents and no path, so the
   /// contents are what crosses to main; the native picker keeps its own paths.
   const attachDropped = (files: FileList | null | undefined) => {
@@ -2004,9 +2007,15 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     if (text === undefined) { setMessage(""); setHistory(-1); }
     const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles, snapshot) : { text: "", uses: [] };
     const attachedSkill = skill;
+    const after = thread.messages.length;
+    /// Recorded against the message this turn is about to write, so the tiles the
+    /// composer is drawing right now stay drawn above it once it has been sent.
+    rememberTurnAttachments(thread.id, after, content, picks.flatMap((pick) => pick.kind === "attachment"
+      ? [{ name: pick.name, path: pick.path, ...(pick.thumbnail ? { thumbnail: pick.thumbnail } : {}) }]
+      : []));
     sendTurn(thread.id, {
       content,
-      after: thread.messages.length,
+      after,
       params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
       // Only a delivered turn goes in the ledger: it records what Emma was actually sent.
       delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skill" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
@@ -2087,7 +2096,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       <div className="transcript" ref={transcript} onScroll={transcriptScroll}>
         <RunContext.Provider value={runFences}>
         {!thread.messages.length && echo === null && !sending && <div className="welcome"><Mark /><h3>What are we working on?</h3><p>Ask Emma to research, plan, write, or think. Nothing enters knowledge unless you choose it.</p></div>}
-        {thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} blocks={landedBlocks[index]} index={index} />)}
+        {thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} blocks={landedBlocks[index]} index={index} attached={attachedTurns[index]} />)}
         {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span><span className="pending-note">Sending…</span></footer></article>}
         {streaming !== null && <Streaming blocks={streaming} threadId={thread.id} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> Emma is working…</p>}
@@ -2129,7 +2138,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
           {contextPages.map((item) => <button key={item.id} type="button" role="tab" aria-selected={item.id === page.id} title={`${item.name} — ${item.widgets.length} ${plural(item.widgets.length, "component")}`} onClick={() => setContextPage(item.id)}>{item.name}</button>)}
         </span> : <span>{page.name}</span>}
         {changes.length > 0 && <button type="button" className="changes-open" title={`${changes.length} ${plural(changes.length, "file")} changed — open the diff`} onClick={() => setTab("changes")}><ChangeCount stat={diffStat(changes)} /></button>}<button onClick={() => void act("saveToKnowledge", { threadId: thread.id })} disabled={locked || !thread.messages.some((item) => item.role === "assistant")}>Save & analyze</button></header>
-      <ContextWidgets page={page} context={{ ledger, threadId: thread.id, sending, subagents, subthreads, agents, onOpenThread: openThreadPage, tab, onPick: setTab, git, onOpenGit: () => setTab("git") }} /></div>}
+      <ContextWidgets page={page} context={{ ledger, threadId: thread.id, sending, subagents, subthreads, agents, onOpenThread: openThreadPage, tab, onPick: setTab, git, onOpenGit: () => setTab("git") }} onChange={(widgets) => onContextPages(contextPages.map((item) => item.id === page.id ? { ...item, widgets } : item))} /></div>}
     </aside></Region>{agentOpen && <AgentDialog thread={thread} close={() => setAgentOpen(false)} />}
   </div>;
 }
@@ -2563,7 +2572,7 @@ async function selectModelKey(settings: UserSettings, key: string, act: (method:
 }
 
 function syncMainPreferences(settings: UserSettings) {
-  window.emma.setOverlayPreferences({ notchGap: settings.notchGap, cursorOrbsEnabled: settings.cursorOrbsEnabled, notchConcurrency: settings.notchConcurrency, systemPrompt: settings.systemPrompt, connections: settings.connections });
+  window.emma.setOverlayPreferences({ notchGap: settings.notchGap, cursorOrbsEnabled: settings.cursorOrbsEnabled, notchConcurrency: settings.notchConcurrency, systemPrompt: settings.systemPrompt, prompts: settings.prompts, connections: settings.connections });
   // Main starts on the default verifier, so a saved one has to be pushed at launch
   // as well as on save — otherwise Auto mode reviews with the wrong model until Settings is opened.
   void window.emma.setVerifier(settings.verifier).catch(() => undefined);
@@ -2592,7 +2601,7 @@ const credits: { title: string; body: string; href?: string; link?: string }[] =
   { title: "Brand marks", body: "Vendor icons come from official brand kits where one exists, and otherwise from pinned Simple Icons and lobe-icons revisions (both MIT for the packaging). Each mark stays its owner's trademark.", href: "https://github.com/simple-icons/simple-icons", link: "simple-icons ↗" },
 ];
 
-type SettingsPage = "actions" | "notch" | "keybinds" | "voice" | "appearance" | "contextbar" | "models" | "tools" | "harness" | "imports" | "connections" | "privacy" | "about";
+type SettingsPage = "actions" | "notch" | "keybinds" | "voice" | "appearance" | "contextbar" | "models" | "prompts" | "tools" | "harness" | "imports" | "connections" | "privacy" | "about";
 const settingsPages: { id: SettingsPage; label: string; copy: string; group: string }[] = [
   { id: "actions", label: "Quick actions", copy: "Three overlay shortcuts", group: "Personal" },
   { id: "notch", label: "Notch", copy: "Quick Ask model and tasks", group: "Personal" },
@@ -2601,6 +2610,7 @@ const settingsPages: { id: SettingsPage; label: string; copy: string; group: str
   { id: "appearance", label: "Appearance", copy: "Interface and agent fonts", group: "Personal" },
   { id: "contextbar", label: "Context bar", copy: "Arrange the thread inspector", group: "Personal" },
   { id: "models", label: "Models", copy: "Picker, keys, and routes", group: "Personal" },
+  { id: "prompts", label: "System prompt", copy: "Global, and per model", group: "Coding" },
   { id: "tools", label: "Tools", copy: "What the agent may call", group: "Integrations" },
   { id: "harness", label: "Harness", copy: "Experimental context hooks", group: "Coding" },
   { id: "imports", label: "Imports & plugins", copy: "Skills and MCP sources", group: "Integrations" },
@@ -2942,6 +2952,10 @@ function SettingsBody({ snapshot, page, act, busy, onModelChanged }: { snapshot:
   /* Saved on toggle, like the fonts and keybinds: the switch is the whole setting,
      and main re-probes for the binaries when the selection reaches it. */
   const saveConnections = (connections: string[]) => { const valid = persistSettings({ ...settings, connections }); setSettings(valid); syncMainPreferences(valid); };
+  /* Saved on every keystroke, like the fonts and the arrangements: main is what
+     writes these out for the next turn, and they travel on the one message it
+     already receives. A Save button under a prompt editor is a second gesture. */
+  const savePrompts = (next: UserSettings) => { const valid = persistSettings(next); setSettings(valid); syncMainPreferences(valid); };
   // Saved on pick, not behind the form's Save: a font is judged by looking at it.
   const saveFont = (field: "interfaceFont" | "agentFont", value: FontChoice) => setSettings(persistSettings({ ...settings, [field]: value }));
   /* Saved on drop, like the fonts and the keybinds: an arrangement is judged by
@@ -2962,13 +2976,14 @@ function SettingsBody({ snapshot, page, act, busy, onModelChanged }: { snapshot:
   if (page === "notch") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Notch</h2></header><NotchSettings settings={settings} onChange={saveNotch} busy={busy} /></section>;
   if (page === "voice") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Voice</h2></header><VoiceSettings settings={settings} onChange={saveModelSettings} busy={busy} /></section>;
   if (page === "keybinds") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Keybinds</h2></header><KeybindSettings settings={settings} save={saveKeybinds} /></section>;
+  if (page === "prompts") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>System prompt</h2><p>The text every turn opens with. One global prompt, plus as many as you like pinned to a model family or a single model — the pinned ones are read after the global, so they win where the two disagree. Anything in <b>{"{braces}"}</b> is filled in when the turn goes out.</p></header><PromptSettings settings={settings} onChange={savePrompts} busy={busy} /></section>;
   if (page === "tools") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Tools</h2></header><ToolSettingsPanel settings={settings} onChange={saveTools} onDefaultMode={(defaultPermissionMode) => saveModelSettings({ ...settings, defaultPermissionMode })} busy={busy} /></section>;
   if (page === "harness") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>Harness <b className="tag-experimental">Experimental</b></h2></header><HarnessExperimentsPanel settings={settings} onChange={saveHarnessExperiments} busy={busy} /></section>;
   if (page === "imports") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Imports & plugins</h2></header><AgentImports /></section>;
   if (page === "connections") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Connections</h2></header><ConnectionSettings settings={settings} onChange={saveConnections} busy={busy} /></section>;
   if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><h3>Start fresh</h3><p>Deletes every thread, knowledge page, artifact, plan, connected folder, saved key, and setting Emma keeps on this Mac, then restarts her empty. The Markdown mirror in your Documents folder is left where it is. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><h3>Threads and knowledge stay local</h3><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><h3>Annotated screens remain local</h3><p>The yellow pen captures and compresses a screen image locally. Provider transfer stays disabled until you explicitly authorize sending full-screen images to the selected model endpoint.</p></div></section><section><div><h3>Protected routing remains enforced</h3><p>Selected-model turns request no provider data collection and zero retention. OpenRouter account-level logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. Creating or updating knowledge always requires an explicit user action or a quick action configured to save.</p></div></section><section><div><h3>Every run is gated by the mode picker</h3><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through. The step ceiling, the action rate limit, the on-screen banner, and the Escape kill switch apply in every mode, and every action is logged.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>Settings / about</span><h2>Emma</h2></header><div className="settings-lines prose-lines">{credits.map((credit) => <section key={credit.title}><div><h3>{credit.title}</h3><p>{credit.body}</p>{credit.href ? <a href={credit.href} target="_blank" rel="noreferrer">{credit.link}</a> : null}</div></section>)}</div></section>;
-  return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Quick actions</h2></header><section className="notch-settings"><div><h3>Quick Ask hangs off the camera housing</h3><p>Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing.</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section><section className="prompt-settings"><div><h3>Standing instructions</h3><p>Added to the system context of every turn, on Emma’s own loop and on the coding harness. It is added to what each already sends — the built-in prompt carries the tool contracts, so this never replaces it.</p><label className="prompt-field">Your instructions<textarea value={settings.systemPrompt} maxLength={MAX_SYSTEM_PROMPT_CHARS} rows={6} placeholder="e.g. Answer in British English, and say what you checked before claiming something works." onChange={(event) => setSettings((current) => ({ ...current, systemPrompt: event.target.value }))} /></label><div className="prompt-footer"><small>{settings.systemPrompt.length} / {MAX_SYSTEM_PROMPT_CHARS} characters</small><button type="button" onClick={() => setSettings((current) => ({ ...current, systemPrompt: defaultSettings.systemPrompt }))}>Reset to default</button></div></div></section><div className="quick-settings">{settings.quickActions.map((action, index) => <section className="quick-action-row" key={index}><div className="shortcut"><kbd>⌘{index + 1}</kbd><span>Overlay action</span></div><div className="quick-fields"><label>Label<input value={action.label} maxLength={40} onChange={(event) => updateAction(index, "label", event.target.value)} /></label><label className="prompt-field">Prompt<textarea value={action.prompt} maxLength={4096} rows={2} onChange={(event) => updateAction(index, "prompt", event.target.value)} /></label><label>Destination<select value={resolveQuickActionDestination(action.destinationKnowledgeBaseId, snapshot.knowledgeBases) ?? ""} onChange={(event) => updateAction(index, "destinationKnowledgeBaseId", event.target.value)}><option value="">Default</option>{snapshot.knowledgeBases.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}</select></label><label>Category<input value={action.category} placeholder="optional" onChange={(event) => updateAction(index, "category", event.target.value)} /></label><label className="check"><input type="checkbox" checked={action.saveToKnowledge} onChange={(event) => updateAction(index, "saveToKnowledge", event.target.checked)} /> Save analyzed result</label></div></section>)}</div><section className="orb-settings"><div><h3>Orbs you can rearrange</h3><p>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the island when the pointer swipes below it. Pick an orb to change what it runs or where it sits. <b>Save page</b> keeps the page your browser has in front — its text, its favicon, and the pictures it leads with. Emma files captures into a category by itself once one of your categories holds {AUTO_FILE_EXAMPLES} examples to learn from; until then they land unfiled.</p>
+  return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Quick actions</h2></header><section className="notch-settings"><div><h3>Quick Ask hangs off the camera housing</h3><p>Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing.</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section><div className="quick-settings">{settings.quickActions.map((action, index) => <section className="quick-action-row" key={index}><div className="shortcut"><kbd>⌘{index + 1}</kbd><span>Overlay action</span></div><div className="quick-fields"><label>Label<input value={action.label} maxLength={40} onChange={(event) => updateAction(index, "label", event.target.value)} /></label><label className="prompt-field">Prompt<textarea value={action.prompt} maxLength={4096} rows={2} onChange={(event) => updateAction(index, "prompt", event.target.value)} /></label><label>Destination<select value={resolveQuickActionDestination(action.destinationKnowledgeBaseId, snapshot.knowledgeBases) ?? ""} onChange={(event) => updateAction(index, "destinationKnowledgeBaseId", event.target.value)}><option value="">Default</option>{snapshot.knowledgeBases.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}</select></label><label>Category<input value={action.category} placeholder="optional" onChange={(event) => updateAction(index, "category", event.target.value)} /></label><label className="check"><input type="checkbox" checked={action.saveToKnowledge} onChange={(event) => updateAction(index, "saveToKnowledge", event.target.checked)} /> Save analyzed result</label></div></section>)}</div><section className="orb-settings"><div><h3>Orbs you can rearrange</h3><p>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the island when the pointer swipes below it. Pick an orb to change what it runs or where it sits. <b>Save page</b> keeps the page your browser has in front — its text, its favicon, and the pictures it leads with. Emma files captures into a category by itself once one of your categories holds {AUTO_FILE_EXAMPLES} examples to learn from; until then they land unfiled.</p>
       <label className="check"><input type="checkbox" checked={settings.cursorOrbsEnabled} onChange={(event) => setSettings((current) => ({ ...current, cursorOrbsEnabled: event.target.checked }))} /> Ring the cursor when Quick Ask opens</label>
       <label className="check"><input type="checkbox" checked={settings.notchCommandsEnabled} onChange={(event) => setSettings((current) => ({ ...current, notchCommandsEnabled: event.target.checked }))} /> Reveal commands under the island on a swipe</label>
       <div className="orb-fields"><label>Orbs · 1–{MAX_CURSOR_ORBS}<input type="number" min={1} max={MAX_CURSOR_ORBS} value={settings.cursorOrbs.length} onChange={(event) => resizeOrbs(event.currentTarget.valueAsNumber)} /></label>
@@ -3296,6 +3311,107 @@ const seesImages = (model: OpenRouterCatalog["models"][number]) => model.inputMo
  * filter that saved row too; and the custom-endpoint escape is the only way to
  * name a route the catalog has never heard of.
  */
+/** One editable prompt body: a mirror paints the `{variables}`, the textarea over it takes the typing. */
+function PromptEditor({ value, onChange, busy, rows }: { value: string; onChange: (value: string) => void; busy: boolean; rows: number }) {
+  const mirror = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const insert = (name: string) => {
+    const node = input.current;
+    if (!node) return;
+    const start = node.selectionStart ?? value.length;
+    const caret = start + name.length + 2;
+    onChange(`${value.slice(0, start)}{${name}}${value.slice(node.selectionEnd ?? start)}`.slice(0, MAX_SYSTEM_PROMPT_CHARS));
+    requestAnimationFrame(() => { node.focus(); node.setSelectionRange(caret, caret); });
+  };
+  return <div className="prompt-editor">
+    <div className="prompt-canvas">
+      <div className="prompt-highlight" ref={mirror} aria-hidden="true">{promptSegments(value).map((segment, index) => <span key={index} className={segment.hue === undefined ? segment.unknown ? "prompt-token prompt-token-unknown" : undefined : "prompt-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div>
+      <textarea ref={input} value={value} disabled={busy} spellCheck={false} rows={rows} maxLength={MAX_SYSTEM_PROMPT_CHARS} aria-label="Prompt text"
+        onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }}
+        onChange={(event) => onChange(event.target.value)} />
+    </div>
+    <div className="prompt-variables">{PROMPT_VARIABLES.map((variable, index) => <button type="button" key={variable.name} className="prompt-token" data-hue={index % 6} disabled={busy} title={variable.detail} onClick={() => insert(variable.name)}>{`{${variable.name}}`}</button>)}</div>
+  </div>;
+}
+
+/** What a conditional prompt is pinned to: every model, one family, or one model. */
+function ScopePicker({ settings, entries, scope, onChange, busy }: { settings: UserSettings; entries: CatalogEntry[]; scope: string; onChange: (scope: string) => void; busy: boolean }) {
+  const [picking, setPicking] = useState(false);
+  const modelKey = scope.startsWith("model:") ? scope.slice("model:".length) : "";
+  const family = scope.startsWith("family:") ? scope.slice("family:".length) : "";
+  return <div className="scope-picker">
+    <div className="scope-marks">
+      <button type="button" className="scope-mark" aria-pressed={!scope} disabled={busy} onClick={() => { onChange(""); setPicking(false); }}><BrandIcon brand={allBrand} className="model-brand" /><span>Every model</span></button>
+      {MODEL_FAMILIES.map((entry) => <button type="button" key={entry.id} className="scope-mark" aria-pressed={family === entry.id} disabled={busy} title={`Only ${entry.label} models`} onClick={() => { onChange(`family:${entry.id}`); setPicking(false); }}>
+        <BrandIcon brand={brandForProvider(entry.brand) ?? allBrand} className="model-brand" /><span>{entry.label}</span>
+      </button>)}
+      <button type="button" className="scope-mark" aria-pressed={!!modelKey} aria-expanded={picking} disabled={busy} onClick={() => setPicking(!picking)}>
+        <BrandIcon brand={modelKey ? modelKeyBrand(settings, modelKey) ?? allBrand : allBrand} className="model-brand" /><span>{modelKey ? modelKeyLabel(settings, modelKey) : "One model…"}</span>
+      </button>
+    </div>
+    {picking && <div className="scope-models model-menu"><ModelPicker entries={entries} active={modelKey} label="the model this prompt is pinned to" busy={busy} onPick={(key) => { onChange(`model:${key}`); setPicking(false); }} /></div>}
+  </div>;
+}
+
+/**
+ * Settings → System prompt: the whole prompt, not an addition to one.
+ *
+ * The global text rides every turn. A conditional one rides only the turns whose
+ * model matches it, and is read after the global so the narrower text wins where
+ * the two disagree. Forking exists because that is how a per-model prompt is
+ * actually written: from the one already working, not from a blank field.
+ */
+function PromptSettings({ settings, onChange, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void; busy: boolean }) {
+  const [models, setModels] = useState<OpenRouterCatalog["models"]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => { void window.emma.request<OpenRouterCatalog>("listOpenRouterModels").then((catalog) => setModels(catalog.models)).catch(() => setModels([])); }, []);
+  const entries = useMemo(() => modelEntries(settings.localModels, models), [settings.localModels, models]);
+  const apply = (next: Partial<UserSettings>) => {
+    setError("");
+    try { onChange({ ...settings, ...next }); }
+    catch (reason) { setError(reasonText(reason)); }
+  };
+  const write = (id: string, patch: Partial<PromptPreset>) => apply({ prompts: settings.prompts.map((preset) => preset.id === id ? { ...preset, ...patch } : preset) });
+  const add = (preset: PromptPreset) => {
+    if (settings.prompts.length >= MAX_PROMPTS) { setError(`Keep at most ${MAX_PROMPTS} prompts.`); return; }
+    apply({ prompts: [...settings.prompts, preset] });
+  };
+  return <>
+    <section className="prompt-card">
+      <header>
+        <div><h3>Global</h3><p>The whole system prompt, sent on every turn whatever model answers it. Emma’s harness adds its own tool contracts underneath, so the tools keep working however this is rewritten.</p></div>
+        <div className="prompt-card-actions">
+          <button type="button" disabled={busy} onClick={() => add({ id: newPresetId(), name: "Forked from global", body: settings.systemPrompt, scope: "", enabled: false })}>Fork</button>
+          <button type="button" disabled={busy || settings.systemPrompt === DEFAULT_SYSTEM_PROMPT} onClick={() => apply({ systemPrompt: DEFAULT_SYSTEM_PROMPT })}>Reset to default</button>
+        </div>
+      </header>
+      <PromptEditor value={settings.systemPrompt} busy={busy} rows={18} onChange={(systemPrompt) => apply({ systemPrompt })} />
+      <footer><small>{settings.systemPrompt.length} / {MAX_SYSTEM_PROMPT_CHARS} characters</small></footer>
+    </section>
+    {settings.prompts.map((preset) => <section className={`prompt-card ${promptApplies(preset, settings.selectedModel) ? "prompt-live" : ""}`} key={preset.id}>
+      <header>
+        <div className="prompt-name">
+          <label className="check"><input type="checkbox" checked={preset.enabled} disabled={busy} onChange={(event) => write(preset.id, { enabled: event.target.checked })} /> On</label>
+          <input value={preset.name} maxLength={MAX_PROMPT_NAME_CHARS} disabled={busy} aria-label="Prompt name" onChange={(event) => write(preset.id, { name: event.target.value })} />
+          {promptApplies(preset, settings.selectedModel) && <strong className="status-live"><i /> Applies to {modelKeyLabel(settings, settings.selectedModel)}</strong>}
+        </div>
+        <div className="prompt-card-actions">
+          <button type="button" disabled={busy} onClick={() => add(forkPreset(preset, newPresetId()))}>Fork</button>
+          <button type="button" disabled={busy} onClick={() => apply({ prompts: settings.prompts.filter((item) => item.id !== preset.id) })}>Delete</button>
+        </div>
+      </header>
+      <ScopePicker settings={settings} entries={entries} scope={preset.scope} busy={busy} onChange={(scope) => write(preset.id, { scope })} />
+      <PromptEditor value={preset.body} busy={busy} rows={10} onChange={(body) => write(preset.id, { body })} />
+      <footer><small>{preset.body.length} / {MAX_SYSTEM_PROMPT_CHARS} characters · read after the global one, so it wins where the two disagree</small></footer>
+    </section>)}
+    <div className="prompt-add">
+      <button type="button" disabled={busy || settings.prompts.length >= MAX_PROMPTS} onClick={() => add({ id: newPresetId(), name: "New prompt", body: "", scope: "", enabled: true })}>Add a conditional prompt</button>
+      <small>{settings.prompts.length} / {MAX_PROMPTS}</small>
+    </div>
+    {error && <p className="local-model-error" role="status">{error}</p>}
+  </>;
+}
+
 function SecondModelPicker({ label, off, draft, localModels, onChange, busy, accepts }: {
   label: string;
   /** What the empty choice means for this model, in its own words. */

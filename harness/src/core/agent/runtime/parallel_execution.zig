@@ -22,6 +22,7 @@ pub fn isReadOnlyCall(registry: tool_dispatch.Registry, call: ToolCall) bool {
         .read_file,
         .read_tool_result,
         .semantic_search,
+        .lsp,
         .grep_files,
         .file_info,
         .skill,
