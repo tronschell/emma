@@ -31,12 +31,15 @@ const HASH = /^(sh|bash|zsh|shell|console|fish|py|python|rb|ruby|pl|perl|r|ya?ml
    either), then strings, tags, numbers, and finally a bare name. */
 const CORE = String.raw`\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|\/\/[^\n]*)|("(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|\x60(?:\\.|[^\x60\\])*\x60?)|(<\/?[A-Za-z][\w.:-]*)|(\b\d[\w.]*)|([A-Za-z_$@#-][\w$-]*)`;
 
+const PLAIN = new RegExp(`(${CORE}`, "g");
+const HASHED = new RegExp(String.raw`(#[^\n]*|` + CORE, "g");
+
 /**
  * The block's text split into runs. Every character of the input comes back
  * exactly once, in order, so rendering the tokens rebuilds the block verbatim.
  */
 export function tokenize(text: string, language = ""): Token[] {
-  const pattern = new RegExp(`(${HASH.test(language) ? String.raw`#[^\n]*|` : ""}${CORE}`, "g");
+  const pattern = HASH.test(language) ? HASHED : PLAIN;
   const tokens: Token[] = [];
   let last = 0;
   const plain = (end: number) => { if (end > last) tokens.push({ text: text.slice(last, end) }); };

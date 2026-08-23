@@ -5,6 +5,7 @@ import { PromptField, useTaskCommands } from "./schedule";
 import { plural } from "./plural";
 import { DEFAULT_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
 import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
+import { zoned } from "./dates";
 
 /* Its own module so recharts stays out of the overlay and the quick-ask bundles:
    the workspace loads it only when the Autoresearch section is opened. */
@@ -14,7 +15,8 @@ import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const chart = { grid: token("--border"), axis: token("--text-3"), line: token("--teal"), keep: token("--lime"), crash: token("--rose"), mark: token("--orange") };
 
-const stamp = (value: string) => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
+const stampFormat = zoned({ month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const stamp = (value: string) => stampFormat(new Date(value));
 const num = (value: number | null) => value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 6 });
 const pct = (value: number | null) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 // $1 = 1_000_000 micro-dollars. A cent is 10_000, so a run that has spent less

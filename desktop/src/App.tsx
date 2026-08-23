@@ -4,6 +4,7 @@ import { describeRun, describeTrigger, parseVariables, parseWorkflow, runWorkflo
 import { PluginsView } from "./plugins";
 import { PromptField, TriggerPicker, useTaskCommands, WorkflowGraph } from "./schedule";
 import { plural } from "./plural";
+import { zoned } from "./dates";
 import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
@@ -54,8 +55,10 @@ const SNAPSHOT_REFRESH_MS = 60_000;
 const AgentView = lazy(() => import("./AgentView"));
 const ResearchView = lazy(() => import("./research"));
 const ChartArtifact = lazy(() => import("./chart-artifact"));
-const date = (value: string) => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
-const time = (value: string) => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+const dateFormat = zoned({ month: "short", day: "numeric", year: "numeric" });
+const timeFormat = zoned({ hour: "numeric", minute: "2-digit" });
+const date = (value: string) => dateFormat(new Date(value));
+const time = (value: string) => timeFormat(new Date(value));
 
 function Mark() {
   return <span className="mark" aria-hidden="true">◇</span>;

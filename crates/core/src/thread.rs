@@ -7,7 +7,10 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -653,7 +656,7 @@ impl Thread {
 struct ParsedThread {
     modified: SystemTime,
     length: u64,
-    thread: Thread,
+    thread: Arc<Thread>,
 }
 
 fn file_stamp(metadata: &Metadata) -> Option<(SystemTime, u64)> {
@@ -678,21 +681,21 @@ impl ThreadStore {
         &self.root
     }
 
-    fn take_parsed(&self, id: &ThreadId, stamp: (SystemTime, u64)) -> Option<Thread> {
+    fn take_parsed(&self, id: &ThreadId, stamp: (SystemTime, u64)) -> Option<Arc<Thread>> {
         self.parsed
             .borrow()
             .get(id)
             .filter(|entry| (entry.modified, entry.length) == stamp)
-            .map(|entry| entry.thread.clone())
+            .map(|entry| Arc::clone(&entry.thread))
     }
 
-    fn keep_parsed(&self, stamp: (SystemTime, u64), thread: &Thread) {
+    fn keep_parsed(&self, stamp: (SystemTime, u64), thread: Arc<Thread>) {
         self.parsed.borrow_mut().insert(
             thread.id.clone(),
             ParsedThread {
                 modified: stamp.0,
                 length: stamp.1,
-                thread: thread.clone(),
+                thread,
             },
         );
     }
@@ -739,7 +742,7 @@ impl ThreadStore {
         })();
         match &result {
             Ok(written) => match fs::metadata(written).ok().and_then(|it| file_stamp(&it)) {
-                Some(stamp) => self.keep_parsed(stamp, thread),
+                Some(stamp) => self.keep_parsed(stamp, Arc::new(thread.clone())),
                 None => {
                     self.parsed.borrow_mut().remove(&thread.id);
                 }
@@ -753,6 +756,10 @@ impl ThreadStore {
     }
 
     pub fn load(&self, id: &ThreadId) -> Result<Thread, ThreadStoreError> {
+        self.cached(id).map(|thread| (*thread).clone())
+    }
+
+    fn cached(&self, id: &ThreadId) -> Result<Arc<Thread>, ThreadStoreError> {
         let path = self.path_for(id);
         let stamp = fs::metadata(&path).ok().and_then(|it| file_stamp(&it));
         if let Some(thread) = stamp.and_then(|stamp| self.take_parsed(id, stamp)) {
@@ -771,8 +778,9 @@ impl ThreadStore {
                 reason: "thread ID does not match filename".into(),
             }));
         }
+        let thread = Arc::new(thread);
         if let Some(stamp) = stamp {
-            self.keep_parsed(stamp, &thread);
+            self.keep_parsed(stamp, Arc::clone(&thread));
         }
         Ok(thread)
     }
@@ -814,7 +822,7 @@ impl ThreadStore {
                     continue;
                 }
             };
-            match self.load(&id) {
+            match self.cached(&id) {
                 Ok(thread) => listing.threads.push(thread),
                 Err(ThreadStoreError::Malformed(thread)) => listing.malformed.push(thread),
                 Err(ThreadStoreError::Io(error)) => return Err(ThreadStoreError::Io(error)),
@@ -843,7 +851,7 @@ impl ThreadStore {
 
 #[derive(Debug, Default)]
 pub struct ThreadListing {
-    pub threads: Vec<Thread>,
+    pub threads: Vec<Arc<Thread>>,
     pub malformed: Vec<MalformedThread>,
 }
 

@@ -64,37 +64,35 @@ typedef struct {
 
 typedef struct {
     HoldSet set;
-    /** Which binding is being held, +1, so 0 means nothing is. */
     size_t armed;
-    double armed_at;
-    /** Bumped on every cancel so a timer that already fired knows it is stale. */
     uint64_t generation;
 } HoldWatch;
 
-static const struct { uint16_t code; NSEventModifierFlags flag; } kModifierFlags[] = {
-    {54, NSEventModifierFlagCommand}, {55, NSEventModifierFlagCommand},
-    {56, NSEventModifierFlagShift}, {60, NSEventModifierFlagShift},
-    {58, NSEventModifierFlagOption}, {61, NSEventModifierFlagOption},
-    {59, NSEventModifierFlagControl}, {62, NSEventModifierFlagControl},
+static const CGEventFlags kModifierMask = kCGEventFlagMaskAlphaShift | kCGEventFlagMaskShift
+    | kCGEventFlagMaskControl | kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand
+    | kCGEventFlagMaskNumericPad | kCGEventFlagMaskHelp | kCGEventFlagMaskSecondaryFn;
+
+static const struct { uint16_t code; CGEventFlags flag; } kModifierFlags[] = {
+    {54, kCGEventFlagMaskCommand}, {55, kCGEventFlagMaskCommand},
+    {56, kCGEventFlagMaskShift}, {60, kCGEventFlagMaskShift},
+    {58, kCGEventFlagMaskAlternate}, {61, kCGEventFlagMaskAlternate},
+    {59, kCGEventFlagMaskControl}, {62, kCGEventFlagMaskControl},
 };
 
-static NSEventModifierFlags modifier_flag(uint16_t key_code) {
+static CGEventFlags modifier_flag(uint16_t key_code) {
     for (size_t index = 0; index < sizeof(kModifierFlags) / sizeof(kModifierFlags[0]); index += 1) {
         if (kModifierFlags[index].code == key_code) return kModifierFlags[index].flag;
     }
     return 0;
 }
 
-/** Which binding this event just armed, +1, or 0 when it armed nothing (and cancelled any). */
-static size_t handle_hold(HoldWatch *watch, NSEventType type, uint16_t key_code, NSEventModifierFlags flags, double time) {
-    flags &= NSEventModifierFlagDeviceIndependentFlagsMask;
-    if (type != NSEventTypeFlagsChanged) { watch->armed = 0; watch->generation += 1; return 0; }
+static size_t handle_hold(HoldWatch *watch, CGEventType type, uint16_t key_code, CGEventFlags flags) {
+    flags &= kModifierMask;
+    if (type != kCGEventFlagsChanged) { watch->armed = 0; watch->generation += 1; return 0; }
     for (size_t index = 0; index < watch->set.count; index += 1) {
-        NSEventModifierFlags flag = modifier_flag(watch->set.items[index].key_code);
-        // Exactly this modifier, nothing else: ⌥ held is a binding, ⇧⌥ held is a chord in progress.
+        CGEventFlags flag = modifier_flag(watch->set.items[index].key_code);
         if (watch->set.items[index].key_code == key_code && flag != 0 && flags == flag) {
             watch->armed = index + 1;
-            watch->armed_at = time;
             watch->generation += 1;
             return watch->armed;
         }
@@ -136,12 +134,11 @@ static HoldSet parse_holds(NSDictionary *object) {
     return set;
 }
 
-static TapEvent event_input(NSEvent *event) {
-    if (event.type == NSEventTypeKeyDown) return TapCancel;
-    if (event.type != NSEventTypeFlagsChanged || event.keyCode != kLeftOptionKeyCode) return TapCancel;
+static TapEvent event_input(CGEventType type, uint16_t key_code, CGEventFlags flags) {
+    if (type != kCGEventFlagsChanged || key_code != kLeftOptionKeyCode) return TapCancel;
 
-    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    if (flags == NSEventModifierFlagOption) return TapDown;
+    flags &= kModifierMask;
+    if (flags == kCGEventFlagMaskAlternate) return TapDown;
     if (flags == 0) return TapUp;
     return TapCancel;
 }
@@ -572,39 +569,36 @@ static void self_test(void) {
     assert(!handle_tap(&tap, TapCancel, 0.51));
     assert(!handle_tap(&tap, TapDown, 0.6));
 
-    NSEvent *left_down = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:NSEventModifierFlagOption timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:kLeftOptionKeyCode];
-    NSEvent *left_up = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:kLeftOptionKeyCode];
-    NSEvent *right_down = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:NSEventModifierFlagOption timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:61];
-    NSEvent *chord_down = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:(NSEventModifierFlagOption | NSEventModifierFlagCommand) timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:kLeftOptionKeyCode];
-    NSEvent *key_down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
-    assert(event_input(left_down) == TapDown);
-    assert(event_input(left_up) == TapUp);
-    assert(event_input(right_down) == TapCancel);
-    assert(event_input(chord_down) == TapCancel);
-    assert(event_input(key_down) == TapCancel);
+    assert(event_input(kCGEventFlagsChanged, kLeftOptionKeyCode, kCGEventFlagMaskAlternate) == TapDown);
+    assert(event_input(kCGEventFlagsChanged, kLeftOptionKeyCode, kCGEventFlagMaskAlternate | kCGEventFlagMaskNonCoalesced) == TapDown);
+    assert(event_input(kCGEventFlagsChanged, kLeftOptionKeyCode, 0) == TapUp);
+    assert(event_input(kCGEventFlagsChanged, 61, kCGEventFlagMaskAlternate) == TapCancel);
+    assert(event_input(kCGEventFlagsChanged, kLeftOptionKeyCode, kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand) == TapCancel);
+    assert(event_input(kCGEventFlagsChanged, kLeftOptionKeyCode, kCGEventFlagMaskAlternate | kCGEventFlagMaskSecondaryFn) == TapCancel);
+    assert(event_input(kCGEventKeyDown, 0, 0) == TapCancel);
 
     HoldWatch watch = {0};
     watch.set = parse_holds(@{@"holds": @[@{@"id": @"voice", @"keyCode": @58, @"ms": @500}, @{@"id": @"bad", @"keyCode": @0, @"ms": @500}]});
     // A letter key is not holdable, so only the modifier binding survives parsing.
     assert(watch.set.count == 1 && watch.set.items[0].key_code == 58 && watch.set.items[0].seconds == 0.5);
-    size_t armed = handle_hold(&watch, NSEventTypeFlagsChanged, 58, NSEventModifierFlagOption, 0);
+    size_t armed = handle_hold(&watch, kCGEventFlagsChanged, 58, kCGEventFlagMaskAlternate);
     assert(armed == 1);
     uint64_t generation = watch.generation;
     assert(hold_survived(&watch, armed, generation));
     // Releasing, adding a second modifier, or typing under the hold all cancel it.
-    assert(handle_hold(&watch, NSEventTypeFlagsChanged, 58, 0, 0.1) == 0);
+    assert(handle_hold(&watch, kCGEventFlagsChanged, 58, 0) == 0);
     assert(!hold_survived(&watch, armed, generation));
-    armed = handle_hold(&watch, NSEventTypeFlagsChanged, 58, NSEventModifierFlagOption, 1);
+    armed = handle_hold(&watch, kCGEventFlagsChanged, 58, kCGEventFlagMaskAlternate);
     generation = watch.generation;
-    assert(armed == 1 && handle_hold(&watch, NSEventTypeFlagsChanged, 56, NSEventModifierFlagOption | NSEventModifierFlagShift, 1.1) == 0);
+    assert(armed == 1 && handle_hold(&watch, kCGEventFlagsChanged, 56, kCGEventFlagMaskAlternate | kCGEventFlagMaskShift) == 0);
     assert(!hold_survived(&watch, armed, generation));
-    armed = handle_hold(&watch, NSEventTypeFlagsChanged, 58, NSEventModifierFlagOption, 2);
+    armed = handle_hold(&watch, kCGEventFlagsChanged, 58, kCGEventFlagMaskAlternate);
     generation = watch.generation;
-    assert(armed == 1 && handle_hold(&watch, NSEventTypeKeyDown, 0, NSEventModifierFlagOption, 2.1) == 0);
+    assert(armed == 1 && handle_hold(&watch, kCGEventKeyDown, 0, kCGEventFlagMaskAlternate) == 0);
     assert(!hold_survived(&watch, armed, generation));
     // The other Option key is a different binding, and an unbound modifier arms nothing.
-    assert(handle_hold(&watch, NSEventTypeFlagsChanged, 61, NSEventModifierFlagOption, 3) == 0);
-    assert(handle_hold(&watch, NSEventTypeFlagsChanged, 56, NSEventModifierFlagShift, 4) == 0);
+    assert(handle_hold(&watch, kCGEventFlagsChanged, 61, kCGEventFlagMaskAlternate) == 0);
+    assert(handle_hold(&watch, kCGEventFlagsChanged, 56, kCGEventFlagMaskShift) == 0);
 
     InputAction action;
     NSString *text = nil;
@@ -645,6 +639,37 @@ static void self_test(void) {
     assert(!parse_action((NSDictionary *)@[], &action, &text, &error));
 }
 
+static DoubleLeftOption tap;
+static HoldWatch watch;
+static CFMachPortRef listener;
+
+static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *info) {
+    (void)proxy;
+    (void)info;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        CGEventTapEnable(listener, true);
+        return event;
+    }
+    uint16_t key_code = (uint16_t)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    CGEventFlags flags = CGEventGetFlags(event);
+    double time = (double)CGEventGetTimestamp(event) / (double)NSEC_PER_SEC;
+    if (handle_tap(&tap, event_input(type, key_code, flags), time)) {
+        fputs("toggle\n", stdout);
+        fflush(stdout);
+    }
+    size_t armed = handle_hold(&watch, type, key_code, flags);
+    if (!armed) return event;
+    uint64_t generation = watch.generation;
+    HoldBinding binding = watch.set.items[armed - 1];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(binding.seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!hold_survived(&watch, armed, generation)) return;
+        watch.armed = 0;
+        printf("hold %s\n", binding.id);
+        fflush(stdout);
+    });
+    return event;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc == 2 && strcmp(argv[1], "--self-test") == 0) {
@@ -659,13 +684,6 @@ int main(int argc, const char *argv[]) {
             fputs("Emma: Accessibility access is required for double-left-Option Quick Ask. Grant it in System Settings, then relaunch Emma.\n", stderr);
         }
 
-        NSApplication *application = [NSApplication sharedApplication];
-        [application setActivationPolicy:NSApplicationActivationPolicyProhibited];
-        [application finishLaunching];
-
-        __block DoubleLeftOption tap = {0};
-        static HoldWatch watch = {0};
-        // Emma rewrites the hold bindings on this stdin whenever the user changes them.
         __block NSMutableData *pending = [NSMutableData data];
         NSFileHandle *input = [NSFileHandle fileHandleWithStandardInput];
         input.readabilityHandler = ^(NSFileHandle *handle) {
@@ -682,7 +700,6 @@ int main(int argc, const char *argv[]) {
                     start = index + 1;
                     NSDictionary *object = line.length ? [NSJSONSerialization JSONObjectWithData:line options:0 error:NULL] : nil;
                     HoldSet parsed = object ? parse_holds(object) : (HoldSet){0};
-                    // The watch belongs to the event handler's thread, so hand it over there.
                     dispatch_async(dispatch_get_main_queue(), ^{
                         watch.set = parsed;
                         watch.armed = 0;
@@ -692,28 +709,17 @@ int main(int argc, const char *argv[]) {
                 pending = [[pending subdataWithRange:NSMakeRange(start, pending.length - start)] mutableCopy];
             }
         };
-        id monitor = [NSEvent addGlobalMonitorForEventsMatchingMask:(NSEventMaskFlagsChanged | NSEventMaskKeyDown) handler:^(NSEvent *event) {
-            if (handle_tap(&tap, event_input(event), event.timestamp)) {
-                fputs("toggle\n", stdout);
-                fflush(stdout);
-            }
-            size_t armed = handle_hold(&watch, event.type, event.keyCode, event.modifierFlags, event.timestamp);
-            if (!armed) return;
-            uint64_t generation = watch.generation;
-            HoldBinding binding = watch.set.items[armed - 1];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(binding.seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!hold_survived(&watch, armed, generation)) return;
-                // One report per press: the release cancels, so it cannot fire twice.
-                watch.armed = 0;
-                printf("hold %s\n", binding.id);
-                fflush(stdout);
-            });
-        }];
-        if (!monitor) {
+        listener = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly,
+            CGEventMaskBit(kCGEventFlagsChanged) | CGEventMaskBit(kCGEventKeyDown), observe, NULL);
+        if (!listener) {
             fputs("Emma: unable to start the Quick Ask hotkey listener.\n", stderr);
             return 1;
         }
-        [application run];
+        CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(NULL, listener, 0);
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+        CFRelease(source);
+        CGEventTapEnable(listener, true);
+        CFRunLoopRun();
     }
     return 0;
 }

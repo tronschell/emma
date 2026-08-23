@@ -19,6 +19,7 @@ import { plural } from "./plural";
 import { InfoDot } from "./icons";
 import { reasonText } from "./errors";
 import type { Snapshot } from "./types";
+import { zoned } from "./dates";
 
 /* ponytail: the newest threads, not all of them — one IPC per thread, and a
    pattern needs recent turns rather than every turn Emma has ever run. Raise
@@ -26,7 +27,8 @@ import type { Snapshot } from "./types";
 const RECENT_THREADS = 40;
 const WINDOW_DAYS = 30;
 
-const day = (at: number) => at ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(at)) : "—";
+const dayFormat = zoned({ month: "short", day: "numeric" });
+const day = (at: number) => at ? dayFormat(new Date(at)) : "—";
 const per = (value: number) => value.toFixed(2);
 const Empty = ({ copy }: { copy: string }) => <div className="empty"><span className="mark" aria-hidden="true">◇</span><p>{copy}</p></div>;
 

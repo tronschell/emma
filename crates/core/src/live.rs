@@ -96,7 +96,7 @@ pub struct ThreadAuthoringContext {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSnapshot {
-    pub threads: Vec<Thread>,
+    pub threads: Vec<Arc<Thread>>,
     pub knowledge_bases: Vec<KnowledgeBase>,
     pub pages: Vec<KnowledgePage>,
     pub scheduled_jobs: Vec<ScheduledJob>,
