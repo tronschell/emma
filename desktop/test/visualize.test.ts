@@ -8,7 +8,7 @@ import { groupBlocks, type Block } from "../src/runs";
 import { toolGate } from "../shared/permissions";
 import type { ThreadStep } from "../shared/agents";
 
-const everything = { folders: true, computer: true, mcp: true, canSpawn: true };
+const everything = { folders: true, computer: true };
 const parse = (args: unknown) => parseToolArgs("visualize", JSON.stringify(args));
 const quarters = { kind: "line", labels: ["Q1", "Q2", "Q3"], values: [4, 9, 7], caption: "Revenue" };
 
@@ -80,10 +80,10 @@ test("a visualization is not an artifact, and does not fold away like a tool cal
 });
 
 test("drawing is offered in every mode, since it reaches nothing outside the transcript", () => {
-  assert.equal(toolGate("plan", "visualize"), "auto");
   assert.equal(toolGate("ask", "visualize"), "auto");
+  assert.equal(toolGate("full", "visualize"), "auto");
   // No folder, no MCP, no Mac: a picture needs none of them.
-  assert.ok(toolDefinitions("plan", { folders: false, computer: false, mcp: false, canSpawn: false }).some((tool) => tool.name === "visualize"));
+  assert.ok(toolDefinitions("ask", { folders: false, computer: false }).some((tool) => tool.name === "visualize"));
   // The description reaches the model over MCP, which truncates it at 1024 bytes —
   // and the argument rules are the tail that would be cut.
   const drawn = toolDefinitions("full", everything).find((tool) => tool.name === "visualize")!;

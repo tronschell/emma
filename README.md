@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="desktop/assets/emma.webp" alt="Emma: a hand-drawn window with two eyes and a pink bow" width="200">
+
 # Emma
 
 **A macOS agent workspace with an exportable knowledge base.**
@@ -13,7 +15,7 @@ Double-tap left Option. Ask. Keep what mattered as Markdown you own.
 [![Node](https://img.shields.io/badge/Node-24%2B-1f2a1f?style=flat-square&logo=nodedotjs&logoColor=5fa04e)](desktop/package.json)
 [![Docs](https://img.shields.io/badge/docs-docs%2F-1c1c1c?style=flat-square)](docs/README.md)
 
-<img src="desktop/screenshots/agent-dashboard.png" alt="Emma's workspace: sidebar, knowledge dashboard, and a job proposal waiting for approval" width="900">
+<img src="desktop/screenshots/workspace-thread.png" alt="Emma's workspace: thread sidebar on the left, a running conversation in the middle, and the context bar on the right showing thread stats, context used, and a timeline" width="900">
 
 </div>
 
@@ -57,7 +59,7 @@ New to the repo? Start at **[docs/getting-started.md](docs/getting-started.md)**
 | **Zig** | 0.16.0 |
 | **Xcode CLT** | `clang` builds the two native helpers |
 
-`npm run dev` builds the Rust host, the Zig sidecar, and the macOS hotkey
+`npm run dev` builds the Rust host, the Zig harness, and the macOS hotkey
 helper, then starts Vite and Electron against it. `npm --prefix desktop start`
 does the same without the dev server and also vendors ripgrep.
 
@@ -84,19 +86,56 @@ and the complete gate matrix: **[docs/permissions.md](docs/permissions.md)** and
 
 ### Subagents and sub-threads
 
+<img src="desktop/screenshots/plan-subagents.png" alt="A plan running mid-turn: the spawned subagent has its own tab across the top and its own row in the sidebar, while the context bar shows the eight-step dependency graph and the checklist for wave 1" width="900">
+
 Live subagents show in the sidebar under their own color and open in their own
 tab, where you can steer or stop them and read their model, rate, tokens, and
 tool calls. A `threads` call instead starts a full sub-thread nested under its
 parent, with an agent of its own and a card in the transcript to watch it, open
 it, stop it, or send it a line.
 
-The inspector carries the turn as a span waterfall, a ledger of what the prompt
-actually carried, a Git tab for the connected folder's working tree, and a
-`+N −M` diff of everything Emma's own writes touched, with a revert per file.
+## The context bar
+
+<img src="desktop/screenshots/settings-context-bar.png" alt="Settings → Context bar: page tabs, a list of components to drag in and out of the column, and a live preview of the bar at its default 288px width" width="900">
+
+The panel down the right of a thread is not a fixed stack — **it's components you
+arrange.** Seven of them ship: thread stats, the context-window ledger, the turn
+timeline, the plan graph, subagents, sub-threads, and Git.
+
+Everything about the arrangement is yours:
+
+| | |
+|---|---|
+| **Which components** | Drag any of the seven in; drag out the ones this kind of work never looks at. |
+| **In what order** | Reorder by dragging. What you read most goes above the fold. |
+| **Which way each lays out** | Stats, context, subagents, and sub-threads read down the column or across it — two real readings of the same panel, not a rotation. |
+| **How many arrangements** | Up to four **pages**, each named. The bar's own tabs switch between them, so "Context" while reading and "Run" while watching a build is one click. |
+| **How wide the column is** | Drag its edge — 260 to 360 px, 288 by default — or collapse it to a 30 px rail. |
+
+The preview in Settings is the real components — the same React the thread
+renders — over a made-up thread, so you see the arrangement before you commit it.
+
+Two pages ship by default: **Context** — the bar exactly as it was before any of
+this was configurable — and **Run**, which drops the reading panels for the
+timeline, the plan, subagents, sub-threads, and Git.
+
+A page holds each component at most once, names cap at 20 characters, and the
+whole arrangement is validated on the way in, so a hand-edited settings file
+can't produce a bar that won't paint. Edit it in **Settings → Context bar**.
+
+If none of the seven is what you want, Emma can write her own: a `code` artifact
+that claims the `context` surface is loaded as a real module and *becomes* the
+bar, with the built-in as the fallback when there's no module or it throws.
+
+The stock components carry the turn as a span waterfall, a ledger of what the
+prompt actually carried, the connected folder's working tree, and a `+N −M` diff
+of everything Emma's own writes touched, with a revert per file.
+
+Details: **[docs/context-bar.md](docs/context-bar.md)**
 
 ## The notch surfaces
 
-<img src="desktop/screenshots/notch-island.png" alt="Quick Ask open at the notch, with three quick-action orbs hanging below the island" width="820">
+<img src="desktop/screenshots/notch-island.png" alt="Quick Ask open at the notch, wrapping the camera housing: a draft in the composer, the mode and model chips along the foot" width="820">
 
 Emma measures the real camera housing per display through the
 `emma-option-tap` helper. Quick Ask is a single island: it takes over the menu
@@ -121,7 +160,7 @@ Details: **[docs/notch.md](docs/notch.md)** · **[docs/voice.md](docs/voice.md)*
 
 ## Knowledge
 
-<img src="desktop/screenshots/knowledge-workspace.png" alt="A saved knowledge page with its category, provenance, and token accounting" width="900">
+<img src="desktop/screenshots/knowledge-base.png" alt="The knowledge view: saved pages as cards across named bases, each with its category, source thumbnail, and date" width="900">
 
 Every thread selects one named knowledge base for writes (the stable
 **Default** base covers older data) plus read-only source bases for retrieval.
@@ -142,8 +181,11 @@ Details: **[docs/knowledge.md](docs/knowledge.md)**
 
 ## Jobs
 
-A **scheduled job** is a workflow — one validated trigger and a graph of agent,
-set, and branch nodes. Triggers are five-field UTC cron, `manual`,
+<img src="desktop/screenshots/scheduled-jobs.png" alt="The Scheduled view: a daily job with its cron trigger, the prompt it runs, the permission mode it runs as, its step list, and its past runs" width="900">
+
+A **scheduled job** is a workflow — one validated trigger and a graph of three
+node kinds: `agent` runs a prompt, `set` stores a value, `if` branches on a
+condition. Triggers are five-field UTC cron, `manual`,
 `after <job-id>`, or an app event. Jobs run only while Emma is open, create
 normal threads under the permission mode they were saved with, and never save
 knowledge or write a skill silently.
@@ -157,35 +199,29 @@ Details: **[docs/jobs.md](docs/jobs.md)** · **[docs/autoresearch.md](docs/autor
 
 ## Controlling the Mac
 
-Describe a task under ＋ → Control this Mac and approve the run: Emma captures
-the screen, moves the pointer, clicks, and types until the task is done. A
-banner sits above every app with the current action and a Stop button, and
-Escape aborts from anywhere.
+Ask for something that needs the screen and Emma reaches for the `computer`
+tool: she captures the display, moves the pointer, clicks, and types until the
+task is done. A banner sits above every app with the current action and a Stop
+button, and Escape aborts from anywhere.
 
-The YOLO toggle in Settings → Privacy skips the approval dialog **and nothing
-else** — the step, action, rate, and time ceilings, the action log, the banner,
-and Escape stay on either way. A run that hits a dead end or finds a better
-route writes itself a skill, so the next one starts knowing what this one
-learned.
+It is an ordinary tool, so **the composer's mode picker decides it** — `plan`
+hides it, `ask` and `acceptEdits` stop for your yes on every call, `auto` sends
+the call to your verifier model, and `full` lets it through. What the mode never
+changes: the step ceiling, the action rate limit, the time limit, the banner,
+the action log, and Escape. A run that hits a dead end or finds a better route
+writes itself a skill, so the next one starts knowing what this one learned.
 
 Details: **[docs/computer-use.md](docs/computer-use.md)**
 
 ## Models and credentials
 
-Point Emma at any OpenAI-compatible local or hosted endpoint. The credential
-setting names an environment variable and never contains the key:
+<img src="desktop/screenshots/model-picker.png" alt="The model picker open over a new thread: a searchable list of the live OpenRouter catalog with free models marked, provider filters down the side, a thinking slider, and the selected model pinned at the top" width="900">
 
-```bash
-export EMMA_PROVIDER_BASE_URL=http://127.0.0.1:1234/v1
-export EMMA_PROVIDER_MODEL=your-model
-export EMMA_PROVIDER_CREDENTIAL_ENV=EMMA_API_KEY
-export EMMA_API_KEY=your-key-or-local-placeholder
-```
-
-Settings → Models is the same thing without a shell. A pasted key is encrypted
-with the OS keychain under the user's data directory and reaches the host and
-its sidecar only through their spawn environment — the renderer gets back a mask
-and never the value.
+Point Emma at any OpenAI-compatible local or hosted endpoint from Settings →
+Models. The credential setting names an environment variable and never contains
+the key: a pasted key is encrypted with the OS keychain under the user's data
+directory and reaches the harness only through its spawn environment — the
+renderer gets back a mask and never the value.
 
 For **OpenRouter**, use the model picker in a thread's composer. Emma loads the
 live tool-capable catalog — free and paid, each marked — and browsing it needs
@@ -197,13 +233,13 @@ covers a first launch with neither. Running a model does need a key:
 export OPENROUTER_API_KEY=your-openrouter-key
 ```
 
-Settings → Privacy has a zero-retention switch: with it on, Emma sends
-OpenRouter's `provider.data_collection: "deny"` and `provider.zdr: true` on
-every model turn, so a request fails instead of falling back to a provider that
-may collect or retain the prompt. It is off by default because OpenRouter has no
-free zero-retention endpoint, and requiring one would block the whole free
-catalog. Account-level logging settings still apply — review them at
-<https://openrouter.ai/settings/privacy>.
+Settings → Models has a **Private routing** switch. With it on, Emma demands
+endpoints that neither train on nor retain your prompts, so a turn fails rather
+than quietly falling back to a provider that might keep it. It is off by default
+because OpenRouter has no free endpoint that qualifies — every free model fails
+while it's on, so leave it off unless you route to a paid or local model.
+Changing it restarts the local agent. Account-level logging settings still apply
+— review them at <https://openrouter.ai/settings/privacy>.
 
 Details: **[docs/models.md](docs/models.md)** · **[docs/privacy.md](docs/privacy.md)**
 
@@ -225,16 +261,15 @@ Details: **[docs/plugins.md](docs/plugins.md)** · **[docs/cli.md](docs/cli.md)*
 
 ### Emma in a terminal
 
-The same agent runs headless. Run this once to get an `emma` command on PATH:
+The same agent runs headless — it is the harness below, without the window:
 
 ```bash
-/Applications/Emma.app/Contents/Resources/emma --install
+/Applications/Emma.app/Contents/Resources/emma-cli ask "explain this repository"
 ```
 
-Then `emma "your prompt"`, or bare `emma` for a REPL. It talks to the same
-sidecar and provider settings. With a provider configured it advertises exactly
-one tool — `bash` — and gates each call on the tty under the same permission
-modes the desktop uses. `EMMA_MODE` selects the mode.
+Bare `emma-cli` is a REPL in the current directory, and `emma-cli sessions`
+lists what it has saved. Everything it does it gates on the tty under the same
+permission modes the desktop uses.
 
 ### The harness
 
@@ -243,8 +278,8 @@ modes the desktop uses. `EMMA_MODE` selects the mode.
 driven over the Agent Client Protocol from
 [`desktop/main/harness.ts`](desktop/main/harness.ts). It owns the agent loop,
 tool execution, hooks, skills, and subagents for a turn; Emma owns the window,
-the durable Markdown thread, and the answer to every permission question. It is
-off by default and opts in with `EMMA_HARNESS=1`.
+the durable Markdown thread, and the answer to every permission question. Every
+turn runs on it — there is no second loop to fall back to.
 
 Provenance and the Apache-2.0 obligations are in
 [`harness/FORK.md`](harness/FORK.md).
@@ -259,6 +294,7 @@ Everything lives in **[`docs/`](docs/README.md)**.
 |---|---|
 | [Getting started](docs/getting-started.md) | Install, run, first turn, macOS permissions |
 | [Concepts](docs/concepts.md) | Threads, runs, subagents, artifacts, context, the inspector |
+| [Context bar](docs/context-bar.md) | The thread inspector, every component, and how to rearrange it |
 | [Architecture](docs/architecture.md) | Process boundaries and the product contract |
 | [Permissions](docs/permissions.md) | The five modes and the full gate matrix |
 | [Tools](docs/tools.md) | Every tool a turn can call |
@@ -270,7 +306,7 @@ Everything lives in **[`docs/`](docs/README.md)**.
 | [Jobs](docs/jobs.md) | Scheduled workflows, triggers, node graphs |
 | [Autoresearch](docs/autoresearch.md) | The experiment loop and its immutable metric |
 | [Computer use](docs/computer-use.md) | Driving the Mac, and every safety rail |
-| [CLI](docs/cli.md) | The `emma` command and driving other CLIs |
+| [CLI](docs/cli.md) | Driving the user's other coding CLIs, and Settings → Connections |
 | [Harness](docs/harness.md) | The fx fork, ACP, and what it reaches today |
 | [Plugins](docs/plugins.md) | Skills, MCP servers, tools Emma writes, CSS plugins |
 | [Design system](docs/design-system.md) | Tokens, density, and the one visual language |
@@ -290,8 +326,7 @@ desktop/        Electron main/preload and React 19 workspace
   shared/         types and tables both sides agree on
   native/         emma-option-tap and emma-transcribe, built with clang
 crates/core/    Durable Markdown knowledge, thread, scheduled and research domain
-crates/host/    NDJSON host bridge and Zig sidecar adapter
-agent/          Zig agent sidecar, based on fx's embeddable architecture
+crates/host/    NDJSON host bridge
 harness/        emma-cli, Emma's fork of vercel-labs/fx, Apache-2.0
 website/        Separate React 19 + Tailwind 4 public site
 docs/           Product and architecture contracts
@@ -304,10 +339,10 @@ and the host boundary, and Zig owns the agent harness:
      sandboxed React renderer
              │  allowlisted IPC
      Electron main / preload
-             │  newline-delimited JSON over stdio
-     Rust host ──► emma-core ──► Markdown stores
-             │
-     Zig agent ──► OpenAI-compatible providers and lazy MCP tools
+             ├─ newline-delimited JSON over stdio
+             │      Rust host ──► emma-core ──► Markdown stores
+             └─ Agent Client Protocol over stdio
+                    Zig harness ──► OpenAI-compatible providers and MCP tools
 ```
 
 ## Development
@@ -315,7 +350,6 @@ and the host boundary, and Zig owns the agent harness:
 ```bash
 npm --prefix desktop run check       # test, typecheck, lint, renderer build
 cargo test --workspace --locked
-zig build test -Doptimize=ReleaseSafe --build-file agent/build.zig
 (cd harness && zig build test)
 ```
 

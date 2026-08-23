@@ -7,6 +7,7 @@
 //! tools that advertising all of them would cost more context than the turn.
 
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const gateway_schema = @import("../../core/tooling/gateway_schema.zig");
 const bridge = @import("../../tools/emma/bridge.zig");
 
 const ToolSpec = tool_dispatch.Tool;
@@ -103,49 +104,6 @@ pub const run_tool = ToolSpec{
     .irreversible_fn = bridge.isIrreversible,
 };
 
-const mcp_tool_description =
-    "Call a tool on a connected MCP server. Emma looks the name up across the imported servers.";
-
-pub const mcp_tool = ToolSpec{
-    .name = "mcp_tool",
-    .description = mcp_tool_description,
-    .gateway_schema = .{
-        .name = "mcp_tool",
-        .description = mcp_tool_description,
-        .input_schema = .{
-            .properties = &.{
-                .{
-                    .name = "name",
-                    .json_type = .string,
-                    .description = "Tool name as the server advertises it.",
-                },
-                .{
-                    .name = "arguments",
-                    .json_type = .object,
-                    .description = "Arguments object matching that tool's schema.",
-                },
-            },
-            .required = &.{"name"},
-        },
-    },
-    .advertisement = .on_select,
-    .executor_kind = .emma,
-    // Unlike the harness's own mcp_search_tools and mcp_select_tool, this one
-    // executes the remote tool rather than describing it.
-    .activity_kind = .command,
-    .requires_approval = false,
-    .action_label = "Calling MCP tool",
-    .completed_action_label = "Called MCP tool",
-    .permission_target_kind = .none,
-    .decode = bridge.decode,
-    .validate = bridge.validate,
-    .call = bridge.call,
-    .reads_only_fn = bridge.readsAndWrites,
-    // Someone else's server, doing something this side cannot inspect: sending
-    // a message or deleting a record is as available to it as reading.
-    .irreversible_fn = bridge.isIrreversible,
-};
-
 const write_skill_description =
     "Record a durable lesson as a skill so future runs avoid a mistake or reuse a better route. Rewrite an existing name to correct an earlier lesson.";
 
@@ -187,4 +145,48 @@ pub const write_skill = ToolSpec{
     .irreversible_fn = bridge.isReversible,
 };
 
-pub const all = [_]ToolSpec{ write_tool, run_tool, mcp_tool, write_skill };
+const write_plugin_skill_schema = gateway_schema.ObjectSchema{
+    .properties = &.{
+        .{ .name = "name", .json_type = .string, .description = "Lowercase hyphenated slug naming this skill." },
+        .{ .name = "description", .json_type = .string, .description = "When to use this skill. This is what makes it findable later." },
+        .{ .name = "instructions", .json_type = .string, .description = "The skill's Markdown body: when the workflow applies, the steps that work, and what a good result looks like. Frontmatter is written for you unless this already starts with ---." },
+    },
+    .required = &.{ "name", "description", "instructions" },
+};
+
+const write_plugin_description =
+    "Package several skills as a plugin — the ChatGPT and Codex format, .codex-plugin/plugin.json plus a skills folder — and install it into Emma in the same call. Use it when the user asks you to make, build or package a plugin, and when several related skills only make sense together as one installable thing that could be handed to someone else.\n" ++
+    "One lesson on its own is write_skill; this is for the bundle. The folder it writes is a valid plugin for any agent that reads the format, not just Emma.\n" ++
+    "It lands in Emma's own marketplace and is listed on the Plugins page, where the user can uninstall it. Its skills are searchable from the next turn, not this one. Writing a name that already exists replaces it, which is how a plugin that came out wrong gets fixed.";
+
+pub const write_plugin = ToolSpec{
+    .name = "write_plugin",
+    .description = write_plugin_description,
+    .gateway_schema = .{
+        .name = "write_plugin",
+        .description = write_plugin_description,
+        .input_schema = .{
+            .properties = &.{
+                .{ .name = "name", .json_type = .string, .description = "Short kebab-case name for the plugin, for example meeting-follow-up." },
+                .{ .name = "description", .json_type = .string, .description = "One line saying what the plugin is for. This is what the user reads on the Plugins page." },
+                .{ .name = "category", .json_type = .string, .description = "How it is filed: Productivity, Developer tools, Data and analytics, and so on. Defaults to Productivity." },
+                .{ .name = "skills", .json_type = .array, .min_items = 1, .max_items = 64, .description = "The skills the plugin carries. Each becomes skills/<name>/SKILL.md.", .shape = &.{ .array_objects = &write_plugin_skill_schema } },
+            },
+            .required = &.{ "name", "description", "skills" },
+        },
+    },
+    .advertisement = .on_select,
+    .executor_kind = .emma,
+    .activity_kind = .write,
+    .requires_approval = false,
+    .action_label = "Writing plugin",
+    .completed_action_label = "Wrote plugin",
+    .permission_target_kind = .none,
+    .decode = bridge.decode,
+    .validate = bridge.validate,
+    .call = bridge.call,
+    .reads_only_fn = bridge.readsAndWrites,
+    .irreversible_fn = bridge.isReversible,
+};
+
+pub const all = [_]ToolSpec{ write_tool, run_tool, write_skill, write_plugin };

@@ -7,11 +7,11 @@ import { isEnvName, MAX_SECRET_CHARS, maskSecret, printableSecret } from "../sha
 export type CredentialSummary = { env: string; masked: string };
 
 /**
- * Provider keys the user pastes in Settings. The host and its agent sidecar read credentials
- * from their environment, so the plaintext lives here and reaches them only through the child
- * process env — it is never returned to the renderer, only its mask.
+ * Provider keys the user pastes in Settings. Main and the harness read credentials from
+ * their environment, so the plaintext lives here and reaches them only through this
+ * process's env — it is never returned to the renderer, only its mask.
  *
- * Reads and writes are synchronous because the env has to be complete before the host spawns.
+ * Reads and writes are synchronous because the env has to be complete before anything spawns.
  */
 export class CredentialStore {
   private readonly file: string;

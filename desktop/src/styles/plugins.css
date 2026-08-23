@@ -1,0 +1,118 @@
+.plugins-view { height: 100%; overflow-y: auto; padding: var(--s-5) var(--content-gutter) var(--s-8); }
+.plugins-view > header, .plugins-view > .dialog-error, .plugins-view > .artifact-missing { max-width: var(--content-column); }
+.plugins-view > header > span { display: block; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.plugins-view > header h2 { margin-top: var(--s-2); color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.plugins-view > header p { max-width: 68ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.plugins-view > .dialog-error, .plugin-source > .dialog-error { padding-inline: 0; }
+
+.plugins-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-4); }
+.plugins-toolbar input { flex: 1 1 220px; min-width: 0; max-width: 320px; min-height: 26px; padding: 0 var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); transition: border-color var(--t); }
+.plugins-toolbar input:hover { border-color: var(--border-strong); }
+.plugins-chips { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
+
+.plugin-add, .plugin-install {
+  min-height: 26px; padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: transparent; color: var(--accent); font: var(--fs-2xs)/1 var(--font-mono);
+  letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap;
+  transition: color var(--t), border-color var(--t), background-color var(--t);
+}
+.plugin-add:hover:not(:disabled), .plugin-install:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.content-empty .plugin-add { min-height: 28px; margin-top: var(--s-2); }
+
+.plugin-source { margin-top: var(--s-6); }
+.plugin-source > header { display: flex; align-items: center; gap: var(--s-3); padding-bottom: var(--s-2); border-bottom: 1px solid var(--border); }
+.plugin-source > header > div { flex: 1; min-width: 0; }
+.plugin-source > header span { display: block; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.plugin-source > header h3 { margin-top: var(--s-1); color: var(--text); font: var(--fs-sm)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.plugin-source > header button { display: grid; place-items: center; flex: 0 0 auto; min-height: 26px; padding: 0 var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.plugin-source > header button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.plugin-source > header .artifact-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.plugin-source > header .artifact-danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--danger-surface); }
+.plugin-source > .dialog-error, .plugin-source > .artifact-missing { max-width: var(--content-column); }
+
+.plugin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); align-content: start; gap: var(--s-3); margin-top: var(--s-3); }
+.plugin-grid:empty { display: none; }
+.plugin-card { display: grid; align-content: start; gap: var(--s-2); min-width: 0; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface); transition: border-color var(--t); }
+.plugin-card:hover { border-color: var(--border-strong); }
+.plugin-card > header { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.plugin-card > header > div { display: grid; gap: var(--s-1); min-width: 0; }
+.plugin-card > header span:not(.plugin-mark) { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.plugin-title { justify-self: start; max-width: 100%; overflow: hidden; color: var(--text); background: transparent; font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; text-align: left; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t); }
+.plugin-title:hover { color: var(--accent); }
+
+.plugin-mark { display: grid; flex: 0 0 auto; place-items: center; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); }
+.plugin-mark img { width: 100%; height: 100%; object-fit: cover; }
+.plugin-mark i { color: var(--text-3); font: var(--fs-xs)/1 var(--font-mono); font-style: normal; }
+.plugin-mark-card { width: 28px; height: 28px; border-radius: var(--r-sm); }
+.plugin-mark-dialog { width: 34px; height: 34px; border-radius: var(--r-sm); }
+.plugin-card > p { margin: 0; color: var(--text-2); font: var(--fs-xs)/1.6 var(--font); }
+.plugin-keywords { display: flex; flex-wrap: wrap; gap: var(--s-1); margin: 0; padding: 0; list-style: none; }
+.plugin-keywords li { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plugin-keywords li::before { content: "#"; }
+.plugin-card > footer { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-1); }
+.plugin-card > footer > button:not(.plugin-install) { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t); }
+.plugin-card > footer > button:not(.plugin-install):hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.plugin-card > footer > small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plugin-card > footer > .plugin-blocked { color: var(--text-2); }
+.plugin-card > footer > .plugin-untrusted { color: var(--danger); }
+
+.plugin-installed { max-width: var(--content-column); margin-top: var(--s-6); }
+.plugin-installed > header { display: flex; align-items: baseline; gap: var(--s-2); padding-bottom: var(--s-2); border-bottom: 1px solid var(--border); }
+.plugin-installed > header h3 { color: var(--text); font: var(--fs-sm)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.plugin-installed > header small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plugin-installed dl { display: grid; margin: 0; }
+.plugin-installed dl > div { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) var(--s-3); padding: var(--s-2) 0; border-bottom: 1px solid var(--border); }
+.plugin-installed dt { flex: 1 1 180px; min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.plugin-installed dd { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin: 0; }
+.plugin-installed dd > span, .plugin-installed dd > small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plugin-hosted { color: var(--text-2); font: var(--fs-2xs)/1.5 var(--font-mono); }
+.plugin-installed dl > div > .plugin-hosted { flex: 1 1 100%; }
+.plugin-installed dd > button { min-height: 24px; padding: 0 var(--s-2); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: transparent; color: var(--danger); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: border-color var(--t), background-color var(--t); }
+.plugin-installed dd > button:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-surface); }
+.plugin-installed dd > .plugin-hooks-review { color: var(--text-2); border-color: var(--border); }
+.plugin-installed dd > .plugin-hooks-review:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.plugin-installed dd > .plugin-hooks-review.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.plugin-installed dd > .plugin-hooks-review.on:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+
+.plugin-dialog { width: min(560px, 100%); }
+.plugin-dialog > header { align-items: center; justify-content: flex-start; }
+.plugin-dialog > header > div { display: grid; flex: 1; gap: var(--s-1); }
+.plugin-dialog > header h2:has(> .info-dot) { display: flex; align-items: center; gap: var(--s-2); }
+.plugin-dialog-body { display: grid; gap: var(--s-3); padding: var(--s-4) var(--s-4) var(--s-3); }
+.plugin-dialog-body > p { margin: 0; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.plugin-dialog dl > div { grid-template-columns: 92px minmax(0, 1fr); padding: var(--s-2) 0; }
+.plugin-dialog dl > div:first-child { border-top: 1px solid var(--border); }
+.plugin-dialog dd { overflow: visible; color: var(--text-2); font: var(--fs-xs)/1.6 var(--font-mono); white-space: normal; }
+.plugin-shots { display: flex; gap: var(--s-2); overflow-x: auto; margin: 0; padding: 0; list-style: none; }
+.plugin-shots img { display: block; max-height: 150px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.plugin-prompts { display: grid; gap: var(--s-1); margin: 0; padding: 0; list-style: none; }
+.plugin-prompts li::before { content: "› "; color: var(--text-3); }
+.plugin-links { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.plugin-links a { color: var(--accent); text-decoration: none; }
+.plugin-links a:hover { text-decoration: underline; }
+.plugin-hooks { display: grid; gap: var(--s-2); overflow-y: auto; max-height: 46vh; margin: 0; padding: var(--s-4) var(--s-4) var(--s-3); list-style: none; }
+.plugin-hooks li { display: grid; gap: var(--s-1); min-width: 0; padding: var(--s-2); border: 1px solid var(--border); background: var(--surface-2); }
+.plugin-hooks li > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s-2); }
+.plugin-hooks strong { color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; }
+.plugin-hooks em { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; }
+.plugin-hooks em::before { content: "· "; }
+.plugin-hooks li > div > small { margin-left: auto; color: var(--danger); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.plugin-hooks .plugin-hook-trusted > div > small, .plugin-hooks .plugin-hook-off > div > small { color: var(--text-3); }
+.plugin-hooks .plugin-hook-off { opacity: 0.55; }
+.plugin-hooks code { padding: var(--s-1) var(--s-2); border: 1px solid var(--border); background: var(--bg); color: var(--text-2); font: var(--fs-2xs)/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-all; }
+.plugin-hooks p { margin: 0; color: var(--text-3); font: var(--fs-2xs)/1.5 var(--font); }
+
+.plugin-dialog-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-2); padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
+.plugin-dialog-actions > .plugin-blocked { margin-right: auto; color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plugin-dialog-actions button:not(.plugin-install) { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t); }
+.plugin-dialog-actions button:not(.plugin-install):hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+
+.marketplace-dialog form { display: grid; gap: var(--s-3); padding: var(--s-4); }
+.marketplace-dialog label { display: grid; gap: var(--s-1); }
+.marketplace-dialog label > span { color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.marketplace-dialog input, .marketplace-dialog textarea { min-height: 30px; padding: var(--s-1) var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); resize: vertical; transition: border-color var(--t); }
+.marketplace-dialog input:hover, .marketplace-dialog textarea:hover { border-color: var(--border-strong); }
+.marketplace-dialog input:focus-visible, .marketplace-dialog textarea:focus-visible { border-color: var(--accent); }
+.marketplace-dialog .marketplace-actions { display: flex; justify-content: flex-end; gap: var(--s-2); }
+.marketplace-dialog .marketplace-actions button:not(.plugin-install) { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t); }
+.marketplace-dialog .marketplace-actions button:not(.plugin-install):hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }

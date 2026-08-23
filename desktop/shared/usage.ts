@@ -2,7 +2,7 @@
    draw it. Pure helpers: the renderer owns the storage and the pixels. */
 
 /** The kinds a context segment can be. One hue each in panels.css. */
-export type UsageKind = "history" | "knowledge" | "attachment" | "skill" | "mcp" | "system" | "tools";
+export type UsageKind = "history" | "knowledge" | "attachment" | "skill" | "system" | "tools";
 
 export interface ContextUse {
   kind: UsageKind;

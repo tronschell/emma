@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ImportedCapabilityRuntime, listEmmaTools, parseMcpConfig, seedBuiltinSkills, SkillAttachmentStore, writeEmmaTool } from "../main/capabilities";
+import { ImportedCapabilityRuntime, listEmmaTools, MAX_SKILL_RESULTS, parseMcpConfig, seedBuiltinSkills, SkillAttachmentStore, writeEmmaTool } from "../main/capabilities";
 import { shellQuoted } from "../main/tools";
 
 test("bundled skills are seeded into both skill roots and are searchable without an import", async () => {
@@ -24,8 +24,11 @@ test("bundled skills are seeded into both skill roots and are searchable without
     const runtime = new ImportedCapabilityRuntime(userData);
     const [found] = await runtime.searchSkills("build");
     assert.deepEqual(found, { id: "skill:emma:0:building-emma", source: "emma", name: "building-emma" });
+    // What the skills page, the schedule form, the tool-target list and mention
+    // resolution all ask for. Below this the four of them throw rather than
+    // return a short list, and every one of those failures is swallowed.
+    assert.ok(await runtime.searchSkills("", MAX_SKILL_RESULTS));
     assert.match((await runtime.selectSkill(found.id)).instructions, /Rebuild, then verify\./);
-    await runtime.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -59,7 +62,6 @@ test("imported skills stay metadata-only until selected", async () => {
     assert.deepEqual(results, [{ id: "skill:codex:0:review", source: "codex", name: "review" }]);
     assert.equal(JSON.stringify(results).includes("secret"), false);
     assert.deepEqual(await runtime.selectSkill(results[0].id), { id: results[0].id, source: "codex", name: "review", instructions: "secret skill instructions" });
-    await runtime.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -92,90 +94,44 @@ test("a tool Emma writes is executable, listed with its description, and replace
   }
 });
 
-test("one selected stdio MCP server is reviewed, searched, selected, called, and cleaned up", async () => {
+test("an imported stdio server is listed with its arguments redacted and its environment values withheld", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "emma-mcp-"));
-  const runtime = new ImportedCapabilityRuntime(path.join(root, "user-data"));
   try {
     const userData = path.join(root, "user-data");
     const config = path.join(root, "claude.json");
     await mkdir(userData, { recursive: true });
-    const serverProgram = [
-      "const readline=require('node:readline');",
-      "const rl=readline.createInterface({input:process.stdin});",
-      "const send=(value)=>process.stdout.write(JSON.stringify(value)+'\\n');",
-      "rl.on('line',(line)=>{const request=JSON.parse(line);",
-      "if(request.method==='initialize')send({jsonrpc:'2.0',id:request.id,result:{protocolVersion:'2024-11-05',capabilities:{},serverInfo:{name:'fixture',version:'1'}}});",
-      "if(request.method==='tools/list')send({jsonrpc:'2.0',id:request.id,result:{tools:[{name:'echo',description:'Echo selected text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}]}});",
-      "if(request.method==='tools/call')send({jsonrpc:'2.0',id:request.id,result:{content:[{type:'text',text:request.params.arguments.text}]}});",
-      "});",
-    ].join("");
-    await writeFile(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: ["-e", serverProgram], env: { MCP_SECRET: "do-not-render" } } } }));
+    await writeFile(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: ["-e", "process.exit(0)"], env: { MCP_SECRET: "do-not-render" } } } }));
     await writeFile(path.join(userData, "imports.json"), JSON.stringify({ version: 1, sources: [{ id: "claude", skillRoots: [], mcpFiles: [config] }] }));
 
-    const servers = await runtime.listMcpServers();
+    const servers = await new ImportedCapabilityRuntime(userData).listMcpServers();
     assert.equal(servers.length, 1);
     assert.equal(servers[0].command, process.execPath);
     assert.deepEqual(servers[0].args, ["-e", "[argument 2 redacted]"]);
+    assert.deepEqual(servers[0].environmentKeys, ["MCP_SECRET"]);
     assert.equal(JSON.stringify(servers).includes("do-not-render"), false);
-    const review = await runtime.permissionReview(servers[0].id);
-    assert.deepEqual(review.environmentKeys, ["MCP_SECRET"]);
-    assert.equal(review.args[0], "-e");
-    assert.equal(typeof review.token, "string");
-    assert.equal(JSON.stringify(review).includes("do-not-render"), false);
-    const token = review.token;
-    assert.deepEqual(await runtime.connect(servers[0].id, token), { server: servers[0], tools: 1 });
-    await assert.rejects(() => runtime.connect(servers[0].id, token), /invalid or expired/);
-    assert.deepEqual(await runtime.searchTools("echo"), [{ name: "echo", description: "Echo selected text" }]);
-    assert.deepEqual(await runtime.selectTool("echo"), { name: "echo", description: "Echo selected text", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } });
-    assert.deepEqual(await runtime.callTool({ text: "hello" }), { content: [{ type: "text", text: "hello" }] });
-    await runtime.close();
-    await assert.rejects(async () => runtime.searchTools("echo"), /connect one MCP server/);
   } finally {
-    await runtime.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("an installed MCP server is listed and callable with no import and no relaunch", async () => {
+test("an installed MCP server is listed with no import and no relaunch", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "emma-install-mcp-"));
   const userData = path.join(root, "user-data");
   const runtime = new ImportedCapabilityRuntime(userData);
   try {
-    const program = [
-      "const readline=require('node:readline');",
-      "const rl=readline.createInterface({input:process.stdin});",
-      "const send=(value)=>process.stdout.write(JSON.stringify(value)+'\\n');",
-      "rl.on('line',(line)=>{const request=JSON.parse(line);",
-      "if(request.method==='initialize')send({jsonrpc:'2.0',id:request.id,result:{protocolVersion:'2024-11-05',capabilities:{}}});",
-      "if(request.method==='tools/list')send({jsonrpc:'2.0',id:request.id,result:{tools:[{name:'whoami',description:'Name the server',inputSchema:{type:'object',properties:{}}}]}});",
-      "if(request.method==='tools/call')send({jsonrpc:'2.0',id:request.id,result:{content:[{type:'text',text:process.env.WHO}]}});",
-      "});",
-    ].join("");
-    const definition = { name: "fixture", command: process.execPath, args: ["-e", program], env: { WHO: "installed" } };
+    const definition = { name: "fixture", command: process.execPath, args: ["-e", "process.exit(0)"], env: { WHO: "installed" } };
 
-    // No imports.json at all: Emma's own config is the whole install.
-    const installed = await runtime.installMcpServer(definition);
-    assert.equal(installed.id, "mcp:emma:0:fixture");
-    assert.equal(installed.tools, 1);
-    assert.equal(runtime.connected, true);
+    assert.deepEqual(await runtime.installMcpServer(definition), { id: "mcp:emma:0:fixture" });
 
-    // Live in the same process the tool was advertised in, and callable straight away.
-    assert.deepEqual(await runtime.searchTools("whoami"), [{ name: "whoami", description: "Name the server" }]);
-    assert.deepEqual(await runtime.selectTool("whoami"), { name: "whoami", description: "Name the server", inputSchema: { type: "object", properties: {} } });
-    assert.deepEqual(await runtime.callTool({}), { content: [{ type: "text", text: "installed" }] });
-
-    // A fresh runtime, standing in for a relaunch, sees the same server without an import.
     const listed = await new ImportedCapabilityRuntime(userData).listMcpServers();
     assert.deepEqual(listed.map((server) => server.id), ["mcp:emma:0:fixture"]);
     assert.deepEqual(listed[0].environmentKeys, ["WHO"]);
     assert.equal(JSON.stringify(listed).includes("installed"), false);
 
-    // Reinstalling the same name replaces it rather than adding a second entry.
     await runtime.installMcpServer(definition);
     assert.equal((await runtime.listMcpServers()).length, 1);
     await assert.rejects(() => runtime.installMcpServer({ ...definition, name: "not a name" }), /not valid/);
   } finally {
-    await runtime.close();
     await rm(root, { recursive: true, force: true });
   }
 });

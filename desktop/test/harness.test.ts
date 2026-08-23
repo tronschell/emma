@@ -6,7 +6,7 @@ import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
-import { Harness, callEscapesWorkspace, contextExperimentFired, describePath, escapesRoot, experimentOption, failedTurn, harnessModeId, toolOutput, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
+import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 
 /** The fixture lives beside this test in source, not in the compiled output. */
 const fakeAgent = path.join(process.cwd(), "test", "fake-acp-agent.mjs");
@@ -26,6 +26,7 @@ function harness(
   const contexts: PermissionContext[] = [];
   const children: { parentThreadId: string; childId: string; title: string }[] = [];
   const ended: string[] = [];
+  const usages: { threadId: string; inputTokens: number; outputTokens: number }[] = [];
   const toolRequests: { threadId: string; name: string; args: Record<string, unknown> }[] = [];
   const client = new Harness({
     binaryPath: process.execPath,
@@ -38,6 +39,7 @@ function harness(
     onThought: (_threadId, delta) => thoughts.push(delta),
     onToolCall: (call) => calls.push(call),
     onContextExperiment: () => {},
+    onUsage: (threadId, usage) => usages.push({ threadId, ...usage }),
     onChildStart: (child) => { children.push(child); return Promise.resolve(`thread_for_${child.childId}`); },
     onChildEnd: (threadId) => ended.push(threadId),
     onPlan: () => {},
@@ -51,22 +53,15 @@ function harness(
       return runTool(threadId, name, args);
     },
   });
-  return { client, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, toolRequests };
+  return { client, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, usages, toolRequests };
 }
 
-test("every mode that can change something routes its decision back to Emma", () => {
-  // Not the identity mapping. `acceptEdits` used to become the harness's `auto`,
-  // which does not check the granted folder and hands commands to a hardcoded
-  // in-harness reviewer model; `full` became `yolo`, which keeps no floor at
-  // all. Emma is the only side that knows what the user granted.
-  assert.equal(harnessModeId("plan"), "plan");
-  assert.equal(harnessModeId("ask"), "ask");
-  assert.equal(harnessModeId("acceptEdits"), "ask");
-  assert.equal(harnessModeId("auto"), "ask");
-  assert.equal(harnessModeId("full"), "ask");
-  // Plan stays its own mode because the harness enforces read-only there, which
-  // is stricter than anything Emma could impose by answering questions.
-  assert.notEqual(harnessModeId("plan"), harnessModeId("ask"));
+test("every mode routes its decision back to Emma", () => {
+  // `acceptEdits` used to become the harness's `auto`, which does not check the
+  // granted folder and hands commands to a hardcoded in-harness reviewer model;
+  // `full` became `yolo`, which keeps no floor at all. Emma is the only side
+  // that knows what the user granted, so every mode arrives here as `ask`.
+  assert.equal(HARNESS_MODE_ID, "ask");
 });
 
 test("a path outside the workspace is an escape, and one inside is not", () => {
@@ -217,7 +212,7 @@ test("one turn streams deltas, reports tool calls, and an allow reaches the harn
 });
 
 test("a subagent's words land on a thread of its own, never in its parent's answer", async () => {
-  const { client, deltas, calls, children, ended } = harness(async () => "allow_once");
+  const { client, deltas, calls, children, ended, usages } = harness(async () => "allow_once");
   try {
     await client.prompt("thread-parent", workspace, "spawn a subagent", "ask");
     // Whatever a subagent says would otherwise be recorded as the parent's reply:
@@ -232,6 +227,9 @@ test("a subagent's words land on a thread of its own, never in its parent's answ
     // rather than the parent's transcript showing it twice.
     assert.equal(calls.filter((call) => call.threadId === "thread_for_child_1").length, 1);
     assert.equal(calls.filter((call) => call.threadId === "thread-parent" && call.toolCallId === "call_1").length, 0);
+    // What it spent, on its own thread. A subagent tab reading zero tokens is how
+    // "the child is doing nothing" looked, when it was working the whole time.
+    assert.deepEqual(usages, [{ threadId: "thread_for_child_1", inputTokens: 777, outputTokens: 42 }]);
     // Ended exactly once, so nothing is left showing as running forever.
     assert.deepEqual(ended, ["thread_for_child_1"]);
   } finally {
@@ -391,6 +389,33 @@ test("two threads sharing a process take their turns one at a time", async () =>
   }
 });
 
+const settles = (turn: Promise<unknown>, ms: number) =>
+  Promise.race([turn.then(() => "ran", () => "ran"), new Promise<string>((resolve) => setTimeout(resolve, ms, "queued"))]);
+
+test("a turn started inside a turn needs a process of its own, not the one its parent is running on", async () => {
+  const spare = harness(async () => "allow_once");
+  const nested: string[] = [];
+  let queued: Promise<unknown> = Promise.resolve();
+  const parent: ReturnType<typeof harness> = harness(async () => "allow_once", undefined, async () => {
+    queued = parent.client.prompt("thread-sub", workspace, "do it", "ask");
+    nested.push(await settles(queued, 300));
+    nested.push(await settles(spare.client.prompt("thread-sub", workspace, "do it", "ask"), 5000));
+    return "";
+  });
+  try {
+    await spare.client.start();
+    await parent.client.prompt("thread-root", workspace, "emmatool", "ask");
+    assert.deepEqual(nested, ["queued", "ran"], "a turn started inside a turn waits for the turn that started it");
+    await queued;
+    assert.equal(harnessKey(workspace), workspace);
+    assert.notEqual(harnessKey(workspace, "thread-sub"), harnessKey(workspace));
+    assert.notEqual(harnessKey(workspace, "thread-sub"), harnessKey(workspace, "thread-other"));
+  } finally {
+    parent.client.close();
+    spare.client.close();
+  }
+});
+
 test("a requested compaction is asked for between turns, before the prompt it makes room for", async () => {
   // The harness answers `session/compact` with "Prompt already in progress" if
   // one is running, and the turn in flight is reading the very history it would
@@ -449,6 +474,18 @@ test("experiment settings survive the round trip from the settings page to the h
   assert.equal(experimentOption(defaultHarnessExperiments), "reinject_steps=0,reinject_percent=0,prune_steps=0,prune_percent=0");
 });
 
+test("the thinking option carries the stop and the list the harness checks it against", () => {
+  // `acp/server.zig:parseReasoningEffort` splits on the semicolon and refuses a stop
+  // it cannot name, so a change to either half has to break here rather than leave
+  // every request quietly reasoning at the model's default again.
+  assert.equal(effortOption({ level: "high", published: ["low", "medium", "high"] }), "high;low,medium,high");
+  // The default is a value, and it is the one that must reach the session: without
+  // it a slider dragged back to Default leaves last turn's effort in place.
+  assert.equal(effortOption({ level: "", published: ["low", "medium", "high"] }), "auto;low,medium,high");
+  // A model with no thinking knob still publishes that, so a stale one is cleared.
+  assert.equal(effortOption({ level: "", published: [] }), "auto;");
+});
+
 test("a fired experiment is read off the info channel without swallowing the retry status", () => {
   // The exact shape `acp/types.zig:writeContextExperimentInfoUpdate` writes. A
   // rename on either side leaves the levers silently invisible in the transcript.
@@ -471,4 +508,15 @@ test("a fired experiment is read off the info channel without swallowing the ret
   assert.equal(contextExperimentFired({ _meta: { fx: { contextExperiment: { prunedResults: 0, reinjected: false } } } }), undefined);
   assert.equal(contextExperimentFired({ _meta: { fx: { modelResponseRecovery: { message: "retrying" } } } }), undefined);
   assert.equal(contextExperimentFired({}), undefined);
+});
+
+test("a step's usage is read off the same info channel", () => {
+  assert.deepEqual(
+    turnUsageReported({ sessionUpdate: "session_info_update", _meta: { fx: { turnUsage: { inputTokens: 24_100, outputTokens: 3_200 } } } }),
+    { inputTokens: 24_100, outputTokens: 3_200 },
+  );
+  assert.deepEqual(turnUsageReported({ _meta: { fx: { turnUsage: {} } } }), { inputTokens: 0, outputTokens: 0 });
+  assert.equal(turnUsageReported({ _meta: { fx: { contextExperiment: { prunedResults: 2, reinjected: false } } } }), undefined);
+  assert.equal(turnUsageReported({ _meta: { fx: { modelResponseRecovery: { message: "retrying" } } } }), undefined);
+  assert.equal(turnUsageReported({}), undefined);
 });

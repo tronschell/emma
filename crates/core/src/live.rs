@@ -11,298 +11,87 @@ use std::{
 };
 
 use crate::{
-    AnalysisContent, ArtifactBlock, ArtifactSource, CapturedContext, Category, CitedSource,
+    AnalysisContent, ArtifactBlock, ArtifactSource, CapturedContext, Category,
     GenerationTelemetry, KnowledgeBase, KnowledgeBaseId, KnowledgePage, KnowledgeStore,
     MAX_TRIGGER_DEPTH, PageId, PageVersion, ResearchJob, ResearchJobId, ResearchJobStore,
     RunTelemetry, ScheduledJob, ScheduledJobId, ScheduledJobStore, SourceUrl, StoreError, Thread,
     ThreadId, ThreadKind, ThreadMessage, ThreadRole, ThreadStore, ThreadTrace, Timestamp,
     elide_middle, validate_text,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const MAX_AGENT_TITLE_BYTES: usize = 256;
 const MAX_AGENT_SUMMARY_BYTES: usize = 4 * 1024;
 const MAX_AGENT_BODY_BYTES: usize = 64 * 1024;
-const MAX_AGENT_CONTEXT_BODY_BYTES: usize = 8 * 1024;
 const MAX_AGENT_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_CAPTURE_SUMMARY_BYTES: usize = 400;
+/// How many points or caveats an authored page may carry into its body. The app
+/// bounds this too; this is the layer that decides what gets filed.
+const MAX_AGENT_POINTS: usize = 12;
 /// Where an item lands when it is dropped in before anyone decides where it
 /// belongs. Never learned as a real category.
 pub const UNFILED_CATEGORY: &str = "unfiled";
 /// Archived threads are discarded permanently once they are this old.
 pub const ARCHIVE_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
-pub const MAX_SCREEN_CONTEXT_BYTES: usize = 96 * 1024;
-pub const MAX_SKILL_CONTEXT_BYTES: usize = 64 * 1024;
-/// Tool ceilings mirror the sidecar's own; both layers refuse independently.
-pub const MAX_AGENT_TOOLS: usize = 32;
-pub const MAX_TOOL_RESULT_BYTES: usize = 16 * 1024;
-const MAX_TOOL_NAME_BYTES: usize = 128;
-/// Room for a tool whose description is its manual — `workflow` states a whole
-/// node grammar, `autoresearch` a whole job's semantics. Mirrors the sidecar.
-const MAX_TOOL_DESCRIPTION_BYTES: usize = 4 * 1024;
-const JPEG_DATA_URL_PREFIX: &str = "data:image/jpeg;base64,";
 
-#[derive(Clone, Debug)]
-pub enum AgentRequest {
-    ThreadMessage {
-        thread: Thread,
-        content: String,
-        knowledge: Vec<AgentKnowledgePage>,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    },
-    /// Results of the tool calls the previous step asked for, plus the next step's
-    /// tools. The pending-call bookkeeping lives in the sidecar, not here.
-    ToolResult {
-        thread: Thread,
-        results: Vec<AgentToolResult>,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    },
-    Analyze {
-        thread: Thread,
-        text: String,
-        /// Categories the user already keeps in the destination base. The agent
-        /// files into one of these rather than inventing a private taxonomy.
-        categories: Vec<String>,
-    },
-    ReviseDocument {
-        thread: Thread,
-        instruction: String,
-        document: Vec<ArtifactBlock>,
-    },
-    ListOpenRouterModels,
-    SelectOpenRouterModel {
-        model_id: String,
-        /// The thinking mode to run this model in, from the set it publishes. Empty
-        /// leaves the model on its own default.
-        effort: String,
-    },
-    SelectLocalModel {
-        base_url: String,
-        model_id: String,
-        credential_env: String,
-    },
-    /// Runs one thread on a model of its own — what a subagent takes — leaving the
-    /// app's own selection where it is. An empty model ID clears the pin.
-    SetThreadModel {
-        thread_id: ThreadId,
-        model_id: String,
-        effort: String,
-    },
-    SelectFallbackModel,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpenRouterModel {
-    pub id: String,
-    pub name: String,
-    pub context_length: u64,
-    /// Non-text inputs the model accepts ("image", "file", "audio"); empty means text only.
-    pub input_modalities: Vec<String>,
-    /// The thinking modes this model offers, weakest first; empty means no thinking knob.
-    pub reasoning_efforts: Vec<String>,
-    /// The model always reasons, so "off" is not one of the choices.
-    pub reasoning_mandatory: bool,
-    /// Zero prompt and completion price. Paid models are listed too — a key gates running
-    /// one, not seeing it.
-    pub free: bool,
-    /// What a million tokens costs, in micro-dollars ($1 = 1_000_000), so a spend budget
-    /// adds prices up without floats. `0` is free, or a price OpenRouter did not publish.
-    pub prompt_micro_usd_per_mtok: u64,
-    pub completion_micro_usd_per_mtok: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpenRouterCatalog {
-    pub selected_model: Option<String>,
-    pub models: Vec<OpenRouterModel>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentKnowledgePage {
-    pub id: String,
-    pub title: String,
-    pub summary: String,
-    pub body: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScreenContext {
-    pub jpeg_data_url: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SkillContext {
-    pub instructions: String,
-}
-
-impl SkillContext {
-    pub fn new(instructions: String) -> Result<Self, LiveError> {
-        validate_text("skill context", &instructions, true)
-            .map_err(|error| LiveError::new(error.to_string()))?;
-        if instructions.len() > MAX_SKILL_CONTEXT_BYTES {
-            return Err(LiveError::new("skill context is invalid or too large"));
-        }
-        Ok(Self { instructions })
-    }
-}
-
-impl ScreenContext {
-    pub fn new(jpeg_data_url: String) -> Result<Self, LiveError> {
-        let encoded = jpeg_data_url
-            .strip_prefix(JPEG_DATA_URL_PREFIX)
-            .ok_or_else(|| LiveError::new("screen context must be a JPEG data URL"))?;
-        let content_len = encoded.trim_end_matches('=').len();
-        let padding = encoded.len() - content_len;
-        if jpeg_data_url.len() > MAX_SCREEN_CONTEXT_BYTES
-            || encoded.is_empty()
-            || !encoded.len().is_multiple_of(4)
-            || padding > 2
-            || !encoded[..content_len]
-                .bytes()
-                .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/'))
-        {
-            return Err(LiveError::new("screen context is invalid or too large"));
-        }
-        Ok(Self { jpeg_data_url })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentMessage {
-    pub content: String,
-    pub model: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub duration_milliseconds: u64,
-    /// Non-empty when the agent wants tools run before it answers. The caller
-    /// executes them behind its own permission gate and submits the results.
-    pub tool_calls: Vec<AgentToolCall>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentToolCall {
-    pub id: String,
-    pub name: String,
-    /// The model's raw JSON arguments. Emma never interprets them here; the
-    /// executor validates them against the schema it advertised.
-    pub arguments: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentTool {
-    pub name: String,
-    pub description: String,
-    pub input_schema: serde_json::Value,
-}
-
-impl AgentTool {
-    pub fn new(
-        name: String,
-        description: String,
-        input_schema: serde_json::Value,
-    ) -> Result<Self, LiveError> {
-        validate_text("tool name", &name, true)
-            .map_err(|error| LiveError::new(error.to_string()))?;
-        validate_text("tool description", &description, true)
-            .map_err(|error| LiveError::new(error.to_string()))?;
-        if name.len() > MAX_TOOL_NAME_BYTES
-            || description.len() > MAX_TOOL_DESCRIPTION_BYTES
-            || !input_schema.is_object()
-        {
-            return Err(LiveError::new("tool definition is invalid or too large"));
-        }
-        Ok(Self {
-            name,
-            description,
-            input_schema,
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentToolResult {
-    pub id: String,
-    pub content: String,
-}
-
-impl AgentToolResult {
-    pub fn new(id: String, content: String) -> Result<Self, LiveError> {
-        validate_text("tool call id", &id, true)
-            .map_err(|error| LiveError::new(error.to_string()))?;
-        validate_text("tool result", &content, true)
-            .map_err(|error| LiveError::new(format!("tool result is invalid: {error}")))?;
-        if id.len() > MAX_TOOL_NAME_BYTES {
-            return Err(LiveError::new("tool call id is too long"));
-        }
-        Ok(Self {
-            id,
-            content: truncate_tool_result(content),
-        })
-    }
-}
-
-/// One step of a turn: the durable thread as it stands, plus any tool calls the
-/// caller must run before the turn can finish.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TurnOutcome {
-    #[serde(flatten)]
-    pub thread: Thread,
-    pub tool_calls: Vec<AgentToolCall>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentSource {
-    pub title: String,
-    pub url: String,
-}
-
-/// One block of an agent-authored document, before it is validated into an
-/// [`ArtifactBlock`]. The agent chooses the block types, so a document can carry
+/// One block of a model-authored document, before it is validated into an
+/// [`ArtifactBlock`]. The model chooses the block types, so a document can carry
 /// charts, tables, and how-to-apply sections instead of a fixed shape.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct AgentBlock {
     pub id: String,
+    #[serde(rename = "type")]
     pub block_type: String,
     pub payload: serde_json::Value,
     pub fallback: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentAnalysis {
+/// A whole page as the app's author returned it.
+///
+/// The provider call happens in the app process now, so this arrives as JSON off
+/// the wire like any other request — which is exactly why nothing here is trusted.
+/// Every field is checked on the way into the store, the same way it was when a
+/// child process handed it over.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoredPage {
     pub title: String,
     pub category: String,
     pub summary: String,
-    pub body: String,
+    #[serde(default)]
     pub interesting_points: Vec<String>,
+    #[serde(default)]
     pub counterarguments: Vec<String>,
-    pub sources: Vec<AgentSource>,
+    #[serde(default)]
     pub blocks: Vec<AgentBlock>,
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub subagent_count: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentResponse {
-    Message(AgentMessage),
-    Analysis(AgentAnalysis),
-    Document(Vec<AgentBlock>),
-    OpenRouterCatalog(OpenRouterCatalog),
-    OpenRouterModelSelected(String),
-    LocalModelSelected(String),
-    ThreadModelSet,
-    FallbackModelSelected,
+/// What the app needs before it can author or revise a page: the material to work
+/// from, the base's own taxonomy, the document as it stands, and the conversation
+/// thread the page keeps — created here if this page never had one.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageAuthoringContext {
+    pub thread_id: String,
+    pub text: String,
+    pub categories: Vec<String>,
+    pub title: String,
+    pub summary: String,
+    pub artifacts: Vec<ArtifactBlock>,
 }
+
+/// The same, for a thread whose last answer is on its way to becoming a page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadAuthoringContext {
+    pub text: String,
+    pub categories: Vec<String>,
+}
+
 
 // Not `Eq`: an iteration's measurement is an `f64`, and two of those are not
 // equal in the reflexive sense the trait promises.
@@ -395,22 +184,6 @@ enum Command {
         artifacts: Vec<ArtifactBlock>,
         reply: Reply<KnowledgePage>,
     },
-    SendMessage {
-        thread_id: ThreadId,
-        content: String,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-        reply: Reply<TurnOutcome>,
-    },
-    SubmitToolResult {
-        thread_id: ThreadId,
-        results: Vec<AgentToolResult>,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-        reply: Reply<TurnOutcome>,
-    },
     RecordTurn {
         thread_id: ThreadId,
         prompt: String,
@@ -419,7 +192,7 @@ enum Command {
         duration_milliseconds: u64,
         input_tokens: u64,
         model: String,
-        reply: Reply<TurnOutcome>,
+        reply: Reply<Thread>,
     },
     RecordTrace {
         thread_id: ThreadId,
@@ -430,8 +203,13 @@ enum Command {
         thread_id: ThreadId,
         reply: Reply<Vec<ThreadTrace>>,
     },
+    ThreadAuthoringContext {
+        thread_id: ThreadId,
+        reply: Reply<ThreadAuthoringContext>,
+    },
     SaveToKnowledge {
         thread_id: ThreadId,
+        authored: AuthoredPage,
         reply: Reply<KnowledgePage>,
     },
     CaptureToKnowledge {
@@ -446,9 +224,14 @@ enum Command {
         page_id: Option<PageId>,
         reply: Reply<KnowledgePage>,
     },
+    PageAuthoringContext {
+        page_id: PageId,
+        reply: Reply<PageAuthoringContext>,
+    },
     AnalyzePage {
         page_id: PageId,
         keep_category: bool,
+        authored: AuthoredPage,
         reply: Reply<KnowledgePage>,
     },
     ListPageVersions {
@@ -460,14 +243,9 @@ enum Command {
         name: String,
         reply: Reply<KnowledgePage>,
     },
-    ChatAboutPage {
-        page_id: PageId,
-        content: String,
-        reply: Reply<Thread>,
-    },
     RevisePageDocument {
         page_id: PageId,
-        instruction: String,
+        blocks: Vec<AgentBlock>,
         reply: Reply<Vec<ArtifactBlock>>,
     },
     ReadPageAsset {
@@ -553,25 +331,6 @@ enum Command {
         micro_dollars: u64,
         reply: Reply<ResearchJob>,
     },
-    ListOpenRouterModels(Reply<OpenRouterCatalog>),
-    SelectOpenRouterModel {
-        model_id: String,
-        effort: String,
-        reply: Reply<String>,
-    },
-    SelectLocalModel {
-        base_url: String,
-        model_id: String,
-        credential_env: String,
-        reply: Reply<String>,
-    },
-    SetThreadModel {
-        thread_id: ThreadId,
-        model_id: String,
-        effort: String,
-        reply: Reply<()>,
-    },
-    SelectFallbackModel(Reply<()>),
 }
 
 /// Blocking handle to the typed runtime worker. Call these methods only from a
@@ -756,30 +515,6 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while updating the page"))?
     }
 
-    pub fn send_message(
-        &self,
-        thread_id: ThreadId,
-        content: String,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    ) -> Result<TurnOutcome, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SendMessage {
-                thread_id,
-                content,
-                screen_context,
-                skill_context,
-                tools,
-                reply,
-            })
-            .map_err(|_| LiveError::new("Emma runtime stopped before sending the message"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while sending the message"))?
-    }
-
     /// Writes a turn that already ran elsewhere into the durable thread.
     ///
     /// The coding harness owns the live session, its tool calls and its own
@@ -794,7 +529,7 @@ impl LiveClient {
         duration_milliseconds: u64,
         input_tokens: u64,
         model: String,
-    ) -> Result<TurnOutcome, LiveError> {
+    ) -> Result<Thread, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
             .send(Command::RecordTurn {
@@ -815,11 +550,9 @@ impl LiveClient {
 
     /// Stores one finished turn's execution trace on the thread.
     ///
-    /// Separate from `record_turn` because it has to serve both paths: the
-    /// coding harness's turn is written by `record_turn`, but Emma's own loop
-    /// has its answer written from inside `finish_step`, and neither knows about
-    /// the other's trace. A trace is its own block on the thread, so it never
-    /// has to arrive in step with a message.
+    /// Separate from `record_turn` because a trace is its own block on the
+    /// thread: it never has to arrive in step with a message, and a run that
+    /// left no answer still leaves a record of what it did.
     pub fn record_trace(&self, thread_id: ThreadId, trace: String) -> Result<(), LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
@@ -843,30 +576,6 @@ impl LiveClient {
         result
             .recv()
             .map_err(|_| LiveError::new("Emma runtime stopped while reading the trace"))?
-    }
-
-    pub fn submit_tool_result(
-        &self,
-        thread_id: ThreadId,
-        results: Vec<AgentToolResult>,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    ) -> Result<TurnOutcome, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SubmitToolResult {
-                thread_id,
-                results,
-                screen_context,
-                skill_context,
-                tools,
-                reply,
-            })
-            .map_err(|_| LiveError::new("Emma runtime stopped before submitting tool results"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while submitting tool results"))?
     }
 
     pub fn update_page_document(
@@ -897,10 +606,33 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while updating the page document"))?
     }
 
-    pub fn save_to_knowledge(&self, thread_id: ThreadId) -> Result<KnowledgePage, LiveError> {
+    /// What this thread's last answer would be authored from: the answer itself,
+    /// and the categories the destination base already keeps.
+    pub fn thread_authoring_context(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<ThreadAuthoringContext, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
-            .send(Command::SaveToKnowledge { thread_id, reply })
+            .send(Command::ThreadAuthoringContext { thread_id, reply })
+            .map_err(|_| LiveError::new("Emma runtime stopped before reading the thread"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while reading the thread"))?
+    }
+
+    pub fn save_to_knowledge(
+        &self,
+        thread_id: ThreadId,
+        authored: AuthoredPage,
+    ) -> Result<KnowledgePage, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SaveToKnowledge {
+                thread_id,
+                authored,
+                reply,
+            })
             .map_err(|_| LiveError::new("Emma runtime stopped before saving the analysis"))?;
         result
             .recv()
@@ -938,20 +670,38 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while filing the item"))?
     }
 
-    /// Turns a captured item into an analyzed document: Emma files it into one
-    /// of the base's categories and authors the blocks.
+    /// Everything the app needs to author, revise or talk about this page, in one
+    /// read. The page's conversation thread is created here if it had none, so a
+    /// caller that only wanted the thread can ask for this and use that field.
+    pub fn page_authoring_context(
+        &self,
+        page_id: PageId,
+    ) -> Result<PageAuthoringContext, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::PageAuthoringContext { page_id, reply })
+            .map_err(|_| LiveError::new("Emma runtime stopped before reading the page"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while reading the page"))?
+    }
+
+    /// Files an authored document onto a captured item: Emma files it into one
+    /// of the base's categories, retitles, and replaces the page's blocks.
     /// `keep_category` builds the document but leaves the filing alone, for bases that
     /// have not yet taught Emma what their categories look like.
     pub fn analyze_page(
         &self,
         page_id: PageId,
         keep_category: bool,
+        authored: AuthoredPage,
     ) -> Result<KnowledgePage, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
             .send(Command::AnalyzePage {
                 page_id,
                 keep_category,
+                authored,
                 reply,
             })
             .map_err(|_| LiveError::new("Emma runtime stopped before building the document"))?;
@@ -988,30 +738,18 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while restoring the version"))?
     }
 
-    pub fn chat_about_page(&self, page_id: PageId, content: String) -> Result<Thread, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::ChatAboutPage {
-                page_id,
-                content,
-                reply,
-            })
-            .map_err(|_| LiveError::new("Emma runtime stopped before opening the conversation"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while opening the conversation"))?
-    }
-
+    /// Validates a revised document into durable blocks and hands them back for
+    /// the user to approve. Nothing is written until they do.
     pub fn revise_page_document(
         &self,
         page_id: PageId,
-        instruction: String,
+        blocks: Vec<AgentBlock>,
     ) -> Result<Vec<ArtifactBlock>, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
             .send(Command::RevisePageDocument {
                 page_id,
-                instruction,
+                blocks,
                 reply,
             })
             .map_err(|_| LiveError::new("Emma runtime stopped before drafting the revision"))?;
@@ -1302,90 +1040,6 @@ impl LiveClient {
         })?
     }
 
-    pub fn list_openrouter_models(&self) -> Result<OpenRouterCatalog, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::ListOpenRouterModels(reply))
-            .map_err(|_| LiveError::new("Emma runtime stopped before loading OpenRouter models"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while loading OpenRouter models"))?
-    }
-
-    pub fn select_openrouter_model(
-        &self,
-        model_id: String,
-        effort: String,
-    ) -> Result<String, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SelectOpenRouterModel {
-                model_id,
-                effort,
-                reply,
-            })
-            .map_err(|_| LiveError::new("Emma runtime stopped before selecting the model"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while selecting the model"))?
-    }
-
-    /// Pins one thread to a model of its own, without moving the app's selection.
-    ///
-    /// What a subagent runs on: the parent picks the route, the thread it spawns
-    /// takes it for its whole life. An empty model ID puts the thread back on the
-    /// selected model.
-    pub fn set_thread_model(
-        &self,
-        thread_id: ThreadId,
-        model_id: String,
-        effort: String,
-    ) -> Result<(), LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SetThreadModel {
-                thread_id,
-                model_id,
-                effort,
-                reply,
-            })
-            .map_err(|_| LiveError::new("Emma runtime stopped before setting the thread's model"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while setting the thread's model"))?
-    }
-
-    pub fn select_local_model(
-        &self,
-        base_url: String,
-        model_id: String,
-        credential_env: String,
-    ) -> Result<String, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SelectLocalModel {
-                base_url,
-                model_id,
-                credential_env,
-                reply,
-            })
-            .map_err(|_| LiveError::new("Emma runtime stopped before selecting the local model"))?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while selecting the local model"))?
-    }
-
-    pub fn select_fallback_model(&self) -> Result<(), LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SelectFallbackModel(reply))
-            .map_err(|_| {
-                LiveError::new("Emma runtime stopped before selecting the local fallback")
-            })?;
-        result.recv().map_err(|_| {
-            LiveError::new("Emma runtime stopped while selecting the local fallback")
-        })?
-    }
 }
 
 /// One scheduled job that just came due, with its thread already created and saved.
@@ -1413,18 +1067,14 @@ pub struct DueJob {
 /// Runs on the live runtime thread, so it must not block on anything that thread drives.
 pub type JobSink = Arc<dyn Fn(DueJob) + Send + Sync>;
 
-pub fn start_live_runtime<A>(
+pub fn start_live_runtime(
     thread_root: PathBuf,
     knowledge_root: PathBuf,
     knowledge_export: Option<PathBuf>,
     scheduled_root: PathBuf,
     research_root: PathBuf,
     jobs: JobSink,
-    agent: A,
-) -> Result<LiveClient, LiveError>
-where
-    A: FnMut(AgentRequest) -> Result<AgentResponse, LiveError> + Send + 'static,
-{
+) -> Result<LiveClient, LiveError> {
     let (commands, receiver) = mpsc::channel();
     thread::Builder::new()
         .name("emma-live-runtime".into())
@@ -1436,7 +1086,6 @@ where
                 scheduled_root,
                 research_root,
                 jobs,
-                agent,
             );
             loop {
                 match receiver.recv_timeout(Duration::from_secs(30)) {
@@ -1450,19 +1099,15 @@ where
     Ok(LiveClient { commands })
 }
 
-struct Runtime<A> {
+struct Runtime {
     threads: ThreadStore,
     knowledge: KnowledgeStore,
     scheduled: ScheduledJobStore,
     research: ResearchJobStore,
     jobs: JobSink,
-    agent: A,
 }
 
-impl<A> Runtime<A>
-where
-    A: FnMut(AgentRequest) -> Result<AgentResponse, LiveError>,
-{
+impl Runtime {
     fn new(
         thread_root: PathBuf,
         knowledge_root: PathBuf,
@@ -1470,7 +1115,6 @@ where
         scheduled_root: PathBuf,
         research_root: PathBuf,
         jobs: JobSink,
-        agent: A,
     ) -> Self {
         let knowledge = KnowledgeStore::new(knowledge_root);
         Self {
@@ -1482,7 +1126,6 @@ where
             scheduled: ScheduledJobStore::new(scheduled_root),
             research: ResearchJobStore::new(research_root),
             jobs,
-            agent,
         }
     }
 
@@ -1567,38 +1210,6 @@ where
                     self.update_page_document(page_id, title, category, summary, body, artifacts),
                 );
             }
-            Command::SendMessage {
-                thread_id,
-                content,
-                screen_context,
-                skill_context,
-                tools,
-                reply,
-            } => {
-                let _ = reply.send(self.send_message(
-                    thread_id,
-                    content,
-                    screen_context,
-                    skill_context,
-                    tools,
-                ));
-            }
-            Command::SubmitToolResult {
-                thread_id,
-                results,
-                screen_context,
-                skill_context,
-                tools,
-                reply,
-            } => {
-                let _ = reply.send(self.submit_tool_result(
-                    thread_id,
-                    results,
-                    screen_context,
-                    skill_context,
-                    tools,
-                ));
-            }
             Command::RecordTurn {
                 thread_id,
                 prompt,
@@ -1629,8 +1240,15 @@ where
             Command::ReadTrace { thread_id, reply } => {
                 let _ = reply.send(self.read_trace(thread_id));
             }
-            Command::SaveToKnowledge { thread_id, reply } => {
-                let _ = reply.send(self.save_to_knowledge(thread_id));
+            Command::ThreadAuthoringContext { thread_id, reply } => {
+                let _ = reply.send(self.thread_authoring_context(thread_id));
+            }
+            Command::SaveToKnowledge {
+                thread_id,
+                authored,
+                reply,
+            } => {
+                let _ = reply.send(self.save_to_knowledge(thread_id, authored));
             }
             Command::CaptureToKnowledge {
                 knowledge_base_id,
@@ -1654,17 +1272,16 @@ where
                     page_id,
                 ));
             }
-            // ponytail: the model call runs on this thread, and the host answers one
-            // request at a time, so a page being written holds up every other host
-            // call — reads still queue, they are just no longer shown as the whole
-            // app being busy. Move the agent behind an `Arc<Mutex<_>>` and apply the
-            // analysis in a follow-up command if the queueing itself starts to bite.
+            Command::PageAuthoringContext { page_id, reply } => {
+                let _ = reply.send(self.page_authoring_context(page_id));
+            }
             Command::AnalyzePage {
                 page_id,
                 keep_category,
+                authored,
                 reply,
             } => {
-                let _ = reply.send(self.analyze_page(page_id, keep_category));
+                let _ = reply.send(self.analyze_page(page_id, keep_category, authored));
             }
             Command::ListPageVersions { page_id, reply } => {
                 let _ = reply.send(self.list_page_versions(&page_id));
@@ -1676,19 +1293,12 @@ where
             } => {
                 let _ = reply.send(self.restore_page_version(&page_id, &name));
             }
-            Command::ChatAboutPage {
-                page_id,
-                content,
-                reply,
-            } => {
-                let _ = reply.send(self.chat_about_page(page_id, content));
-            }
             Command::RevisePageDocument {
                 page_id,
-                instruction,
+                blocks,
                 reply,
             } => {
-                let _ = reply.send(self.revise_page_document(page_id, instruction));
+                let _ = reply.send(self.revise_page_document(page_id, blocks));
             }
             Command::ReadPageAsset { name, reply } => {
                 let _ = reply.send(self.read_page_asset(&name));
@@ -1821,35 +1431,6 @@ where
                     micro_dollars,
                 ));
             }
-            Command::ListOpenRouterModels(reply) => {
-                let _ = reply.send(self.list_openrouter_models());
-            }
-            Command::SelectOpenRouterModel {
-                model_id,
-                effort,
-                reply,
-            } => {
-                let _ = reply.send(self.select_openrouter_model(model_id, effort));
-            }
-            Command::SelectLocalModel {
-                base_url,
-                model_id,
-                credential_env,
-                reply,
-            } => {
-                let _ = reply.send(self.select_local_model(base_url, model_id, credential_env));
-            }
-            Command::SetThreadModel {
-                thread_id,
-                model_id,
-                effort,
-                reply,
-            } => {
-                let _ = reply.send(self.set_thread_model(thread_id, model_id, effort));
-            }
-            Command::SelectFallbackModel(reply) => {
-                let _ = reply.send(self.select_fallback_model());
-            }
         }
     }
 
@@ -1928,73 +1509,6 @@ where
             }
         }
         Ok(fired)
-    }
-
-    fn list_openrouter_models(&mut self) -> Result<OpenRouterCatalog, LiveError> {
-        match (self.agent)(AgentRequest::ListOpenRouterModels)? {
-            AgentResponse::OpenRouterCatalog(catalog) => Ok(catalog),
-            _ => Err(LiveError::new(
-                "agent returned an unexpected response for the OpenRouter catalog",
-            )),
-        }
-    }
-
-    fn select_openrouter_model(
-        &mut self,
-        model_id: String,
-        effort: String,
-    ) -> Result<String, LiveError> {
-        match (self.agent)(AgentRequest::SelectOpenRouterModel { model_id, effort })? {
-            AgentResponse::OpenRouterModelSelected(model_id) => Ok(model_id),
-            _ => Err(LiveError::new(
-                "agent returned an unexpected response after selecting an OpenRouter model",
-            )),
-        }
-    }
-
-    fn select_local_model(
-        &mut self,
-        base_url: String,
-        model_id: String,
-        credential_env: String,
-    ) -> Result<String, LiveError> {
-        match (self.agent)(AgentRequest::SelectLocalModel {
-            base_url,
-            model_id,
-            credential_env,
-        })? {
-            AgentResponse::LocalModelSelected(model_id) => Ok(model_id),
-            _ => Err(LiveError::new(
-                "agent returned an unexpected response after selecting the local model",
-            )),
-        }
-    }
-
-    fn set_thread_model(
-        &mut self,
-        thread_id: ThreadId,
-        model_id: String,
-        effort: String,
-    ) -> Result<(), LiveError> {
-        match (self.agent)(AgentRequest::SetThreadModel {
-            thread_id,
-            model_id,
-            effort,
-        })? {
-            AgentResponse::ThreadModelSet => Ok(()),
-            _ => Err(LiveError::new(
-                "agent returned an unexpected response after setting the thread's model",
-            )),
-        }
-    }
-
-    fn select_fallback_model(&mut self) -> Result<(), LiveError> {
-        match (self.agent)(AgentRequest::SelectFallbackModel)? {
-            AgentResponse::FallbackModelSelected => Ok(()),
-            _ => Err(LiveError::new(
-                "agent returned an unexpected response after selecting the local fallback",
-            )),
-        }
     }
 
     fn snapshot(&self) -> Result<LiveSnapshot, LiveError> {
@@ -2534,122 +2048,9 @@ where
         Ok(page)
     }
 
-    fn send_message(
-        &mut self,
-        thread_id: ThreadId,
-        content: String,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    ) -> Result<TurnOutcome, LiveError> {
-        validate_agent_text("prompt", &content, true, MAX_AGENT_MESSAGE_BYTES)?;
-        if tools.len() > MAX_AGENT_TOOLS {
-            return Err(LiveError::new("too many tools for one turn"));
-        }
-        let thread = self.threads.load(&thread_id).map_err(|error| {
-            LiveError::new(format!("could not load thread {thread_id}: {error}"))
-        })?;
-        let mut relevant = Vec::new();
-        for base_id in &thread.source_knowledge_base_ids {
-            self.load_base(base_id)?;
-            let pages = self
-                .knowledge
-                .relevant_pages(base_id, &content, crate::MAX_RELEVANT_PAGES)
-                .map_err(|error| {
-                    LiveError::new(format!("could not retrieve relevant knowledge: {error}"))
-                })?;
-            for (rank, page) in pages.into_iter().enumerate() {
-                relevant.push((rank, base_id.clone(), page));
-            }
-        }
-        relevant.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then(left.1.cmp(&right.1))
-                .then(left.2.id.cmp(&right.2.id))
-        });
-        let knowledge = relevant
-            .into_iter()
-            .take(crate::MAX_RELEVANT_PAGES)
-            .map(|(_, _, page)| page)
-            .map(|page| AgentKnowledgePage {
-                id: page.id.as_str().to_owned(),
-                title: bounded(&page.title, MAX_AGENT_TITLE_BYTES),
-                summary: bounded(&page.analysis.summary, MAX_AGENT_SUMMARY_BYTES),
-                body: bounded(&page.analysis.body, MAX_AGENT_CONTEXT_BODY_BYTES),
-            })
-            .collect();
-        self.run_turn(
-            thread,
-            content,
-            knowledge,
-            screen_context,
-            skill_context,
-            tools,
-        )
-    }
-
-    /// Submits the results of a step's tool calls and takes the next step. The
-    /// prompt is already durable; only the agent's own answer is still pending.
-    fn submit_tool_result(
-        &mut self,
-        thread_id: ThreadId,
-        results: Vec<AgentToolResult>,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    ) -> Result<TurnOutcome, LiveError> {
-        if results.is_empty() || tools.len() > MAX_AGENT_TOOLS {
-            return Err(LiveError::new("tool results are invalid"));
-        }
-        let thread = self.threads.load(&thread_id).map_err(|error| {
-            LiveError::new(format!("could not load thread {thread_id}: {error}"))
-        })?;
-        let response = (self.agent)(AgentRequest::ToolResult {
-            thread: thread.clone(),
-            results,
-            screen_context,
-            skill_context,
-            tools,
-        })?;
-        self.finish_step(thread, response)
-    }
-
-    /// One durable user turn: append the prompt, ask the agent, append the
-    /// reply. Both ordinary threads and document conversations route here.
-    fn run_turn(
-        &mut self,
-        mut thread: Thread,
-        content: String,
-        knowledge: Vec<AgentKnowledgePage>,
-        screen_context: Option<ScreenContext>,
-        skill_context: Option<SkillContext>,
-        tools: Vec<AgentTool>,
-    ) -> Result<TurnOutcome, LiveError> {
-        let timestamp = Timestamp::now().max(thread.updated_at);
-        let message = ThreadMessage::new(ThreadRole::User, content.clone(), timestamp)
-            .map_err(|error| LiveError::new(format!("prompt is invalid: {error}")))?;
-        thread
-            .push(message)
-            .map_err(|error| LiveError::new(format!("could not append prompt: {error}")))?;
-        self.threads
-            .save(&thread)
-            .map_err(|error| LiveError::new(format!("could not save prompt: {error}")))?;
-
-        let response = (self.agent)(AgentRequest::ThreadMessage {
-            thread: thread.clone(),
-            content,
-            knowledge,
-            screen_context,
-            skill_context,
-            tools,
-        })?;
-        self.finish_step(thread, response)
-    }
-
-    /// Appends a finished prompt and answer without running the agent, because
-    /// the harness already ran it. Both messages land in one save so a thread is
-    /// never left holding a prompt whose reply exists only in the harness.
+    /// Appends a finished prompt and answer. The harness owns the loop that
+    /// produced them; both messages land in one save so a thread is never left
+    /// holding a prompt whose reply exists only in the harness.
     fn record_turn(
         &mut self,
         thread_id: ThreadId,
@@ -2659,7 +2060,7 @@ where
         duration_milliseconds: u64,
         input_tokens: u64,
         model: String,
-    ) -> Result<TurnOutcome, LiveError> {
+    ) -> Result<Thread, LiveError> {
         // The run already happened, so an oversized half loses its middle rather
         // than the whole turn — the same bound a trace gets. Refusing here took
         // the prompt down with it, and a long build left nothing in the thread
@@ -2696,10 +2097,7 @@ where
         self.threads
             .save(&thread)
             .map_err(|error| LiveError::new(format!("could not save the turn: {error}")))?;
-        Ok(TurnOutcome {
-            thread,
-            tool_calls: Vec::new(),
-        })
+        Ok(thread)
     }
 
     fn record_trace(&mut self, thread_id: ThreadId, trace: String) -> Result<(), LiveError> {
@@ -2725,102 +2123,46 @@ where
             .map_err(|error| LiveError::new(format!("could not load thread {thread_id}: {error}")))
     }
 
-    /// A step that asked for tools stays open: the pending calls go back to the
-    /// caller and nothing is written until the agent produces a real answer.
-    fn finish_step(
+    /// The material a thread's last answer would be authored from, plus the
+    /// taxonomy the destination base already keeps.
+    fn thread_authoring_context(
         &mut self,
-        mut thread: Thread,
-        response: AgentResponse,
-    ) -> Result<TurnOutcome, LiveError> {
-        let AgentResponse::Message(response) = response else {
-            return Err(LiveError::new(
-                "agent returned analysis when a thread message was expected",
-            ));
-        };
-        let AgentMessage {
-            content: assistant_content,
-            model,
-            input_tokens,
-            output_tokens,
-            duration_milliseconds,
-            tool_calls,
-            ..
-        } = response;
-        if !tool_calls.is_empty() {
-            return Ok(TurnOutcome { thread, tool_calls });
-        }
-        let timestamp = Timestamp::now().max(thread.updated_at);
-        let message = ThreadMessage::new(ThreadRole::Assistant, assistant_content, timestamp);
-        let mut message = message
-            .map_err(|error| LiveError::new(format!("assistant response is invalid: {error}")))?;
-        message.generation = Some(
-            GenerationTelemetry::measured(output_tokens, duration_milliseconds, input_tokens, model)
-                .map_err(|error| {
-                    LiveError::new(format!("generation telemetry is invalid: {error}"))
-                })?,
-        );
-        thread
-            .push(message)
-            .map_err(|error| LiveError::new(format!("could not append response: {error}")))?;
-        self.threads
-            .save(&thread)
-            .map_err(|error| LiveError::new(format!("could not save response: {error}")))?;
-        Ok(TurnOutcome {
-            thread,
-            tool_calls: Vec::new(),
+        thread_id: ThreadId,
+    ) -> Result<ThreadAuthoringContext, LiveError> {
+        let thread = self.threads.load(&thread_id).map_err(|error| {
+            LiveError::new(format!("could not load thread {thread_id}: {error}"))
+        })?;
+        let base = self.load_base(&thread.knowledge_base_id)?;
+        Ok(ThreadAuthoringContext {
+            text: last_answer(&thread)?,
+            categories: category_names(&base),
         })
     }
 
-    fn save_to_knowledge(&mut self, thread_id: ThreadId) -> Result<KnowledgePage, LiveError> {
+    fn save_to_knowledge(
+        &mut self,
+        thread_id: ThreadId,
+        authored: AuthoredPage,
+    ) -> Result<KnowledgePage, LiveError> {
         let thread = self.threads.load(&thread_id).map_err(|error| {
             LiveError::new(format!("could not load thread {thread_id}: {error}"))
         })?;
         let selected_base = self.load_base(&thread.knowledge_base_id)?;
-        let text = thread
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.role == ThreadRole::Assistant)
-            .map(|message| message.content.clone())
-            .ok_or_else(|| LiveError::new("send a message before saving an analysis"))?;
-        let response = (self.agent)(AgentRequest::Analyze {
-            thread: thread.clone(),
-            text: text.clone(),
-            categories: selected_base
-                .categories
-                .iter()
-                .map(|category| category.as_str().to_owned())
-                .collect(),
-        })?;
-        let AgentResponse::Analysis(response) = response else {
-            return Err(LiveError::new(
-                "agent returned a message when analysis was expected",
-            ));
-        };
-        let AgentAnalysis {
+        let text = last_answer(&thread)?;
+        let AuthoredPage {
             title,
             category,
             summary,
-            body,
             interesting_points,
             counterarguments,
-            sources: response_sources,
             blocks,
             model,
             input_tokens,
             output_tokens,
-            subagent_count,
-        } = response;
-        let sources = response_sources
-            .into_iter()
-            .map(|source| {
-                let url = SourceUrl::parse(source.url).map_err(|error| {
-                    LiveError::new(format!("analysis source is invalid: {error}"))
-                })?;
-                CitedSource::new(source.title, url)
-                    .map_err(|error| LiveError::new(format!("analysis source is invalid: {error}")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        } = authored;
+        let interesting_points = bounded_points(interesting_points);
+        let counterarguments = bounded_points(counterarguments);
+        let body = analysis_body(&summary, &interesting_points, &counterarguments);
         let timestamp = Timestamp::now().max(thread.updated_at);
         let category = Category::parse(category)
             .map_err(|error| LiveError::new(format!("analysis category is invalid: {error}")))?;
@@ -2832,19 +2174,22 @@ where
                 .map_err(|error| LiveError::new(format!("analysis context is invalid: {error}")))?,
             AnalysisContent::new(summary, body)
                 .map_err(|error| LiveError::new(format!("analysis content is invalid: {error}")))?,
-            sources,
+            // The author returns citations as a block of the document, not as a
+            // separate list, so a page saved from a thread cites nothing of its own.
+            Vec::new(),
             timestamp,
             timestamp,
-            RunTelemetry::new(model, input_tokens, output_tokens, subagent_count).map_err(
-                |error| LiveError::new(format!("analysis telemetry is invalid: {error}")),
-            )?,
+            // Nothing here spawns subagents: the app authors this in one call.
+            RunTelemetry::new(model, input_tokens, output_tokens, 0).map_err(|error| {
+                LiveError::new(format!("analysis telemetry is invalid: {error}"))
+            })?,
         )
         .map_err(|error| LiveError::new(format!("knowledge page is invalid: {error}")))?
         .with_source_thread(thread_id.clone())
         .in_knowledge_base(selected_base.id);
         let source = ArtifactSource::from_thread(Some(&thread_id));
         if !blocks.is_empty() {
-            // The agent authored the document itself; its blocks replace the
+            // The model authored the document itself; its blocks replace the
             // fixed summary/body scaffold entirely.
             let artifacts = artifact_blocks(blocks, &source)?;
             let page = page.with_artifacts(artifacts).map_err(|error| {
@@ -3104,13 +2449,44 @@ where
         Ok(thread)
     }
 
-    /// Re-analyzes an existing page from what was captured: Emma picks the
-    /// category out of the ones this base already keeps, retitles, and authors
+    /// Everything the app needs to author, revise, or talk about this page. The
+    /// page's conversation thread is created here if it never had one, so every
+    /// door onto the document lands in the same history.
+    fn page_authoring_context(
+        &mut self,
+        page_id: PageId,
+    ) -> Result<PageAuthoringContext, LiveError> {
+        let mut page = self
+            .knowledge
+            .load(&page_id)
+            .map_err(|error| LiveError::new(format!("could not load page {page_id}: {error}")))?;
+        let base = self.load_base(&page.knowledge_base_id)?;
+        let thread = self.conversation_thread(&mut page)?;
+        // A page captured as a document rather than as text has nothing in its
+        // context; its own body is the only material there is to re-read.
+        let text = if page.context.text.trim().is_empty() {
+            &page.analysis.body
+        } else {
+            &page.context.text
+        };
+        Ok(PageAuthoringContext {
+            thread_id: thread.id.as_str().to_owned(),
+            text: bounded(text, MAX_AGENT_BODY_BYTES),
+            categories: category_names(&base),
+            title: bounded(&page.title, MAX_AGENT_TITLE_BYTES),
+            summary: bounded(&page.analysis.summary, MAX_AGENT_SUMMARY_BYTES),
+            artifacts: page.artifacts,
+        })
+    }
+
+    /// Files an authored re-analysis onto an existing page: Emma picked the
+    /// category out of the ones this base already keeps, retitled, and authored
     /// the document. Images captured with the item stay, and stay on top.
     fn analyze_page(
         &mut self,
         page_id: PageId,
         keep_category: bool,
+        authored: AuthoredPage,
     ) -> Result<KnowledgePage, LiveError> {
         let mut page = self
             .knowledge
@@ -3118,26 +2494,18 @@ where
             .map_err(|error| LiveError::new(format!("could not load page {page_id}: {error}")))?;
         let base = self.load_base(&page.knowledge_base_id)?;
         let thread = self.conversation_thread(&mut page)?;
-        let text = if page.context.text.trim().is_empty() {
-            page.analysis.body.clone()
-        } else {
-            page.context.text.clone()
-        };
-        let response = (self.agent)(AgentRequest::Analyze {
-            thread: thread.clone(),
-            text,
-            categories: base
-                .categories
-                .iter()
-                .map(|category| category.as_str().to_owned())
-                .collect(),
-        })?;
-        let AgentResponse::Analysis(response) = response else {
-            return Err(LiveError::new(
-                "agent returned a message when analysis was expected",
-            ));
-        };
-        let category = Category::parse(response.category)
+        let AuthoredPage {
+            title,
+            category,
+            summary,
+            interesting_points,
+            counterarguments,
+            blocks,
+            model,
+            input_tokens,
+            output_tokens,
+        } = authored;
+        let category = Category::parse(category)
             .map_err(|error| LiveError::new(format!("analysis category is invalid: {error}")))?;
         // An untrained base gets the document without the filing: neither the page nor the
         // base's taxonomy moves until the user's own filing has taught it this category.
@@ -3145,16 +2513,17 @@ where
             self.learn_category(&base, &category)?;
             page.category = category;
         }
-        page.title = response.title;
-        page.analysis = AnalysisContent::new(response.summary, response.body)
+        let body = analysis_body(
+            &summary,
+            &bounded_points(interesting_points),
+            &bounded_points(counterarguments),
+        );
+        page.title = title;
+        page.analysis = AnalysisContent::new(summary, body)
             .map_err(|error| LiveError::new(format!("analysis content is invalid: {error}")))?;
-        page.telemetry = RunTelemetry::new(
-            response.model,
-            response.input_tokens,
-            response.output_tokens,
-            response.subagent_count,
-        )
-        .map_err(|error| LiveError::new(format!("analysis telemetry is invalid: {error}")))?;
+        // Nothing here spawns subagents: the app authors this in one call.
+        page.telemetry = RunTelemetry::new(model, input_tokens, output_tokens, 0)
+            .map_err(|error| LiveError::new(format!("analysis telemetry is invalid: {error}")))?;
         page.analyzed_at = Timestamp::now().max(page.added_at);
         let source = ArtifactSource::from_thread(Some(&thread.id));
         let images: Vec<ArtifactBlock> = page
@@ -3163,13 +2532,13 @@ where
             .filter(|block| block.block_type == "image")
             .cloned()
             .collect();
-        let mut artifacts = if response.blocks.is_empty() {
+        let mut artifacts = if blocks.is_empty() {
             crate::knowledge::legacy_artifacts(&page.analysis, &page.sources, Some(&thread.id))
                 .map_err(|error| {
                     LiveError::new(format!("analysis artifacts are invalid: {error}"))
                 })?
         } else {
-            artifact_blocks(response.blocks, &source)?
+            artifact_blocks(blocks, &source)?
         };
         // The captured pictures ride directly under the opening summary, where the
         // reader meets them already knowing what the page is about.
@@ -3183,40 +2552,19 @@ where
         Ok(page)
     }
 
-    fn chat_about_page(&mut self, page_id: PageId, content: String) -> Result<Thread, LiveError> {
-        validate_agent_text("prompt", &content, true, MAX_AGENT_MESSAGE_BYTES)?;
-        let mut page = self
-            .knowledge
-            .load(&page_id)
-            .map_err(|error| LiveError::new(format!("could not load page {page_id}: {error}")))?;
-        let thread = self.conversation_thread(&mut page)?;
-        let knowledge = vec![document_context(&page)];
-        self.run_turn(thread, content, knowledge, None, None, Vec::new())
-            .map(|outcome| outcome.thread)
-    }
-
+    /// Validates a revision the app authored. Nothing is written: these blocks go
+    /// back to the reader as a proposal, and only an accepted proposal is saved.
     fn revise_page_document(
         &mut self,
         page_id: PageId,
-        instruction: String,
+        blocks: Vec<AgentBlock>,
     ) -> Result<Vec<ArtifactBlock>, LiveError> {
-        validate_agent_text("instruction", &instruction, true, MAX_AGENT_MESSAGE_BYTES)?;
         let mut page = self
             .knowledge
             .load(&page_id)
             .map_err(|error| LiveError::new(format!("could not load page {page_id}: {error}")))?;
         let thread = self.conversation_thread(&mut page)?;
         let source = ArtifactSource::from_thread(Some(&thread.id));
-        let response = (self.agent)(AgentRequest::ReviseDocument {
-            thread,
-            instruction,
-            document: page.artifacts.clone(),
-        })?;
-        let AgentResponse::Document(blocks) = response else {
-            return Err(LiveError::new(
-                "agent returned an unexpected response when a document was expected",
-            ));
-        };
         if blocks.is_empty() {
             return Err(LiveError::new("agent returned an empty document"));
         }
@@ -3233,21 +2581,55 @@ where
     }
 }
 
-/// A tool that returns more than the ceiling is normal (a long file, a big
-/// listing); the turn keeps going on a truncated result instead of failing.
-fn truncate_tool_result(content: String) -> String {
-    if content.len() <= MAX_TOOL_RESULT_BYTES {
-        return content;
+/// The last thing Emma said in a thread — the answer a page gets made out of.
+fn last_answer(thread: &Thread) -> Result<String, LiveError> {
+    thread
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == ThreadRole::Assistant)
+        .map(|message| message.content.clone())
+        .ok_or_else(|| LiveError::new("send a message before saving an analysis"))
+}
+
+fn category_names(base: &KnowledgeBase) -> Vec<String> {
+    base.categories
+        .iter()
+        .map(|category| category.as_str().to_owned())
+        .collect()
+}
+
+/// An author that returns a hundred bullets gets the first dozen filed; the rest
+/// is padding, and letting it through only pushes the body past its own ceiling.
+fn bounded_points(points: Vec<String>) -> Vec<String> {
+    let mut points = points;
+    points.truncate(MAX_AGENT_POINTS);
+    points
+}
+
+/// The prose body of an analysis, composed the way the page reads: the points and
+/// the caveats under their own headings. An author that gave neither leaves the
+/// summary standing on its own.
+fn analysis_body(summary: &str, points: &[String], counterarguments: &[String]) -> String {
+    let mut sections = Vec::new();
+    if !points.is_empty() {
+        sections.push(format!("Interesting points\n\n{}", bullets(points)));
     }
-    const NOTICE: &str = "\n… truncated: tool result exceeded 16384 bytes";
-    let mut end = MAX_TOOL_RESULT_BYTES - NOTICE.len();
-    while !content.is_char_boundary(end) {
-        end -= 1;
+    if !counterarguments.is_empty() {
+        sections.push(format!("Counterarguments\n\n{}", bullets(counterarguments)));
     }
-    let mut kept = content;
-    kept.truncate(end);
-    kept.push_str(NOTICE);
-    kept
+    if sections.is_empty() {
+        return summary.to_owned();
+    }
+    sections.join("\n\n")
+}
+
+fn bullets(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn validate_agent_text(
@@ -3266,7 +2648,7 @@ fn validate_agent_text(
     Ok(())
 }
 
-/// Validates agent-authored blocks into durable artifacts. The agent picks the
+/// Validates model-authored blocks into durable artifacts. The model picks the
 /// block types, so this is the trust boundary for a generated document.
 fn artifact_blocks(
     blocks: Vec<AgentBlock>,
@@ -3287,23 +2669,6 @@ fn artifact_blocks(
         );
     }
     Ok(artifacts)
-}
-
-/// The page as the agent sees it while chatting about the document: every block
-/// in reading order, using each block's portable fallback text.
-fn document_context(page: &KnowledgePage) -> AgentKnowledgePage {
-    let body = page
-        .artifacts
-        .iter()
-        .map(|block| format!("[{} · {}]\n{}", block.id, block.block_type, block.fallback))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    AgentKnowledgePage {
-        id: page.id.as_str().to_owned(),
-        title: bounded(&page.title, MAX_AGENT_TITLE_BYTES),
-        summary: bounded(&page.analysis.summary, MAX_AGENT_SUMMARY_BYTES),
-        body: bounded(&body, MAX_AGENT_BODY_BYTES),
-    }
 }
 
 fn image_data_url_extension(value: &str) -> Result<&'static str, LiveError> {
@@ -3374,17 +2739,6 @@ fn bounded(value: &str, max_bytes: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_oversized_tool_result_is_truncated_instead_of_refused() {
-        let content = "é".repeat(MAX_TOOL_RESULT_BYTES);
-        let result = AgentToolResult::new("call-a".into(), content).expect("accepted");
-        assert!(result.content.len() <= MAX_TOOL_RESULT_BYTES);
-        assert!(
-            result
-                .content
-                .ends_with("truncated: tool result exceeded 16384 bytes")
-        );
-    }
     use std::{
         fs,
         sync::{
@@ -3414,62 +2768,27 @@ mod tests {
         ))
     }
 
+    /// A page as the app would hand it over, with nothing wrong with it.
+    fn authored(category: &str) -> AuthoredPage {
+        AuthoredPage {
+            title: "Saved fake analysis".into(),
+            category: category.into(),
+            summary: "Focused integration analysis".into(),
+            interesting_points: vec!["A useful point".into()],
+            counterarguments: vec!["A caveat".into()],
+            blocks: Vec::new(),
+            model: "fake".into(),
+            input_tokens: 4,
+            output_tokens: 6,
+        }
+    }
+
     #[test]
     fn live_flow_resaves_one_thread_recovers_stale_temp_and_saves_only_on_action() {
         let root = temp_child();
         let thread_root = root.join("threads");
         let knowledge_root = root.join("knowledge");
         let scheduled_root = root.join("scheduled");
-        let agent = |request| match request {
-            AgentRequest::ThreadMessage {
-                thread,
-                content,
-                knowledge,
-                screen_context,
-                skill_context,
-                tools,
-            } => {
-                assert_eq!(thread.messages.len(), 1);
-                assert!(knowledge.is_empty());
-                assert!(screen_context.is_none());
-                assert!(skill_context.is_none());
-                assert!(tools.is_empty());
-                Ok(AgentResponse::Message(AgentMessage {
-                    content: format!("Fake reply to {content}"),
-                    model: "fake".into(),
-                    input_tokens: 2,
-                    output_tokens: 4,
-                    duration_milliseconds: 200,
-                    tool_calls: Vec::new(),
-                }))
-            }
-            AgentRequest::Analyze { thread, text, .. } => {
-                assert_eq!(thread.messages.len(), 2);
-                Ok(AgentResponse::Analysis(AgentAnalysis {
-                    blocks: Vec::new(),
-                    title: "Saved fake analysis".into(),
-                    category: "general".into(),
-                    summary: "Focused integration analysis".into(),
-                    body: format!("Analyzed: {text}"),
-                    interesting_points: vec!["A useful point".into()],
-                    counterarguments: vec!["A caveat".into()],
-                    sources: Vec::new(),
-                    model: "fake".into(),
-                    input_tokens: 4,
-                    output_tokens: 6,
-                    subagent_count: 0,
-                }))
-            }
-            AgentRequest::ToolResult { .. }
-            | AgentRequest::ReviseDocument { .. }
-            | AgentRequest::ListOpenRouterModels
-            | AgentRequest::SelectOpenRouterModel { .. }
-            | AgentRequest::SelectLocalModel { .. }
-            | AgentRequest::SetThreadModel { .. }
-            | AgentRequest::SelectFallbackModel => {
-                unreachable!()
-            }
-        };
         let mut runtime = Runtime::new(
             thread_root.clone(),
             knowledge_root.clone(),
@@ -3477,17 +2796,16 @@ mod tests {
             scheduled_root,
             root.join("research"),
             no_jobs(),
-            agent,
         );
 
         let created = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
-        let oversized = "x".repeat(MAX_AGENT_MESSAGE_BYTES + 1);
+        // Nothing has been said yet, so there is nothing to author a page out of.
         assert!(
             runtime
-                .send_message(created.id.clone(), oversized, None, None, Vec::new())
+                .thread_authoring_context(created.id.clone())
                 .unwrap_err()
                 .to_string()
-                .contains("cannot exceed 65536 bytes")
+                .contains("send a message before saving")
         );
         assert!(
             runtime
@@ -3500,9 +2818,16 @@ mod tests {
         let stale_temp = thread_root.join(format!(".{}.tmp", created.id));
         fs::write(&stale_temp, "stale interrupted save").unwrap();
         let updated = runtime
-            .send_message(created.id.clone(), "hello".into(), None, None, Vec::new())
-            .unwrap()
-            .thread;
+            .record_turn(
+                created.id.clone(),
+                "hello".into(),
+                "Fake reply to hello".into(),
+                4,
+                200,
+                2,
+                "fake".into(),
+            )
+            .unwrap();
 
         assert_eq!(updated.id, created.id);
         assert_eq!(updated.messages.len(), 2);
@@ -3517,7 +2842,27 @@ mod tests {
         assert!(!stale_temp.exists());
         assert!(runtime.knowledge.list().unwrap().pages.is_empty());
 
-        let page = runtime.save_to_knowledge(created.id.clone()).unwrap();
+        let context = runtime
+            .thread_authoring_context(created.id.clone())
+            .unwrap();
+        assert_eq!(context.text, "Fake reply to hello");
+        // A base nobody has filed anything into offers no categories to choose from.
+        assert!(context.categories.is_empty());
+        // A page the author botched is refused outright rather than half-filed.
+        let mut malformed = authored("general");
+        malformed.category = "not a category!".into();
+        assert!(
+            runtime
+                .save_to_knowledge(created.id.clone(), malformed)
+                .unwrap_err()
+                .to_string()
+                .contains("category is invalid")
+        );
+        assert!(runtime.knowledge.list().unwrap().pages.is_empty());
+
+        let page = runtime
+            .save_to_knowledge(created.id.clone(), authored("general"))
+            .unwrap();
         assert_eq!(page.source_thread_id, Some(created.id));
         assert_eq!(page.knowledge_base_id, KnowledgeBaseId::default_id());
         assert!(page.artifacts.iter().any(|block| block.id == "summary"));
@@ -3546,7 +2891,9 @@ mod tests {
         runtime
             .select_thread_knowledge_base(updated.id.clone(), project.id.clone())
             .unwrap();
-        let project_page = runtime.save_to_knowledge(updated.id.clone()).unwrap();
+        let project_page = runtime
+            .save_to_knowledge(updated.id.clone(), authored("research"))
+            .unwrap();
         assert_eq!(project_page.knowledge_base_id, project.id);
         let edited = runtime
             .update_page(
@@ -3614,7 +2961,7 @@ mod tests {
         runtime.threads.save(&orphaned).unwrap();
         assert!(
             runtime
-                .save_to_knowledge(updated.id)
+                .save_to_knowledge(updated.id, authored("research"))
                 .unwrap_err()
                 .to_string()
                 .contains("does not exist")
@@ -3633,38 +2980,6 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            |request| match request {
-                AgentRequest::ThreadMessage { knowledge, .. } => {
-                    assert_eq!(knowledge.len(), 1);
-                    assert!(knowledge[0].body.contains("Raw captured research"));
-                    Ok(AgentResponse::Message(AgentMessage {
-                        tool_calls: Vec::new(),
-                        content: "Reply about the document".into(),
-                        model: "fake".into(),
-                        input_tokens: 1,
-                        output_tokens: 1,
-                        duration_milliseconds: 1,
-                    }))
-                }
-                AgentRequest::ReviseDocument { document, .. } => {
-                    assert!(!document.is_empty());
-                    Ok(AgentResponse::Document(vec![
-                        AgentBlock {
-                            id: "how-to-apply".into(),
-                            block_type: "list".into(),
-                            payload: json!({"items": ["Try it on one project"]}),
-                            fallback: "- Try it on one project".into(),
-                        },
-                        AgentBlock {
-                            id: "adoption".into(),
-                            block_type: "chart".into(),
-                            payload: json!({"labels": ["Now", "Later"], "values": [3, 1]}),
-                            fallback: "Now: 3\nLater: 1".into(),
-                        },
-                    ]))
-                }
-                _ => unreachable!(),
-            },
         );
 
         let base = runtime.create_knowledge_base("Reading".into()).unwrap();
@@ -3708,24 +3023,65 @@ mod tests {
         );
         assert!(runtime.read_page_asset("../escape.png").is_err());
 
-        // Chatting about the document creates one durable conversation and reuses it.
+        // Asking for the page's context creates one durable conversation and reuses it,
+        // and hands back the document the app has to work from.
+        let context = runtime.page_authoring_context(page.id.clone()).unwrap();
+        assert!(context.text.contains("Raw captured research"));
+        assert_eq!(context.categories, ["field-notes"]);
+        assert!(context.artifacts.iter().any(|block| block.id == "summary"));
+        let conversation_id = ThreadId::parse(context.thread_id.clone()).unwrap();
+        let linked = runtime.knowledge.load(&page.id).unwrap();
+        assert_eq!(
+            linked.conversation_thread_id,
+            Some(conversation_id.clone())
+        );
         let conversation = runtime
-            .chat_about_page(page.id.clone(), "What does this argue?".into())
+            .record_turn(
+                conversation_id,
+                "What does this argue?".into(),
+                "Reply about the document".into(),
+                1,
+                1,
+                1,
+                "fake".into(),
+            )
             .unwrap();
         assert_eq!(conversation.messages.len(), 2);
-        let linked = runtime.knowledge.load(&page.id).unwrap();
-        assert_eq!(linked.conversation_thread_id, Some(conversation.id.clone()));
-        let conversation = runtime
-            .chat_about_page(page.id.clone(), "And the counterargument?".into())
-            .unwrap();
-        assert_eq!(conversation.id, linked.conversation_thread_id.unwrap());
-        assert_eq!(conversation.messages.len(), 4);
+        assert_eq!(
+            runtime
+                .page_authoring_context(page.id.clone())
+                .unwrap()
+                .thread_id,
+            context.thread_id
+        );
 
         // A revision is a proposal: nothing durable changes until it is applied.
         let proposed = runtime
-            .revise_page_document(page.id.clone(), "Add how to apply it".into())
+            .revise_page_document(
+                page.id.clone(),
+                vec![
+                    AgentBlock {
+                        id: "how-to-apply".into(),
+                        block_type: "list".into(),
+                        payload: json!({"items": ["Try it on one project"]}),
+                        fallback: "- Try it on one project".into(),
+                    },
+                    AgentBlock {
+                        id: "adoption".into(),
+                        block_type: "chart".into(),
+                        payload: json!({"labels": ["Now", "Later"], "values": [3, 1]}),
+                        fallback: "Now: 3\nLater: 1".into(),
+                    },
+                ],
+            )
             .unwrap();
         assert_eq!(proposed.len(), 2);
+        // A revision that came back empty is refused, so it can never blank a page.
+        assert!(
+            runtime
+                .revise_page_document(page.id.clone(), Vec::new())
+                .is_err()
+        );
         assert_eq!(
             runtime.knowledge.load(&page.id).unwrap().artifacts,
             linked.artifacts
@@ -3774,43 +3130,31 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            |request| match request {
-                AgentRequest::Analyze {
-                    text, categories, ..
-                } => {
-                    assert!(text.contains("Raw captured research"));
-                    assert_eq!(categories, ["field-notes"]);
-                    Ok(AgentResponse::Analysis(AgentAnalysis {
-                        blocks: vec![
-                            AgentBlock {
-                                id: "summary".into(),
-                                block_type: "rich-text".into(),
-                                payload: json!({"markdown": "What it argues"}),
-                                fallback: "What it argues".into(),
-                            },
-                            AgentBlock {
-                                id: "how-to-apply".into(),
-                                block_type: "list".into(),
-                                payload: json!({"items": ["Try it once"]}),
-                                fallback: "- Try it once".into(),
-                            },
-                        ],
-                        title: "A filed article".into(),
-                        category: "field-notes".into(),
-                        summary: "What it argues".into(),
-                        body: "The long form".into(),
-                        interesting_points: Vec::new(),
-                        counterarguments: Vec::new(),
-                        sources: Vec::new(),
-                        model: "fake".into(),
-                        input_tokens: 4,
-                        output_tokens: 6,
-                        subagent_count: 0,
-                    }))
-                }
-                _ => unreachable!(),
-            },
         );
+        let filed_document = || AuthoredPage {
+            blocks: vec![
+                AgentBlock {
+                    id: "summary".into(),
+                    block_type: "rich-text".into(),
+                    payload: json!({"markdown": "What it argues"}),
+                    fallback: "What it argues".into(),
+                },
+                AgentBlock {
+                    id: "how-to-apply".into(),
+                    block_type: "list".into(),
+                    payload: json!({"items": ["Try it once"]}),
+                    fallback: "- Try it once".into(),
+                },
+            ],
+            title: "A filed article".into(),
+            category: "field-notes".into(),
+            summary: "What it argues".into(),
+            interesting_points: Vec::new(),
+            counterarguments: Vec::new(),
+            model: "fake".into(),
+            input_tokens: 4,
+            output_tokens: 6,
+        };
 
         let base = runtime.create_knowledge_base("Reading".into()).unwrap();
         runtime
@@ -3834,8 +3178,32 @@ mod tests {
             [Category::parse("field-notes").unwrap()]
         );
 
+        // What the app reads before it authors: the capture, and this base's taxonomy.
+        let context = runtime.page_authoring_context(captured.id.clone()).unwrap();
+        assert!(context.text.contains("Raw captured research"));
+        assert_eq!(context.categories, ["field-notes"]);
+
+        // A document whose blocks do not survive validation is refused whole: the page
+        // keeps the capture it had rather than a half-applied re-analysis.
+        let mut malformed = filed_document();
+        malformed.blocks[1].block_type = "not a block type".into();
+        assert!(
+            runtime
+                .analyze_page(captured.id.clone(), false, malformed)
+                .unwrap_err()
+                .to_string()
+                .contains("document block is invalid")
+        );
+        assert_eq!(
+            runtime.knowledge.load(&captured.id).unwrap().artifacts,
+            captured.artifacts
+        );
+        assert!(runtime.list_page_versions(&captured.id).unwrap().is_empty());
+
         // An untrained base still gets the whole document, but nothing is filed by it.
-        let documented = runtime.analyze_page(captured.id.clone(), true).unwrap();
+        let documented = runtime
+            .analyze_page(captured.id.clone(), true, filed_document())
+            .unwrap();
         assert_eq!(documented.category.as_str(), UNFILED_CATEGORY);
         assert!(
             documented
@@ -3848,7 +3216,9 @@ mod tests {
             [Category::parse("field-notes").unwrap()]
         );
 
-        let filed = runtime.analyze_page(captured.id.clone(), false).unwrap();
+        let filed = runtime
+            .analyze_page(captured.id.clone(), false, filed_document())
+            .unwrap();
         assert_eq!(filed.category.as_str(), "field-notes");
         assert_eq!(filed.title, "A filed article");
         // The summary opens the document and the picture rides directly under it.
@@ -3886,7 +3256,6 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            |_| Err(LiveError::new("the agent is not used here")),
         );
         let base = runtime.create_knowledge_base("Reading".into()).unwrap();
         let first = runtime
@@ -3936,7 +3305,6 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            |_| Err(LiveError::new("the agent is not used here")),
         );
         let thread = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let named = runtime
@@ -3970,7 +3338,6 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            |_| Err(LiveError::new("the agent is not used here")),
         );
         let kept = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let expired = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
@@ -4013,11 +3380,9 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            // The harness already ran this turn, so calling the agent is the bug.
-            |_| unreachable!("a recorded turn does not run the agent"),
         );
         let thread = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
-        let outcome = runtime
+        runtime
             .record_turn(
                 thread.id.clone(),
                 "build me a timer".into(),
@@ -4029,7 +3394,6 @@ mod tests {
             )
             .unwrap();
 
-        assert!(outcome.tool_calls.is_empty());
         // Both halves are durable, so a reload sees the turn the harness ran.
         let saved = runtime.threads.load(&thread.id).unwrap();
         assert_eq!(saved.messages.len(), 2);
@@ -4082,7 +3446,6 @@ mod tests {
             root.join("research"),
             sink,
             // Core no longer drives a due job itself, so reaching the agent here is the bug.
-            |_| unreachable!("a due job is run by the caller, not by core"),
         );
         let mut job = runtime
             .save_scheduled_job(
@@ -4135,7 +3498,6 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             sink,
-            |_| unreachable!("a triggered job is run by the caller, not by core"),
         );
         let first = runtime
             .save_scheduled_job(
@@ -4219,7 +3581,6 @@ mod tests {
             root.join("scheduled"),
             root.join("research"),
             no_jobs(),
-            |_| unreachable!("an autoresearch iteration is run by the caller, not by core"),
         );
         let save = |job_id, title: &str, metric: &str, budget| {
             runtime.save_research_job(

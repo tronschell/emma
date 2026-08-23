@@ -149,6 +149,17 @@ export type TraceSummary = {
   tools: { name: string; count: number; ms: number }[];
 };
 
+/* What counts as a tool call. A run's own span is the frame around the work, so
+   counting it would double every millisecond under it; a model request is the
+   asking rather than the doing; and the Auto verifier's review is a permission
+   answer, which the live counter on the run does not count either. */
+const isCall = (span: TraceSpan) => span.kind !== "agent" && span.kind !== "model" && span.kind !== "verifier";
+
+/** Tool calls in a span tree — a stored turn's, or a whole thread's flattened. */
+export function countCalls(spans: readonly TraceSpan[]): number {
+  return spans.filter(isCall).length;
+}
+
 /**
  * The counts behind a waterfall, for the reader who wants the numbers rather
  * than the bars. Takes raw spans — every turn's, flattened — so the times are
@@ -165,9 +176,7 @@ export function summarizeSpans(spans: readonly TraceSpan[], now: number): TraceS
     summary.to = Math.max(summary.to, close(span));
     if (span.status === "failed") summary.failed += 1;
     if (span.kind === "model") { summary.modelRequests += 1; continue; }
-    // A run's own span is the frame around the work, so counting it as work
-    // would double every millisecond under it.
-    if (span.kind === "agent") continue;
+    if (!isCall(span)) continue;
     summary.toolCalls += 1;
     const tally = tools.get(span.name) ?? { name: span.name, count: 0, ms: 0 };
     tools.set(span.name, { name: span.name, count: tally.count + 1, ms: tally.ms + ms });

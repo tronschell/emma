@@ -13,7 +13,7 @@ import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { hotspotLayout, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
 import type { Snapshot } from "../src/types";
-import { BoundedLines, parseHostLine } from "../main/ndjson";
+import { BoundedLines, MAX_RECORDED_TURN_BYTES, parseHostLine, recordedTurn } from "../main/ndjson";
 import { brandRenderData, matchesLocalAlias } from "../src/brand-data";
 import { frontApplicationNote, ScreenContextStore } from "../shared/screen-context";
 import { CLEANUP_ENDPOINT, DEFAULT_HOLD_TO_TALK_MS, MAX_UTTERANCE_BYTES, SPEECH_ENDPOINT, SPEECH_MODEL, VOICE_MODEL, cleanedTranscript, isVoiceModel, unknownVoiceStatus, validateUtterance, validateVoiceSettings, voiceBlocker, voiceReady } from "../shared/voice";
@@ -97,13 +97,34 @@ test("host response lines are framed and bounded before JSON parsing", () => {
   assert.deepEqual(parseHostLine('{"id":"1","ok":true,"result":null}'), { id: "1", ok: true, result: null });
   assert.throws(() => parseHostLine('{"id":"1","ok":true}'), /envelope/);
   assert.throws(() => parseHostLine('{"id":"1","ok":false,"error":null}'), /envelope/);
-  assert.deepEqual(parseHostLine('{"threadId":"t","delta":"hi"}'), { threadId: "t", delta: "hi" });
-  assert.throws(() => parseHostLine('{"threadId":"t"}'), /delta envelope/);
+  // The host pushes due jobs and nothing else; a line that resolves no request and is
+  // not a job is a protocol the two sides no longer share.
+  assert.throws(() => parseHostLine('{"threadId":"t","delta":"hi"}'), /Invalid host response/);
   assert.deepEqual(parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full","depth":0}}'), { dueJob: { jobId: "j", threadId: "t", title: "T", prompt: "p", nodes: "", variables: "{}", permissionMode: "full", depth: 0 } });
   assert.throws(() => parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p"}}'), /due job envelope/);
   // The graph, its starting variables and how deep the trigger chain is are part of
   // the envelope: a run missing them would silently become a bare one-step run.
   assert.throws(() => parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full"}}'), /due job envelope/);
+});
+
+test("a recorded turn is cut to fit the host's request line", () => {
+  const telemetry = { threadId: "t", durationMilliseconds: "1", outputTokens: "0", inputTokens: "0", model: "m" };
+  const small = recordedTurn({ ...telemetry, prompt: "hi", thinking: "weighing it up", answer: "done" });
+  assert.deepEqual(small, { ...telemetry, prompt: "hi", response: "<think>weighing it up</think>\ndone" });
+  const huge = recordedTurn({ ...telemetry, prompt: "hi", thinking: "thought\n".repeat(50_000), answer: "answer\n".repeat(50_000) });
+  assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= MAX_RECORDED_TURN_BYTES);
+  // Both tags survive the cut, or `splitThinking` reads the whole turn as an
+  // unfinished scratchpad and the answer disappears from the transcript.
+  assert.match(huge.response, /^<think>thought/);
+  assert.match(huge.response, /<\/think>\nanswer/);
+  assert.match(huge.response, /characters elided/);
+  // One long line loses its middle rather than the whole answer, and the cut
+  // never lands between the halves of a surrogate pair.
+  const unbroken = recordedTurn({ ...telemetry, prompt: "hi", answer: `x${"🙂".repeat(200_000)}done` });
+  assert.ok(Buffer.byteLength(JSON.stringify(unbroken)) <= MAX_RECORDED_TURN_BYTES);
+  assert.ok(unbroken.response.startsWith("x🙂"));
+  assert.ok(unbroken.response.endsWith("🙂done"));
+  assert.equal(Buffer.from(unbroken.response, "utf8").toString("utf8"), unbroken.response);
 });
 
 test("screen context accepts only bounded JPEG data URLs", () => {

@@ -117,9 +117,9 @@ export const PLANNING_PROTOCOL = [
   "PLANNING:",
   "Work bigger than one agent's worth — a feature across several files, an app built from nothing, a migration, an audit of a whole folder — starts with a plan, before any of it is done.",
   "1. Break it up with plan write: one step per piece of work, each naming what it needs. Cut it by what can go at the same time rather than by what happens first — steps that need nothing are the first wave, and a wave runs at once, one subagent per step.",
-  "2. Run it a wave at a time with plan run, and read what came back before calling again. A step's result line is all the steps waiting on it will ever know about it.",
+  "2. Ask plan run for the wave's briefs, spawn one subagent per brief with the subagent tool, wait for them all with subagent inspect, and write each answer back with plan update. A step's result line is all the steps waiting on it will ever know about it.",
   "3. Rewrite it with plan write when what came back changes the shape of the job. Finished steps and ticked tasks survive a rewrite, so restructuring halfway is safe.",
-  "Not everything needs one: task for a single self-contained job, and no plan at all for work you can finish in this turn.",
+  "Not everything needs one: one subagent for a single self-contained job, and no plan at all for work you can finish in this turn.",
 ].join("\n");
 
 function unique(slug: string, taken: readonly string[]) {

@@ -13,7 +13,7 @@ The ripgrep it vendors has both `arm64` and `x64` builds.
 | --- | --- | --- | --- |
 | Xcode Command Line Tools | any current | — | `clang`, for the two Objective-C helpers |
 | Rust | 1.97.1 | [rust-toolchain.toml](../rust-toolchain.toml) | `crates/core`, `crates/host` |
-| Zig | 0.16.0 or newer | [harness/build.zig.zon](../harness/build.zig.zon) | `agent/`, `harness/` |
+| Zig | 0.16.0 or newer | [harness/build.zig.zon](../harness/build.zig.zon) | `harness/` |
 | Node | 24.x | [desktop/package.json](../desktop/package.json) (`@types/node` 24.10.1) | everything in `desktop/` |
 | Electron | 43.4.0 | [desktop/package.json](../desktop/package.json) | installed by npm, not by you |
 | `just` | optional | [justfile](../justfile) | shorthand for the npm and cargo commands |
@@ -29,17 +29,13 @@ The ripgrep it vendors has both `arm64` and `x64` builds.
   repo. The workspace is Rust edition 2024 with `rust-version = "1.97"`
   ([Cargo.toml](../Cargo.toml)).
 - **Zig.** [harness/build.zig.zon](../harness/build.zig.zon) declares
-  `minimum_zig_version = "0.16.0"`. [agent/build.zig](../agent/build.zig) has no
-  manifest of its own and builds with the same compiler. `brew install zig`, or
-  a tarball from ziglang.org.
+  `minimum_zig_version = "0.16.0"`. `brew install zig`, or a tarball from
+  ziglang.org.
 - **Node.** There is no `engines` field. The typings are pinned at
   `@types/node` 24.10.1 and the repo is developed on Node 24.
 - **Network access on the first build.** [vendor-ripgrep.mjs](../desktop/scripts/vendor-ripgrep.mjs)
   downloads ripgrep 14.1.1 from GitHub and checks it against a pinned SHA-256.
   It is a no-op once `desktop/vendor/rg` exists and its stamp matches.
-
-`jq` is only needed for [agent/emma](../agent/README.md), the terminal front end
-for the sidecar. Nothing in the desktop app uses it.
 
 ## Clone, install, run
 
@@ -54,7 +50,7 @@ npm --prefix desktop install
 npm run dev
 ```
 
-The first `npm run dev` builds the Rust host, both Zig binaries, the native
+The first `npm run dev` builds the Rust host, the Zig harness, the native
 helpers, and the TypeScript main process before Electron opens. Expect a few
 minutes. Later runs reuse the caches.
 
@@ -67,8 +63,7 @@ and what gets built on the way there.
 which runs four steps and stops at the first one that fails:
 
 1. `npm run build:host` — `cargo build --locked -p emma-host`, then
-   `zig build --build-file ../agent/build.zig`, then `npm run build:harness`
-   (`cd ../harness && zig build`).
+   `npm run build:harness` (`cd ../harness && zig build`).
 2. `npm run build:native` — `clang` both `.m` files into `desktop/dist-native/`,
    then runs `emma-option-tap --self-test`.
 3. `npm run build:main` — `tsc -p tsconfig.main.json` into `desktop/dist-main/`.
@@ -114,9 +109,10 @@ On `app.whenReady()`, in order:
   notifications — all refused outright.
 - `CredentialStore`, `FolderStore`, `AttachmentStore`, and `CatalogCache` open
   under `app.getPath("userData")`.
-- `startHost()` spawns `emma-host` with `EMMA_AGENT_BIN` pointed at the Zig
-  sidecar and `EMMA_KNOWLEDGE_DIR` set to the saved knowledge folder
-  ([main.ts:845](../desktop/main/main.ts#L845)).
+- `startHost()` decrypts the saved credentials into this process's environment
+  and spawns `emma-host` with `EMMA_KNOWLEDGE_DIR` set to the saved knowledge
+  folder ([main.ts:838](../desktop/main/main.ts#L838)). The host reads no
+  provider settings and spawns nothing of its own.
 - Bundled skills in [desktop/skills](../desktop/skills) are seeded into
   `userData` and into the harness profile at `userData/harness`.
 - Interrupted autoresearch jobs resume ([research.ts](../desktop/main/research.ts)).
@@ -132,7 +128,7 @@ Two roots, and they are not the same one.
 
 | What | Where | Set by |
 | --- | --- | --- |
-| Threads, knowledge, scheduled jobs, research | `~/Library/Application Support/Emma` | `EMMA_DATA_DIR`, else the default in [runtime.rs:48](../crates/host/src/runtime.rs#L48) |
+| Threads, knowledge, scheduled jobs, research | `~/Library/Application Support/Emma` | `EMMA_DATA_DIR`, else the default in [runtime.rs:26](../crates/host/src/runtime.rs#L26) |
 | Readable Markdown mirror | `~/Documents/Emma Knowledge` | the walkthrough, or `EMMA_KNOWLEDGE_DIR` ([setup.ts:10](../desktop/main/setup.ts#L10)) |
 | Credentials, folder grants, artifacts, plans, harness profile, renderer storage | `~/Library/Application Support/emma-desktop` | Electron's `userData` |
 
@@ -142,28 +138,42 @@ root is decided separately in Rust and is `Emma` either way.
 
 ### The walkthrough
 
-The renderer shows a four-step modal the first time it runs, gated on the
+The renderer shows a five-step modal the first time it runs, gated on the
 `emma.setupSeen.v1` key in `localStorage`
-([App.tsx:341](../desktop/src/App.tsx#L341)). The steps are **Welcome**,
-**Permissions**, **Knowledge base**, and **Your agents**. You can skip any of
-them; Emma asks again when it needs to.
+([App.tsx:341](../desktop/src/App.tsx#L341)). The steps are **Emma**,
+**Permissions**, **Quick Ask**, **Knowledge**, and **Agents**. You can skip any
+of them; Emma asks again when it needs to.
 
-Step 3 offers to pick a knowledge folder or use the Documents default. Creating
+Step 2 lists every grant Emma can ever want — all seven rows of
+`SETUP_PERMISSIONS` ([shared/setup.ts](../desktop/shared/setup.ts)) — with the
+live state of each one beside it: `[ok]` granted, `[  ]` not granted, `[--]`
+macOS will not say. The long reason for each sits behind its `(i)`; the visible
+line is one sentence. Nothing here can grant anything except the microphone,
+which `askForMediaAccess` really does prompt for; every other row opens the pane
+it is granted in and re-checks when Emma comes back to the front.
+
+Step 3 teaches Quick Ask: a drawing of the island wrapping the camera housing,
+the five things you need to know to drive it, and a **Show me** button that
+opens the real island from the workspace (`emma:demo-quick-ask`). That button
+works before Accessibility is granted, which the double-tap gesture does not.
+
+Step 4 offers to pick a knowledge folder or use the Documents default. Creating
 that folder is what makes macOS raise the Files & Folders prompt
 ([setup.ts:29](../desktop/main/setup.ts#L29)). Emma checks the grant by writing
 a probe file and deleting it, because TCC has no API to ask
 ([setup.ts:48](../desktop/main/setup.ts#L48)).
 
-Step 4 scans for skills and MCP servers you already set up for Codex, Claude,
+Step 5 scans for skills and MCP servers you already set up for Codex, Claude,
 Antigravity, Pi, OpenCode, Cursor, Windsurf, and Devin. It records paths only.
 
 ## macOS permissions
 
-Emma cannot grant any of these itself — only you can, in System Settings. The
-walkthrough opens the exact pane for each one and re-checks the moment Emma
-comes back to the front. The pane names live in one table,
-[shared/setup.ts](../desktop/shared/setup.ts), so the reason you read and the
-pane that opens can never drift apart.
+Emma can raise the prompt for exactly one of these, the microphone; the rest
+only you can grant, in System Settings. The walkthrough opens the exact pane for
+each one and re-checks the moment Emma comes back to the front. The panes live
+in one table, [shared/setup.ts](../desktop/shared/setup.ts), so the reason you
+read and the pane that opens can never drift apart — and that table is what the
+walkthrough renders, so a grant Emma needs cannot be missing from it.
 
 ### Accessibility
 
@@ -207,11 +217,13 @@ where Finder, Spotlight, Obsidian, and your backups can see it.
 **System Settings → Privacy & Security → Microphone** and **→ Speech
 Recognition.**
 
-Not part of the first-launch walkthrough. Dictation is off for most people, so
-Settings → Voice is the door onto both panes
-([shared/setup.ts:40](../desktop/shared/setup.ts#L40)). Speech Recognition is
-only ever asked for by the `macOS · built in` engine, which runs through the
-`emma-transcribe` helper ([voice.ts](../desktop/main/voice.ts)).
+Both are walkthrough rows, and Settings → Voice is the second door onto the same
+panes. Microphone is the one grant Emma can raise itself: the walkthrough calls
+`systemPreferences.askForMediaAccess("microphone")` and only falls through to
+the pane when macOS answers no. Speech Recognition is only ever asked for by the
+`macOS · built in` engine, which runs through the `emma-transcribe` helper
+([voice.ts](../desktop/main/voice.ts)), so its walkthrough row reads `[--]` —
+there is no API to query it from the app process.
 
 The built-in recognizer needs the packaged app. TCC reads the *responsible*
 process's `Info.plist` for `NSSpeechRecognitionUsageDescription`, which for the
@@ -225,19 +237,33 @@ development Electron binary does not, so the helper is killed on sight under
 **System Settings → Privacy & Security → Automation → Emma.**
 
 Asked for the first time Emma reads the front browser tab, which is how "save
-this page" works without a screenshot. There is no walkthrough row for it and no
-status entry — the only sign is the error from
+this page" works without a screenshot. The walkthrough has a row for it, but no
+status to put beside it — macOS reports Apple Events grants to nobody, so the
+row reads `[--]` and the only other sign is the error from
 [clip.ts:39](../desktop/main/clip.ts#L39).
+
+### Notifications
+
+**System Settings → Notifications → Emma.**
+
+One banner when a run lands or stops on a permission ask
+([main.ts:497](../desktop/main/main.ts#L497)). The walkthrough row opens the
+Notifications pane rather than Privacy & Security — it is the one grant whose
+URL is not a `com.apple.preference.security` anchor, which is why the pane
+column in [shared/setup.ts](../desktop/shared/setup.ts) holds a whole
+`x-apple.systempreferences:` path and not just an anchor name. An unsigned build
+is never prompted at all, so Emma falls back to bouncing its Dock icon.
 
 ## Your first turn
 
 **Add a model.** Settings → Models. Emma ships one remote route, OpenRouter, and
 stores the key under `OPENROUTER_API_KEY`
-([settings.ts:723](../desktop/shared/settings.ts#L723)). The key is encrypted
+([settings.ts:724](../desktop/shared/settings.ts#L724)). The key is encrypted
 with `safeStorage` — this Mac's keychain — and never returned to the renderer,
-only its mask ([credentials.ts](../desktop/main/credentials.ts)). It reaches the
-sidecar and the harness through their spawn environment, so **a key you just
-pasted only takes effect on a fresh host.**
+only its mask ([credentials.ts](../desktop/main/credentials.ts)). It reaches
+`emma-cli` through its spawn environment, so **a key you just pasted only takes
+effect on a harness spawned after it** — saving one closes every idle harness so
+the next turn picks it up, while a harness mid-turn keeps the old environment.
 
 There is also a free router, which is not a single model but a chain of free
 tool-capable OpenRouter models sent as one comma-separated list. OpenRouter
@@ -254,7 +280,7 @@ the camera housing over whatever app you are in, without bringing Emma forward.
 Escape closes it when idle and parks it as a chip when a turn is running. The
 right Option key does nothing; that is deliberate.
 
-**Pick a permission mode.** The composer's picker, five modes, default `ask`
+**Pick a permission mode.** The composer's picker, four modes, default `ask`
 ([permissions.ts](../desktop/shared/permissions.ts)):
 
 | Mode | What it means |
@@ -286,7 +312,6 @@ cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings
-zig build test -Doptimize=ReleaseSafe --build-file agent/build.zig
 (cd harness && zig build test)
 ```
 
@@ -299,8 +324,7 @@ What each one covers:
 | `cargo check --workspace --locked --all-targets` | Rust compiles, including tests and benches |
 | `cargo test --workspace --locked` | `emma-core` and `emma-host` tests |
 | `cargo clippy … -- -D warnings` | Rust lints, warnings are failures |
-| `zig build test … --build-file agent/build.zig` | the agent sidecar's tests |
-| `(cd harness && zig build test)` | the `emma-cli` fork's tests |
+| `(cd harness && zig build test)` | the `emma-cli` fork's tests, and the only Zig suite there is |
 
 `npm --prefix desktop run check` breaks down into
 ([desktop/package.json](../desktop/package.json)):
@@ -317,7 +341,7 @@ What each one covers:
 Individual build targets, when you only changed one layer:
 
 ```bash
-npm --prefix desktop run build:host      # cargo host + zig agent + zig harness
+npm --prefix desktop run build:host      # cargo host, then the zig harness
 npm --prefix desktop run build:harness   # just emma-cli
 npm --prefix desktop run build:native    # the two ObjC helpers, plus a self-test
 npm --prefix desktop run build:main      # tsc for the main process
@@ -341,17 +365,16 @@ That runs, in order
 ([desktop/package.json](../desktop/package.json)):
 
 1. `cargo build --locked --release -p emma-host`
-2. `zig build -Doptimize=ReleaseSafe --build-file ../agent/build.zig`
-3. `(cd ../harness && zig build -Doptimize=ReleaseSafe)`
-4. `npm run build:native`
-5. `npm run vendor:ripgrep`
-6. `npm run build`
-7. `electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar …`
+2. `(cd ../harness && zig build -Doptimize=ReleaseSafe)`
+3. `npm run build:native`
+4. `npm run vendor:ripgrep`
+5. `npm run build`
+6. `electron-packager . Emma --platform=darwin --arch=arm64 --out=release --overwrite --asar …`
 
-The result is `desktop/release/Emma-darwin-arm64/Emma.app` — about 316 MB on
-disk. `Contents/Resources` holds `app.asar` plus the sidecars copied by
-`--extra-resource`: `emma-host`, `emma-agent`, `emma-cli`, `emma`,
-`emma-option-tap`, `emma-transcribe`, `rg`, and the `skills` directory.
+The result is `desktop/release/Emma-darwin-arm64/Emma.app`.
+`Contents/Resources` holds `app.asar` plus the six things copied by
+`--extra-resource`: `emma-host`, `emma-cli`, `rg`, `emma-option-tap`,
+`emma-transcribe`, and the `skills` directory.
 `--extend-info=native/Info.extra.plist` merges
 `NSSpeechRecognitionUsageDescription` into the bundle's `Info.plist`.
 
@@ -373,10 +396,6 @@ You can check every one of these on a build you just made.
   which needs no authorization.
 - **The icon is Electron's.** No `--icon` is passed, so the bundle ships
   `electron.icns`.
-- **`agent/emma` is not in a fresh clone.** `package:mac` copies it with
-  `--extra-resource=../agent/emma`, but the file is ignored by
-  [.gitignore:15](../.gitignore). On a clone that has never had it, the copy step
-  has nothing to copy. Restore the file or drop that flag.
 
 ## See also
 
@@ -384,10 +403,10 @@ You can check every one of these on a build you just made.
 - [development.md](development.md) — day-to-day workflow, conventions, and tests
 - [troubleshooting.md](troubleshooting.md) — when one of the above does not work
 - [concepts.md](concepts.md) — threads, runs, knowledge, and the vocabulary
-- [permissions.md](permissions.md) — the five modes and the tool gate table
+- [permissions.md](permissions.md) — the four modes and the tool gate table
 - [models.md](models.md) — providers, the catalog, and the free router
 - [harness.md](harness.md) — `emma-cli`, the fx fork
-- [cli.md](cli.md) — the terminal front ends
+- [cli.md](cli.md) — the `cli` tools and Settings → Connections
 - [privacy.md](privacy.md) — what leaves this Mac, and when
 - [notch.md](notch.md) — Quick Ask, the island, and the cursor ring
 - [voice.md](voice.md) — dictation and the local cleanup model

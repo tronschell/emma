@@ -168,9 +168,6 @@
 .context-usage [data-kind="knowledge"] { --kind: var(--violet); }
 .context-usage [data-kind="attachment"] { --kind: var(--teal); }
 .context-usage [data-kind="skill"] { --kind: var(--rose); }
-/* Invoked, not carried: an MCP call weighs nothing in the window, so it takes the
-   same grey as free space rather than a hue that claims a share of the bar. */
-.context-usage [data-kind="mcp"] { --kind: var(--text-3); }
 .context-usage [data-kind="system"] { --kind: var(--lime); }
 .context-usage [data-kind="tools"] { --kind: var(--orange); }
 .context-usage [data-kind="free"] { --kind: var(--border-strong); }
@@ -188,8 +185,6 @@
 .context-legend { display: grid; gap: var(--s-1); margin: 0; padding: 0; list-style: none; }
 .context-legend li { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; color: var(--text-2); font: var(--fs-sm)/1.4 var(--font-mono); }
 .context-legend i { flex: 0 0 auto; width: 8px; height: 8px; background: var(--kind); }
-/* Hollow means it did not ride the turn — an MCP result is shown, never sent. */
-.context-legend li[data-carried="false"] i { background: transparent; box-shadow: inset 0 0 0 1px var(--kind); }
 /* The label is the only elastic cell, so at the column's narrow end it lost the
    width to two fixed ones and ellipsised mid-word — "Experiments/ · file …".
    It takes a second line instead, breaking at the separator these labels already
@@ -216,6 +211,9 @@
 .content-empty .mark { width: 28px; height: 28px; margin: 0; border-color: var(--border-strong); color: var(--text-3); font-size: var(--fs-lg); }
 .content-empty h2 { margin: 0; color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .content-empty p { max-width: 46ch; margin: 0; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); text-wrap: pretty; }
+/* The way out of an empty pane, in the middle of it. */
+.content-empty button { min-height: 28px; margin-top: var(--s-2); padding: 0 var(--s-4); color: var(--accent); background: transparent; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.content-empty button:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 /* Sits under the picker rather than in a whole window, so it is a size quieter. */
 .knowledge-layout .content-empty { padding: var(--s-6); }
 
@@ -757,6 +755,11 @@
 .agent-dialog dl > div:last-child { border-bottom: 0; }
 .agent-dialog dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.5; }
 .agent-dialog dd { overflow: hidden; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* A value you are meant to take away: the message tick, next to it instead of the
+   turn it normally sits under, so it needs the hover reveal turned back off. */
+.agent-dialog dd.copyable { display: flex; align-items: center; gap: var(--s-2); }
+.agent-dialog dd.copyable > span { overflow: hidden; text-overflow: ellipsis; }
+.agent-dialog .message-copy { flex: 0 0 auto; opacity: 1; }
 
 /* The same ledger, expanded: tiled numbers over a table, because the counts the
    210px column hides in a tooltip are columns once there is room for them. Below
@@ -775,7 +778,6 @@
 .context-table th:first-child { width: 100%; text-align: left; white-space: normal; }
 /* inline-block, not a flex cell: display on a <th> drops it out of the table row. */
 .context-table th i { display: inline-block; width: 8px; height: 8px; margin-right: var(--s-2); background: var(--kind); }
-.context-table tr[data-carried="false"] i { background: transparent; box-shadow: inset 0 0 0 1px var(--kind); }
 .agent-cli { display: grid; gap: var(--s-2); margin: 0; padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
 .agent-cli code { width: fit-content; max-width: 100%; overflow-x: auto; padding: 0 0 0 var(--s-3); border-left: 1px solid var(--border); color: var(--violet); font: var(--fs-xs)/1.6 var(--font-code); }
 .agent-cli p { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
@@ -783,7 +785,6 @@
 .computer-dialog p { padding: 0; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
 /* The thing being approved, marked by the edge rather than by a fill. */
 .computer-dialog p.computer-task { margin: 0; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); font-size: var(--fs-md); }
-.computer-dialog p.capability-review-warning { margin: 0; padding: var(--s-3) var(--s-4); color: var(--text-2); font-size: var(--fs-sm); }
 .computer-dialog dd { white-space: normal; }
 .computer-dialog-actions { display: flex; justify-content: flex-start; gap: 0; margin: 0; padding: 0; border-top: 1px solid var(--border); }
 .computer-dialog-actions button { width: auto; height: auto; min-height: 32px; padding: 0 var(--s-4); border: 0; }

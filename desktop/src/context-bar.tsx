@@ -2,9 +2,9 @@
 
    Three things live here, in the order they depend on each other:
 
-   1. The ledger. What this thread's turns literally carried, measured once and
-      read by two widgets — the stats tiles and the context bar — so they cannot
-      disagree about the same number.
+   1. The two hooks the pane reads its numbers through: `useContextLedger`, over
+      the ledger `context.ts` builds, and `useThreadCalls`, which is the one
+      figure in it that has to be fetched.
    2. The widgets, and `ContextWidgets`, which renders one page of them. This is
       what the real inspector mounts.
    3. `ContextBarSettings`, the arranger. It mounts the *same* widgets over
@@ -12,73 +12,37 @@
       around is the thing itself rather than a diagram of it.
 
    Nothing here fetches for the preview: every widget already took its data as
-   props, and the two that did not — the ledger's async parts and the timeline's
-   stored trace — now accept an override, which is the whole of the seam. */
+   props, and the ones that did not — the timeline's stored trace, the plan rail's
+   plans — now accept an override, which is the whole of the seam. */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { CONTEXT_WIDGETS, MAX_CONTEXT_PAGES, MAX_PAGE_NAME, nextPageId, widgetDefinition, type ContextPage, type ContextWidget, type ContextWidgetType, type WidgetOrientation } from "../shared/context-bar";
-import { allocateCells, charLabel, rateByContext, shareLabel, usageKey, type ContextUse } from "../shared/usage";
+import { charLabel, CHARS_PER_TOKEN, shareLabel, usageKey, type ContextUse } from "../shared/usage";
 import { agentColor, type LiveAgent } from "../shared/agents";
 import type { Plan } from "../shared/plan";
 import type { GitSnapshot } from "../shared/git";
-import type { TraceSpan } from "../shared/trace";
-import type { Message, Thread } from "./types";
-import { historyUse, NO_EXPERIMENTS, systemUse, type ExperimentTally } from "./context";
+import { countCalls, decodeSpans, type TraceSpan } from "../shared/trace";
+import type { Thread } from "./types";
+import { buildLedger, NO_EXPERIMENTS, type ExperimentTally, type Ledger } from "./context";
 import { plural } from "./activity";
 import { since, threadLabel } from "./threads";
-import { ExpandIcon } from "./icons";
+import { brandForModel } from "./brands";
+import { BrandIcon, ExpandIcon } from "./icons";
 import { GitPanel } from "./git";
 import { PlanRail } from "./plan";
 import { Timeline } from "./timeline";
 
 /* ------------------------------------------------------------- ledger -- */
 
-/* One cell per 1/48th of the model's context window, hued by kind and laid out
-   as one bar, so a folder listing that has quietly grown to half the request is
-   visible before it costs a turn. Whatever the turns have not claimed is the
-   free tail. An MCP call is listed too, but hollow and outside the grid: Emma
-   shows its result in the panel, it never enters the request. */
-const USAGE_CELLS = 48;
-/* ponytail: OpenRouter states the window in tokens, this side counts characters, so
-   the ceiling is the usual ~4 chars a token. Swap in a tokenizer if the estimate misleads. */
-export const CHARS_PER_TOKEN = 4;
 /* The panel measures in characters but the window is stated in tokens, so every
    figure is divided back before it is shown: "62k / 4000k" was 62k chars of a
    4M-char budget, which is the same fraction but reads as a window four times
    larger than the model's. */
 const tokenLabel = (chars: number): string => charLabel(Math.round(chars / CHARS_PER_TOKEN));
-const KIND_NAMES: Record<ContextUse["kind"], string> = { history: "Transcript", system: "System prompt", tools: "Tool schemas", knowledge: "Knowledge", attachment: "Attachment", skill: "Skill", mcp: "MCP · invoked" };
-
-/** What main assembles rather than the thread: the standing instructions and the tool schemas. */
-export type ContextParts = { toolChars: number; tools: number; promptChars: number };
-const NO_PARTS: ContextParts = { toolChars: 0, tools: 0, promptChars: 0 };
-
-export interface Ledger {
-  rows: ContextUse[];
-  total: number;
-  capacity: number;
-  free: number;
-  whole: number;
-  cells: string[];
-  kinds: Map<string, string>;
-  messages: number;
-  replies: number;
-  attachments: number;
-  calls: number;
-  tokens: number;
-  elapsed: number;
-  curve: { context: number; rate: number; turns: number }[];
-  largest?: ContextUse;
-  /** What the timeline's context axis weighs its spans against. */
-  carriedTokens: number;
-  /** What the Harness experiments took out of this thread's requests and put back
-      in. Not a row: neither lever is a segment the turn carries, they are what was
-      done to the segments above — and a saving is negative mass a grid cannot draw. */
-  experiments: ExperimentTally;
-}
+const KIND_NAMES: Record<ContextUse["kind"], string> = { history: "Transcript", system: "System prompt", tools: "Tool schemas", knowledge: "Knowledge", attachment: "Attachment", skill: "Skill" };
 
 /**
  * Measured once in the pane, read by every widget that shows a piece of it.
@@ -87,75 +51,37 @@ export interface Ledger {
  * total for its context axis, and because the ledger has to stay right whether
  * or not the widget that draws it is on the page you are looking at.
  */
-export function useContextLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally = NO_EXPERIMENTS, override?: ContextParts): Ledger {
-  // Main assembles the standing instructions and the tool schemas, so it is asked
-  // for their exact size rather than the panel folding them into one lump.
-  const [fetched, setFetched] = useState(NO_PARTS);
-  const threadId = thread?.id;
-  const messageCount = thread?.messages.length ?? 0;
-  useEffect(() => {
-    if (override || !threadId) return;
-    void window.emma.contextParts(threadId).then(setFetched).catch(() => setFetched(NO_PARTS));
-  }, [override, threadId, messageCount]);
-  const parts = override ?? fetched;
-  return useMemo(() => buildLedger(thread, uses, contextTokens, inFlight, parts, experiments), [thread, uses, contextTokens, inFlight, parts, experiments]);
+export function useContextLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally = NO_EXPERIMENTS, landedCalls = 0): Ledger {
+  return useMemo(() => buildLedger(thread, uses, contextTokens, inFlight, experiments, landedCalls), [thread, uses, contextTokens, inFlight, experiments, landedCalls]);
 }
 
-function buildLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], parts: ContextParts, experiments: ExperimentTally): Ledger {
-  const messages: Message[] = thread?.messages ?? [];
-  const replies = messages.filter((message) => message.role === "assistant").length;
-  // A turn is one durable message however many steps it took, so a ledger read
-  // off `thread.messages` alone sits still through exactly the part that fills
-  // the window — a hundred tool results, resent every step — and then jumps when
-  // the turn lands. The loop counts what it hands over, so the running total is
-  // shown as its own row until the message it becomes replaces it.
-  const running = inFlight.reduce((sum, agent) => sum + agent.inputTokens, 0) * CHARS_PER_TOKEN;
-  const liveCalls = inFlight.reduce((sum, agent) => sum + agent.toolCalls, 0);
-  const measured: ContextUse[] = thread ? [
-    { ...historyUse(thread), turns: messages.filter((message) => message.role === "user").length },
-    ...(running > 0 ? [{ kind: "history" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1 }] : []),
-    ...uses,
-  ] : [];
-  const below: ContextUse[] = [
-    ...(parts.promptChars ? [{ kind: "system" as const, label: "System prompt", chars: parts.promptChars, turns: replies }] : []),
-    ...(parts.toolChars ? [{ kind: "tools" as const, label: `Tool schemas · ${parts.tools}`, chars: parts.toolChars, turns: replies }] : []),
-  ];
-  // Whatever is left of the provider's own input count once every measured
-  // segment is subtracted: retrieved knowledge, injected skills, resent steps.
-  // `running` is left out of the subtraction: the residual is what the *last
-  // landed* turn's input count could not account for, and the turn in flight has
-  // not reported one yet. Counting it here would eat the row instead.
-  const system = thread ? systemUse(thread, measured.filter((row) => row.kind !== "mcp").reduce((sum, row) => sum + row.chars, 0) - running + parts.promptChars + parts.toolChars) : undefined;
-  const rows: ContextUse[] = [...below, ...(system ? [{ ...system, turns: replies }] : []), ...measured];
-  const carried = rows.filter((row) => row.kind !== "mcp");
-  const total = carried.reduce((sum, row) => sum + row.chars, 0);
-  // Only the OpenRouter catalog states a window; on the fallback and local routes the
-  // shares are of what this thread has sent, and there is no free tail to draw.
-  const capacity = contextTokens * CHARS_PER_TOKEN;
-  const free = Math.max(0, capacity - total);
-  const packed = allocateCells([...carried.map((row) => ({ key: usageKey(row), chars: row.chars })), { key: "free", chars: free }], USAGE_CELLS);
-  // Every provider-backed reply carries its own tokens and milliseconds, so the
-  // thread's rate is the pooled one, not the average of the per-message rates.
-  const tokens = messages.reduce((sum, message) => sum + (message.generation?.outputTokens ?? 0), 0);
-  return {
-    rows,
-    total,
-    capacity,
-    free,
-    whole: capacity || total,
-    cells: [...packed.filter((key) => key !== "free"), ...packed.filter((key) => key === "free")],
-    kinds: new Map<string, string>([...rows.map((row) => [usageKey(row), row.kind] as const), ["free", "free"]]),
-    messages: messages.length,
-    replies,
-    attachments: rows.filter((row) => row.kind === "attachment" || row.kind === "skill").length,
-    calls: rows.filter((row) => row.kind === "mcp").reduce((sum, row) => sum + row.turns, 0),
-    tokens,
-    elapsed: messages.reduce((sum, message) => sum + (message.generation?.durationMilliseconds ?? 0), 0),
-    curve: rateByContext(messages.flatMap((message) => message.generation ? [message.generation] : [])),
-    largest: carried.reduce<ContextUse | undefined>((top, row) => !top || row.chars > top.chars ? row : top, undefined),
-    carriedTokens: Math.round(total / CHARS_PER_TOKEN),
-    experiments,
-  };
+/**
+ * What the turns already on this thread did, off the traces the host kept.
+ *
+ * The agent's own calls — the harness's `terminal`, `read_file` and the rest — are
+ * not segments of a request, so they were never in the usage ledger, and the
+ * running count on the loop dies with the run that reported it. The stored trace
+ * is the only durable record of them, and it is the same one the timeline draws,
+ * so the tile and the waterfall beside it count the same spans.
+ *
+ * Re-read when the turn ends, because that is when its trace lands on the thread.
+ */
+export function useThreadCalls(threadId: string | undefined, sending: boolean): number {
+  // Kept against the thread it was counted for, so switching threads reads zero
+  // until its own traces arrive rather than the last thread's total — and so the
+  // number the tile shows never changes until a fetch has actually answered,
+  // which is what keeps it from dipping in the instant a turn lands.
+  const [counted, setCounted] = useState<{ threadId: string; calls: number }>();
+  useEffect(() => {
+    if (!threadId) return;
+    let alive = true;
+    const take = (calls: number) => { if (alive) setCounted({ threadId, calls }); };
+    void window.emma.threadTraces(threadId)
+      .then((traces) => take(traces.reduce((sum, trace) => sum + countCalls(decodeSpans(trace.text)), 0)))
+      .catch(() => take(0));
+    return () => { alive = false; };
+  }, [threadId, sending]);
+  return counted && counted.threadId === threadId ? counted.calls : 0;
 }
 
 /** "12.4k saved · 0.9k added" — what the two levers have done to this thread,
@@ -224,13 +150,10 @@ function ContextLedger({ ledger, orientation }: { ledger: Ledger; orientation: W
     <span title={capacity ? "" : "This model states no context window, so the rows are shares of what this thread sent, not of a window"}><span className="context-title">{capacity ? "Context window" : "Context used"}<button type="button" className="context-expand" aria-haspopup="dialog" aria-label="Expand the context ledger" title="Expand the context ledger" onClick={() => setExpanded(true)}><ExpandIcon /></button></span><b>{tokenLabel(total)}{capacity ? ` / ${tokenLabel(capacity)}` : ""} {plural(Math.round(total / CHARS_PER_TOKEN), "token")}{capacity ? ` (${shareLabel(total, whole)})` : " sent · no stated window"}</b></span>
     {grid}
     <ul className="context-legend">
-      {/* An invoked call has no share to state, and the dash that stood in for one
-          was a column of noise beside the hollow swatch already saying so. The
-          cell stays, empty, because it is what holds the percentages in a column. */}
-      {rows.map((row) => <li key={usageKey(row)} data-kind={row.kind} data-carried={row.kind !== "mcp"} title={`${KIND_NAMES[row.kind]} · ${row.label} · ${row.chars.toLocaleString()} chars · ${row.turns} ${plural(row.turns, "turn")}`}>
-        <i /><span>{row.label}</span><b>{row.kind === "mcp" ? `×${row.turns}` : tokenLabel(row.chars)}</b><em>{row.kind === "mcp" ? "" : shareLabel(row.chars, whole)}</em>
+      {rows.map((row) => <li key={usageKey(row)} data-kind={row.kind} title={`${KIND_NAMES[row.kind]} · ${row.label} · ${row.chars.toLocaleString()} chars · ${row.turns} ${plural(row.turns, "turn")}`}>
+        <i /><span>{row.label}</span><b>{tokenLabel(row.chars)}</b><em>{shareLabel(row.chars, whole)}</em>
       </li>)}
-      {capacity > 0 && <li data-kind="free" data-carried="true" title={`${free.toLocaleString()} of ${capacity.toLocaleString()} characters left before this model's window is full`}>
+      {capacity > 0 && <li data-kind="free" title={`${free.toLocaleString()} of ${capacity.toLocaleString()} characters left before this model's window is full`}>
         <i /><span>Free space</span><b>{tokenLabel(free)}</b><em>{shareLabel(free, whole)}</em>
       </li>}
     </ul>
@@ -257,21 +180,21 @@ function ContextLedger({ ledger, orientation }: { ledger: Ledger; orientation: W
           <table className="context-table">
             <thead><tr><th>Segment</th><th>Kind</th><th>Chars</th><th>Tokens</th><th>Share</th><th>Turns</th></tr></thead>
             <tbody>
-              {rows.map((row) => <tr key={usageKey(row)} data-kind={row.kind} data-carried={row.kind !== "mcp"}>
+              {rows.map((row) => <tr key={usageKey(row)} data-kind={row.kind}>
                 <th scope="row"><i />{row.label}</th>
                 <td>{KIND_NAMES[row.kind]}</td>
-                <td>{row.kind === "mcp" ? "—" : row.chars.toLocaleString()}</td>
-                <td>{row.kind === "mcp" ? "—" : tokenLabel(row.chars)}</td>
-                <td>{row.kind === "mcp" ? "—" : shareLabel(row.chars, whole)}</td>
+                <td>{row.chars.toLocaleString()}</td>
+                <td>{tokenLabel(row.chars)}</td>
+                <td>{shareLabel(row.chars, whole)}</td>
                 <td>{row.turns}</td>
               </tr>)}
-              {capacity > 0 && <tr data-kind="free" data-carried="true">
+              {capacity > 0 && <tr data-kind="free">
                 <th scope="row"><i />Free space</th><td>Unclaimed</td><td>{free.toLocaleString()}</td><td>{tokenLabel(free)}</td><td>{shareLabel(free, whole)}</td><td>—</td>
               </tr>}
             </tbody>
           </table>
         </div>
-        <p>Characters are counted on this Mac and divided by {CHARS_PER_TOKEN} to read as tokens, so every figure here is an estimate. A hollow swatch was shown in the panel, never sent.</p>
+        <p>Characters are counted on this Mac and divided by {CHARS_PER_TOKEN} to read as tokens, so every figure here is an estimate.</p>
       </section>
     </dialog>}
   </section>;
@@ -292,14 +215,17 @@ function SubagentRail({ agents, active, onPick, orientation }: {
     <span>Subagents{agents.length ? ` · ${agents.length}` : ""}</span>
     <ul className="subagent-list">
       {agents.map((agent) => <li key={agent.threadId}>
-        <button type="button" className={`subagent ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}`} onClick={() => onPick(agent.threadId)}>
+        <button type="button" className={`subagent ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}${agent.model ? ` · ${agent.model}` : ""}`} onClick={() => onPick(agent.threadId)}>
           <i className="subagent-square" style={{ background: agent.color }} data-status={agent.status} aria-hidden="true" />
           <span>{agent.title}</span>
-          <em>{agent.model || agent.status}</em>
+          {/* The maker's mark, not the slug: "deepseek/deepseek-v4-flash-vision-exp"
+              was wider than the title it sat beside, and every row on a fanned-out
+              thread repeats the same one. The slug is in the title attribute. */}
+          <BrandIcon brand={brandForModel(agent.model)} className="subagent-model" />
         </button>
       </li>)}
     </ul>
-    {!agents.length && <p className="subagent-empty">Nothing delegated yet — Emma spawns one per <code>task</code> call.</p>}
+    {!agents.length && <p className="subagent-empty">Nothing delegated yet — a subagent gets a row here the moment it starts.</p>}
   </section>;
 }
 
@@ -373,7 +299,7 @@ function Widget({ widget, context }: { widget: ContextWidget; context: WidgetCon
   if (widget.type === "stats") return <ContextStats ledger={context.ledger} orientation={orientation} />;
   if (widget.type === "context") return <ContextLedger ledger={context.ledger} orientation={orientation} />;
   if (widget.type === "timeline") return <Timeline threadId={context.threadId} sending={context.sending} carriedTokens={context.ledger.carriedTokens} sample={context.sampleTrace} />;
-  if (widget.type === "plan") return <PlanRail threadId={context.threadId} agents={context.subagents} sample={context.samplePlans} />;
+  if (widget.type === "plan") return <PlanRail threadId={context.threadId} agents={context.subagents} sample={context.samplePlans} onOpen={context.onPick} />;
   if (widget.type === "subagents") return <SubagentRail agents={context.subagents} active={context.tab} onPick={context.onPick} orientation={orientation} />;
   if (widget.type === "subthreads") return <SubthreadRail threads={context.subthreads} agents={context.agents} onOpen={context.onOpenThread} orientation={orientation} />;
   return context.git ? <GitPanel snapshot={context.git} onOpen={context.onOpenGit} /> : null;
@@ -394,9 +320,8 @@ export const writeContextPage = (id: string): void => localStorage.setItem(PAGE_
 /* -------------------------------------------------------- the arranger -- */
 
 /* A thread that never happened, sized so every widget has something to say: a
-   window that is visibly part-full, a transcript that dominates it, one skill
-   and one MCP call so the hollow swatch appears, and replies slow enough that
-   the speed curve has a slope. */
+   window that is visibly part-full, a transcript that dominates it, one skill,
+   and replies slow enough that the speed curve has a slope. */
 const sampleGeneration = (inputTokens: number, outputTokens: number, durationMilliseconds: number) =>
   ({ inputTokens, outputTokens, durationMilliseconds, model: "anthropic/claude-sonnet-4.5" });
 
@@ -418,13 +343,10 @@ const SAMPLE_THREAD: Thread = {
 };
 
 const SAMPLE_USES: ContextUse[] = [
-  { kind: "knowledge", label: "Retrieval & retries", chars: 20_000 * CHARS_PER_TOKEN, turns: 3 },
+  { kind: "knowledge", label: "Prompt, tools & retrieval", chars: 20_000 * CHARS_PER_TOKEN, turns: 3 },
   { kind: "attachment", label: "Experiments/ · file list", chars: 3_700 * CHARS_PER_TOKEN, turns: 3 },
   { kind: "skill", label: "review-diff", chars: 1_900 * CHARS_PER_TOKEN, turns: 1 },
-  { kind: "mcp", label: "linear · list_issues", chars: 0, turns: 2 },
 ];
-
-const SAMPLE_PARTS: ContextParts = { toolChars: 7_800 * CHARS_PER_TOKEN, tools: 28, promptChars: 2_400 * CHARS_PER_TOKEN };
 
 /* A thread that ran with both Harness levers on, so the line they add is part of
    what you arrange rather than something that appears later on a real thread. */
@@ -489,7 +411,7 @@ const SAMPLE_GIT: GitSnapshot = {
 
 /** The widgets, over the sample thread, at the real width of the bar. */
 function usePreviewContext(): WidgetContext {
-  const ledger = useContextLedger(SAMPLE_THREAD, SAMPLE_USES, 1_049_000, [], SAMPLE_EXPERIMENTS, SAMPLE_PARTS);
+  const ledger = useContextLedger(SAMPLE_THREAD, SAMPLE_USES, 1_049_000, [], SAMPLE_EXPERIMENTS);
   const sampleTrace = useMemo(() => ({ label: "3:41:42 PM", spans: SAMPLE_SPANS }), []);
   return {
     ledger,

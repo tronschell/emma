@@ -1,6 +1,6 @@
 /// Reasoning models put their scratchpad inline in `content` as a <think> block.
-/// Nothing between the provider and the transcript strips it — not the Zig
-/// sidecar, not the host — so folding it away is the renderer's job.
+/// Nothing between the provider and the transcript strips it — not the harness,
+/// not the host — so folding it away is the renderer's job.
 ///
 /// An unclosed block means the model is still in the scratchpad: everything is
 /// thinking and there is no answer yet. That is also what a truncated reply

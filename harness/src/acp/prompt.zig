@@ -129,28 +129,33 @@ const AcpContext = struct {
     /// for usage with no billing identity.
     turn_usage: acp_types.TurnUsage = .{},
 
+    fn noteTurnUsage(self: *AcpContext, usage: types.Usage) void {
+        if (usage.input_tokens) |input| self.turn_usage.input_tokens = input;
+        self.turn_usage.output_tokens +|= usage.output_tokens orelse 0;
+    }
+
     fn deinitPublishedToolCalls(self: *AcpContext) void {
         var keys = self.published_tool_calls.keyIterator();
         while (keys.next()) |key| self.alloc.free(key.*);
         self.published_tool_calls.deinit(self.alloc);
     }
 
-    fn sendUpdate(self: *AcpContext, update_json: []const u8) !void {
+    fn sendRawUpdate(self: *AcpContext, update_json: []const u8) !void {
         var out: std.Io.Writer.Allocating = .init(self.alloc);
         defer out.deinit();
-        const child = self.child orelse {
-            try acp_types.writeSessionUpdate(&out.writer, self.session_id, update_json);
-            try self.state.writer.writeNotification(self.alloc, "session/update", out.writer.buffered());
-            return;
-        };
+        try acp_types.writeSessionUpdate(&out.writer, self.session_id, update_json);
+        try self.state.writer.writeNotification(self.alloc, "session/update", out.writer.buffered());
+    }
+
+    fn sendUpdate(self: *AcpContext, update_json: []const u8) !void {
         // A subagent's words are not the session's answer, so they are tagged
         // rather than merged: untagged, a child's text would land in the parent's
         // durable reply as if the parent had said it.
+        const child = self.child orelse return self.sendRawUpdate(update_json);
         var tagged: std.Io.Writer.Allocating = .init(self.alloc);
         defer tagged.deinit();
         try acp_types.writeChildTaggedUpdate(&tagged.writer, update_json, child.id, child.title, child.ended);
-        try acp_types.writeSessionUpdate(&out.writer, self.session_id, tagged.writer.buffered());
-        try self.state.writer.writeNotification(self.alloc, "session/update", out.writer.buffered());
+        try self.sendRawUpdate(tagged.writer.buffered());
     }
 
     /// Closes a child out, so a front end watching it knows the run ended rather
@@ -923,13 +928,21 @@ pub fn runSubagentChild(
         state.context_limits,
     ) catch return error.OutOfMemory;
     defer explicit_skills.deinit(alloc);
+    var emma_responder = AcpEmmaToolResponderContext{
+        .acp = &ctx,
+        .tool_call_id = if (turn.child_id) |child_id| child_id else session_id,
+        .operation_cancel_flag = cancel,
+    };
+    var child_tool_context = ctx.toolContext();
+    child_tool_context.emma_tool_responder = emma_responder.responder();
     return subagent_agent_adapter.run(.{
         .host = subagent_host,
-        .tool_context = ctx.toolContext(),
+        .tool_context = child_tool_context,
         .live_mirror = if (ctx.child == null) null else .{
             .ctx = @ptrCast(&ctx),
             .push_text = pushText,
             .push_tool_lifecycle = pushChildToolLifecycle,
+            .push_usage = reportTurnUsage,
         },
         .provider_routes = .{
             .gateway = .{
@@ -1271,24 +1284,35 @@ fn agentRuntimeDeps(ctx: *AcpContext) agent_runtime.AgentRuntimeDeps {
 /// carried context, so that is what the turn reports.
 fn reportTurnUsage(raw_ctx: *anyopaque, usage: types.Usage) void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    if (usage.input_tokens) |input| ctx.turn_usage.input_tokens = input;
-    ctx.turn_usage.output_tokens +|= usage.output_tokens orelse 0;
+    ctx.noteTurnUsage(usage);
+    var out: std.Io.Writer.Allocating = .init(ctx.alloc);
+    defer out.deinit();
+    // A child's numbers carry its tag in the same `_meta` rather than a second
+    // one, which `writeChildTaggedUpdate` refuses — silently, so a subagent read
+    // as having spent nothing at all.
+    if (ctx.child) |child| {
+        acp_types.writeChildTurnUsageInfoUpdate(&out.writer, ctx.turn_usage, child.id, child.title, child.ended) catch return;
+        ctx.sendRawUpdate(out.writer.buffered()) catch {};
+        return;
+    }
+    acp_types.writeTurnUsageInfoUpdate(&out.writer, ctx.turn_usage) catch return;
+    ctx.sendUpdate(out.writer.buffered()) catch {};
 }
 
-test "reportTurnUsage sums output but reports the last step's input" {
+test "noteTurnUsage sums output but reports the last step's input" {
     var state: server.ServerState = undefined;
     var ctx = AcpContext{ .alloc = std.testing.allocator, .state = &state, .session_id = "sess" };
-    reportTurnUsage(@ptrCast(&ctx), .{ .input_tokens = 1000, .output_tokens = 3 });
-    reportTurnUsage(@ptrCast(&ctx), .{ .input_tokens = 2000, .output_tokens = 4 });
+    ctx.noteTurnUsage(.{ .input_tokens = 1000, .output_tokens = 3 });
+    ctx.noteTurnUsage(.{ .input_tokens = 2000, .output_tokens = 4 });
     try std.testing.expectEqual(@as(u64, 2000), ctx.turn_usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 7), ctx.turn_usage.output_tokens);
 }
 
-test "reportTurnUsage keeps the last known input when a step omits it" {
+test "noteTurnUsage keeps the last known input when a step omits it" {
     var state: server.ServerState = undefined;
     var ctx = AcpContext{ .alloc = std.testing.allocator, .state = &state, .session_id = "sess" };
-    reportTurnUsage(@ptrCast(&ctx), .{ .input_tokens = 7, .output_tokens = 3 });
-    reportTurnUsage(@ptrCast(&ctx), .{ .input_tokens = null, .output_tokens = 5 });
+    ctx.noteTurnUsage(.{ .input_tokens = 7, .output_tokens = 3 });
+    ctx.noteTurnUsage(.{ .input_tokens = null, .output_tokens = 5 });
     try std.testing.expectEqual(@as(u64, 7), ctx.turn_usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 8), ctx.turn_usage.output_tokens);
 }
@@ -1354,7 +1378,7 @@ fn resolveModelCapabilities(
 ) model_capabilities.ResolveError!model_capabilities.Capabilities {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     const session = if (ctx.state.active_session) |*active| active else return model_capabilities.capabilitiesForModel(model);
-    return ctx.state.capability_resolver.resolve(
+    return withPublishedEfforts(ctx, model, try ctx.state.capability_resolver.resolve(
         ctx.state.alloc,
         ctx.state.cfg.gateway_provider.model_catalog,
         .{
@@ -1363,7 +1387,7 @@ fn resolveModelCapabilities(
             .cancel_flag = &session.cancel_flag,
         },
         model,
-    );
+    ));
 }
 
 fn availableModelCapabilities(
@@ -1371,7 +1395,27 @@ fn availableModelCapabilities(
     model: []const u8,
 ) model_capabilities.Capabilities {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    return ctx.state.capability_resolver.available(model);
+    return withPublishedEfforts(ctx, model, ctx.state.capability_resolver.available(model));
+}
+
+/// The stops the client sent on the `reasoning_effort` option, over whatever the
+/// catalog answered. Both hooks take them because either one can end up being the
+/// capabilities a request is built from, and an effort missing from the set the
+/// request is checked against is dropped on the way to the gateway.
+///
+/// Only for the model they were published for: the same session resolves other
+/// models — a reviewer's, a subagent's — and their vocabularies are their own.
+fn withPublishedEfforts(
+    ctx: *AcpContext,
+    model: []const u8,
+    capabilities: model_capabilities.Capabilities,
+) model_capabilities.Capabilities {
+    const session = if (ctx.state.active_session) |*active| active else return capabilities;
+    if (session.reasoning_efforts.len == 0 or !std.mem.eql(u8, model, session.model)) return capabilities;
+    var published = capabilities;
+    published.supports_reasoning = true;
+    published.reasoning_efforts = session.reasoning_efforts;
+    return published;
 }
 
 fn finalizeTurn(raw_ctx: *anyopaque, turn_id: u64, outcome: types.TurnPresentationOutcome, disposition: ?types.ProviderCompletionDisposition) !void {

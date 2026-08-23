@@ -43,7 +43,11 @@ function usePlans(threadId: string, sample?: Plan[]): Plan[] {
 const workingOn = (agents: LiveAgent[], step: PlanStep) =>
   agents.find((agent) => agent.title === step.title && (agent.status === "running" || agent.status === "waiting"));
 
-export function PlanRail({ threadId, agents, sample }: { threadId: string; agents: LiveAgent[]; sample?: Plan[] }) {
+/** The tab this step belongs to: the live one if it is still going, else whatever ran it. */
+const ranBy = (agents: LiveAgent[], step: PlanStep) =>
+  workingOn(agents, step) ?? agents.find((agent) => agent.title === step.title);
+
+export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: string; agents: LiveAgent[]; sample?: Plan[]; onOpen?: (threadId: string) => void }) {
   const plans = usePlans(threadId, sample);
   const [pick, setPick] = useState("");
   const [pinned, setPinned] = useState("");
@@ -106,6 +110,10 @@ export function PlanRail({ threadId, agents, sample }: { threadId: string; agent
         const spot = spots.get(item.id);
         if (!spot) return null;
         const agent = workingOn(agents, item);
+        // Pressing the node already being read is the second press: it goes to that
+        // step's own tab, since the transcript is the rest of the answer the panel
+        // only summarises. Nothing ran it yet — fall back to letting go of the pin.
+        const tab = onOpen && item.id === step?.id ? ranBy(agents, item) : undefined;
         const ticked = item.tasks.filter((task) => task.done).length;
         return <button
           key={item.id}
@@ -113,9 +121,12 @@ export function PlanRail({ threadId, agents, sample }: { threadId: string; agent
           className={`plan-node ${item.id === step?.id ? "active" : ""}`}
           data-status={state(item)}
           style={{ left: `${spot.x}%`, top: spot.y }}
-          aria-label={`${item.title} — ${state(item)}`}
-          title={`${item.title} — ${state(item)}${item.tasks.length ? ` · ${ticked}/${item.tasks.length}` : ""}${item.needs.length ? `\nwaits on ${item.needs.join(", ")}` : ""}\n${agent?.activity || item.result || item.brief}`}
-          onClick={() => setPinned(item.id === pinned ? "" : item.id)}
+          aria-label={tab ? `${item.title} — ${state(item)}, open its tab` : `${item.title} — ${state(item)}`}
+          title={`${item.title} — ${state(item)}${item.tasks.length ? ` · ${ticked}/${item.tasks.length}` : ""}${item.needs.length ? `\nwaits on ${item.needs.join(", ")}` : ""}\n${agent?.activity || item.result || item.brief}${tab ? "\npress again to open its tab" : ""}`}
+          onClick={() => {
+            if (tab) onOpen?.(tab.threadId);
+            else setPinned(item.id === pinned || item.id === step?.id ? "" : item.id);
+          }}
         >{index + 1}</button>;
       })}
     </div>

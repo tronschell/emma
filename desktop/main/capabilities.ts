@@ -1,27 +1,24 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
-import { BoundedLines } from "./ndjson";
+import { installedCapabilitySources } from "./marketplace";
 
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_SKILL_BYTES = 64 * 1024;
 const MAX_SKILL_ROOTS = 16;
 const MAX_SKILLS_PER_ROOT = 128;
-const MAX_SKILL_RESULTS = 32;
+/* Every caller asks for 64 — the skills page, the schedule form, the tool-target
+   list and mention resolution. This was 32, and main's IPC guard spelled the
+   same ceiling as a literal, so all four threw instead of returning a short
+   list. Exported now, so the guard reads the bound rather than a copy of it. */
+export const MAX_SKILL_RESULTS = 64;
 const MAX_TOOL_BYTES = 64 * 1024;
 const MAX_TOOL_DESCRIPTION_BYTES = 1024;
 const MAX_EMMA_TOOLS = 64;
 const MAX_MCP_FILES = 16;
 const MAX_MCP_SERVERS = 32;
-const MAX_MCP_TOOLS = 256;
-const MAX_MCP_LINE_BYTES = 64 * 1024;
-const MAX_MCP_RESPONSE_BYTES = 256 * 1024;
-const MAX_MCP_SCHEMA_BYTES = 64 * 1024;
-const MAX_MCP_ARGUMENT_BYTES = 64 * 1024;
-const MCP_TIMEOUT_MS = 10_000;
 
 type ImportedSource = {
   id: string;
@@ -57,26 +54,6 @@ export type McpServer = {
   args: string[];
   argCount: number;
   environmentKeys: string[];
-};
-
-export type McpPermissionReview = McpServer & {
-  token: string;
-  warning: string;
-  capabilities: string[];
-};
-
-export type McpTool = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-};
-
-export type McpToolSummary = Omit<McpTool, "inputSchema">;
-
-export type McpCallResult = {
-  content?: unknown;
-  isError?: boolean;
-  [key: string]: unknown;
 };
 
 function boundedString(value: unknown, max: number, label: string) {
@@ -137,12 +114,17 @@ function withEmmaSource(userData: string, manifest: ImportManifest): ImportManif
   };
 }
 
+async function withPluginSources(userData: string, manifest: ImportManifest): Promise<ImportManifest> {
+  const plugins = await installedCapabilitySources(userData).catch(() => []);
+  return { version: 1, sources: [...manifest.sources, ...plugins] };
+}
+
 async function loadManifest(userData: string) {
   try {
     const text = await readBounded(path.join(userData, "imports.json"), MAX_MANIFEST_BYTES);
-    return withEmmaSource(userData, parseManifest(JSON.parse(text)));
+    return await withPluginSources(userData, withEmmaSource(userData, parseManifest(JSON.parse(text))));
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return withEmmaSource(userData, { version: 1, sources: [] });
+    if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return await withPluginSources(userData, withEmmaSource(userData, { version: 1, sources: [] }));
     // Every skill and every / entry disappears when this file cannot be read, so the
     // message has to say which file and how to rebuild it.
     throw new Error("Emma's imported-skill list (imports.json) could not be read — run /import again to rebuild it.", { cause: error });
@@ -279,7 +261,7 @@ export async function mirrorSkillsToHarness(userData: string, harnessHome: strin
   const blocked = new Set(disabled);
   const mirrored: string[] = [];
   for (const skill of skills) {
-    if (blocked.has(skill.id) || blocked.has(skill.name)) continue;
+    if (blocked.has(skill.id) || blocked.has(skill.name) || mirrored.includes(skill.name)) continue;
     try {
       const content = await readBounded(path.join(skill.root, skill.name, "SKILL.md"), MAX_SKILL_BYTES);
       if (!content.trim()) continue;
@@ -291,6 +273,10 @@ export async function mirrorSkillsToHarness(userData: string, harnessHome: strin
       await writeFile(path.join(directory, "SKILL.md"), withFrontmatter(skill.name, content), { encoding: "utf8", mode: 0o600 });
       mirrored.push(skill.name);
     } catch { /* one unreadable skill does not stop the rest */ }
+  }
+  const kept = new Set(mirrored);
+  for (const entry of await readdir(root).catch(() => [])) {
+    if (!kept.has(entry)) await rm(path.join(root, entry), { recursive: true, force: true }).catch(() => {});
   }
   return mirrored;
 }
@@ -499,6 +485,8 @@ function configRoots(value: Record<string, unknown>) {
     const candidate = value[key];
     if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate as Record<string, unknown>;
   }
+  const entries = Object.entries(value);
+  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && "command" in (item as object))) return value;
   return {};
 }
 
@@ -610,9 +598,16 @@ export async function listImportedMcpServers(userData: string) {
 /**
  * The same servers, in the shape the harness's `session/new` wants them.
  *
- * Two differences from Emma's own record, both of which the harness enforces:
- * the command must be absolute — a bare `npx` is rejected outright — and the
- * environment is a list of pairs rather than an object.
+ * Three differences from Emma's own record, all of which the harness enforces:
+ * a stdio server carries no `type` at all — the field means `http` or `sse` and
+ * nothing else, so sending `"stdio"` failed every `session/new` that had a
+ * server in it — the command must be absolute, and the environment is a list of
+ * pairs rather than an object.
+ *
+ * `PATH` and `HOME` ride along whenever the server sets anything of its own,
+ * because the harness hands a non-empty list to the child as its whole
+ * environment rather than merging it: a server with one API key configured
+ * would otherwise spawn with no `PATH` and fail to find its own interpreter.
  *
  * A server whose command cannot be resolved is dropped rather than sent, since
  * the harness fails the whole `session/new` on one bad entry and taking the
@@ -623,12 +618,13 @@ export async function harnessMcpServers(userData: string) {
   const resolved = await Promise.all(servers.map(async (server) => {
     const command = await absoluteCommand(server.command);
     if (!command) return undefined;
+    const env = Object.entries(server.env);
+    const inherited = env.length === 0 ? [] : Object.entries({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" });
     return {
-      type: "stdio" as const,
       name: server.name,
       command,
       args: server.args,
-      env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+      env: [...inherited, ...env].map(([name, value]) => ({ name, value })),
     };
   }));
   return resolved.filter((server): server is NonNullable<typeof server> => server !== undefined);
@@ -648,301 +644,15 @@ async function absoluteCommand(command: string) {
   return undefined;
 }
 
-function validRpcObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function jsonSize(value: unknown, max: number, label: string) {
-  const text = JSON.stringify(value);
-  if (Buffer.byteLength(text, "utf8") > max) throw new Error(`${label} is too large`);
-  return text;
-}
-
-class McpStdio {
-  private readonly child: ChildProcessWithoutNullStreams;
-  private readonly lines = new BoundedLines(MAX_MCP_LINE_BYTES);
-  private readonly queued: string[] = [];
-  private readonly waiters: Array<{ resolve: (line: string) => void; reject: (error: Error) => void }> = [];
-  private nextId = 1;
-  private failure: Error | undefined;
-  private closed = false;
-  /** Named in every failure below: "an MCP server stopped" leaves the user with
-      nothing to go and look at, and they usually have several connected. */
-  private readonly label: string;
-
-  constructor(server: InternalMcpServer) {
-    this.label = server.name;
-    const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...server.env };
-    this.child = spawn(server.command, server.args, { env, stdio: ["pipe", "pipe", "pipe"] });
-    this.child.stdout.on("data", (data: Buffer) => {
-      try {
-        for (const line of this.lines.push(data)) this.push(line);
-      } catch (error) {
-        this.fail(error instanceof Error ? error : new Error(`The "${this.label}" MCP server sent something Emma could not read.`));
-      }
-    });
-    this.child.stdout.once("end", () => {
-      try { this.lines.end(); this.fail(new Error(`The "${this.label}" MCP server closed its connection — check that its command still runs.`)); } catch (error) { this.fail(error as Error); }
-    });
-    this.child.stderr.on("data", () => undefined);
-    this.child.once("error", (error) => this.fail(error));
-    this.child.once("exit", () => this.fail(new Error(`The "${this.label}" MCP server stopped — check that its command still runs.`)));
-  }
-
-  private push(line: string) {
-    if (line.length > MAX_MCP_RESPONSE_BYTES) throw new Error("MCP response is too large");
-    const waiter = this.waiters.shift();
-    if (waiter) waiter.resolve(line);
-    else {
-      if (this.queued.length >= 32) throw new Error("MCP output queue is full");
-      this.queued.push(line);
-    }
-  }
-
-  private fail(error: Error) {
-    this.failure ??= error;
-    for (const waiter of this.waiters.splice(0)) waiter.reject(this.failure);
-    if (!this.closed && !this.child.killed) this.child.kill();
-  }
-
-  private async line(timeout = MCP_TIMEOUT_MS) {
-    if (this.failure) throw this.failure;
-    const queued = this.queued.shift();
-    if (queued !== undefined) return queued;
-    return new Promise<string>((resolve, reject) => {
-      const onResolve = (value: string) => { clearTimeout(timer); resolve(value); };
-      const timer = setTimeout(() => {
-        const index = this.waiters.findIndex((waiter) => waiter.resolve === onResolve);
-        if (index >= 0) this.waiters.splice(index, 1);
-        const timeout = new Error(`The "${this.label}" MCP server did not answer in time — it may be slow to start, or asking for a login.`);
-        reject(timeout);
-        this.fail(timeout);
-      }, timeout);
-      this.waiters.push({ resolve: onResolve, reject });
-    });
-  }
-
-  private async write(value: string) {
-    if (this.failure || this.closed) throw this.failure ?? new Error(`The "${this.label}" MCP server is no longer connected.`);
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const error = new Error("MCP write timed out");
-        this.fail(error);
-        reject(error);
-      }, MCP_TIMEOUT_MS);
-      this.child.stdin.write(`${value}\n`, (error) => {
-        clearTimeout(timer);
-        if (error) { this.fail(error); reject(error); } else resolve();
-      });
-    });
-  }
-
-  async notify(method: string, params: Record<string, unknown>) {
-    await this.write(JSON.stringify({ jsonrpc: "2.0", method, params }));
-  }
-
-  async request(method: string, params: Record<string, unknown>) {
-    const id = this.nextId++;
-    try {
-      await this.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-      while (true) {
-        const line = await this.line();
-        let value: unknown;
-        try { value = JSON.parse(line); } catch { throw new Error("MCP response is not JSON"); }
-        if (!validRpcObject(value) || value.jsonrpc !== "2.0") throw new Error("MCP response is not JSON-RPC 2.0");
-        if (!Object.hasOwn(value, "id")) continue;
-        if (value.id !== id) throw new Error("MCP response ID does not match the request");
-        if (Object.hasOwn(value, "error")) {
-          const error = value.error;
-          const message = validRpcObject(error) && typeof error.message === "string" ? error.message.slice(0, 512) : "MCP request failed";
-          throw new Error(message);
-        }
-        if (!Object.hasOwn(value, "result")) throw new Error("MCP response has no result");
-        jsonSize(value.result, MAX_MCP_RESPONSE_BYTES, "MCP response");
-        return value.result;
-      }
-    } catch (error) {
-      const failure = error instanceof Error ? error : new Error("MCP request failed");
-      this.fail(failure);
-      throw failure;
-    }
-  }
-
-  async close() {
-    if (this.closed) return;
-    this.closed = true;
-    this.fail(new Error("MCP session closed"));
-    if (!this.child.stdin.destroyed) this.child.stdin.end();
-    if (!this.child.killed) this.child.kill();
-    await new Promise<void>((resolve) => {
-      if (this.child.exitCode !== null) { resolve(); return; }
-      const timer = setTimeout(resolve, 500);
-      this.child.once("exit", () => { clearTimeout(timer); resolve(); });
-    });
-  }
-}
-
-function parseTools(value: unknown) {
-  if (!validRpcObject(value) || !Array.isArray(value.tools) || value.tools.length > MAX_MCP_TOOLS) throw new Error("MCP tools/list result is invalid");
-  const names = new Set<string>();
-  return value.tools.map((raw): McpTool => {
-    if (!validRpcObject(raw) || typeof raw.name !== "string" || raw.name.length < 1 || raw.name.length > 128 || (raw.description !== undefined && (typeof raw.description !== "string" || raw.description.length > 4096)) || !validRpcObject(raw.inputSchema)) throw new Error("MCP tool metadata is invalid");
-    if (names.has(raw.name)) throw new Error("MCP tool names must be unique");
-    names.add(raw.name);
-    jsonSize(raw.inputSchema, MAX_MCP_SCHEMA_BYTES, "MCP tool schema");
-    return { name: raw.name, description: raw.description ?? "", inputSchema: raw.inputSchema };
-  });
-}
-
-class McpSession {
-  readonly server: McpServer;
-  readonly tools: McpTool[];
-  private readonly io: McpStdio;
-  private searched: string[] = [];
-  private selected: McpTool | undefined;
-
-  private constructor(server: InternalMcpServer, io: McpStdio, tools: McpTool[]) {
-    this.server = serverMetadata(server);
-    this.io = io;
-    this.tools = tools;
-  }
-
-  static async start(server: InternalMcpServer) {
-    const io = new McpStdio(server);
-    try {
-      const initialized = await io.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "emma", version: "0.1.0" } });
-      if (!validRpcObject(initialized)) throw new Error("MCP initialize result is invalid");
-      await io.notify("notifications/initialized", {});
-      const tools = parseTools(await io.request("tools/list", {}));
-      return new McpSession(server, io, tools);
-    } catch (error) {
-      await io.close();
-      throw error;
-    }
-  }
-
-  search(query: string, limit: number) {
-    boundedString(query, 256, "MCP tool search");
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32) throw new Error("MCP tool result limit is invalid");
-    this.searched = this.tools.filter((tool) => searchText(query, tool.name, tool.description)).slice(0, limit).map((tool) => tool.name);
-    this.selected = undefined;
-    return this.searched.map((name) => {
-      const tool = this.tools.find((candidate) => candidate.name === name)!;
-      return { name: tool.name, description: tool.description } satisfies McpToolSummary;
-    });
-  }
-
-  select(name: string) {
-    boundedString(name, 128, "MCP tool selection");
-    if (!this.searched.includes(name)) throw new Error("Select a tool from the latest MCP search");
-    const tool = this.tools.find((candidate) => candidate.name === name);
-    if (!tool) throw new Error("Selected MCP tool is unavailable");
-    this.selected = tool;
-    return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
-  }
-
-  async call(args: unknown) {
-    if (!this.selected) throw new Error("Select an MCP tool before calling it");
-    if (!validRpcObject(args)) throw new Error("MCP tool arguments must be an object");
-    jsonSize(args, MAX_MCP_ARGUMENT_BYTES, "MCP tool arguments");
-    const result = await this.io.request("tools/call", { name: this.selected.name, arguments: args });
-    if (!validRpcObject(result)) throw new Error("MCP tools/call result is invalid");
-    jsonSize(result, MAX_MCP_RESPONSE_BYTES, "MCP tool output");
-    return result as McpCallResult;
-  }
-
-  close() { return this.io.close(); }
-}
-
 export class ImportedCapabilityRuntime {
-  private session: McpSession | undefined;
-  private readonly reviews = new Map<string, { serverId: string; expiresAt: number }>();
-
   constructor(private readonly userData: string) {}
 
   searchSkills(query: string, limit = 16) { return searchImportedSkills(this.userData, query, limit); }
   selectSkill(id: string) { return loadImportedSkill(this.userData, id); }
   listMcpServers() { return listImportedMcpServers(this.userData); }
 
-  async permissionReview(serverId: string): Promise<McpPermissionReview> {
-    const server = await this.findServer(serverId);
-    const now = Date.now();
-    for (const [token, review] of this.reviews) if (review.expiresAt < now) this.reviews.delete(token);
-    if (this.reviews.size >= 32) throw new Error("Too many pending MCP permission reviews");
-    const token = randomUUID();
-    this.reviews.set(token, { serverId, expiresAt: Date.now() + 5 * 60_000 });
-    return {
-      ...serverMetadata(server),
-      token,
-      warning: "This starts one imported stdio process with its configured environment. Emma sends only the selected tool call and keeps configuration values in the main process.",
-      capabilities: ["start one local stdio process", "read bounded tool metadata", "send one user-invoked selected tool call"],
-    };
-  }
-
-  async connect(serverId: string, token: string) {
-    boundedString(token, 128, "MCP permission token");
-    const review = this.reviews.get(token);
-    this.reviews.delete(token);
-    if (!review || review.serverId !== serverId || review.expiresAt < Date.now()) throw new Error("MCP permission review is invalid or expired");
-    const server = await this.findServer(serverId);
-    if (this.session && this.session.server.id !== server.id) throw new Error("Close the active MCP server before selecting another");
-    if (!this.session) this.session = await McpSession.start(server);
-    return { server: this.session.server, tools: this.session.tools.length };
-  }
-
-  /** Whether a user-approved server is live, which is what makes `mcp_tool` offerable. */
-  get connected() {
-    return this.session !== undefined;
-  }
-
-  /**
-   * Installs one server and connects it in the same call, so the tools it carries
-   * are usable in the turn that asked for them rather than after a relaunch. The
-   * permission ask that gated `install_mcp` is the review: it carries the same
-   * command, arguments and environment keys the panel's review token covers.
-   *
-   * The new session starts before the old one is dropped, so a command that does
-   * not run leaves whatever was already connected alone.
-   *
-   * ponytail: one live session is the existing ceiling, so this replaces it. Key
-   * `session` by server id if two servers ever have to be up at once.
-   */
   async installMcpServer(definition: McpServerDefinition) {
-    const id = await writeLearnedMcpServer(this.userData, definition);
-    const started = await McpSession.start(await this.findServer(id));
-    const replaced = this.session;
-    this.session = started;
-    await replaced?.close();
-    return { id, tools: started.tools.length, replaced: replaced?.server.name };
-  }
-
-  searchTools(query: string, limit = 16) {
-    if (!this.session) throw new Error("Review and connect one MCP server first");
-    return this.session.search(query, limit);
-  }
-
-  selectTool(name: string) {
-    if (!this.session) throw new Error("Review and connect one MCP server first");
-    return this.session.select(name);
-  }
-
-  callTool(args: unknown) {
-    if (!this.session) throw new Error("Review and connect one MCP server first");
-    return this.session.call(args);
-  }
-
-  async close() {
-    const session = this.session;
-    this.session = undefined;
-    this.reviews.clear();
-    await session?.close();
-  }
-
-  private async findServer(id: string) {
-    boundedString(id, 256, "MCP server selection");
-    const server = (await enumerateMcpServers(await loadManifest(this.userData))).find((candidate) => candidate.id === id);
-    if (!server) throw new Error("Selected MCP server is unavailable");
-    return server;
+    return { id: await writeLearnedMcpServer(this.userData, definition) };
   }
 }
 

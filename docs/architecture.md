@@ -6,25 +6,24 @@
 sandboxed React renderer
         | allowlisted IPC
 Electron main / preload
-        | newline-delimited JSON over stdio
-Rust host -> emma-core -> Markdown stores
-        |
-Zig agent -> OpenAI-compatible providers and lazy MCP tools
+        |- newline-delimited JSON over stdio -> Rust host -> emma-core -> Markdown stores
+        `- Agent Client Protocol over stdio  -> emma-cli -> OpenAI-compatible providers,
+                                                            tools, lazy MCP
 ```
 
 The renderer holds a live projection only. Electron owns windows, the global
-shortcut, trusted-sender validation, and the narrow preload API. `emma-core`
-owns parsing, validation, atomic persistence, and domain invariants. The Zig
-sidecar owns transient agent runs, tool selection, and usage accounting; it can
-mutate durable data only through an explicit validated host command.
+shortcut, trusted-sender validation, the narrow preload API, and every provider
+call that is not a turn. `emma-core` owns parsing, validation, atomic
+persistence, and domain invariants. `emma-cli` owns transient agent runs, tool
+selection, and usage accounting; it can mutate durable data only through
+Electron, which writes it with an explicit validated host command.
 
-Assistant text streams back along the same stdio path, out of band of the
-request/response pairing: the sidecar parses the provider's SSE itself and emits
-`{"id","delta"}` lines against the in-flight request, the host re-tags them
-`{"threadId","delta"}` onto its own stdout, and main broadcasts them as
-`emma:delta`. An empty delta means the host is retrying on a fallback provider
-and the renderer must drop what it has buffered. The turn's durable message is
-still the response envelope; a delta is never persisted.
+The Rust host spawns no child process and makes no network request. It is a
+one-directional request/response server onto the Markdown stores, plus
+`{"dueJob": ...}` lines it pushes onto its own stdout when a scheduled job comes
+due. There are no `delta` lines on that path. Assistant text streams from the
+harness over ACP, and main broadcasts it as `emma:delta`; the turn's durable
+message is written afterwards with `recordTurn`, so a delta is never persisted.
 
 Both renderer windows use `sandbox: true`, `contextIsolation: true`, and
 `nodeIntegration: false`. A restrictive content-security policy is applied and
@@ -159,20 +158,18 @@ their version across launches.
 A plan is how Emma takes on a job too big for one agent: a markdown file naming
 the steps, what each one waits on, and the tasks underneath it. One step is one
 subagent. Steps whose dependencies are all `done` are a *wave*, and a wave is
-what `plan run` delegates — `Promise.all` over `AgentRuntime.delegate`, which is
-the only way tool calls inside one model step ever overlap, since they are
-otherwise strictly sequential. A row of the drawn graph is literally a wave.
-One call runs one wave and returns, so a long plan stays
-inside `MAX_TURN_MS` and the model stays in the loop between them; the wave is
-capped at `MAX_LIVE_SUBAGENTS` and the tool says which steps it held back rather
-than quietly truncating.
+what `plan run` hands out: it marks the wave running and returns one brief per
+step, for the model to spawn a harness subagent per brief and record each answer
+with `plan update`. A row of the drawn graph is literally a wave. One call starts
+one wave and returns, so a long plan stays inside `MAX_TURN_MS` and the model
+stays in the loop between them; the wave is capped at `MAX_LIVE_SUBAGENTS` and
+the tool says which steps it held back rather than quietly truncating.
 
 Reaching for it at all is the part a schema cannot carry, since a model only
 reads the `plan` schema once it is already planning — so `PLANNING_PROTOCOL`
 rides the turn's system context the way `MEMORY_PROTOCOL` does, on root turns
-that are actually offered the tool. Not in Plan mode, where it is hidden, and
-not at depth: a step's subagent has `stepBrief`, and a plan of its own would be
-a plan inside a plan.
+that are actually offered the tool, and not at depth: a step's subagent has
+`stepBrief`, and a plan of its own would be a plan inside a plan.
 
 Markdown is the store, not an export of one. `<userData>/plans/<id>.md` is what
 the tool rewrites, what the widget parses, and what opens in any editor — so
@@ -251,38 +248,37 @@ settles so successful prompts cannot replay.
 
 ## Models and extensions
 
-Provider configuration consists of an OpenAI-compatible base URL, model, and
+Provider configuration consists of an OpenAI-compatible chat URL, model, and
 credential environment-variable name. There is no Vercel login surface. The
-OpenRouter catalog is fetched lazily through Zig and offers every tool-capable
-model, free and paid, each flagged with which it is — the listing endpoint is
-public, so browsing models needs no key and only running one does. Electron
-caches the result under the user's data directory and diffs each reload against
-it, so the page paints offline and a reload reports what changed; a bundled seed
-covers a first launch that has neither cache nor network. Selected turns require
-no provider data collection and zero retention; otherwise they fail closed.
+OpenRouter catalog is fetched by Electron and offers every tool-capable model,
+free and paid, each flagged with which it is — the listing endpoint is public,
+so browsing models needs no key and only running one does. Electron caches the
+result under the user's data directory and diffs each reload against it, so the
+page paints offline and a reload reports what changed; a bundled seed covers a
+first launch that has neither cache nor network. The picker is answered against
+that same cache in Electron main, not by the host. With zero retention on, a
+turn requires no provider data collection and a zero-retention endpoint;
+otherwise it fails closed.
 
 ## Agent turns
 
 Every prompt is a full agent turn. Electron main intercepts `sendMessage` once,
 so the thread composer, Quick Ask, a quick action, a page chat and a due
-scheduled job all enter the same loop rather than each growing their own. The
-loop advertises tools to the sidecar, executes the calls it asks for, and
-submits the results back over `thread_tool_result` until the model answers,
-bounded at 120 steps, 30 minutes, and 8 calls per step.
+scheduled job all enter the same loop rather than each growing their own. That
+one interception is `driveTurn`, which hands the turn to the harness over ACP.
 
-The composer's picker sets the mode: `plan` advertises only tools that cannot
-change this machine, `ask` gates writes and commands behind a dialog,
-`acceptEdits` writes files but still asks before running anything, and `full`
-runs unattended. One table in `desktop/shared/permissions.ts` decides what each
-mode advertises and what it gates, and the `emma` terminal command reads those
-same four names out of `EMMA_MODE`. Scheduled jobs store their mode in the job
+The composer's picker sets the mode: `ask` gates writes and commands behind a
+dialog, `acceptEdits` writes files but still asks before running anything, `auto`
+sends each gated call to a verifier model, and `full` runs unattended. One table
+in `desktop/shared/permissions.ts` decides what each mode advertises and what it
+gates. Scheduled jobs store their mode in the job
 record, so a job fires under the mode it was approved with.
 
 Two different things are owned child threads, and `kind` on the thread record is
 what tells them apart. A **thread** is a durable timeline: the event stream is
 stored, it outlives every run in it, and it stays in the sidebar to be picked up
 again. An **agent** is the loop working inside one, and it dissolves when its job
-is done. A `task` call spawns a **subagent**: `kind: subagent`, several to a
+is done. A `subagent` call spawns a **subagent**: `kind: subagent`, several to a
 thread, its transcript, telemetry and tab all coming from the machinery threads
 already have, and kept out of the projects list because nobody opened it. A
 `threads` call with `spawn` starts a **sub thread**: `kind: main`, a thread of
@@ -336,21 +332,21 @@ answer to the thread in one save. Core never drives the model for these turns �
 `Runtime::record_turn` exists precisely so the Markdown store stays the record
 of what was said without pretending it ran the agent.
 
-The harness path is off by default and opts in with `EMMA_HARNESS=1`. The fork
-does not yet reach Emma's folder, computer-use, MCP and knowledge tools, so
-making it unconditional would trade one set of abilities for another; the flag
-goes away when it reaches parity.
+Every turn runs on the harness; the `EMMA_HARNESS=1` opt-in that used to gate it
+is gone, and nothing reads it. The fork does not yet reach all of Emma's folder,
+computer-use, MCP and knowledge tools — see [harness.md](harness.md) for what it
+reaches today.
 
 ## Computer use
 
 Emma can drive this Mac: it captures the display it is working on, moves the
-real pointer, clicks, scrolls, and types. The agent loop lives in the Zig
-sidecar, which asks for `computer` and `write_skill` calls; execution lives in
-Electron main, which owns the screen, the input helper, and the permission gate.
-The sidecar never performs an action itself — the same split MCP already uses.
+real pointer, clicks, scrolls, and types. The agent loop lives in the harness,
+which asks for `computer` and `write_skill` calls; execution lives in Electron
+main, which owns the screen, the input helper, and the permission gate. The
+harness never performs an action itself — the same split MCP already uses.
 
 There is no separate approval flow: `computer` is an ordinary tool, so the
-thread's permission mode is the gate. It is hidden in `plan`, asks the user in
+thread's permission mode is the gate. It asks the user in
 `ask` and `acceptEdits`, goes to the verifier model in `auto`, and runs through
 in `full` — the same table every other tool answers to. The first cleared call
 starts the run lazily. Whatever the mode, the twenty-step ceiling, the

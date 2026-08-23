@@ -6,6 +6,7 @@ import type { GitSnapshot } from "../shared/git";
 import type { Improvements } from "../shared/improvement";
 import type { PermissionMode } from "../shared/permissions";
 import type { Plan } from "../shared/plan";
+import type { PluginCatalog, PluginDetail } from "../shared/plugins";
 import type { FrontApplication } from "../shared/screen-context";
 import type { LinkedPermission, SetupStatus } from "../shared/setup";
 import type { TraceSpan } from "../shared/trace";
@@ -33,7 +34,7 @@ export interface Thread {
   title: string;
   /** The thread that owns this one: a sub thread's parent, or a subagent's spawner. */
   parentThreadId?: string | null;
-  /** `subagent` is one `task` call's transcript, and stays out of the project list. */
+  /** `subagent` is one delegated child's transcript, and stays out of the project list. */
   kind?: "main" | "subagent";
   /** Set when a scheduled job's due run opened this thread; it is listed under Scheduled tasks. */
   scheduledJobId?: string | null;
@@ -218,24 +219,6 @@ export interface ImportedMcpServer {
   environmentKeys: string[];
 }
 
-export interface ImportedMcpPermissionReview extends ImportedMcpServer {
-  token: string;
-  warning: string;
-  capabilities: string[];
-}
-
-export interface ImportedMcpTool {
-  name: string;
-  description: string;
-  inputSchema?: Record<string, unknown>;
-}
-
-export interface ImportedMcpCallResult {
-  content?: unknown;
-  isError?: boolean;
-  [key: string]: unknown;
-}
-
 /** A stored provider key, seen from the renderer: the env name and a masked preview, never the key. */
 export interface CredentialSummary {
   env: string;
@@ -276,6 +259,8 @@ declare global {
       expandPill(): void;
       dismissOverlay(): void;
       openWorkspace(settingsPage?: string): void;
+      /** The page has been laid out wider than its own window — asks for the resize that clears it. */
+      resyncWindow(): void;
       voiceStatus(settings: VoiceSettings): Promise<VoiceStatus>;
       /** Speech in, written text out. `raw` is what was heard before S1-mini cleaned it. */
       transcribe(value: { audio: ArrayBuffer; mimeType: string; settings: VoiceSettings }): Promise<{ text: string; raw: string }>;
@@ -296,8 +281,6 @@ declare global {
       screenAnnotationStatus(): Promise<{ id: string; image: string; source?: FrontApplication } | null>;
       onScreenContext(listener: (value: { id: string; image: string; source?: FrontApplication } | null) => void): () => void;
       clearScreenAnnotation(id: string): Promise<void>;
-      /** What a request carries before the prompt: the tool schemas and the standing instructions. */
-      contextParts(threadId: string): Promise<{ toolChars: number; tools: number; promptChars: number }>;
       /** Shows a file the model named in Finder. False when nothing is there. */
       revealPath(path: string): Promise<boolean>;
       /** The file behind a path, for the in-app preview. Null when nothing is there; null text when it is outside every grant. */
@@ -319,11 +302,22 @@ declare global {
       onPlansChanged(listener: () => void): () => void;
       setupStatus(): Promise<SetupStatus>;
       openPrivacySettings(permission: LinkedPermission): Promise<void>;
+      /** Opens Quick Ask from the workspace, so the walkthrough can show it before ⌥⌥ is granted. */
+      demoQuickAsk(): Promise<void>;
       /** Points the knowledge mirror at the default Documents folder, or one the user picks. */
       setKnowledgeDir(mode: "pick" | "default"): Promise<SetupStatus>;
       /** Deletes everything Emma stores on this Mac and restarts her empty. Never resolves — the app is gone. */
       resetData(): Promise<void>;
       listFolders(): Promise<FolderGrant[]>;
+      /** Every marketplace Emma tracks and every plugin installed out of one. */
+      pluginCatalog(): Promise<PluginCatalog>;
+      addMarketplace(value: { source: string; ref: string; sparse: string }): Promise<PluginCatalog>;
+      removeMarketplace(id: string): Promise<PluginCatalog>;
+      refreshMarketplace(id: string): Promise<PluginCatalog>;
+      installPlugin(value: { marketplace: string; plugin: string }): Promise<PluginCatalog>;
+      uninstallPlugin(id: string): Promise<PluginCatalog>;
+      pluginDetail(value: { marketplace: string; plugin: string }): Promise<PluginDetail>;
+      trustPluginHooks(value: { id: string; trusted: boolean }): Promise<PluginCatalog>;
       onFolderAttached(listener: (value: { threadId: string; folderId: string }) => void): () => void;
       pickFolder(): Promise<FolderGrant[]>;
       forgetFolder(id: string): Promise<FolderGrant[]>;
@@ -355,12 +349,6 @@ declare global {
       importedSkillStatus(): Promise<(ImportedSkill & { threadId: string }) | null>;
       clearImportedSkill(id: string): Promise<void>;
       listImportedMcpServers(): Promise<ImportedMcpServer[]>;
-      reviewImportedMcpServer(id: string): Promise<ImportedMcpPermissionReview>;
-      connectImportedMcpServer(value: { serverId: string; token: string }): Promise<{ server: ImportedMcpServer; tools: number }>;
-      searchMcpTools(value: { query: string; limit?: number }): Promise<ImportedMcpTool[]>;
-      selectMcpTool(name: string): Promise<ImportedMcpTool>;
-      callMcpTool(argsJson: string): Promise<ImportedMcpCallResult>;
-      closeImportedMcpServer(): Promise<void>;
       stopComputerRun(): void;
       onComputerRunProgress(listener: (value: { step: number; action: string; actions: number }) => void): () => void;
       /** Auto mode's verifier model, as main will use it. Rejects what it will not accept. */

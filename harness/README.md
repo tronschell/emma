@@ -8,8 +8,7 @@ It focuses on minimalism and performance across the board, from system prompt
 design to its tools, feature set, and binary size. Its CLI output style and form
 factor aim to be closer to a Unix shell than a heavy "IDE in the terminal" TUI.
 
-It is not Emma's `emma` command: that one is the terminal front end for the
-`emma-agent` sidecar, documented in [`agent/README.md`](../agent/README.md).
+It is also Emma's terminal front end: there is no separate `emma` command.
 
 ⚠ Status: Experimental. Use at your own risk.
 
@@ -91,16 +90,17 @@ removes a stored rule.
 
 ## Inside Emma
 
-The packaged app does not bundle this binary. It is built beside the app with
-`npm --prefix desktop run build:harness`, and a run opts in with
-`EMMA_HARNESS=1`; without both, Emma uses its own agent loop instead. When it
-is on, Emma spawns `emma-cli acp` once per workspace directory and drives it
-over the Agent Client Protocol, answering every `session/request_permission`
-itself. `HOME` points at a profile of Emma's own, so the harness never reads
-the user's `~/.fx`: Emma seeds that profile's `.fx/skills` at launch and writes
-its `.fx/AGENTS.md` from the user's Settings text before each turn. The
-credential comes from Emma's environment as `OPENROUTER_API_KEY` and is handed
-down as `EMMA_PROVIDER_API_KEY`.
+This is the only agent loop Emma has. A packaged app carries the binary at
+`Emma.app/Contents/Resources/emma-cli`; a development run reads
+`harness/zig-out/bin/emma-cli`, built by `npm --prefix desktop run
+build:harness`. A missing binary is a broken install, not a reason to take
+another path. Emma spawns `emma-cli acp` once per workspace directory and
+drives it over the Agent Client Protocol, answering every
+`session/request_permission` itself. `HOME` points at a profile of Emma's own,
+so the harness never reads the user's `~/.fx`: Emma seeds that profile's
+`.fx/skills` at launch and writes its `.fx/AGENTS.md` from the user's Settings
+text before each turn. The credential comes from Emma's environment as
+`OPENROUTER_API_KEY` and is handed down as `EMMA_PROVIDER_API_KEY`.
 
 ## Embed
 

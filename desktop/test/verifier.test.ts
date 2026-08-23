@@ -69,7 +69,7 @@ test("the verifier is told the goal and the exact command, not just the tool nam
   const prompt = verifierPrompt(request());
   assert.match(prompt, /The user asked: run the tests/);
   assert.match(prompt, /rm -rf \/tmp\/build && npm test/);
-  assert.match(prompt, /Proposed action: bash/);
+  assert.match(prompt, /Proposed action: terminal/);
 });
 
 test("the standing rules are the prohibited list, and the goal is what everything else is judged against", async () => {
@@ -124,9 +124,9 @@ test("picking a catalogued model is picking a route, and only a stranger needs t
 });
 
 test("auto gates exactly what ask gates, so the verifier is asked the same questions", () => {
-  assert.equal(toolGate("auto", "bash"), "ask");
-  assert.equal(toolGate("auto", "write_file"), "ask");
-  assert.equal(toolGate("auto", "read_file"), "auto");
+  assert.equal(toolGate("auto", "run_tool"), "ask");
+  assert.equal(toolGate("auto", "computer"), "ask");
+  assert.equal(toolGate("auto", "save_page"), "auto");
   // Auto is not a way to reach a tool the mode table hides from everyone.
   assert.equal(toolGate("auto", "rm_rf"), "hidden");
 });
@@ -184,7 +184,7 @@ test("a verifier that cannot answer asks the user rather than deciding for them"
 });
 
 function request(): VerifierRequest {
-  return { goal: "run the tests", title: "This thread", activity: "running npm test", tool: "bash", summary: "running npm test", detail: "rm -rf /tmp/build && npm test" };
+  return { goal: "run the tests", title: "This thread", activity: "running npm test", tool: "terminal", summary: "running npm test", detail: "rm -rf /tmp/build && npm test" };
 }
 
 /**
@@ -209,6 +209,6 @@ function harness({ verify, answer }: { verify: (request: VerifierRequest) => Pro
     step: (value) => live.push(value),
   });
   runtime.adopt({ threadId: "t1", content: "run the tests", mode: "auto", title: "This thread" });
-  const gate = () => runtime.question({ threadId: "t1", tool: "bash", summary: "running npm test", detail: "npm test" });
+  const gate = () => runtime.question({ threadId: "t1", tool: "terminal", summary: "running npm test", detail: "npm test" });
   return { runtime, gate, asked, live, traced };
 }

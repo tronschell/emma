@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld("emma", {
   dismissOverlay: () => ipcRenderer.send("emma:dismiss-overlay"),
   /** Raises the workspace, optionally on a settings page — how the island hands voice setup over. */
   openWorkspace: (settingsPage?: string) => ipcRenderer.send("emma:open-workspace", settingsPage),
+  /** The page has been laid out wider than its own window — ask for the resize that clears it. */
+  resyncWindow: () => ipcRenderer.send("emma:resync-window"),
   /** Which local servers dictation can reach right now, and whether the microphone is granted. */
   voiceStatus: (settings: unknown) => ipcRenderer.invoke("emma:voice-status", settings),
   transcribe: (value: { audio: ArrayBuffer; mimeType: string; settings: unknown }) => ipcRenderer.invoke("emma:transcribe", value),
@@ -88,7 +90,6 @@ contextBridge.exposeInMainWorld("emma", {
   cancelScreenAnnotation: () => ipcRenderer.invoke("emma:cancel-screen-annotation"),
   screenAnnotationStatus: () => ipcRenderer.invoke("emma:screen-annotation-status"),
   clearScreenAnnotation: (id: string) => ipcRenderer.invoke("emma:clear-screen-annotation", id),
-  contextParts: (threadId: string) => ipcRenderer.invoke("emma:context-parts", { threadId }),
   revealPath: (value: string) => ipcRenderer.invoke("emma:reveal-path", value),
   previewPath: (value: string) => ipcRenderer.invoke("emma:preview-path", value),
   listArtifacts: () => ipcRenderer.invoke("emma:list-artifacts"),
@@ -113,6 +114,15 @@ contextBridge.exposeInMainWorld("emma", {
     return () => ipcRenderer.removeListener("emma:plans-changed", wrapped);
   },
   listFolders: () => ipcRenderer.invoke("emma:list-folders"),
+  /** Every marketplace Emma tracks and every plugin installed out of one. */
+  pluginCatalog: () => ipcRenderer.invoke("emma:plugin-catalog"),
+  addMarketplace: (value: { source: string; ref: string; sparse: string }) => ipcRenderer.invoke("emma:add-marketplace", value),
+  removeMarketplace: (id: string) => ipcRenderer.invoke("emma:remove-marketplace", id),
+  refreshMarketplace: (id: string) => ipcRenderer.invoke("emma:refresh-marketplace", id),
+  installPlugin: (value: { marketplace: string; plugin: string }) => ipcRenderer.invoke("emma:install-plugin", value),
+  uninstallPlugin: (id: string) => ipcRenderer.invoke("emma:uninstall-plugin", id),
+  pluginDetail: (value: { marketplace: string; plugin: string }) => ipcRenderer.invoke("emma:plugin-detail", value),
+  trustPluginHooks: (value: { id: string; trusted: boolean }) => ipcRenderer.invoke("emma:trust-plugin-hooks", value),
   /** A folder the agent asked for mid-turn and the user picked in the native dialog. */
   onFolderAttached: (listener: (value: { threadId: string; folderId: string }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
@@ -122,9 +132,9 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:folder-attached", wrapped);
     return () => ipcRenderer.removeListener("emma:folder-attached", wrapped);
   },
-  /** First-launch walkthrough: which macOS grants Emma has, and where knowledge is written. */
   setupStatus: () => ipcRenderer.invoke("emma:setup-status"),
   openPrivacySettings: (permission: string) => ipcRenderer.invoke("emma:open-privacy-settings", permission),
+  demoQuickAsk: () => ipcRenderer.invoke("emma:demo-quick-ask"),
   setKnowledgeDir: (mode: "pick" | "default") => ipcRenderer.invoke("emma:set-knowledge-dir", mode),
   resetData: () => ipcRenderer.invoke("emma:reset-data"),
   pickFolder: () => ipcRenderer.invoke("emma:pick-folder"),
@@ -151,12 +161,6 @@ contextBridge.exposeInMainWorld("emma", {
   importedSkillStatus: () => ipcRenderer.invoke("emma:imported-skill-status"),
   clearImportedSkill: (id: string) => ipcRenderer.invoke("emma:clear-imported-skill", id),
   listImportedMcpServers: () => ipcRenderer.invoke("emma:list-imported-mcp-servers"),
-  reviewImportedMcpServer: (id: string) => ipcRenderer.invoke("emma:review-imported-mcp-server", id),
-  connectImportedMcpServer: (value: { serverId: string; token: string }) => ipcRenderer.invoke("emma:connect-imported-mcp-server", value),
-  searchMcpTools: (value: { query: string; limit?: number }) => ipcRenderer.invoke("emma:search-mcp-tools", value),
-  selectMcpTool: (name: string) => ipcRenderer.invoke("emma:select-mcp-tool", name),
-  callMcpTool: (argsJson: string) => ipcRenderer.invoke("emma:call-mcp-tool", argsJson),
-  closeImportedMcpServer: () => ipcRenderer.invoke("emma:close-imported-mcp-server"),
   stopComputerRun: () => ipcRenderer.send("emma:stop-computer-run"),
   onComputerRunProgress: (listener: (value: { step: number; action: string; actions: number }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object") listener(value as { step: number; action: string; actions: number }); };

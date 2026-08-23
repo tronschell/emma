@@ -33,6 +33,7 @@ const worker_runtime = @import("../core/agent/worker_runtime.zig");
 const background_runtime = @import("../core/background/background_runtime.zig");
 const terminal_client_runtime = @import("../core/terminal/client.zig");
 const subagent_tool_host = @import("../core/subagent/tool_host.zig");
+const subagent_domain = @import("../core/subagent/domain.zig");
 const subagent_authority = @import("../core/subagent/authority.zig");
 const types = @import("../core/shared/types.zig");
 const context_contract = @import("../core/workspace/context_contract.zig");
@@ -43,6 +44,7 @@ const elicitation = @import("../core/mcp/elicitation.zig");
 const tool_mcp_runtime = @import("../core/tooling/tool_mcp_runtime.zig");
 const permissions = @import("../core/permissions/permissions.zig");
 const context_experiments = @import("../core/agent/runtime/context_experiments.zig");
+const model_capabilities = @import("../core/config/model_capabilities.zig");
 
 const Allocator = std.mem.Allocator;
 const ErrorCode = jsonrpc.ErrorCode;
@@ -63,6 +65,7 @@ const AcpMethod = enum {
     session_set_config_option,
     session_set_mode,
     session_steer_child,
+    session_cancel_child,
     unknown,
 
     fn parse(method: []const u8) AcpMethod {
@@ -79,6 +82,7 @@ const AcpMethod = enum {
         if (std.mem.eql(u8, method, "session/set_config_option")) return .session_set_config_option;
         if (std.mem.eql(u8, method, "session/set_mode")) return .session_set_mode;
         if (std.mem.eql(u8, method, "session/steer_child")) return .session_steer_child;
+        if (std.mem.eql(u8, method, "session/cancel_child")) return .session_cancel_child;
         return .unknown;
     }
 
@@ -86,10 +90,8 @@ const AcpMethod = enum {
         return switch (self) {
             .initialize,
             .session_cancel,
-            // The whole point of steering is to reach a child while the turn that
-            // spawned it is still running, so waiting for the prompt to end would
-            // deliver every message to a subagent that no longer exists.
             .session_steer_child,
+            .session_cancel_child,
             .session_set_mode,
             .session_new,
             .session_load,
@@ -186,6 +188,9 @@ pub const ActiveSessionState = struct {
     /// Experimental per-step context hooks, off unless the client turns them on
     /// with the `context_experiments` config option.
     context_experiments: context_experiments.Settings = .{},
+    /// What `effort` above is allowed to be: the stops the client says this model
+    /// publishes, empty unless it sent them with the `reasoning_effort` option.
+    reasoning_efforts: model_capabilities.ReasoningEffortOptions = .{},
     mcp: ?*mcp_runtime.McpRuntime = null,
     cancel_flag: std.atomic.Value(bool),
     pending_prompt_id: ?jsonrpc.RequestId,
@@ -1038,6 +1043,7 @@ fn dispatch(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void 
     }
 
     if (method == .session_steer_child) return handleSteerChild(state, alloc, msg);
+    if (method == .session_cancel_child) return handleCancelChild(state, alloc, msg);
 
     if (method.waitsForActivePrompt() and state.active_prompt != null) {
         return state.writer.writeError(alloc, msg.id, .{
@@ -1075,6 +1081,7 @@ fn dispatch(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void 
         .initialize,
         .session_cancel,
         .session_steer_child,
+        .session_cancel_child,
         .session_remove,
         .unknown,
         => state.writer.writeError(alloc, msg.id, .{
@@ -1512,6 +1519,9 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
                     "Failed to persist session model",
             });
         };
+        // The efforts below belong to the model they were published for, and this is
+        // not that model any more. The client sends the new list with its next turn.
+        session.reasoning_efforts = .{};
     } else if (std.mem.eql(u8, config_id, "mode")) {
         if (state.active_session) |*session| {
             state.subagent_authority_mutex.lockUncancelable(io_mod.getIo());
@@ -1533,6 +1543,22 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
             .message = "No active session",
         });
         session.session_rt.context_window_tokens = window;
+    } else if (std.mem.eql(u8, config_id, "reasoning_effort")) {
+        // Same reason as `context_window`: the client has the model catalog and this
+        // harness does not reach one from behind Emma's gateway, so without the
+        // published list every effort fails `reasoningEffortSupported` and no
+        // request ever carries one.
+        const selection = parseReasoningEffort(value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid reasoning_effort",
+            });
+        const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No active session",
+        });
+        session.effort = selection.effort;
+        session.reasoning_efforts = selection.options;
     } else if (std.mem.eql(u8, config_id, "context_experiments")) {
         const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
             .code = ErrorCode.invalid_request,
@@ -1608,6 +1634,66 @@ test "context experiment options parse into the settings the loop reads" {
     try std.testing.expect(!unknown.enabled());
     try std.testing.expectError(error.InvalidValue, parseContextExperiments("reinject_steps"));
     try std.testing.expectError(error.InvalidCharacter, parseContextExperiments("reinject_steps=often"));
+}
+
+/// `high;none,low,medium,high` — the stop the client's picker is on, then every stop
+/// the model it belongs to publishes. One option rather than two for the same reason
+/// as the experiments above, and because neither half is any use alone: an effort no
+/// capability list names is dropped before a request can carry it. `auto`, or nothing
+/// before the semicolon, is the model's own default and sends no reasoning field.
+///
+/// No enum of effort names anywhere: the vocabulary is the model's, not this
+/// harness's, and the two disagree from one model to the next.
+fn parseReasoningEffort(value: []const u8) !struct {
+    effort: types.ReasoningEffort,
+    options: model_capabilities.ReasoningEffortOptions,
+} {
+    const split = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
+    const selected = std.mem.trim(u8, value[0..split], " ");
+    const effort: types.ReasoningEffort = if (selected.len == 0)
+        .auto
+    else
+        types.ReasoningEffort.parse(selected) orelse return error.InvalidValue;
+
+    var options: model_capabilities.ReasoningEffortOptions = .{};
+    var listed = std.mem.splitScalar(u8, if (split == value.len) "" else value[split + 1 ..], ',');
+    while (listed.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " ");
+        if (name.len == 0) continue;
+        const option = types.ReasoningEffort.parse(name) orelse return error.InvalidValue;
+        if (option.isDefault()) continue;
+        // Refused rather than truncated: a list this long is a client that has lost
+        // track of its catalog, and dropping its tail would drop the chosen stop.
+        if (options.len == options.values.len) return error.InvalidValue;
+        options.values[options.len] = option;
+        options.len += 1;
+    }
+    return .{ .effort = effort, .options = options };
+}
+
+test "the reasoning effort option carries the pick and the list it has to be in" {
+    const parsed = try parseReasoningEffort("high;none,low,medium,high");
+    try std.testing.expectEqualStrings("high", parsed.effort.label());
+    try std.testing.expectEqual(@as(usize, 4), parsed.options.len);
+    try std.testing.expectEqualStrings("none", parsed.options.values[0].label());
+    const capabilities = model_capabilities.Capabilities{ .reasoning_efforts = parsed.options };
+    try std.testing.expect(model_capabilities.reasoningEffortSupported(capabilities, parsed.effort));
+
+    // The default is the one value that must leave the request without the field.
+    try std.testing.expect((try parseReasoningEffort("auto;low,high")).effort.isDefault());
+    try std.testing.expect((try parseReasoningEffort(";low,high")).effort.isDefault());
+
+    // A model with no stops publishes none, and a stop outside its list stays dropped.
+    const silent = try parseReasoningEffort("auto;");
+    try std.testing.expectEqual(@as(usize, 0), silent.options.len);
+    const stale = try parseReasoningEffort("xhigh;low,medium,high");
+    try std.testing.expect(!model_capabilities.reasoningEffortSupported(
+        .{ .reasoning_efforts = stale.options },
+        stale.effort,
+    ));
+
+    try std.testing.expectError(error.InvalidValue, parseReasoningEffort("hi gh;low"));
+    try std.testing.expectError(error.InvalidValue, parseReasoningEffort("low;a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q"));
 }
 
 fn commitActiveSessionProvider(
@@ -1716,8 +1802,6 @@ fn handleSteerChild(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message
     const invocation_id = try std.fmt.allocPrint(alloc, "acp-steer:{s}:{d}", .{ child_id, state.steer_sequence });
     defer alloc.free(invocation_id);
     var result = host.sendMessage(alloc, .{
-        // The root, because this is the human at the other end of the connection
-        // speaking, not one subagent messaging another.
         .caller_id = host.root_id,
         .invocation_id = invocation_id,
         .child_id = child_id,
@@ -1730,8 +1814,59 @@ fn handleSteerChild(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message
     defer result.deinit(alloc);
     return switch (result) {
         .receipt, .inspection => state.writer.writeResponse(alloc, msg.id, "null"),
-        // Named rather than flattened to "failed": `child_unavailable` on a child
-        // that has already finished is the common one, and reads as an answer.
+        .failure => |failure| state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = @tagName(failure.code),
+        }),
+    };
+}
+
+fn handleCancelChild(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void {
+    const invalid_params = jsonrpc.RpcError{ .code = ErrorCode.invalid_params, .message = "Expected childId" };
+    const params = msg.params_raw orelse return state.writer.writeError(alloc, msg.id, invalid_params);
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, params, .{}) catch
+        return state.writer.writeError(alloc, msg.id, invalid_params);
+    defer parsed.deinit();
+    if (parsed.value != .object) return state.writer.writeError(alloc, msg.id, invalid_params);
+    const child_id = switch (parsed.value.object.get("childId") orelse .null) {
+        .string => |value| value,
+        else => return state.writer.writeError(alloc, msg.id, invalid_params),
+    };
+
+    const host = state.subagent_host orelse return state.writer.writeError(alloc, msg.id, .{
+        .code = ErrorCode.invalid_request,
+        .message = "Subagents are not available on this connection",
+    });
+    const session = if (state.active_session) |*active| active else
+        return state.writer.writeError(alloc, msg.id, prompt_handler.no_active_session_rpc_error);
+
+    state.subagent_authority_mutex.lockUncancelable(io_mod.getIo());
+    defer state.subagent_authority_mutex.unlock(io_mod.getIo());
+    state.steer_sequence += 1;
+    const invocation_id = try std.fmt.allocPrint(alloc, "acp-cancel:{s}:{d}", .{ child_id, state.steer_sequence });
+    defer alloc.free(invocation_id);
+    var command = subagent_domain.validateCommand(alloc, .{ .lifecycle = .{
+        .id = child_id,
+        .action = .cancel,
+    } }) catch return state.writer.writeError(alloc, msg.id, invalid_params);
+    defer command.deinit(alloc);
+    var result = host.executeHumanCommand(alloc, &command, .{
+        .invocation_id = invocation_id,
+        .defaults = .{
+            .provider = session.provider,
+            .model = session.model,
+            .effort = session.effort,
+            .fast_mode = session.fast_mode,
+            .conversation_language = session.session_rt.languageSnapshot(),
+        },
+        .timestamp_ms = io_mod.milliTimestamp(),
+    }) catch return state.writer.writeError(alloc, msg.id, .{
+        .code = ErrorCode.internal_error,
+        .message = "The subagent store refused the cancellation",
+    });
+    defer result.deinit(alloc);
+    return switch (result) {
+        .receipt, .inspection => state.writer.writeResponse(alloc, msg.id, "null"),
         .failure => |failure| state.writer.writeError(alloc, msg.id, .{
             .code = ErrorCode.invalid_request,
             .message = @tagName(failure.code),
@@ -1866,10 +2001,10 @@ test "ACP prompt gate policy keeps lifecycle interruption responsive" {
     try std.testing.expect(AcpMethod.session_compact.waitsForActivePrompt());
     try std.testing.expect(AcpMethod.session_set_config_option.waitsForActivePrompt());
     try std.testing.expect(!AcpMethod.session_set_mode.waitsForActivePrompt());
-    // A subagent only exists while the prompt that spawned it is running, so
-    // steering has to be admitted during one or it can never arrive at all.
     try std.testing.expectEqual(AcpMethod.session_steer_child, AcpMethod.parse("session/steer_child"));
     try std.testing.expect(!AcpMethod.session_steer_child.waitsForActivePrompt());
+    try std.testing.expectEqual(AcpMethod.session_cancel_child, AcpMethod.parse("session/cancel_child"));
+    try std.testing.expect(!AcpMethod.session_cancel_child.waitsForActivePrompt());
     try std.testing.expect(AcpMethod.unknown.waitsForActivePrompt());
 }
 

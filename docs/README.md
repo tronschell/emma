@@ -15,7 +15,8 @@ is the tour; this is the reference.
 
 | | |
 |---|---|
-| [Permissions](permissions.md) | The five modes, the full gate matrix, the verifier, and what survives every mode |
+| [Context bar](context-bar.md) | The thread inspector — every component, pages, and rearranging the column |
+| [Permissions](permissions.md) | The four modes, the full gate matrix, the verifier, and what survives every mode |
 | [Tools](tools.md) | Every tool a turn can call: input, output, gate, and the file behind it |
 | [Models](models.md) | The local fallback, OpenAI-compatible endpoints, credentials, the OpenRouter catalog |
 | [Privacy](privacy.md) | What leaves this Mac and what doesn't, subsystem by subsystem |
@@ -25,13 +26,13 @@ is the tour; this is the reference.
 | [Computer use](computer-use.md) | Emma driving the Mac, and every safety rail as implemented |
 | [Jobs](jobs.md) | Scheduled workflows: triggers, node graphs, validation, execution |
 | [Autoresearch](autoresearch.md) | The experiment loop, the immutable metric, budgets |
-| [CLI](cli.md) | The `emma` terminal command, and driving the user's other CLIs |
+| [CLI](cli.md) | Driving the user's other coding CLIs, and Settings → Connections |
 
 ## Building on Emma
 
 | | |
 |---|---|
-| [Plugins](plugins.md) | Skills, MCP servers, tools Emma writes for herself, CSS UI plugins |
+| [Plugins](plugins.md) | ChatGPT and Codex plugins, marketplaces, skills, MCP servers, tools Emma writes for herself, CSS UI plugins |
 | [Harness](harness.md) | `emma-cli`, the fx fork, ACP, and what it reaches today |
 | [Design system](design-system.md) | Tokens, density, and one visual language for every surface |
 
@@ -50,6 +51,9 @@ short version: **no comments, anywhere**. If something needs explaining, it goes
 in this folder.
 
 ## Reading paths
+
+**"I want to make it mine."**
+[Context bar](context-bar.md) → [Design system](design-system.md) → [Plugins](plugins.md)
 
 **"I just want to run it."**
 [Getting started](getting-started.md) → [Models](models.md) → [Troubleshooting](troubleshooting.md)

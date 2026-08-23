@@ -1,55 +1,70 @@
-/* What the first launch asks the Mac for, and why. One table, shared by the walkthrough
-   that shows it and by main's deep link, so the reason the user reads and the pane that
-   opens can never drift. macOS has no API that grants any of these — only the user can,
-   in System Settings — so every row is a sentence plus the pane it lives in. */
-
 export const SETUP_PERMISSIONS = [
   {
     id: "accessibility",
     title: "Accessibility",
-    what: "Watch for the Quick Ask gesture, and move the pointer when you ask Emma to.",
+    what: "Opens Quick Ask on ⌥⌥, and moves the pointer when you ask.",
     why: "Double-tapping the left Option key is a key press in whatever app is in front, so macOS only reports it to an app you have trusted. The same grant is what lets Emma click and type for you — and that still asks before every run.",
-    pane: "Privacy_Accessibility",
-    note: "Emma has to be relaunched after you grant this before the gesture starts working.",
+    pane: "com.apple.preference.security?Privacy_Accessibility",
+    relaunch: true,
   },
   {
     id: "screen",
     title: "Screen Recording",
-    what: "Take the picture of your screen you attach to a question.",
+    what: "Attaches a picture of your screen to a question.",
     why: "Nothing is captured until you ask for it — the ▣ orb, the ✎ pen, or a saved page. Each capture is compressed on this Mac and travels only with the turn you send it with.",
-    pane: "Privacy_ScreenCapture",
-    note: "",
+    pane: "com.apple.preference.security?Privacy_ScreenCapture",
+    relaunch: true,
+  },
+  {
+    id: "microphone",
+    title: "Microphone",
+    what: "Dictates into the composer instead of typing.",
+    why: "Hold the ● orb, or the key you bind to voice, and Emma writes down what you say. The audio is transcribed and dropped; only the words reach a thread.",
+    pane: "com.apple.preference.security?Privacy_Microphone",
+    relaunch: false,
+  },
+  {
+    id: "speech",
+    title: "Speech Recognition",
+    what: "Transcribes on this Mac with the built-in recognizer.",
+    why: "Only the “macOS · built in” dictation engine asks for this, and only from a packaged Emma — under a development build macOS refuses the helper before it can ask. A local Whisper server needs neither.",
+    pane: "com.apple.preference.security?Privacy_SpeechRecognition",
+    relaunch: false,
+  },
+  {
+    id: "automation",
+    title: "Automation",
+    what: "Saves the page your browser has open, without a screenshot.",
+    why: "Emma asks Safari or Chrome for the front tab's address and title, then fetches the page itself. macOS raises this the first time, once per browser, and lists Emma under the browser it is asking about.",
+    pane: "com.apple.preference.security?Privacy_Automation",
+    relaunch: false,
+  },
+  {
+    id: "notifications",
+    title: "Notifications",
+    what: "Tells you when a turn finishes, or needs an answer.",
+    why: "Emma posts one banner when a run lands or stops on a permission ask, and bounces the Dock icon when macOS will not. Nothing else is ever announced.",
+    pane: "com.apple.preference.notifications",
+    relaunch: false,
   },
   {
     id: "files",
     title: "Files & Folders",
-    what: "Keep your knowledge base as plain Markdown you can open in any app.",
+    what: "Keeps your knowledge base as Markdown you can open anywhere.",
     why: "Emma writes it into your Documents folder, so Finder, Spotlight, Obsidian, and your backups all see it. macOS asks the first time Emma writes there.",
-    pane: "Privacy_FilesAndFolders",
-    note: "",
+    pane: "com.apple.preference.security?Privacy_FilesAndFolders",
+    relaunch: false,
   },
 ] as const;
 
 export type SetupPermission = (typeof SETUP_PERMISSIONS)[number]["id"];
 
-/* Grants Emma links to but does not ask for at first launch. The microphone belongs
-   to dictation, which most people never switch on, so the walkthrough stays at three
-   cards and Settings → Voice is what opens this pane. Speech Recognition is the same
-   story one step further in: it is what the macOS recognizer is granted under, and
-   only the "macOS · built in" engine ever asks for it. */
-const EXTRA_PANES: Record<string, string> = { microphone: "Privacy_Microphone", speech: "Privacy_SpeechRecognition" };
-export type LinkedPermission = SetupPermission | "microphone" | "speech";
+export type LinkedPermission = SetupPermission;
 
-/** Status of the three grants, plus where the knowledge base is going to live. */
-export type SetupStatus = Record<SetupPermission, boolean> & { knowledgeDir: string };
+export type SetupStatus = Record<SetupPermission, boolean | null> & { knowledgeDir: string };
 
-/**
- * The System Settings pane for one grant. The pane name comes from the table above
- * rather than from the caller, so a renderer can never talk main into opening an
- * arbitrary `x-apple.systempreferences:` URL.
- */
 export function privacySettingsUrl(id: unknown): string {
-  const pane = SETUP_PERMISSIONS.find((item) => item.id === id)?.pane ?? (typeof id === "string" ? EXTRA_PANES[id] : undefined);
+  const pane = SETUP_PERMISSIONS.find((item) => item.id === id)?.pane;
   if (!pane) throw new Error("That is not a permission Emma asks for.");
-  return `x-apple.systempreferences:com.apple.preference.security?${pane}`;
+  return `x-apple.systempreferences:${pane}`;
 }

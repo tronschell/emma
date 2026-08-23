@@ -77,12 +77,12 @@ test("every built-in tool is a / command, and Settings can switch one out of the
   const all = toolCommands();
   assert.ok(all.length > 20, "the whole catalog lists");
   assert.ok(all.every((item) => item.kind === "tool" && !item.pick), "tools attach nothing");
-  const ripgrep = all.find((item) => item.name === "ripgrep");
-  assert.equal(KIND_LABELS[ripgrep!.kind], "Tool");
+  const saved = all.find((item) => item.name === "save_page");
+  assert.equal(KIND_LABELS[saved!.kind], "Tool");
   // A tool name carries an underscore, which the "/" grammar has to accept.
-  assert.deepEqual(matchCommands(all, "read_f").map((item) => item.name), ["read_file"]);
-  assert.deepEqual(slashQuery("use /read_file", 14), { start: 4, query: "read_file", sigil: "/" });
-  assert.equal(toolCommands(["bash"]).some((item) => item.name === "bash"), false);
+  assert.deepEqual(matchCommands(all, "save_p").map((item) => item.name), ["save_page"]);
+  assert.deepEqual(slashQuery("use /save_page", 14), { start: 4, query: "save_page", sigil: "/" });
+  assert.equal(toolCommands(["save_page"]).some((item) => item.name === "save_page"), false);
 });
 
 test("@ lists what Emma made and saved before the files on disk", () => {

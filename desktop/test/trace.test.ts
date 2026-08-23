@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { axisTicks, clampTrace, decodeSpans, encodeSpans, formatDuration, layoutSpans, renderTrace, summarizeSpans, tokenAxis, type TraceSpan } from "../shared/trace";
+import { axisTicks, clampTrace, countCalls, decodeSpans, encodeSpans, formatDuration, layoutSpans, renderTrace, summarizeSpans, tokenAxis, type TraceSpan } from "../shared/trace";
 
 const span = (id: string, startedAt: number, endedAt: number | undefined, extra: Partial<TraceSpan> = {}): TraceSpan =>
   ({ id, name: id, kind: "read", startedAt, endedAt, status: "ok", ...extra });
@@ -131,6 +131,12 @@ test("the lifecycle summary counts work, not the frame around it", () => {
   const open = summarizeSpans([span("call:c", 1000, undefined)], 4000)!;
   assert.deepEqual(open.slowest, { name: "call:c", ms: 3000 });
   assert.equal(summarizeSpans([], 0), undefined);
+
+  // The Auto verifier's review is an answer to a permission ask, not a call, and
+  // the running count on the loop does not count one either.
+  const reviewed = [...turn(), span("call:verify:1", 1600, 1900, { name: "auto agent approved · call a", kind: "verifier" })];
+  assert.equal(summarizeSpans(reviewed, 99_999)!.toolCalls, 2);
+  assert.equal(countCalls(reviewed), 2);
 });
 
 test("the axis ticks on round numbers and stops short of the end", () => {

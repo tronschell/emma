@@ -321,10 +321,6 @@ class Runner {
     const startedAt = Date.now();
     const index = job.iterations.length + 1;
     const before = (await deps!.run(job.projectDir, "git rev-parse HEAD")).trim();
-    // The proposer model is Emma's own selection, so a running job is also what the
-    // app is pointed at. ponytail: per-turn models need a `sendMessage` parameter the
-    // host does not have; add one and this line goes away.
-    await deps!.request("selectOpenRouterModel", { modelId: job.proposerModel });
     const answer = lastAssistantMessage(await deps!.turn({
       threadId: this.threadId,
       // The brief is written in the composer's grammar but nobody is at the composer,
@@ -392,9 +388,7 @@ class Runner {
         "Output:",
         output.slice(0, 32 * 1024),
       ].join("\n"),
-      // No folder is attached to this thread and the mode changes nothing, so the
-      // judge has the output in front of it and nothing else.
-      mode: "plan",
+      mode: "ask",
       title: `${job.title} · judge`,
       model: job.proposerModel,
     })) ?? "";

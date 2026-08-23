@@ -160,6 +160,19 @@ export class CatalogCache {
     return this.models.find((model) => model.id === id)?.contextLength;
   }
 
+  /**
+   * The thinking efforts a model publishes, weakest first.
+   *
+   * The same reason as the window above: the harness's own capability table knows a
+   * handful of prefixes and nothing about this model, so an effort it was not told
+   * about is dropped rather than sent. This is the list it is missing, and the one a
+   * stop off the slider is checked against before it ever reaches a request.
+   */
+  reasoningEfforts(id: string | undefined): string[] {
+    if (!id) return [];
+    return this.models.find((model) => model.id === id)?.reasoningEfforts ?? [];
+  }
+
   /** Every model this cache has seen, for callers checking that an ID is still listed. */
   ids(): string[] {
     return this.models.map((model) => model.id);

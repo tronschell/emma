@@ -17,8 +17,8 @@ skill and it will survive.
 Everything here needs the Emma checkout connected as this thread's folder. If
 nothing is connected, ask the user to connect it — the folder button in the
 sidebar opens the picker — and say which folder you need and why. Confirm you
-have the right one: `AGENTS.md`, `desktop/`, `crates/`, `agent/` and `harness/`
-sit at its root.
+have the right one: `AGENTS.md`, `desktop/`, `crates/` and `harness/` sit at its
+root.
 
 Work on a branch. `git status` first, and leave the tree as you found it apart
 from your change.
@@ -46,7 +46,7 @@ Take the cheapest thing that actually works. Most requests do not need a rebuild
 4. **A scheduled job or a knowledge page** — existing product surfaces, driven
    through the UI or the IPC bridge. No build at all.
 5. **A real source change** — new UI, a new tool, new main-process behaviour,
-   host or sidecar work. This is the expensive one: it needs a build, a second
+   host or harness work. This is the expensive one: it needs a build, a second
    dev instance, and a verified interaction. The rest of this skill is about it.
 
 ## Standards
@@ -56,8 +56,8 @@ Take the cheapest thing that actually works. Most requests do not need a rebuild
 - **Respect the layer boundaries.** `desktop/main` owns windows, shortcuts, IPC
   and every privileged runtime; `desktop/src` is a sandboxed renderer with no
   Node access; `crates/host` owns the NDJSON bridge; `crates/core` owns durable
-  Markdown records; `agent/` and `harness/` own the model loops. Filesystem,
-  process, network and model work never moves into the renderer.
+  Markdown records; `harness/` owns the agent loop. Filesystem, process, network
+  and model work never moves into the renderer.
 - **Validate at the trust boundary.** Every IPC parameter, NDJSON line, imported
   manifest and model-supplied argument is parsed and bounded where it arrives —
   see `desktop/main/ipc.ts` and `desktop/main/tools.ts` for the house style. Add
@@ -74,16 +74,15 @@ Take the cheapest thing that actually works. Most requests do not need a rebuild
 
 ## Rebuilding
 
-Only rebuild the layer you touched. Run these with `bash`; they all exit on
-their own.
+Only rebuild the layer you touched. Run these with `terminal` (`action: exec`);
+they all exit on their own.
 
 | You changed | Build with | Then |
 | --- | --- | --- |
 | `desktop/src` (renderer) | `npm --prefix desktop run build:renderer` | reload the window |
 | `desktop/main`, `desktop/shared` | `npm --prefix desktop run build:main` | **relaunch Electron** |
 | `crates/` | `npm --prefix desktop run build:host` | relaunch |
-| `agent/` | `zig build --build-file agent/build.zig` | relaunch |
-| `harness/` | `npm --prefix desktop run build:harness` | relaunch, with `EMMA_HARNESS=1` |
+| `harness/` | `npm --prefix desktop run build:harness` | relaunch |
 | `desktop/native/*.m` | `npm --prefix desktop run build:native` | relaunch |
 
 A cold checkout needs all of it once:
@@ -107,7 +106,7 @@ cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings
-zig build test -Doptimize=ReleaseSafe --build-file agent/build.zig
+(cd harness && zig build test)
 ```
 
 `npm run check` is test + typecheck + lint + renderer build. Never run two of
@@ -130,11 +129,11 @@ cd desktop && EMMA_DATA_DIR=/tmp/emma-dev-data ./node_modules/.bin/electron . \
   --user-data-dir=/tmp/emma-dev-profile --remote-debugging-port=9223
 ```
 
-Run it with `bash` and `background: true` — it never exits on its own, so a
-foreground call blocks the whole turn until the deadline kills it. Keep the task
-id. Read its stdout with the `background` tool when the window misbehaves, and
-`stop` it the moment you are finished; a forgotten instance keeps running and
-keeps the port.
+Run it with `terminal` and `action: start` — it never exits on its own, so an
+`exec` blocks the whole turn until the deadline kills it. Keep the session id.
+Read its stdout with `terminal` `action: read` when the window misbehaves, and
+`action: close` the moment you are finished; a forgotten instance keeps running
+and keeps the port.
 
 `npm run dev` also starts Vite for hot renderer reloads, but it launches on the
 default profile and will lose the lock race. Prefer the command above.

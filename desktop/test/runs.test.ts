@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, dropQueued, groupBlocks, mergeStep, pairBlocks, sendTurn, takeDraft, wire, wrote, type Block } from "../src/runs";
+import { appendText, dropQueued, groupBlocks, mergeStep, pairBlocks, sendTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
 import type { Message } from "../src/types";
@@ -89,6 +89,27 @@ test("a turn is blocks in arrival order, not one buffer with the calls under it"
 test("reasoning keeps its own block instead of merging into the answer", () => {
   const blocks = appendText(appendText([], "thinking", "hm"), "text", "done");
   assert.deepEqual(blocks.map((block) => block.kind), ["thinking", "text"]);
+});
+
+test("a turn's reasoning is one train of thought, and the calls either side of it are one list", () => {
+  // Both shapes at once: the reasoning channel's own blocks, and a provider that
+  // inlined its scratchpad in the text.
+  const blocks: Block[] = [
+    { kind: "thinking", text: "first " },
+    { kind: "step", step: step("a", "completed") },
+    { kind: "thinking", text: " second" },
+    { kind: "step", step: step("b", "completed") },
+    { kind: "text", text: "<think>third</think>the answer" },
+  ];
+  assert.equal(thinkingOf(blocks), "first\n\nsecond\n\nthird");
+  // The scratchpad is gone, the answer keeps only its answer, and the two calls
+  // it used to sit between are now adjacent — so they fold into a single list.
+  assert.deepEqual(groupBlocks(withoutThinking(blocks), 0), [
+    { kind: "steps", steps: [step("a", "completed"), step("b", "completed")], keep: 0 },
+    { kind: "text", text: "the answer" },
+  ]);
+  // A turn that only thought leaves nothing to draw, not an empty paragraph.
+  assert.deepEqual(withoutThinking([{ kind: "text", text: "<think>all of it</think>" }]), []);
 });
 
 const liveAgent = (threadId: string): LiveAgent =>

@@ -30,7 +30,7 @@ The record is [`crates/core/src/thread.rs`](../crates/core/src/thread.rs):
 `kind` and `parent_thread_id` together are what tell the two nested shapes apart.
 Both a sub-thread and a subagent carry a parent. `Main` is a thread the user
 talks to — a root thread, or a sub-thread another main thread started and owns.
-`Subagent` is the transcript of one `task` call.
+`Subagent` is the transcript of one harness child.
 
 A new thread defaults its destination base to `default` and its sources to
 `[default]`. `select_knowledge_base` and `select_source_knowledge_bases` both
@@ -120,8 +120,8 @@ one bad thread does not take the library down with it.
 
 [`desktop/src/threads.ts`](../desktop/src/threads.ts) is the presentation side:
 
-- `threadLabel` falls back to the first user message, cut at 48 characters, when
-  a thread has no title of its own.
+- `threadLabel` falls back to the first user message when a thread has no title
+  of its own, cut to 48 characters with the last one an ellipsis.
 - `nested` orders a tree parent-first, ranking each branch by the newest activity
   anywhere under it.
 - `since` reads an age as `<1m`, `12m`, `3h`, `5d`.
@@ -154,17 +154,22 @@ Every input surface funnels through a single place in Electron main. In
 ```ts
 const result = request.method === "sendMessage"
   ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: { ...await skillParams(content), ...extra } })
-  : await host!.request(request);
+  : await answerRequest(request.method, request.params);
 ```
 
-The thread composer, Quick Ask, a quick action and a page chat all send
-`sendMessage`, so all four arrive here. The other three entry points call
-`driveTurn` directly:
+`answerRequest` is the other door: most methods it forwards to the host
+untouched, but it answers the model picker itself against Electron's own
+OpenRouter catalog, and it answers the knowledge-page methods as a provider call
+between two store calls — see [knowledge.md](knowledge.md).
+
+The thread composer, Quick Ask, a quick action, the one-line send on a thread
+card and the Agent page's hand-over all send `sendMessage`, so all of them
+arrive here. The other entry points call `driveTurn` directly:
 
 | Surface | Where |
 |---|---|
-| Composer, Quick Ask, quick action, page chat | `emma:request` → `sendMessage` |
-| `task` and `threads spawn` | `spawnTurn` in the `AgentRuntime` deps |
+| Composer, Quick Ask, quick action, thread card, Agent page hand-over | `emma:request` → `sendMessage` |
+| `threads spawn` and `threads message` | `spawnTurn` in the `AgentRuntime` deps |
 | Autoresearch iteration | `configureResearch({ turn: (request) => driveTurn(request) })` |
 | Due scheduled job | `runScheduledWorkflow` |
 
@@ -205,37 +210,47 @@ started, so a run begun in Quick Ask keeps rendering when the workspace opens.
 **A subagent is a worker that dissolves once it answers. A sub-thread is a
 conversation that stays.**
 
-They are different tools with different lifetimes, and the distinction is the one
-thing most worth getting right about Emma's concurrency.
+They are different tools with different lifetimes.
 
-| | `task` — subagent | `threads spawn` — sub-thread |
+| | `subagent` — subagent | `threads spawn` — sub-thread |
 |---|---|---|
 | Thread `kind` | `subagent` | `main` |
-| Awaited by the caller | Yes — the answer is the tool result | No — it runs beside the turn |
+| Awaited by the caller | Only if it asks: `create` returns at once, `inspect.wait` blocks | No — it runs beside the turn |
 | Owner | The calling thread | `parentThreadId ?? threadId` |
 | In the sidebar | No; it appears in the live agent rail | Yes, as its own row |
 | In the transcript | A step | A card |
 | Where the user reads it | Its own tab beside the parent thread | Its own thread |
 | Steerable | Yes, from its tab | Yes, from its card or its thread |
 | Ends when | It answers | Never; runs inside it end, it does not |
-| Ceiling | `MAX_LIVE_SUBAGENTS` = 8, `MAX_AGENT_DEPTH` = 2 | `MAX_LIVE_THREADS` = 8, top-level runs only |
+| Ceiling | The harness's own; `plan run` hands out at most `MAX_LIVE_SUBAGENTS` = 8 briefs a wave | `MAX_LIVE_THREADS` = 8, top-level runs only |
 
 The tool descriptions in
 [`harness/src/builtins/emma/threads.zig`](../harness/src/builtins/emma/threads.zig)
-draw the line for the model: *"Use task instead when you need an answer inside
-this turn: a subagent is a worker that dissolves once it answers, a thread is a
-conversation that stays."*
+draw the line for the model: *"Spawn a subagent instead when you need an answer
+inside this turn: a subagent is a worker that dissolves once it answers, a thread
+is a conversation that stays."*
 
-### `task`
+### `subagent`
 
-`AgentRuntime.delegate(parent, title, prompt)` in
-[`agent-loop.ts`](../desktop/main/agent-loop.ts) increments depth, refuses past
-`MAX_AGENT_DEPTH` or `MAX_LIVE_SUBAGENTS`, creates a thread with
-`kind: "subagent"`, optionally pins the subagent model route, spawns the turn and
-returns that turn's last assistant message as the tool result. The subagent
-inherits the parent's permission mode, so its own writes and commands hit the
-gate table again rather than escaping through the spawn. It also inherits the
-parent's trial arm — the whole tree is one sample.
+The harness owns delegation. `subagent` is one of its own tools — create, inspect,
+message, relate, configure, control — and Emma never spawns a turn for it. A child
+runs inside the harness process, so it does not queue behind the parent's turn the
+way a second `session/prompt` would.
+
+Emma sees a child because its updates ride the parent's ACP stream tagged
+`_meta.fx.child`. `Harness.handleUpdate` in
+[`harness.ts`](../desktop/main/harness.ts) fans them out: first sight of a tag
+calls `onChildStart`, which creates a thread with `kind: "subagent"` and adopts a
+run for the rail; `child.ended` calls `onChildEnd`, which records the child's turn
+against that thread. Text, thoughts, tool calls and usage all arrive through the
+same callbacks a root turn uses, against the child's thread id.
+
+The child inherits the parent's permission mode and cannot exceed it, so its own
+writes and commands hit the gate table again rather than escaping through the
+spawn. It reaches Emma's own tools too: `runSubagentChild` in
+[`prompt.zig`](../harness/src/acp/prompt.zig) gives the child's tool context the
+same `_emma/callTool` responder the parent gets, which is what lets a step's
+subagent tick its own tasks off with `plan update`.
 
 The subagent's transcript is a real thread, so its tab renders the same transcript
 any thread gets, plus the numbers the parent's header cannot show:
@@ -277,8 +292,8 @@ can be read — steered into the agent working there if one is, started as a tur
 of its own if the thread is quiet. A message that arrives from another thread is
 prefixed `[thread {id} messaged]`.
 
-The inspector draws both, deliberately as two rails:
-`SubagentRail` ("Nothing delegated yet — Emma spawns one per `task` call") and
+The inspector draws both, as two separate rails:
+`SubagentRail` ("Nothing delegated yet — a subagent gets a row here the moment it starts") and
 `SubthreadRail` ("Nothing branched off yet — Emma opens one per `threads spawn`")
 in [`desktop/src/context-bar.tsx`](../desktop/src/context-bar.tsx). The subagent
 rail is squares into tabs; the sub-thread rail is rows that stay after their work
@@ -309,15 +324,15 @@ to. Those four criteria are the bundled skill's, in
 | `mermaid` | Diagram | `.mmd` | Rendered by mermaid, `securityLevel: "strict"` |
 | `react` | React component | `.jsx` | Highlighted source, never executed |
 
-Emma renders no model-written React component. `code` and `react` are shown as
-source. See [`desktop/src/artifacts.tsx`](../desktop/src/artifacts.tsx) and
+No model-written React ever runs: `code` and `react` are shown as source. See
+[`desktop/src/artifacts.tsx`](../desktop/src/artifacts.tsx) and
 [`desktop/src/mermaid-artifact.tsx`](../desktop/src/mermaid-artifact.tsx).
 
 ### Sandboxing
 
 Artifacts are served over a custom scheme, `emma-artifact://<id>`, registered in
 [`main.ts`](../desktop/main/main.ts). Every frame is `sandbox="allow-scripts"` and
-nothing else — never `allow-same-origin`, `allow-forms` or `allow-popups. The
+nothing else — never `allow-same-origin`, `allow-forms` or `allow-popups`. The
 origin is opaque, which is why the `emma.sql` postMessage bridge replies to `"*"`
 and answers only for the artifact id that asked.
 
@@ -328,8 +343,8 @@ The Content-Security-Policy the protocol handler sends:
 - `svg`: rendered in a `sandbox=""` srcDoc, so it runs nothing at all
 - `code`, `react`, `markdown`, `mermaid`: never framed
 
-In practice that means an `html` artifact has no CDN, no webfonts, no network
-images, no `fetch`, no storage and no form submission. `/module.js` is served only
+So an `html` artifact has no CDN, no webfonts, no network images, no `fetch`, no
+storage and no form submission. `/module.js` is served only
 for a `code` artifact that has been given a surface.
 
 ### Sizes and storage
@@ -437,24 +452,20 @@ as tokens. Every figure is an estimate. The rows are:
 
 | Kind | Row |
 |---|---|
-| `system` | System prompt |
-| `tools` | Tool schemas, with the count |
-| `knowledge` | Retrieval & retries — the residual |
+| `knowledge` | Prompt, tools & retrieval — the residual |
 | `history` | Transcript, plus the turn in flight as its own row |
 | `attachment` | An attached file |
 | `skill` | An attached skill |
-| `mcp` | An invoked MCP call — hollow, and outside the grid |
 
-The bar is 48 cells. "Retrieval & retries" is the residual: whatever the
-provider's own input count reports that no measured segment accounts for —
-retrieved knowledge, injected skills, resent steps. An MCP row is drawn hollow
-with no share, because Emma shows its result in the panel and it never enters the
-request. Free space is only drawn when the model states a window; on the fallback
-and local routes the shares are of what the thread has sent.
+The bar is 48 cells. "Prompt, tools & retrieval" is the residual: whatever the
+provider's own input count reports that no measured segment accounts for — the
+harness's system prompt, the tool schemas it advertised, retrieved knowledge,
+injected skills, resent steps. Free space is only drawn when the model states a
+window; on the fallback and local routes the shares are of what the thread has
+sent.
 
-`window.emma.contextParts(threadId)` is what main answers with the exact size of
-the standing instructions and the tool schemas, rather than the panel folding them
-into one lump.
+Every row is measured off a turn that happened, never off a projection of one
+that might. A thread with nothing in it reads zero, which is what it sent.
 
 ## Inspector
 
@@ -544,7 +555,7 @@ user's call, not a button's.
 
 **How much a turn may do without asking.**
 
-Five rungs — `plan`, `ask`, `acceptEdits`, `auto`, `full` — set per thread on the
+Four rungs — `ask`, `acceptEdits`, `auto`, `full` — set per thread on the
 picker beside ＋, and carried by a scheduled job as the mode it was saved with.
 One table in
 [`desktop/shared/permissions.ts`](../desktop/shared/permissions.ts) decides what
@@ -560,9 +571,10 @@ ships her own in [`desktop/skills/`](../desktop/skills), and can import
 references to Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf and Devin
 locations without copying their config. See [plugins.md](plugins.md).
 
-An **MCP server** is an external process Emma connects to and calls tools on.
-Servers are reviewed before they are connected and their tools are discovered
-lazily. See [plugins.md](plugins.md).
+An **MCP server** is an external process the harness starts and calls tools on.
+Emma speaks no MCP herself: she parses the configured servers and hands them to
+the harness at `session/new`, which holds their tools behind `mcp_search_tools`
+until the model asks for one. See [plugins.md](plugins.md).
 
 A **tool** is one callable the agent may reach for. The built-ins are listed in
 `AGENT_TOOLS` and described in `TOOL_CATALOG`, both in
@@ -589,8 +601,9 @@ app. See [notch.md](notch.md).
 
 ## Scheduled job, autoresearch job
 
-A **scheduled job** is a workflow: one validated trigger and a graph of agent, set
-and branch nodes. Triggers are five-field UTC cron, `manual`, `after <job-id>`, or
+A **scheduled job** is a workflow: one validated trigger and a graph of three node
+kinds — `agent` runs a prompt, `set` stores a value, `if` branches on a
+condition. Triggers are five-field UTC cron, `manual`, `after <job-id>`, or
 an app event; only cron has a next run. Jobs run only while Emma is open, open
 normal threads under the permission mode they were saved with, and never save
 knowledge or write a skill silently. A due job is claimed exactly once, so a tick
@@ -607,7 +620,7 @@ of the job. See [autoresearch.md](autoresearch.md).
 
 - [getting-started.md](getting-started.md) — install, run, first turn
 - [architecture.md](architecture.md) — process boundaries and the product contract
-- [permissions.md](permissions.md) — the five modes and the full gate matrix
+- [permissions.md](permissions.md) — the four modes and the full gate matrix
 - [tools.md](tools.md) — every tool a turn can call
 - [knowledge.md](knowledge.md) — bases, save & analyze, the Markdown mirror
 - [models.md](models.md) — providers, credentials, the OpenRouter catalog

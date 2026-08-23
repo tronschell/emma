@@ -17,7 +17,7 @@ const threads_description =
     "read — one thread's most recent messages, by ID. This is how you pick up what another conversation already worked out.\n" ++
     "message — send text into another thread: it steers the agent working there if one is, and starts a turn if none is.\n" ++
     "rename — rename the thread this turn is in, so its sidebar row says what it is about. Do this once on your own when a thread still called \"New thread\" has settled into a subject.\n" ++
-    "Use task instead when you need an answer inside this turn: a subagent is a worker that dissolves once it answers, a thread is a conversation that stays.";
+    "Spawn a subagent instead when you need an answer inside this turn: a subagent is a worker that dissolves once it answers, a thread is a conversation that stays.";
 
 pub const threads = ToolSpec{
     .name = "threads",
@@ -111,53 +111,14 @@ pub const context = ToolSpec{
     .irreversible_fn = bridge.isReversible,
 };
 
-const task_description =
-    "Hand a self-contained piece of work to a subagent with its own transcript and the same permissions. Use it for work that can run on its own; you get its final answer back. Say everything it needs — it cannot see this conversation.";
-
-pub const task = ToolSpec{
-    .name = "task",
-    .description = task_description,
-    .gateway_schema = .{
-        .name = "task",
-        .description = task_description,
-        .input_schema = .{
-            .properties = &.{
-                .{
-                    .name = "title",
-                    .json_type = .string,
-                    .description = "Three or four words naming the job, for the agent list.",
-                },
-                .{
-                    .name = "prompt",
-                    .json_type = .string,
-                    .description = "The complete instructions, including any file paths and context it needs.",
-                },
-            },
-            .required = &.{ "title", "prompt" },
-        },
-    },
-    .advertisement = .on_select,
-    .executor_kind = .emma,
-    .activity_kind = .write,
-    .requires_approval = false,
-    .action_label = "Running a subagent",
-    .completed_action_label = "Ran a subagent",
-    .permission_target_kind = .none,
-    .decode = bridge.decode,
-    .validate = bridge.validate,
-    .call = bridge.call,
-    .reads_only_fn = bridge.readsAndWrites,
-    .irreversible_fn = bridge.isReversible,
-};
-
 const plan_description =
     "Break a large job into steps, write them down in a durable markdown file, and hand each step to its own subagent. Steps that wait on nothing run at the same time, so a plan is how several subagents work in parallel instead of one doing everything in sequence. The user watches it in the thread's inspector.\n" ++
-    "Reach for it when the work is more than one subagent's worth, when parts of it can go at once, or when the user asks for a plan. Use task instead for a single self-contained job.\n" ++
+    "Reach for it when the work is more than one subagent's worth, when parts of it can go at once, or when the user asks for a plan. Spawn a subagent directly for a single self-contained job.\n" ++
     "Actions:\n" ++
     "read — with id, one plan as its markdown; without, every plan and how far along it is. Read before you update: the file is what the last wave left behind.\n" ++
     "write — create the plan, or rewrite its whole shape. steps is a JSON array, as a string: id, title, brief, tasks, and needs naming the steps it waits on. Rewriting keeps what has already happened — a step that keeps its id keeps its status, a task that keeps its text keeps its tick — so restructuring halfway is safe.\n" ++
-    "run — hand every step whose dependencies are done to a subagent, all at once, and write back what each answered. One wave per call: call it again for the next one.\n" ++
-    "update — the state, not the shape: a step's status, its result, or check to tick its nth task off. This is how a subagent reports where it is inside its own step.\n" ++
+    "run — start the next wave: marks every step whose dependencies are done as running and hands you one brief per step. Spawn one subagent per brief, then wait for them and record what each answered with update.\n" ++
+    "update — the state, not the shape: a step's status, its result, or check to tick its nth task off. This is how a subagent reports where it is inside its own step, and how you write a finished step's answer back.\n" ++
     "delete — remove a finished plan.\n" ++
     "Write the brief as if to a stranger, because it is one: the subagent has its own transcript and cannot see this conversation. Say which files, which folder, and what \"done\" looks like.";
 
@@ -321,4 +282,4 @@ pub const read_trace = ToolSpec{
     .irreversible_fn = bridge.isReversible,
 };
 
-pub const all = [_]ToolSpec{ threads, context, task, plan, agents, read_trace };
+pub const all = [_]ToolSpec{ threads, context, plan, agents, read_trace };

@@ -13,8 +13,6 @@
 .mode-trigger:disabled { color: var(--text-3); }
 .mode-trigger > b { font-weight: 400; line-height: 1; }
 .mode-trigger > span[aria-hidden] { color: var(--text-3); }
-/* Each mode gets the hue its risk deserves: plan changes nothing, full asks nothing. */
-.mode-picker[data-mode="plan"] .mode-trigger > b, .mode-row[data-mode="plan"] > b { color: var(--teal); }
 .mode-picker[data-mode="ask"] .mode-trigger > b, .mode-row[data-mode="ask"] > b { color: var(--blue); }
 .mode-picker[data-mode="acceptEdits"] .mode-trigger > b, .mode-row[data-mode="acceptEdits"] > b { color: var(--lime); }
 .mode-picker[data-mode="auto"] .mode-trigger > b, .mode-row[data-mode="auto"] > b { color: var(--violet); }
@@ -166,10 +164,12 @@
 /* Scoped to the list it always sits in: a row is a <button>, and the Settings
    preview mounts this rail inside a page that resets every button on it — one
    class of head start is what keeps a row drawn the same in both places. */
-.subagent-list .subagent { display: grid; grid-template-columns: 10px minmax(0, 1fr) minmax(0, max-content); align-items: center; gap: var(--s-2); width: 100%; min-height: 24px; padding: var(--s-1) var(--s-2) var(--s-1) 0; color: var(--text-2); border: 0; background: transparent; font: var(--fs-sm)/1.4 var(--font-mono); text-align: left; transition: background-color var(--t), color var(--t); }
+.subagent-list .subagent { display: grid; grid-template-columns: 10px minmax(0, 1fr) 14px; align-items: center; gap: var(--s-2); width: 100%; min-height: 24px; padding: var(--s-1) var(--s-2) var(--s-1) 0; color: var(--text-2); border: 0; background: transparent; font: var(--fs-sm)/1.4 var(--font-mono); text-align: left; transition: background-color var(--t), color var(--t); }
 .subagent:hover, .subagent.active { color: var(--text); background: var(--surface-3); }
 .subagent > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.subagent em { min-width: 0; overflow: hidden; color: var(--text-3); font-style: normal; font-size: var(--fs-2xs); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+/* The maker's mark where the model slug used to be, sized like the one under a
+   reply. `.brand-image`'s own padding and fit are index.css's. */
+.subagent-model { display: grid; place-items: center; width: 14px; height: 14px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
 /* Square and sharp: `i` is a 6px round dot everywhere else in the app. */
 .subagent-square { display: block; width: 10px; height: 10px; border-radius: 0; }
 .subagent-square[data-status="waiting"], .subagent-square[data-status="running"] { animation: agent-waiting 1.4s ease-in-out infinite; }
@@ -308,7 +308,12 @@
 .inspector-tabs button { min-height: 26px; padding: var(--s-2) var(--s-4) !important; border: 0 !important; color: var(--text-3); background: transparent; font-size: var(--fs-2xs); }
 .inspector-tabs button[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -1px 0 var(--accent); }
 
-.git-panel { display: grid; gap: var(--s-3); }
+/* The column is floored at zero, not at what the rows would like to be: a flex
+   row whose path is `flex: 1` reports the whole path as its intrinsic width, so
+   an auto column grew to the longest one and the rail scrolled sideways with the
+   +/- counts off its right edge. Clamped, the path ellipsizes instead — and an
+   open diff scrolls inside its own `overflow: auto` box, which is what it is for. */
+.git-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); }
 .git-head { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s-1) var(--s-2); align-items: baseline; }
 .git-head > span { color: var(--text-3); font-size: var(--fs-2xs); }
 .git-head > strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; }
@@ -317,8 +322,10 @@
    `inline-flex` above is blockified to a full-width `flex`, and a stretched box
    is one bad `flex-wrap` or stray `display` away from breaking +N over -N. */
 .git-head > .change-count { display: flex; flex-wrap: nowrap; width: max-content; }
-.git-head .git-expand { padding: 0 var(--s-2); color: var(--text-3); background: transparent; border: 1px solid var(--border); transition: color var(--t), border-color var(--t); }
-.git-expand:hover { color: var(--text); border-color: var(--border-strong); }
+/* Bare, like every other expand in the panel: the glyph is already a shape, and
+   boxing this one made a button of it beside a branch name that is not one. */
+.git-head .git-expand { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; color: var(--text-3); background: transparent; transition: color var(--t); }
+.git-expand:hover { color: var(--text); }
 
 .git-file > summary { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) 0; cursor: pointer; color: var(--text-2); font-size: var(--fs-2xs); }
 /* Only the path is reversed — the ellipsis belongs on the front of a/long/path.
@@ -336,11 +343,16 @@
 .git-file[open] > summary { color: var(--text); }
 .git-file .diff { max-height: 40vh; }
 
-/* Each installed editor's own app icon, beside whatever the row names. */
+/* Each installed editor's own app icon, beside whatever the row names. The marks carry
+   no outline at rest — an app tile is already a shape, and boxing each one turned the
+   row into a strip of cells. The cost is measured and accepted: the dark tiles (Zed
+   2.13:1, Obsidian 2.18:1, Raycast 2.32:1) sit under the 3:1 floor against every surface
+   here and lose their edges into the panel. Size is what carries them instead, which is
+   why the old 15px and the 0.65 dimming are both gone. */
 .open-in { display: flex; align-items: center; gap: var(--s-1); flex: 0 0 auto; }
-.open-in button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; background: transparent; border: 1px solid transparent; opacity: 0.65; transition: opacity var(--t), border-color var(--t); }
-.open-in button:hover { opacity: 1; border-color: var(--border-strong); }
-.open-in img { width: 16px; height: 16px; }
+.open-in button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; background: transparent; border: 1px solid transparent; transition: border-color var(--t); }
+.open-in button:hover { border-color: var(--border-strong); }
+.open-in img { width: 18px; height: 18px; }
 .open-in b { color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; }
 /* In the 260px rail the marks would take a quarter of the path they belong to, so
    there they wait for the pointer — or a tab, which is why it is opacity and not
@@ -349,12 +361,11 @@
 .git-panel:not(.git-page) .git-file > summary:hover .open-in, .git-panel:not(.git-page) .open-in:focus-within { opacity: 1; }
 /* Standing on its own on the thread bar rather than trailing a path, it takes the
    app's button box and says what it is: same 1px outline and mono small caps as
-   the Agent button beside it, holding marks instead of a word. */
-.open-in.boxed { gap: var(--s-2); min-height: 28px; padding: 0 var(--s-2); border: 1px solid var(--border); transition: border-color var(--t); }
+   the Agent button beside it, holding marks instead of a word. 24px is the height
+   of `.page-info-button`, the `i` it sits next to — the pair reads as one control. */
+.open-in.boxed { gap: var(--s-2); min-height: 24px; padding: 0 var(--s-2); border: 1px solid var(--border); transition: border-color var(--t); }
 .open-in.boxed:hover { border-color: var(--border-strong); }
 .open-in.boxed small { color: var(--text-3); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.open-in.boxed button { width: 20px; height: 20px; opacity: 0.8; }
-.open-in.boxed img { width: 15px; height: 15px; }
 
 /* The same panel as its own tab: it scrolls, and no diff inside it is boxed. */
 .git-page { align-content: start; max-width: var(--content-column); margin: 0 auto; padding: var(--s-4) var(--s-4) var(--s-6); overflow: auto; }

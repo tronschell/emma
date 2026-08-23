@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { withThinking } from "../shared/thinking";
 
 export class BoundedLines {
   private pending = Buffer.alloc(0);
@@ -32,12 +33,44 @@ export class BoundedLines {
   }
 }
 
-export type HostResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
+export const MAX_RECORDED_TURN_BYTES = 120 * 1024;
 
-/// Assistant text streamed while the turn that produces it is still in flight.
-/// Tagged by thread rather than request ID: it resolves nothing, and the window
-/// that has to render it is chosen by thread anyway.
-export type HostDelta = { threadId: string; delta: string };
+export type RecordedTurn = {
+  threadId: string;
+  prompt: string;
+  thinking?: string;
+  answer: string;
+  durationMilliseconds: string;
+  outputTokens: string;
+  inputTokens: string;
+  model: string;
+};
+
+export function elided(text: string, room: number): string {
+  if (text.length <= room) return text;
+  const half = Math.max(0, (room - 48) >> 1);
+  const head = text.slice(0, half).replace(/[\uD800-\uDBFF]$/, "");
+  const tail = text.slice(text.length - half).replace(/^[\uDC00-\uDFFF]/, "");
+  return `${head}\n\n… ${text.length - head.length - tail.length} characters elided …\n\n${tail}`;
+}
+
+export function recordedTurn({ thinking, answer, ...rest }: RecordedTurn): Record<string, string> {
+  const fitted = (room: number) => ({
+    ...rest,
+    prompt: elided(rest.prompt, room),
+    response: withThinking(elided(thinking ?? "", room), elided(answer, room)),
+  });
+  const sized = (params: Record<string, string>) => Buffer.byteLength(JSON.stringify(params));
+  let room = MAX_RECORDED_TURN_BYTES;
+  let params = fitted(room);
+  for (let size = sized(params); size > MAX_RECORDED_TURN_BYTES && room > 512; size = sized(params)) {
+    room = Math.floor((room * MAX_RECORDED_TURN_BYTES * 0.9) / size);
+    params = fitted(room);
+  }
+  return params;
+}
+
+export type HostResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
 /// A scheduled job the host just fired — by the clock, by hand, or because the job
 /// upstream of it finished — with its thread already saved. Pushed rather than
@@ -47,7 +80,7 @@ export type HostDueJob = { dueJob: { jobId: string; threadId: string; title: str
 
 const DUE_JOB_FIELDS = ["jobId", "threadId", "title", "prompt", "nodes", "variables", "permissionMode"] as const;
 
-export function parseHostLine(line: string): HostResponse | HostDelta | HostDueJob {
+export function parseHostLine(line: string): HostResponse | HostDueJob {
   const value: unknown = JSON.parse(line);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid host response");
   const response = value as Record<string, unknown>;
@@ -57,10 +90,6 @@ export function parseHostLine(line: string): HostResponse | HostDelta | HostDueJ
       throw new Error("Invalid host due job envelope");
     }
     return { dueJob: job as unknown as HostDueJob["dueJob"] };
-  }
-  if (typeof response.threadId === "string") {
-    if (typeof response.delta !== "string") throw new Error("Invalid host delta envelope");
-    return { threadId: response.threadId, delta: response.delta };
   }
   if (typeof response.id !== "string" || typeof response.ok !== "boolean") throw new Error("Invalid host response");
   if (response.ok) {

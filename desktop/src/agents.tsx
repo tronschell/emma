@@ -22,11 +22,7 @@ export function useAgents(): LiveAgent[] {
 
 const alive = (agent: LiveAgent) => agent.status === "running" || agent.status === "waiting";
 
-/* What each rung actually lets a turn do, in the harness's own words — the same
-   four descriptions harness/src/builtins/modes.zig ships. A bare "Full access"
-   never says that it runs unattended, so the label alone is not the answer. */
 const permissionModeMeanings: Record<PermissionMode, string> = {
-  plan: "Read and reason, change nothing",
   ask: "Request permission before making any changes",
   acceptEdits: "Edit files without asking, but ask before running anything",
   auto: "A verifier model clears each call, or it comes to you",

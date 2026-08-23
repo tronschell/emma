@@ -7,6 +7,7 @@ import { useSyncExternalStore } from "react";
 import type { ThreadStep } from "../shared/agents";
 import { readVisualization, type Visualization } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
+import { splitThinking } from "../shared/thinking";
 import type { Message } from "./types";
 import { recordExperiment } from "./context";
 import { reasonText } from "./errors";
@@ -68,6 +69,37 @@ export function pairBlocks(messages: Message[], landed: Block[][], cached: Recor
 export function wrote(content: string, blocks: Block[]): boolean {
   const said = blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > 8);
   return !said || content.includes((said as { text: string }).text.trim().slice(0, 40));
+}
+
+/**
+ * A turn's whole scratchpad, in order: the reasoning channel's own blocks and any
+ * `<think>` a provider inlined in the text, joined as the one train of thought they
+ * are. The transcript draws it once, so where each piece arrived stops mattering.
+ */
+export function thinkingOf(blocks: Block[]): string {
+  return blocks
+    .flatMap((block) => block.kind === "thinking" ? [block.text] : block.kind === "text" ? [splitThinking(block.text).thinking] : [])
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/**
+ * The same blocks with the reasoning taken out, since it is drawn as one row for
+ * the turn rather than wherever each burst of it landed.
+ *
+ * Dropping it here rather than skipping it at render is what lets the tool calls
+ * either side of a scratchpad fold into one list: `groupBlocks` ends a burst at
+ * anything that is not a call, so a block nobody draws would still split the list
+ * in two and leave a seam with nothing in it.
+ */
+export function withoutThinking(blocks: Block[]): Block[] {
+  return blocks.flatMap<Block>((block) => {
+    if (block.kind === "thinking") return [];
+    if (block.kind !== "text") return [block];
+    const { answer } = splitThinking(block.text);
+    return answer.trim() ? [{ kind: "text", text: answer }] : [];
+  });
 }
 
 /** A turn's blocks as the transcript draws them: prose in place, tool calls in lists. */

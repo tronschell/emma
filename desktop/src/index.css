@@ -8,6 +8,7 @@
 @import "./styles/research.css";
 @import "./styles/artifacts.css";
 @import "./styles/agents.css";
+@import "./styles/plugins.css";
 @import "./styles/settings.css";
 /* After settings.css on purpose: the context bar's arranger is a page inside
    Settings, so its own rules have to win the ties against that page's controls
@@ -118,6 +119,14 @@ p, h1, h2, h3, dl, dd { margin: 0; }
    zero-width content area, which paints nothing at all. Every mark here is
    12–20px, so 2px reads the same at any of those sizes. */
 .brand-image { padding: 2px; object-fit: contain; }
+
+.emma-mark { position: relative; display: block; flex: 0 0 auto; line-height: 0; }
+.emma-mark img { display: block; width: 100%; height: auto; }
+.emma-mark .emma-lid { position: absolute; inset: 0; opacity: 0; }
+.emma-mark.blinks img:not(.emma-lid) { animation: emma-open 7s infinite; }
+.emma-mark.blinks .emma-lid { animation: emma-shut 7s infinite; }
+@keyframes emma-open { 0%, 97% { opacity: 1 } 97.01%, 99% { opacity: 0 } 99.01%, 100% { opacity: 1 } }
+@keyframes emma-shut { 0%, 97% { opacity: 0 } 97.01%, 99% { opacity: 1 } 99.01%, 100% { opacity: 0 } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }

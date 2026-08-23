@@ -63,7 +63,7 @@ export const computerTools = [
   {
     name: "computer",
     description:
-      "Take over this Mac's real pointer and keyboard. Only for work that has no other route: driving a GUI app, or looking at the screen. Never for files or code — use read_file, write_file and bash. The user must have asked for it, or you must ask them first and get a yes in the conversation; a granted permission dialog is not that ask. Call with action \"screenshot\" first, then use the returned pixel coordinates. Coordinates are [x, y] in screenshot pixels, top-left origin. Use \"zoom\" on a region when small text is hard to read.",
+      "Take over this Mac's real pointer and keyboard. Only for work that has no other route: driving a GUI app, or looking at the screen. Never for files or code — use read_file, write_file and terminal. The user must have asked for it, or you must ask them first and get a yes in the conversation; a granted permission dialog is not that ask. Call with action \"screenshot\" first, then use the returned pixel coordinates. Coordinates are [x, y] in screenshot pixels, top-left origin. Use \"zoom\" on a region when small text is hard to read.",
     inputSchema: {
       type: "object",
       properties: {

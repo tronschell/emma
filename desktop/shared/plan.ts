@@ -1,4 +1,5 @@
-/* The plan Emma writes down before it delegates: steps, each one a subagent, each
+/* The plan Emma writes down before it delegates: steps, each one a subagent's
+   brief, each
    wired to the steps it waits on. Steps whose dependencies are all met are one
    wave and run at once — which is the whole reason to write the plan down rather
    than do the work inside one turn.

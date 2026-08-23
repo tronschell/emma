@@ -4,6 +4,16 @@ import type { ReactNode } from "react";
 import { brandRenderData } from "./brand-data";
 import type { BrandDefinition } from "./brands";
 
+const EMMA_OPEN = new URL("../assets/emma.webp", import.meta.url).href;
+const EMMA_SHUT = new URL("../assets/emma-blink.webp", import.meta.url).href;
+
+export function EmmaMark({ className = "" }: { className?: string }) {
+  return <span className={`emma-mark ${className}`} aria-hidden="true">
+    <img src={EMMA_OPEN} alt="" />
+    <img className="emma-lid" src={EMMA_SHUT} alt="" />
+  </span>;
+}
+
 /** The long half of a panel's copy, folded behind an (i) so the page reads as one line per idea. */
 export function InfoDot({ children }: { children: ReactNode }) {
   return <details className="info-dot"><summary aria-label="What this is for">i</summary><div>{children}</div></details>;

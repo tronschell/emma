@@ -29,11 +29,10 @@ owns the agent harness. Keep those boundaries visible.
 - `desktop/main`: Electron lifecycle, windows, global shortcuts, trusted IPC,
   and the narrow preload bridge.
 - `desktop/src`: sandboxed React views and presentation state; no Node access.
-- `crates/host`: NDJSON bridge, provider adapter, and Zig process boundary.
+- `crates/host`: NDJSON bridge onto the stores. It talks to no model and answers
+  requests only — the app process drives every provider call.
 - `crates/core`: thread and knowledge records, validation, and atomic Markdown
   persistence.
-- `agent`: Zig agent runtime and its wire protocol. It never renders UI or
-  writes the durable stores directly.
 - `harness`: `emma-cli`, the fork of vercel-labs/fx driven over ACP from
   `desktop/main/harness.ts`. Apache-2.0; keep `harness/FORK.md` honest.
 - `website`: separate React and Tailwind public site.
@@ -51,7 +50,6 @@ cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings
-zig build test -Doptimize=ReleaseSafe --build-file agent/build.zig
 (cd harness && zig build test)
 ```
 

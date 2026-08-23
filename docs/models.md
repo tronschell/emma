@@ -10,9 +10,9 @@ Nothing else is required. No account inside Emma, no config file.
 
 ## What actually runs a turn
 
-One process runs the agent loop: `emma-cli`, the Zig harness in [harness/](../harness). Electron owns the UI, the tools, the permission answers and the durable Markdown store; the harness owns the loop and the HTTP call to the provider.
+One process runs the agent loop: `emma-cli`, the Zig harness in [harness/](../harness). Electron owns the UI, the tools, the permission answers and the durable Markdown store. The harness owns the loop and the HTTP call to the provider.
 
-The renderer sends `sendMessage` over IPC. [main.ts](../desktop/main/main.ts) intercepts it before it reaches the Rust host and turns it into `driveTurn`, which runs the turn on the harness over ACP:
+The renderer sends `sendMessage` over IPC. [main.ts](../desktop/main/main.ts) catches it before it reaches the Rust host and turns it into `driveTurn`, which runs the turn on the harness over ACP:
 
 ```ts
 const result = request.method === "sendMessage"
@@ -20,9 +20,9 @@ const result = request.method === "sendMessage"
   : await host!.request(request);
 ```
 
-When the turn finishes, Electron writes it back with a `recordTurn` call to the Rust host. The host is the store — threads, knowledge, scheduled jobs, autoresearch jobs, traces. It is not in the model path.
+When the turn finishes, Electron writes it back with a `recordTurn` call to the Rust host. The host is the store — threads, knowledge, scheduled jobs, autoresearch jobs, traces. It is not in the model path at all.
 
-If the `emma-cli` binary is missing, Emma refuses to start a turn. [main.ts](../desktop/main/main.ts) calls that a broken install, not a fallback condition.
+If the `emma-cli` binary is missing, Emma refuses to start a turn. [main.ts](../desktop/main/main.ts) treats that as a broken install, not a reason to fall back.
 
 ### The transport
 
@@ -47,7 +47,7 @@ Requests are not streamed at the HTTP layer — the body ends `,"stream":false}`
 
 ## Model keys
 
-Emma's picker deals in keys, not raw model IDs. Three shapes, all defined in [settings.ts](../desktop/shared/settings.ts):
+Emma's picker deals in keys, not raw model IDs. Four shapes, all defined in [settings.ts](../desktop/shared/settings.ts):
 
 | Key | Means |
 | --- | --- |
@@ -67,11 +67,11 @@ function harnessModel(key: string | undefined) {
 }
 ```
 
-`undefined` means Emma sends no `model` config option at all, and the harness stays on its own `default_model`. That is what `fallback` and `local:` keys do today: **selecting a local profile as your main thread model does not route the turn at your local server.** The code says so outright — the harness's gateway is Emma's provider endpoint, not a loopback server. Local profiles do work for the second models (verifier, tagger, advisor, vision). To point the main loop at a local server, use the environment variables below.
+`undefined` means Emma sends no `model` config option at all, so the harness stays on its own `default_model`. That is what `fallback` and `local:` keys do today, which has one consequence worth stating plainly: **picking a local profile as your main thread model does not send the turn to your local server.** The code says so outright — the harness's gateway is Emma's provider endpoint, not a loopback server. Local profiles do work for the second models (verifier, tagger, advisor, vision). To point the main loop at a local server, use the environment variables below.
 
 ### The free router
 
-`free-router` is not a model. `freeRouterChain()` expands it into one comma-separated list, best first, which the transport turns into OpenRouter's `models` fallback array. `FREE_ROUTER_MODELS` in [settings.ts](../desktop/shared/settings.ts) is checked on 2026-08-22 and holds ten IDs:
+`free-router` is not a model. `freeRouterChain()` expands it into one comma-separated list, best first, which the transport turns into OpenRouter's `models` fallback array. `FREE_ROUTER_MODELS` in [settings.ts](../desktop/shared/settings.ts) was checked on 2026-08-22 and holds ten IDs:
 
 ```
 nvidia/nemotron-3-ultra-550b-a55b:free
@@ -86,15 +86,15 @@ cohere/north-mini-code:free
 nvidia/nemotron-3.5-lightning:free
 ```
 
-The chain is filtered against the catalog Emma actually has, so a retired ID is dropped rather than sent. An empty catalog means the list goes unfiltered — a first launch that has never fetched still routes.
+The chain is filtered against the catalog Emma actually has, so a retired ID gets dropped instead of sent. An empty catalog means the list goes unfiltered, so a first launch that has never fetched still routes.
 
-What was deliberately left out: models under a 256K window, vision-only and perception sub-agent models, LiquidAI's 2.6B, and stealth/cloaked routes whose vendor is unnamed and whose prompts are logged for training.
+Left out on purpose: models under a 256K window, vision-only and perception sub-agent models, LiquidAI's 2.6B, and stealth/cloaked routes whose vendor is unnamed and whose prompts are logged for training.
 
-The UI calls this **Emma Free Router**. One known gap: `recordTurn` stores the chain, not the link that answered. OpenRouter names the serving model in its response; the harness does not pass it back.
+The UI calls this **Emma Free Router**. One known gap: `recordTurn` stores the chain, not the link that answered. OpenRouter names the serving model in its response, but the harness does not pass it back.
 
 ## The OpenRouter catalog
 
-[catalog.ts](../desktop/main/catalog.ts) fetches and caches the model list. Electron does this, not the sidecar.
+[catalog.ts](../desktop/main/catalog.ts) fetches and caches the model list. Electron does this, not the Rust host — `listOpenRouterModels` and the four `select*Model` methods are answered in [main.ts](../desktop/main/main.ts) against `CatalogCache`, and never reach the store.
 
 ```
 https://openrouter.ai/api/v1/models?supported_parameters=tools&sort=most-popular
@@ -104,19 +104,19 @@ https://openrouter.ai/api/v1/models?supported_parameters=tools&sort=most-popular
 
 **Why only tool-capable models.** Emma advertises tools on every turn. A model without tool support fails the moment it is used, so `supported_parameters=tools` filters it out at the source and `supportsParameter(row.supported_parameters, "tools")` checks again on the way in.
 
-**Validation.** Every row is remote input, so every field is checked. `MAX_CATALOG_MODELS` is `2048`. An ID must match `/^[A-Za-z0-9\-_.:]+\/[A-Za-z0-9\-_.:]+$/` and be at most 128 chars; a name must be 1–256 chars with no control characters; a context length must be an integer from 1 to 100,000,000; input modalities are filtered to `image`, `file`, `audio`. A bad row is dropped, not allowed into the picker.
+**Validation.** Every row is remote input, so every field gets checked. `MAX_CATALOG_MODELS` is `2048`. An ID must match `/^[A-Za-z0-9\-_.:]+\/[A-Za-z0-9\-_.:]+$/` and be at most 128 chars. A name must be 1–256 chars with no control characters. A context length must be an integer from 1 to 100,000,000. Input modalities are filtered to `image`, `file`, `audio`. A bad row gets dropped rather than let into the picker.
 
 **Free vs paid.** `free` is `isZeroPrice(pricing.prompt) && isZeroPrice(pricing.completion)` — both sides must parse to exactly `0`. Prices are stored as micro-dollars per million tokens: `Math.round(usdPerToken * 1e12)`, on `promptMicroUsdPerMtok` and `completionMicroUsdPerMtok`. The picker renders this as a `Free` or `Paid` badge, and `isFreeModel` in the renderer is a plain `idOrKey.endsWith(":free")`.
 
-**Thinking modes.** `reasoningEfforts` is filtered against the closed vocabulary `["none", "minimal", "low", "medium", "high", "xhigh", "max"]`, weakest first. A model that advertises `reasoning_effort` but publishes no list gets OpenRouter's own three stops, `["low", "medium", "high"]`, so the knob works with the vendor default behind it. `reasoningMandatory` comes straight from the vendor.
+**Thinking modes.** `reasoningEfforts` is filtered against a closed list, weakest first: `["none", "minimal", "low", "medium", "high", "xhigh", "max"]`. A model that advertises `reasoning_effort` but publishes no list gets OpenRouter's own three stops, `["low", "medium", "high"]`, so the knob works with the vendor default behind it. `reasoningMandatory` comes straight from the vendor.
 
 ### The cache and the diff
 
-`CatalogCache` writes `<userData>/openrouter-catalog.json` with mode `0o600`. On construction it loads the bundled seed, then replaces it with the on-disk cache if there is one — a cache older than the seed still wins, because it is what this user last saw.
+`CatalogCache` writes `<userData>/openrouter-catalog.json` with mode `0o600`. On construction it loads the bundled seed, then replaces it with the on-disk cache if there is one. A cache older than the seed still wins, because it is what this user last saw.
 
-`refresh()` snapshots the current IDs, runs the fetch, and returns `added` and `removed` alongside the models, so reloading the page can say what actually changed. If the fetch throws, it returns the cached models with `stale: true` and the error message. The models page paints offline.
+`refresh()` snapshots the current IDs, runs the fetch, and returns `added` and `removed` alongside the models, so reloading the page can say what actually changed. If the fetch throws, it returns the cached models with `stale: true` and the error message. That is why the models page paints offline.
 
-A cache that cannot be written is a slower next launch, not a failed reload — the write is wrapped in a `try` that swallows.
+A cache that cannot be written is a slower next launch, not a failed reload — the write sits in a `try` that swallows.
 
 `contextLength(id)` exists because the harness only recognises a few model-ID prefixes and treats every other window as unknown, which silently caps its history and disables token-pressure compaction. Electron looks the real number up and sends it as the `context_window` config option.
 
@@ -128,7 +128,7 @@ A cache that cannot be written is a slower next launch, not a failed reload — 
 npm run seed:catalog
 ```
 
-[seed-catalog.mjs](../desktop/scripts/seed-catalog.mjs) hits the same public endpoint and writes `../main/catalog-seed.ts`. It notes in its own comments that the listing is public, so this needs no credential.
+[seed-catalog.mjs](../desktop/scripts/seed-catalog.mjs) hits the same public endpoint and writes `../main/catalog-seed.ts`. Its own comment says it: the listing is public, so this needs no credential.
 
 ## Credentials
 
@@ -141,12 +141,11 @@ The rule: **a setting names an environment variable. It never holds the key.**
 3. `save()` encrypts each secret with Electron's `safeStorage.encryptString`, which uses the macOS keychain, and base64-encodes the result. If `safeStorage.isEncryptionAvailable()` is false it throws: *"This Mac's keychain is unavailable, so Emma will not store a key in plain text."*
 4. The blob lands at `<userData>/credentials.json`, written to a `.tmp` file with mode `0o600` inside a directory created `0o700`, then renamed into place. On macOS `<userData>` is `~/Library/Application Support/Emma`.
 5. `applyToEnv(process.env)` decrypts and mirrors the secrets onto Electron's own environment.
-6. `startHost()` spawns the Rust host and its Zig sidecar with that environment, and they inherit it.
-7. `Harness` spawns `emma-cli` with `{ ...process.env, HOME: this.deps.home, AI_GATEWAY_API_KEY: apiKey, EMMA_PROVIDER_API_KEY: apiKey }`, where `apiKey` is `process.env.OPENROUTER_API_KEY`.
+6. `Harness` spawns `emma-cli` with `{ ...process.env, HOME: this.deps.home, AI_GATEWAY_API_KEY: apiKey, EMMA_PROVIDER_API_KEY: apiKey }`, where `apiKey` is `process.env.OPENROUTER_API_KEY`.
 
 The renderer never gets a value back. `list()` returns `{ env, masked }`, and `maskSecret` shows the first 6 characters, ten bullets, and the last 4 — or eight bullets alone for anything under 12 characters.
 
-Because both children read the key from their spawn environment, a key you just pasted only takes effect on a fresh process. `emma:save-credential` restarts the host and closes idle harnesses for exactly that reason.
+`emma-cli` reads the key from its spawn environment, so a key you just pasted only takes effect on a fresh process. That is why `emma:save-credential` closes the idle harnesses. Electron main's own provider calls — the second models below, and knowledge-page authoring — read `process.env` per call, so they pick a new key up immediately.
 
 The one provider Emma ships a slot for, from `providerCredentials`:
 
@@ -162,7 +161,7 @@ Web search keys use the same store: `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `E
 
 ## Environment variables
 
-Emma has two provider seams, read by two different processes. This trips people up, so here they are separately.
+There is one provider seam in the environment, and `emma-cli` is the only process that reads it. The Rust host reads no provider setting at all. Electron main's own provider calls are configured from settings rather than from the environment, and take only the key out of it — `process.env[credentialEnv]`, looked up per call.
 
 ### Read by `emma-cli` — the process that runs your turn
 
@@ -175,31 +174,16 @@ Emma has two provider seams, read by two different processes. This trips people 
 | `FX_MODEL` | Overrides the startup model ([app_lifecycle.zig](../harness/src/core/app/app_lifecycle.zig)) |
 | `FX_GATEWAY_BASE_URL` | Overrides the model catalog base URL |
 
-### Read by the Rust host — the store, and its Zig sidecar
+### Read by the Rust host — the store, and only the store
 
-[runtime.rs](../crates/host/src/runtime.rs):
+[runtime.rs](../crates/host/src/runtime.rs) is 37 lines and reads two variables:
 
 | Variable | Effect |
 | --- | --- |
-| `EMMA_PROVIDER_BASE_URL` | Provider base URL |
-| `EMMA_PROVIDER_MODEL` | Model ID |
-| `EMMA_PROVIDER_CREDENTIAL_ENV` | The **name** of the variable holding the key |
-| `EMMA_OPENROUTER_ZDR` | Zero-retention routing |
 | `EMMA_DATA_DIR` | Overrides `~/Library/Application Support/Emma` |
 | `EMMA_KNOWLEDGE_DIR` | Overrides `~/Documents/Emma Knowledge`; empty turns the mirror off |
 
-The first three are all-or-nothing. All unset is fine — that is the no-provider case. Any partial combination is an error: *"set all of EMMA_PROVIDER_BASE_URL, EMMA_PROVIDER_MODEL, and EMMA_PROVIDER_CREDENTIAL_ENV"*.
-
-Note the indirection on `EMMA_PROVIDER_CREDENTIAL_ENV`. It holds a variable name, not a secret:
-
-```sh
-export EMMA_PROVIDER_CREDENTIAL_ENV=OPENROUTER_API_KEY
-export OPENROUTER_API_KEY=sk-or-v1-...
-```
-
-The sidecar reads the name, then reads that variable. A key never lives in a setting, a config file, or a log line.
-
-`provider_config_from_values` also derives two flags: `protect_data` is true when the base URL is an OpenRouter host, and `zero_retention` is true when `EMMA_OPENROUTER_ZDR` is set at all.
+Neither points at a provider. The host spawns no child, holds no credential and makes no network request; it resolves the data root, starts the store, and answers requests.
 
 ## Settings → Models
 
@@ -214,7 +198,7 @@ The sidecar reads the name, then reads that variable. A key never lives in a set
 
 ### Local endpoint profiles
 
-`localModelEndpoint()` in [settings.ts](../desktop/shared/settings.ts) is strict about what counts as local:
+`localModelEndpoint()` in [settings.ts](../desktop/shared/settings.ts) is picky about what counts as local:
 
 - `http:` only — not `https:`
 - hostname must be `localhost`, `127.0.0.1`, `[::1]` or `::1`
@@ -238,7 +222,7 @@ Because a thread can be half-answered by one model and half by another, the mode
 
 Four subsystems run a separate small model on a separate route. They all share the `VerifierSettings` shape — `{ model, endpoint, credentialEnv, system }` — and all go through one `chatCompletion` helper in [verifier.ts](../desktop/main/verifier.ts).
 
-That helper posts `{ model, messages, temperature: 0, max_tokens, stream: false }` with an `authorization: Bearer <key>` header, and falls back to `message.reasoning` when `content` comes back empty. The key comes from `process.env[settings.credentialEnv]`, which the credential store already mirrored in. An empty `credentialEnv` means a local server that needs no key.
+That helper posts `{ model, messages, temperature: 0, max_tokens, stream: false }` with an `authorization: Bearer <key>` header, and reads `message.reasoning` when `content` comes back empty. The key comes from `process.env[settings.credentialEnv]`, which the credential store already mirrored in. An empty `credentialEnv` means a local server that needs no key.
 
 | Subsystem | File | Default model | Timeout | Max tokens |
 | --- | --- | --- | --- | --- |
@@ -247,11 +231,11 @@ That helper posts `{ model, messages, temperature: 0, max_tokens, stream: false 
 | Vision | [vision.ts](../desktop/main/vision.ts) | `nvidia/nemotron-nano-12b-v2-vl:free` | 60 s | 1024 |
 | Advisor | [advisor.ts](../desktop/main/advisor.ts) | `""` (off) | 120 s | 1024 |
 
-All three configured defaults point at `OPENROUTER_CHAT_ENDPOINT` (`https://openrouter.ai/api/v1/chat/completions`) with `credentialEnv: "OPENROUTER_API_KEY"`. All are remote by default; all can be pointed at a local profile.
+All four default to `endpoint: OPENROUTER_CHAT_ENDPOINT` (`https://openrouter.ai/api/v1/chat/completions`) with `credentialEnv: "OPENROUTER_API_KEY"`. So all four are remote out of the box, and all four can be pointed at a local profile instead.
 
-**Verifier.** The second model in `auto` mode. It reads what you asked for and the call the agent wants to make, and answers whether that call is safe. `MAX_ATTEMPTS` is 3, detail is capped at `MAX_DETAIL_CHARS` (2000). Its standing rules are editable — what counts as destructive is your call — up to `MAX_VERIFIER_SYSTEM_CHARS` (8192).
+**Verifier.** The second model in `auto` mode. It reads what you asked for and the call the agent wants to make, and answers whether that call is safe. `MAX_ATTEMPTS` is 3, detail is capped at `MAX_DETAIL_CHARS` (2000). Its standing rules are yours to edit — what counts as destructive is your call — up to `MAX_VERIFIER_SYSTEM_CHARS` (8192).
 
-It is deliberately not the selected model. The point is a reviewer that is not the thing being reviewed, small and cheap enough to sit in front of every gated call. `toolGate()` in [permissions.ts](../desktop/shared/permissions.ts) maps `auto` onto the same column as `ask` — the question just goes to the verifier instead of to you. An empty `model` leaves `auto` with no verifier, so every call asks.
+It is deliberately not the selected model. The point is a reviewer that is not the thing being reviewed, small and cheap enough to sit in front of every gated call. `toolGate()` in [permissions.ts](../desktop/shared/permissions.ts) maps `auto` onto the same column as `ask` — the question just goes to the verifier instead of to you. An empty `model` leaves `auto` with no verifier, so every call asks you.
 
 Cost: one extra completion per gated tool call, capped at 700 output tokens, on a free model by default.
 
@@ -259,11 +243,11 @@ Cost: one extra completion per gated tool call, capped at 700 output tokens, on 
 
 **Vision.** The `vision` tool, for a selected model that cannot see. It sends an `image_url` data URL. Text-only models are most of the catalog and half the free half of it, and without this a screenshot on disk is a path the agent can only guess about. Image URLs from the model go through `publicUrl`, not `externalUrl` — see [privacy.md](privacy.md).
 
-**Tagger.** Files a thread under one of your own tags. `MAX_TAGGER_TEXT_CHARS` is 4000 and `MAX_THREAD_TAGS` is 32. `pickTag` matches the longest tag in the reply; `none` means the model declined. Stateless — the route arrives with each request rather than being held in main.
+**Tagger.** Files a thread under one of your own tags. `MAX_TAGGER_TEXT_CHARS` is 4000 and `MAX_THREAD_TAGS` is 32. `pickTag` matches the longest tag in the reply, and `none` means the model declined. It is stateless: the route arrives with each request instead of being held in main, because nothing in main ever asks for a tag on its own.
 
 ## The autoresearch judge
 
-[research.ts](../desktop/main/research.ts) runs the judge on its own thread in `mode: "plan"` with `model: job.proposerModel` — the same model the job is proposing with, not a separate one. Its output is sliced to 32 KB.
+[research.ts](../desktop/main/research.ts) runs the judge on its own thread in `mode: "ask"` with `model: job.proposerModel` — the same model the job is proposing with, not a separate one. Its output is sliced to 32 KB.
 
 Cost is tracked in micro-dollars:
 
@@ -300,9 +284,9 @@ noteUsage(threadId, usage) {
 }
 ```
 
-This matters beyond cosmetics. Without the real input count, the autoresearch token budget only ever sees the output side and stops at roughly half the real spend.
+This is not cosmetic. Without the real input count, the autoresearch token budget only ever sees the output side and stops at roughly half the real spend.
 
-`recordTurn` stores `inputTokens`, `outputTokens`, `durationMilliseconds` and `model` per turn. A turn that failed before any usage arrived records `"0"` on both sides — a ledger that knows it cannot account for a turn is better than a guess.
+`recordTurn` stores `inputTokens`, `outputTokens`, `durationMilliseconds` and `model` per turn. A turn that failed before any usage arrived records `"0"` on both sides — a ledger that knows it cannot account for a turn beats a guess.
 
 The context bar reads the rest of [usage.ts](../desktop/shared/usage.ts): `MAX_USES` is 32, `RATE_FLOOR` is 4096, and `rateByContext`, `systemChars`, `mergeUses`, `allocateCells`, `charLabel` and `shareLabel` render it.
 
@@ -320,7 +304,7 @@ LM Studio serves an OpenAI-compatible API on `http://127.0.0.1:1234/v1`. Ollama 
    - Credential env: leave empty
 3. Pick that profile in **VerifierPanel**, **TaggerPanel**, **VisionPanel** or **AdvisorPanel**.
 
-`verifierFromKey` builds `http://127.0.0.1:1234/v1/chat/completions` and posts to it with no `authorization` header. Verified traffic never leaves the Mac.
+`verifierFromKey` builds `http://127.0.0.1:1234/v1/chat/completions` and posts to it with no `authorization` header. That traffic never leaves the Mac.
 
 Watch the validator: `https` is rejected for a local profile, and so is any URL with a query string, fragment or embedded credentials.
 
@@ -340,27 +324,21 @@ open -a Emma
 - `FX_MODEL` names the model, because Electron sends no `model` option for a non-`openrouter:` key.
 - Leave `EMMA_OPENROUTER_ZDR` unset. The zero-retention flags are OpenRouter-specific and `isOpenRouter()` will not match a loopback URL anyway.
 
-Two things to expect. The catalog page still lists OpenRouter models, because `FX_GATEWAY_BASE_URL` and Electron's catalog fetch are separate. And your local server must support tool calls — Emma advertises tools on every turn.
+Two things to expect. The catalog page still lists OpenRouter models, because Electron's catalog fetch and `FX_GATEWAY_BASE_URL` are separate things. And your local server has to support tool calls, because Emma advertises tools on every turn.
 
 ## The deterministic local fallback
 
-`fallback` is the shipped default `selectedModel`, and it names a real thing: a canned reply built entirely on this Mac, no provider, no network. [agent/src/main.zig](../agent/src/main.zig) still implements it, in `fallbackReply`:
+`fallback` is the shipped default `selectedModel`, and it means two different things depending on what you point it at.
 
-```
-I received your message about "{subject}".
- I found {n} relevant knowledge page(s): "Title", ...
- This local fallback keeps the conversation in this thread; connect a provider for a model-generated answer.
-```
+**For a knowledge page it is real.** `selectFallbackModel` clears `pageRoute`, and [knowledge-author.ts](../desktop/main/knowledge-author.ts) answers a routeless call with `localPage()`: no provider, no network. The title is the input's first sentence, the category comes from `chooseCategory` — a category the base already uses, or failing that `classify()`, a keyword-only rule that sorts text into research, technology, finance, health or general — and the summary, points and counterargument are fixed strings. The page carries no blocks. It is recorded with model `local-fallback` and tokens counted as `Math.ceil(text.length / 4)`.
 
-The turn is recorded with model `local-fallback`, and input tokens are counted as `(input_bytes + 3) / 4`. The sidecar also has `classify()`, a keyword-only categoriser that sorts text into research, technology, finance, health or general with no model involved.
+**For a thread turn it is not.** `harnessModel()` returns `undefined` for the `fallback` key, which means Emma sends no `model` config option and the harness stays on its own `default_model` — `nvidia/nemotron-3-super-120b-a12b:free` — over the network. There is no local answer path for a thread turn on this branch.
 
-**On this branch, no thread turn reaches it.** The host's `sendMessage` method is what leads to the sidecar's `thread_message` handler, and Electron intercepts `sendMessage` in the IPC bridge before it gets there. `grep` finds no caller. A thread on the `fallback` key gets the harness's `default_model` — `nvidia/nemotron-3-super-120b-a12b:free` — over the network.
-
-The Settings copy that reads *"Without a selected provider, Emma uses its deterministic local fallback"* describes the sidecar path, which no longer serves thread turns.
+So the Settings copy that reads *"Without a selected provider, Emma uses its deterministic local fallback"* is true of the knowledge page and not of the thread.
 
 ## See also
 
-- [architecture.md](architecture.md) — how Electron, the Rust host, the Zig sidecar and the harness fit together
+- [architecture.md](architecture.md) — how Electron, the Rust host and the harness fit together
 - [harness.md](harness.md) — `emma-cli` in detail
 - [privacy.md](privacy.md) — what leaves this Mac
 - [permissions.md](permissions.md) — the modes the verifier plugs into

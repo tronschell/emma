@@ -5,10 +5,12 @@ import { contextBlock, pickKey, slashName, type ContextPick, type FolderFile, ty
 import { pathName, type SlashCommand } from "../shared/slash";
 import { ARTIFACT_LABELS, type ArtifactMeta } from "../shared/artifacts";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
-import { mergeUses, systemChars, type ContextUse } from "../shared/usage";
+import { allocateCells, CHARS_PER_TOKEN, mergeUses, rateByContext, systemChars, usageKey, type ContextUse } from "../shared/usage";
 import { tagName } from "../shared/settings";
-import type { KnowledgePage, Snapshot, Thread } from "./types";
+import type { LiveAgent } from "../shared/agents";
+import type { KnowledgePage, Message, Snapshot, Thread } from "./types";
 import type { Block } from "./runs";
+import { plural } from "./activity";
 import { reasonText } from "./errors";
 
 // ponytail: thread → folder lives in localStorage, not in the durable thread file.
@@ -242,14 +244,116 @@ export function lastInputTokens(thread: Thread): number {
 
 /**
  * What is left of the last turn's input once every segment this side can measure
- * is subtracted — the standing instructions and the tool schemas included, since
- * main reports both exactly. What remains is host-retrieved knowledge, injected
- * skills and whatever a retried step resent. Undefined when no turn reported
- * usage: a residual is never negative and never invented.
+ * is subtracted: the harness's own system prompt, whatever tool schemas it chose
+ * to advertise, host-retrieved knowledge, injected skills, and whatever a retried
+ * step resent. Undefined when no turn reported usage: a residual is never
+ * negative and never invented, so a thread that has not run yet shows no row
+ * rather than a guess at what a request would have carried.
  */
 export function systemUse(thread: Thread, measuredChars: number): Omit<ContextUse, "turns"> | undefined {
   const chars = systemChars(lastInputTokens(thread), measuredChars);
-  return chars > 0 ? { kind: "knowledge", label: "Retrieval & retries", chars } : undefined;
+  return chars > 0 ? { kind: "knowledge", label: "Prompt, tools & retrieval", chars } : undefined;
+}
+
+/* The ledger itself: what this thread's turns literally carried, measured once
+   and read by every widget that draws a piece of it, so two of them cannot
+   disagree about the same number.
+
+   One cell per 1/48th of the model's context window, hued by kind and laid out
+   as one bar, so a folder listing that has quietly grown to half the request is
+   visible before it costs a turn. Whatever the turns have not claimed is the
+   free tail. */
+const USAGE_CELLS = 48;
+
+export interface Ledger {
+  rows: ContextUse[];
+  total: number;
+  capacity: number;
+  free: number;
+  whole: number;
+  cells: string[];
+  kinds: Map<string, string>;
+  messages: number;
+  replies: number;
+  attachments: number;
+  calls: number;
+  tokens: number;
+  elapsed: number;
+  curve: { context: number; rate: number; turns: number }[];
+  largest?: ContextUse;
+  /** What the timeline's context axis weighs its spans against. */
+  carriedTokens: number;
+  /** What the Harness experiments took out of this thread's requests and put back
+      in. Not a row: neither lever is a segment the turn carries, they are what was
+      done to the segments above — and a saving is negative mass a grid cannot draw. */
+  experiments: ExperimentTally;
+}
+
+/**
+ * `landedCalls` is what the turns already on the thread did, counted off the
+ * traces the host kept; `inFlight` is what the turn still running has done so
+ * far. A trace is written when its turn ends, so the two never overlap and the
+ * tile does not step as one becomes the other.
+ */
+export function buildLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally, landedCalls = 0): Ledger {
+  const messages: Message[] = thread?.messages ?? [];
+  const replies = messages.filter((message) => message.role === "assistant").length;
+  // A turn is one durable message however many steps it took, so a ledger read
+  // off `thread.messages` alone sits still through exactly the part that fills
+  // the window — a hundred tool results, resent every step — and then jumps when
+  // the turn lands. The loop counts what it hands over, so the running total is
+  // shown as its own row until the message it becomes replaces it.
+  const running = inFlight.reduce((sum, agent) => sum + agent.inputTokens, 0) * CHARS_PER_TOKEN;
+  const liveCalls = inFlight.reduce((sum, agent) => sum + agent.toolCalls, 0);
+  const liveTurns = inFlight.filter((agent) => agent.threadId === thread?.id);
+  const measured: ContextUse[] = thread ? [
+    { ...historyUse(thread), turns: messages.filter((message) => message.role === "user").length },
+    ...(running > 0 ? [{ kind: "history" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1 }] : []),
+    ...uses,
+  ] : [];
+  // Whatever is left of the provider's own input count once every measured
+  // segment is subtracted: the harness's system prompt, the schemas it advertised,
+  // retrieved knowledge, injected skills, resent steps. Emma used to state the
+  // prompt and the schemas as their own rows, measured off the catalog its own
+  // loop assembled — but that loop is gone, the harness decides what a turn
+  // advertises and most of its tools wait behind `search_tools`, so the rows were
+  // sizing a request nobody sends. Worse, they were shown before the first turn:
+  // a brand new thread read "8.2k tokens sent" having sent nothing at all. What is
+  // reported now is only what a turn really carried, so an empty thread reads zero.
+  // `running` is left out of the subtraction: the residual is what the *last
+  // landed* turn's input count could not account for, and the turn in flight has
+  // not reported one yet. Counting it here would eat the row instead.
+  const system = thread ? systemUse(thread, measured.reduce((sum, row) => sum + row.chars, 0) - running) : undefined;
+  const rows: ContextUse[] = [...(system ? [{ ...system, turns: replies }] : []), ...measured];
+  const total = rows.reduce((sum, row) => sum + row.chars, 0);
+  // Only the OpenRouter catalog states a window; on the fallback and local routes the
+  // shares are of what this thread has sent, and there is no free tail to draw.
+  const capacity = contextTokens * CHARS_PER_TOKEN;
+  const free = Math.max(0, capacity - total);
+  const packed = allocateCells([...rows.map((row) => ({ key: usageKey(row), chars: row.chars })), { key: "free", chars: free }], USAGE_CELLS);
+  // Every provider-backed reply carries its own tokens and milliseconds, so the
+  // thread's rate is the pooled one, not the average of the per-message rates.
+  const tokens = messages.reduce((sum, message) => sum + (message.generation?.outputTokens ?? 0), 0)
+    + liveTurns.reduce((sum, agent) => sum + agent.outputTokens, 0);
+  return {
+    rows,
+    total,
+    capacity,
+    free,
+    whole: capacity || total,
+    cells: [...packed.filter((key) => key !== "free"), ...packed.filter((key) => key === "free")],
+    kinds: new Map<string, string>([...rows.map((row) => [usageKey(row), row.kind] as const), ["free", "free"]]),
+    messages: messages.length + liveTurns.length * 2,
+    replies: replies + liveTurns.length,
+    attachments: rows.filter((row) => row.kind === "attachment" || row.kind === "skill").length,
+    calls: landedCalls + liveCalls,
+    tokens,
+    elapsed: messages.reduce((sum, message) => sum + (message.generation?.durationMilliseconds ?? 0), 0) + liveTurns.reduce((sum, agent) => sum + agent.generationMs, 0),
+    curve: rateByContext(messages.flatMap((message) => message.generation ? [message.generation] : [])),
+    largest: rows.reduce<ContextUse | undefined>((top, row) => !top || row.chars > top.chars ? row : top, undefined),
+    carriedTokens: Math.round(total / CHARS_PER_TOKEN),
+    experiments,
+  };
 }
 
 /** Pages the host may retrieve into a system message. Which ones, and how many

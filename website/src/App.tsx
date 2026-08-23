@@ -501,13 +501,13 @@ function App() {
               </div>
               <div className="endpoint">
                 <span>▸ TERMINAL</span>
-                <b>emma “your prompt”</b>
+                <b>emma-cli ask “your prompt”</b>
                 <em>SAME AGENT, HEADLESS</em>
               </div>
               <div className="endpoint">
                 <span>◈ MODE</span>
-                <b>EMMA_MODE=acceptEdits</b>
-                <em>SAME GATES ON THE TTY</em>
+                <b>every call gated on the tty</b>
+                <em>SAME GATES, NO WINDOW</em>
               </div>
             </div>
           </div>

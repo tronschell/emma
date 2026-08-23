@@ -29,6 +29,7 @@
 .island-bar { display: grid; grid-template-columns: calc(var(--notch-x) - var(--island-inset)) var(--notch-w) 1fr; align-items: center; height: var(--notch-h); border-bottom: 1px solid var(--border); }
 .island-bar .brand { justify-content: flex-start; padding-left: var(--s-4); }
 .island-bar .mark { width: 20px; height: 20px; font-size: var(--fs-md); }
+.island-bar .emma-mark { width: 22px; }
 /* Only the state fits here: the column beside the housing is ~190px wide, and at
    the 10px metadata floor that is 26 characters. The rest of the line moved to
    .island-foot, the way the workspace keeps its liveness line in the sidebar's. */

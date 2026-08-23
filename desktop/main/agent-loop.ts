@@ -12,7 +12,7 @@
    `adopt`), which is what keeps the rail live for a run this file no longer drives. */
 
 import { randomUUID } from "node:crypto";
-import { agentColor, collapseChanges, editStat, fromThread, MAX_AGENT_DEPTH, MAX_LIVE_SUBAGENTS, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
+import { agentColor, collapseChanges, fromThread, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import { takeArm } from "./system-prompt";
 import { decodeSpans, encodeSpans, renderTrace, type TraceSpan, type TraceStatus } from "../shared/trace";
@@ -24,6 +24,7 @@ import type { Advice } from "./advisor";
 const MAX_ASK_MS = 10 * 60 * 1000;
 /** ponytail: ~4 characters a token, the same estimate the context inspector uses. */
 const CHARS_PER_TOKEN = 4;
+const LIVE_REFRESH_MS = 250;
 
 /**
  * Tools `AgentRuntime` answers itself rather than handing to main's executor:
@@ -40,13 +41,23 @@ export type TurnRequest = {
   title: string;
   /** What the composer's picker is on. Main knows the name; the host reports no model back. */
   model?: string;
+  /** The thinking stop to ask that model for. Blank is its own default; unset lets main fill it in. */
+  effort?: string;
   parentThreadId?: string;
   depth?: number;
+  /**
+   * Started from inside another turn, so it needs a harness process of its own.
+   *
+   * One process holds one session and takes one turn at a time, so a turn started
+   * from a tool call queues behind the very turn that started it — which is why a
+   * `threads spawn` with a prompt looked like it had hung until the parent stopped.
+   */
+  nested?: boolean;
   /** The model this run's subagents take, if the thread's inspector pinned one. */
   subagent?: SubagentRoute;
   /** Extra params for the first `sendMessage` only — screen context, an attached skill. */
   params?: Record<string, string>;
-  /** The `task` call that spawned this run, so its spans nest under that call. */
+  /** The `subagent` call that spawned this run, so its spans nest under that call. */
   parentSpanId?: string;
 };
 
@@ -64,9 +75,8 @@ export type LoopDeps = {
    * Runs one turn on the harness, through the same door every other surface takes.
    *
    * Required, not optional: it used to fall back to this file's own loop, and
-   * with that loop gone there is nothing behind it. Both callers here are spawns
-   * — a `threads` spawn, which does not wait, and a `task` delegation, which
-   * waits for the answer to hand back as a tool result.
+   * with that loop gone there is nothing behind it. Every caller here is a
+   * `threads` spawn or message, which starts a turn and does not wait for it.
    *
    * `owner` is the thread the spawn came out of, when there is one: a brand new
    * thread has no folder of its own yet, and it is meant to work where the
@@ -106,6 +116,7 @@ export class AgentRuntime {
   private readonly runs = new Map<string, Run>();
   private readonly asks = new Map<string, (allowed: boolean) => void>();
   private spawned = 0;
+  private streamedAt = 0;
   /** Only to key one review's span and step apart from the next one's. */
   private verifications = 0;
 
@@ -175,6 +186,16 @@ export class AgentRuntime {
     // adopted path — where nothing here made the request — reports it too.
     const answering = run.spans.find((span) => span.kind === "model" && span.endedAt === undefined);
     if (answering) answering.tokens = (answering.tokens ?? 0) + Math.ceil(text.length / CHARS_PER_TOKEN);
+    // The transcript has its own delta channel, but the agent list does not, so
+    // every reading taken off it — the context ledger's tiles, the rate, the
+    // agent rail — sat still for the whole of a turn and jumped when it landed.
+    // Rate-limited rather than sent per token: this is the whole list plus every
+    // live span, and a fast model streams hundreds of deltas a second.
+    const now = Date.now();
+    if (now - this.streamedAt >= LIVE_REFRESH_MS) {
+      this.streamedAt = now;
+      this.deps.changed();
+    }
     return true;
   }
 
@@ -205,7 +226,7 @@ export class AgentRuntime {
     switch (args.name) {
       case "read_trace": return await this.readTrace(turn, args.thread, args.limit);
       case "threads": return await this.runThreadsTool(args, turn);
-      case "agents": return this.runAgentsTool(args, turn.mode);
+      case "agents": return this.runAgentsTool(args);
       case "advisor": {
         if (!run) throw new Error("The advisor reads this run's own transcript, which is not available here.");
         return await this.consultAdvisor(run, turn, args.question);
@@ -214,13 +235,7 @@ export class AgentRuntime {
   }
 
   /** The live agent rail as the model reads it: what is running, and the two levers on it. */
-  private runAgentsTool(args: Extract<LoopArgs, { name: "agents" }>, mode: PermissionMode): string {
-    // The gate table is per tool, and this one both reads and acts. Listing is a
-    // read and belongs in plan mode; steering and stopping are not, so they are
-    // refused here rather than by hiding the whole tool.
-    if (mode === "plan" && (args.message !== undefined || args.stop)) {
-      throw new Error("Plan mode does not steer or stop a running agent. Read the list and say what should change.");
-    }
+  private runAgentsTool(args: Extract<LoopArgs, { name: "agents" }>): string {
     if (args.message !== undefined) this.steer(args.agent!, args.message);
     if (args.stop) { this.stop(args.agent!); return `Stopped ${args.agent} and anything running under it.`; }
     const live = this.list();
@@ -323,6 +338,7 @@ export class AgentRuntime {
   private open(turn: TurnRequest): Run {
     const depth = turn.depth ?? 0;
     if (this.runs.get(turn.threadId)?.status === "running") throw new Error("That thread already has a turn in flight.");
+    if (depth > 0) this.spawned += 1;
     const run: Run = {
       threadId: turn.threadId,
       parentThreadId: turn.parentThreadId,
@@ -348,7 +364,7 @@ export class AgentRuntime {
       traced: false,
     };
     // The run's own span, and the root of everything it does. A subagent's hangs
-    // off the `task` call that asked for it rather than off its parent thread, so
+    // off the `subagent` call that asked for it rather than off its parent thread, so
     // the trace reads as one tree rather than two lists side by side.
     run.spans.push({
       id: `agent:${run.threadId}`,
@@ -436,14 +452,20 @@ export class AgentRuntime {
    *
    * An adopted run's numbers are inferred from the text coming back, and its
    * input side is never counted at all — nothing here made the request. The
-   * token budget that stops an autoresearch job reads these, so leaving the
-   * input side at zero let a job run to roughly twice its stated budget.
+   * harness reports both per model step, and every live reading of the window —
+   * the context ledger, the `context` tool, the token budget that stops an
+   * autoresearch job — is only as current as the last one of these.
+   *
+   * Assigned rather than summed: the harness already reports the turn's running
+   * totals, and its input side is the last step's request rather than a sum,
+   * because each step resends the whole conversation.
    */
   noteUsage(threadId: string, usage: { inputTokens: number; outputTokens: number }): void {
     const run = this.runs.get(threadId);
     if (!run) return;
-    run.inputTokens += usage.inputTokens;
+    if (usage.inputTokens > 0) run.inputTokens = usage.inputTokens;
     if (usage.outputTokens > 0) run.outputTokens = usage.outputTokens;
+    this.deps.changed();
   }
 
   /**
@@ -497,7 +519,7 @@ export class AgentRuntime {
    * Where a run spawned by this thread hangs in the trace: its root span. The
    * calls themselves are made by the harness's loop, which never tells this one
    * which of them is in flight, so a spawn nests under the thread rather than
-   * under the `task` call that asked for it.
+   * under the `subagent` call that asked for it.
    */
   spanFor(threadId: string): string | undefined {
     return this.runs.get(threadId)?.spans[0]?.id;
@@ -523,51 +545,6 @@ export class AgentRuntime {
     for (const span of run.spans) if (span.endedAt === undefined && span.status === "running") span.endedAt = run.endedAt;
     this.flushTrace(run);
     this.deps.changed();
-  }
-
-  /** Spawns a subagent on its own thread and returns its final answer as a tool result. */
-  async delegate(parent: TurnRequest, title: string, prompt: string): Promise<string> {
-    const depth = (parent.depth ?? 0) + 1;
-    if (depth > MAX_AGENT_DEPTH) return "Subagents cannot spawn their own subagents. Do this part of the work yourself.";
-    const live = [...this.runs.values()].filter((run) => run.status === "running" && run.parentThreadId).length;
-    if (live >= MAX_LIVE_SUBAGENTS) return `Emma already has ${MAX_LIVE_SUBAGENTS} subagents running. Wait for one to finish, or do this part yourself.`;
-    const created = await this.deps.request("createThread", { parentThreadId: parent.threadId, title, kind: "subagent" });
-    const threadId = (created as { id?: unknown }).id;
-    if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
-    this.spawned += 1;
-    // Pinned before the first step, so the whole subagent runs on one model. A route
-    // the host will not take — a stale catalog, an effort the model dropped — is not
-    // worth failing the work over, so the child runs where its parent runs and the
-    // label says so rather than claiming a model it never reached.
-    let model = parent.model;
-    if (parent.subagent?.model) {
-      try {
-        await this.deps.request("setThreadModel", { threadId, modelId: parent.subagent.model, effort: parent.subagent.effort });
-        model = parent.subagent.model;
-      } catch (error) {
-        console.error("Emma: the subagent's model could not be set", error);
-      }
-    }
-    // The same door every other surface takes, so a subagent runs on the harness
-    // like everything else. It used to call this file's own `run` directly, which
-    // is how a `task` from a harness turn ended up on a second loop entirely.
-    const outcome = await this.deps.spawnTurn({
-      threadId,
-      content: prompt,
-      mode: parent.mode,
-      model,
-      title,
-      parentThreadId: parent.threadId,
-      depth,
-      // Inherited, so a subagent's own subagent takes the same route.
-      subagent: parent.subagent,
-      // So the child's whole tree hangs inside the parent's rather than beside it.
-      parentSpanId: this.spanFor(parent.threadId),
-    }, parent.threadId);
-    // A subagent can be stopped on its own from the agent rail, and the parent
-    // reads this string — "finished without an answer" would be a lie about why.
-    if (!lastAssistantMessage(outcome) && this.runs.get(threadId)?.status === "stopped") return "That subagent was stopped before it answered.";
-    return lastAssistantMessage(outcome) ?? "That subagent finished without an answer.";
   }
 
   /** The stored traces of a thread's past turns, newest last, as the model reads them. */
@@ -656,12 +633,6 @@ export class AgentRuntime {
    * to talk to, even when nothing is running.
    */
   private async runThreadsTool(args: Extract<LoopArgs, { name: "threads" }>, turn: TurnRequest): Promise<string> {
-    // One gate row per tool, and this one both reads and acts: listing, reading
-    // and renaming change nothing and belong in plan mode, while a new row in
-    // the sidebar and an agent put to work do not.
-    if (turn.mode === "plan" && (args.action === "spawn" || args.action === "message")) {
-      throw new Error("Plan mode does not start threads or put agents to work. Say which threads should be spawned and what each one is for.");
-    }
     switch (args.action) {
       case "list": return await this.readThread(undefined, args.limit);
       case "read": return await this.readThread(args.thread, args.limit);
@@ -683,12 +654,11 @@ export class AgentRuntime {
    */
   private async spawnThread(turn: TurnRequest, title: string, prompt?: string): Promise<string> {
     // Owned by the thread the user can actually see. A subagent's transcript is
-    // not in the sidebar, so hanging a sub thread off one would hide it; the one
-    // hop up is enough, because a subagent cannot spawn a subagent.
+    // not in the sidebar, so hanging a sub thread off one would hide it.
     const owner = turn.parentThreadId ?? turn.threadId;
     // Counted before the thread is created, so a refused spawn does not leave an
     // empty row behind. Only threads working on their own are counted: subagents
-    // have a ceiling of their own, over in `delegate`.
+    // are the harness's to cap.
     const working = [...this.runs.values()].filter((run) => !run.parentThreadId && (run.status === "running" || run.status === "waiting")).length;
     if (prompt && working >= MAX_LIVE_THREADS) {
       return `Emma already has ${MAX_LIVE_THREADS} threads working. Wait for one to finish, or spawn this one without a prompt so the user can start it.`;
@@ -731,7 +701,7 @@ export class AgentRuntime {
    * row in the agent list rather than coming back here as a tool error.
    */
   private start(turn: TurnRequest, owner?: string): void {
-    void Promise.resolve(this.deps.spawnTurn(turn, owner)).catch((error: unknown) => console.error("Emma: a thread's own turn failed", error));
+    void Promise.resolve(this.deps.spawnTurn({ ...turn, nested: true }, owner)).catch((error: unknown) => console.error("Emma: a thread's own turn failed", error));
   }
 
   /** Every thread Emma has stored, which is what the model reads its library as. */
@@ -858,7 +828,7 @@ type SnapshotThread = {
 
 const TRUNCATION_NOTICE = "\n[truncated]";
 
-/** The sidecar's ceiling is bytes, not characters, and the notice counts against it. */
+/** The ceiling is bytes, not characters, and the notice counts against it. */
 export function bounded(value: string): string {
   if (Buffer.byteLength(value) <= MAX_TOOL_OUTPUT_BYTES) return value;
   const limit = MAX_TOOL_OUTPUT_BYTES - Buffer.byteLength(TRUNCATION_NOTICE);

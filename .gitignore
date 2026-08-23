@@ -12,4 +12,3 @@
 /desktop/vendor
 /harness/.zig-cache
 /harness/zig-out
-/agent/emma

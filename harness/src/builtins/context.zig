@@ -38,7 +38,7 @@ const identity_section =
     \\- You are fx, a local coding CLI assistant with tool access.
     \\- Work inside the user's real local workspace and use it as the source of truth for code, docs, commands, and verification.
     \\- Runtime context may provide the current cwd, OS, shell, date, git state, and workspace root. Treat it as current for the turn; inspect the workspace when it is missing or stale.
-    \\- Never claim you cannot access local files or run commands when the relevant tools are available.
+    \\- Never claim you cannot access local files or run commands. Both are available; the tools for them load on demand.
     \\- Read-only inspection may use absolute paths outside the workspace when the user explicitly asks about another local project or file.
     \\
 ;
@@ -47,7 +47,7 @@ const workspace_section =
     \\# Workspace behavior
     \\
     \\- For requests about the workspace, repository, code, configuration, CI, git history, commands, errors, or project structure, gather local evidence before answering and make at least one safe local inspection before the final answer. Do not rely on memory or general knowledge when inspection can make progress.
-    \\- Start with direct file, search, or local git inspection when those capabilities are available.
+    \\- Start with direct file, search, or local git inspection.
     \\- Do not ask for discoverable workspace facts. Inspect first, then ask only for preferences, tradeoffs, credentials, or irreversible decisions that still block progress.
     \\- When users ask to build or edit something, use tools to make the change. Read the relevant files and local conventions, stay inside the requested scope, and align UI or web work with the existing stack and visual language.
     \\- If a tool or command fails, diagnose the latest result before retrying and do not repeat the same action without new evidence.
@@ -95,7 +95,9 @@ const safety_section =
 const tools_and_verification_section =
     \\# Tools and verification
     \\
-    \\- Choose the smallest suitable available capability.
+    \\- The advertised tool list starts nearly empty by design. A capability missing from it is loadable, not absent: call search_tools once with a phrase for what you need (read a file, edit a file, search file contents, run a command, git, plan), then select_tool on the matches before using them.
+    \\- Do this before answering that something is out of reach, and before substituting a shell command for a tool that exists.
+    \\- Choose the smallest suitable capability.
     \\- After code changes, verify the relevant behavior with direct checks such as formatting, a focused test, build, CLI run, or eval before claiming it works. Broaden when the touched surface is shared, focused proof fails, or the user asks.
     \\- If the user names a test file, run it directly or infer the closest command from local conventions. When no test is named, inspect only enough changed-file metadata to select the checks.
     \\- Prefer build, test, typecheck, CLI, or other direct checks appropriate to the change.
@@ -3653,13 +3655,13 @@ test "gateway_system_prompt: local workspace authority" {
     try expectDefaultPromptContains("real local workspace");
     try expectDefaultPromptContains("source of truth for code, docs, commands, and verification");
     try expectDefaultPromptContains("Treat it as current for the turn; inspect the workspace when it is missing or stale.");
-    try expectDefaultPromptContains("Never claim you cannot access local files or run commands when the relevant tools are available.");
+    try expectDefaultPromptContains("Never claim you cannot access local files or run commands. Both are available; the tools for them load on demand.");
 }
 
 test "gateway_system_prompt: evidence-led scoped execution" {
     try expectDefaultPromptContains("gather local evidence before answering");
     try expectDefaultPromptContains("make at least one safe local inspection before the final answer");
-    try expectDefaultPromptContains("Start with direct file, search, or local git inspection when those capabilities are available.");
+    try expectDefaultPromptContains("Start with direct file, search, or local git inspection.");
     try expectDefaultPromptContains("Do not ask for discoverable workspace facts. Inspect first");
     try expectDefaultPromptContains("When users ask to build or edit something, use tools to make the change.");
     try expectDefaultPromptContains("stay inside the requested scope");
@@ -3700,7 +3702,11 @@ test "gateway_system_prompt: safety and permission boundaries" {
 }
 
 test "gateway_system_prompt: focused tools and live verification" {
-    try expectDefaultPromptContains("Choose the smallest suitable available capability.");
+    try expectDefaultPromptContains("The advertised tool list starts nearly empty by design.");
+    try expectDefaultPromptContains("call search_tools once with a phrase for what you need");
+    try expectDefaultPromptContains("then select_tool on the matches before using them");
+    try expectDefaultPromptContains("before substituting a shell command for a tool that exists");
+    try expectDefaultPromptContains("Choose the smallest suitable capability.");
     try expectDefaultPromptContains("verify the relevant behavior with direct checks");
     try expectDefaultPromptContains("Broaden when the touched surface is shared");
     try expectDefaultPromptContains("preserve the exact commands, pass or fail status, exit code when available, meaningful output");

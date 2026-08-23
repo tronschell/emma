@@ -1,20 +1,19 @@
 # Permissions
 
 What a turn is allowed to do without stopping to ask, and where that is enforced.
-One table in [permissions.ts](../desktop/shared/permissions.ts) answers the
-question for every tool; the mode picker in the composer chooses which column of
-it a run reads.
+One table in [permissions.ts](../desktop/shared/permissions.ts) decides it for
+every tool. The mode picker in the composer picks which column of that table a
+run reads.
 
-## The five modes
+## The four modes
 
-`PERMISSION_MODES` is `["plan", "ask", "acceptEdits", "auto", "full"]`. The
+`PERMISSION_MODES` is `["ask", "acceptEdits", "auto", "full"]`. The
 default is `ask` (`DEFAULT_PERMISSION_MODE`). Names, glyphs and hints are exactly
 as they appear in [permissions.ts](../desktop/shared/permissions.ts) and exactly
 what the picker renders:
 
 | Glyph | Name | Mode id | Hint |
 | --- | --- | --- | --- |
-| ◇ | Plan | `plan` | Reads and subagents only. Nothing on this Mac changes. |
 | ◈ | Ask | `ask` | Every write, command, and click asks first. |
 | ◆ | Accept edits | `acceptEdits` | File writes and grep go through; other commands and the pointer still ask. |
 | ⬗ | Auto | `auto` | A separate verifier model reads each gated call; anything it will not clear still asks you. |
@@ -38,16 +37,14 @@ turn already going follows the picker, not the mode it opened on.
 | `ask` | The call stops and a human (or, in `auto`, the verifier) has to say yes. |
 | `auto` | The call goes through. |
 
-`hidden` is the strong one. The source says it plainly:
+`hidden` is the strong one:
 
 > `hidden` is never advertised, so the model cannot even ask for it.
 
-The significance is that `hidden` is not a "no" the model can argue with or
-retry — the tool is absent from the catalog, so there is no call to negotiate
-over and no dialog for a user to click through by habit. That is what makes
-`plan` mode a real promise rather than a strongly worded request: in `plan`,
-`write_file`, `bash`, `computer`, `install_mcp` and the rest are not options that
-get denied, they are options that do not exist.
+`hidden` is not a "no" the model can argue with or retry. The tool is missing
+from the catalog, so there is no call to negotiate over and no dialog to click
+through by habit. Today only a Settings → Tools switch and an unknown name reach
+it; no mode hides a tool the user has left switched on.
 
 Settings → Tools switches are checked in the same function, first:
 
@@ -69,58 +66,56 @@ Every tool in `AGENT_TOOLS`, transcribed cell for cell from `GATES` in
 [permissions.ts](../desktop/shared/permissions.ts). Rows are in `AGENT_TOOLS`
 order.
 
-| Tool | `plan` | `ask` | `acceptEdits` | `full` |
-| --- | --- | --- | --- | --- |
-| `read_file` | auto | auto | auto | auto |
-| `list_files` | auto | auto | auto | auto |
-| `ripgrep` | auto | auto | auto | auto |
-| `write_file` | hidden | ask | auto | auto |
-| `bash` | hidden | ask | ask | auto |
-| `background` | hidden | auto | auto | auto |
-| `cli` | hidden | ask | ask | auto |
-| `cli_runs` | auto | auto | auto | auto |
-| `computer` | hidden | ask | ask | auto |
-| `write_skill` | hidden | auto | auto | auto |
-| `write_tool` | hidden | auto | auto | auto |
-| `run_tool` | hidden | ask | ask | auto |
-| `memory` | hidden | auto | auto | auto |
-| `advisor` | auto | auto | auto | auto |
-| `vision` | auto | auto | auto | auto |
-| `web_fetch` | auto | auto | auto | auto |
-| `web_search` | auto | auto | auto | auto |
-| `task` | auto | auto | auto | auto |
-| `plan` | hidden | auto | auto | auto |
-| `threads` | auto | auto | auto | auto |
-| `read_trace` | auto | auto | auto | auto |
-| `context` | auto | auto | auto | auto |
-| `save_page` | hidden | auto | auto | auto |
-| `mcp_tool` | hidden | ask | ask | auto |
-| `agents` | auto | auto | auto | auto |
-| `install_mcp` | hidden | ask | ask | auto |
-| `workflow` | hidden | ask | ask | auto |
-| `autoresearch` | hidden | ask | ask | auto |
-| `artifact` | hidden | auto | auto | auto |
-| `visualize` | auto | auto | auto | auto |
+| Tool | `ask` | `acceptEdits` | `full` |
+| --- | --- | --- | --- |
+| `read_file` | auto | auto | auto |
+| `list_files` | auto | auto | auto |
+| `ripgrep` | auto | auto | auto |
+| `write_file` | ask | auto | auto |
+| `bash` | ask | ask | auto |
+| `background` | auto | auto | auto |
+| `cli` | ask | ask | auto |
+| `cli_runs` | auto | auto | auto |
+| `computer` | ask | ask | auto |
+| `write_skill` | auto | auto | auto |
+| `write_tool` | auto | auto | auto |
+| `write_plugin` | auto | auto | auto |
+| `run_tool` | ask | ask | auto |
+| `memory` | auto | auto | auto |
+| `advisor` | auto | auto | auto |
+| `vision` | auto | auto | auto |
+| `web_fetch` | auto | auto | auto |
+| `web_search` | auto | auto | auto |
+| `plan` | auto | auto | auto |
+| `threads` | auto | auto | auto |
+| `read_trace` | auto | auto | auto |
+| `context` | auto | auto | auto |
+| `save_page` | auto | auto | auto |
+| `agents` | auto | auto | auto |
+| `install_mcp` | ask | ask | auto |
+| `workflow` | ask | ask | auto |
+| `autoresearch` | ask | ask | auto |
+| `artifact` | auto | auto | auto |
+| `visualize` | auto | auto | auto |
 
 Reading the table sideways:
 
-- **Free in every mode, including `plan`** — `read_file`, `list_files`,
-  `ripgrep`, `cli_runs`, `advisor`, `vision`, `web_fetch`, `web_search`, `task`,
-  `threads`, `read_trace`, `context`, `agents`, `visualize`. Reads are free
-  everywhere: a folder grant is already the user saying yes to that folder.
-- **Never asks, but hidden in `plan`** — `background`, `write_skill`,
-  `write_tool`, `memory`, `save_page`, `plan`, `artifact`. These write, but only
+- **Free in every mode** — `read_file`, `list_files`, `ripgrep`, `cli_runs`,
+  `advisor`, `vision`, `web_fetch`, `web_search`, `threads`, `read_trace`,
+  `context`, `agents`, `visualize`. Reads are free everywhere: a folder grant is
+  already the user saying yes to that folder.
+- **Never asks, though it writes** — `background`, `write_skill`, `write_tool`,
+  `write_plugin`, `memory`, `save_page`, `plan`, `artifact`. These write, but only
   into Emma's own data folder or the user's knowledge base, never into a file the
-  user owns. In `plan`, where the promise is that nothing at all happens, they
-  are not offered.
+  user owns.
 - **Asks in `ask`, free in `acceptEdits`** — `write_file`, alone. That is the
   whole difference between the two modes.
 - **Asks in `ask` and in `acceptEdits`** — `bash`, `cli`, `run_tool`, `computer`,
-  `mcp_tool`, `install_mcp`, `workflow`, `autoresearch`. `acceptEdits` promises
+  `install_mcp`, `workflow`, `autoresearch`. `acceptEdits` promises
   edits, not commands, and each of these runs a program: `run_tool` runs a script
   in the connected folder, `cli` hands the folder to another coding agent,
-  `install_mcp` starts a process, `workflow` and `autoresearch` hand out agent
-  turns that run later with nobody watching.
+  `install_mcp` puts one on the list the harness launches, `workflow` and
+  `autoresearch` hand out agent turns that run later with nobody watching.
 - **Free in `full`** — everything. Nothing asks.
 
 `ripgrep` is `auto` everywhere because it runs one bundled binary with no shell.
@@ -202,26 +197,18 @@ prompt and reply, so it is readable afterwards in the inspector and by
 
 ## Subagents inherit the mode
 
-The comment above `GATES` states the rule:
+A child inherits the parent's mode, so its writes and commands hit this table
+again rather than escaping through the spawn.
 
-> `task` is free too — a subagent inherits this same mode, so its own writes and
-> commands hit this table again rather than escaping through the spawn.
+Delegation is the harness's tool, not Emma's, so it is gated there instead:
+`permission_mode` on a `subagent` `create` "inherits the caller when omitted and
+cannot exceed it". Spawning is not itself a change to the Mac, and the child
+cannot do anything the parent could not. `spawnThread` in
+[agent-loop.ts](../desktop/main/agent-loop.ts) passes `mode: turn.mode` down, and
+`threads spawn` is gated the same way for the same reason.
 
-That is why `task` is `auto` in every column, including `plan`: spawning is not
-itself a change to the Mac, and the child cannot do anything the parent could
-not. `spawnThread` in [agent-loop.ts](../desktop/main/agent-loop.ts) passes
-`mode: turn.mode` down, and `threads spawn` is gated the same way for the same
-reason.
-
-Two extra limits on top:
-
-- `ToolAvailability.canSpawn` is false inside a subagent
-  ([tools.ts](../desktop/main/tools.ts)), so a subagent cannot spawn another.
-- `runThreadsTool` refuses `spawn` and `message` outright in `plan` mode, even
-  though the `threads` row is `auto` — the read-only halves (`list`, `read`,
-  `rename`) stay available, and the halves that put an agent to work do not.
-
-Live subagents are capped at `MAX_LIVE_SUBAGENTS = 8`
+How many children run at once is the harness's to decide. What Emma still caps is
+the plan: one wave hands out at most `MAX_LIVE_SUBAGENTS = 8` briefs
 ([agents.ts](../desktop/shared/agents.ts)).
 
 ## Where the gate is enforced
@@ -280,23 +267,18 @@ them itself at execution. A test asserts it for every one of them, with the
 reason: "Emma applies its own gate when it runs the call, so a harness prompt
 would be a second one for the same decision."
 
-Mode ids are mapped in [harness.ts](../desktop/main/harness.ts):
+The mode id sent to the harness is a constant in
+[harness.ts](../desktop/main/harness.ts):
 
 ```ts
-const MODE_IDS: Record<PermissionMode, string> = {
-  plan: "plan",
-  ask: "ask",
-  acceptEdits: "ask",
-  auto: "ask",
-  full: "ask",
-};
+export const HARNESS_MODE_ID = "ask";
 ```
 
-Every mode that can change something maps to the harness's `ask`, so every
-decision comes back to Emma. The two identity mappings that look natural were
-both unsafe and were removed: `acceptEdits` → harness `auto` does not check the
-granted folder at all, and `full` → harness `yolo` has no floor whatsoever, where
-Emma's `full` still enforces the sandbox.
+Every Emma mode maps to the harness's `ask`, so every decision comes back to
+Emma. Two of them look like they should map straight through, and both were
+unsafe: `acceptEdits` → harness `auto` does not check the granted folder at all,
+and `full` → harness `yolo` has no floor whatsoever, where Emma's `full` still
+enforces the sandbox.
 
 The decision then lands in `onPermission` in [main.ts](../desktop/main/main.ts),
 in this order:
@@ -373,15 +355,16 @@ click *is* the consent:
 
 A scheduled task stores its own `permissionMode` and runs under it later with
 nobody watching. The `workflow` tool's schema
-([tools.ts](../desktop/main/tools.ts)) offers four values, not five:
+([tools.ts](../desktop/main/tools.ts)) offers three values, not four — `auto`
+needs a verifier the unattended path does not run:
 
 ```ts
-permissionMode: { type: "string", enum: ["plan", "ask", "acceptEdits", "full"], description: "What the unattended run may do. Nobody is there to answer a question, so \"ask\" declines every gated call." }
+permissionMode: { type: "string", enum: ["ask", "acceptEdits", "full"], description: "What the unattended run may do. Nobody is there to answer a question, so \"ask\" declines every gated call." }
 ```
 
 `autoresearch` carries the same field, with its own note: "Nobody is watching, so
-\"ask\" declines every gated call — a job that edits files needs \"acceptEdits\"
-at least."
+`ask` declines every gated call — a job that edits files needs `acceptEdits` at
+least."
 
 The field is normalised through `asPermissionMode` on save
 ([ipc.ts](../desktop/main/ipc.ts) lists `permissionMode` among
@@ -395,33 +378,9 @@ A question raised with nobody there does not hang forever and does not pass:
 If there is no main window at all, main answers `false` immediately. See
 [jobs.md](jobs.md) and [autoresearch.md](autoresearch.md).
 
-## `EMMA_MODE` for the terminal command
+## The harness's own modes
 
-The standalone `emma` command is a bash script, [agent/emma](../agent/emma). It
-reads the same mode names except `auto`:
-
-```bash
-mode="${EMMA_MODE:-ask}"
-[ -n "${EMMA_YOLO:-}" ] && mode=full
-case $mode in
-  plan | ask | acceptEdits | full) ;;
-  *) echo "EMMA_MODE must be plan, ask, acceptEdits, or full" >&2; exit 1 ;;
-esac
-```
-
-`auto` is absent because there is no verifier in that script and no window to
-fall back to. What each mode does there:
-
-- `plan` advertises no tools at all.
-- `ask` prompts `run it? [y/N]` on `/dev/tty`.
-- `acceptEdits` and `full` run the command.
-
-It has one tool, `bash`, its output is cut at `head -c 16000`, and `max_steps` is
-120. `EMMA_YOLO` set to anything forces `full`. `EMMA_MODE` appears in this script
-and nowhere else — not in `agent/src/main.zig`, not in
-[cli.ts](../desktop/main/cli.ts). See [cli.md](cli.md).
-
-The harness has its own four modes in
+The harness has four modes in
 [modes.zig](../harness/src/builtins/modes.zig), matched to Emma's picker, with
 `default_mode_id = "ask"`:
 
@@ -432,9 +391,11 @@ The harness has its own four modes in
 | `acceptEdits` | Accept edits | Edit files without asking, but ask before running anything | `.auto` |
 | `full` | Full | Run unattended, asking for nothing | `.yolo` |
 
-Plan mode's denial message there is: "Plan mode is read-only. Say what you would
-do, and the user can switch modes to let you do it." Because of `MODE_IDS` above,
-Emma only ever selects `plan` or `ask` of these.
+Emma selects only `ask` of these. The harness keeps its own `plan` mode for its
+TUI; Emma's picker dropped it, because a mode that hides `terminal` and
+`write_file` has no way back out to executing the plan it just wrote. Planning in
+Emma is the `plan` tool instead — write the steps, run a wave of subagents,
+record what each returned — which needs a mode that can act.
 
 ## What a permission prompt carries
 
@@ -547,23 +508,28 @@ and its refusals are written for the model to act on rather than for a log.
 granted it, in any mode: "Screen Recording permission is required. Enable Emma in
 System Settings → Privacy & Security → Screen Recording."
 
+**Plugin hooks.** A plugin's lifecycle hooks are not tool calls and never reach
+`GATES`: they are shell commands the user reviewed once, running at fixed moments
+in a turn. Their gate is trust, pinned to a hash of the exact command text and
+revoked the moment it changes ([plugins.md](plugins.md#trust)).
+
 **The log.** Every call lands in the durable trace, readable in the inspector and
 by `read_trace`, including every verifier review.
 
 Settings → Privacy states the same contract in the product's own words: "Every
-run is gated by the mode picker … *Plan* hides it, *Ask* and *Accept edits* stop
+run is gated by the mode picker … *Ask* and *Accept edits* stop
 for your yes on every call, *Auto* sends the call to your verifier model, and
 *Full access* lets it through. The step ceiling, the action rate limit, the
 on-screen banner, and the Escape kill switch apply in every mode, and every
 action is logged."
 
-## Note on lazy tool discovery
+## Lazy tool discovery is not a gate
 
 Every harness mode opens advertising only `search_tools` and `select_tool`; the
 rest of the catalog waits behind a search
 ([tool_native_dispatch.zig](../harness/src/core/tooling/tool_native_dispatch.zig)).
 That file says outright that this is "a prompt-cost mechanism, not a security
-boundary" — it saves tokens, it does not gate anything. The gate is `GATES`.
+boundary". It saves tokens. It gates nothing. The gate is `GATES`.
 
 ## See also
 
@@ -574,7 +540,7 @@ boundary" — it saves tokens, it does not gate anything. The gate is `GATES`.
 - [models.md](models.md) — configuring the verifier and advisor routes
 - [privacy.md](privacy.md) — what leaves this Mac
 - [harness.md](harness.md) — `emma-cli`, ACP, and the permission channel
-- [cli.md](cli.md) — `EMMA_MODE` and the terminal front ends
+- [cli.md](cli.md) — driving the user's other coding CLIs
 - [architecture.md](architecture.md) — process boundaries and the trust model
 - [concepts.md](concepts.md) — thread, run, subagent, mode
 - [getting-started.md](getting-started.md) — the macOS permissions Emma asks for

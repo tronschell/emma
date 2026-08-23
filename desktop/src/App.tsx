@@ -1,23 +1,28 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
-import type { AgentImportSource, ArtifactBlock, Connection, CredentialSummary, HeldAttachment, ImportedMcpPermissionReview, ImportedMcpServer, ImportedMcpTool, ImportedSkill, ToolTarget, KnowledgePage, Message, ModelModality, OpenRouterCatalog, OverlaySurface, PageClip, PageVersion, ScheduledJob, Snapshot, Thread } from "./types";
+import type { AgentImportSource, ArtifactBlock, Connection, CredentialSummary, HeldAttachment, ImportedMcpServer, ImportedSkill, ToolTarget, KnowledgePage, Message, ModelModality, OpenRouterCatalog, OverlaySurface, PageClip, PageVersion, ScheduledJob, Snapshot, Thread } from "./types";
 import { describeRun, describeTrigger, parseVariables, parseWorkflow, runWorkflow, triggerProblem } from "../shared/workflow";
+import { PluginsView } from "./plugins";
 import { PromptField, TriggerPicker, useTaskCommands, WorkflowGraph } from "./schedule";
-import { activityDays, plural } from "./activity";
+import { activityDays, activityGrid, plural } from "./activity";
 import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
-import { defaultPaneLayout, validatePaneLayout, type PaneLayout } from "./layout";
+import { defaultPaneLayout, NAV_VIEWS, ordered, validatePaneLayout, type PaneLayout } from "./layout";
+import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { dropQueued, groupBlocks, pairBlocks, sendTurn, takeDraft, useRun, wrote, type Block } from "./runs";
-import { splitThinking, withThinking } from "../shared/thinking";
+import { dropQueued, groupBlocks, pairBlocks, sendTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block } from "./runs";
+import { splitThinking } from "../shared/thinking";
 import { brandForConnection, brandForImporter, brandForModel, brandForProvider, providerBrands, type BrandDefinition } from "./brands";
 import { validScreenContextId } from "../shared/screen-context";
 import { CAPTURE_MODEL, isRawClip, pageForUrl } from "../shared/knowledge";
 import { highlightSegments, insertCommand, KIND_LABELS, matchCommands, mentions, MENU_MAX, slashQuery, type SlashCommand } from "../shared/slash";
 import { pickKey, type ContextPick, type FolderFile, type FolderGrant } from "../shared/folders";
-import { type ContextUse } from "../shared/usage";
-import { ContextBarSettings, ContextWidgets, readContextPage, useContextLedger, writeContextPage } from "./context-bar";
+import { charLabel, CHARS_PER_TOKEN, type ContextUse } from "../shared/usage";
+import { formatDuration } from "../shared/trace";
+import { ContextBarSettings, ContextWidgets, readContextPage, useContextLedger, useThreadCalls, writeContextPage } from "./context-bar";
 import { MAX_CONTEXT_PAGES, type ContextPage } from "../shared/context-bar";
 import { documentGroups, parseMarkdown, type Inline } from "./document";
 import { Markdown } from "./markdown";
@@ -31,7 +36,7 @@ import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeM
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
 import { worktreeName, type GitSnapshot } from "../shared/git";
-import { BrandIcon, ClipIcon, InfoDot, ToolIcon, TrashIcon } from "./icons";
+import { BrandIcon, ClipIcon, EmmaMark, InfoDot, ToolIcon } from "./icons";
 import { syncImprovements } from "./improvements";
 import { CliDock, CliPanel, useCliRuns, useTailScroll } from "./cli";
 import { cliHarness } from "../shared/cli";
@@ -65,22 +70,43 @@ function ThreadStatus({ status }: { status?: AgentStatus }) {
   return <span className={`thread-status ${state}`} title={STATUS_TITLES[state]} role="img" aria-label={STATUS_TITLES[state]} />;
 }
 
-/// A message's rendered content: the reasoning scratchpad folded into a
-/// dropdown, the answer under it. Shared by a landed turn and a streaming one so
+/// A message's rendered content. Shared by a landed turn and a streaming one so
 /// the text does not shift when the host's copy replaces the streamed buffer.
-/// The answer is Markdown — tables and fences arrive as tables and fences — but
-/// the scratchpad stays plain: it is a raw dump, not authored prose.
-function Body({ content, split }: { content: string; split: boolean }) {
-  const { thinking, answer } = split ? splitThinking(content) : { thinking: "", answer: content };
-  return <div className="message-body">
-    {thinking && <details className="thinking"><summary>Thinking · {thinking.length.toLocaleString()} chars</summary><p>{thinking}</p></details>}
-    <Markdown text={answer} />
-  </div>;
+/// Markdown — tables and fences arrive as tables and fences. The scratchpad is
+/// not here: it is one row for the whole turn, drawn by `Thought`.
+function Body({ content }: { content: string }) {
+  return <div className="message-body"><Markdown text={content} /></div>;
 }
+
+/// `48s`, `3m 29s` — whole seconds, because the live row ticks once a second and
+/// `formatDuration`'s hundredths would only flicker there.
+const clock = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)}s` : formatDuration(ms);
+
+/**
+ * A turn's reasoning as one row, rather than one caret per burst.
+ *
+ * The harness thinks between every tool call, so a caret drawn where each burst
+ * happened stacked a dozen of them down a single turn and left the answer to be
+ * found among them. It is one train of thought and it reads as one line: the
+ * clock and the weight while it runs, what it cost once it lands, open either way.
+ */
+function Thought({ text, ms, tokens, live }: { text: string; ms: number; tokens: number; live?: string }) {
+  if (!text.trim() && !live) return null;
+  return <details className="thinking" data-live={live ? "true" : undefined}>
+    <summary>{live
+      ? `${clock(ms)} · ${charLabel(tokens)} tokens · ${live}`
+      : ms > 0 ? `Thought for ${clock(ms)} · ${charLabel(tokens)} tokens` : `Thought · ${charLabel(tokens)} tokens`}</summary>
+    <p>{text}</p>
+  </details>;
+}
+
+/// The scratchpad's own weight, which nothing reports: the turn's token count is
+/// the answer's too, and this row is not about the answer.
+const thoughtTokens = (text: string) => Math.round(text.length / CHARS_PER_TOKEN);
 
 /// The turn's text on the clipboard. The scratchpad is left behind: what a
 /// reader means by "this message" is the answer, not the model's notes.
-function CopyTurn({ text }: { text: string }) {
+function CopyTurn({ text, label = "Copy message" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -89,7 +115,7 @@ function CopyTurn({ text }: { text: string }) {
   }, [copied]);
   // A mark, not a word: the meta line is already three readouts wide, and the
   // tick is the whole confirmation — the label carries it for a screen reader.
-  return <button type="button" className="message-copy" aria-label={copied ? "Copied" : "Copy message"} title={copied ? "Copied" : "Copy message"} onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true)).catch(() => undefined)}>
+  return <button type="button" className="message-copy" aria-label={copied ? "Copied" : label} title={copied ? "Copied" : label} onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true)).catch(() => undefined)}>
     {copied
       ? <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 8.5 6 12l7.5-8" /></svg>
       : <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" /><path d="M10.5 3.5v-1h-8v8h1" /></svg>}
@@ -144,8 +170,13 @@ function Turn({ item, blocks, index }: { item: Message; blocks?: Block[]; index?
   // messaged this one is named instead, because "You" is the one thing the user
   // cannot tell apart from something they typed themselves.
   const { from, body } = sentByThread(item.content);
+  // Above the turn, not inside it: a turn that thought between every tool call
+  // has its reasoning in a dozen places, and one row for all of it is the only
+  // arrangement that does not push the answer off the screen.
+  const thought = item.role !== "assistant" ? "" : blocks?.length ? thinkingOf(blocks) : splitThinking(body).thinking;
   return <article className={`message ${item.role}`} data-turn={index}>
-    {blocks?.length ? <Blocks blocks={blocks} /> : <Body content={body} split={item.role === "assistant"} />}
+    {thought && <Thought text={thought} ms={item.generation?.durationMilliseconds ?? 0} tokens={thoughtTokens(thought)} />}
+    {blocks?.length ? <Blocks blocks={blocks} /> : <Body content={item.role === "assistant" ? splitThinking(body).answer : body} />}
     <footer className="message-meta"><span>{item.role === "user" ? from ? `thread ${from} messaged:` : "You" : "Emma"}</span><CopyTurn text={item.role === "assistant" ? splitThinking(item.content).answer : body} />{model && <span className="message-model" title={`Answered by ${model}`}><BrandIcon brand={brandForModel(model)} className="message-model-mark" /><span>{model}</span></span>}<time dateTime={item.timestamp}>{time(item.timestamp)}</time>{item.generation && <span className="generation-rate" title={`${item.generation.outputTokens} output tokens in ${item.generation.durationMilliseconds} ms`}>{Math.round(item.generation.outputTokens / item.generation.durationMilliseconds * 1000).toLocaleString()} tok/s</span>}</footer>
   </article>;
 }
@@ -157,9 +188,9 @@ function Turn({ item, blocks, index }: { item: Message; blocks?: Block[]; index?
  * of narration opens its own list under that line, because that is where it happened.
  */
 function Blocks({ blocks }: { blocks: Block[] }) {
-  // Reasoning arrives on its own channel here, and inline as <think> in the text;
-  // wrapping the one in the other is what puts both in the same dropdown.
-  return <>{groupBlocks(blocks, STEPS_SHOWN).map((block, index) => block.kind === "steps"
+  // Reasoning arrives on its own channel here, and inline as <think> in the text.
+  // Neither is drawn in place: `Thought` has already hoisted both to one row.
+  return <>{groupBlocks(withoutThinking(blocks), STEPS_SHOWN).map((block, index) => block.kind === "steps"
     ? <Steps key={index} steps={block.steps} shown={block.keep} />
     // The same recharts component the knowledge pages draw with, and the same
     // lazy module, so a thread that never asks for a picture never loads it.
@@ -168,7 +199,7 @@ function Blocks({ blocks }: { blocks: Block[] }) {
       ? <Suspense key={index} fallback={null}><ChartArtifact {...block.visual} /></Suspense>
       : block.kind === "notice"
         ? <ContextNotice key={index} text={block.text} />
-        : <Body key={index} content={block.kind === "thinking" ? withThinking(block.text, "") : block.text} split={true} />)}</>;
+        : <Body key={index} content={block.text} />)}</>;
 }
 
 /// A Harness lever rewriting the window mid-turn, said where it happened. Emma
@@ -295,15 +326,32 @@ function Review({ step }: { step: ThreadStep }) {
   </details>;
 }
 
-/// The turn as it arrives. Same blocks as a landed one, no footer: there is no
-/// timestamp or token count until the host writes the message. An unclosed
-/// <think> block reads as all-thinking, so the dropdown fills live and the
-/// answer starts underneath it the moment the model closes the tag.
-function Streaming({ blocks }: { blocks: Block[] }) {
+/// The turn as it arrives. Same blocks as a landed one, with the reasoning row
+/// pinned under them rather than above: while a turn runs, that row is its status
+/// line — how long it has been at it, what it has spent, what it is doing — and a
+/// status line belongs at the end of what it is reporting on. It fills as the
+/// scratchpad streams, so it is also the way to read the thinking mid-turn.
+function Streaming({ blocks, threadId }: { blocks: Block[]; threadId: string }) {
+  const agent = useAgents().find((item) => item.threadId === threadId);
+  // Elapsed is the only readout that moves while a turn thinks, and nothing else
+  // on screen changes to carry it, so it gets a clock of its own.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   return <article className="message assistant streaming">
     <Blocks blocks={blocks} />
-    <footer className="message-meta"><span>Emma</span><span className="pending-note">Streaming…</span></footer>
+    {agent && <Thought text={thinkingOf(blocks)} ms={now - agent.startedAt} tokens={agent.outputTokens} live={agent.activity || "thinking"} />}
+    <footer className="message-meta"><span>Emma</span>{!agent && <span className="pending-note">Streaming…</span>}</footer>
   </article>;
+}
+
+function AgentTranscript({ threadId, thread }: { threadId: string; thread?: Thread }) {
+  const run = useRun(threadId);
+  if (thread?.messages.length) return <>{thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} />)}</>;
+  if (run.blocks.length) return <Streaming blocks={run.blocks} threadId={threadId} />;
+  return <p className="waiting" role="status"><Mark /> Waiting for this agent's first turn…</p>;
 }
 
 function SendIcon() {
@@ -492,6 +540,18 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   return { snapshot, load, error, setError };
 }
 
+function ActivityHeatmap({ timestamps }: { timestamps: string[] }) {
+  const { weeks, max } = useMemo(() => activityGrid(timestamps, ACTIVITY_WEEKS), [timestamps]);
+  const level = (count: number) => count === 0 ? 0 : Math.min(4, 1 + Math.floor((count - 1) / (Math.ceil(max / 4) || 1)));
+  const total = weeks.flat().reduce((sum, day) => sum + day.count, 0);
+  return <section className="sidebar-activity" aria-label={total === 0 ? "No activity this period" : `${total} ${plural(total, "activity event", "activity events")}`}>
+    <span className="activity-head"><span className="sidebar-label">Activity</span><span>{total}</span></span>
+    <span className="activity-grid" role="img" aria-label={`${weeks.length} weeks of activity`}>
+      {weeks.flatMap((column, week) => column.map((day) => <i key={`${week}-${day.date}`} className={`activity-cell l${level(day.count)}`} data-date={day.date} data-count={day.count} title={`${day.date}: ${day.count} ${plural(day.count, "message")}`} />))}
+    </span>
+  </section>;
+}
+
 function Workspace() {
   const [threadId, setThreadId] = useState("");
   const [pageId, setPageId] = useState("");
@@ -502,7 +562,7 @@ function Workspace() {
     setPageId((current) => next.pages.some((item) => item.id === current) ? current : "");
   }, []);
   const { snapshot, load, error, setError } = useSnapshot(pinSelections);
-  const [view, setView] = useState<"threads" | "knowledge" | "artifacts" | "agent" | "scheduled" | "research" | "archive" | "settings">("threads");
+  const [view, setView] = useState<"threads" | "knowledge" | "artifacts" | "agent" | "scheduled" | "plugins" | "research" | "archive" | "settings">("threads");
   const [threadMenu, setThreadMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [projectMenu, setProjectMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -566,7 +626,7 @@ function Workspace() {
   const actionInFlight = useRef(false);
   const restoredModel = useRef(false);
   // A subagent is a real thread, so it arrives in the snapshot like any other. It
-  // belongs to its parent's tab strip, not to the project list, or every `task`
+  // belongs to its parent's tab strip, not to the project list, or every delegated
   // call would litter the sidebar with threads nobody opened. A sub thread is the
   // other kind of owned thread — its own main agent — and it is listed, nested
   // under the thread that started it.
@@ -599,10 +659,31 @@ function Workspace() {
     addEventListener("emma-settings-changed", reload);
     return () => { removeEventListener("storage", reload); removeEventListener("emma-settings-changed", reload); };
   }, []);
+  // innerWidth is the viewport Chromium laid the page out at; outerWidth is the
+  // window macOS actually gave it, and the two only ever come apart when the page
+  // has been drawn past the window's own right edge — the inspector, which lives on
+  // that edge, then reads as cut in half. Nothing in here can widen a viewport, so
+  // the window is asked for the resize that has always been the fix by hand. Checked
+  // on focus as well as on resize: the window this happens to is usually one that
+  // was resized while nobody was looking at it, and coming back is when it is seen.
   useEffect(() => {
-    const fit = () => setLayout((current) => validatePaneLayout(current, window.innerWidth));
+    let asked = 0;
+    const resync = () => {
+      // A window nobody can see reports no outer width at all, so it would fail this
+      // comparison every time — and dragging one that is minimised or behind another
+      // app fixes nothing anyway. It is checked again the moment it comes back, which
+      // is when a bad frame is seen. Throttled because the answer arrives as another
+      // resize: a window that cannot be put right must not be dragged a pixel forever.
+      if (document.hidden || window.innerWidth <= window.outerWidth || Date.now() - asked < 2_000) return;
+      asked = Date.now();
+      window.emma.resyncWindow();
+    };
+    const fit = () => { setLayout((current) => validatePaneLayout(current, window.innerWidth)); resync(); };
+    resync();
     addEventListener("resize", fit);
-    return () => removeEventListener("resize", fit);
+    addEventListener("focus", resync);
+    document.addEventListener("visibilitychange", resync);
+    return () => { removeEventListener("resize", fit); removeEventListener("focus", resync); document.removeEventListener("visibilitychange", resync); };
   }, []);
   const pane = (change: Partial<PaneLayout>) => setLayout((current) => validatePaneLayout({ ...current, ...change }, window.innerWidth));
   const shellStyle = {
@@ -626,10 +707,10 @@ function Workspace() {
     }
     return "";
   };
-  const projects = [
+  const projects = ordered([
     ...grants.map((grant) => ({ id: grant.id, name: grant.name, threads: nested(filedThreads.filter((item) => projectOf(item) === grant.id)) })),
     { id: "unfiled", name: "Unfiled", threads: nested(filedThreads.filter((item) => !projectOf(item))) },
-  ].filter((group) => group.threads.length || group.id !== "unfiled");
+  ].filter((group) => group.threads.length || group.id !== "unfiled"), layout.projectOrder);
   /* The tags on the rows, and Emma's own filing into them.
      A tag is the second axis beside the project: the group says which folder the
      thread works out of, the chip says what it is about. */
@@ -743,7 +824,7 @@ function Workspace() {
     if (restoredModel.current) return;
     restoredModel.current = true;
     void (async () => {
-      // Flipping this restarts the host, so it has to land before the model selection does.
+      // Flipping this recycles the harnesses, so it lands before the model selection does.
       await window.emma.setZeroRetention(settings.requireZeroRetention).catch((reason: unknown) => setError(reasonText(reason)));
       if (settings.selectedModel === "fallback") {
         try {
@@ -769,7 +850,9 @@ function Workspace() {
           const modelId = settings.selectedModel.slice("openrouter:".length);
           const catalog = await window.emma.request<OpenRouterCatalog>("listOpenRouterModels");
           if (!catalog.models.some((model) => model.id === modelId)) throw new Error("The saved OpenRouter model is no longer in the catalog");
-          await window.emma.request("selectOpenRouterModel", { modelId });
+          // With the saved stop, or main starts every launch on the model's own
+          // default and the slider lies about what the next turn will ask for.
+          await window.emma.request("selectOpenRouterModel", { modelId, effort: settings.thinkingLevel });
           return;
         }
         throw new Error("The saved model selection is invalid");
@@ -813,6 +896,33 @@ function Workspace() {
     "What I want changed: ",
   ].join("\n"));
 
+  /// Both lists in the rail are the user's to arrange, so both are dragged the same
+  /// way: press a row, move 4px, drop it. Under that threshold the press is still a
+  /// press — a nav row still opens its page and a folder still toggles.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const [draggingProject, setDraggingProject] = useState(false);
+  const [navMore, setNavMore] = useState(false);
+  const navCounts: Record<string, number> = { threads: snapshot.threads.length, knowledge: snapshot.pages.length, artifacts: artifactCount, agent: 0, scheduled: snapshot.scheduledJobs.length, plugins: 0, research: snapshot.researchJobs.length };
+  const navLabels: Record<string, string> = { threads: "Threads", knowledge: "Knowledge base", artifacts: "Artifacts", agent: "Agent", scheduled: "Scheduled", plugins: "Plugins", research: "Autoresearch" };
+  const navPages = ordered(NAV_VIEWS.map((id) => ({ id })), layout.navOrder);
+  /// The rail opens on the three sections the user dragged to the top and folds the
+  /// rest behind one row. The page being read is always drawn, folded or not:
+  /// collapsing the list is not a reason for the rail to stop saying where you are.
+  const navShown = navMore ? navPages : navPages.filter((item, at) => at < NAV_PINNED || item.id === view);
+  /// The move is applied to the full list, never the one on screen: a search hides
+  /// groups, and writing the filtered order back would file every hidden folder
+  /// behind the visible ones.
+  const dropped = (all: { id: string }[], write: (order: string[]) => void) => ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const ids = all.map((item) => item.id);
+    const from = ids.indexOf(String(active.id));
+    const to = ids.indexOf(String(over.id));
+    if (from < 0 || to < 0) return;
+    write(arrayMove(ids, from, to));
+  };
+
+  const activityStamps = useMemo(() => snapshot.threads.flatMap((item) => item.messages.map((message) => message.timestamp)), [snapshot.threads]);
+
   return (
     <div className="app-shell" style={shellStyle}>
       <a className="skip-link" href="#content">Skip to content</a>
@@ -830,7 +940,7 @@ function Workspace() {
         {/* The window's only drag handle, and the strip the traffic lights sit in — above the wordmark. */}
         <div className="drag-region" />
         {/* Search lives in the brand band as a glyph, left of the rail toggle, and grows into a field in place. */}
-        <div className="brand"><Mark /><strong>Emma</strong>
+        <div className="brand"><EmmaMark className="blinks" /><strong>Emma</strong>
           <div className={`sidebar-search ${searchOpen ? "open" : ""}`}>
             <button type="button" className="search-toggle" aria-label="Search threads" aria-expanded={searchOpen} onClick={() => { if (searchOpen) { setThreadQuery(""); setSearchOpen(false); } else { setSearchOpen(true); searchInput.current?.focus(); } }}>
               <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" strokeLinecap="round" /></svg>
@@ -840,14 +950,22 @@ function Workspace() {
           </div>
           <button type="button" className="rail-toggle" aria-label={layout.sidebarCollapsed ? "Expand navigation" : "Collapse navigation"} aria-expanded={!layout.sidebarCollapsed} onClick={() => pane({ sidebarCollapsed: !layout.sidebarCollapsed })}>{layout.sidebarCollapsed ? "›" : "‹"}</button></div>
         <button className="new-thread" title="New thread" onClick={() => { setError(""); void createThread(); }} disabled={uiBusy}><span>＋</span><span className="nav-label">New thread</span></button>
-        <nav className="sidebar-nav">
-          <button data-view="threads" title="Threads" disabled={uiBusy} className={view === "threads" ? "active" : ""} onClick={() => setView("threads")}><span>◫</span><span className="nav-label">Threads</span>{snapshot.threads.length > 0 && <b>{snapshot.threads.length}</b>}</button>
-          <button data-view="knowledge" title="Knowledge base" disabled={uiBusy} className={view === "knowledge" ? "active" : ""} onClick={() => setView("knowledge")}><span>◇</span><span className="nav-label">Knowledge base</span>{snapshot.pages.length > 0 && <b>{snapshot.pages.length}</b>}</button>
-          <button data-view="artifacts" title="Artifacts" disabled={uiBusy} className={view === "artifacts" ? "active" : ""} onClick={() => setView("artifacts")}><span>◨</span><span className="nav-label">Artifacts</span>{artifactCount > 0 && <b>{artifactCount}</b>}</button>
-          <button data-view="agent" title="Agent" disabled={uiBusy} className={view === "agent" ? "active" : ""} onClick={() => setView("agent")}><span>⌁</span><span className="nav-label">Agent</span></button>
-          <button data-view="scheduled" title="Scheduled" disabled={uiBusy} className={view === "scheduled" ? "active" : ""} onClick={() => setView("scheduled")}><span>◷</span><span className="nav-label">Scheduled</span>{snapshot.scheduledJobs.length > 0 && <b>{snapshot.scheduledJobs.length}</b>}</button>
-          <button data-view="research" title="Autoresearch" disabled={uiBusy} className={view === "research" ? "active" : ""} onClick={() => setView("research")}><span>◹</span><span className="nav-label">Autoresearch</span>{snapshot.researchJobs.length > 0 && <b>{snapshot.researchJobs.length}</b>}</button>
-        </nav>
+        {/* Drag a section to move it. The artifact pick is a one-shot command, not a
+            level: the nav clears it, or the page would reopen the last-picked
+            artifact every time it is entered. */}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={dropped(navPages, (navOrder) => pane({ navOrder }))}>
+          <SortableContext items={navShown.map((item) => item.id)}>
+            <nav className="sidebar-nav">
+              {navShown.map((item) => <Sortable key={item.id} id={item.id} className="nav-sort">{(handle) =>
+                <button {...handle} data-view={item.id} title={navLabels[item.id]} disabled={uiBusy} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "artifacts") setArtifactPick({ id: "", at: 0 }); setView(item.id); }}><span><NavIcon view={item.id} /></span><span className="nav-label">{navLabels[item.id]}</span>{navCounts[item.id] > 0 && <b>{navCounts[item.id]}</b>}</button>}
+              </Sortable>)}
+              {navPages.length > navShown.length || navMore
+                ? <button type="button" className="nav-more" title={navMore ? "Show fewer sections" : "Show every section"} aria-expanded={navMore} onClick={() => setNavMore(!navMore)}><span><NavIcon view="more" /></span><span className="nav-label">{navMore ? "Less" : "More"}</span></button>
+                : null}
+            </nav>
+          </SortableContext>
+        </DndContext>
+        <ActivityHeatmap timestamps={activityStamps} />
         <AgentRail agents={agents} active={view === "threads" ? tab : undefined} onPick={(agent) => {
           // Picking a subagent opens its tab; picking the root just goes to its thread.
           setView("threads");
@@ -855,33 +973,43 @@ function Workspace() {
           else { setThreadId(agent.threadId); setTab("thread"); }
         }} />
         <BackgroundRail />
-        <div className="sidebar-projects">
+        {/* Dragging a folder collapses every group to its own summary row for the
+            length of the drag: the folders are what is being arranged, and a rail
+            of open groups is a list too tall to see the drop in. */}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+          onDragStart={() => setDraggingProject(true)}
+          onDragCancel={() => setDraggingProject(false)}
+          onDragEnd={(event) => { setDraggingProject(false); dropped(projects, (projectOrder) => pane({ projectOrder }))(event); }}>
+        <SortableContext items={visibleProjects.map((group) => group.id)} strategy={verticalListSortingStrategy}>
+        <div className="sidebar-projects" data-dragging={draggingProject || undefined}>
           <span className="sidebar-label">Projects</span>
           {selection.length > 0 && <div className="thread-selection"><span className="nav-label">{selection.length} selected</span><button type="button" disabled={uiBusy} onClick={() => void archiveThreads(selection)}>Archive</button><button type="button" onClick={() => setSelection([])} aria-label="Clear selection">×</button></div>}
-          {visibleProjects.map((group) => { const limit = threadLimits[group.id] ?? THREAD_PAGE; return <details className="project-group" key={group.id} open><summary onContextMenu={(event) => { if (group.id === "unfiled") return; event.preventDefault(); setProjectMenu({ id: group.id, x: event.clientX, y: event.clientY }); }}><FolderIcon /><span className="nav-label">{group.name}</span><span className="project-actions"><ProjectSweep threads={group.threads} busy={uiBusy} archive={archiveThreads} />{group.id !== "unfiled" && <button type="button" className="project-new" disabled={uiBusy} aria-label={`New thread in ${group.name}`} title={`New thread in ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setError(""); void createThread(group.id); }}>＋</button>}</span><b>{group.threads.length}</b></summary>{group.threads.slice(0, limit).map((item) => renaming?.id === item.id
+          {visibleProjects.map((group) => { const limit = threadLimits[group.id] ?? THREAD_PAGE; return <Sortable key={group.id} id={group.id} className="project-sort">{(handle) => <details className="project-group" open><summary {...handle} onContextMenu={(event) => { event.preventDefault(); setProjectMenu({ id: group.id, x: event.clientX, y: event.clientY }); }}><FolderIcon /><span className="nav-label">{group.name}</span>{group.id !== "unfiled" && <button type="button" className="project-new" disabled={uiBusy} aria-label={`New thread in ${group.name}`} title={`New thread in ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setError(""); void createThread(group.id); }}>＋</button>}<b>{group.threads.length}</b></summary>{group.threads.slice(0, limit).map((item) => renaming?.id === item.id
             ? <form key={item.id} className="project-thread renaming" onSubmit={(event) => { event.preventDefault(); void renameThread(item.id, renaming.value); }}><ThreadStatus status={threadStatus.get(item.id)} /><input autoFocus value={renaming.value} aria-label="Thread name" onChange={(event) => setRenaming({ id: item.id, value: event.target.value })} onBlur={() => void renameThread(item.id, renaming.value)} onKeyDown={(event) => { if (event.key === "Escape") setRenaming(null); }} /></form>
-            : <div className={`project-row ${threadMenu?.id === item.id ? "menu-open" : ""}`} key={item.id}><button type="button" style={{ "--thread-depth": threadDepth(group.threads, item) } as CSSProperties} className={`project-thread ${item.id === thread?.id && view === "threads" && !selection.length ? "active" : ""} ${selection.includes(item.id) ? "selected" : ""}`} title={threadLabel(item)} disabled={uiBusy} onClick={(event) => clickThread(event, group, item.id)} onDoubleClick={() => setRenaming({ id: item.id, value: threadLabel(item) })} onContextMenu={(event) => { event.preventDefault(); setThreadMenu({ id: item.id, x: event.clientX, y: event.clientY }); }}><ThreadStatus status={threadStatus.get(item.id)} /><span className="nav-label">{threadLabel(item)}</span>{tags[item.id] && <em className={`thread-tag ${tags[item.id].auto ? "auto" : ""}`} title={tags[item.id].auto ? `${tags[item.id].tag} · Emma’s guess, right-click to change it` : tags[item.id].tag}>{tags[item.id].tag}</em>}</button><button type="button" className="thread-actions" title="Thread options" aria-label={`Options for ${threadLabel(item)}`} aria-haspopup="menu" aria-expanded={threadMenu?.id === item.id} disabled={uiBusy} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); setThreadMenu({ id: item.id, x: box.left, y: box.bottom + 2 }); }}><DotsIcon /></button></div>)}{group.threads.length > limit && <button type="button" className="project-more" onClick={() => setThreadLimits((current) => ({ ...current, [group.id]: limit + THREAD_PAGE }))}>Load more ({group.threads.length - limit})</button>}{!group.threads.length && <p className="project-empty">No threads yet</p>}</details>; })}
+            : <div className={`project-row ${threadMenu?.id === item.id ? "menu-open" : ""}`} key={item.id}><button type="button" style={{ "--thread-depth": threadDepth(group.threads, item) } as CSSProperties} className={`project-thread ${item.id === thread?.id && view === "threads" && !selection.length ? "active" : ""} ${selection.includes(item.id) ? "selected" : ""}`} title={threadLabel(item)} disabled={uiBusy} onClick={(event) => clickThread(event, group, item.id)} onDoubleClick={() => setRenaming({ id: item.id, value: threadLabel(item) })} onContextMenu={(event) => { event.preventDefault(); setThreadMenu({ id: item.id, x: event.clientX, y: event.clientY }); }}><ThreadStatus status={threadStatus.get(item.id)} /><span className="nav-label">{threadLabel(item)}</span>{tags[item.id] && <em className={`thread-tag ${tags[item.id].auto ? "auto" : ""}`} title={tags[item.id].auto ? `${tags[item.id].tag} · Emma’s guess, right-click to change it` : tags[item.id].tag}>{tags[item.id].tag}</em>}</button><button type="button" className="thread-actions" title="Thread options" aria-label={`Options for ${threadLabel(item)}`} aria-haspopup="menu" aria-expanded={threadMenu?.id === item.id} disabled={uiBusy} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); setThreadMenu({ id: item.id, x: box.left, y: box.bottom + 2 }); }}><DotsIcon /></button></div>)}{group.threads.length > limit && <button type="button" className="project-more" onClick={() => setThreadLimits((current) => ({ ...current, [group.id]: limit + THREAD_PAGE }))}>Load more ({group.threads.length - limit})</button>}{!group.threads.length && <p className="project-empty">No threads yet</p>}</details>}</Sortable>; })}
           {search && !visibleProjects.length && <p className="project-empty">No threads match that search</p>}
         </div>
+        </SortableContext>
+        </DndContext>
         {/* Scheduled tasks sit at the foot of the rail: threads Emma opened on a
             timer, filed under the job that opened them rather than in a project. */}
         {snapshot.scheduledJobs.length > 0 && <details className="sidebar-scheduled">
           <summary><HourglassIcon /><span className="nav-label">Scheduled tasks</span><b>{scheduledThreads.length}</b></summary>
           {snapshot.scheduledJobs.map((job) => { const runs = scheduledThreads.filter((item) => item.scheduledJobId === job.id); return <details className="project-group" key={job.id} open><summary><span className="nav-label">{job.title}</span><b>{runs.length}</b></summary>{runs.map((item) => <button key={item.id} type="button" style={{ "--thread-depth": 1 } as CSSProperties} className={`project-thread ${item.id === thread?.id && view === "threads" && !selection.length ? "active" : ""}`} title={`${threadLabel(item)} · ${date(item.createdAt)} ${time(item.createdAt)}`} disabled={uiBusy} onClick={() => openThread(item.id)} onContextMenu={(event) => { event.preventDefault(); setThreadMenu({ id: item.id, x: event.clientX, y: event.clientY }); }}><ThreadStatus status={threadStatus.get(item.id)} /><span className="nav-label">{date(item.createdAt)} · {time(item.createdAt)}</span></button>)}{!runs.length && <p className="project-empty">No runs yet</p>}</details>; })}
         </details>}
-        <div className="nav-foot"><span><i /> Agent online</span><button type="button" className={`nav-settings ${layout.navIcons ? "active" : ""}`} title={layout.navIcons ? "Show sections as rows" : "Show sections as icons"} aria-label="Show sections as icons" aria-pressed={layout.navIcons} onClick={() => pane({ navIcons: !layout.navIcons })}>▦</button><button type="button" data-view="archive" className={`nav-settings nav-archive ${view === "archive" ? "active" : ""}`} title="Archive" aria-label="Archive" aria-pressed={view === "archive"} disabled={uiBusy} onClick={() => setView("archive")}><TrashIcon /></button><button type="button" data-view="settings" className={`nav-settings ${view === "settings" ? "active" : ""}`} title="Settings" aria-label="Settings" aria-pressed={view === "settings"} disabled={uiBusy} onClick={() => setView("settings")}>⚙</button></div>
+        <div className="nav-foot"><span><i /> Agent online</span><button type="button" className={`nav-settings ${layout.navIcons ? "active" : ""}`} title={layout.navIcons ? "Show sections as rows" : "Show sections as icons"} aria-label="Show sections as icons" aria-pressed={layout.navIcons} onClick={() => pane({ navIcons: !layout.navIcons })}><NavIcon view="tiles" /></button><button type="button" data-view="archive" className={`nav-settings nav-archive ${view === "archive" ? "active" : ""}`} title="Archive" aria-label="Archive" aria-pressed={view === "archive"} disabled={uiBusy} onClick={() => setView("archive")}><NavIcon view="archive" /></button><button type="button" data-view="settings" className={`nav-settings ${view === "settings" ? "active" : ""}`} title="Settings" aria-label="Settings" aria-pressed={view === "settings"} disabled={uiBusy} onClick={() => setView("settings")}><NavIcon view="settings" /></button></div>
         {!layout.sidebarCollapsed && <ResizeHandle label="Resize navigation" value={layout.sidebarWidth} min={200} max={340} onChange={(sidebarWidth) => pane({ sidebarWidth })} />}
       </aside>
       </Region>
       <main id="content" className="content">
-        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={settings.selectedModel} modelLabel={modelLabel} modelTag={modelTag} modelBrand={modelBrand} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} selected={page?.id} onSelect={setPageId} openThread={openThread} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView snapshot={snapshot} page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
+        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={() => { setError(""); void createThread(); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={settings.selectedModel} modelLabel={modelLabel} modelTag={modelTag} modelBrand={modelBrand} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} selected={page?.id} onSelect={setPageId} openThread={openThread} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <PluginsView busy={uiBusy} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView snapshot={snapshot} page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
       {/* The tag field is the whole of manual filing, and the only way back from a
           wrong guess: type over it, or empty it to clear the row. Its datalist is
           the tags already in use, so a set of them stays a set. */}
       {threadMenu && <div className="thread-menu-scrim" onClick={() => setThreadMenu(null)} onContextMenu={(event) => { event.preventDefault(); setThreadMenu(null); }}><menu className="thread-menu" style={{ left: threadMenu.x, top: threadMenu.y }}><form className="thread-menu-tag" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); setThreadTag(threadMenu.id, String(new FormData(event.currentTarget).get("tag") ?? "")); setThreadMenu(null); }}><input name="tag" list="thread-tag-names" autoFocus autoComplete="off" maxLength={32} defaultValue={tags[threadMenu.id]?.tag ?? ""} placeholder="Tag" aria-label="Thread tag" /><datalist id="thread-tag-names">{handTags().map((tag) => <option key={tag} value={tag} />)}</datalist></form><button type="button" disabled={uiBusy} onClick={() => { const item = liveThreads.find((entry) => entry.id === threadMenu.id); setThreadMenu(null); if (item) setRenaming({ id: item.id, value: threadLabel(item) }); }}>Rename</button><button type="button" disabled={uiBusy} onClick={() => void archiveThreads(selection.includes(threadMenu.id) ? selection : [threadMenu.id])}>{selection.includes(threadMenu.id) && selection.length > 1 ? `Archive ${selection.length} threads` : "Archive"}</button></menu></div>}
-      {projectMenu && <div className="thread-menu-scrim" onClick={() => setProjectMenu(null)} onContextMenu={(event) => { event.preventDefault(); setProjectMenu(null); }}><menu className="thread-menu" style={{ left: projectMenu.x, top: projectMenu.y }}><button type="button" disabled={uiBusy} onClick={() => forgetProject(projectMenu.id)}>Remove from sidebar</button></menu></div>}
+      {projectMenu && <div className="thread-menu-scrim" onClick={() => setProjectMenu(null)} onContextMenu={(event) => { event.preventDefault(); setProjectMenu(null); }}><menu className="thread-menu" style={{ left: projectMenu.x, top: projectMenu.y }}><ProjectSweep threads={visibleProjects.find((group) => group.id === projectMenu.id)?.threads ?? []} busy={uiBusy} archive={archiveThreads} />{projectMenu.id !== "unfiled" && <button type="button" disabled={uiBusy} onClick={() => forgetProject(projectMenu.id)}>Remove from sidebar</button>}</menu></div>}
       {setupOpen
         ? <SetupDialog close={() => { localStorage.setItem(SETUP_SEEN_KEY, "1"); localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setSetupOpen(false); setImportsOpen(false); }} />
         : importsOpen && <ImportDialog close={() => { localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setImportsOpen(false); }} />}
@@ -892,20 +1020,55 @@ function Workspace() {
   );
 }
 
+const ACTIVITY_WEEKS = 20;
+
 const THREAD_PAGE = 6;
+
+const NAV_PINNED = 3;
 
 const SWEEP_DAYS = [7, 30, 90, 180];
 
 /// Clears a project down to what is still current: everything untouched for longer
-/// than the chosen span is archived in one pass.
+/// than the chosen span is archived in one pass. It lives in the folder's right-click
+/// menu — a row that offers one control on hover offers the ＋, not the trash.
 function ProjectSweep({ threads, busy, archive }: { threads: Thread[]; busy: boolean; archive: (ids: string[]) => Promise<void> }) {
   const stale = (days: number) => threads.filter((item) => Date.parse(item.updatedAt) < Date.now() - days * 86_400_000).map((item) => item.id);
-  // The trigger is the same trash mark the archive rail uses, so the native select sits
-  // invisible on top of it: the popup is the browser's, the face is ours.
-  return <span className="project-sweep" title="Archive threads older than…"><TrashIcon /><select value="" disabled={busy || !threads.length} aria-label="Archive threads older than" onClick={(event) => event.stopPropagation()} onChange={(event) => { const ids = stale(Number(event.target.value)); event.target.value = ""; if (ids.length) void archive(ids); }}>
-    <option value="" disabled>Archive older than…</option>
-    {SWEEP_DAYS.map((days) => <option key={days} value={days}>Archive older than {days} days ({stale(days).length})</option>)}
-  </select></span>;
+  return <>{SWEEP_DAYS.map((days) => { const ids = stale(days); return <button key={days} type="button" disabled={busy || !ids.length} onClick={() => void archive(ids)}>Archive older than {days} days ({ids.length})</button>; })}</>;
+}
+
+/**
+ * The section marks. One line weight, one 16-grid, one round join across all of
+ * them, so the nav reads as one set of drawings rather than a pile of borrowed
+ * glyphs — and each says what its page holds: a conversation, a shelf, a written
+ * file, a bot, a clock, a plug, an experiment.
+ */
+function NavIcon({ view }: { view: string }) {
+  const paths: Record<string, ReactNode> = {
+    threads: <><path d="M13.8 9.2a1.3 1.3 0 0 1-1.3 1.3H5.4l-2.7 2.7V4a1.3 1.3 0 0 1 1.3-1.3h8.5A1.3 1.3 0 0 1 13.8 4z" /><path d="M5.4 5.9h5.2M5.4 8h3.4" /></>,
+    knowledge: <><path d="M8 4.4S6.6 3.1 3.2 3.1a.6.6 0 0 0-.6.6v7.6a.6.6 0 0 0 .6.6c3.4 0 4.8 1.3 4.8 1.3s1.4-1.3 4.8-1.3a.6.6 0 0 0 .6-.6V3.7a.6.6 0 0 0-.6-.6C9.4 3.1 8 4.4 8 4.4z" /><path d="M8 4.4v8.8" /></>,
+    artifacts: <><path d="M9.3 1.9H4.4a1 1 0 0 0-1 1v10.2a1 1 0 0 0 1 1h7.2a1 1 0 0 0 1-1V5.2z" /><path d="M9.3 1.9v3.3h3.3M5.9 8.4h4.2M5.9 10.9h2.8" /></>,
+    agent: <><path d="M8 1.4v2.1" /><rect x="2.9" y="3.5" width="10.2" height="8.9" rx="2.4" /><path d="M1.3 7.3v2.2M14.7 7.3v2.2M6.1 10.2h3.8" /><circle cx="6" cy="7.3" r="0.95" fill="currentColor" stroke="none" /><circle cx="10" cy="7.3" r="0.95" fill="currentColor" stroke="none" /></>,
+    scheduled: <><circle cx="8" cy="8" r="5.8" /><path d="M8 4.6V8l2.4 1.6" /></>,
+    plugins: <><rect x="4.2" y="6.1" width="7.6" height="7.7" rx="1.4" /><path d="M6.3 6.1V2.5M9.7 6.1V2.5" /></>,
+    research: <><path d="M6.4 1.9v4L2.9 11.6a1.2 1.2 0 0 0 1 1.9h8.2a1.2 1.2 0 0 0 1-1.9L9.6 5.9v-4" /><path d="M5.6 1.9h4.8M4.4 9.3h7.2" /></>,
+    archive: <><path d="M2.2 3.4h11.6v2.7H2.2z" /><path d="M3.3 6.1v6.1a1 1 0 0 0 1 1h7.4a1 1 0 0 0 1-1V6.1M6.4 8.6h3.2" /></>,
+    settings: <><path d="M2.6 4.7h5.8M11.9 4.7h1.5M2.6 11.3h1.5M7.6 11.3h5.8" /><circle cx="9.9" cy="4.7" r="1.6" /><circle cx="5.9" cy="11.3" r="1.6" /></>,
+    tiles: <><rect x="2.4" y="2.4" width="4.7" height="4.7" rx="1" /><rect x="8.9" y="2.4" width="4.7" height="4.7" rx="1" /><rect x="2.4" y="8.9" width="4.7" height="4.7" rx="1" /><rect x="8.9" y="8.9" width="4.7" height="4.7" rx="1" /></>,
+    more: <path d="M4 6.3 8 10.2l4-3.9" />,
+  };
+  return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[view]}</svg>;
+}
+
+/**
+ * One draggable row. The wrapper carries the drag transform so the row inside is
+ * whatever it already was — a nav button, a whole project folder — and the handle
+ * goes on the part that starts the drag, which is never the part that scrolls.
+ */
+function Sortable({ id, className, children }: { id: string; className: string; children: (handle: Record<string, unknown>) => ReactNode }) {
+  const { setNodeRef, setActivatorNodeRef, listeners, transform, transition, isDragging } = useSortable({ id });
+  return <div ref={setNodeRef} className={className} data-dragging={isDragging || undefined} style={{ transform: CSS.Transform.toString(transform), transition }}>
+    {children({ ref: setActivatorNodeRef, ...listeners })}
+  </div>;
 }
 
 /** A project group is a folder on this Mac; the mark says so before its name does. */
@@ -1434,64 +1597,36 @@ function ProjectBar({ folders, ids, setFolders, setIds, git, name, busy }: { fol
   </div>;
 }
 
-function CapabilityPopover({ threadId, locked, initialServerId, close, skill, setSkill, setBusy, noteUses }: { threadId: string; locked: boolean; initialServerId?: string; close: () => void; skill: ImportedSkill | null; setSkill: (skill: ImportedSkill | null) => void; setBusy: (busy: boolean) => void; noteUses: (added: Omit<ContextUse, "turns">[]) => void }) {
+function CapabilityPopover({ threadId, locked, close, skill, setSkill, setBusy }: { threadId: string; locked: boolean; close: () => void; skill: ImportedSkill | null; setSkill: (skill: ImportedSkill | null) => void; setBusy: (busy: boolean) => void }) {
   const [skillQuery, setSkillQuery] = useState("");
   const [skills, setSkills] = useState<ImportedSkill[]>([]);
   const [servers, setServers] = useState<ImportedMcpServer[]>([]);
-  const [server, setServer] = useState<ImportedMcpServer>();
-  const [review, setReview] = useState<ImportedMcpPermissionReview>();
-  const [connected, setConnected] = useState(false);
-  const [toolQuery, setToolQuery] = useState("");
-  const [tools, setTools] = useState<ImportedMcpTool[]>([]);
-  const [tool, setTool] = useState<ImportedMcpTool>();
-  const [args, setArgs] = useState("{}");
-  const [result, setResult] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  useEffect(() => () => { void window.emma.closeImportedMcpServer().catch(() => undefined); }, []);
-  // Everything imported is listed on open — the panel is a list, not a search box.
   useEffect(() => {
     let active = true;
     void window.emma.searchImportedSkills({ query: "", limit: 64 }).then((value) => { if (active) setSkills(value); }).catch(() => undefined);
-    void window.emma.listImportedMcpServers().then((value) => {
-      if (!active) return;
-      setServers(value);
-      setServer(value.find((item) => item.id === initialServerId));
-    }).catch(() => undefined);
+    void window.emma.listImportedMcpServers().then((value) => { if (active) setServers(value); }).catch(() => undefined);
     return () => { active = false; };
-  }, [initialServerId]);
-  const run = async <T,>(operation: () => Promise<T>, onResult: (value: T) => void, onFailure?: () => void) => {
+  }, []);
+  const run = async <T,>(operation: () => Promise<T>, onResult: (value: T) => void) => {
     if (locked || pending) return;
     setPending(true); setBusy(true); setError("");
     try { onResult(await operation()); }
-    catch (reason) { onFailure?.(); setError(reasonText(reason)); }
+    catch (reason) { setError(reasonText(reason)); }
     finally { setPending(false); setBusy(false); }
   };
   const shownSkills = skills.filter((item) => `${item.source}/${item.name}`.toLowerCase().includes(skillQuery.trim().toLowerCase()));
   const attach = (item: ImportedSkill) => void run(() => window.emma.selectImportedSkill({ id: item.id, threadId }), setSkill);
   const clearSkill = () => void run(() => window.emma.clearImportedSkill(skill?.id ?? ""), () => setSkill(null));
-  const inspectServer = (item: ImportedMcpServer) => { if (connected) return; setServer(item); setReview(undefined); setTools([]); setTool(undefined); setResult(""); };
-  const reviewServer = () => { if (server) void run(() => window.emma.reviewImportedMcpServer(server.id), setReview); };
-  const connect = () => {
-    if (!server || !review) return;
-    void run(() => window.emma.connectImportedMcpServer({ serverId: server.id, token: review.token }), (value) => { setConnected(true); setReview(undefined); setTools([]); setTool(undefined); setResult(`${value.tools} ${plural(value.tools, "tool")} ready.`); }, () => setReview(undefined));
-  };
-  const searchTools = () => { if (!toolQuery.trim()) return; void run(() => window.emma.searchMcpTools({ query: toolQuery.trim(), limit: 8 }), setTools); };
-  const selectTool = (item: ImportedMcpTool) => void run(() => window.emma.selectMcpTool(item.name), setTool);
-  const callTool = () => void run(async () => { JSON.parse(args); return window.emma.callMcpTool(args); }, (value) => {
-    const text = JSON.stringify(value, null, 2);
-    setResult(text);
-    noteUses([{ kind: "mcp", label: `${server?.name ?? "server"} · ${tool?.name ?? "tool"}`, chars: text.length }]);
-  });
-  const closeServer = () => void run(() => window.emma.closeImportedMcpServer(), () => { setConnected(false); setReview(undefined); setTools([]); setTool(undefined); setResult(""); });
-  return <section className="capability-panel" aria-label="Imported capabilities"><header><div><span>Imported skills & MCP</span><small>Each attachment is explicit and limited to the next action.</small></div><button type="button" disabled={locked || pending} onClick={close} aria-label="Back to add menu">← Back</button></header>{skill && <div className="capability-attached"><span>Skill attached · {skill.source}/{skill.name}</span><button type="button" disabled={locked || pending} onClick={clearSkill}>Clear</button></div>}<div className="capability-section"><label>Filter skills<input value={skillQuery} disabled={locked || pending} onChange={(event) => setSkillQuery(event.target.value)} placeholder="review, research…" /></label>{!shownSkills.length && <p className="project-empty">{skills.length ? "Nothing matches that." : "No skills imported yet."}</p>}{shownSkills.map((item) => <button type="button" className="capability-row" disabled={locked || pending} key={item.id} onClick={() => attach(item)}><strong>{item.name}</strong><small>{item.source} · attach to this thread</small></button>)}<small>Instructions remain main-side and apply only to the next provider-backed turn; local fallback rejects them.</small></div><div className="capability-section"><div className="capability-label"><span>MCP servers</span></div>{!servers.length && <p className="project-empty">No MCP servers imported yet.</p>}{servers.map((item) => <button type="button" className={`capability-row ${server?.id === item.id ? "selected" : ""}`} disabled={locked || pending || connected} key={item.id} onClick={() => inspectServer(item)}><strong>{item.name}</strong><small>{item.source} · {item.command} · {item.args.length} safe args · env: {item.environmentKeys.join(", ") || "none"}</small></button>)}{server && !connected && <div className="capability-review"><p><strong>Permission review</strong><br />Run exactly one selected stdio process: <code>{server.command}</code> {server.args.map((arg, index) => <code key={index}>{arg}</code>)}<br />Configured environment values stay in Emma; keys: {server.environmentKeys.join(", ") || "none"}.</p>{review && <><p className="capability-review-warning">{review.warning}</p><p className="capability-review-capabilities">Allowed: {review.capabilities.join(" · ")}</p></>}{review ? <button type="button" className="capability-action" disabled={locked || pending} onClick={connect}>Approve & connect</button> : <button type="button" className="capability-action" disabled={locked || pending} onClick={reviewServer}>Review server</button>}</div>}{connected && <div className="capability-review"><p><strong>Connected · user-invoked only</strong><br />Provider autonomous tool loops are not enabled.</p><label>Search tools<input value={toolQuery} disabled={locked || pending} onChange={(event) => setToolQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchTools(); } }} placeholder="files, calendar…" /></label><button type="button" className="capability-action" disabled={locked || pending || !toolQuery.trim()} onClick={searchTools}>Search tools</button>{tools.map((item) => <button type="button" className={`capability-row ${tool?.name === item.name ? "selected" : ""}`} disabled={locked || pending} key={item.name} onClick={() => selectTool(item)}><strong>{item.name}</strong><small>{item.description || "No description"}</small></button>)}{tool && <><pre className="capability-schema">{JSON.stringify(tool.inputSchema, null, 2)}</pre><label>Tool arguments · JSON<textarea value={args} disabled={locked || pending} onChange={(event) => setArgs(event.target.value)} rows={3} /></label><button type="button" className="capability-action" disabled={locked || pending} onClick={callTool}>Call selected tool</button></>}{result && <pre className="capability-result" role="status">{result}</pre>}<button type="button" className="capability-close" disabled={locked || pending} onClick={closeServer}>Close server</button></div>}</div>{error && <p className="capability-error" role="alert">{error}</p>}</section>;
+  return <section className="capability-panel" aria-label="Imported capabilities"><header><div><span>Imported skills & MCP</span><small>A skill attaches to the next turn; imported MCP servers are handed to the harness with every turn.</small></div><button type="button" disabled={locked || pending} onClick={close} aria-label="Back to add menu">← Back</button></header>{skill && <div className="capability-attached"><span>Skill attached · {skill.source}/{skill.name}</span><button type="button" disabled={locked || pending} onClick={clearSkill}>Clear</button></div>}<div className="capability-section"><label>Filter skills<input value={skillQuery} disabled={locked || pending} onChange={(event) => setSkillQuery(event.target.value)} placeholder="review, research…" /></label>{!shownSkills.length && <p className="project-empty">{skills.length ? "Nothing matches that." : "No skills imported yet."}</p>}{shownSkills.map((item) => <button type="button" className="capability-row" disabled={locked || pending} key={item.id} onClick={() => attach(item)}><strong>{item.name}</strong><small>{item.source} · attach to this thread</small></button>)}<small>Instructions remain main-side and apply only to the next provider-backed turn; local fallback rejects them.</small></div><div className="capability-section"><div className="capability-label"><span>MCP servers</span></div>{!servers.length && <p className="project-empty">No MCP servers imported yet.</p>}{servers.map((item) => <div className="capability-row" key={item.id}><strong>{item.name}</strong><small>{item.source} · {item.command} · env: {item.environmentKeys.join(", ") || "none"}</small></div>)}<small>The harness starts these itself and searches their tools when a turn needs one. Switch one off in Settings → Tools.</small></div>{error && <p className="capability-error" role="alert">{error}</p>}</section>;
 }
 
 /* Always in the "/" menu, so it lists something before anything is imported.
    These open the panel that already owns the capability; only skills and MCP
    servers leave a token behind in the message. */
 const BUILTIN_COMMANDS: SlashCommand[] = [
-  { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig runtime sidecar" },
+  { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig coding harness" },
   { id: "import", name: "import", kind: "builtin", detail: "built-in · import skills & MCP" },
 ];
 
@@ -1553,7 +1688,7 @@ function TagPicker({ threadId }: { threadId: string }) {
   </div>;
 }
 
-function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, defaultMode, contextTokens, contextPages, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[] } & PaneProps) {
+function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, defaultMode, contextTokens, contextPages, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: () => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[] } & PaneProps) {
   // ThreadView is keyed by thread id, so a thread opened from the Artifacts page
   // mounts this fresh and the seeded question is what the composer starts with.
   // Read here and cleared in the effect, never taken in the initializer, which
@@ -1564,8 +1699,6 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
-  /// Which MCP server the capability panel opens on, so picking one from a list lands on its review.
-  const [mcpServerId, setMcpServerId] = useState<string>();
   const [agentOpen, setAgentOpen] = useState(false);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
   /// A failed steer, shown under the composer until the next one is typed.
@@ -1738,7 +1871,8 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   // figure leans on an async fetch and the provider's input count — a second copy
   // of that arithmetic is a second thing to keep in step. It is measured whether or
   // not the widget that draws it is on the page you happen to be looking at.
-  const ledger = useContextLedger(thread, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""));
+  const landedCalls = useThreadCalls(threadId, sending);
+  const ledger = useContextLedger(thread, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls);
   const git = useGit(folderIds[0], sending);
   const [changes, setChanges] = useState<FileChange[]>([]);
   const reloadChanges = useCallback(() => {
@@ -1769,7 +1903,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     rememberBlocks(thread.id, Object.fromEntries(thread.messages.flatMap((item, index) =>
       paired[index] && wrote(item.content, paired[index]!) ? [[item.timestamp, paired[index]!]] : [])));
   }, [thread, run.landed]);
-  if (!thread) return <div className="content-empty"><Mark /><h2>Start a durable thread</h2><p>Normal agent work stays here until you explicitly save it to knowledge.</p></div>;
+  if (!thread) return <div className="content-empty"><Mark /><h2>Start a durable thread</h2><p>Normal agent work stays here until you explicitly save it to knowledge.</p><button type="button" disabled={busy} onClick={newThread}>New thread</button></div>;
   /// A running turn no longer counts: the composer stays live so the next prompt
   /// can be typed and queued, or sent into the run as steering.
   const locked = busy || capabilityBusy;
@@ -1816,13 +1950,12 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   const typing = (element: HTMLTextAreaElement) => { setMessage(element.value); setCaret(element.selectionStart ?? element.value.length); setSlashDismissed(false); setSlashPick(0); setHistory(-1); };
   /// Prompts already sent in this thread, newest first — what ↑ walks back through.
   const past = thread.messages.filter((item) => item.role === "user").map((item) => sentByThread(item.content).body).reverse();
-  // A skill attaches on pick, exactly as the ＋ menu attaches one. An MCP server
-  // cannot: connecting it is a permission review, so the token names it and the
-  // capabilities panel opens for the approval. A built-in leaves no token — it
-  // is a shortcut to the panel that already owns it, so the fragment is dropped.
-  // A built-in tool attaches nothing at all: the turn already advertises it, so
-  // the token is the instruction to reach for that one.
-  const openCapabilities = (serverId?: string) => { setModelsOpen(false); setSourcesOpen(true); setMcpServerId(serverId); setCapabilitiesOpen(true); };
+  // A skill attaches on pick, exactly as the ＋ menu attaches one. A built-in
+  // leaves no token — it is a shortcut to the panel that already owns it, so the
+  // fragment is dropped. A built-in tool and an MCP server attach nothing at all:
+  // the turn already carries both, so the token is the instruction to reach for
+  // that one.
+  const openCapabilities = () => { setModelsOpen(false); setSourcesOpen(true); setCapabilitiesOpen(true); };
   const pickCommand = (command: SlashCommand) => {
     if (!slash) return;
     const next = command.kind === "builtin" ? { text: `${message.slice(0, slash.start)}${message.slice(slash.start + slash.query.length + 1)}`, caret: slash.start } : insertCommand(message, slash, command.name);
@@ -1830,9 +1963,8 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     setSlashPick(0);
     queueMicrotask(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
     if (command.pick) addPick(command.pick);
-    else if (command.kind === "tool") return;
+    else if (command.kind === "tool" || command.kind === "mcp") return;
     else if (command.kind === "skill") void window.emma.selectImportedSkill({ id: command.id, threadId: thread.id }).then(setSkill).catch(() => undefined);
-    else if (command.kind === "mcp") openCapabilities(command.id);
     else if (command.id === "agent") setAgentOpen(true);
     else if (command.id === "import") onManageImports();
     else openCapabilities();
@@ -1927,9 +2059,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       {openCli ? <CliPanel run={openCli} busy={locked} />
         : tab === "changes" ? <ChangesPanel changes={changes} busy={locked} onReverted={reloadChanges} />
         : tab === "git" && git ? <GitPanel snapshot={git} folderId={folderIds[0]} full />
-        : openAgent ? <AgentPanel agent={openAgent} transcript={agentThread
-          ? agentThread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} />)
-          : <p className="waiting" role="status"><Mark /> Waiting for this agent's first turn…</p>} />
+        : openAgent ? <AgentPanel agent={openAgent} transcript={<AgentTranscript threadId={openAgent.threadId} thread={agentThread} />} />
         : <Region name="chat" props={{
           thread, messages: thread.messages, busy: locked, sending,
           // The composer's own path, so a region Emma wrote sends exactly what the
@@ -1956,7 +2086,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       /><TagPicker threadId={thread.id} /><div className="thread-actions">{/* Only once this thread has actually touched code: with a clean tree the row
           would be three app icons offering to open nothing in particular. */}
         {folderIds[0] && (!!git?.diff.trim() || changes.length > 0) && <OpenIn folderId={folderIds[0]} label />}
-        <button className="agent-button" onClick={() => setAgentOpen(true)}>Agent</button></div></header>
+        <button type="button" className="page-info-button" aria-label="Show thread details" aria-haspopup="dialog" onClick={() => setAgentOpen(true)}>i</button></div></header>
       <div className="transcript-wrap">
       <TranscriptRail messages={thread.messages} scroller={transcript} />
       <div className="transcript" ref={transcript} onScroll={transcriptScroll}>
@@ -1964,7 +2094,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
         {!thread.messages.length && echo === null && !sending && <div className="welcome"><Mark /><h3>What are we working on?</h3><p>Ask Emma to research, plan, write, or think. Nothing enters knowledge unless you choose it.</p></div>}
         {thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} blocks={landedBlocks[index]} index={index} />)}
         {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span><span className="pending-note">Sending…</span></footer></article>}
-        {streaming !== null && <Streaming blocks={streaming} />}
+        {streaming !== null && <Streaming blocks={streaming} threadId={thread.id} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> Emma is working…</p>}
         {!sending && run.stopped && <p className="waiting stopped" role="status">Agent stopped. Ask Emma to continue where it left off.</p>}
         </RunContext.Provider>
@@ -1986,7 +2116,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
           ? (message.trim()
             ? <button type="button" className="composer-send steering" disabled={locked} onClick={steer} aria-label="Steer this turn" title="Steer — arrives with the next tool result">⤳</button>
             : <button type="button" className="composer-send stopping" onClick={() => window.emma.stopAgent(thread.id)} aria-label="Stop this turn" title="Stop this turn">■</button>)
-          : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={onModelChanged} onManage={onManageModels} />}{runError && <p className="capability-error" role="alert">{runError}</p>}{run.error && <p className="capability-error" role="alert">{run.error}</p>}{run.draft && <div className="composer-attachment queued-turn"><span>Not sent · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{picks.map((pick) => pick.kind === "attachment" ? null : <div className="composer-attachment" key={pickKey(pick)}><span>{KIND_LABELS[pick.kind]} · {pickLabel(pick, folders, snapshot)} · next turn only</span><button type="button" disabled={locked} onClick={() => dropPick(pick)} aria-label={`Clear ${pickLabel(pick, folders, snapshot)}`}>×</button></div>)}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} initialServerId={mcpServerId} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} noteUses={noteUses} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping or pasting into the composer works too</small></div></button><span className="add-section">Files &amp; knowledge categories</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search files and knowledge categories</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, categories, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length && <p className="project-empty">Pick a folder in the project chip, or capture pages into a knowledge category.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(item.id); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this Mac.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>⌘</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or inspect and call an imported server</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent sidecar</strong><small>Inspect Emma's Zig runtime and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div></>}</section>}</form>
+          : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={onModelChanged} onManage={onManageModels} />}{runError && <p className="capability-error" role="alert">{runError}</p>}{run.error && <p className="capability-error" role="alert">{run.error}</p>}{run.draft && <div className="composer-attachment queued-turn"><span>Not sent · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{picks.map((pick) => pick.kind === "attachment" ? null : <div className="composer-attachment" key={pickKey(pick)}><span>{KIND_LABELS[pick.kind]} · {pickLabel(pick, folders, snapshot)} · next turn only</span><button type="button" disabled={locked} onClick={() => dropPick(pick)} aria-label={`Clear ${pickLabel(pick, folders, snapshot)}`}>×</button></div>)}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping or pasting into the composer works too</small></div></button><span className="add-section">Files &amp; knowledge categories</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search files and knowledge categories</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, categories, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length && <p className="project-empty">Pick a folder in the project chip, or capture pages into a knowledge category.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this Mac.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>⌘</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or see the MCP servers every turn is handed</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent runtime</strong><small>Inspect Emma's Zig harness and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div></>}</section>}</form>
     </section></Region>}
     </div>
     <Region name="context" props={{
@@ -2013,7 +2143,7 @@ function AgentDialog({ thread, close }: { thread: Thread; close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
   const dismiss = () => dialog.current?.close();
-  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="agent-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}><section className="agent-dialog"><header><div><span>Thread agent</span><h2 id="agent-title">Zig sidecar</h2></div><button type="button" onClick={dismiss} aria-label="Close agent details">×</button></header><dl><div><dt>Thread</dt><dd>{thread.id}</dd></div><div><dt>Runtime</dt><dd><i /> emma-agent · NDJSON</dd></div><div><dt>Context</dt><dd>{thread.messages.length} durable {plural(thread.messages.length, "message")} · {thread.sourceKnowledgeBaseIds.length} source {plural(thread.sourceKnowledgeBaseIds.length, "base")}</dd></div><div><dt>Tools</dt><dd>Lazy MCP search; schemas load only after selection</dd></div></dl><div className="agent-cli"><span>Headless entry point</span><code>./agent/zig-out/bin/emma-agent</code><p>Run coding or automation threads without Electron. See agent/README.md for exact requests.</p></div></section></dialog>;
+  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="agent-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}><section className="agent-dialog"><header><div><span>Thread agent</span><h2 id="agent-title">Emma harness</h2></div><button type="button" onClick={dismiss} aria-label="Close agent details">×</button></header><dl><div><dt>Thread</dt><dd className="copyable"><span>{thread.id}</span><CopyTurn text={thread.id} label="Copy thread ID" /></dd></div><div><dt>Created</dt><dd>{date(thread.createdAt)} · {time(thread.createdAt)}</dd></div><div><dt>Modified</dt><dd>{date(thread.updatedAt)} · {time(thread.updatedAt)}</dd></div><div><dt>Runtime</dt><dd><i /> emma-cli · ACP</dd></div><div><dt>Context</dt><dd>{thread.messages.length} durable {plural(thread.messages.length, "message")} · {thread.sourceKnowledgeBaseIds.length} source {plural(thread.sourceKnowledgeBaseIds.length, "base")}</dd></div><div><dt>Tools</dt><dd>Lazy MCP search; schemas load only after selection</dd></div></dl><div className="agent-cli"><span>Headless entry point</span><code>./harness/zig-out/bin/emma-cli acp</code><p>Run coding or automation threads without Electron. See harness/README.md for the protocol.</p></div></section></dialog>;
 }
 
 function PageView(props: { page?: KnowledgePage; snapshot: Snapshot; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean; selected?: string; onSelect: (id: string) => void; openThread: (id: string) => void }) {
@@ -2395,7 +2525,8 @@ function ThinkingSlider({ level, stops, setLevel, disabled }: { level: ThinkingL
      alone snaps the thumb back to the old stop on every notch and the drag fights
      the cursor. The dragged stop is held here and released once the prop catches up. */
   const [dragged, setDragged] = useState<ThinkingLevel | null>(null);
-  useEffect(() => setDragged(null), [level]);
+  const [saved, setSaved] = useState(level);
+  if (saved !== level) { setSaved(level); setDragged(null); }
   const shown = dragged !== null && stops.includes(dragged) ? dragged : level;
   const index = Math.max(0, stops.indexOf(shown));
   // A one-stop model has no range to drag; `--stops` is a divisor, so it never hits zero.
@@ -2457,8 +2588,8 @@ function syncMainPreferences(settings: UserSettings) {
    see the same stack AGENTS.md and the READMEs describe. */
 const credits: { title: string; body: string; href?: string; link?: string }[] = [
   { title: "Electron + React", body: "The sandboxed renderer uses a narrow preload API. Electron owns native windows and a bundled macOS listener owns the Quick Ask gesture. React 19, TypeScript, and Vite build it; Recharts draws every chart." },
-  { title: "Rust + Markdown", body: "The Rust host reuses emma-core for thread, knowledge, and provenance rules; Zig 0.16 remains the agent sidecar." },
-  { title: "vercel-labs/fx", body: "Emma's coding harness, emma-cli, is a fork of fx — a minimal Zig agent harness by Vercel. Emma keeps its agent loop, permission model, hooks, skills, subagents, tools, and MCP client, and the sidecar follows its embeddable architecture. Apache-2.0; the license and upstream notices ship with the fork.", href: "https://github.com/vercel-labs/fx", link: "vercel-labs/fx ↗" },
+  { title: "Rust + Markdown", body: "The Rust host reuses emma-core for thread, knowledge, and provenance rules; Zig 0.16 builds the coding harness." },
+  { title: "vercel-labs/fx", body: "Emma's coding harness, emma-cli, is a fork of fx — a minimal Zig agent harness by Vercel. Emma keeps its agent loop, permission model, hooks, skills, subagents, tools, and MCP client. Apache-2.0; the license and upstream notices ship with the fork.", href: "https://github.com/vercel-labs/fx", link: "vercel-labs/fx ↗" },
   { title: "karpathy/autoresearch", body: "Autoresearch jobs are that loop generalised: propose one change, measure the metric, keep it if it improved and revert it if it did not.", href: "https://github.com/karpathy/autoresearch", link: "karpathy/autoresearch ↗" },
   { title: "ripgrep", body: "The ripgrep tool is BurntSushi's ripgrep 14.1.1, vendored as a pinned binary and verified against the SHA-256 its release publishes. MIT / Unlicense.", href: "https://github.com/BurntSushi/ripgrep", link: "BurntSushi/ripgrep ↗" },
   { title: "Model Context Protocol", body: "Imported MCP servers and skills run under Emma's own permission boundary, so tools from other agents work here without a second runtime." },
@@ -2840,7 +2971,7 @@ function SettingsBody({ snapshot, page, act, busy, onModelChanged }: { snapshot:
   if (page === "harness") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>Harness <b className="tag-experimental">Experimental</b></h2></header><HarnessExperimentsPanel settings={settings} onChange={saveHarnessExperiments} busy={busy} /></section>;
   if (page === "imports") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Imports & plugins</h2></header><AgentImports /></section>;
   if (page === "connections") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Connections</h2></header><ConnectionSettings settings={settings} onChange={saveConnections} busy={busy} /></section>;
-  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><h3>Start fresh</h3><p>Deletes every thread, knowledge page, artifact, plan, connected folder, saved key, and setting Emma keeps on this Mac, then restarts her empty. The Markdown mirror in your Documents folder is left where it is. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><h3>Threads and knowledge stay local</h3><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><h3>Annotated screens remain local</h3><p>The yellow pen captures and compresses a screen image locally. Provider transfer stays disabled until you explicitly authorize sending full-screen images to the selected model endpoint.</p></div></section><section><div><h3>Protected routing remains enforced</h3><p>Selected-model turns request no provider data collection and zero retention. OpenRouter account-level logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. Creating or updating knowledge always requires an explicit user action or a quick action configured to save.</p></div></section><section><div><h3>Every run is gated by the mode picker</h3><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Plan</em> hides it, <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through. The step ceiling, the action rate limit, the on-screen banner, and the Escape kill switch apply in every mode, and every action is logged.</p></div></section></div></section>;
+  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><h3>Start fresh</h3><p>Deletes every thread, knowledge page, artifact, plan, connected folder, saved key, and setting Emma keeps on this Mac, then restarts her empty. The Markdown mirror in your Documents folder is left where it is. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><h3>Threads and knowledge stay local</h3><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><h3>Annotated screens remain local</h3><p>The yellow pen captures and compresses a screen image locally. Provider transfer stays disabled until you explicitly authorize sending full-screen images to the selected model endpoint.</p></div></section><section><div><h3>Protected routing remains enforced</h3><p>Selected-model turns request no provider data collection and zero retention. OpenRouter account-level logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. Creating or updating knowledge always requires an explicit user action or a quick action configured to save.</p></div></section><section><div><h3>Every run is gated by the mode picker</h3><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through. The step ceiling, the action rate limit, the on-screen banner, and the Escape kill switch apply in every mode, and every action is logged.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>Settings / about</span><h2>Emma</h2></header><div className="settings-lines prose-lines">{credits.map((credit) => <section key={credit.title}><div><h3>{credit.title}</h3><p>{credit.body}</p>{credit.href ? <a href={credit.href} target="_blank" rel="noreferrer">{credit.link}</a> : null}</div></section>)}</div></section>;
   return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Quick actions</h2></header><section className="notch-settings"><div><h3>Quick Ask hangs off the camera housing</h3><p>Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing.</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section><section className="prompt-settings"><div><h3>Standing instructions</h3><p>Added to the system context of every turn, on Emma’s own loop and on the coding harness. It is added to what each already sends — the built-in prompt carries the tool contracts, so this never replaces it.</p><label className="prompt-field">Your instructions<textarea value={settings.systemPrompt} maxLength={MAX_SYSTEM_PROMPT_CHARS} rows={6} placeholder="e.g. Answer in British English, and say what you checked before claiming something works." onChange={(event) => setSettings((current) => ({ ...current, systemPrompt: event.target.value }))} /></label><div className="prompt-footer"><small>{settings.systemPrompt.length} / {MAX_SYSTEM_PROMPT_CHARS} characters</small><button type="button" onClick={() => setSettings((current) => ({ ...current, systemPrompt: defaultSettings.systemPrompt }))}>Reset to default</button></div></div></section><div className="quick-settings">{settings.quickActions.map((action, index) => <section className="quick-action-row" key={index}><div className="shortcut"><kbd>⌘{index + 1}</kbd><span>Overlay action</span></div><div className="quick-fields"><label>Label<input value={action.label} maxLength={40} onChange={(event) => updateAction(index, "label", event.target.value)} /></label><label className="prompt-field">Prompt<textarea value={action.prompt} maxLength={4096} rows={2} onChange={(event) => updateAction(index, "prompt", event.target.value)} /></label><label>Destination<select value={resolveQuickActionDestination(action.destinationKnowledgeBaseId, snapshot.knowledgeBases) ?? ""} onChange={(event) => updateAction(index, "destinationKnowledgeBaseId", event.target.value)}><option value="">Default</option>{snapshot.knowledgeBases.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}</select></label><label>Category<input value={action.category} placeholder="optional" onChange={(event) => updateAction(index, "category", event.target.value)} /></label><label className="check"><input type="checkbox" checked={action.saveToKnowledge} onChange={(event) => updateAction(index, "saveToKnowledge", event.target.checked)} /> Save analyzed result</label></div></section>)}</div><section className="orb-settings"><div><h3>Orbs you can rearrange</h3><p>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the island when the pointer swipes below it. Pick an orb to change what it runs or where it sits. <b>Save page</b> keeps the page your browser has in front — its text, its favicon, and the pictures it leads with. Emma files captures into a category by itself once one of your categories holds {AUTO_FILE_EXAMPLES} examples to learn from; until then they land unfiled.</p>
       <label className="check"><input type="checkbox" checked={settings.cursorOrbsEnabled} onChange={(event) => setSettings((current) => ({ ...current, cursorOrbsEnabled: event.target.checked }))} /> Ring the cursor when Quick Ask opens</label>
@@ -2858,11 +2989,14 @@ const MODALITY_MARKS: Record<ModelModality, { label: string; path: string }> = {
   audio: { label: "Accepts audio", path: "M3.5 6.5h2.5l3.5-3v9l-3.5-3H3.5zM11.5 5.5a4 4 0 0 1 0 5" },
 };
 
+/** The stated window, short enough to sit in a row: "200K", "1M". */
+const contextMark = new Intl.NumberFormat("en", { notation: "compact" });
+
 const modalityMarks = (modalities: ModelModality[] = []) => modalities
   .filter((modality) => modality in MODALITY_MARKS)
   .map((modality) => <svg key={modality} className="model-modality" viewBox="0 0 16 16" role="img" aria-label={MODALITY_MARKS[modality].label}><title>{MODALITY_MARKS[modality].label}</title><path d={MODALITY_MARKS[modality].path} /></svg>);
 
-type ModelEntry = { key: string; name: string; detail: string; brand?: BrandDefinition; modalities?: ModelModality[]; free?: boolean };
+type ModelEntry = { key: string; name: string; detail: string; brand?: BrandDefinition; modalities?: ModelModality[]; free?: boolean; context?: number };
 type CatalogEntry = ModelEntry & { maker: string };
 
 /**
@@ -2893,7 +3027,7 @@ function modelEntries(localModels: LocalModelProfile[], models: OpenRouterCatalo
     ...localModels.map((profile) => ({ maker: "local", key: `local:${profile.id}`, name: profile.name, detail: `${profile.modelId} · ${profile.baseUrl}`, brand: brandForModel(profile.modelId, "local") ?? localBrand })),
     ...models.map((model) => {
       const brand = brandForModel(model.id, "openrouter");
-      return { maker: brand?.id ?? "other", key: `openrouter:${model.id}`, name: model.name, detail: `${model.id} · ${Math.round(model.contextLength / 1000)}K context`, brand, modalities: model.inputModalities, free: model.free };
+      return { maker: brand?.id ?? "other", key: `openrouter:${model.id}`, name: model.name, detail: `${model.id} · ${Math.round(model.contextLength / 1000)}K context`, brand, modalities: model.inputModalities, free: model.free, context: model.contextLength };
     }),
   ];
   // What runs on this Mac sorts ahead of every provider route. Sort is stable, so
@@ -2947,6 +3081,9 @@ function ModelRow({ entry, current, busy, onPick, starred, onStar }: {
           "same as the workspace" — carry no mark and say what they are instead. */}
       <small><BrandIcon brand={entry.brand} className="model-brand" /><span>{entry.brand?.label ?? entry.detail}</span></small>
     </button>
+    {/* Drawn even when the model states no window, so the star keeps one column
+        down a list that mixes catalogued models with local profiles. */}
+    <span className="model-context" title={entry.context ? `${entry.context.toLocaleString()}-token context window` : ""}>{entry.context ? contextMark.format(entry.context) : ""}</span>
     {onStar && <button type="button" className="model-star" aria-pressed={starred} aria-label={`${starred ? "Unstar" : "Star"} ${entry.name}`} title={starred ? "Remove from the composer's picker" : "Show in the composer's picker"} onClick={() => onStar(entry.key)}>{starred ? "★" : "☆"}</button>}
   </div>;
 }
@@ -3377,7 +3514,7 @@ function ToolSettingsPanel({ settings, onChange, onDefaultMode, busy }: { settin
       <div className="tool-group">{rows("disabledSkills", targets.skills.map((skill) => ({ id: skill.id, name: skill.name, source: `from ${skill.source}` })), "No skills imported yet.")}</div>
     </section>
     <section className="local-model-settings">
-      <header><div><span>Imported</span><h3>MCP servers</h3><p>A server that is off is not listed and will not connect. One runs at a time either way.</p></div><strong>{targets.servers.length || "None"}</strong></header>
+      <header><div><span>Imported</span><h3>MCP servers</h3><p>A server that is off is not handed to the harness, so it never starts and its tools are never offered.</p></div><strong>{targets.servers.length || "None"}</strong></header>
       <div className="tool-group">{rows("disabledServers", targets.servers.map((server) => ({ id: server.id, name: server.name, source: `from ${server.source} · ${server.command}` })), "No MCP servers imported yet.")}</div>
     </section>
     {error && <p className="local-model-error" role="status">{error}</p>}
@@ -3603,7 +3740,7 @@ function AgentImports({ done }: { done?: () => void }) {
     } catch (reason) { setStatus(reasonText(reason)); }
     finally { setBusy(false); }
   };
-  return <div className="import-sources"><div className="import-list">{sources.map((source) => { const available = source.skills > 0 || source.mcpConfigs > 0; return <label key={source.id} className={available ? "" : "unavailable"}><input type="checkbox" disabled={!available || busy} checked={selected.includes(source.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, source.id] : selected.filter((id) => id !== source.id))} /><BrandIcon brand={brandForImporter(source.id)} className={`integration-mark ${source.id}`} /><div><strong>{source.label}</strong><small>{available ? `${source.skills} ${plural(source.skills, "skill")} · ${source.mcpConfigs} MCP ${plural(source.mcpConfigs, "config")}` : "Nothing found in default locations"}</small>{source.locations.length > 0 && <code>{source.locations.join(" · ")}</code>}</div></label>; })}</div><footer><p>Imports are references, not copies. Skill instructions and MCP servers remain inactive until a thread or plugin explicitly selects them.</p><button type="button" onClick={() => void submit()} disabled={busy || !selected.length}>{busy ? "Scanning…" : "Import selected"}</button></footer>{status && <p className="import-status" role="status">{status}</p>}</div>;
+  return <div className="import-sources"><div className="import-list">{sources.map((source) => { const available = source.skills > 0 || source.mcpConfigs > 0; return <label key={source.id} className={available ? "" : "unavailable"}><input type="checkbox" disabled={!available || busy} checked={selected.includes(source.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, source.id] : selected.filter((id) => id !== source.id))} /><BrandIcon brand={brandForImporter(source.id)} className={`integration-mark ${source.id}`} /><div><strong>{source.label}</strong><small>{available ? `${source.skills} ${plural(source.skills, "skill")} · ${source.mcpConfigs} MCP ${plural(source.mcpConfigs, "config")}` : "Nothing found in default locations"}</small>{source.locations.length > 0 && <code>{source.locations.join(" · ")}</code>}</div></label>; })}</div><footer><p>References, not copies.</p><InfoDot>Skill instructions and MCP servers remain inactive until a thread or plugin explicitly selects them.</InfoDot><button type="button" onClick={() => void submit()} disabled={busy || !selected.length}>{busy ? "Scanning…" : "Import selected"}</button></footer>{status && <p className="import-status" role="status">{status}</p>}</div>;
 }
 
 function ConnectionSettings({ settings, onChange, busy }: { settings: UserSettings; onChange: (connections: string[]) => void; busy: boolean }) {
@@ -3648,20 +3785,24 @@ function ConnectionSettings({ settings, onChange, busy }: { settings: UserSettin
   })}{status && <p className="import-status" role="status">{status}</p>}</div>;
 }
 
-const SETUP_STEPS = ["Welcome", "Permissions", "Knowledge base", "Your agents"] as const;
+const SETUP_STEPS = ["Emma", "Permissions", "Quick Ask", "Knowledge", "Agents"] as const;
 
-/* Every drawing in the walkthrough is plain ASCII. Departure Mono has real glyphs for
-   `│ ─ · —` and nothing else in the box-drawing block, and a fallback glyph carries a
-   different advance — one `├` would tear the whole column apart. */
-const EMMA_BANNER = [
-  "####  #   #  #   #   ### ",
-  "#     ## ##  ## ##  #   #",
-  "###   # # #  # # #  #####",
-  "#     #   #  #   #  #   #",
-  "####  #   #  #   #  #   #",
-].join("\n");
+const SETUP_PROMISES = [
+  { key: "⌥⌥", line: "Ask from anywhere, over whatever app you are in." },
+  { key: "Explicit", line: "Nothing is filed, written, or run until you say so." },
+  { key: "Local", line: "Threads, knowledge, and every key stay on this Mac." },
+] as const;
 
-/** What the folder looks like a week in: the shape of the thing being asked about. */
+const NOTCH_LESSONS = [
+  { key: "⌥⌥", line: "Double-tap the left Option key. Both taps inside a third of a second." },
+  { key: "↩", line: "Enter sends. Shift-Enter starts a new line." },
+  { key: "esc", line: "Escape parks a running turn as a chip. Click it to come back." },
+  { key: "▽", line: "Swipe below the island for your three quick actions." },
+  { key: "◎", line: "Orbs ring the cursor: capture, draw, save the page." },
+] as const;
+
+const NOTCH_ORBS = [{ glyph: "▣", name: "Screen" }, { glyph: "✎", name: "Draw" }, { glyph: "⧉", name: "Save page" }] as const;
+
 function knowledgeTree(directory: string): string {
   const name = directory.split("/").filter(Boolean).pop() ?? "Emma Knowledge";
   return [
@@ -3674,17 +3815,30 @@ function knowledgeTree(directory: string): string {
   ].join("\n");
 }
 
-/** `[ok]` / `[  ]`: the grant's state as a terminal would print it. */
-function SetupMark({ on }: { on: boolean }) {
-  return <i className={`setup-mark ${on ? "on" : ""}`} aria-hidden="true">{on ? "[ok]" : "[  ]"}</i>;
+const GRANT_STATES = { on: { mark: "[ok]", title: "Granted" }, off: { mark: "[  ]", title: "Not granted" }, unknown: { mark: "[--]", title: "macOS does not report this one" } };
+
+function SetupMark({ on }: { on: boolean | null | undefined }) {
+  const state = on === true ? "on" : on === false ? "off" : "unknown";
+  return <i className={`setup-mark ${state}`} title={GRANT_STATES[state].title} role="img" aria-label={GRANT_STATES[state].title}>{GRANT_STATES[state].mark}</i>;
 }
 
-/**
- * The first launch, once: what Emma is, the three things macOS makes the user grant by
- * hand, and where the knowledge base is going to live. Nothing here can grant anything —
- * only System Settings can — so each row explains why Emma wants it and opens the pane it
- * is granted in. Every step is skippable; each grant is asked for again where it is used.
- */
+function NotchDrawing() {
+  return <div className="setup-notch" aria-hidden="true">
+    <div className="island">
+      <header className="island-bar">
+        <div className="brand"><EmmaMark /><strong>Emma</strong></div>
+        <span className="setup-housing" />
+        <span className="island-status"><i /> Quick thread</span>
+      </header>
+      <div className="island-body"><span className="setup-caret">Ask Emma anything…</span></div>
+      <footer className="island-foot"><span>Auto</span><span>— ctx</span></footer>
+    </div>
+    <div className="setup-orbs">
+      {NOTCH_ORBS.map((orb) => <span key={orb.name}><span className="orb"><kbd>{orb.glyph}</kbd></span>{orb.name}</span>)}
+    </div>
+  </div>;
+}
+
 function SetupDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [step, setStep] = useState(0);
@@ -3692,25 +3846,21 @@ function SetupDialog({ close }: { close: () => void }) {
   const [error, setError] = useState("");
   const refresh = useCallback(() => { void window.emma.setupStatus().then(setStatus).catch(() => undefined); }, []);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
-  // The answer is given in System Settings, not in this window, so the moment Emma can
-  // learn it is when it comes back to the front.
   useEffect(() => { refresh(); window.addEventListener("focus", refresh); return () => window.removeEventListener("focus", refresh); }, [refresh]);
   const open = (permission: SetupPermission) => void window.emma.openPrivacySettings(permission).catch((reason: unknown) => setError(reasonText(reason)));
   const choose = (mode: "pick" | "default") => {
     setError("");
     void window.emma.setKnowledgeDir(mode).then(setStatus).catch((reason: unknown) => setError(reasonText(reason)));
   };
-  const granted = SETUP_PERMISSIONS.filter((permission) => status?.[permission.id]).length;
+  const granted = SETUP_PERMISSIONS.filter((permission) => status?.[permission.id] === true).length;
+  const last = step === SETUP_STEPS.length - 1;
   return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="setup-title" onCancel={(event) => { event.preventDefault(); close(); }}>
     <section className="import-dialog setup-dialog">
       <header>
+        <EmmaMark className="setup-crest blinks" />
         <div>
-          <span>Welcome / {step + 1} of {SETUP_STEPS.length}</span>
+          <span>Setup / {step + 1} of {SETUP_STEPS.length}</span>
           <h2 id="setup-title">{SETUP_STEPS[step]}</h2>
-          {step === 0 && <p>Emma is a workspace that thinks with you and keeps what matters. Threads, knowledge, and every key stay on this Mac. Four short steps — you can skip any of them and Emma will ask again when it needs to.</p>}
-          {step === 1 && <p>macOS hands these out one at a time, and only you can grant them. Each row opens the exact pane it lives in; come back to Emma and it re-checks.</p>}
-          {step === 2 && <p>Everything Emma files is plain Markdown in a folder you own, so Finder, Spotlight, and your backups see it like any other document.</p>}
-          {step === 3 && <p>Emma can read the skills and MCP servers you already set up for Codex, Claude, Cursor, and the rest. It records paths only — nothing is copied and no config secret is read.</p>}
         </div>
         <button type="button" onClick={close} aria-label="Skip setup">×</button>
       </header>
@@ -3718,37 +3868,39 @@ function SetupDialog({ close }: { close: () => void }) {
         {SETUP_STEPS.map((title, index) => <span key={title} className={index === step ? "on" : index < step ? "done" : ""} aria-current={index === step ? "step" : undefined}><b>{String(index + 1).padStart(2, "0")}</b> {title}</span>)}
       </nav>
       {step === 0 && <div className="setup-intro">
-        <pre className="setup-art setup-banner" role="img" aria-label="Emma">{EMMA_BANNER}</pre>
-        <dl>
-          <div><dt>⌥⌥</dt><dd>Double-tap the left Option key and Quick Ask opens over whatever app you are in.</dd></div>
-          <div><dt>Explicit</dt><dd>A thread stays a thread until you file it into knowledge, and every write, command, and click asks first.</dd></div>
-          <div><dt>Local</dt><dd>Threads, knowledge, and every provider key stay on this Mac — the keys encrypted by its own keychain.</dd></div>
-        </dl>
+        <EmmaMark className="setup-hero blinks" />
+        <dl>{SETUP_PROMISES.map((promise) => <div key={promise.key}><dt>{promise.key}</dt><dd>{promise.line}</dd></div>)}</dl>
       </div>}
       {step === 1 && <div className="setup-grants">
-        <p className="setup-meter"><span aria-hidden="true">[{"#".repeat(granted)}{".".repeat(SETUP_PERMISSIONS.length - granted)}]</span> {granted} of {SETUP_PERMISSIONS.length} granted</p>
+        <p className="setup-meter"><span aria-hidden="true">[{"#".repeat(granted)}{".".repeat(SETUP_PERMISSIONS.length - granted)}]</span> {granted} of {SETUP_PERMISSIONS.length} granted · macOS asks one at a time</p>
         {SETUP_PERMISSIONS.map((permission) => {
-          const ok = status?.[permission.id] ?? false;
+          const ok = status?.[permission.id];
           return <section key={permission.id}>
-            <h3><SetupMark on={ok} />{permission.title}</h3>
-            <button type="button" onClick={() => open(permission.id)}>{ok ? "Review ↗" : "Grant ↗"}</button>
+            <h3><SetupMark on={ok} />{permission.title}<InfoDot>{permission.why}</InfoDot></h3>
+            <button type="button" onClick={() => open(permission.id)}>{ok === true ? "Review ↗" : "Grant ↗"}</button>
             <div>
               <p>{permission.what}</p>
-              <p className="setup-why">{permission.why}</p>
-              {permission.note && !ok && <small>{permission.note}</small>}
+              {permission.relaunch && ok !== true && <small>Relaunch Emma once you have granted it.</small>}
             </div>
           </section>;
         })}
       </div>}
-      {step === 2 && <div className="setup-grants">
+      {step === 2 && <div className="setup-notch-step">
+        <NotchDrawing />
+        <dl>{NOTCH_LESSONS.map((lesson) => <div key={lesson.key}><dt>{lesson.key}</dt><dd>{lesson.line}</dd></div>)}</dl>
+        <div className="setup-choices">
+          <button type="button" onClick={() => void window.emma.demoQuickAsk().catch((reason: unknown) => setError(reasonText(reason)))}>Show me ↗</button>
+          {status?.accessibility !== true && <small>⌥⌥ stays dead until Accessibility is granted — this button opens it either way.</small>}
+        </div>
+      </div>}
+      {step === 3 && <div className="setup-grants">
         <section>
-          <h3><SetupMark on={status?.files ?? false} />Where knowledge lives</h3>
+          <h3><SetupMark on={status?.files} />Where knowledge lives<InfoDot>Emma keeps its own copy either way; this folder is the readable one — one Markdown file per saved page, in folders named after your categories. Writing it is what makes macOS ask about your Documents folder.</InfoDot></h3>
           <button type="button" onClick={() => choose("pick")}>Choose folder…</button>
           <div>
             <code>{status?.knowledgeDir || "Mirror switched off"}</code>
             <pre className="setup-art" aria-hidden="true">{knowledgeTree(status?.knowledgeDir ?? "")}</pre>
-            <p className="setup-why">Emma keeps its own copy either way; this folder is the readable one — one Markdown file per saved page, in folders named after your categories. Writing it is what makes macOS ask about your Documents folder.</p>
-            {!status?.files && <small>macOS has not let Emma write there yet. Grant Files &amp; Folders, then pick the folder again.</small>}
+            {status?.files !== true && <small>macOS has not let Emma write there yet. Grant Files &amp; Folders, then pick the folder again.</small>}
             <div className="setup-choices">
               <button type="button" onClick={() => choose("default")}>Use Documents</button>
               <button type="button" onClick={() => open("files")}>Open Settings ↗</button>
@@ -3756,12 +3908,12 @@ function SetupDialog({ close }: { close: () => void }) {
           </div>
         </section>
       </div>}
-      {step === 3 && <AgentImports />}
+      {step === 4 && <AgentImports />}
       {error && <p className="dialog-error" role="alert">{error}</p>}
       <footer className="setup-foot">
-        {step < SETUP_STEPS.length - 1 && <button type="button" className="setup-skip" onClick={close}>Skip setup</button>}
+        {!last && <button type="button" className="setup-skip" onClick={close}>Skip setup</button>}
         {step > 0 && <button type="button" onClick={() => setStep(step - 1)}>Back</button>}
-        <button type="button" className="dialog-primary" onClick={() => step === SETUP_STEPS.length - 1 ? close() : setStep(step + 1)}>{step === SETUP_STEPS.length - 1 ? "Start using Emma" : "Continue"}</button>
+        <button type="button" className="dialog-primary" onClick={() => last ? close() : setStep(step + 1)}>{last ? "Start using Emma" : "Continue"}</button>
       </footer>
     </section>
   </dialog>;
@@ -4449,7 +4601,7 @@ function Overlay() {
       open: () => window.emma.openWorkspace(),
     }}>
     <div className={`island ${orbs ? "dimmed" : ""}`}>
-      <header className="island-bar"><div className="brand"><Mark /><strong>Emma</strong></div><span className="island-housing" /><span className="island-status"><i /> {listening ? "Listening" : transcribing ? "Transcribing" : busy ? working : "Quick thread"}</span></header>
+      <header className="island-bar"><div className="brand"><EmmaMark className="blinks" /><strong>Emma</strong></div><span className="island-housing" /><span className="island-status"><i /> {listening ? "Listening" : transcribing ? "Transcribing" : busy ? working : "Quick thread"}</span></header>
       <div className="island-body">
         {annotationId && <div className="annotation-chip">{thumbnail && <img src={thumbnail} alt={attachedApp ? `Screen capture of ${attachedApp}` : "Screen capture"} title={attachedApp} />}<button type="button" onClick={() => void clearDrawing()} aria-label="Discard screen markup">×</button></div>}
         <form onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="quick-message">Ask Emma</label><textarea ref={input} autoFocus disabled={busy} id="quick-message" value={message} role="combobox" aria-expanded={slashOpen} aria-controls="island-slash-menu" aria-autocomplete="list" onChange={(event) => { setMessage(event.target.value); setCaret(event.target.selectionStart ?? event.target.value.length); setSlashDismissed(false); setSlashPick(0); }} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onKeyDown={composerKeys} placeholder="Ask Emma anything…" rows={1} /><div className="overlay-actions"><button type="button" onClick={() => void startDrawing()} disabled={busy} title="Draw yellow highlights over the screen" aria-label="Draw on screen">✎</button><button type="button" className={listening ? "voice-live" : ""} onClick={() => void dictate()} disabled={busy || transcribing} title={dictation.ready ? listening ? "Stop listening" : `Dictate — or hold space for ${settings.voiceHoldMs}ms` : `${dictation.blocker} — set voice up in the workspace`} aria-label={listening ? "Stop listening" : "Dictate"}>●</button><button className="send" disabled={busy || !message.trim()} aria-label="Send">{busy ? "···" : <SendIcon />}</button></div></form>

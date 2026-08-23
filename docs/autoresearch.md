@@ -176,24 +176,20 @@ which `git reset --hard` would have discarded anyway.
 
 ## Compaction
 
-Unrelated to autoresearch, required by it: **every** turn, on every surface,
-compacts its conversation when it passes **70%** of the selected model's context
-window. Emma has no compaction today — the sidecar drops the oldest messages once
-it passes `max_imported_messages`, which silently loses the start of long runs,
-and an autoresearch job is nothing but a long run.
+Unrelated to autoresearch, required by it: an autoresearch job is nothing but a
+long run, so what happens when its conversation outgrows the window decides
+whether the run is any good.
 
-The conversation accumulates in the Zig sidecar (`agent/src/main.zig`), so that
-is where the rule lives: when the thread's estimated tokens exceed 70% of the
-provider's context length, the oldest half is replaced with one system message
-summarising it. If the summary call fails, fall back to today's drop-oldest so a
-turn never dies of compaction.
+The conversation lives in the harness, so that is where the rule lives.
+`compactHistory` in
+[`harness/src/core/session/session.zig`](../harness/src/core/session/session.zig)
+fires on either of two conditions: more turns than `max_history_turns`, or
+`historyOverTokenBudget` — the estimated tokens across the history passing
+`compact_token_trigger_percent`, which is **70** — and replaces everything but
+the most recent turns with one summary. A `context_window_tokens` of `0` means
+the caller does not know the window, and only the turn-count rule applies.
 
-The host knows each model's context length and sends it with the provider
-config; `0` means unknown, which keeps the old behaviour.
-
-One surface is **not** covered: the forked coding harness under `harness/`, off
-unless `EMMA_HARNESS=1`, compacts on a turn count with a summary it builds
-locally and knows nothing about context windows. Bringing it under the same rule
-needs the model's window plumbed into its session runtime and a token estimate
-over its history union; `compactHistory` carries a `ponytail:` comment naming
-both.
+Emma is what stops it being zero. `contextLength(id)` reads the real number off
+the cached OpenRouter catalog and `harness.ts` sends it as the `context_window`
+config option, because the harness recognises only a handful of model-id
+prefixes on its own.

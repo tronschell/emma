@@ -97,10 +97,39 @@ Rules:
 - **Popovers and dialogs** use `--surface-2`, `--r-lg`, `--shadow-lg`, and 12px
   internal padding. Menu rows are 34px, icon + label + optional description.
 
+## The mark
+
+Emma's logo is the drawn window with the bow: `desktop/assets/emma.webp` with
+her eyes open, `desktop/assets/emma-blink.webp` with them shut. Both are trimmed
+to the ink — the drawing arrived on a 2048² canvas that was mostly empty margin,
+and any margin left in the file becomes padding baked into every box she sits
+in. They are 1800×1253, so a caller sets a width and lets the height follow.
+
+`EmmaMark` in `desktop/src/icons.tsx` stacks the two frames in one box and cuts
+between their opacities on the same keyframe. Both frames are transparent, so
+fading the shut one in over the open one is not enough — the open eyes show
+straight through the shut frame's empty pixels, and she reads as never blinking
+at all. The open frame has to go to zero in the same step. Swapping `src`
+instead of stacking would refetch and leave a gap on the first blink of a
+session, before the second frame has decoded. She is static by default; the
+`blinks` class is what opens the cycle.
+
+She appears once, in the sidebar brand band at 28px beside the wordmark, and she
+blinks there. One mark in one place: a second copy floating in a corner reads as
+a stray element rather than as a logo.
+
+The `◇` tile (`.mark`) is unrelated — it is the empty-state and waiting glyph,
+not the logo.
+
 ## Motion
 
 One transition token, `--t` (120ms ease). Hover and focus only. No entrance
 animations, no transforms on scroll.
+
+The one exception is Emma's blink: roughly 140ms shut once every 7 seconds,
+which is a human blink rate rather than a strobe. It is an opacity crossfade on
+a decorative image, so `prefers-reduced-motion` stops it through the global rule
+in `index.css` and simply leaves her eyes open.
 
 ## Accessibility floor
 

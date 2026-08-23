@@ -209,7 +209,7 @@ test("the transcript reads back the marker the tool writes", () => {
    to say about ids, files and the marker is in the tail. Adding a sentence is what
    pushes it over, silently, so the ceiling is asserted rather than commented. */
 test("the artifact tool still says all of itself inside the harness's cut", () => {
-  const tool = toolDefinitions("auto", { folders: true, computer: true, mcp: true, canSpawn: true }).find((candidate) => candidate.name === "artifact");
+  const tool = toolDefinitions("auto", { folders: true, computer: true }).find((candidate) => candidate.name === "artifact");
   assert.ok(tool, "the artifact tool is always advertised");
   assert.ok(Buffer.byteLength(tool.description) <= 1024, `the description is ${Buffer.byteLength(tool.description)} bytes; over 1024 the harness cuts the tail off`);
   assert.match(tool.description, /\[artifact:id\]/, "the marker rule is the last thing said, so it is the first thing lost");

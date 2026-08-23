@@ -50,7 +50,5 @@ test("the search provider round-trips, and picks up its own default endpoint", (
 test("the web tools take the arguments they advertise", () => {
   assert.deepEqual(parseToolArgs("web_search", JSON.stringify({ query: "zig comptime" })), { name: "web_search", query: "zig comptime", limit: 8 });
   assert.deepEqual(parseToolArgs("web_search", JSON.stringify({ query: "a", limit: 99 })), { name: "web_search", query: "a", limit: 20 });
-  assert.deepEqual(parseToolArgs("web_fetch", JSON.stringify({ url: "https://example.com" })), { name: "web_fetch", url: "https://example.com" });
   assert.throws(() => parseToolArgs("web_search", JSON.stringify({})), /query/);
-  assert.throws(() => parseToolArgs("web_fetch", JSON.stringify({})), /url/);
 });

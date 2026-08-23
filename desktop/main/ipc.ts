@@ -139,8 +139,8 @@ export function validateRequest(value: unknown): Request {
 
 /* A command the user pressed play on, next to a fence Emma printed. The click is
    the permission — the same rule Stop follows — so this only bounds what crosses
-   the bridge: one command, no longer than the `bash` tool takes, and at most one
-   connected folder to run it in. */
+   the bridge: one command, bounded in length, and at most one connected folder
+   to run it in. */
 export function runCommandRequest(value: unknown): { command: string; folderId?: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Command is invalid");
   const candidate = value as { command?: unknown; folderId?: unknown };

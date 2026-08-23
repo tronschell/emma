@@ -125,15 +125,12 @@ test("the advisor is shown the transcript as quoted data, not as instructions", 
 });
 
 test("both new tools are advertised, gated, and hidden when switched off", () => {
-  const everything = { folders: true, computer: true, mcp: true, canSpawn: true };
+  const everything = { folders: true, computer: true };
   const names = () => toolDefinitions("ask", everything).map((tool) => tool.name);
   assert.ok(names().includes("memory"));
   assert.ok(names().includes("advisor"));
 
-  // Memory writes to Emma's data folder, so `plan` — where nothing happens — omits
-  // it. The advisor only reads and thinks, so a plan is exactly when to ask it.
-  assert.equal(toolGate("plan", "memory"), "hidden");
-  assert.equal(toolGate("plan", "advisor"), "auto");
+  assert.equal(toolGate("ask", "advisor"), "auto");
   assert.equal(toolGate("ask", "memory"), "auto");
 
   // The Settings switch hides a tool and refuses it, in the same call.

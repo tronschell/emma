@@ -9,7 +9,8 @@ use std::{
 };
 
 use crate::{
-    PERMISSION_MODES, ThreadId, Timestamp, ValidationError, quote, unquote, validate_text,
+    PERMISSION_MODES, ThreadId, Timestamp, ValidationError, quote, stored_permission_mode, unquote,
+    validate_text,
 };
 use serde::Serialize;
 
@@ -415,7 +416,7 @@ impl ResearchJob {
             field_value(&mut lines, "prompt")?
         };
         let proposer_model = field_value(&mut lines, "proposer-model")?;
-        let permission_mode = field_value(&mut lines, "permission-mode")?;
+        let permission_mode = stored_permission_mode(field_value(&mut lines, "permission-mode")?);
         let status = field_value(&mut lines, "status")?;
         let status_note = field_value(&mut lines, "status-note")?;
         let thread_id = match field_value(&mut lines, "thread-id")? {

@@ -49,7 +49,7 @@ grants and no saved keys.
 **Cause.** `--user-data-dir` only moves Electron's half. Threads, knowledge,
 scheduled jobs, and research live under the Rust host's own root, which defaults
 to `~/Library/Application Support/Emma` and is decided in Rust, not Electron
-([runtime.rs:48](../crates/host/src/runtime.rs#L48)). Clicking around in a
+([runtime.rs:26](../crates/host/src/runtime.rs#L26)). Clicking around in a
 throwaway profile still creates real threads.
 
 **Fix.** Set both.
@@ -75,10 +75,10 @@ lsof -ti :5173 | xargs -r kill
 npm run dev
 ```
 
-The other two causes of a blank dev window are staleness, not code faults. A
-`ReferenceError` for a symbol the served file plainly exports is Chromium's
-module cache — reload ignoring cache. A `TypeError` reading a field of a
-snapshot is a stale `target/debug/emma-host` that predates a change in
+The other two ways a dev window comes up blank are both staleness, not broken
+code. A `ReferenceError` for a symbol the served file plainly exports is
+Chromium's module cache — reload ignoring cache. A `TypeError` reading a field
+off a snapshot means `target/debug/emma-host` is older than a change in
 `crates/core`:
 
 ```bash
@@ -94,12 +94,12 @@ does not quit Emma on macOS — `window-all-closed` only quits off darwin
 
 ## Building
 
-### `zig: command not found`, or the agent step fails
+### `zig: command not found`, or the harness step fails
 
-**Cause.** `build:host` chains three builds and stops at the first failure:
-`cargo build -p emma-host`, then `zig build --build-file ../agent/build.zig`,
-then `build:harness`. Both Zig steps need a compiler on `PATH`.
-[harness/build.zig.zon](../harness/build.zig.zon) requires 0.16.0 or newer.
+**Cause.** `build:host` chains two builds and stops at the first failure:
+`cargo build --locked -p emma-host`, then `build:harness`. The second one needs
+a Zig compiler on `PATH`. [harness/build.zig.zon](../harness/build.zig.zon)
+requires 0.16.0 or newer.
 
 **Fix.**
 
@@ -191,12 +191,12 @@ npm --prefix desktop run build:renderer
 
 ### `Emma could not find its agent at <path>. The install is incomplete — reinstall Emma, or run npm run build:harness from the repo.`
 
-**Cause.** `emma-cli` is missing. On this branch it is the only agent loop there
-is — there is no fallback to a second loop, deliberately, because a bad build
-used to look like a working Emma that quietly behaved differently
-([main.ts:1591](../desktop/main/main.ts#L1591)). In a dev tree the binary is
+**Cause.** `emma-cli` is missing. It is the only agent loop, and there is no
+fallback to a second one on purpose: a bad build used to look like a working
+Emma that quietly behaved differently
+([main.ts:1590](../desktop/main/main.ts#L1590)). In a dev tree the binary is
 expected at `harness/zig-out/bin/emma-cli`
-([main.ts:269](../desktop/main/main.ts#L269)); in the packaged app it is in
+([main.ts:262](../desktop/main/main.ts#L262)); in the packaged app it is in
 `Contents/Resources`.
 
 **Fix.**
@@ -228,7 +228,7 @@ the turn was long.
 
 **Fix.** The failed turn does not lose the work: whatever the harness had
 already streamed is recorded with the failure appended, so the transcript reads
-as far as it got ([main.ts:2012](../desktop/main/main.ts#L2012)). Send the turn
+as far as it got ([main.ts:2014](../desktop/main/main.ts#L2014)). Send the turn
 again. If it recurs, the harness process is wedged — quit and relaunch Emma to
 drop every client.
 
@@ -272,12 +272,12 @@ Emma's own tools and invisible to every tool the CLI runs itself.
 
 ### The turn comes back refused, with the provider's text as the answer
 
-**Cause.** A provider or auth failure arrives from the harness as ordinary
-assistant text on a `refused` stop reason. Emma catches that specifically —
+**Cause.** When a provider or auth call fails, the harness reports it as ordinary
+assistant text with a `refused` stop reason. Left alone, the provider's complaint
+would be saved as Emma's answer. So Emma watches for exactly that case —
 `failedTurn` is `reason === "refused"`
 ([harness.ts:47](../desktop/main/harness.ts#L47)) — and re-throws the spoken text
-as an error, so you get an error banner and your typed prompt back instead of
-the provider's complaint recorded as Emma's answer
+as an error instead. You get an error banner and your typed prompt back
 ([main.ts:1981](../desktop/main/main.ts#L1981)).
 
 **Fix.** Read the banner. It is the provider's own message.
@@ -286,7 +286,7 @@ the provider's complaint recorded as Emma's answer
 
 **Cause.** Emma owns the credential and hands it to the harness rather than
 letting it find its own. `main.ts` reads `process.env.OPENROUTER_API_KEY`
-([main.ts:1597](../desktop/main/main.ts#L1597)) and `harness.ts` passes it down
+([main.ts:1596](../desktop/main/main.ts#L1596)) and `harness.ts` passes it down
 as both `AI_GATEWAY_API_KEY` and `EMMA_PROVIDER_API_KEY`
 ([harness.ts:267](../desktop/main/harness.ts#L267)). No key in the store means
 no key in that environment.
@@ -294,7 +294,7 @@ no key in that environment.
 **Fix.** Settings → Models → paste an OpenRouter key. Saving it restarts the
 host and closes every **idle** harness so the next turn is spawned with the new
 key; a harness that is mid-turn keeps its old environment until that turn ends
-([main.ts:3180](../desktop/main/main.ts#L3180)).
+([main.ts:3319](../desktop/main/main.ts#L3319)).
 
 ```bash
 # verify the key reached the process, from a terminal-launched dev run
@@ -319,124 +319,33 @@ half a set of keys ([credentials.ts:63](../desktop/main/credentials.ts#L63)).
 
 **Fix.** Re-paste the keys in Settings → Models.
 
-### `Emma's model list is out of date — refresh it in Settings, then pick that model again`
+### `That model is no longer in OpenRouter's catalog. Reload the models page and pick again.`
 
-**Cause.** A model was pinned by id that the live OpenRouter catalog no longer
-lists ([runtime.rs:526](../crates/host/src/runtime.rs#L526)).
+**Cause.** A model was pinned by id that the cached catalog no longer lists. The
+picker is answered in Electron main against `CatalogCache`, not by the host, so
+this check runs where the catalog actually lives
+([main.ts:1948](../desktop/main/main.ts#L1948), [catalog.ts](../desktop/main/catalog.ts)).
 
 **Fix.** Settings → Models → reload the catalog, then pick again. The catalog is
 cached on disk at `userData/openrouter-catalog.json` and answers from the cache
-when the fetch fails ([catalog.ts](../desktop/main/catalog.ts)).
-
-### `that model does not offer that thinking mode — pick another mode, or another model`
-
-**Cause.** The reasoning effort you selected is not one the model publishes, or
-you turned reasoning off on a mandatory reasoner. Sending it anyway is a 400 you
-never asked for, so the host refuses first
-([runtime.rs:508](../crates/host/src/runtime.rs#L508)).
-
-**Fix.** Pick a different effort, or a different model.
-
-### `Emma is tracking model pins for too many threads — restart Emma to clear them`
-
-**Cause.** Per-thread model pins accumulate for the life of the host process and
-are only dropped by being cleared ([runtime.rs:472](../crates/host/src/runtime.rs#L472)).
-
-**Fix.** Relaunch Emma.
+when the fetch fails.
 
 ### `OpenRouter listed no models Emma can use — check your connection and try again`
 
 **Cause.** The catalog came back but nothing in it passed Emma's filter — free,
-tool-capable, usable ([catalog.ts:124](../desktop/main/catalog.ts#L124),
-[runtime.rs:418](../crates/host/src/runtime.rs#L418)). Usually a captive portal
-or a proxy returning an HTML error page as JSON.
+tool-capable, usable ([catalog.ts:124](../desktop/main/catalog.ts#L124)). Usually
+a captive portal or a proxy returning an HTML error page as JSON.
 
 **Fix.** Check the connection, then reload the catalog in Settings.
 
-### `Emma's agent component would not start — reinstall Emma, or set EMMA_AGENT_BIN if you built it yourself`
+### `A local model server has to be on this Mac.`
 
-**Cause.** The Rust host could not spawn `emma-agent`
-([runtime.rs:950](../crates/host/src/runtime.rs#L950)). The real reason is
-printed to stderr just above it, as
-`could not start Emma agent at <path>: <error>`. The default path is
-`agent/zig-out/bin/emma-agent` relative to the crate
-([runtime.rs:125](../crates/host/src/runtime.rs#L125)); Emma overrides it with
-`EMMA_AGENT_BIN` when it spawns the host
-([main.ts:67](../desktop/main/main.ts#L67)).
-
-**Fix.**
-
-```bash
-zig build --build-file agent/build.zig
-ls -l agent/zig-out/bin/emma-agent
-```
-
-### `Emma's agent stopped responding — try again, and restart Emma if it keeps happening`
-
-**Cause.** The sidecar broke its own NDJSON protocol or died mid-request. Which
-of those it was is on stderr as `emma-agent fault: <detail>`
-([runtime.rs:929](../crates/host/src/runtime.rs#L929)) — a mismatched request
-id, invalid JSON, a missing result, or an exit status.
-
-**Fix.** Relaunch. If it repeats, rebuild the sidecar — a stale `emma-agent`
-against a newer `crates/core` is the usual cause.
-
-### `set all of EMMA_PROVIDER_BASE_URL, EMMA_PROVIDER_MODEL, and EMMA_PROVIDER_CREDENTIAL_ENV`
-
-**Cause.** You set some of the three provider overrides but not all
-([runtime.rs:101](../crates/host/src/runtime.rs#L101)). They are all-or-nothing.
-A related pair: `<NAME> must not be empty` and `<NAME> must be valid Unicode`
-come from the same reader ([runtime.rs:73](../crates/host/src/runtime.rs#L73)).
-
-**Fix.** Set all three or none.
-
-```bash
-EMMA_PROVIDER_BASE_URL=http://127.0.0.1:11434/v1 \
-EMMA_PROVIDER_MODEL=your-model \
-EMMA_PROVIDER_CREDENTIAL_ENV=EMMA_API_KEY \
-npm run dev
-```
-
-### `Emma will not send to that endpoint: use an OpenRouter https address, or an http address on this Mac such as http://localhost:11434/v1`
-
-**Cause.** The sidecar validates every base URL before it sends
-([main.zig:1401](../agent/src/main.zig#L1401)). Plain `http` is only allowed to
-`localhost`, `127.0.0.1`, or `[::1]`; anything remote must be `https`; and URLs
-carrying a user, password, query, or fragment are refused outright
-([openai_compatible.zig:224](../agent/src/openai_compatible.zig#L224)).
-
-**Fix.** Use the exact endpoint, scheme included. The sidecar has a matching
-message for the next mistake up:
-`the endpoint redirected the request — use its exact address, including https and the /v1 path`,
-which in practice means a missing `/v1` or the wrong scheme
-([main.zig:1415](../agent/src/main.zig#L1415)).
-
-### Other sidecar provider errors
-
-All from the same table at [main.zig:1386](../agent/src/main.zig#L1386). Each is
-written to be read as-is:
-
-| Code | What it means |
-| --- | --- |
-| `provider_credential_unavailable` | no usable API key for this model |
-| `provider_authentication_failed` | the provider rejected the key |
-| `provider_rate_limited` | sending faster than the model allows |
-| `provider_timeout` | no answer within 60 seconds |
-| `provider_unavailable` | could not reach the model at all |
-| `provider_payment_required` | the account needs credit for that model |
-| `provider_request_rejected` | wrong model id, or unsupported images/tools/reasoning |
-| `provider_request_too_large` | the conversation exceeds the context window |
-| `invalid_provider_response` | the reply was unreadable — the model may not support tools |
-
-The code is printed to stderr as `emma-agent error code: <code>`; only the
-sentence reaches the user ([runtime.rs:889](../crates/host/src/runtime.rs#L889)).
-
-### `local models must use an HTTP localhost endpoint and a model ID`
-
-**Cause.** A local model profile was saved with a non-loopback address
-([runtime.rs:721](../crates/host/src/runtime.rs#L721)). Credentials are optional
-for a local profile, but if you name one, the environment variable name has to
-be valid.
+**Cause.** A local model profile was saved with a non-loopback address. It is
+checked in Electron main rather than trusted, because that endpoint is one main
+POSTs your own saved pages to ([main.ts:1976](../desktop/main/main.ts#L1976)).
+A sibling error, `The local model key must be the name of an environment variable.`,
+comes from the next line: naming a credential is optional, but the name has to
+be one.
 
 **Fix.** Point it at `http://localhost:<port>/v1` or `http://127.0.0.1:<port>/v1`.
 
@@ -448,7 +357,7 @@ be valid.
 gesture with `NSEvent addGlobalMonitorForEventsMatchingMask`, and macOS only
 reports key presses in other apps to a trusted process. Without the grant, the
 helper starts, prints to stderr, and never sees a thing
-([quick_ask.m:528](../desktop/native/quick_ask.m#L528)):
+([quick_ask.m:659](../desktop/native/quick_ask.m#L659)):
 
 ```
 Emma: Accessibility access is required for double-left-Option Quick Ask. Grant it in System Settings, then relaunch Emma.
@@ -521,7 +430,7 @@ copy of knowledge either way — this only affects the readable Markdown mirror.
 **Cause.** Reading the front browser tab goes through `osascript` and System
 Events, which needs Automation. It is the one failure nothing else in Emma
 reports — there is no setup-status row for it
-([clip.ts:33](../desktop/main/clip.ts#L33)).
+([clip.ts:39](../desktop/main/clip.ts#L39)).
 
 **Fix.**
 
@@ -581,11 +490,9 @@ stderr:
 
 - `console.error` from `desktop/main`
 - the Rust host's stderr, forwarded line by line
-  ([main.ts:73](../desktop/main/main.ts#L73))
+  ([main.ts:75](../desktop/main/main.ts#L75))
 - `emma-cli`'s stderr, prefixed `emma-cli:`
   ([harness.ts:281](../desktop/main/harness.ts#L281))
-- `emma-agent`'s stderr, inherited straight through by the host
-  ([runtime.rs:945](../crates/host/src/runtime.rs#L945))
 
 So: run from a terminal and you see everything.
 
@@ -619,37 +526,27 @@ configured by environment.
 
 | Variable | Read by | Effect |
 | --- | --- | --- |
-| `EMMA_DATA_DIR` | [runtime.rs:48](../crates/host/src/runtime.rs#L48), [main.ts:2945](../desktop/main/main.ts#L2945) | Root for `threads/`, `knowledge/`, `scheduled/`, `research/`. Default `~/Library/Application Support/Emma`. Also what "reset data" deletes. |
-| `EMMA_KNOWLEDGE_DIR` | [runtime.rs:116](../crates/host/src/runtime.rs#L116), [setup.ts:25](../desktop/main/setup.ts#L25) | Where the readable Markdown mirror goes. Default `~/Documents/Emma Knowledge`. **An empty value turns the mirror off.** Overridden by the walkthrough's saved choice once one is made. |
-| `EMMA_AGENT_BIN` | [runtime.rs:52](../crates/host/src/runtime.rs#L52) | Path to `emma-agent`. Emma sets it when spawning the host ([main.ts:67](../desktop/main/main.ts#L67)). |
-| `EMMA_PROVIDER_BASE_URL` | [runtime.rs:67](../crates/host/src/runtime.rs#L67) | Sidecar provider endpoint. All three of these or none. |
-| `EMMA_PROVIDER_MODEL` | [runtime.rs:68](../crates/host/src/runtime.rs#L68) | Sidecar model id. |
-| `EMMA_PROVIDER_CREDENTIAL_ENV` | [runtime.rs:69](../crates/host/src/runtime.rs#L69) | *Name* of the variable holding the key, not the key. |
+| `EMMA_DATA_DIR` | [runtime.rs:9](../crates/host/src/runtime.rs#L9), [main.ts:3082](../desktop/main/main.ts#L3082) | Root for `threads/`, `knowledge/`, `scheduled/`, `research/`. Default `~/Library/Application Support/Emma`. Also what "reset data" deletes. |
+| `EMMA_KNOWLEDGE_DIR` | [runtime.rs:33](../crates/host/src/runtime.rs#L33), [setup.ts:25](../desktop/main/setup.ts#L25) | Where the readable Markdown mirror goes. Default `~/Documents/Emma Knowledge`. **An empty value turns the mirror off.** Overridden by the walkthrough's saved choice once one is made. |
 | `EMMA_PROVIDER_API_KEY` | [credentials.zig:9](../harness/src/core/auth/credentials.zig#L9) | The harness's credential. Emma sets it from `OPENROUTER_API_KEY` ([harness.ts:267](../desktop/main/harness.ts#L267)). |
 | `EMMA_PROVIDER_CHAT_URL` | [emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41) | Overrides the harness's Chat Completions URL. Default `https://openrouter.ai/api/v1/chat/completions`. Empty means the default. |
-| `EMMA_OPENROUTER_ZDR` | [runtime.rs:93](../crates/host/src/runtime.rs#L93), [emma_openai.zig:54](../harness/src/gateway/emma_openai.zig#L54) | Any non-empty value asks OpenRouter for zero-retention routing. Set by the Settings toggle, which restarts the host ([main.ts:3170](../desktop/main/main.ts#L3170)). Most free models offer no zero-retention endpoint, so forcing it can make them unroutable. |
-| `OPENROUTER_API_KEY` | [main.ts:1597](../desktop/main/main.ts#L1597), [settings.ts:723](../desktop/shared/settings.ts#L723) | The one shipped remote route's key slot. |
-| `EMMA_DEV_SERVER_URL` | [main.ts:439](../desktop/main/main.ts#L439), [ipc.ts:269](../desktop/main/ipc.ts#L269) | Load the renderer from Vite instead of `file://`, and trust that origin for IPC. Set by [dev.mjs](../desktop/scripts/dev.mjs). |
+| `EMMA_OPENROUTER_ZDR` | [emma_openai.zig:54](../harness/src/gateway/emma_openai.zig#L54) | Any non-empty value asks OpenRouter for zero-retention routing. Read only by the harness. Set by the Settings toggle, which closes the idle harnesses so the next turn is spawned with it ([main.ts:3306](../desktop/main/main.ts#L3306)). Most free models offer no zero-retention endpoint, so forcing it can make them unroutable. |
+| `OPENROUTER_API_KEY` | [main.ts:1596](../desktop/main/main.ts#L1596), [settings.ts:724](../desktop/shared/settings.ts#L724) | The one shipped remote route's key slot. |
+| `EMMA_DEV_SERVER_URL` | [main.ts:432](../desktop/main/main.ts#L432), [ipc.ts:269](../desktop/main/ipc.ts#L269) | Load the renderer from Vite instead of `file://`, and trust that origin for IPC. Set by [dev.mjs](../desktop/scripts/dev.mjs). |
 | `EMMA_CDP_PORT` | [drive.mjs:9](../desktop/scripts/drive.mjs#L9) | Which debugging port `drive.mjs` talks to. Default `9222`. |
-| `EMMA_MODE` | [agent/emma:37](../agent/README.md) | Permission mode for the `emma` terminal front end only: `plan`, `ask`, `acceptEdits`, or `full`. Default `ask`. |
-| `EMMA_YOLO` | [agent/emma:38](../agent/README.md) | Alias for `EMMA_MODE=full`, same script. |
 | `EMMA_UPGRADE_BASE_URL` | [upgrade_helpers.zig:29](../harness/src/core/upgrade/upgrade_helpers.zig#L29) | The harness's self-upgrade endpoint. Not used by the desktop app. |
 
-Two notes on things you may see in older docs:
-
-- **`EMMA_HARNESS` no longer exists.** It is not read anywhere in the current
-  source. The harness is the only agent loop now — `main.ts` throws rather than
-  falling back ([main.ts:1587](../desktop/main/main.ts#L1587)). Any reference to
-  `EMMA_HARNESS=1` or `=0` is stale, including in a `desktop/dist-main` build
-  artifact left over from an earlier compile.
-- **`EMMA_MODE` is not the desktop app's mode.** It only configures the
-  `agent/emma` shell script. The app's five modes come from the composer's
-  picker ([permissions.ts](../desktop/shared/permissions.ts)).
+One note on something you may see in older docs: **`EMMA_HARNESS` no longer
+exists.** It is not read anywhere in the current source. The harness is the only
+agent loop now — `main.ts` throws rather than falling back
+([main.ts:1590](../desktop/main/main.ts#L1590)). Any reference to
+`EMMA_HARNESS=1` or `=0` is stale, including in a `desktop/dist-main` build
+artifact left over from an earlier compile.
 
 ## Starting over
 
 **Wipe everything.** Settings has a reset that closes the host, deletes both
-roots, and relaunches ([main.ts:2945](../desktop/main/main.ts#L2945)). The
+roots, and relaunches ([main.ts:3082](../desktop/main/main.ts#L3082)). The
 Markdown mirror in Documents is your folder, so it stays — and nothing reads it
 back in. The equivalent by hand, with Emma quit:
 
@@ -665,7 +562,7 @@ rm -rf ~/Library/Application\ Support/Emma \
 node desktop/scripts/drive.mjs 'localStorage.removeItem("emma.setupSeen.v1")'
 ```
 
-**Rebuild every sidecar.** When the symptom is a mismatch between the
+**Rebuild every binary.** When the symptom is a mismatch between the
 TypeScript, Rust, and Zig halves:
 
 ```bash
@@ -690,10 +587,10 @@ tccutil reset SpeechRecognition dev.local.emma
 - [getting-started.md](getting-started.md) — prerequisites, first run, and every build command
 - [development.md](development.md) — workflow and conventions
 - [architecture.md](architecture.md) — which layer owns what
-- [permissions.md](permissions.md) — the five modes and the tool gate
+- [permissions.md](permissions.md) — the four modes and the tool gate
 - [models.md](models.md) — providers, catalog, and the free router
 - [harness.md](harness.md) — `emma-cli` and the ACP wiring
-- [cli.md](cli.md) — the terminal front ends
+- [cli.md](cli.md) — the `cli` tools and Settings → Connections
 - [data.md](data.md) — every file Emma writes and where
 - [privacy.md](privacy.md) — what leaves this Mac, and when
 - [voice.md](voice.md) — dictation setup and its failure modes

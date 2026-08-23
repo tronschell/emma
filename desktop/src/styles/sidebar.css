@@ -29,9 +29,8 @@
    the projects scroller. Drawn inside instead — same 2px, still unmistakable. */
 .sidebar :focus-visible { outline-offset: -2px; }
 
-/* Brand band: a 20px square mark against the wordmark, both on the grid. */
 .sidebar > .brand { display: flex; align-items: center; gap: var(--s-3); min-height: var(--row); padding: var(--s-2) var(--pad); border-bottom: 1px solid var(--border); font: inherit; letter-spacing: normal; }
-.sidebar > .brand .mark { width: 20px; height: 20px; border: 1px solid var(--border-strong); color: var(--text-2); background: none; font-size: var(--fs-md); }
+.sidebar > .brand .emma-mark { width: 28px; }
 .sidebar > .brand strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 400; line-height: 1; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .rail-toggle, .nav-settings { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; margin-left: auto; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t); }
 .rail-toggle:hover, .nav-settings:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
@@ -70,6 +69,15 @@
 /* Tier 2 — section nav. Fill is state only: a whisper on hover, a step up when active. */
 .sidebar-nav { display: grid; padding: var(--s-2) 0; border-bottom: 1px solid var(--border); }
 .sidebar-nav button { letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* The mark is a drawing, not a character, so its box is the grid cell rather than
+   a line of type — otherwise it sits on a baseline the label does not share. */
+.sidebar-nav button > span:first-child { display: grid; place-items: center; }
+/* The rest of the sections, folded behind one row. It is a control over the list,
+   not a section in it, so it takes half a row rather than a whole one, is drawn a
+   step quieter, and its caret turns to face the way pressing it moves the list. */
+.sidebar-nav .nav-more { min-height: calc(var(--row) / 2); color: var(--text-3); line-height: 1; }
+.sidebar-nav .nav-more svg { width: 12px; height: 12px; }
+.nav-more[aria-expanded="true"] svg { rotate: 180deg; }
 .sidebar-nav button:not(:disabled):hover { color: var(--text); background: var(--surface-2); }
 .sidebar-nav button.active { color: var(--text); background: var(--surface-3); }
 /* The five sections are a set, so they take distinct hues in palette order rather
@@ -84,29 +92,54 @@
    an auto-placed count would slide one column left whenever the row is at rest. */
 .sidebar-nav b, .project-group > summary b { grid-column: -2; justify-self: end; overflow: hidden; color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; font-variant-numeric: tabular-nums; text-align: right; }
 
-/* Icon mode: the same four sections as one horizontal strip of glyph tiles, the
-   way Arc pins sit above its list. Labels go to the title tooltip, the count
-   rides the tile corner instead of its tab stop. Off in the 46px rail, which is
-   already a glyph column. */
+.sidebar-activity { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3) var(--pad) var(--s-4); border-bottom: 1px solid var(--border); }
+.sidebar-activity .activity-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); color: var(--text-3); }
+.activity-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 8px); gap: 3px; }
+.activity-cell { width: 8px; height: 8px; background: var(--surface-3); }
+.activity-cell.l1 { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.activity-cell.l2 { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.activity-cell.l3 { background: color-mix(in srgb, var(--accent) 80%, transparent); }
+.activity-cell.l4 { background: var(--accent); }
+
+/* Icon mode: the same sections as one horizontal strip of glyph tiles, the way Arc
+   pins sit above its list. Labels go to the title tooltip. The tile is one column
+   of two centred rows, mark over count — the count used to be pinned to the corner
+   on top of the mark, which a three-digit one covered. Metadata never goes below
+   --fs-2xs, so the way to fit both is to stop stacking them in the same 34px. Off
+   in the 46px rail, which is already a glyph column. */
 .sidebar.nav-icons:not(.collapsed) .sidebar-nav { grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s-1); padding: var(--s-2) var(--pad); }
-.sidebar.nav-icons:not(.collapsed) .sidebar-nav button { position: relative; grid-template-columns: minmax(0, 1fr); min-height: 34px; padding: 0; }
+.sidebar.nav-icons:not(.collapsed) .sidebar-nav button { grid-template-columns: minmax(0, 1fr); align-content: center; gap: 1px; min-height: 34px; padding: 2px 0; }
 .sidebar.nav-icons:not(.collapsed) .sidebar-nav .nav-label { display: none; }
 .sidebar.nav-icons:not(.collapsed) .sidebar-nav button > span:first-child { justify-self: center; font-size: var(--fs-xl); }
-.sidebar.nav-icons:not(.collapsed) .sidebar-nav b { position: absolute; top: 2px; right: var(--s-1); }
+.sidebar.nav-icons:not(.collapsed) .sidebar-nav svg { width: 17px; height: 17px; }
+.sidebar.nav-icons:not(.collapsed) .sidebar-nav b { grid-column: 1; justify-self: center; text-align: center; }
+
+/* Dragging: the row being carried goes translucent and rides over its neighbours,
+   which slide under it. Nothing else about it changes — it is the same row, moving. */
+.nav-sort[data-dragging], .project-sort[data-dragging] { position: relative; z-index: 2; opacity: 0.55; }
+.nav-sort[data-dragging] button, .project-sort[data-dragging] > details > summary { cursor: grabbing; }
+/* For the length of a folder drag every group shows its summary row alone: the
+   folders are what is being arranged, and a rail of open groups is a list too tall
+   to see the drop in. The caret follows, so a collapsed row is not drawn as open. */
+.sidebar-projects[data-dragging] .project-group > :not(summary) { display: none; }
+.sidebar-projects[data-dragging] .project-group[open] > summary::before { rotate: none; }
 
 /* Tier 3 — the project tree. Its label is a band header, rule included. */
 .sidebar-projects { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: var(--s-3); }
 .sidebar-label { display: block; padding: var(--s-3) var(--pad) var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-/* Four columns, not the shared three: caret, name, actions, count — otherwise the
-   count is a fourth child in a 3-column grid and wraps to its own line. The row
-   actions share one column so the count keeps its tab stop however many there are,
-   and they only take that space while the row is hovered — at rest the name gets it. */
-.project-group > summary { grid-template-columns: var(--s-6) auto minmax(0, 1fr) auto 4ch; cursor: pointer; list-style: none; white-space: nowrap; }
+/* Four columns, not the shared three: caret, folder, name, and one trailing tab
+   stop the count and the ＋ take turns in — the count is what the row says at rest,
+   the ＋ what it offers on hover. One cell for both is what keeps the swap from
+   moving anything. */
+.project-group > summary { grid-template-columns: var(--s-6) auto minmax(0, 1fr) 4ch; cursor: pointer; list-style: none; white-space: nowrap; }
 /* The folder mark: a group is a folder on this Mac, so it is drawn as one. Its own
    column between caret and name — the caret is state, the folder is what the row is. */
 .project-folder { display: grid; place-items: center; margin-right: var(--s-2); color: var(--text-3); }
-.project-actions { display: flex; align-items: center; }
-.project-group > summary:not(:hover):not(:focus-within) .project-actions { display: none; }
+.project-group > summary:not(:hover):not(:focus-within) .project-new { display: none; }
+/* :has() guards the unfiled group, which has no ＋ to put in the cell — it keeps its
+   count on hover rather than blinking out and leaving a hole. */
+.project-group > summary:has(.project-new):hover b,
+.project-group > summary:has(.project-new):focus-within b { display: none; }
 .project-group > summary::-webkit-details-marker { display: none; }
 .project-group > summary::before { content: "▸"; color: var(--text-3); font-size: var(--fs-sm); }
 .project-group[open] > summary::before { rotate: 90deg; }
@@ -174,17 +207,8 @@
 .thread-selection .nav-label { flex: 1 1 auto; }
 .thread-selection button { padding: 0 var(--s-2); color: var(--text-2); background: var(--surface-2); }
 .thread-selection button:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
-/* Sits in the group row; the select's own menu is the whole control. appearance:none
-   drops the native chevron so the ▤ glyph isn't squeezed beside it — and doesn't
-   read as a second caret next to the group's own. */
-/* The trash mark is the face; the native select rides invisibly on top of it so the
-   popup stays the platform's own. */
-.project-sweep { position: relative; display: grid; place-items: center; width: 24px; height: 24px; color: var(--text-3); transition: color var(--t), background-color var(--t); }
-.project-sweep svg { width: 12px; height: 12px; }
-.project-sweep select { position: absolute; inset: 0; appearance: none; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; opacity: 0; }
-.project-sweep:has(select:disabled) { opacity: 0.4; }
-.project-sweep:not(:has(select:disabled)):hover { color: var(--text); background: var(--surface-3); }
-.project-new { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t); }
+/* The row's one control, in the count's own cell and on the count's own tab stop. */
+.project-new { grid-column: -2; justify-self: end; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t); }
 .project-new:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 /* The ⋮ rides over the row's right gutter instead of taking a grid column: the row
    keeps its own shape and hover fill, and the title already fades out under it.
@@ -254,7 +278,7 @@
 /* 46px rail: the gutter collapses so the 20px mark and the glyph column both centre. */
 .sidebar.collapsed { --pad: 0; }
 .sidebar.collapsed > .brand { justify-content: center; }
-.sidebar.collapsed .brand strong, .sidebar.collapsed .nav-label, .sidebar.collapsed .sidebar-nav b, .sidebar.collapsed .sidebar-search, .sidebar.collapsed .sidebar-projects, .sidebar.collapsed .sidebar-scheduled, .sidebar.collapsed .nav-foot span { display: none; }
+.sidebar.collapsed .brand strong, .sidebar.collapsed .nav-label, .sidebar.collapsed .sidebar-nav b, .sidebar.collapsed .sidebar-search, .sidebar.collapsed .sidebar-projects, .sidebar.collapsed .sidebar-scheduled, .sidebar.collapsed .sidebar-activity, .sidebar.collapsed .nav-foot span { display: none; }
 /* The toggle never moves when it is pressed: it stays in the brand band at both
    widths, so the click that collapses the pane and the click that expands it land
    on the same pixel. The rail is one 24px glyph column wide, so the mark yields
@@ -262,7 +286,7 @@
    flex-growing child, so the foot has to claim the slack itself or it floats
    mid-rail. The two foot marks stack instead of sitting side by side — 2x28px plus
    the gap is wider than the 46px rail and both would spill past its edges. */
-.sidebar.collapsed > .brand .mark { display: none; }
+.sidebar.collapsed > .brand .emma-mark { display: none; }
 .sidebar.collapsed .nav-foot { flex-direction: column; justify-content: center; gap: var(--s-1); margin-top: auto; }
 .sidebar.collapsed .nav-settings, .sidebar.collapsed .rail-toggle { margin-left: 0; }
 .sidebar.collapsed .new-thread, .sidebar.collapsed .sidebar-nav button { grid-template-columns: minmax(0, 1fr); }

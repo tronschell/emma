@@ -399,8 +399,8 @@
 /* The action band: the note explains the button beside it rather than being
    flung to the opposite edge of the region. */
 .import-sources footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-4); }
-.import-sources footer p { flex: 1 1 320px; max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
-.settings-view .import-sources footer button, .import-sources footer button { flex: 0 0 auto; min-height: 30px; }
+.import-sources footer p { flex: 0 1 auto; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.settings-view .import-sources footer button, .import-sources footer button { flex: 0 0 auto; min-height: 30px; margin-left: auto; }
 .import-status { color: var(--accent); font: var(--fs-sm)/1.5 var(--font-mono); }
 
 /* ---------------------------------------------------------- connections -- */
@@ -447,13 +447,10 @@
 .import-later { display: block; width: 100%; min-height: 32px; padding: 0 var(--s-4); text-align: left; color: var(--text-3); background: transparent; border: 0; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), background-color var(--t); }
 .import-later:hover { color: var(--text); background: var(--surface-2); }
 
-/* The first-launch walkthrough wears the import dialog's outline; its bands are the
-   step rail, the grant rows, and the closing band. Every control in here is mono
-   small-caps — the shared control language in panels.css draws them. */
 .setup-dialog { width: min(700px, 100%); }
-/* Terminal drawings: ASCII only, so the column holds in Departure Mono. */
+.setup-dialog > header { align-items: center; }
+.setup-crest { width: 30px; }
 .setup-art { margin: 0; color: var(--text-3); font: var(--fs-sm)/1.35 var(--font-mono); white-space: pre; overflow-x: auto; }
-.setup-banner { color: var(--accent); font-size: var(--fs-xs); line-height: 1.15; }
 
 .setup-rail { display: flex; flex-wrap: wrap; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
 .setup-rail span { display: flex; align-items: center; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
@@ -462,29 +459,42 @@
 .setup-rail .done { color: var(--text-2); }
 .setup-rail .on { color: var(--accent); }
 
-.setup-intro { display: grid; gap: var(--s-5); padding: var(--s-5) var(--s-4); }
-/* LABEL   sentence, on one tab stop, the way every other row in the app aligns. */
-.setup-intro dl { display: grid; gap: var(--s-3); }
-.setup-intro dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: var(--s-4); align-items: baseline; }
-.setup-intro dt { color: var(--text); font: var(--fs-2xs)/1.6 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.setup-intro dd { margin: 0; max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.setup-intro { display: grid; justify-items: center; gap: var(--s-6); padding: var(--s-7) var(--s-4); }
+.setup-hero { width: 132px; }
+.setup-intro dl, .setup-notch-step dl { display: grid; gap: var(--s-3); width: 100%; }
+.setup-intro dl > div, .setup-notch-step dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: var(--s-4); align-items: baseline; }
+.setup-intro dt, .setup-notch-step dt { color: var(--text); font: var(--fs-2xs)/1.6 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-intro dd, .setup-notch-step dd { margin: 0; max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.setup-notch-step dl > div { grid-template-columns: 48px minmax(0, 1fr); align-items: center; }
+.setup-notch-step dt { color: var(--accent); font-size: var(--fs-2xl); letter-spacing: 0; text-align: center; }
 
-.setup-meter { padding: var(--s-3) var(--s-4); color: var(--text-2); border-bottom: 1px solid var(--border); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-meter { max-width: none; padding: var(--s-3) var(--s-4); color: var(--text-2); border-bottom: 1px solid var(--border); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .setup-meter span { color: var(--accent); }
-/* Status, name, and the one action on a single line; the explanation sits under them. */
 .setup-grants > section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-2) var(--s-4); align-items: center; padding: var(--s-4); border-bottom: 1px solid var(--border); }
 .setup-grants h3 { display: flex; align-items: center; gap: var(--s-3); min-width: 0; color: var(--text); font: var(--fs-sm)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .setup-grants > section > div { grid-column: 1 / -1; display: grid; gap: var(--s-2); }
 .setup-grants p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
-.setup-grants .setup-why { color: var(--text-3); }
 .setup-grants code { color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); word-break: break-all; }
-.setup-grants small { color: var(--accent); font: var(--fs-2xs)/1.5 var(--font-mono); }
+.setup-grants small, .setup-choices small { color: var(--accent); font: var(--fs-2xs)/1.5 var(--font-mono); }
 .setup-mark { flex: 0 0 auto; color: var(--text-3); font-style: normal; }
 .setup-mark.on { color: var(--accent); }
-.setup-choices { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-1); }
+.setup-choices { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin-top: var(--s-1); }
+
+.setup-notch-step { display: grid; gap: var(--s-6); padding: var(--s-5) var(--s-4); }
+.setup-notch { position: relative; padding-bottom: 78px; --notch-w: 148px; --notch-x: calc(50% - var(--notch-w) / 2); --notch-h: 26px; --island-h: 84px; --island-inset: 0px; }
+.setup-notch .emma-mark { width: 18px; }
+.setup-notch .island-body { justify-content: center; }
+.setup-notch .island-bar { background: var(--surface-4); }
+.setup-housing { z-index: 1; align-self: start; height: calc(100% + 10px); background: var(--fg-invert); border: 1px solid var(--border); border-top: 0; }
+.setup-caret { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
+.setup-caret::after { content: "|"; margin-left: 1px; color: var(--accent); }
+.setup-orbs { position: absolute; left: calc(var(--notch-x) + var(--notch-w) / 2); bottom: var(--s-3); display: flex; gap: var(--s-7); translate: -50% 0; }
+.setup-orbs > span { display: grid; justify-items: center; gap: var(--s-2); width: 96px; color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-orbs > span:nth-child(1) kbd { color: var(--teal); }
+.setup-orbs > span:nth-child(2) kbd { color: var(--violet); }
+.setup-orbs > span:nth-child(3) kbd { color: var(--lime); }
 
 .setup-foot { display: flex; gap: var(--s-2); justify-content: flex-end; padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
-/* Skipping is the quiet way out: a label at the far end, not a second offer. */
 .setup-foot .setup-skip { margin-right: auto; color: var(--text-3); border-color: transparent; }
 
 /* Shared with panels.css: inside settings the standalone reload control is a band. */

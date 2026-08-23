@@ -76,6 +76,12 @@ pub fn writeContextExperimentInfoUpdate(
     try writer.writeAll("}}}}");
 }
 
+pub fn writeTurnUsageInfoUpdate(writer: *std.Io.Writer, usage: TurnUsage) !void {
+    try writer.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":");
+    try writer.print("{d},\"outputTokens\":{d}", .{ usage.input_tokens, usage.output_tokens });
+    try writer.writeAll("}}}}");
+}
+
 pub const StopReason = enum {
     end_turn,
     max_output_tokens,
@@ -155,6 +161,37 @@ pub fn writeSessionUpdate(w: *std.Io.Writer, session_id: []const u8, update_json
 /// every writer above, which would grow a `_meta` parameter on all of them for
 /// one caller. `state` closes the child out: a front end that only ever saw
 /// updates would have no way to know one had finished.
+pub fn writeChildTurnUsageInfoUpdate(
+    w: *std.Io.Writer,
+    usage: TurnUsage,
+    child_id: []const u8,
+    title: []const u8,
+    ended: bool,
+) !void {
+    try w.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":");
+    try w.print("{d},\"outputTokens\":{d}", .{ usage.input_tokens, usage.output_tokens });
+    try w.writeAll("},\"child\":{\"id\":");
+    try writeJsonStr(child_id, w);
+    try w.writeAll(",\"title\":");
+    try writeJsonStr(title, w);
+    try w.writeAll(",\"state\":");
+    try writeJsonStr(if (ended) "ended" else "running", w);
+    try w.writeAll("}}}}");
+}
+
+test "a child's usage rides the same _meta as its tag, not a second one" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeChildTurnUsageInfoUpdate(&out.writer, .{ .input_tokens = 777, .output_tokens = 42 }, "child-1", "read the docs", false);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.writer.buffered(), .{});
+    defer parsed.deinit();
+    const fx = parsed.value.object.get("_meta").?.object.get("fx").?.object;
+    try std.testing.expectEqual(@as(i64, 777), fx.get("turnUsage").?.object.get("inputTokens").?.integer);
+    try std.testing.expectEqual(@as(i64, 42), fx.get("turnUsage").?.object.get("outputTokens").?.integer);
+    try std.testing.expectEqualStrings("child-1", fx.get("child").?.object.get("id").?.string);
+    try std.testing.expectEqualStrings("running", fx.get("child").?.object.get("state").?.string);
+}
+
 pub fn writeChildTaggedUpdate(
     w: *std.Io.Writer,
     update_json: []const u8,
@@ -518,4 +555,15 @@ test "context experiment info update reports both levers" {
     try writeContextExperimentInfoUpdate(&out.writer, 0, true, 0, 310);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"reinjected\":true") != null);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"addedTokens\":310") != null);
+}
+
+test "turn usage info update carries both sides" {
+    const alloc = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeTurnUsageInfoUpdate(&out.writer, .{ .input_tokens = 24_100, .output_tokens = 3_200 });
+    try std.testing.expectEqualStrings(
+        "{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":24100,\"outputTokens\":3200}}}}",
+        out.writer.buffered(),
+    );
 }

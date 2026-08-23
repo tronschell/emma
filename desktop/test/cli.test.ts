@@ -43,17 +43,16 @@ test("the cli tool refuses a call that would spawn nothing useful", () => {
   assert.deepEqual(parseToolArgs("cli_runs", JSON.stringify({ id: "cli1", stop: true })), { name: "cli_runs", id: "cli1", stop: true });
 });
 
-test("starting a CLI is gated like bash; watching one is not", () => {
-  assert.equal(toolGate("plan", "cli"), "hidden");
+test("starting a CLI stops to ask; watching one does not", () => {
   assert.equal(toolGate("ask", "cli"), "ask");
   // The one that matters: accepting edits must not silently accept another agent.
   assert.equal(toolGate("acceptEdits", "cli"), "ask");
   assert.equal(toolGate("full", "cli"), "auto");
-  assert.equal(toolGate("plan", "cli_runs"), "auto");
-  const names = toolDefinitions("ask", { folders: true, computer: false, mcp: false, canSpawn: true }).map((tool) => tool.name);
+  assert.equal(toolGate("ask", "cli_runs"), "auto");
+  const names = toolDefinitions("ask", { folders: true, computer: false }).map((tool) => tool.name);
   assert.ok(names.includes("cli") && names.includes("cli_runs"));
   // No folder, nothing to run in — so it is not advertised at all.
-  assert.ok(!toolDefinitions("ask", { folders: false, computer: false, mcp: false, canSpawn: true }).map((tool) => tool.name).includes("cli"));
+  assert.ok(!toolDefinitions("ask", { folders: false, computer: false }).map((tool) => tool.name).includes("cli"));
 });
 
 test("the run list reads as one line each", () => {

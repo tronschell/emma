@@ -83,6 +83,7 @@ pub const LiveMirror = struct {
     ctx: *anyopaque,
     push_text: *const fn (*anyopaque, agent_runtime.TextEmission) anyerror!void,
     push_tool_lifecycle: *const fn (*anyopaque, types.ToolLifecycleEvent) anyerror!void,
+    push_usage: *const fn (*anyopaque, types.Usage) void,
 };
 
 pub const Config = struct {
@@ -643,6 +644,7 @@ fn reportUsage(raw: *anyopaque, usage: types.Usage) void {
     const context: *Context = @ptrCast(@alignCast(raw));
     if (usage.input_tokens) |value| context.input_tokens = value;
     if (usage.output_tokens) |value| context.output_tokens = value;
+    if (context.config.live_mirror) |mirror| mirror.push_usage(mirror.ctx, usage);
 }
 
 fn publishCommittedFileHandoff(_: *anyopaque, _: file_mutation.CommittedFileHandoff) agent_runtime.SecondaryPublicationReport {

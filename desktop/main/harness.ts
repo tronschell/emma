@@ -5,6 +5,7 @@ import { BoundedLines } from "./ndjson";
 export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
+import type { RunnableHookEvent } from "../shared/plugins";
 import type { HarnessExperiments } from "../shared/settings";
 
 /**
@@ -61,7 +62,20 @@ export type TurnUsage = { inputTokens: number; outputTokens: number };
  * composer chip cleared and the attachment was marked delivered while the
  * instructions never left this process.
  */
-export type TurnExtras = { skillContext?: string; contextWindow?: number; experiments?: HarnessExperiments; compact?: boolean };
+export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; compact?: boolean };
+
+/** The stop the picker is on, with the stops the turn's model publishes. Blank asks for the model's default. */
+export type ThinkingRoute = { level: string; published: string[] };
+
+/**
+ * The thinking effort, in the one string `session/set_config_option` takes.
+ *
+ * Both halves ride it because the harness needs both: its own capability table
+ * knows nothing about this model, so an effort arrives unsupported and is dropped
+ * unless the list it belongs to arrives with it. `auto` is the model's own default
+ * — the one value that means "send no reasoning field at all".
+ */
+export const effortOption = ({ level, published }: ThinkingRoute) => `${level || "auto"};${published.join(",")}`;
 
 /**
  * The experimental context hooks, in the one string `session/set_config_option`
@@ -77,11 +91,10 @@ export const experimentOption = (experiments: HarnessExperiments) =>
     `prune_percent=${experiments.pruneToolsPercent}`,
   ].join(",");
 
-/** An MCP server, in the shape `session/new` wants it. */
-export type HarnessMcpServer =
-  | { type: "stdio"; name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }
-  /** Emma's own tools, served over localhost; see `bridge.ts`. */
-  | { type: "http"; name: string; url: string; headers: Array<{ name: string; value: string }> };
+/** An MCP server, in the shape `session/new` wants it: stdio is the absence of
+    a `type`, not a value for it. The `http` variant went with the localhost
+    bridge that used to carry Emma's own tools, now that they are native. */
+export type HarnessMcpServer = { name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> };
 
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 
@@ -108,6 +121,13 @@ export function contextExperimentFired(update: Record<string, unknown>): Context
   return pruned || reinjected
     ? { prunedResults: pruned, reinjected, savedTokens: count(fired.savedTokens), addedTokens: count(fired.addedTokens) }
     : undefined;
+}
+
+export function turnUsageReported(update: Record<string, unknown>): TurnUsage | undefined {
+  const usage = (update._meta as { fx?: { turnUsage?: unknown } } | undefined)?.fx?.turnUsage as
+    { inputTokens?: unknown; outputTokens?: unknown } | undefined;
+  if (!usage || typeof usage !== "object") return undefined;
+  return { inputTokens: count(usage.inputTokens), outputTokens: count(usage.outputTokens) };
 }
 
 export type HarnessDeps = {
@@ -143,6 +163,7 @@ export type HarnessDeps = {
    * switched it on, so the turn it silently rewrites has to say that it did.
    */
   onContextExperiment: (threadId: string, fired: ContextExperimentFired) => void;
+  onUsage: (threadId: string, usage: TurnUsage) => void;
   /**
    * A subagent seen for the first time. Resolves with the Emma thread its
    * transcript belongs on; everything the child says and does is reported against
@@ -162,6 +183,7 @@ export type HarnessDeps = {
    * transport — the message is what it reads.
    */
   onToolRequest: (threadId: string, name: string, args: Record<string, unknown>) => Promise<string>;
+  onLifecycle?: (event: RunnableHookEvent, threadId: string, input: Record<string, unknown>) => Promise<void>;
 };
 
 /**
@@ -174,42 +196,18 @@ export type PermissionContext = { outsideWorkspace: boolean; mode: PermissionMod
 
 export type PermissionOption = { optionId: string; name: string; kind: string };
 
-/**
- * Emma's four picker modes onto the harness's mode ids.
- *
- * The mapping is the identity because `harness/src/builtins/modes.zig` was made
- * to match: upstream shipped only `ask` and `code`, and `code` is `acceptEdits`
- * under its real behaviour since it still gates commands. Mapping `full` onto it
- * would have left an unattended run prompting for approval nobody was there to
- * give.
- */
-const MODE_IDS: Record<PermissionMode, string> = {
-  plan: "plan",
-  // Every mode that can change something maps to `ask`, so every decision comes
-  // back to Emma. This is not the identity mapping it looks like it should be,
-  // and the two modes that used to map straight through were both unsafe:
-  //
-  // `acceptEdits` became the harness's `auto`, which does not check the granted
-  // folder at all (its own trace says `outside_workspace=unknown`) and which
-  // hands every shell command to a hardcoded in-harness reviewer model. Emma's
-  // picker promises the user that commands still ask, and they did not.
-  //
-  // `full` became `yolo`, evaluated before the config rule loop, so it kept no
-  // floor whatsoever — where Emma's own `full` still enforces the sandbox.
-  //
-  // Routing everything here costs one local round trip per tool call and puts
-  // the decision where the grant is actually known. `handlePermission` answers
-  // without troubling the user in the modes that should not prompt.
-  ask: "ask",
-  acceptEdits: "ask",
-  // The harness has no verifier of its own, and must not: the question it raises
-  // is answered by Emma's verifier on the way through `AgentRuntime.question`
-  // rather than by the user.
-  auto: "ask",
-  full: "ask",
-};
+export const HARNESS_MODE_ID = "ask";
 
-export const harnessModeId = (mode: PermissionMode) => MODE_IDS[mode];
+/**
+ * Which harness process a turn belongs on: the workspace, unless the turn was
+ * started from inside another one.
+ *
+ * A process holds one session and runs one turn at a time, so a nested turn on
+ * its parent's process waits for the parent to finish — which is why a
+ * `threads spawn` carrying a prompt looked like it had hung.
+ */
+export const harnessKey = (cwd: string, nestedThreadId?: string) =>
+  nestedThreadId ? `${cwd}\u0000${nestedThreadId}` : cwd;
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; touch: () => void };
 
@@ -310,9 +308,11 @@ export class Harness {
 
   private async runPrompt(threadId: string, cwd: string, text: string, mode: PermissionMode, model?: string, extra: TurnExtras = {}): Promise<{ stopReason: StopReason; usage: TurnUsage }> {
     await this.start();
+    const opening = !this.sessions.has(threadId);
     const sessionId = await this.activeSession(threadId, cwd);
     this.modes.set(threadId, mode);
-    await this.request("session/set_mode", { sessionId, modeId: MODE_IDS[mode] });
+    if (opening) await this.lifecycle("SessionStart", threadId, sessionId, mode, model, { source: "startup" });
+    await this.request("session/set_mode", { sessionId, modeId: HARNESS_MODE_ID });
     // Emma's picker is the source of truth for the model, so it is re-applied
     // per turn rather than trusted to persist in the harness's own settings.
     if (model) await this.request("session/set_config_option", { sessionId, configId: "model", value: model });
@@ -322,6 +322,13 @@ export class Harness {
     // number from the OpenRouter catalog.
     if (extra.contextWindow) {
       await this.request("session/set_config_option", { sessionId, configId: "context_window", value: String(extra.contextWindow) });
+    }
+    // The picker's thinking stop, beside the model it belongs to. Sent whether or
+    // not one is set, for the same reason the experiments below are: the harness
+    // holds the effort per session, so a slider dragged back to Default has to
+    // reach the session that was running with an effort on.
+    if (extra.effort) {
+      await this.request("session/set_config_option", { sessionId, configId: "reasoning_effort", value: effortOption(extra.effort) });
     }
     // Settings → Harness. Sent whether or not anything is on, so switching a
     // lever off reaches the session that was running with it on.
@@ -342,14 +349,30 @@ export class Harness {
     const prompt = extra.skillContext
       ? [{ type: "text", text: extra.skillContext }, { type: "text", text }]
       : [{ type: "text", text }];
+    await this.lifecycle("UserPromptSubmit", threadId, sessionId, mode, model, { prompt: text });
     const result = (await this.request("session/prompt", {
       sessionId,
       prompt,
     })) as { stopReason?: string; usage?: { inputTokens?: unknown; outputTokens?: unknown } } | null;
+    const stopReason = (result?.stopReason ?? "end_turn") as StopReason;
+    await this.lifecycle("Stop", threadId, sessionId, mode, model, { stop_hook_active: false, stop_reason: stopReason });
     return {
-      stopReason: (result?.stopReason ?? "end_turn") as StopReason,
+      stopReason,
       usage: { inputTokens: count(result?.usage?.inputTokens), outputTokens: count(result?.usage?.outputTokens) },
     };
+  }
+
+  private async lifecycle(event: RunnableHookEvent, threadId: string, sessionId: string, mode: PermissionMode, model: string | undefined, extra: Record<string, unknown>) {
+    if (!this.deps.onLifecycle) return;
+    await this.deps.onLifecycle(event, threadId, {
+      session_id: sessionId,
+      transcript_path: null,
+      cwd: this.deps.cwd,
+      hook_event_name: event,
+      permission_mode: mode,
+      model: model ?? "",
+      ...extra,
+    }).catch((error: unknown) => console.error(`Emma: a ${event} plugin hook could not be run`, error));
   }
 
   async cancel(threadId: string) {
@@ -363,14 +386,12 @@ export class Harness {
     this.send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
   }
 
-  /**
-   * A message for one running subagent. It is queued on the child rather than
-   * injected, so it lands with that child's next turn and never interrupts the
-   * tool call it is in the middle of — the same thing steering means everywhere
-   * else in Emma.
-   */
   async steerChild(childId: string, content: string) {
     await this.request("session/steer_child", { childId, content });
+  }
+
+  async cancelChild(childId: string) {
+    await this.request("session/cancel_child", { childId });
   }
 
   close() {
@@ -438,8 +459,10 @@ export class Harness {
     this.sessions.delete(threadId);
   }
 
-  /** The same, for every thread, after the set of configured servers changes. */
   forgetAllSessions() {
+    for (const [threadId, sessionId] of this.sessions) {
+      void this.lifecycle("SessionEnd", threadId, sessionId, this.modes.get(threadId) ?? "ask", undefined, { reason: "other" });
+    }
     this.sessions.clear();
   }
 
@@ -606,6 +629,11 @@ export class Harness {
       // a provider that is failing. Dropped, a run waiting out a 503 with a
       // sixty-second backoff was indistinguishable from one that had hung.
       case "session_info_update": {
+        const usage = turnUsageReported(update);
+        if (usage) {
+          this.deps.onUsage(threadId, usage);
+          return;
+        }
         const fired = contextExperimentFired(update);
         if (fired) {
           this.deps.onContextExperiment(threadId, fired);

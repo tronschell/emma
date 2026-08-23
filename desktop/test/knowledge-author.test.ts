@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { authorPage, chooseCategory, readBlocks, revisePage, titleFrom } from "../main/knowledge-author";
+import { authorKnowledgePage, authorPage, authorPageFromThread, chooseCategory, pageTurnContext, proposePageRevision, readBlocks, revisePage, titleFrom } from "../main/knowledge-author";
 
 const route = { endpoint: "https://provider.test/v1/chat/completions", model: "vendor/model", key: "k" };
 
@@ -82,7 +82,7 @@ test("a revision returns the whole page, and needs a model because there is no l
   await assert.rejects(revisePage("x", current, { ...route, model: "" }), /needs a model/);
 });
 
-test("the local title and category rules are the sidecar's, so pages keep filing the same way", () => {
+test("the local title and category rules are unchanged, so pages keep filing the same way", () => {
   assert.equal(titleFrom("   "), "Untitled page");
   assert.equal(titleFrom("A".repeat(200)), "A".repeat(120));
   assert.equal(titleFrom("First line\nSecond line"), "First line");
@@ -102,4 +102,66 @@ test("blocks are read defensively, since they are model output", () => {
     id: `block-${index}`, type: "rich-text", payload: { markdown: "x" }, fallback: "x",
   }));
   assert.equal(readBlocks(many).length, 64);
+});
+
+/** Records every store call in order, and answers the read halves. */
+function store(context: Record<string, unknown> = {}) {
+  const calls: { method: string; params: Record<string, string> }[] = [];
+  const call = async (method: string, params: Record<string, string>) => {
+    calls.push({ method, params });
+    if (method === "pageAuthoringContext" || method === "threadAuthoringContext") {
+      return { threadId: "thread-123456789", text: "A paper about retrieval.", categories: ["research"], title: "RAG", summary: "What RAG is.", artifacts: [], ...context };
+    }
+    return { ok: true };
+  };
+  return { calls, call };
+}
+
+test("each page flow reads the store, calls the model, then writes back what came out", async () => {
+  const { calls, call } = store();
+  // No route: the local scaffold stands in for the provider call, so this needs no network.
+  await authorKnowledgePage(call, { pageId: "page-1", keepCategory: "true" });
+  assert.deepEqual(calls.map((entry) => entry.method), ["pageAuthoringContext", "analyzePage"]);
+  // The whole authored page rides the write, and `keepCategory` survives the round trip.
+  assert.equal(calls[1].params.keepCategory, "true");
+  const document = JSON.parse(calls[1].params.document) as { category: string; model: string };
+  assert.equal(document.category, "research");
+  assert.equal(document.model, "local-fallback");
+
+  const thread = store();
+  await authorPageFromThread(thread.call, "thread-123456789");
+  assert.deepEqual(thread.calls.map((entry) => entry.method), ["threadAuthoringContext", "saveToKnowledge"]);
+  assert.equal(thread.calls[1].params.threadId, "thread-123456789");
+});
+
+test("a revision refuses without a model before it touches the store, and posts the whole page after", async () => {
+  const refused = store();
+  await assert.rejects(proposePageRevision(refused.call, { pageId: "page-1", instruction: "x" }), /needs a model/);
+  // Reading the page creates its conversation thread, so a refusal must not get that far.
+  assert.deepEqual(refused.calls, []);
+
+  const current = [{ id: "summary", type: "rich-text", payload: { markdown: "old" }, fallback: "old" }];
+  const { calls, call } = store({ artifacts: current.map((block) => ({ ...block, version: 1, source: {} })) });
+  const { sent, restore } = serve(JSON.stringify({
+    blocks: [{ id: "summary", type: "rich-text", payload: { markdown: "new" }, fallback: "new" }],
+  }));
+  try {
+    await proposePageRevision(call, { pageId: "page-1", instruction: "Tighten it." }, route);
+    assert.deepEqual(calls.map((entry) => entry.method), ["pageAuthoringContext", "revisePageDocument"]);
+    // The page reaches the model without the durable fields the store keeps around it.
+    const prompt = (sent[0].messages as { content: string }[]).map((message) => message.content).join("\n");
+    assert.match(prompt, /\{"id":"summary","type":"rich-text","payload":\{"markdown":"old"\},"fallback":"old"\}/);
+    assert.ok(!prompt.includes('"version"'), "the store's own fields do not belong in the prompt");
+    assert.deepEqual(JSON.parse(calls[1].params.blocks), [{ id: "summary", type: "rich-text", payload: { markdown: "new" }, fallback: "new" }]);
+  } finally { restore(); }
+});
+
+test("a page chat becomes one turn with the whole document attached", async () => {
+  const { calls, call } = store({ artifacts: [{ id: "how-to-apply", type: "list", payload: { items: ["Try it"] }, fallback: "- Try it" }] });
+  const turn = await pageTurnContext(call, "page-1");
+  assert.deepEqual(calls.map((entry) => entry.method), ["pageAuthoringContext"]);
+  // The page's own thread, so every door onto the document lands in one history.
+  assert.equal(turn.threadId, "thread-123456789");
+  assert.match(turn.skillContext, /Title: RAG/);
+  assert.match(turn.skillContext, /\[how-to-apply · list\]\n- Try it/);
 });

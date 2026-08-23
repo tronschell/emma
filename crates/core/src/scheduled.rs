@@ -86,14 +86,20 @@ pub struct ScheduledJob {
 }
 
 pub const MAX_SCHEDULED_SOURCE_DOMAINS: usize = 32;
-/// The same four the desktop composer offers; kept as strings so core owns no UI vocabulary.
-pub const PERMISSION_MODES: [&str; 4] = ["plan", "ask", "acceptEdits", "full"];
+pub const PERMISSION_MODES: [&str; 3] = ["ask", "acceptEdits", "full"];
 pub const MAX_WORKFLOW_NODE_BYTES: usize = 32 * 1024;
 pub const MAX_WORKFLOW_OUTPUT_BYTES: usize = 16 * 1024;
 /// How far a chain of `after` triggers may run before core stops firing. Two jobs
 /// that trigger each other are a loop, and a loop of unattended agent turns is the
 /// one failure here nobody is watching.
 pub const MAX_TRIGGER_DEPTH: u32 = 3;
+
+pub fn stored_permission_mode(stored: String) -> String {
+    match stored.as_str() {
+        "plan" => "ask".to_string(),
+        _ => stored,
+    }
+}
 
 impl ScheduledJob {
     pub fn new(
@@ -281,7 +287,7 @@ impl ScheduledJob {
             value => Some(ThreadId::parse(value)?.to_string()),
         };
         let permission_mode = if format >= 2 {
-            field_value(&mut lines, "permission-mode")?
+            stored_permission_mode(field_value(&mut lines, "permission-mode")?)
         } else {
             "ask".to_string()
         };
@@ -654,8 +660,15 @@ mod tests {
             )
             .is_err()
         );
-        // A job saved before modes and graphs existed still loads: it runs under the
-        // mode that declines every gated call, as one agent step on its prompt.
+        let retired = job
+            .to_markdown()
+            .replace("permission-mode: \"full\"\n", "permission-mode: \"plan\"\n");
+        assert_eq!(
+            ScheduledJob::from_markdown(&retired)
+                .unwrap()
+                .permission_mode,
+            "ask"
+        );
         let older = job
             .to_markdown()
             .replacen(

@@ -20,7 +20,9 @@
    the grid in mono and keeps its own case, at the pane's own gutter rather than
    indented onto the transcript column: it names the pane, so it starts where the
    pane does. */
-.thread-bar { display: flex; align-items: center; gap: var(--s-2); min-height: 34px; padding: var(--s-2) var(--content-gutter); }
+/* The gap is the pane's own gutter so the name sits with the same air on both
+   sides: the pane edge to its first glyph, its last glyph to the tag. */
+.thread-bar { display: flex; align-items: center; gap: var(--content-gutter); min-height: 34px; padding: var(--s-2) var(--content-gutter); }
 .thread-bar h2 { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 400; letter-spacing: normal; text-overflow: ellipsis; white-space: nowrap; }
 /* Reads as the heading it replaces until you point at it, when it admits it is a
    field. `field-sizing` keeps the box on the text: an input at its default 20ch
@@ -36,11 +38,14 @@
    nothing filed it is the dimmest thing on the bar, so an untagged thread reads
    as untagged rather than as a control waiting to be used. */
 .tag-picker { position: relative; display: flex; align-items: center; flex: 0 0 auto; }
-.tag-trigger { max-width: 16ch; overflow: hidden; min-height: 0; height: 20px; padding: 0 var(--s-2); color: var(--text-3); background: var(--surface-3); border: 1px solid transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t); }
+.tag-trigger { max-width: 16ch; overflow: hidden; min-height: 0; height: 20px; padding: 0 var(--s-2); color: var(--text-3); background: var(--surface-3); border: 1px solid transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t), opacity var(--t); }
 .tag-trigger:hover, .tag-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-4); }
-/* Untagged is the dimmest state, and Emma's own guess is dashed — the same two
-   marks the sidebar row uses, so a tag reads the same in both places. */
-.tag-trigger[data-state="none"] { background: transparent; border-color: var(--border); }
+/* Emma's own guess is dashed — the mark the sidebar row uses, so a tag reads the
+   same in both places. Untagged is an offer rather than a fact, so it waits for
+   the pointer, and only for opacity: it keeps its place in the layout and in the
+   tab order, so nothing shifts and the keyboard can still reach it. */
+.tag-trigger[data-state="none"] { background: transparent; border-color: var(--border); opacity: 0; }
+.thread-bar:hover .tag-trigger[data-state="none"], .tag-trigger[data-state="none"]:focus-visible, .tag-trigger[data-state="none"][aria-expanded="true"] { opacity: 1; }
 .tag-trigger[data-state="auto"] { background: transparent; border-color: var(--border); border-style: dashed; }
 /* Hangs below the bar, left-aligned on the chip — the popover's default is above,
    which is right over the composer and wrong under a header. Doubled up on the
@@ -126,8 +131,13 @@
 .message-body { max-width: 72ch; color: var(--text); font-size: var(--fs-md); line-height: 1.6; overflow-wrap: anywhere; }
 .message-body > * + * { margin-top: var(--s-3); }
 /* A turn is several bodies now — one per stretch of talking, with what it did in
-   between — so the rhythm between them is the same as the rhythm inside one. */
-.message-body + .message-body, .steps + .message-body { margin-top: var(--s-3); }
+   between. A line of narration and the calls it made are one block; the next
+   line of narration starts the next one. So the air inside a block is tighter
+   than the air between blocks — at one flat rhythm every line in the turn sits
+   the same distance from every other and the whole turn reads as one wall. */
+.message-body + .message-body { margin-top: var(--s-3); }
+.steps + .message-body, .steps-more + .message-body { margin-top: var(--s-5); }
+.message-body + .steps, .message-body + .steps-more { margin-top: var(--s-2); }
 /* The UA's own block margins would double the rhythm * + * just set, and its
    40px inline margin on a blockquote would push the quote off the column. */
 .message-body > * { margin-bottom: 0; margin-inline: 0; }
@@ -154,14 +164,25 @@
 
 /* Stream, echo, wait ------------------------------------------------------ */
 
-/* The scratchpad is machinery, not prose — mono, demoted, and shut. Same left
-   rule as a code block, because it is the same kind of thing: a block quoted
-   out of the machine. <details> does the open/close, so there is no state here. */
-.message-body .thinking { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-sm); }
-.message-body .thinking > summary { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; transition: color var(--t); }
-.message-body .thinking > summary:hover, .message-body .thinking[open] > summary { color: var(--text-2); }
-.message-body .thinking > p { margin-top: var(--s-2); padding-left: var(--s-3); border-left: 1px solid var(--border); color: var(--text-3); font-size: inherit; line-height: 1.55; }
-.message-body .thinking + p { margin-top: var(--s-3); }
+/* The scratchpad is machinery, not prose — mono, demoted, and shut. One row for
+   the whole turn, above the answer, because the harness thinks between every
+   tool call and a caret per burst was a stack of them down the turn. Open, it
+   takes the same left rule as a code block: it is the same kind of thing, a
+   block quoted out of the machine. <details> does the open/close, no state here.
+   No disclosure mark either — it is one demoted line and the triangle beside it
+   was the loudest thing about it. The row lights on hover, which is the offer. */
+.message > .thinking { max-width: 72ch; margin-bottom: var(--s-3); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.message > .thinking > summary { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; list-style: none; transition: color var(--t); }
+.message > .thinking > summary::-webkit-details-marker { display: none; }
+.message > .thinking > summary:hover, .message > .thinking[open] > summary { color: var(--text-2); }
+.message > .thinking > p { margin-top: var(--s-2); padding-left: var(--s-3); border-left: 1px solid var(--border); color: var(--text-3); font-size: inherit; line-height: 1.55; white-space: pre-wrap; }
+/* Live, the row is the turn's status line and sits under the work it reports on.
+   The whole line breathes rather than a glyph beside it: at this size a 10px mark
+   pulsing on its own is a tic in the corner of the eye, and the line is the thing
+   that is still going. Same pulse the waiting line uses, so it reads the same. */
+.message > .thinking[data-live] { margin-top: var(--s-3); margin-bottom: 0; }
+.message > .thinking[data-live] > summary { animation: waiting-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .message > .thinking[data-live] > summary { animation: none; } }
 
 /* A picture the turn drew, in the flow where it drew it. Sized to the prose
    column, because it is a sentence in the answer rather than a panel beside it —
@@ -572,9 +593,9 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-body > * { flex: 0 0 auto; }
 /* Unboxed: the rule under it is the field's only edge. */
 .model-search { min-height: 30px; padding: 0 var(--s-3); color: var(--text); border: 0; border-bottom: 1px solid var(--border); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); }
-/* Three classes deep only to outrank settings.css's copy of the field's border,
-   so the focus edge index.css asks for survives in the settings catalog too. */
-.model-find .model-search:focus-visible { border-bottom-color: var(--accent); }
+/* The field is autofocused the moment the picker opens, so the accent edge
+   index.css gives focused inputs would just be permanent decoration. Caret only. */
+.model-find .model-search:focus-visible { border-bottom-color: var(--border); }
 /* Free-only sits on the search line, and carries the field's own rule so the line
    under it stays unbroken across the two controls. */
 .model-find { display: flex; }
@@ -587,7 +608,10 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 /* Two lines: the model, then who made it. No rule between rows — a two-line row
    already reads as its own block, and the fill on the selected one is the only
    mark this list needs. */
-.model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; transition: background-color var(--t); }
+.model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; transition: background-color var(--t); }
+/* The window sits with the star, not in the name line: it is a property of the
+   row, and a fixed right edge lets the numbers be compared down the column. */
+.model-context { color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); white-space: nowrap; }
 .model-row:hover, .model-row.current { background: var(--surface-3); }
 .model-row-pick { display: grid; gap: 2px; min-width: 0; padding: var(--s-2) var(--s-3); text-align: left; color: var(--text); background: transparent; }
 .model-row-pick strong { display: flex; align-items: center; gap: var(--s-2); min-width: 0; font: var(--fs-md)/1.35 var(--font-mono); font-weight: 400; }
@@ -637,17 +661,13 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 /* Controls are the one exemption from "never nest outlines": a hit target, not
    a region, so a 1px --border box one step quieter than the menu's own
    --border-strong. Same language as panels.css. */
-.capability-panel > header button, .capability-action, .capability-close {
+.capability-panel > header button, .capability-action {
   flex: 0 0 auto; justify-self: start; min-height: 28px; padding: 0 var(--s-3);
   color: var(--text-2); background: transparent; border: 1px solid var(--border);
   font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap;
   transition: color var(--t), border-color var(--t), background-color var(--t);
 }
-.capability-panel > header button:hover:not(:disabled), .capability-action:hover:not(:disabled), .capability-close:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
-/* The actions inside a review are the ones that actually commit — approve the
-   process, call the tool — so they take the accent on an accent rule. */
-.capability-review .capability-action { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
-.capability-review .capability-action:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.capability-panel > header button:hover:not(:disabled), .capability-action:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
 
 .capability-section { display: grid; gap: var(--s-2); padding: var(--s-3); border-top: 1px solid var(--border); }
 /* Full reset of the label's metadata type: uppercase would inherit into the
@@ -658,13 +678,9 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .capability-section input::placeholder { color: var(--text-3); opacity: 1; }
 .capability-section input:hover, .capability-section textarea:hover, .capability-section input:focus, .capability-section textarea:focus { border-color: var(--border-strong); }
 
-/* A list, not a stack of cards: rules between rows, fill only for hover and the
-   selected row. The negative top margin cancels the section's row gap so the
-   rules touch, and the negative inline margin lets both reach the outline. */
 .capability-row { display: grid; gap: 2px; min-height: 30px; margin-inline: calc(-1 * var(--s-3)); padding: var(--s-2) var(--s-3); text-align: left; color: var(--text-2); border: 0; background: transparent; transition: background-color var(--t); }
 .capability-row + .capability-row { margin-top: calc(-1 * var(--s-2)); border-top: 1px solid var(--border); }
-.capability-row:hover:not(:disabled) { background: var(--surface-2); }
-.capability-row.selected { background: var(--surface-3); }
+button.capability-row:hover:not(:disabled) { background: var(--surface-2); }
 /* The name is an identifier on the grid; the line under it is a sentence. */
 .capability-row strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; }
 .capability-row small { color: var(--text-2); font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
@@ -674,19 +690,6 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .capability-attached { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: var(--s-2) var(--s-3); border-top: 1px solid var(--border); color: var(--accent); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.4; letter-spacing: 0; }
 .capability-attached button { flex: 0 0 auto; color: inherit; font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; text-decoration: underline; text-underline-offset: 2px; }
 
-/* A proposal awaiting a decision is a band, not a card: no fill, no outline of
-   its own. Its heading carries the accent, because the state is the point. */
-.capability-review { display: grid; gap: var(--s-2); margin-top: calc(-1 * var(--s-2)); margin-inline: calc(-1 * var(--s-3)); padding: var(--s-3); border-top: 1px solid var(--border); color: var(--text-2); font-size: var(--fs-sm); line-height: 1.5; }
-.capability-review p { margin: 0; color: var(--text-2); }
-.capability-review p strong { color: var(--accent); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.capability-review p.capability-review-warning { color: var(--danger); }
-/* The command and arguments being approved are machine identifiers — violet,
-   the way panels.css hues a block id or a cron field. */
-.capability-review code { display: inline-block; max-width: 100%; margin: 2px var(--s-2) 0 0; overflow: hidden; color: var(--violet); font-family: var(--font-code); font-size: var(--fs-sm); text-overflow: ellipsis; vertical-align: middle; }
-/* Schemas and tool output are read and copied out, never decorated: --font-code
-   behind a left rule, the same mark panels.css puts on a quoted block. A box
-   here would be a box inside the menu's outline. */
-.capability-schema, .capability-result { max-height: 180px; margin: 0; padding: 0 0 0 var(--s-3); overflow: auto; color: var(--text-2); background: none; border: 0; border-left: 1px solid var(--border); font-family: var(--font-code); font-size: var(--fs-sm); line-height: 1.55; white-space: pre; overflow-wrap: normal; }
 .capability-error { color: var(--danger); font-size: var(--fs-sm); line-height: 1.45; }
 /* The panel's own bands pad themselves, and a failure is one of them. */
 .capability-panel > .capability-error { padding: var(--s-3); border-top: 1px solid var(--border); }

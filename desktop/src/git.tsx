@@ -1,6 +1,6 @@
 /* The Git view: what the working tree of this thread's folder looks like against
-   the last commit, whichever loop wrote it. The Changes tab only knows what Emma's
-   own write_file did; git knows what the coding harness and a bash one-liner did too.
+   the last commit, whichever loop wrote it. The Changes tab only knows the edits
+   Emma recorded; git knows what a shell one-liner did too.
    The same panel draws twice: narrow in the inspector rail, and full-width in its own
    tab, where the per-file line cap comes off. Either way each file can be handed to
    an editor. */

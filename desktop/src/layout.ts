@@ -41,6 +41,8 @@ export function edgePath(from: { x: number; y: number }, to: { x: number; y: num
   };
 }
 
+export const NAV_VIEWS = ["threads", "knowledge", "artifacts", "agent", "scheduled", "plugins", "research"] as const;
+
 export interface PaneLayout {
   sidebarWidth: number;
   inspectorWidth: number;
@@ -48,6 +50,8 @@ export interface PaneLayout {
   inspectorCollapsed: boolean;
   /* Section nav as one horizontal row of glyph tiles, Arc's pinned strip. */
   navIcons: boolean;
+  navOrder: string[];
+  projectOrder: string[];
 }
 
 export const defaultPaneLayout: PaneLayout = {
@@ -56,10 +60,28 @@ export const defaultPaneLayout: PaneLayout = {
   sidebarCollapsed: false,
   inspectorCollapsed: false,
   navIcons: false,
+  navOrder: [],
+  projectOrder: [],
 };
+
+/**
+ * The rows the user dragged, then everything else in its natural order. A stored
+ * order is a preference, not the list: an id that has gone away is dropped and a
+ * row that appeared since — a new section, a folder granted this morning — lands
+ * at the end rather than vanishing because nobody has dragged it yet.
+ */
+export function ordered<T extends { id: string }>(items: T[], order: string[]): T[] {
+  const dragged = order.map((id) => items.find((item) => item.id === id)).filter((item) => item !== undefined);
+  return [...dragged, ...items.filter((item) => !order.includes(item.id))];
+}
 
 const number = (value: unknown, fallback: number, min: number, max: number) =>
   typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback;
+
+const idList = (value: unknown, allowed?: readonly string[]) => {
+  const list = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 64) : [];
+  return [...new Set(list)].filter((id) => !allowed || allowed.includes(id)).slice(0, 64);
+};
 
 export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITIVE_INFINITY): PaneLayout {
   const input = value && typeof value === "object" ? value as Partial<PaneLayout> : {};
@@ -69,6 +91,8 @@ export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITI
     sidebarCollapsed: typeof input.sidebarCollapsed === "boolean" ? input.sidebarCollapsed : false,
     inspectorCollapsed: typeof input.inspectorCollapsed === "boolean" ? input.inspectorCollapsed : false,
     navIcons: typeof input.navIcons === "boolean" ? input.navIcons : false,
+    navOrder: idList(input.navOrder, NAV_VIEWS),
+    projectOrder: idList(input.projectOrder),
   };
   const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 30 : 260);
   const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200) + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260);

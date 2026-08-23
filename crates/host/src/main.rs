@@ -4,9 +4,8 @@ use std::{
 };
 
 use emma_core::{
-    AgentTool, AgentToolResult, ArtifactBlock, DueJob, KnowledgeBaseId, LiveClient,
-    MAX_AGENT_TOOLS, PageId, ResearchJobId, ScheduledJobId, ScreenContext, SkillContext, ThreadId,
-    ThreadKind,
+    AgentBlock, ArtifactBlock, AuthoredPage, DueJob, KnowledgeBaseId, LiveClient, PageId,
+    ResearchJobId, ScheduledJobId, ThreadId, ThreadKind,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -51,18 +50,6 @@ struct CreateThreadParams {
     kind: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MessageParams {
-    thread_id: String,
-    content: String,
-    screen_context: Option<String>,
-    skill_context: Option<String>,
-    /// JSON array of tool definitions. Present only for a granted computer-use
-    /// run; an ordinary turn advertises nothing.
-    tools: Option<String>,
-}
-
 /// A turn the coding harness already ran, on its way into the durable thread.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -90,61 +77,14 @@ struct RecordTraceParams {
     trace: String,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ToolResultParams {
-    thread_id: String,
-    results: String,
-    screen_context: Option<String>,
-    skill_context: Option<String>,
-    tools: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WireToolDefinition {
-    name: String,
-    description: String,
-    input_schema: Value,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireToolResult {
-    id: String,
-    content: String,
-}
-
-fn agent_tools(value: Option<String>) -> Result<Vec<AgentTool>, String> {
-    let Some(raw) = value else {
-        return Ok(Vec::new());
-    };
-    let parsed: Vec<WireToolDefinition> =
-        serde_json::from_str(&raw).map_err(|_| "tool definitions are invalid JSON".to_string())?;
-    if parsed.len() > MAX_AGENT_TOOLS {
-        return Err("too many tools for one turn".into());
+/// A page the app authored, as JSON. Read as a string like every other structured
+/// parameter, and parsed here so a malformed document fails as a bad request
+/// rather than reaching the store.
+fn authored_page(raw: &str) -> Result<AuthoredPage, String> {
+    if raw.len() > MAX_ARTIFACT_EDIT_BYTES {
+        return Err("authored document is too large".into());
     }
-    parsed
-        .into_iter()
-        .map(|tool| {
-            AgentTool::new(tool.name, tool.description, tool.input_schema)
-                .map_err(|error| error.to_string())
-        })
-        .collect()
-}
-
-fn agent_tool_results(raw: &str) -> Result<Vec<AgentToolResult>, String> {
-    let parsed: Vec<WireToolResult> =
-        serde_json::from_str(raw).map_err(|_| "tool results are invalid JSON".to_string())?;
-    if parsed.is_empty() || parsed.len() > MAX_AGENT_TOOLS {
-        return Err("tool results are invalid".into());
-    }
-    parsed
-        .into_iter()
-        .map(|result| {
-            AgentToolResult::new(result.id, result.content).map_err(|error| error.to_string())
-        })
-        .collect()
+    serde_json::from_str(raw).map_err(|_| "authored document is invalid JSON".to_string())
 }
 
 #[derive(Deserialize)]
@@ -152,34 +92,6 @@ fn agent_tool_results(raw: &str) -> Result<Vec<AgentToolResult>, String> {
 struct SelectBaseParams {
     thread_id: String,
     knowledge_base_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ModelParams {
-    model_id: String,
-    /// The thinking mode to run the model in; absent leaves the model's own default.
-    #[serde(default)]
-    effort: String,
-}
-
-/// One thread's own model — what a subagent runs on. An empty `modelId` clears it.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ThreadModelParams {
-    thread_id: String,
-    #[serde(default)]
-    model_id: String,
-    #[serde(default)]
-    effort: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LocalModelParams {
-    base_url: String,
-    model_id: String,
-    credential_env: String,
 }
 
 #[derive(Deserialize)]
@@ -241,10 +153,18 @@ struct PageParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveToKnowledgeParams {
+    thread_id: String,
+    document: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AnalyzeParams {
     page_id: String,
     /// "true" builds the document but leaves the page where it is filed.
     keep_category: Option<String>,
+    document: String,
 }
 
 #[derive(Deserialize)]
@@ -254,18 +174,12 @@ struct PageVersionParams {
     name: String,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageChatParams {
-    page_id: String,
-    content: String,
-}
-
+/// A revision the app authored: the whole document as JSON, not an instruction.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PageReviseParams {
     page_id: String,
-    instruction: String,
+    blocks: String,
 }
 
 #[derive(Deserialize)]
@@ -415,32 +329,19 @@ fn main() {
 
 fn run() -> Result<(), String> {
     // One lock over stdout, shared with the runtime thread. `serve` only holds
-    // it to write a finished response, and it is blocked in `dispatch` for the
-    // whole span a turn is streaming, so the two never contend in practice.
+    // it to write a finished response, and the clock's thread only to push a due
+    // job, so the two never contend in practice.
     let out = Arc::new(Mutex::new(io::stdout()));
-    let sink = Arc::clone(&out);
     let jobs = Arc::clone(&out);
-    let live = runtime::start(
-        Arc::new(move |thread_id: &str, text: &str| {
-            // A dropped chunk is a missed repaint; the turn's own response line still
-            // carries the whole message, so nothing here is worth failing the host over.
-            if let Ok(mut writer) = sink.lock() {
-                let line = json!({ "threadId": thread_id, "delta": text });
-                let _ = serde_json::to_writer(&mut *writer, &line);
-                let _ = writer.write_all(b"\n");
-                let _ = writer.flush();
-            }
-        }),
-        Arc::new(move |job: DueJob| {
-            // Pushed, not replied to: nothing asked for this, the clock did.
-            if let Ok(mut writer) = jobs.lock() {
-                let line = json!({ "dueJob": job });
-                let _ = serde_json::to_writer(&mut *writer, &line);
-                let _ = writer.write_all(b"\n");
-                let _ = writer.flush();
-            }
-        }),
-    )
+    let live = runtime::start(Arc::new(move |job: DueJob| {
+        // Pushed, not replied to: nothing asked for this, the clock did.
+        if let Ok(mut writer) = jobs.lock() {
+            let line = json!({ "dueJob": job });
+            let _ = serde_json::to_writer(&mut *writer, &line);
+            let _ = writer.write_all(b"\n");
+            let _ = writer.flush();
+        }
+    }))
     .map_err(|error| error.to_string())?;
     serve(io::stdin().lock(), &out, &live)
 }
@@ -718,35 +619,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     artifacts,
                 ))?)
             }
-            "sendMessage" => {
-                if request
-                    .params
-                    .get("screenContext")
-                    .is_some_and(|value| !value.is_string())
-                {
-                    return Err(
-                        "invalid sendMessage parameters: screen context must be a string".into(),
-                    );
-                }
-                let params: MessageParams = params(request)?;
-                let screen_context = params
-                    .screen_context
-                    .map(ScreenContext::new)
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                let skill_context = params
-                    .skill_context
-                    .map(SkillContext::new)
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                encode(call(live.send_message(
-                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                    params.content,
-                    screen_context,
-                    skill_context,
-                    agent_tools(params.tools)?,
-                ))?)
-            }
             "recordTurn" => {
                 let params: RecordTurnParams = params(request)?;
                 encode(call(
@@ -784,30 +656,17 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                 ))?)
             }
-            "submitToolResult" => {
-                let params: ToolResultParams = params(request)?;
-                let screen_context = params
-                    .screen_context
-                    .map(ScreenContext::new)
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                let skill_context = params
-                    .skill_context
-                    .map(SkillContext::new)
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                encode(call(live.submit_tool_result(
+            "threadAuthoringContext" => {
+                let params: ThreadParams = params(request)?;
+                encode(call(live.thread_authoring_context(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                    agent_tool_results(&params.results)?,
-                    screen_context,
-                    skill_context,
-                    agent_tools(params.tools)?,
                 ))?)
             }
             "saveToKnowledge" => {
-                let params: ThreadParams = params(request)?;
+                let params: SaveToKnowledgeParams = params(request)?;
                 encode(call(live.save_to_knowledge(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    authored_page(&params.document)?,
                 ))?)
             }
             "captureToKnowledge" => {
@@ -847,6 +706,13 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 encode(call(live.analyze_page(
                     PageId::parse(params.page_id).map_err(|error| error.to_string())?,
                     keep_category,
+                    authored_page(&params.document)?,
+                ))?)
+            }
+            "pageAuthoringContext" => {
+                let params: PageParams = params(request)?;
+                encode(call(live.page_authoring_context(
+                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
                 ))?)
             }
             "listPageVersions" => {
@@ -862,18 +728,16 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     params.name,
                 ))?)
             }
-            "chatAboutPage" => {
-                let params: PageChatParams = params(request)?;
-                encode(call(live.chat_about_page(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    params.content,
-                ))?)
-            }
             "revisePageDocument" => {
                 let params: PageReviseParams = params(request)?;
+                if params.blocks.len() > MAX_ARTIFACT_EDIT_BYTES {
+                    return Err("revised document is too large".into());
+                }
+                let blocks: Vec<AgentBlock> = serde_json::from_str(&params.blocks)
+                    .map_err(|_| "revised document is invalid JSON".to_string())?;
                 encode(call(live.revise_page_document(
                     PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    params.instruction,
+                    blocks,
                 ))?)
             }
             "readPageAsset" => {
@@ -1006,31 +870,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     whole_number("microDollars", &params.micro_dollars)?,
                 ))?)
             }
-            "listOpenRouterModels" => encode(call(live.list_openrouter_models())?),
-            "selectOpenRouterModel" => {
-                let params: ModelParams = params(request)?;
-                encode(call(
-                    live.select_openrouter_model(params.model_id, params.effort),
-                )?)
-            }
-            "setThreadModel" => {
-                let params: ThreadModelParams = params(request)?;
-                call(live.set_thread_model(
-                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                    params.model_id,
-                    params.effort,
-                ))?;
-                Ok(json!({ "set": true }))
-            }
-            "selectLocalModel" => {
-                let params: LocalModelParams = params(request)?;
-                encode(call(live.select_local_model(
-                    params.base_url,
-                    params.model_id,
-                    params.credential_env,
-                ))?)
-            }
-            "selectFallbackModel" => encode(call(live.select_fallback_model())?),
             _ => Err("method is not allowed".into()),
         }
     })()

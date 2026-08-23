@@ -10,7 +10,8 @@ const workspace = () => mkdtempSync(path.join(tmpdir(), "emma-setup-"));
 
 test("only the permissions Emma asks for open a settings pane", () => {
   for (const permission of SETUP_PERMISSIONS) {
-    assert.equal(privacySettingsUrl(permission.id), `x-apple.systempreferences:com.apple.preference.security?${permission.pane}`);
+    assert.equal(privacySettingsUrl(permission.id), `x-apple.systempreferences:${permission.pane}`);
+    assert.match(permission.pane, /^com\.apple\.preference\.[a-z]+(\?[A-Za-z_]+)?$/);
   }
   assert.throws(() => privacySettingsUrl("Privacy_AllFiles"), /not a permission/);
   assert.throws(() => privacySettingsUrl(undefined), /not a permission/);

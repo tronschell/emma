@@ -12,7 +12,6 @@ emma/
 ├── rust-toolchain.toml    Pins Rust 1.97.1
 ├── justfile               Thin wrappers over the npm scripts
 ├── package.json           Root shims: dev, check, package:mac
-├── agent/                 Zig sidecar (emma-agent)
 ├── crates/                Rust
 ├── desktop/               Electron app
 ├── harness/               emma-cli, the fork of vercel-labs/fx
@@ -24,7 +23,7 @@ emma/
 
 | Directory | Who owns what |
 | --- | --- |
-| [`main/`](../desktop/main) | Electron main process: app lifecycle, windows, global shortcuts, trusted IPC, the preload bridge, and every runtime that touches the filesystem, a process, the network, or a model. 40 files. |
+| [`main/`](../desktop/main) | Electron main process: app lifecycle, windows, global shortcuts, trusted IPC, the preload bridge, and every runtime that touches the filesystem, a process, the network, or a model. 37 files. |
 | [`src/`](../desktop/src) | Sandboxed React 19 renderer. Views, presentation state, markdown/highlight/document parsing. No Node, no Electron imports. |
 | [`src/styles/`](../desktop/src/styles) | One stylesheet per region — `tokens.css` holds the design tokens, the rest are `sidebar`, `conversation`, `panels`, `settings`, `overlay`, `agents`, `artifacts`, `context-bar`, `markdown`, `research`, `timeline`. |
 | [`shared/`](../desktop/shared) | Types and tables both processes agree on: `permissions.ts`, `settings.ts`, `artifacts.ts`, `plan.ts`, `workflow.ts`, `trace.ts`, `usage.ts`, `voice.ts`, `cli.ts`, `folders.ts`, `git.ts`. Importable from either side, so nothing in here may import Electron. |
@@ -46,15 +45,7 @@ emma/
 | [`core/src/scheduled.rs`](../crates/core/src/scheduled.rs) | `ScheduledJob` / `ScheduledJobStore` and due-job listing. |
 | [`core/src/research.rs`](../crates/core/src/research.rs) | `ResearchJob` / `ResearchJobStore` and per-iteration history. |
 | [`host/src/main.rs`](../crates/host/src/main.rs) | The `emma-host` binary: a stdio NDJSON-RPC server, one JSON request per line, dispatching named methods onto `emma-core`. |
-| [`host/src/runtime.rs`](../crates/host/src/runtime.rs) | The `Sidecar`: spawns and supervises `emma-agent`, builds `ProviderConfig` from the environment, tells OpenRouter routes from loopback ones, bounds imported text. |
-
-### agent/
-
-| File | What it holds |
-| --- | --- |
-| [`src/main.zig`](../agent/src/main.zig) | The `emma-agent` sidecar. NDJSON on stdin/stdout, echoes request ids, streams `delta` lines. 256 KiB line ceiling, 64 KiB text ceiling. |
-| [`src/openai_compatible.zig`](../agent/src/openai_compatible.zig) | OpenAI-compatible Chat Completions client, plus the model-catalog fetch (8 MiB cap, 60 s timeout). |
-| [`emma`](../agent/emma) | A bash script, not a binary: the terminal front end. Mkfifos an in/out pair, keeps one `emma-agent` alive, speaks NDJSON so the terminal never sees JSON. `emma "prompt"` is one shot, no args is a REPL, `--install` symlinks it onto `PATH`. |
+| [`host/src/runtime.rs`](../crates/host/src/runtime.rs) | Brings up the store: resolves the data root, the knowledge export root, and hands `start_live_runtime` its job sink. Nothing here talks to a model. |
 
 ### harness/
 
@@ -117,9 +108,8 @@ the host boundary. Zig owns the agent harness. Don't blur them.
 
 - `desktop/main` — lifecycle, windows, global shortcuts, trusted IPC, the narrow preload bridge.
 - `desktop/src` — sandboxed React views and presentation state. No Node access.
-- `crates/host` — NDJSON bridge, provider adapter, the Zig process boundary.
+- `crates/host` — NDJSON bridge onto the stores. It talks to no model and answers requests only.
 - `crates/core` — thread and knowledge records, validation, atomic Markdown persistence.
-- `agent` — the Zig agent runtime and its wire protocol. It never renders UI and never writes the durable stores.
 - `harness` — `emma-cli`, driven over ACP from `desktop/main/harness.ts`.
 - `website` — separate React and Tailwind public site.
 
@@ -139,7 +129,7 @@ The renderer asks main; main does it. That is what the preload bridge is for.
 Every IPC message and every NDJSON line is untrusted until it has been checked.
 [`ipc.ts`](../desktop/main/ipc.ts) declares each method's exact field list and
 refuses anything else; [`ndjson.ts`](../desktop/main/ndjson.ts) frames and bounds
-the host stream; `crates/host` re-checks everything the sidecar sends back.
+the host stream; `crates/host` re-checks everything the app process sends it.
 A new channel gets the same treatment or it does not ship.
 
 ### Launch it
@@ -165,9 +155,6 @@ permissions, VoiceOver behavior, display geometry, signing, and non-macOS paths.
 | ESLint | 10.0.1 | same |
 | Xcode CLT | whatever ships `clang` | builds the two native helpers |
 
-`agent/build.zig` sets no minimum of its own; it uses the same Zig you build the
-harness with.
-
 Get set up:
 
 ```sh
@@ -177,8 +164,7 @@ npm run dev
 
 ## Checks
 
-The list every change has to pass, exactly as [`AGENTS.md`](../AGENTS.md) states
-it:
+Every change has to pass all six. Straight from [`AGENTS.md`](../AGENTS.md):
 
 ```sh
 npm --prefix desktop run check
@@ -186,13 +172,11 @@ cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings
-zig build test -Doptimize=ReleaseSafe --build-file agent/build.zig
 (cd harness && zig build test)
 ```
 
 Roughly: the npm check is tens of seconds, the Rust four are a couple of minutes
-cold and seconds warm, the agent Zig test is seconds, and the harness test suite
-is the long pole — it compiles a 25 MB binary's worth of Zig.
+cold and seconds warm, and the harness test suite is the long pole — it compiles a 25 MB binary's worth of Zig.
 
 ### npm scripts
 
@@ -208,7 +192,7 @@ Everything lives in [`desktop/package.json`](../desktop/package.json). The root
 | `build:main` | `tsc -p tsconfig.main.json` → `dist-main/`. Emits CommonJS. |
 | `build:renderer` | `vite build` → `dist-renderer/`. React + Tailwind, `base: "./"`. |
 | `build` | `build:main` then `build:renderer`. |
-| `build:host` | `cargo build --locked -p emma-host`, then `zig build --build-file ../agent/build.zig`, then `build:harness`. All three sidecars. |
+| `build:host` | `cargo build --locked -p emma-host`, then `build:harness`. Both child binaries. |
 | `build:harness` | `(cd ../harness && zig build)` → `harness/zig-out/bin/emma-cli`. Nothing else builds it. |
 | `build:native` | `clang` twice: `native/quick_ask.m` → `dist-native/emma-option-tap` (then runs `--self-test`), and `native/transcribe.m` → `dist-native/emma-transcribe`. Both `-mmacosx-version-min=12.0 -fobjc-arc`. |
 | `vendor:ripgrep` | Downloads ripgrep 14.1.1 for this arch into `desktop/vendor/rg`, checked against a pinned SHA-256, and stamps `vendor/rg.version`. Re-running with the stamp present is a no-op. On a non-darwin host it warns and skips — the tool falls back to `rg` on PATH, then to `grep`. |
@@ -228,8 +212,8 @@ Everything lives in [`desktop/package.json`](../desktop/package.json). The root
 | `just dev` / `just run` | `npm --prefix desktop run dev` |
 | `just package` | `npm --prefix desktop run package:mac` |
 
-Note `just check` is not the full check list — it skips `cargo fmt`, `clippy`,
-and both Zig suites. Run the seven commands above.
+`just check` is not the full check list — it skips `cargo fmt`, `clippy`, and
+both Zig suites. Run the seven commands above.
 
 ## Tests
 
@@ -246,7 +230,7 @@ like `src/runs.ts` can be unit-tested at all. There is no `"type": "module"`, so
 Node16 emits CommonJS — which is what lets a test stub Electron by poisoning
 `require.cache`.
 
-Two consequences worth knowing:
+Two things that follow from this:
 
 - **Run it from `desktop/`.** `harness.test.ts` builds `path.join(process.cwd(), "test", "fake-acp-agent.mjs")`, and that `.mjs` is never compiled or copied. `panes.test.ts` reads the real CSS out of `../../src/styles/`.
 - **Anything in `shared/` or `src/` that no `main/` or `test/` file imports is not typechecked by this project.** `npm run typecheck` covers the rest through `tsconfig.renderer.json`.
@@ -275,7 +259,7 @@ arrives, so the two-threads-one-process bug stays covered.
 | `artifacts.test.ts` | `main/artifacts.ts`: read/write/update/delete round-trips, path escapes out of the artifact root, the single-statement SQL bridge and its caps, corrupt-DB tolerance, region ownership. |
 | `attachments.test.ts` | `main/attachments.ts`: picked files copied under userData by basename, only attached paths readable, images carry a path not bytes, binaries refused. |
 | `background.test.ts` | `main/background.ts`: a backgrounded command returns immediately, keeps streaming, stops on request. |
-| `capabilities.test.ts` | `main/capabilities.ts`: builtin skill seeding into both roots, thread-bound skill attachments, Emma-authored tools, stdio MCP review/search/call/cleanup, Codex TOML, JSONC trailing commas. |
+| `capabilities.test.ts` | `main/capabilities.ts`: builtin skill seeding into both roots, thread-bound skill attachments, Emma-authored tools, imported MCP servers listed with arguments redacted and environment values withheld, Codex TOML, JSONC trailing commas. |
 | `catalog.test.ts` | `main/catalog.ts`: on-disk catalog caching, change reporting, surviving a dead fetch, OpenRouter parse/price/filter, free-chain ordering. |
 | `cli.test.ts` | `shared/cli.ts` + `main/tools.ts`: ANSI stripping with line rewrites, each harness's start/resume argv, and that starting a CLI is bash-gated while watching one is not. |
 | `clip.test.ts` | `main/clip.ts` (Electron stubbed): browser allowlisting for front-tab AppleScript, clip image ordering and resize rules, byte-wise text trimming. |
@@ -325,15 +309,13 @@ should update it deliberately.
 
 ### Zig
 
-Two separate suites, two separate build files:
+One suite:
 
 ```sh
-zig build test -Doptimize=ReleaseSafe --build-file agent/build.zig
 (cd harness && zig build test)
 ```
 
-`agent/build.zig` defines exactly one step, `test`, over `src/main.zig`.
-`harness/build.zig` defines many; `test` is the one the check list runs, and it
+`harness/build.zig` defines many steps; `test` is the one the check list runs, and it
 also pulls in the UI-activity benchmark tests. The others are opt-in:
 `run-json-schema-corpus`, `run-mcp-stdio-dispatcher-e2e`, `bench-file-index`,
 `bench-ui-activity`, `bench-approval-review`, `pgso-ir`, `libfx-napi`, and a
@@ -360,7 +342,7 @@ code.
 **What does not:**
 
 - `desktop/main/**`, `desktop/shared/**` — compiled once in step 3. Quit Emma and rerun `npm run dev`.
-- `crates/**`, `agent/**`, `harness/**` — compiled once in step 1. Same.
+- `crates/**`, `harness/**` — compiled once in step 1. Same.
 - `desktop/native/**` — compiled once in step 2. Same.
 
 There is no watcher. Anything outside `src/` means a full restart.
@@ -381,7 +363,7 @@ Four places, in this order.
 **1. Declare it.** In [`shared/permissions.ts`](../desktop/shared/permissions.ts):
 
 - add the name to `AGENT_TOOLS`
-- add a row to the `GATES` table — one `ToolGate` (`"hidden"`, `"ask"`, `"auto"`) per mode in `plan`, `ask`, `acceptEdits`, `full`. There is no `auto` column: `auto` reads `ask`'s and sends the question to the verifier model instead of the user.
+- add a row to the `GATES` table — one `ToolGate` (`"hidden"`, `"ask"`, `"auto"`) per mode in `ask`, `acceptEdits`, `full`. There is no `auto` column: `auto` reads `ask`'s and sends the question to the verifier model instead of the user.
 - add an entry to `TOOL_CATALOG` — label, one-line blurb, group. Settings → Tools renders this. A test asserts `GATES` and `TOOL_CATALOG` cover exactly the same names, so skipping either fails.
 
 Pick the gate by blast radius, not by how it sounds. Reads are `auto`
@@ -392,7 +374,7 @@ never lower.
 
 **2. Describe it.** In [`main/tools.ts`](../desktop/main/tools.ts): add a
 `ToolDefinition` to `DEFINITIONS` with a `needs` field (`"always"`, `"folders"`,
-`"computer"`, `"mcp"`, `"canSpawn"`), add a variant to the `ToolCall` union, and
+`"computer"`), add a variant to the `ToolCall` union, and
 add its argument parsing. The file is pure — no Electron — so the gate, the
 schemas, and the refusal messages are all testable.
 
@@ -422,7 +404,7 @@ Nothing in `harness/src/tools/emma/` executes anything itself.
 
 ### A new IPC channel
 
-Three files, plus a validator.
+Four files, and the validator comes first.
 
 1. **[`main/ipc.ts`](../desktop/main/ipc.ts)** for a host-RPC method: add the name to `methods`, its required params to `fields`, any optional ones to `optionalFields`. `validateRequest` refuses unknown keys, non-strings, blanks, anything over the per-key length cap, and any request whose serialized form passes 128 KiB. For a channel that does not reach the host, write the validator next to the handler and call it first.
 2. **[`main/main.ts`](../desktop/main/main.ts)**: register `ipcMain.handle` or `ipcMain.on`. Start with the sender check — `event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)` — then validate the payload, then act.
@@ -463,18 +445,29 @@ the renderer is served from `http://127.0.0.1:5173`, so source maps and HMR work
 
 **Main.** `console.log`/`console.error` from `desktop/main` go to the terminal
 that ran `npm run dev`. There is no log file. `emma-cli`'s stderr is forwarded
-line by line with an `emma-cli: ` prefix; the Rust host prints `emma-agent fault:`
-and `emma-agent error code:` lines when the sidecar misbehaves.
+line by line with an `emma-cli: ` prefix; `emma-host`'s stderr is inherited straight
+through.
 
-**The NDJSON stream.** Electron ↔ `emma-host` is newline-delimited JSON over
-stdio: one request object per line, one response envelope per line, plus `delta`
-lines while a turn streams. Framing and bounds are in
-[`ndjson.ts`](../desktop/main/ndjson.ts) (128 KiB per request) and
-[`runtime.rs`](../crates/host/src/runtime.rs) (256 KiB per response line). A
-response whose `id` does not match the request is a protocol fault, not something
-to pass on. You can run `emma-host` by hand and type JSON at it — set
-`EMMA_PROVIDER_BASE_URL`, `EMMA_PROVIDER_MODEL` and `EMMA_PROVIDER_CREDENTIAL_ENV`
-together, or leave all three unset for the local fallback.
+**The NDJSON stream.** Electron → `emma-host` is newline-delimited JSON over
+stdio, and it only runs one way: one request object per line in, one response
+envelope per line out, plus pushed `{"dueJob": …}` lines the host raises on its
+own. Nothing streams — assistant text comes from the harness over ACP instead.
+Framing and bounds are in [`main.rs`](../crates/host/src/main.rs) (128 KiB per
+request) and [`ndjson.ts`](../desktop/main/ndjson.ts), parsing lines Electron
+bounds at 16 MiB. A response whose `id` does not match the request is a protocol
+fault, not something to pass on.
+
+`recordTurn` is the one request with no natural ceiling — a long coding turn's
+reasoning stream and answer together run well past 128 KiB, and the host answered
+`request is too large`, which threw the finished turn away and handed the prompt
+back to the composer unsent. `recordedTurn` in `ndjson.ts` fits it first: the
+prompt, the reasoning and the answer each lose their middle, separately, so
+`<think>` still opens and closes around a scratchpad that no longer swallows the
+answer. It shrinks toward `MAX_RECORDED_TURN_BYTES` (120 KiB, measured on the
+encoded params) and never cuts between the halves of a surrogate pair, since the
+host reads the line as UTF-8 before it parses it. `emma-host` needs no configuration to run by
+hand: it reads and writes Markdown and talks to no model, so you can start it in
+a terminal and type JSON at it.
 
 **Driving the running app over CDP.** Three scripts in `desktop/scripts`, all
 talking to a debugger port (`EMMA_CDP_PORT`, default 9222 for `drive.mjs`, 9223
@@ -523,9 +516,7 @@ do; `dist-main/src` and `dist-main/test` do not.
 | Resource | From |
 | --- | --- |
 | `emma-host` | `../target/release/emma-host` |
-| `emma-agent` | `../agent/zig-out/bin/emma-agent` |
 | `emma-cli` | `../harness/zig-out/bin/emma-cli` |
-| `emma` | `../agent/emma` (the bash front end) |
 | `rg` | `vendor/rg` |
 | `emma-option-tap` | `dist-native/emma-option-tap` |
 | `emma-transcribe` | `dist-native/emma-transcribe` |
@@ -539,8 +530,8 @@ that is Emma.app — so the string has to be there and not in the helper.
 
 At runtime, `binary(name)` in `main.ts` resolves each of these from
 `process.resourcesPath` when packaged, and from the build outputs
-(`target/debug/emma-host`, `agent/zig-out/bin/emma-agent`,
-`harness/zig-out/bin/emma-cli`, `desktop/vendor/rg`) when not.
+(`target/debug/emma-host`, `harness/zig-out/bin/emma-cli`,
+`desktop/vendor/rg`) when not.
 
 ### Release blockers
 
@@ -565,7 +556,7 @@ Emma is not release-ready. Open items:
 **There is no root `LICENSE` file.** The repository as a whole is unlicensed
 until one lands. That is an open item, not an oversight to work around: `harness/`
 carries its own license and `crates/` declares one in metadata, but `desktop/`,
-`agent/`, `website/` and `docs/` have no stated terms.
+`website/` and `docs/` have no stated terms.
 
 ## See also
 

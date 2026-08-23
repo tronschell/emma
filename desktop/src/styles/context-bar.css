@@ -31,11 +31,11 @@
 .context-usage[data-orientation="horizontal"] .context-legend span { flex: 0 1 auto; }
 .context-usage[data-orientation="horizontal"] .context-legend em { display: none; }
 
-/* Subagents. Horizontal drops the model column and wraps the squares, so a
+/* Subagents. Horizontal drops the model mark and wraps the squares, so a
    thread that fanned out to eight of them is one strip rather than eight rows. */
 .subagents[data-orientation="horizontal"] .subagent-list { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-2); }
 .subagents[data-orientation="horizontal"] .subagent { grid-template-columns: 10px minmax(0, 1fr); width: auto; max-width: 100%; padding: var(--s-1) var(--s-2); border: 1px solid var(--border); }
-.subagents[data-orientation="horizontal"] .subagent em { display: none; }
+.subagents[data-orientation="horizontal"] .subagent-model { display: none; }
 
 /* Sub threads. Same wrap, and the stop stays: it is the only control on the row
    that a chip cannot say in words. */

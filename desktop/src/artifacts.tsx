@@ -12,6 +12,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ARTIFACT_EXTENSIONS, ARTIFACT_KINDS, ARTIFACT_LABELS, artifactFrameUrl, SURFACE_LABELS, type Artifact, type ArtifactKind, type ArtifactMeta } from "../shared/artifacts";
 import { reasonText } from "./errors";
 import { tokenize } from "./highlight";
+import { TrashIcon } from "./icons";
 import { Markdown } from "./markdown";
 
 const MermaidArtifact = lazy(() => import("./mermaid-artifact"));
@@ -172,19 +173,34 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
 
 function GridCard({ meta, busy, open, edit, remove }: { meta: ArtifactMeta; busy: boolean; open: () => void; edit: (artifact: Artifact) => void; remove: () => void }) {
   const artifact = useArtifact(meta.id);
+  // The picture is the button, the same as the card a thread shows inline: opening
+  // it is reading it, so it never waited on a word to click.
   return <article className="artifact-card">
-    {/* A mounted panel says where it is running, because the Artifacts page is
-        where the user takes it back out — of the four regions, only this one lists it. */}
-    <header><span>{ARTIFACT_LABELS[meta.kind]}{meta.surface ? ` · in the ${SURFACE_LABELS[meta.surface]}` : ""}</span><strong>{meta.title}</strong><small>v{meta.version}</small></header>
-    {artifact === false ? <p className="artifact-missing">{GONE}</p>
-      : <div className="artifact-clip" inert>{artifact && <ArtifactRender artifact={artifact} />}</div>}
-    <div className="artifact-actions">
-      <button type="button" disabled={busy} onClick={open}>Open</button>
-      <button type="button" disabled={busy || !artifact} onClick={() => { if (artifact) edit(artifact); }}>Edit</button>
-      <button type="button" disabled={busy} onClick={() => void window.emma.revealArtifact(meta.id)}>Reveal</button>
-      <button type="button" className="artifact-danger" disabled={busy} onClick={remove}>Delete</button>
+    <button type="button" className="artifact-card-open" onClick={open} aria-label={`Open ${meta.title}`}>
+      {/* A mounted panel says where it is running, because the Artifacts page is
+          where the user takes it back out — of the four regions, only this one lists it. */}
+      <header><span>{ARTIFACT_LABELS[meta.kind]}{meta.surface ? ` · in the ${SURFACE_LABELS[meta.surface]}` : ""}</span><strong>{meta.title}</strong><small>v{meta.version}</small></header>
+      {artifact === false ? <p className="artifact-missing">{GONE}</p>
+        : <div className="artifact-clip" inert>{artifact && <ArtifactRender artifact={artifact} />}</div>}
+    </button>
+    {/* Three marks rather than three words: the card is mostly picture, and the
+        label lives in the tooltip the accessible name already says. */}
+    <div className="artifact-actions artifact-icons">
+      <button type="button" title="Edit in a thread" aria-label="Edit in a thread" disabled={busy || !artifact} onClick={() => { if (artifact) edit(artifact); }}><PencilIcon /></button>
+      <button type="button" title="Reveal in Finder" aria-label="Reveal in Finder" disabled={busy} onClick={() => void window.emma.revealArtifact(meta.id)}><FolderIcon /></button>
+      <button type="button" className="artifact-danger" title="Delete" aria-label="Delete" disabled={busy} onClick={remove}><TrashIcon /></button>
     </div>
   </article>;
+}
+
+/** Rewriting it: the nib the rest of the app would draw if it drew one. */
+function PencilIcon() {
+  return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11.1 2.3a1.3 1.3 0 0 1 1.9 0l.7.7a1.3 1.3 0 0 1 0 1.9l-7.6 7.6-3 .8.8-3zM10.2 3.2l2.6 2.6" /></svg>;
+}
+
+/** Where it is on disk. */
+function FolderIcon() {
+  return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.9 12.6V3.9a.9.9 0 0 1 .9-.9h3l1.6 1.8h5.8a.9.9 0 0 1 .9.9v6.9a.9.9 0 0 1-.9.9H2.8a.9.9 0 0 1-.9-.9z" /></svg>;
 }
 
 function ArtifactDialog({ id, busy, close, edit, remove }: { id: string; busy: boolean; close: () => void; edit: (artifact: Artifact) => void; remove: (meta: ArtifactMeta) => void }) {

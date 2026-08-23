@@ -16,7 +16,7 @@ export const CONTEXT_WIDGETS = [
   { type: "context", label: "Context window", glyph: "▤", blurb: "What the last turn carried, by kind, against the model's stated window.", orientable: true },
   { type: "timeline", label: "Timeline", glyph: "⌇", blurb: "Every turn as a waterfall — model requests, tool calls, subagents.", orientable: false },
   { type: "plan", label: "Plan", glyph: "◰", blurb: "The plan this thread is working through, drawn as a graph of subagents. Press a node to light its wave.", orientable: false },
-  { type: "subagents", label: "Subagents", glyph: "⌸", blurb: "One row per delegated task call, into the transcript it is writing.", orientable: true },
+  { type: "subagents", label: "Subagents", glyph: "⌸", blurb: "One row per subagent, into the transcript it is writing.", orientable: true },
   { type: "subthreads", label: "Sub threads", glyph: "⑃", blurb: "Threads this one started, working or idle. They outlive their runs, so the rows stay.", orientable: true },
   { type: "git", label: "Git", glyph: "⑂", blurb: "Branch, working tree, and the diff behind it. Empty outside a repo.", orientable: false },
 ] as const;

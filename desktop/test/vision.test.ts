@@ -6,7 +6,7 @@ import { toolGate } from "../shared/permissions";
 import { defaultVision, validateVision, validateToolSettings, defaultVisionSystem } from "../shared/settings";
 import type { ChatMessage, ContentPart } from "../main/verifier";
 
-const everything = { folders: true, computer: true, mcp: true, canSpawn: true };
+const everything = { folders: true, computer: true };
 
 test("the image travels as an image part beside the question, not as a description of one", async () => {
   let sent: ChatMessage[] = [];
@@ -50,7 +50,7 @@ test("the vision route is validated like the other second models, and offered in
   assert.throws(() => validateVision({ ...defaultVision, endpoint: "http://example.com/v1" }), /https/);
   assert.throws(() => validateVision({ ...defaultVision, credentialEnv: "not an env name" }), /environment variable/);
   // A read of a granted image, answered in words: free wherever `read_file` is.
-  assert.equal(toolGate("plan", "vision"), "auto");
+  assert.equal(toolGate("ask", "vision"), "auto");
   assert.equal(toolGate("full", "vision"), "auto");
   assert.equal(toolGate("ask", "vision", ["vision"]), "hidden");
   // Offered without a folder connected: a public image URL needs no grant.

@@ -1140,7 +1140,7 @@ pub const install_skill = ToolSpec{
 };
 
 pub const subagent = ToolSpec{
-    .advertisement = .on_select,
+    .advertisement = .always,
     .name = "subagent",
     .description = subagent_description,
     .gateway_schema = .{
@@ -1987,7 +1987,7 @@ pub const read_only_tool_names = [_][]const u8{
     "cli_runs",
     "context",
     "read_trace",
-    "task",
+    "subagent",
     "threads",
     "visualize",
     "look_at_image",
@@ -3036,7 +3036,7 @@ test "built-in read-only tool set matches plan inspection tools" {
         "cli_runs",
         "context",
         "read_trace",
-        "task",
+        "subagent",
         "threads",
         "visualize",
         "look_at_image",
@@ -3056,7 +3056,7 @@ test "built-in read-only tool set matches plan inspection tools" {
     try std.testing.expect(!isReadOnlyToolName("run_command"));
     // The tools that change the Mac or the user's library, named so a careless
     // addition to the list above fails here rather than in plan mode.
-    inline for (.{ "terminal", "edit_file", "delete_file", "cli", "computer", "memory", "save_page", "workflow", "write_skill", "write_tool" }) |name| {
+    inline for (.{ "terminal", "edit_file", "delete_file", "cli", "computer", "memory", "save_page", "workflow", "write_skill", "write_tool", "write_plugin" }) |name| {
         try std.testing.expect(!isReadOnlyToolName(name));
     }
 }

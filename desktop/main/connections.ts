@@ -1,6 +1,6 @@
 /* Third-party command-line tools Emma can lean on, offered as connections in
    Settings. A connection is deliberately not a new tool: the binary is already
-   reachable through `bash`, and all the agent is missing is that it exists on
+   reachable through `terminal`, and all the agent is missing is that it exists on
    this Mac and what it is for. So a connection is a line of system context, and
    nothing else — no wrapper, no schema, no process Emma owns. */
 
@@ -48,8 +48,8 @@ export function isConnectionId(value: unknown): value is string {
 }
 
 /**
- * One `bash -lc` for the whole catalog: the same login shell the `bash` tool runs
- * commands under, so a binary that is on the agent's PATH is the one detected.
+ * One `bash -lc` for the whole catalog: the same login shell the `terminal` tool
+ * runs commands under, so a binary that is on the agent's PATH is the one detected.
  *
  * The script's own exit status is whatever its last `command -v` returned, so the
  * output is read whether or not execFile reports an error.
@@ -98,7 +98,7 @@ export function describeConnections(detected: readonly DetectedConnection[], ids
     .filter((item) => item.binary && ids.includes(item.id))
     .map((item) => `- ${item.label} — \`${item.binary}\`. ${item.detail} Run \`${item.binary} --help\` first if you are unsure of its subcommands.`);
   if (!lines.length) return "";
-  return `Third-party command-line tools the user has connected on this Mac. Use them through the bash tool, which needs a connected folder as its working directory:\n\n${lines.join("\n")}`;
+  return `Third-party command-line tools the user has connected on this Mac. Use them through the terminal tool, which needs a connected folder as its working directory:\n\n${lines.join("\n")}`;
 }
 
 let probedIds = "";

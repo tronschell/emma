@@ -50,7 +50,7 @@ pub fn chatUrl() []const u8 {
     return if (override.len == 0) default_chat_url else override;
 }
 
-/// The env var Emma's zero-retention toggle sets, matching `crates/host`.
+/// The env var Emma's zero-retention toggle sets. This is its only reader.
 pub const zero_retention_env = "EMMA_OPENROUTER_ZDR";
 
 fn isOpenRouter(url: []const u8) bool {

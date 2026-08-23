@@ -100,7 +100,7 @@ There is no idle sliver on a display without a real housing — see
 
 ## Quick Ask: one island
 
-![The Quick Ask island wrapping the camera housing, with the quick thread below the composer and the three action orbs beneath it](../desktop/screenshots/notch-island.png)
+![The Quick Ask island wrapping the camera housing: the header, the composer with a draft in it, and the foot carrying the mode and model chips](../desktop/screenshots/notch-island.png)
 
 Quick Ask is a single window, not a panel beside the notch. It takes over the
 menu bar on both sides of the housing and hangs below it, centered on the real
@@ -253,7 +253,7 @@ Exactly **three**, stored locally. `validateSettings()` throws
 `"Exactly three quick actions are required"` on anything else, and the type is a
 fixed tuple `[QuickAction, QuickAction, QuickAction]`.
 
-![Settings → Quick actions, three rows keyed ⌘1, ⌘2, ⌘3](../desktop/screenshots/settings-quick-actions.png)
+![Settings → Quick actions: the fallback notch gap, the standing instructions box, and the action rows keyed ⌘1, ⌘2, ⌘3](../desktop/screenshots/settings-quick-actions.png)
 
 Each action has a label (≤ 40 chars), a prompt (≤ 4096), a destination knowledge
 base, an optional category (lowercase kebab, ≤ 64) and a

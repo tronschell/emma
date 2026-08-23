@@ -156,7 +156,7 @@ pub const advisor = ToolSpec{
 };
 
 const install_mcp_description =
-    "Install an MCP server into Emma's own configuration and connect it in the same call, so the tools it carries are usable later in this turn — nothing to relaunch. Take the stdio command straight from the server's own README (npx, uvx, a binary on this Mac). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Then call mcp_tool by tool name. Prefer this over telling the user to edit a config file by hand.";
+    "Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, a binary on this Mac). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.";
 
 pub const install_mcp = ToolSpec{
     .name = "install_mcp",
@@ -208,7 +208,7 @@ pub const install_mcp = ToolSpec{
 };
 
 const computer_description =
-    "Take over this Mac's real pointer and keyboard. Only for work that has no other route: driving a GUI app, or looking at the screen. Never for files or code — use read_file, write_file and bash. The user must have asked for it, or you must ask them first and get a yes in the conversation; a granted permission dialog is not that ask. Call with action \"screenshot\" first, then use the returned pixel coordinates. Coordinates are [x, y] in screenshot pixels, top-left origin. Use \"zoom\" on a region when small text is hard to read.";
+    "Take over this Mac's real pointer and keyboard. Only for work that has no other route: driving a GUI app, or looking at the screen. Never for files or code — use read_file, write_file and terminal. The user must have asked for it, or you must ask them first and get a yes in the conversation; a granted permission dialog is not that ask. Call with action \"screenshot\" first, then use the returned pixel coordinates. Coordinates are [x, y] in screenshot pixels, top-left origin. Use \"zoom\" on a region when small text is hard to read.";
 
 pub const computer = ToolSpec{
     .name = "computer",

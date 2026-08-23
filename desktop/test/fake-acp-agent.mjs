@@ -100,6 +100,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "parent speaks" } });
       notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "child speaks" }, ...tag("running") });
       notify(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_1", title: "read", kind: "read", status: "pending", ...tag("running") });
+      notify(sessionId, { sessionUpdate: "session_info_update", _meta: { fx: { turnUsage: { inputTokens: 777, outputTokens: 42 }, child: { id: "child_1", title: "read the docs", state: "running" } } } });
       notify(sessionId, { sessionUpdate: "session_info_update", ...tag("ended") });
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
       return;

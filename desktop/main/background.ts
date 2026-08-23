@@ -1,8 +1,8 @@
-/* Commands that outlive the tool call that started them: dev servers, watchers,
-   long builds. `bash` waits and dies at its deadline, which is right for a build
-   and wrong for `npm run dev` — that one blocks the turn until it is killed. A
-   background command returns an id immediately; the agent reads its output or
-   stops it later, and the user can stop it from the sidebar. */
+/* Commands that outlive the run that started them: dev servers, watchers, long
+   builds. A foreground command waits and dies at its deadline, which is right
+   for a build and wrong for `npm run dev` — that one blocks until it is killed.
+   A background command returns an id immediately; the user reads its output or
+   stops it from the sidebar. */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { BackgroundTask } from "../shared/agents";
@@ -85,10 +85,4 @@ function kill(pid: number, signal: NodeJS.Signals) {
 
 function snapshot(entry: Entry): BackgroundTask {
   return { id: entry.id, command: entry.command, folder: entry.folder, status: entry.status, exitCode: entry.exitCode, startedAt: entry.startedAt, endedAt: entry.endedAt };
-}
-
-/** One line per task, for a tool result the model reads. */
-export function describeTasks(tasks: BackgroundTask[]): string {
-  if (!tasks.length) return "No background commands have been started in this session.";
-  return tasks.map((task) => `${task.id}  ${task.status === "running" ? "running" : `exited ${task.exitCode ?? "?"}`}  ${Math.round(((task.endedAt ?? Date.now()) - task.startedAt) / 1000)}s  ${task.command.split("\n")[0].slice(0, 80)}`).join("\n");
 }

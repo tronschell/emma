@@ -3,13 +3,11 @@
 
 import type { PermissionMode } from "./permissions";
 
-/** How deep `task` may nest. A subagent that could spawn again is a fork bomb with a credit card. */
-export const MAX_AGENT_DEPTH = 2;
 export const MAX_LIVE_SUBAGENTS = 8;
 /**
  * Threads that may have an agent working in them at once. A spawned thread's
- * agent can spawn threads of its own, so the same ceiling `task` needs is the
- * one this needs — for the same reason, and counted across the whole process.
+ * agent can spawn threads of its own, so the ceiling is counted across the whole
+ * process rather than per thread.
  */
 export const MAX_LIVE_THREADS = 8;
 

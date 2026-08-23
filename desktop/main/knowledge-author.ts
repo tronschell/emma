@@ -3,11 +3,17 @@
  *
  * The Zig sidecar used to do this: one non-streaming provider call that returns a whole
  * JSON page, plus a deterministic local scaffold for when no model is configured. It is
- * here now because the sidecar is going and the harness has no verb for it — ACP prompts a
+ * here now because the sidecar is gone and the harness has no verb for it — ACP prompts a
  * session, it does not author a document. Emma's durable store still validates and files
  * whatever comes back, so this side is best-effort by design: a malformed block loses its
  * block, not the page.
+ *
+ * Each flow is a provider call with a store read on one side of it and a store write on
+ * the other. Both ends stay in Rust, which is where a model's output is still checked
+ * before anything is kept; only the call in the middle happens here.
  */
+
+import { mergeSkillContext } from "../shared/folders";
 
 /** A page block as the model returns it and the store takes it. */
 export interface PageBlock {
@@ -34,6 +40,8 @@ export interface AuthorRoute {
   endpoint: string;
   model: string;
   key: string;
+  /** The stop the picker is on, already checked against what this model publishes. Blank sends no field. */
+  effort?: string;
 }
 
 const MAX_BLOCKS = 64;
@@ -138,7 +146,9 @@ async function askForJson(route: AuthorRoute, prompt: string, timeoutMs: number)
   const response = await fetch(route.endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", ...(route.key ? { authorization: `Bearer ${route.key}` } : {}) },
-    body: JSON.stringify({ model: route.model, messages: [{ role: "user", content: prompt }], stream: false }),
+    // No stop means the model's own default, which is the absence of the field
+    // rather than an empty one — providers reject the empty string.
+    body: JSON.stringify({ model: route.model, messages: [{ role: "user", content: prompt }], stream: false, ...(route.effort ? { reasoning_effort: route.effort } : {}) }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`The authoring endpoint answered ${response.status}.`);
@@ -245,4 +255,70 @@ ${instruction}
 `;
   const reply = await askForJson(route, prompt, timeoutMs);
   return readBlocks(reply.document.blocks);
+}
+
+/** One store call, in the shape `Host.request` takes. */
+export type PageStore = (method: string, params: Record<string, string>) => Promise<unknown>;
+
+/** What the store hands over before a page is authored, revised, or talked about. */
+export interface PageContext {
+  /** The page's own conversation thread, created by this read if it never had one. */
+  threadId: string;
+  text: string;
+  categories: string[];
+  title: string;
+  summary: string;
+  /** Durable artifacts, which carry a `version` and a `source` these flows do not use. */
+  artifacts: PageBlock[];
+}
+
+const pageContext = (store: PageStore, pageId: string) =>
+  store("pageAuthoringContext", { pageId }) as Promise<PageContext>;
+
+const documentBlocks = (context: PageContext): PageBlock[] =>
+  context.artifacts.map((block) => ({ id: block.id, type: block.type, payload: block.payload, fallback: block.fallback }));
+
+/** The page as the model reads it in a chat: every block in reading order, by its fallback text. */
+export const pageAsText = (context: PageContext): string => mergeSkillContext([
+  "The user is reading this page from their knowledge base. Answer about it.",
+  `Title: ${context.title}`,
+  `Summary: ${context.summary}`,
+  ...documentBlocks(context).map((block) => `[${block.id} · ${block.type}]\n${block.fallback}`),
+].join("\n\n"));
+
+/** Re-authors an existing page from whatever it was captured from. */
+export async function authorKnowledgePage(store: PageStore, params: Record<string, string>, route?: AuthorRoute) {
+  const context = await pageContext(store, params.pageId);
+  const document = await authorPage(context.text, context.categories, route);
+  return store("analyzePage", {
+    pageId: params.pageId,
+    ...(params.keepCategory ? { keepCategory: params.keepCategory } : {}),
+    document: JSON.stringify(document),
+  });
+}
+
+/** The same, for a thread's last answer on its way to becoming a page of its own. */
+export async function authorPageFromThread(store: PageStore, threadId: string, route?: AuthorRoute) {
+  const context = await store("threadAuthoringContext", { threadId }) as { text: string; categories: string[] };
+  const document = await authorPage(context.text, context.categories, route);
+  return store("saveToKnowledge", { threadId, document: JSON.stringify(document) });
+}
+
+/**
+ * A revision is a proposal: the store validates the blocks and hands them straight back
+ * without keeping them, so the reader is the one who decides whether the page changes.
+ */
+export async function proposePageRevision(store: PageStore, params: Record<string, string>, route?: AuthorRoute) {
+  // Checked before the page is read: refusing after a store round trip only creates the
+  // page's conversation thread for an edit that was never going to happen.
+  if (!route?.model) throw new Error("Rewriting a page needs a model. Pick one in Settings.");
+  const context = await pageContext(store, params.pageId);
+  const blocks = await revisePage(params.instruction, documentBlocks(context), route);
+  return store("revisePageDocument", { pageId: params.pageId, blocks: JSON.stringify(blocks) });
+}
+
+/** What a page chat turns into: an ordinary turn on the page's own thread, document attached. */
+export async function pageTurnContext(store: PageStore, pageId: string) {
+  const context = await pageContext(store, pageId);
+  return { threadId: context.threadId, title: context.title, skillContext: pageAsText(context) };
 }

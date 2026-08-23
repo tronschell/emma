@@ -35,11 +35,18 @@
 
 .artifact-card { display: grid; align-content: start; gap: var(--s-2); min-width: 0; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface); text-align: left; transition: border-color var(--t), background-color var(--t); }
 .artifact-card:hover { border-color: var(--border-strong); }
-.artifact-card > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s-1) var(--s-2); min-width: 0; }
-.artifact-card > header > span { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.artifact-card > header > strong { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+/* On the grid the header and the picture sit inside the card's own open button;
+   inline in a thread the card is that button. Both spellings, one look. */
+:is(.artifact-card, .artifact-card-open) > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s-1) var(--s-2); min-width: 0; }
+:is(.artifact-card, .artifact-card-open) > header > span { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+:is(.artifact-card, .artifact-card-open) > header > strong { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t); }
 /* The revision count is a quantity read as data, so it takes orange like every other. */
-.artifact-card > header > small { color: var(--orange); font: var(--fs-2xs)/1.4 var(--font-mono); white-space: nowrap; }
+:is(.artifact-card, .artifact-card-open) > header > small { color: var(--orange); font: var(--fs-2xs)/1.4 var(--font-mono); white-space: nowrap; }
+
+/* The card's own hit target: everything but the action row. No box of its own —
+   it stands in for the card, so the title taking the accent is the whole hover. */
+.artifact-card-open { display: grid; align-content: start; gap: var(--s-2); width: 100%; min-width: 0; padding: 0; background: transparent; text-align: left; }
+.artifact-card-open:hover > header > strong { color: var(--accent); }
 
 /* The whole card is the hit target inline in a thread, so it is a button there —
    .page-tile's composition, with the artifact itself where the tile has its image. */
@@ -92,6 +99,9 @@
 .artifact-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .artifact-actions button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
 .artifact-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+/* On a grid card the three are marks, not words, so each is the same square the
+   dialog headers use — the name is on the button, read out rather than drawn. */
+.artifact-icons button { display: grid; place-items: center; width: 28px; padding: 0; }
 .artifact-actions .artifact-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .artifact-actions .artifact-danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--danger-surface); }
 

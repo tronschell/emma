@@ -35,6 +35,11 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   vendor login surface anywhere in Emma.
 - **Branding and hosted endpoints.** `fx.sh` docs links, feedback and upgrade
   URLs, and telemetry paths are removed rather than repointed.
+- **Subagent advertisement.** Upstream hides the `subagent` tool behind
+  `search_tools` (`.advertisement = .on_select`); Emma advertises it whenever
+  the session supports children. Delegation is a first-class Emma feature — the
+  app draws every child as a thread of its own — and a tool the model has to go
+  looking for is one it does not use. The `subagent_available` gate is untouched.
 
 ### De-Vercel pass (removals)
 
