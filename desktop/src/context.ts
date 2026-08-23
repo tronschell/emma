@@ -19,7 +19,7 @@ const FOLDERS_KEY = "emma.threadFolders.v1";
 const MODES_KEY = "emma.threadModes.v1";
 const USES_KEY = "emma.threadContextUses.v1";
 
-function allFolders(): Record<string, string[]> {
+export function threadFolderMap(): Record<string, string[]> {
   try {
     const stored = JSON.parse(localStorage.getItem(FOLDERS_KEY) ?? "{}") as Record<string, unknown>;
     return Object.fromEntries(Object.entries(stored).filter(([, value]) => Array.isArray(value) && value.every((item) => typeof item === "string"))) as Record<string, string[]>;
@@ -30,11 +30,11 @@ function allFolders(): Record<string, string[]> {
 /// way out as well as in, so a thread stored back when several could be attached
 /// collapses onto its project rather than carrying folders no tool can reach.
 export function threadFolders(threadId: string): string[] {
-  return (allFolders()[threadId] ?? []).slice(0, 1);
+  return (threadFolderMap()[threadId] ?? []).slice(0, 1);
 }
 
 export function setThreadFolders(threadId: string, ids: string[]): void {
-  localStorage.setItem(FOLDERS_KEY, JSON.stringify({ ...allFolders(), [threadId]: ids.slice(0, 1) }));
+  localStorage.setItem(FOLDERS_KEY, JSON.stringify({ ...threadFolderMap(), [threadId]: ids.slice(0, 1) }));
   // The sidebar files threads by their folder, so it has to hear about a change
   // made down in the composer.
   dispatchEvent(new Event("emma-thread-folders-changed"));
@@ -439,8 +439,8 @@ export function handTags(): string[] {
 }
 
 /** How close the thread side is to filing by itself — hand tags only, same threshold as the pages. */
-export function autoTagStatus() {
-  return learnedFrom(Object.values(threadTags()).filter((entry) => !entry.auto).map((entry) => entry.tag));
+export function autoTagStatus(tags: Record<string, ThreadTag> = threadTags()) {
+  return learnedFrom(Object.values(tags).filter((entry) => !entry.auto).map((entry) => entry.tag));
 }
 
 /**

@@ -31,7 +31,7 @@ import { PreviewHost } from "./preview";
 import { ArtifactCard, ArtifactsView } from "./artifacts";
 import { Region } from "./regions";
 import { ARTIFACT_LABELS, artifactWritten, type Artifact, type ArtifactMeta } from "../shared/artifacts";
-import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolders, threadMode, threadTags, threadUses, toolCommands, UNFILED_CATEGORY } from "./context";
+import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, UNFILED_CATEGORY } from "./context";
 import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeMenu, ModePicker, ModeTrigger, PermissionPrompt, TabStrip, ThreadCard, useAgents, type AgentTab } from "./agents";
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
@@ -46,9 +46,11 @@ import { SETUP_PERMISSIONS, type SetupPermission, type SetupStatus } from "../sh
 import { CLEANUP_INSTALL, HOLD_TO_TALK_MS, LLAMA_INSTALL, LLAMA_SITE_URL, SPEECH_INSTALL, SPEECH_MODEL, SPEECH_MODEL_URL, VOICE_MODEL, VOICE_MODEL_URL, voiceReady, type TranscriptionEngine } from "../shared/voice";
 import { useDictation, useSpaceHold } from "./voice";
 import { reasonText } from "./errors";
+import { takeBootSnapshot } from "./boot";
 
 const empty: Snapshot = { threads: [], knowledgeBases: [], pages: [], scheduledJobs: [], researchJobs: [], warnings: [] };
 const SNAPSHOT_REFRESH_MS = 60_000;
+const SNAPSHOT_COALESCE_MS = 120;
 const AgentView = lazy(() => import("./AgentView"));
 const ResearchView = lazy(() => import("./research"));
 const ChartArtifact = lazy(() => import("./chart-artifact"));
@@ -514,9 +516,13 @@ function ScreenAnnotation() {
 function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   const [snapshot, setSnapshot] = useState(empty);
   const [error, setError] = useState("");
+  const booted = useRef(takeBootSnapshot());
+  const skipped = useRef(false);
   const load = useCallback(async () => {
     try {
-      const next = await window.emma.request<Snapshot>("snapshot");
+      const inFlight = booted.current;
+      booted.current = undefined;
+      const next = await (inFlight ?? window.emma.request<Snapshot>("snapshot"));
       setSnapshot(next);
       onLoad?.(next);
       setError("");
@@ -526,14 +532,22 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   }, [onLoad]);
   useEffect(() => {
     queueMicrotask(() => void load());
-    const listener = window.emma.onChanged(() => void load());
-    const refresh = () => void load();
-    const refreshVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    const refresh = () => { skipped.current = false; void load(); };
+    const refreshVisible = () => { if (document.visibilityState === "visible") refresh(); else skipped.current = true; };
+    let coalesce = 0;
+    const listener = window.emma.onChanged(() => {
+      window.clearTimeout(coalesce);
+      coalesce = window.setTimeout(refreshVisible, SNAPSHOT_COALESCE_MS);
+    });
+    const shown = () => { if (document.visibilityState === "visible" && skipped.current) refresh(); };
     window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", shown);
     const interval = window.setInterval(refreshVisible, SNAPSHOT_REFRESH_MS);
     return () => {
+      window.clearTimeout(coalesce);
       window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", shown);
       window.emma.offChanged(listener);
     };
   }, [load]);
@@ -577,9 +591,10 @@ function Workspace() {
   // folder, and a thread is filed under the folder it works out of. Re-read when
   // a grant is added or a composer attaches one.
   const [grants, setGrants] = useState<FolderGrant[]>([]);
-  const [, refiled] = useState(0);
+  const [tags, setTags] = useState(threadTags);
+  const [filedFolders, setFiledFolders] = useState(threadFolderMap);
   useEffect(() => {
-    const reload = () => { void window.emma.listFolders().then(setGrants).catch(() => undefined); refiled((count) => count + 1); };
+    const reload = () => { void window.emma.listFolders().then(setGrants).catch(() => undefined); setTags(threadTags()); setFiledFolders(threadFolderMap()); };
     reload();
     addEventListener("emma-thread-folders-changed", reload);
     // Tags are the other axis a row is filed on, and they move from three places:
@@ -630,8 +645,8 @@ function Workspace() {
   // call would litter the sidebar with threads nobody opened. A sub thread is the
   // other kind of owned thread — its own main agent — and it is listed, nested
   // under the thread that started it.
-  const liveThreads = snapshot.threads.filter((item) => !item.archivedAt && item.kind !== "subagent");
-  const archivedThreads = snapshot.threads.filter((item) => item.archivedAt && item.kind !== "subagent");
+  const liveThreads = useMemo(() => snapshot.threads.filter((item) => !item.archivedAt && item.kind !== "subagent"), [snapshot.threads]);
+  const archivedThreads = useMemo(() => snapshot.threads.filter((item) => item.archivedAt && item.kind !== "subagent"), [snapshot.threads]);
   const thread = liveThreads.find((item) => item.id === threadId) ?? liveThreads[0];
   const page = snapshot.pages.find((item) => item.id === pageId);
   const uiBusy = busy || interactionLocked;
@@ -692,30 +707,32 @@ function Workspace() {
   } as CSSProperties;
   // A due run opens an ordinary thread, but it is not one the user started, so it
   // is listed under its job at the foot of the rail rather than in a project.
-  const filedThreads = liveThreads.filter((item) => !item.scheduledJobId);
-  const scheduledThreads = liveThreads.filter((item) => item.scheduledJobId);
+  const filedThreads = useMemo(() => liveThreads.filter((item) => !item.scheduledJobId), [liveThreads]);
+  const scheduledThreads = useMemo(() => liveThreads.filter((item) => item.scheduledJobId), [liveThreads]);
   // A thread's project is the first folder its composer works out of; a thread with
   // no folder attached — a chat-only one — is unfiled. A sub thread has no composer
   // of its own until it is opened, so it is listed under the project of the thread
   // that started it, the same one it inherits when it does open.
-  const projectOf = (item: Thread) => {
+  const projectOf = useCallback((item: Thread) => {
     let at: Thread | undefined = item;
     for (let hop = 0; at && hop < 8; hop += 1) {
-      const grant = grants.find((folder) => folder.id === threadFolders(at!.id)[0]);
+      const grant = grants.find((folder) => folder.id === filedFolders[at!.id]?.[0]);
       if (grant) return grant.id;
       at = liveThreads.find((owner) => owner.id === at!.parentThreadId);
     }
     return "";
-  };
-  const projects = ordered([
-    ...grants.map((grant) => ({ id: grant.id, name: grant.name, threads: nested(filedThreads.filter((item) => projectOf(item) === grant.id)) })),
-    { id: "unfiled", name: "Unfiled", threads: nested(filedThreads.filter((item) => !projectOf(item))) },
-  ].filter((group) => group.threads.length || group.id !== "unfiled"), layout.projectOrder);
+  }, [filedFolders, grants, liveThreads]);
+  const projects = useMemo(() => {
+    const filedTo = new Map(filedThreads.map((item) => [item.id, projectOf(item)]));
+    return ordered([
+      ...grants.map((grant) => ({ id: grant.id, name: grant.name, threads: nested(filedThreads.filter((item) => filedTo.get(item.id) === grant.id)) })),
+      { id: "unfiled", name: "Unfiled", threads: nested(filedThreads.filter((item) => !filedTo.get(item.id))) },
+    ].filter((group) => group.threads.length || group.id !== "unfiled"), layout.projectOrder);
+  }, [filedThreads, grants, layout.projectOrder, projectOf]);
   /* The tags on the rows, and Emma's own filing into them.
      A tag is the second axis beside the project: the group says which folder the
      thread works out of, the chip says what it is about. */
-  const tags = threadTags();
-  const filing = autoTagStatus();
+  const filing = useMemo(() => autoTagStatus(tags), [tags]);
   /* Auto-filing, the thread side of what the knowledge board already does with
      captures: once one hand-applied tag has AUTO_FILE_EXAMPLES threads to learn
      from, a thread that has actually been used and carries no tag gets Emma's
