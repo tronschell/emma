@@ -24,7 +24,7 @@ import { AttachmentStore, isImageAttachment, type Attachment } from "./attachmen
 import { defaultKnowledgeDir, knowledgeDirWritable, readKnowledgeDir, saveKnowledgeDir } from "./setup";
 import { isRawClip, pageForUrl, type SavedPage } from "../shared/knowledge";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
-import { CatalogCache, type Catalog } from "./catalog";
+import { CatalogCache, fetchOpenRouterCatalog } from "./catalog";
 import { addWorktree, gitSnapshot, mainCheckout, switchBranch } from "./git";
 import { installedEditors, openInEditor } from "./editors";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
@@ -2555,7 +2555,7 @@ if (primaryInstance) app.whenReady().then(() => {
     // The catalog answers from disk when the fetch fails, and reports what changed when it
     // does not — a reload that lands on an identical list has to say so, not look inert.
     if (request.method === "listOpenRouterModels") {
-      return modelCatalog!.refresh(() => host!.request(request) as Promise<Catalog>);
+      return modelCatalog!.refresh(() => fetchOpenRouterCatalog());
     }
     let screenContextId: string | undefined;
     let skillAttachmentId: string | undefined;

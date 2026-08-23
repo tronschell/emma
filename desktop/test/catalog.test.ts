@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CatalogCache, type CatalogModel } from "../main/catalog";
+import { CatalogCache, fetchOpenRouterCatalog, type CatalogModel } from "../main/catalog";
 import { freeModels } from "../shared/settings";
 
 const model = (id: string, free = true): CatalogModel =>
@@ -57,4 +57,73 @@ test("free-only routing keeps the catalog's free models and whatever is already 
   // The model in use never disappears from its own picker, free or not.
   assert.deepEqual(keys("openrouter:b/two"), ["openrouter:a/one", "openrouter:b/two"]);
   assert.deepEqual(keys("fallback"), ["fallback", "openrouter:a/one"]);
+});
+
+test("the OpenRouter listing is parsed, priced, and filtered to models Emma can actually use", async () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: "vendor/model",
+    name: "Vendor Model",
+    context_length: 8192,
+    supported_parameters: ["tools"],
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+    architecture: { input_modalities: ["text", "image"] },
+    ...over,
+  });
+  const served = (data: unknown[]) => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data }), {
+      status: 200, headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+    return () => { globalThis.fetch = original; };
+  };
+
+  let restore = served([
+    row(),
+    // Dropped: Emma advertises tools every turn, so a model without them fails on first use.
+    row({ id: "vendor/no-tools", supported_parameters: ["temperature"] }),
+    // Dropped: one vendor's bad row, not a corrupt listing.
+    row({ id: "vendor/no-window", context_length: 0 }),
+    row({ id: "not-a-path", name: "Malformed Id" }),
+    // Deduped against the first row.
+    row({ name: "Duplicate" }),
+    row({
+      id: "vendor/free-thinker",
+      name: "Free Thinker",
+      pricing: { prompt: "0", completion: "0" },
+      reasoning: { supported_efforts: ["low", "max"], mandatory: true },
+    }),
+    row({
+      id: "vendor/default-stops",
+      name: "Default Stops",
+      supported_parameters: ["tools", "reasoning_effort"],
+    }),
+  ]);
+  try {
+    const { models } = await fetchOpenRouterCatalog();
+    assert.deepEqual(models.map((entry) => entry.id), ["vendor/default-stops", "vendor/free-thinker", "vendor/model"]);
+
+    const paid = models.find((entry) => entry.id === "vendor/model")!;
+    assert.equal(paid.free, false);
+    // Dollars per token to micro-dollars per million tokens: the same number times 1e12.
+    assert.equal(paid.promptMicroUsdPerMtok, 1_000_000);
+    assert.equal(paid.completionMicroUsdPerMtok, 2_000_000);
+    // A listing quirk should not promise vision: only the modalities Emma knows survive.
+    assert.deepEqual(paid.inputModalities, ["image"]);
+    assert.deepEqual(paid.reasoningEfforts, []);
+
+    const thinker = models.find((entry) => entry.id === "vendor/free-thinker")!;
+    assert.equal(thinker.free, true);
+    // Published efforts come back weakest-first, whatever order the vendor listed them in.
+    assert.deepEqual(thinker.reasoningEfforts, ["low", "max"]);
+    assert.equal(thinker.reasoningMandatory, true);
+
+    // `reasoning_effort` with no published list gets OpenRouter's own three stops.
+    assert.deepEqual(models.find((entry) => entry.id === "vendor/default-stops")!.reasoningEfforts, ["low", "medium", "high"]);
+  } finally { restore(); }
+
+  // A listing with nothing usable in it is an error, not an empty picker.
+  restore = served([row({ supported_parameters: ["temperature"] })]);
+  try {
+    await assert.rejects(fetchOpenRouterCatalog(), /no models Emma can use/);
+  } finally { restore(); }
 });
