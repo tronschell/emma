@@ -328,17 +328,15 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    // One lock over stdout, shared with the runtime thread. `serve` only holds
-    // it to write a finished response, and the clock's thread only to push a due
-    // job, so the two never contend in practice.
     let out = Arc::new(Mutex::new(io::stdout()));
     let jobs = Arc::clone(&out);
     let live = runtime::start(Arc::new(move |job: DueJob| {
-        // Pushed, not replied to: nothing asked for this, the clock did.
+        let Ok(mut line) = serde_json::to_vec(&json!({ "dueJob": job })) else {
+            return;
+        };
+        line.push(b'\n');
         if let Ok(mut writer) = jobs.lock() {
-            let line = json!({ "dueJob": job });
-            let _ = serde_json::to_writer(&mut *writer, &line);
-            let _ = writer.write_all(b"\n");
+            let _ = writer.write_all(&line);
             let _ = writer.flush();
         }
     }))
@@ -359,13 +357,14 @@ fn serve(
             Ok((id, result)) => json!({ "id": id, "ok": true, "result": result }),
             Err((id, error)) => json!({ "id": id, "ok": false, "error": error }),
         };
+        let mut encoded = serde_json::to_vec(&response)
+            .map_err(|error| format!("could not encode response: {error}"))?;
+        encoded.push(b'\n');
         let mut writer = writer
             .lock()
             .map_err(|_| "Emma host output lock was poisoned".to_string())?;
-        serde_json::to_writer(&mut *writer, &response)
-            .map_err(|error| format!("could not encode response: {error}"))?;
         writer
-            .write_all(b"\n")
+            .write_all(&encoded)
             .and_then(|()| writer.flush())
             .map_err(|error| format!("could not write response: {error}"))?;
     }
