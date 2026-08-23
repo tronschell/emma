@@ -55,6 +55,7 @@ import { editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type
 
 // ponytail: whole snapshots cap at 16 MiB; paginate the host protocol before raising it.
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
+const SNAPSHOT_CACHE_MS = 5000;
 
 class Host {
   private child: ChildProcessWithoutNullStreams;
@@ -62,6 +63,8 @@ class Host {
   private nextId = 1;
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: Error | null = null;
+  private writes = 0;
+  private snapshot: { writes: number; at: number; value: Promise<unknown> } | undefined;
 
   constructor(binary: string) {
     this.child = spawn(binary, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] });
@@ -78,6 +81,25 @@ class Host {
 
   request(request: { method: string; params: Record<string, string> }): Promise<unknown> {
     if (this.failure) return Promise.reject(this.failure);
+    if (request.method !== "snapshot") {
+      this.storeChanged();
+      return this.send(request);
+    }
+    const cached = this.snapshot;
+    if (cached && cached.writes === this.writes && Date.now() - cached.at < SNAPSHOT_CACHE_MS) return cached.value;
+    const value = this.send(request);
+    const entry = { writes: this.writes, at: Date.now(), value };
+    this.snapshot = entry;
+    value.catch(() => { if (this.snapshot === entry) this.snapshot = undefined; });
+    return value;
+  }
+
+  private storeChanged() {
+    this.writes++;
+    this.snapshot = undefined;
+  }
+
+  private send(request: { method: string; params: Record<string, string> }): Promise<unknown> {
     const id = String(this.nextId++);
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -100,6 +122,7 @@ class Host {
         // Nothing asked for this line, the clock did, so it starts a turn here
         // rather than resolving one: a job is a full agent run under its saved mode.
         const job = response.dueJob;
+        this.storeChanged();
         void runScheduledWorkflow(job).catch((error: unknown) => console.error(`Scheduled job ${job.jobId} failed:`, error));
         return;
       }
@@ -120,6 +143,7 @@ class Host {
 
   private fail(error: Error) {
     this.failure ??= error;
+    this.snapshot = undefined;
     for (const request of this.pending.values()) request.reject(this.failure);
     this.pending.clear();
   }
@@ -180,7 +204,7 @@ function attachFolder(threadId: string, folderId: string) {
   // hand the model a filesystem half its tools cannot see.
   if (context.folderIds[0] !== folderId) threadContexts.set(threadId, { ...context, folderIds: [folderId] });
   broadcast("emma:folder-attached", { threadId, folderId });
-  broadcast("emma:changed");
+  changed();
 }
 const skillAttachment = new SkillAttachmentStore();
 /** One harness process per workspace directory; see `HarnessDeps.cwd` for why. */
@@ -980,6 +1004,27 @@ function broadcast(channel: string, payload?: unknown) {
   }
 }
 
+const CHANGED_COALESCE_MS = 150;
+const READ_ONLY_METHODS = new Set(["snapshot", "listOpenRouterModels", "listPageVersions", "readPageAsset"]);
+let changedAt = 0;
+let changedQueued: ReturnType<typeof setTimeout> | undefined;
+
+function changed() {
+  const since = Date.now() - changedAt;
+  if (since >= CHANGED_COALESCE_MS) {
+    changedAt = Date.now();
+    broadcast("emma:changed");
+    return;
+  }
+  if (changedQueued) return;
+  changedQueued = setTimeout(() => {
+    changedQueued = undefined;
+    changedAt = Date.now();
+    broadcast("emma:changed");
+  }, CHANGED_COALESCE_MS - since);
+  changedQueued.unref();
+}
+
 /**
  * The one directory this thread works in, or nothing when it has none.
  *
@@ -1087,7 +1132,7 @@ async function savePage(threadId: string, url?: string, existing?: string): Prom
       ...(refreshing ? { pageId: refreshing.id } : {}),
     },
   }) as { id: string };
-  broadcast("emma:changed");
+  changed();
   void buildPageDocument(captured.id, clip.url);
   return `${refreshing ? "Refreshed" : "Saved"} “${clip.title}” (${clip.url}) ${refreshing ? "in" : "to"} the knowledge base. Emma is building its document now, in the background — it appears on the board when it lands, so do not call save_page for this page again. Say what the page covers rather than repeating the steps.`;
 }
@@ -1104,7 +1149,7 @@ async function buildPageDocument(pageId: string, url: string) {
   } catch (error) {
     console.error(`Could not build the document for ${pageId}:`, error);
   } finally {
-    broadcast("emma:changed");
+    changed();
   }
 }
 
@@ -1686,7 +1731,7 @@ function recycleHarnesses() {
 }
 
 /** A file's text before a harness edit, keyed by the call that is about to make it. */
-const harnessBefore = new Map<string, string | null>();
+const harnessBefore = new Map<string, { threadId: string; text: string | null }>();
 
 /**
  * Records a harness file mutation as one of Emma's own changes.
@@ -1713,10 +1758,10 @@ function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | und
   const read = () => { try { return readFileSync(absolute, "utf8"); } catch { return null; } };
 
   if (call.status !== "completed") {
-    if (!harnessBefore.has(call.toolCallId)) harnessBefore.set(call.toolCallId, read());
+    if (!harnessBefore.has(call.toolCallId)) harnessBefore.set(call.toolCallId, { threadId: call.threadId, text: read() });
     return;
   }
-  const before = harnessBefore.get(call.toolCallId) ?? null;
+  const before = harnessBefore.get(call.toolCallId)?.text ?? null;
   harnessBefore.delete(call.toolCallId);
   const after = read();
   // A delete leaves nothing to show as the new text, and an unchanged file is
@@ -1724,7 +1769,7 @@ function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | und
   if (after === null || after === before) return;
   const change: FileChange = { folderId: grant.id, path: path.relative(cwd, absolute), before, after, at: Date.now() };
   agents!.noteChange(call.threadId, change);
-  broadcast("emma:changed");
+  changed();
   return change;
 }
 
@@ -2094,6 +2139,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
     harnessText.delete(turn.threadId);
     harnessThought.delete(turn.threadId);
     harnessTurns.delete(turn.threadId);
+    for (const [id, opened] of harnessBefore) if (opened.threadId === turn.threadId) harnessBefore.delete(id);
   }
 }
 
@@ -2125,7 +2171,7 @@ async function driveTurn(turn: TurnRequest) {
       computerRuntime?.abort("finished");
       closeRunBanner();
     }
-    broadcast("emma:changed");
+    changed();
   }
 }
 
@@ -2217,7 +2263,7 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
       method: "recordTurn",
       params: { threadId: job.threadId, prompt: job.prompt, response: `This task did not run: its graph will not run as written.\n\n${errors.join("\n")}`, durationMilliseconds: "0", outputTokens: "0", inputTokens: "0" },
     });
-    broadcast("emma:changed");
+    changed();
     return;
   }
   const mode = asPermissionMode(job.permissionMode);
@@ -2229,7 +2275,7 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
   // Finishing is what fires whatever waits `after` this task, so it happens even
   // when a step came back empty — a task that produced nothing still ran.
   await host!.request({ method: "finishScheduledJob", params: { jobId: job.jobId, outputs: packVariables(run.variables), depth: String(job.depth) } });
-  broadcast("emma:changed");
+  changed();
 }
 
 /** Raises an app event, so a task triggered `on <event>` fires. Best effort by design. */
@@ -2271,7 +2317,7 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
     case "delete": {
       const job = named();
       await host!.request({ method: "deleteScheduledJob", params: { jobId: job.id } });
-      broadcast("emma:changed");
+      changed();
       return `Deleted "${job.title}".`;
     }
     case "run": {
@@ -2309,7 +2355,7 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
           permissionMode: asPermissionMode(args.permissionMode ?? existing?.permissionMode),
         },
       }) as { id?: string };
-      broadcast("emma:changed");
+      changed();
       return `${existing ? "Updated" : "Saved"} "${title}" (${saved.id ?? existing?.id}), triggered by ${trigger}. Nothing has run yet — test it, or run it once to see what it does.`;
     }
   }
@@ -2340,7 +2386,7 @@ async function researchTool(args: Extract<ToolArgs, { name: "autoresearch" }>): 
   const setStatus = async (job: ResearchJob, status: "running" | "paused", note: string) => {
     await host!.request({ method: "setResearchJobStatus", params: { jobId: job.id, status, note } });
     if (status === "running") startResearchJob(job.id); else stopResearchJob(job.id);
-    broadcast("emma:changed");
+    changed();
   };
   switch (args.action) {
     case "list":
@@ -2351,7 +2397,7 @@ async function researchTool(args: Extract<ToolArgs, { name: "autoresearch" }>): 
       const job = named();
       stopResearchJob(job.id);
       await host!.request({ method: "deleteResearchJob", params: { jobId: job.id } });
-      broadcast("emma:changed");
+      changed();
       return `Deleted "${job.title}". Its thread and everything it committed are still there.`;
     }
     case "start": {
@@ -2398,7 +2444,7 @@ async function researchTool(args: Extract<ToolArgs, { name: "autoresearch" }>): 
           ...(prompt ? { prompt } : {}),
         },
       }) as { id?: string };
-      broadcast("emma:changed");
+      changed();
       return `${existing ? "Updated" : "Saved"} "${title}" (${saved.id ?? existing?.id}). Nothing runs until it is started; ${metricName} (${direction} is better) is fixed for the life of the job.`;
     }
   }
@@ -2566,6 +2612,7 @@ if (primaryInstance) app.whenReady().then(() => {
   modelCatalog = new CatalogCache(app.getPath("userData"));
   startHost();
   fireEvent("launch");
+  void host!.request({ method: "snapshot", params: {} }).catch(() => undefined);
   capabilities = new ImportedCapabilityRuntime(app.getPath("userData"));
   // `artifact` is preserved: it is the one bundled skill the user is invited to
   // tailor, so a copy they have edited survives the launch that reseeds the rest.
@@ -2615,7 +2662,7 @@ if (primaryInstance) app.whenReady().then(() => {
       return { inputTokens: run?.inputTokens ?? 0, outputTokens: run?.outputTokens ?? 0 };
     },
     catalogFile: path.join(app.getPath("userData"), "openrouter-catalog.json"),
-    changed: () => broadcast("emma:changed"),
+    changed,
   });
   // Recovery: a job the store still calls running was interrupted by a quit or a
   // crash, and everything it needs to carry on is on disk.
@@ -2696,9 +2743,7 @@ if (primaryInstance) app.whenReady().then(() => {
       delivered = true;
       if (screenClaimed) annotationAttachment.finish(screenContextId!, true);
       if (skillClaimed) skillAttachment.finish(skillAttachmentId!, true);
-      if (!(["snapshot", "listOpenRouterModels"] as string[]).includes(request.method)) {
-        for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:changed");
-      }
+      if (!READ_ONLY_METHODS.has(request.method)) changed();
       return result;
     } finally {
       if (screenClaimed && !delivered) annotationAttachment.finish(screenContextId!, false);
@@ -2818,7 +2863,7 @@ if (primaryInstance) app.whenReady().then(() => {
     const file = boundedCapabilityId(request.path, "Revert path");
     if (typeof request.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
     folders!.write(folderId, file, request.before);
-    broadcast("emma:changed");
+    changed();
     return true;
   });
   ipcMain.on("emma:stop-computer-run", (event) => {
@@ -3091,7 +3136,7 @@ if (primaryInstance) app.whenReady().then(() => {
     const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
     await switchBranch(cwd, boundedCapabilityId(request.branch, "Branch"), request.create === true);
     // The same signal a write sends: every git view in the renderer re-reads itself.
-    broadcast("emma:changed");
+    changed();
   });
   // Moves a thread between a repo's main checkout and a worktree of it. Both ends are
   // folders the user already granted, or derived from one, so this widens nothing: the

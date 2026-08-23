@@ -2,26 +2,29 @@ import { Buffer } from "node:buffer";
 import { withThinking } from "../shared/thinking";
 
 export class BoundedLines {
-  private pending = Buffer.alloc(0);
+  private pending: Buffer[] = [];
+  private pendingBytes = 0;
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
 
   constructor(private readonly maxBytes: number) {}
 
   push(value: Uint8Array) {
-    const chunk = Buffer.from(value);
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
     const lines: string[] = [];
     let offset = 0;
     while (offset < chunk.length) {
       const newline = chunk.indexOf(10, offset);
       const end = newline < 0 ? chunk.length : newline;
       const piece = chunk.subarray(offset, end);
-      if (this.pending.length + piece.length > this.maxBytes) throw new Error("Host response line is too large");
+      if (this.pendingBytes + piece.length > this.maxBytes) throw new Error("Host response line is too large");
       if (newline < 0) {
-        this.pending = this.pending.length ? Buffer.concat([this.pending, piece]) : Buffer.from(piece);
+        this.pending.push(Buffer.from(piece));
+        this.pendingBytes += piece.length;
         break;
       }
-      const line = this.pending.length ? Buffer.concat([this.pending, piece]) : piece;
-      this.pending = Buffer.alloc(0);
+      const line = this.pendingBytes ? Buffer.concat([...this.pending, piece], this.pendingBytes + piece.length) : piece;
+      this.pending = [];
+      this.pendingBytes = 0;
       lines.push(this.decoder.decode(line));
       offset = end + 1;
     }
@@ -29,7 +32,7 @@ export class BoundedLines {
   }
 
   end() {
-    if (this.pending.length) throw new Error("Host response ended mid-line");
+    if (this.pendingBytes) throw new Error("Host response ended mid-line");
   }
 }
 

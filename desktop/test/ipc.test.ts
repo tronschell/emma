@@ -94,6 +94,14 @@ test("host response lines are framed and bounded before JSON parsing", () => {
   assert.deepEqual(lines.push(Buffer.from("1}\n{}\n")), ["{\"a\":1}", "{}"]);
   lines.end();
   assert.throws(() => new BoundedLines(4).push(Buffer.from("12345")), /too large/);
+  const split = new BoundedLines(64);
+  assert.deepEqual(split.push(Buffer.from("{\"a\":\"xx")), []);
+  assert.deepEqual(split.push(Buffer.from("yy")), []);
+  assert.deepEqual(split.push(Buffer.from("zz\"}\n")), ["{\"a\":\"xxyyzz\"}"]);
+  split.end();
+  const capped = new BoundedLines(6);
+  assert.deepEqual(capped.push(Buffer.from("1234")), []);
+  assert.throws(() => capped.push(Buffer.from("567")), /too large/);
   assert.deepEqual(parseHostLine('{"id":"1","ok":true,"result":null}'), { id: "1", ok: true, result: null });
   assert.throws(() => parseHostLine('{"id":"1","ok":true}'), /envelope/);
   assert.throws(() => parseHostLine('{"id":"1","ok":false,"error":null}'), /envelope/);
