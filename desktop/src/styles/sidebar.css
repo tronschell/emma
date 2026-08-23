@@ -92,14 +92,6 @@
    an auto-placed count would slide one column left whenever the row is at rest. */
 .sidebar-nav b, .project-group > summary b { grid-column: -2; justify-self: end; overflow: hidden; color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; font-variant-numeric: tabular-nums; text-align: right; }
 
-.sidebar-activity { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3) var(--pad) var(--s-4); border-bottom: 1px solid var(--border); }
-.sidebar-activity .activity-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); color: var(--text-3); }
-.activity-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 8px); gap: 3px; }
-.activity-cell { width: 8px; height: 8px; background: var(--surface-3); }
-.activity-cell.l1 { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-.activity-cell.l2 { background: color-mix(in srgb, var(--accent) 55%, transparent); }
-.activity-cell.l3 { background: color-mix(in srgb, var(--accent) 80%, transparent); }
-.activity-cell.l4 { background: var(--accent); }
 
 /* Icon mode: the same sections as one horizontal strip of glyph tiles, the way Arc
    pins sit above its list. Labels go to the title tooltip. The tile is one column
@@ -278,7 +270,7 @@
 /* 46px rail: the gutter collapses so the 20px mark and the glyph column both centre. */
 .sidebar.collapsed { --pad: 0; }
 .sidebar.collapsed > .brand { justify-content: center; }
-.sidebar.collapsed .brand strong, .sidebar.collapsed .nav-label, .sidebar.collapsed .sidebar-nav b, .sidebar.collapsed .sidebar-search, .sidebar.collapsed .sidebar-projects, .sidebar.collapsed .sidebar-scheduled, .sidebar.collapsed .sidebar-activity, .sidebar.collapsed .nav-foot span { display: none; }
+.sidebar.collapsed .brand strong, .sidebar.collapsed .nav-label, .sidebar.collapsed .sidebar-nav b, .sidebar.collapsed .sidebar-search, .sidebar.collapsed .sidebar-projects, .sidebar.collapsed .sidebar-scheduled, .sidebar.collapsed .nav-foot span { display: none; }
 /* The toggle never moves when it is pressed: it stays in the brand band at both
    widths, so the click that collapses the pane and the click that expands it land
    on the same pixel. The rail is one 24px glyph column wide, so the mark yields

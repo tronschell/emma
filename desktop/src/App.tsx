@@ -3,7 +3,7 @@ import type { AgentImportSource, ArtifactBlock, Connection, CredentialSummary, H
 import { describeRun, describeTrigger, parseVariables, parseWorkflow, runWorkflow, triggerProblem } from "../shared/workflow";
 import { PluginsView } from "./plugins";
 import { PromptField, TriggerPicker, useTaskCommands, WorkflowGraph } from "./schedule";
-import { activityDays, activityGrid, plural } from "./activity";
+import { activityDays, plural } from "./activity";
 import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
@@ -548,18 +548,6 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   return { snapshot, load, error, setError };
 }
 
-function ActivityHeatmap({ timestamps }: { timestamps: string[] }) {
-  const { weeks, max } = useMemo(() => activityGrid(timestamps, ACTIVITY_WEEKS), [timestamps]);
-  const level = (count: number) => count === 0 ? 0 : Math.min(4, 1 + Math.floor((count - 1) / (Math.ceil(max / 4) || 1)));
-  const total = weeks.flat().reduce((sum, day) => sum + day.count, 0);
-  return <section className="sidebar-activity" aria-label={total === 0 ? "No activity this period" : `${total} ${plural(total, "activity event", "activity events")}`}>
-    <span className="activity-head"><span className="sidebar-label">Activity</span><span>{total}</span></span>
-    <span className="activity-grid" role="img" aria-label={`${weeks.length} weeks of activity`}>
-      {weeks.flatMap((column, week) => column.map((day) => <i key={`${week}-${day.date}`} className={`activity-cell l${level(day.count)}`} data-date={day.date} data-count={day.count} title={`${day.date}: ${day.count} ${plural(day.count, "message")}`} />))}
-    </span>
-  </section>;
-}
-
 function Workspace() {
   const [threadId, setThreadId] = useState("");
   const [pageId, setPageId] = useState("");
@@ -932,7 +920,6 @@ function Workspace() {
     write(arrayMove(ids, from, to));
   };
 
-  const activityStamps = useMemo(() => snapshot.threads.flatMap((item) => item.messages.map((message) => message.timestamp)), [snapshot.threads]);
 
   return (
     <div className="app-shell" style={shellStyle}>
@@ -976,7 +963,6 @@ function Workspace() {
             </nav>
           </SortableContext>
         </DndContext>
-        <ActivityHeatmap timestamps={activityStamps} />
         <AgentRail agents={agents} active={view === "threads" ? tab : undefined} onPick={(agent) => {
           // Picking a subagent opens its tab; picking the root just goes to its thread.
           setView("threads");
@@ -1030,8 +1016,6 @@ function Workspace() {
     </div>
   );
 }
-
-const ACTIVITY_WEEKS = 20;
 
 const THREAD_PAGE = 6;
 
