@@ -671,8 +671,7 @@ int main(int argc, const char *argv[]) {
         input.readabilityHandler = ^(NSFileHandle *handle) {
             @autoreleasepool {
                 NSData *chunk = [handle availableData];
-                // EOF means Emma is gone; the helper exits with it, so the handler stays put.
-                if (!chunk.length) return;
+                if (!chunk.length) { handle.readabilityHandler = nil; exit(0); }
                 [pending appendData:chunk];
                 if (pending.length > 8192) { pending = [NSMutableData data]; return; }
                 const char *bytes = pending.bytes;
