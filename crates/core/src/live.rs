@@ -11,12 +11,11 @@ use std::{
 };
 
 use crate::{
-    AnalysisContent, ArtifactBlock, ArtifactSource, CapturedContext, Category,
-    GenerationTelemetry, KnowledgeBase, KnowledgeBaseId, KnowledgePage, KnowledgeStore,
-    MAX_TRIGGER_DEPTH, PageId, PageVersion, ResearchJob, ResearchJobId, ResearchJobStore,
-    RunTelemetry, ScheduledJob, ScheduledJobId, ScheduledJobStore, SourceUrl, StoreError, Thread,
-    ThreadId, ThreadKind, ThreadMessage, ThreadRole, ThreadStore, ThreadTrace, Timestamp,
-    elide_middle, validate_text,
+    AnalysisContent, ArtifactBlock, ArtifactSource, CapturedContext, Category, GenerationTelemetry,
+    KnowledgeBase, KnowledgeBaseId, KnowledgePage, KnowledgeStore, MAX_TRIGGER_DEPTH, PageId,
+    PageVersion, ResearchJob, ResearchJobId, ResearchJobStore, RunTelemetry, ScheduledJob,
+    ScheduledJobId, ScheduledJobStore, SourceUrl, StoreError, Thread, ThreadId, ThreadKind,
+    ThreadMessage, ThreadRole, ThreadStore, ThreadTrace, Timestamp, elide_middle, validate_text,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -91,7 +90,6 @@ pub struct ThreadAuthoringContext {
     pub text: String,
     pub categories: Vec<String>,
 }
-
 
 // Not `Eq`: an iteration's measurement is an `f64`, and two of those are not
 // equal in the reflexive sense the trait promises.
@@ -520,6 +518,7 @@ impl LiveClient {
     /// The coding harness owns the live session, its tool calls and its own
     /// history; this is the one-way sync back, so the Markdown thread stays the
     /// record of what was said even though core never drove the model.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_turn(
         &self,
         thread_id: ThreadId,
@@ -1039,7 +1038,6 @@ impl LiveClient {
             LiveError::new("Emma runtime stopped while recording the autoresearch iteration")
         })?
     }
-
 }
 
 /// One scheduled job that just came due, with its thread already created and saved.
@@ -2051,6 +2049,7 @@ impl Runtime {
     /// Appends a finished prompt and answer. The harness owns the loop that
     /// produced them; both messages land in one save so a thread is never left
     /// holding a prompt whose reply exists only in the harness.
+    #[allow(clippy::too_many_arguments)]
     fn record_turn(
         &mut self,
         thread_id: ThreadId,
@@ -2088,9 +2087,13 @@ impl Runtime {
         // Telemetry is best effort here: a harness that reports no usage leaves the
         // counts at zero rather than failing the turn, and the inspector shows a
         // dash instead of a fake rate.
-        answer.generation =
-            GenerationTelemetry::measured(output_tokens, duration_milliseconds, input_tokens, model)
-                .ok();
+        answer.generation = GenerationTelemetry::measured(
+            output_tokens,
+            duration_milliseconds,
+            input_tokens,
+            model,
+        )
+        .ok();
         thread
             .push(answer)
             .map_err(|error| LiveError::new(format!("could not append response: {error}")))?;
@@ -3031,10 +3034,7 @@ mod tests {
         assert!(context.artifacts.iter().any(|block| block.id == "summary"));
         let conversation_id = ThreadId::parse(context.thread_id.clone()).unwrap();
         let linked = runtime.knowledge.load(&page.id).unwrap();
-        assert_eq!(
-            linked.conversation_thread_id,
-            Some(conversation_id.clone())
-        );
+        assert_eq!(linked.conversation_thread_id, Some(conversation_id.clone()));
         let conversation = runtime
             .record_turn(
                 conversation_id,
@@ -3418,14 +3418,30 @@ mod tests {
         // An empty half would silently drop one side of the exchange.
         assert!(
             runtime
-                .record_turn(thread.id.clone(), "ask".into(), "  ".into(), 0, 0, 0, String::new())
+                .record_turn(
+                    thread.id.clone(),
+                    "ask".into(),
+                    "  ".into(),
+                    0,
+                    0,
+                    0,
+                    String::new()
+                )
                 .is_err()
         );
         // A long build's answer is elided, not refused: refusing wrote neither
         // half, so the run's work was on disk with nothing in the thread.
         let long = "let x = 1;\n".repeat(MAX_AGENT_MESSAGE_BYTES / 8);
         runtime
-            .record_turn(thread.id.clone(), "build a 3js game".into(), long, 0, 0, 0, String::new())
+            .record_turn(
+                thread.id.clone(),
+                "build a 3js game".into(),
+                long,
+                0,
+                0,
+                0,
+                String::new(),
+            )
             .unwrap();
         let saved = runtime.threads.load(&thread.id).unwrap();
         assert_eq!(saved.messages.len(), 4);
@@ -3541,11 +3557,9 @@ mod tests {
             .unwrap();
         // Stand in for the app: every run handed out finishes, which is what feeds
         // the loop. Bounded so a runaway chain fails the test instead of hanging it.
-        let mut finished = 0;
-        for _ in 0..16 {
+        for finished in 0..16 {
             let next = due.lock().unwrap().get(finished).cloned();
             let Some(run) = next else { break };
-            finished += 1;
             runtime
                 .finish_scheduled_job(
                     ScheduledJobId::parse(run.job_id).unwrap(),

@@ -33,6 +33,8 @@ fn knowledge_export_root() -> Option<PathBuf> {
     match env::var_os("EMMA_KNOWLEDGE_DIR") {
         Some(path) if path.is_empty() => None,
         Some(path) => Some(PathBuf::from(path)),
-        None => env::var_os("HOME").map(|home| PathBuf::from(home).join("Documents/Emma Knowledge")),
+        None => {
+            env::var_os("HOME").map(|home| PathBuf::from(home).join("Documents/Emma Knowledge"))
+        }
     }
 }

@@ -170,7 +170,12 @@ impl GenerationTelemetry {
         }
         // Clamped rather than refused: the model name is a label on the turn, and
         // losing a whole recorded turn over a cosmetic field is the worse failure.
-        let model: String = model.into().trim().chars().take(MAX_MODEL_NAME_CHARS).collect();
+        let model: String = model
+            .into()
+            .trim()
+            .chars()
+            .take(MAX_MODEL_NAME_CHARS)
+            .collect();
         validate_text("generation model", &model, false)?;
         Ok(Self {
             output_tokens,

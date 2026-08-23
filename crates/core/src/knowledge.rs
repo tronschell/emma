@@ -963,7 +963,10 @@ impl KnowledgeStore {
         // The mirror is derived and never read back, so a folder Emma may not
         // write to (macOS asks before ~/Documents) costs the copy, not the save.
         if let Err(error) = self.export_plain(page) {
-            eprintln!("emma: could not export page {} as Markdown: {error}", page.id);
+            eprintln!(
+                "emma: could not export page {} as Markdown: {error}",
+                page.id
+            );
         }
         Ok(destination)
     }

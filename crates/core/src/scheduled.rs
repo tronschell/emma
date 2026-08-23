@@ -644,10 +644,7 @@ mod tests {
             job
         );
         assert_eq!(job.source_domains, ["example.com"]);
-        assert_eq!(
-            job.next_run_at.unwrap().to_string(),
-            "2023-11-20T09:00:00Z"
-        );
+        assert_eq!(job.next_run_at.unwrap().to_string(), "2023-11-20T09:00:00Z");
         assert!(
             ScheduledJob::new(
                 "x".into(),
@@ -708,9 +705,16 @@ mod tests {
             job.start_run(now);
             assert_eq!(job.last_run_at, Some(now));
             assert_eq!(job.next_run_at, None);
-            assert_eq!(ScheduledJob::from_markdown(&job.to_markdown()).unwrap(), job);
+            assert_eq!(
+                ScheduledJob::from_markdown(&job.to_markdown()).unwrap(),
+                job
+            );
         }
-        assert!(job("manual").set_outputs("{\"digest\":\"three items\"}".into()).is_ok());
+        assert!(
+            job("manual")
+                .set_outputs("{\"digest\":\"three items\"}".into())
+                .is_ok()
+        );
         for trigger in ["after nope", "on Page Saved", "on ", "* * * * * *"] {
             assert!(validate_schedule(trigger).is_err(), "accepted {trigger}");
         }
@@ -722,7 +726,10 @@ mod tests {
         let booked = job.next_run_at;
         job.start_run(Timestamp::from_unix_seconds(1_700_000_100));
         assert_eq!(job.next_run_at, booked);
-        assert_eq!(ScheduledJob::from_markdown(&job.to_markdown()).unwrap(), job);
+        assert_eq!(
+            ScheduledJob::from_markdown(&job.to_markdown()).unwrap(),
+            job
+        );
     }
 
     #[test]
