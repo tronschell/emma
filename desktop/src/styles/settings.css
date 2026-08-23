@@ -131,6 +131,10 @@
    is --border-strong + --text-2; disabled is --border + --text-3, on both the
    buttons and the fields, so the whole page has one enabled/disabled contrast. */
 .settings-view button:disabled, .import-sources button:disabled, .connection-row button:disabled { opacity: 1; color: var(--text-3); border-color: var(--border); background: transparent; }
+/* The one button on the page that destroys something: same shape, rose outline,
+   and its natural width so it never reads as the band's primary control. */
+.settings-view .reset-data { justify-self: start; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.settings-view .reset-data:hover:not(:disabled) { color: var(--danger); background: var(--danger-surface); border-color: var(--danger); }
 
 .settings-view label.check, .import-list > label { cursor: pointer; }
 .settings-view label.check { display: flex; align-items: center; gap: var(--s-2); min-height: 24px; color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
@@ -314,6 +318,9 @@
 .settings-view .catalog-star[aria-pressed="true"] { color: var(--accent); }
 .settings-view .catalog-use { min-height: 26px; }
 .catalog-row.selected .catalog-use { opacity: 1; color: var(--accent); border-color: var(--accent); }
+/* Emma's own row has no star to give: its action takes the last column anyway, so it
+   lines up with every Use button under it rather than sitting a gap short of them. */
+.catalog-row.free-router .catalog-use { grid-column: 4; }
 /* The catalog's action band: full width, flush to the outline, closes the region. */
 .model-catalog .load-models { display: block; width: 100%; min-height: 34px; margin: 0; border: 0; border-top: 1px solid var(--border); }
 /* The one row in the catalog that jumps out of it: to the local-server form below. */

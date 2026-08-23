@@ -20,6 +20,10 @@ import type { HarnessExperiments } from "../shared/settings";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const PROTOCOL_VERSION = 1;
+/** What one of Emma's own tools may answer with. The harness truncates again on
+    its own side; this is what keeps a runaway result off the wire in the first
+    place, and it is the ceiling the MCP bridge applied before it. */
+const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 
 /**
  * How long the harness may go *silent* before Emma stops waiting on it.
@@ -150,6 +154,14 @@ export type HarnessDeps = {
   onPlan: (threadId: string, entries: unknown) => void;
   /** Resolves with the chosen ACP option id, or null to cancel the request. */
   onPermission: (ask: PermissionAsk, options: PermissionOption[], context: PermissionContext) => Promise<string | null>;
+  /**
+   * Runs one of Emma's own tools, which the harness advertises but cannot
+   * execute: they read and write the app's durable stores.
+   *
+   * Throwing is a failed tool call the model can recover from, not a broken
+   * transport — the message is what it reads.
+   */
+  onToolRequest: (threadId: string, name: string, args: Record<string, unknown>) => Promise<string>;
 };
 
 /**
@@ -492,6 +504,10 @@ export class Harness {
       await this.handlePermission(message.id, params);
       return;
     }
+    if (method === "_emma/callTool" && typeof message.id === "number") {
+      await this.handleToolRequest(message.id, params);
+      return;
+    }
     // Unknown request: answer rather than leave the harness waiting forever.
     if (typeof message.id === "number") {
       this.send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `Unsupported method ${method}` } });
@@ -651,6 +667,33 @@ export class Harness {
     });
   }
 
+  /**
+   * Runs one of Emma's own tools on the harness's behalf.
+   *
+   * A tool that refuses or throws answers with `output` text rather than a
+   * JSON-RPC error: the model recovers from the first and the harness treats the
+   * second as the channel being broken. The error path is only for a request
+   * that never named a live thread.
+   */
+  private async handleToolRequest(id: number, params: Record<string, unknown>) {
+    const threadId = this.threadsBySession.get(String(params.sessionId ?? ""));
+    const name = typeof params.name === "string" ? params.name : "";
+    const args = (params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)
+      ? params.arguments
+      : {}) as Record<string, unknown>;
+    if (!threadId || !name) {
+      this.send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown session or tool" } });
+      return;
+    }
+    let output: string;
+    try {
+      output = await this.deps.onToolRequest(threadId, name, args);
+    } catch (error) {
+      output = error instanceof Error ? error.message : String(error);
+    }
+    this.send({ jsonrpc: "2.0", id, result: { output: output.slice(0, MAX_TOOL_OUTPUT_BYTES) } });
+  }
+
   private fail(error: Error) {
     this.failure ??= error;
     for (const pending of this.pending.values()) pending.reject(this.failure);
@@ -792,13 +835,16 @@ function mcpText(blocks: unknown): string | undefined {
 /**
  * An MCP tool's answer, taken out of the envelope the harness reports it in.
  *
- * Every one of Emma's own tools reaches the harness over the MCP bridge, and
- * comes back as `{"server":…,"tool":…,"result":{"content":[…]}}` rather than as
- * the text the tool wrote. Unwrapped here, at the one place tool output is read,
- * because two things downstream want the text and not the wrapper: the
- * transcript, which was showing a line of raw JSON for every Emma tool, and the
- * `[artifact:…]` marker, which is read off the end of the first line and was
- * finding the envelope instead — so no artifact card ever drew on this path.
+ * A tool from one of the user's MCP servers comes back as
+ * `{"server":…,"tool":…,"result":{"content":[…]}}` rather than as the text the
+ * tool wrote. Unwrapped here, at the one place tool output is read, because two
+ * things downstream want the text and not the wrapper: the transcript, which
+ * was showing a line of raw JSON, and the `[artifact:…]` marker, which is read
+ * off the end of the first line and was finding the envelope instead.
+ *
+ * Emma's own tools are native now and answer as plain text, so they take the
+ * untouched path — which is also why they get all 200 of the bytes below
+ * instead of the ~90 the envelope's header used to leave them.
  *
  * Anything that is not one of these envelopes is returned untouched.
  */
@@ -820,10 +866,10 @@ export function unwrapMcpResult(text: string): string {
  * The words inside an envelope that arrived cut off mid-string.
  *
  * `toolUpdateContentText` in the harness reports a 200-byte prefix of any tool's
- * output, and the envelope's own header eats about 110 of those — so a bridged
+ * output, and the envelope's own header eats about 110 of those — so an MCP
  * tool's result is nearly always unparseable JSON, and the usual path above
  * cannot help. Without this the transcript shows a broken brace-and-quote
- * fragment for every one of Emma's tools.
+ * fragment for every call to a user's MCP server.
  *
  * ponytail: matches the harness's key order (`server` then `tool`) rather than
  * parsing; if that wire format changes this stops firing and the raw text comes

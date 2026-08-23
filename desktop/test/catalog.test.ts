@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { CatalogCache, fetchOpenRouterCatalog, type CatalogModel } from "../main/catalog";
-import { freeModels } from "../shared/settings";
+import { freeModels, freeRouterChain, FREE_ROUTER_MODELS } from "../shared/settings";
 
 const model = (id: string, free = true): CatalogModel =>
   ({ id, name: id, contextLength: 1024, inputModalities: [], free });
@@ -57,6 +57,18 @@ test("free-only routing keeps the catalog's free models and whatever is already 
   // The model in use never disappears from its own picker, free or not.
   assert.deepEqual(keys("openrouter:b/two"), ["openrouter:a/one", "openrouter:b/two"]);
   assert.deepEqual(keys("fallback"), ["fallback", "openrouter:a/one"]);
+});
+
+test("the free router sends the whole chain, in order, minus what the catalog has dropped", () => {
+  // Nothing catalogued to check against — offline, or a cache that has never landed —
+  // is the full chain rather than an empty one: OpenRouter is the judge of what answers.
+  assert.equal(freeRouterChain().split(",").length, FREE_ROUTER_MODELS.length);
+  assert.equal(freeRouterChain(), FREE_ROUTER_MODELS.join(","));
+  const listed = [FREE_ROUTER_MODELS[2], FREE_ROUTER_MODELS[0], "someone/else"];
+  // The catalog says which still exist; the chain's own order says which is tried first.
+  assert.equal(freeRouterChain(listed), `${FREE_ROUTER_MODELS[0]},${FREE_ROUTER_MODELS[2]}`);
+  // A catalog with none of them left is a stale list here, not a request with no model on it.
+  assert.equal(freeRouterChain(["someone/else"]), FREE_ROUTER_MODELS.join(","));
 });
 
 test("the OpenRouter listing is parsed, priced, and filtered to models Emma can actually use", async () => {

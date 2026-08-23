@@ -110,15 +110,22 @@ test("a turn the notch started owns its thread here too, and hands it back when 
   await settle();
 });
 
-test("a turn's tool calls are one list however many it makes, counted across the turn", () => {
-  // The shape that broke the old per-burst fold: a call, a line about it, a call.
-  const blocks: Block[] = [{ kind: "text", text: "reading" }];
-  for (const id of ["a", "b", "c", "d"]) blocks.push({ kind: "step", step: step(id, "completed") }, { kind: "text", text: `did ${id}` });
-  const grouped = groupBlocks(blocks, 0);
-  // One list holding all four, so the transcript draws one caret and not four rows…
-  assert.deepEqual(grouped.filter((block) => block.kind === "steps").map((list) => list.steps.length), [4]);
-  // …where the first call happened, rather than after the prose that followed it.
-  assert.equal(grouped.findIndex((block) => block.kind === "steps"), 1);
+test("a turn's tool calls are drawn where they happened, and a burst of them is one list", () => {
+  // A call, a line about it, a call: four lists, each under the line it followed.
+  const alternating: Block[] = [{ kind: "text", text: "reading" }];
+  for (const id of ["a", "b", "c", "d"]) alternating.push({ kind: "step", step: step(id, "completed") }, { kind: "text", text: `did ${id}` });
+  assert.deepEqual(groupBlocks(alternating, 0).map((block) => block.kind),
+    ["text", "steps", "text", "steps", "text", "steps", "text", "steps", "text"]);
+
+  // A burst with no prose in it still folds to one list, so it costs one caret.
+  const burst: Block[] = [
+    { kind: "text", text: "reading" },
+    ...["a", "b", "c"].map((id): Block => ({ kind: "step", step: step(id, "completed") })),
+    { kind: "text", text: "done" },
+  ];
+  const grouped = groupBlocks(burst, 0);
+  assert.deepEqual(grouped.map((block) => block.kind), ["text", "steps", "text"]);
+  assert.equal(grouped[1].kind === "steps" && grouped[1].steps.length, 3);
 });
 
 const said = (role: Message["role"], content: string, timestamp: string): Message =>

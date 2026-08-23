@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { externalUrl, publicUrl, runCommandRequest, trustedSender, validJpegDataUrl, validateRequest } from "./ipc";
@@ -32,7 +32,7 @@ import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, 
 import { contextBlock, mergeSkillContext } from "../shared/folders";
 import { mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
-import { defaultHarnessExperiments, defaultSettings, defaultToolSettings, defaultVerifier, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, systemPromptBlock, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { defaultHarnessExperiments, defaultSettings, defaultToolSettings, defaultVerifier, FREE_ROUTER_KEY, freeRouterChain, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, systemPromptBlock, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ToolSettings, type VerifierSettings } from "../shared/settings";
 import { applied, validateImprovements } from "../shared/improvement";
 import { frontApplicationNote, ScreenContextStore, type FrontApplication } from "../shared/screen-context";
 import { AgentRuntime, lastAssistantMessage, OWN_TOOLS, type TurnRequest } from "./agent-loop";
@@ -40,17 +40,16 @@ import { BackgroundCommands, describeTasks } from "./background";
 import { runSearch } from "./search";
 import { CliRuns } from "./cli";
 import { cliHarness, describeRuns } from "../shared/cli";
-import { setConnections, setImprovements, setSystemPrompt, systemPrompt, verifierLessons, writeHarnessPrompt } from "./system-prompt";
+import { setConnections, setImprovements, setSystemPrompt, systemPrompt, verifierLessons, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { detectConnections, isConnectionId, outdatedConnections, setUpConnection } from "./connections";
 import { Harness, describePath, failedTurn, type HarnessMcpServer, type HarnessToolCall } from "./harness";
-import { startBridge, type Bridge } from "./bridge";
 import { review } from "./verifier";
 import { advise } from "./advisor";
 import { look } from "./vision";
 import { MAX_TAGGER_TEXT_CHARS, MAX_THREAD_TAGS, tagThread } from "./tagger";
 import { runMemoryCommand } from "./memory";
 import { withThinking } from "../shared/thinking";
-import { MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolDefinitions, type ToolArgs, type ToolAvailability } from "./tools";
+import { describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolDefinitions, toolNeeds, type ToolArgs, type ToolAvailability } from "./tools";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, toolGate, type PermissionMode } from "../shared/permissions";
 import { editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 
@@ -993,7 +992,7 @@ function broadcast(channel: string, payload?: unknown) {
  * A thread is bound to a single folder: it is the working directory `emma-cli` is
  * spawned in, and the harness takes its workspace root from that cwd once at
  * startup. A second folder attached beside it would be reachable through Emma's
- * bridged tools and invisible to every tool the CLI runs itself — so there is no
+ * own tools and invisible to every tool the CLI runs itself — so there is no
  * second folder, and this is the one answer both sides read.
  */
 function threadFolder(threadId: string): string | undefined {
@@ -1165,12 +1164,6 @@ async function reportContext(turn: TurnRequest, compact: boolean): Promise<strin
       ? `${carried}, of a ${window.toLocaleString()}-token window — ${Math.round((used / window) * 100)}% of it.`
       : `${carried}. This route does not report its context window, so there is no share to give.`;
   if (!compact) return head;
-  // Emma's own loop has no manual lever: its sidecar summarises the oldest half
-  // by itself past 70% of the window and there is nothing to bring forward. Say
-  // so rather than reporting a compaction that will not happen.
-  if (!harnessEnabled()) {
-    return `${head}\n\nThis thread runs on Emma's own loop, which compacts by itself once the window is 70% full and takes no request to do it early. Nothing was changed.`;
-  }
   compactNext.add(turn.threadId);
   return `${head}\n\nCompaction is set for your next turn: everything before the most recent turn becomes one summary. This turn keeps the history it started with, so finish here — say in one line what you compacted, and stop.`;
 }
@@ -1255,23 +1248,6 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       if (!read) return `There is no CLI run called ${args.id}. ${describeRuns(clis.list())}`;
       const state = read.run.status === "running" ? `still working on turn ${read.run.turns}` : `idle after ${read.run.turns} ${read.run.turns === 1 ? "turn" : "turns"} (exit ${read.run.exitCode ?? "?"})`;
       return `${args.id} is ${state}.\n\n${read.output.trim() || "(no output yet)"}`;
-    }
-    case "connect_folder": {
-      if (!mainWindow || mainWindow.isDestroyed()) throw new Error("There is no window to open the picker over. Ask the user to open Emma.");
-      // The one question that never goes through `ask`: it is ungated, so the
-      // picker is the whole dialog, and a sheet behind another app is invisible.
-      needsYou("Emma needs a folder", args.reason ?? "Emma needs a folder to work in.");
-      const choice = await dialog.showOpenDialog(mainWindow, {
-        title: "Connect a folder",
-        message: args.reason ?? "Emma needs a folder to work in.",
-        buttonLabel: "Connect",
-        properties: ["openDirectory", "createDirectory"],
-      });
-      if (choice.canceled || !choice.filePaths[0]) return "The user closed the picker without choosing a folder. Nothing is connected, so ask them where the work should go instead of guessing a path.";
-      const chosen = realpathSync(choice.filePaths[0]);
-      const grant = folders!.add(chosen).find((folder) => folder.path === chosen)!;
-      attachFolder(turn.threadId, grant.id);
-      return `Connected "${grant.name}" and opened it as this thread's project. Every path is relative to its root; start with list_files.`;
     }
     case "computer": {
       await ensureComputerRun(turn.threadId, turn.content);
@@ -1595,27 +1571,10 @@ const MAX_COMMAND_OUTPUT = 16 * 1024;
 const MAX_CLI_VIEW_CHARS = 128 * 1024;
 const MAX_COMMAND_MS = 120_000;
 
-/**
- * The forked coding harness. This is the agent loop.
- *
- * It owns tool execution, permissions, hooks, skills and compaction; Emma's own
- * tools reach it over the MCP bridge, so the trade that kept this behind a flag
- * — the fork's loop or Emma's tools, not both — no longer exists.
- *
- * `EMMA_HARNESS=0` falls back to Emma's own loop. That is a way out of a bad
- * build, not a supported second mode: the old loop has no compaction of its own
- * and its parity with this one is not tested.
- * ponytail: env escape hatch, delete it once the fork has run in the wild.
- */
-function harnessEnabled() {
-  return process.env.EMMA_HARNESS !== "0" && existsSync(binary("emma-cli"));
-}
-
 /** One harness per workspace, reused across that workspace's threads. */
-function harnessClient(cwd: string): Harness | undefined {
+function harnessClient(cwd: string): Harness {
   const running = harnesses.get(cwd);
-  if (running) {
-    if (!running.running) { harnesses.delete(cwd); return undefined; }
+  if (running?.running) {
     // Re-inserted so map order stays least-recently-used, which is what `reapHarnesses`
     // reads: without this a long-lived project harness ages out behind a burst of
     // scratch ones it is still the most used of.
@@ -1623,8 +1582,13 @@ function harnessClient(cwd: string): Harness | undefined {
     harnesses.set(cwd, running);
     return running;
   }
-  if (!harnessEnabled()) return undefined;
+  if (running) harnesses.delete(cwd);
   const binaryPath = binary("emma-cli");
+  // This is the only agent loop there is now, so a missing binary is a broken
+  // install rather than a reason to take another path. It used to fall through to
+  // a second loop in `agent-loop.ts`, which is what let a bad build look like a
+  // working Emma that quietly behaved differently.
+  if (!existsSync(binaryPath)) throw new Error(`Emma could not find its agent at ${binaryPath}. The install is incomplete — reinstall Emma, or run npm run build:harness from the repo.`);
   const client = new Harness({
     binaryPath,
     cwd,
@@ -1705,7 +1669,7 @@ function harnessClient(cwd: string): Harness | undefined {
           durationMilliseconds: String(Date.now() - child.startedAt),
           outputTokens: "0",
           inputTokens: "0",
-          model: threadModel(threadId),
+          model: modelName(threadModel(threadId)),
         },
       }).catch((error: unknown) => console.error("Emma: a subagent's transcript could not be recorded", error));
     },
@@ -1741,6 +1705,7 @@ function harnessClient(cwd: string): Harness | undefined {
       // a "no"; cancelling would end the run and lose everything before it.
       return allowed ? pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null : deny();
     },
+    onToolRequest: (threadId, name, args) => runEmmaTool(threadId, name, args),
     mcpServers: (threadId) => harnessMcpServers(threadId),
   });
   harnesses.set(cwd, client);
@@ -1824,74 +1789,129 @@ function syncHarnessSkills() {
     .catch((error) => console.warn("Emma could not mirror skills to the harness:", error instanceof Error ? error.message : error));
 }
 
-/**
- * The tools the harness ships its own version of, so the bridge does not
- * advertise a second one beside it. Everything else Emma has is bridged.
- */
-const HARNESS_OWNS_TOOL = new Set(["read_file", "list_files", "ripgrep", "write_file", "bash", "background", "connect_folder"]);
-
-/** The turn a bridged call belongs to, since `executeTool` runs against one. */
+/** The turn a delegated call belongs to, since `executeTool` runs against one. */
 const harnessTurns = new Map<string, TurnRequest>();
 
 /**
- * Emma's own tools, served to the harness.
+ * Tools the harness had to name differently, mapped back to what Emma calls them.
  *
- * The harness runs its own loop and knows nothing of Emma's threads, knowledge
- * base, scheduled tasks or configuration, and MCP is the only way it takes a
- * tool it did not ship. One server, started on first use and reused after.
+ * Only one so far. `vision` is a name the harness needs for itself: its gateway
+ * forces a tool of that exact name when the model cannot see an image the user
+ * attached, against a schema of its own. Emma's image tool is advertised as
+ * `look_at_image` to leave it alone, and is translated here rather than renamed
+ * throughout — `GATES`, the Settings → Tools switches and `executeTool` all key
+ * on `vision`, and changing that key would quietly turn the switch back on for
+ * everyone who had switched it off.
  */
-let bridge: Bridge | undefined;
-function harnessBridge() {
-  bridge ??= startBridge({
-    tools: (threadId) => toolDefinitions(harnessTurns.get(threadId)?.mode ?? DEFAULT_PERMISSION_MODE, {
-      folders: threadFolderIds(threadId).length > 0,
-      computer: process.platform === "darwin",
-      mcp: capabilities!.connected,
-      // The harness owns delegation through its own `subagent`, so nothing
-      // bridged here is ever running inside one.
-      canSpawn: true,
-    }, toolSettings.disabledTools).filter((tool) => !HARNESS_OWNS_TOOL.has(tool.name)),
-    call: async (threadId, name, args) => {
-      const turn = harnessTurns.get(threadId);
-      if (!turn) throw new Error("Emma's tools are only available while a turn is running.");
-      // The same gate the other loop applies, because a filtered list is not an
-      // enforced one: the harness caches its catalog and the model can guess.
-      if (toolGate(turn.mode, name, toolSettings.disabledTools) === "hidden") {
-        throw new Error(`${name} is not available in ${turn.mode} mode, or is switched off in Settings → Tools.`);
-      }
-      const parsed = parseToolArgs(name, JSON.stringify(args));
-      // The loop answers its own thread and agent tools — `threads`, `read_trace`,
-      // `agents`, `advisor` — because the record they read is the one it writes.
-      // Sending them to `executeTool` would advertise them here and then fall off
-      // the end of its switch. Its own list, so the two can never drift.
-      return OWN_TOOLS.has(name)
-        ? await agents!.runThreadTool(parsed, turn)
-        : await executeTool(parsed as ToolArgs, turn);
-    },
-  });
-  return bridge;
+const HARNESS_TOOL_NAMES: Record<string, string> = { look_at_image: "vision" };
+
+/**
+ * Runs one of Emma's own tools for the harness.
+ *
+ * The harness advertises these natively now — it used to reach them over an MCP
+ * server on localhost, because MCP was the only door it left open for a tool it
+ * did not ship. What did not change is where they run: they read and write
+ * Emma's durable stores, its threads and its grants, so the harness can only ask.
+ *
+ * Availability is answered here rather than by leaving a tool out of the
+ * catalog. A native tool is registered for the whole process, so "no folder is
+ * connected" has to come back as a refusal the model can read instead of an
+ * absence it cannot see.
+ */
+async function runEmmaTool(threadId: string, wireName: string, args: Record<string, unknown>): Promise<string> {
+  const name = HARNESS_TOOL_NAMES[wireName] ?? wireName;
+  const turn = harnessTurns.get(threadId);
+  if (!turn) throw new Error("Emma's tools are only available while a turn is running.");
+  // The same gate the other loop applies, because a filtered list is not an
+  // enforced one: the harness caches its catalog and the model can guess.
+  // Refusals name the tool the model called, not the one Emma gates internally:
+  // `look_at_image` is `vision` on this side of the translation, and a refusal
+  // naming a tool it was never offered reads as a different tool being blocked.
+  const gate = toolGate(turn.mode, name, toolSettings.disabledTools);
+  if (gate === "hidden") {
+    throw new Error(`${wireName} is not available in ${turn.mode} mode, or is switched off in Settings → Tools.`);
+  }
+  const unavailable = whyUnavailable(threadId, name, wireName);
+  if (unavailable) throw new Error(unavailable);
+  const parsed = parseToolArgs(name, JSON.stringify(args));
+  // Emma's tools are registered with the harness as needing no approval, on the
+  // grounds that Emma gates them itself — this is where it does. Seven of them
+  // land on `ask`, and they reach the same dialog and the same Auto verifier as
+  // the harness's own `bash` and `write_file`, which ask over ACP instead. The
+  // raw call is the detail, because that is what the harness's door shows too.
+  if (gate === "ask") {
+    const allowed = await agents!.question({
+      threadId,
+      tool: name,
+      summary: describeToolCall(parsed),
+      detail: JSON.stringify(args, null, 2).slice(0, 4096),
+    });
+    if (!allowed) throw new Error(`The user did not allow ${wireName} to run. Do not try it again this turn; say what you needed it for instead.`);
+  }
+  // The loop answers its own thread and agent tools — `threads`, `read_trace`,
+  // `agents`, `advisor` — because the record they read is the one it writes.
+  // Sending them to `executeTool` would advertise them here and then fall off
+  // the end of its switch. Its own list, so the two can never drift.
+  return OWN_TOOLS.has(name)
+    ? await agents!.runThreadTool(parsed, turn)
+    : await executeTool(parsed as ToolArgs, turn);
 }
 
-/** The user's configured MCP servers, plus Emma's own tools. */
-async function harnessMcpServers(threadId: string): Promise<HarnessMcpServer[]> {
-  const emma = harnessBridge();
-  const own: HarnessMcpServer = {
-    type: "http",
-    name: "emma",
-    url: await emma.url(threadId),
-    headers: [{ name: "Authorization", value: `Bearer ${emma.token}` }],
-  };
+/**
+ * Why a tool the harness advertises cannot run this turn, in words for the model.
+ *
+ * These were the `needs` column in `toolDefinitions`, which decided whether a
+ * tool was listed at all. Native tools are listed always, so each condition has
+ * to be said out loud instead. Of Emma's own tools only three are gated this
+ * way — `cli`, `computer` and `mcp_tool`; the rest of the `folders` column is
+ * the harness's own file tools, which enforce their workspace root themselves.
+ */
+function whyUnavailable(threadId: string, name: string, called = name): string | undefined {
+  const needs = toolNeeds(name);
+  if (needs === "folders" && threadFolderIds(threadId).length === 0) {
+    return `${called} needs a connected folder. Ask the user to connect one — the folder button in Emma's sidebar opens the picker.`;
+  }
+  if (needs === "computer" && process.platform !== "darwin") {
+    return `${called} controls this Mac, and this is not a Mac.`;
+  }
+  if (needs === "mcp" && !capabilities!.connected) {
+    return `${called} needs an imported MCP server. Use install_mcp to add one first.`;
+  }
+  return undefined;
+}
+
+/** The user's configured MCP servers. Emma's own tools are registered natively. */
+async function harnessMcpServers(_threadId: string): Promise<HarnessMcpServer[]> {
   try {
-    return [own, ...await readHarnessMcpServers(app.getPath("userData"))];
+    return await readHarnessMcpServers(app.getPath("userData"));
   } catch {
     // A broken config costs the user their servers, not their thread.
-    return [own];
+    return [];
   }
 }
 
-/** A model's real context window, so the harness stops guessing at it. */
+/**
+ * The route a turn takes, from the key the picker is on.
+ *
+ * Emma's free router is not a model, so it expands here into the chain the
+ * transport turns into OpenRouter's `models` fallback array. A local profile
+ * and the deterministic fallback name no route the harness can take — its
+ * gateway is Emma's provider endpoint, not a loopback server — so those leave
+ * it on its own default rather than sending it somewhere it cannot reach.
+ */
+function harnessModel(key: string | undefined) {
+  if (key === FREE_ROUTER_KEY) return freeRouterChain(modelCatalog?.ids());
+  return key?.startsWith("openrouter:") ? key.slice("openrouter:".length) : undefined;
+}
+
+/** The same key as something a transcript can show: the model's ID, not Emma's routing prefix. */
+function modelName(key: string | undefined) {
+  return key?.startsWith("openrouter:") ? key.slice("openrouter:".length) : key ?? "";
+}
+
+/** A model's real context window, so the harness stops guessing at it. The chain's is its first link's. */
 function contextWindowFor(model: string | undefined) {
-  return modelCatalog?.contextLength(model);
+  return modelCatalog?.contextLength(model?.split(",")[0]);
 }
 
 /**
@@ -1935,14 +1955,15 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
   // The harness owns the loop, so nothing here calls `agents.run`. Without this
   // there is no Run record and every live number — deltas, tool calls, rate —
   // lands nowhere.
-  agents!.adopt(turn);
+  agents!.adopt({ ...turn, model: modelName(turn.model) });
+  const route = harnessModel(turn.model);
   try {
-    const { stopReason, usage } = await client.prompt(turn.threadId, cwd, turn.content, turn.mode, turn.model, {
+    const { stopReason, usage } = await client.prompt(turn.threadId, cwd, turn.content, turn.mode, route, {
       // Skills, attached folders, files and knowledge all arrive on this one
       // field. It was being dropped entirely: the chip cleared, the attachment
       // was marked delivered, and the instructions never left this process.
       skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
-      contextWindow: contextWindowFor(turn.model),
+      contextWindow: contextWindowFor(route),
       experiments: harnessExperiments,
       // Asked for by the `context` tool on an earlier turn. Consumed here, at
       // the one point the harness will take it: between turns, with the session
@@ -1973,7 +1994,10 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
         inputTokens: String(usage.inputTokens),
         // Recorded per turn, not read off the picker at render time: the picker
         // moves, and a thread half answered by another model has to say so.
-        model: turn.model ?? "",
+        // ponytail: on the free router this records the chain, not the link that
+        // answered — OpenRouter names it in the response, the harness does not
+        // pass it back. Surface it once the ACP result carries the served model.
+        model: modelName(turn.model),
       },
     });
   } catch (error) {
@@ -2023,14 +2047,12 @@ async function driveTurn(turn: TurnRequest) {
   // here, so this only ever fills a top-level run's.
   turn.subagent ??= threadSubagent(turn.threadId);
   try {
-    // Resolved before the client so a disabled harness never creates a scratch
-    // directory for a turn Emma's own loop is about to run.
-    const cwd = harnessEnabled() ? harnessCwd(turn.threadId) : undefined;
-    // The harness reads its standing instructions from a file, Emma's own loop takes
-    // them as skill context; both are the user's Settings text, written before the run.
-    if (cwd) writeHarnessPrompt(path.join(app.getPath("userData"), "harness"));
-    const client = cwd ? harnessClient(cwd) : undefined;
-    return client && cwd ? await runOnHarness(client, cwd, turn) : await agents!.run(turn);
+    const cwd = harnessCwd(turn.threadId);
+    // The harness reads its standing instructions from a file — the user's
+    // Settings text, written before the run rather than carried into it. Only
+    // the Agent page's trial arm rides the turn, because it is decided per turn.
+    writeHarnessPrompt(path.join(app.getPath("userData"), "harness"));
+    return await runOnHarness(harnessClient(cwd), cwd, withTrialArm(turn));
   } finally {
     if (!agents!.busy) {
       computerRuntime?.abort("finished");
@@ -2484,15 +2506,6 @@ if (primaryInstance) app.whenReady().then(() => {
   computerRuntime = new ComputerUseRuntime(nativeHelper());
   agents = new AgentRuntime({
     request: (method, params) => host!.request({ method, params }),
-    execute: executeTool,
-    available: (threadId, depth) => ({
-      folders: threadFolderIds(threadId).length > 0,
-      computer: process.platform === "darwin",
-      // An importable server is not a usable one: the tool only works once the user
-      // has reviewed and connected a session, so that is what makes it offerable.
-      mcp: capabilities!.connected,
-      canSpawn: depth === 0,
-    }) satisfies ToolAvailability,
     ask: (request: PermissionAsk) => {
       // Only the main window can answer, so a run started from the overlay raises it.
       if (!mainWindow || mainWindow.isDestroyed()) { agents!.answer(request.id, false); return; }
@@ -2508,11 +2521,6 @@ if (primaryInstance) app.whenReady().then(() => {
       return review(lessons ? { ...verifier, system: `${verifier.system}\n\n${lessons}` } : verifier, request);
     },
     advise: (transcript) => advise(toolSettings.advisor, transcript),
-    disabledTools: () => toolSettings.disabledTools,
-    screenshot: async () => {
-      if (!computerRuntime!.active) return undefined;
-      return (await computerRuntime!.screenshot()).image;
-    },
     // A thread the loop spawned takes the same door every other surface takes,
     // so it runs on the harness whenever Emma is running on the harness. Its
     // folders are the owner's: a thread minted a moment ago has none of its
@@ -2925,6 +2933,18 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:setup-status", (event) => {
     mainWindowSender(event);
     return setupStatus();
+  });
+  /* Start fresh: the host's own root — threads, knowledge, scheduled and research —
+     and userData, which is where credentials, folders, artifacts, plans, harness
+     state and the renderer's storage all live. The Markdown mirror in Documents is
+     the user's own folder, so it stays; nothing reads it back in. */
+  ipcMain.handle("emma:reset-data", (event) => {
+    mainWindowSender(event);
+    host?.close();
+    host = undefined;
+    for (const root of [process.env.EMMA_DATA_DIR || path.join(homedir(), "Library/Application Support/Emma"), app.getPath("userData")]) rmSync(root, { recursive: true, force: true });
+    app.relaunch();
+    app.exit(0);
   });
   // macOS grants none of these from code: the walkthrough explains each one and this
   // opens the exact pane it is granted in. Accessibility gets its own system prompt

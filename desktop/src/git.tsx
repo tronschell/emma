@@ -2,12 +2,13 @@
    the last commit, whichever loop wrote it. The Changes tab only knows what Emma's
    own write_file did; git knows what the coding harness and a bash one-liner did too.
    The same panel draws twice: narrow in the inspector rail, and full-width in its own
-   tab, where the per-file line cap comes off and each file can be handed to an editor. */
+   tab, where the per-file line cap comes off. Either way each file can be handed to
+   an editor. */
 
 import { useEffect, useMemo, useState } from "react";
 import { MAX_DIFF_LINES, parseDiff, type GitSnapshot } from "../shared/git";
-import type { EditorApp } from "../shared/folders";
 import { ChangeCount } from "./agents";
+import { OpenIn } from "./editors";
 import { plural } from "./activity";
 
 /* The mark beside each path. Every file in assets/filetypes is either a Simple
@@ -70,24 +71,9 @@ export function useGit(folderId: string | undefined, sending: boolean): GitSnaps
   return folderId ? snapshot : null;
 }
 
-/** Asked for once, and only by the full-width view — the rail has no room for the row. */
-function useEditors(enabled: boolean): EditorApp[] {
-  const [editors, setEditors] = useState<EditorApp[]>([]);
-  useEffect(() => {
-    if (!enabled) return;
-    let active = true;
-    void window.emma.listEditors()
-      .then((value) => { if (active) setEditors(value); })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, [enabled]);
-  return editors;
-}
-
 export function GitPanel({ snapshot, folderId, full, onOpen }: { snapshot: GitSnapshot; folderId?: string; full?: boolean; onOpen?: () => void }) {
   // No cap in the tab: the whole point of opening it is the diff the rail cut off.
   const files = useMemo(() => parseDiff(snapshot.diff, full ? Infinity : MAX_DIFF_LINES), [snapshot.diff, full]);
-  const editors = useEditors(!!full && !!folderId);
   const total = files.reduce((sum, file) => ({ added: sum.added + file.added, removed: sum.removed + file.removed }), { added: 0, removed: 0 });
   return <div className={`git-panel ${full ? "git-page" : ""}`}>
     <section className="git-head">
@@ -103,11 +89,7 @@ export function GitPanel({ snapshot, folderId, full, onOpen }: { snapshot: GitSn
         <FileMark path={file.path} />
         <span className="git-path">{file.path}</span>
         <ChangeCount stat={file} />
-        {folderId && editors.length > 0 && <span className="git-editors">{editors.map((editor) => <button
-          type="button" key={editor.id} title={`Open ${file.path} in ${editor.label}`} aria-label={`Open ${file.path} in ${editor.label}`}
-          onClick={(event) => { event.preventDefault(); void window.emma.openInEditor({ folderId, path: file.path, editorId: editor.id }).catch(() => undefined); }}>
-          {editor.icon ? <img src={editor.icon} alt="" /> : <b>{editor.label.slice(0, 1)}</b>}
-        </button>)}</span>}
+        {folderId && <OpenIn folderId={folderId} path={file.path} />}
       </summary>
       <pre className="diff">{file.lines.map((line, index) => <span key={index}
         className={line.kind === "+" ? "added" : line.kind === "-" ? "removed" : line.kind === "@" ? "hunk" : undefined}>{line.kind === "@" ? "" : line.kind}{line.text}{"\n"}</span>)}

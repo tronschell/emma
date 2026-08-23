@@ -127,6 +127,11 @@ pub fn streamGatewayCompletion(
     errdefer if (provider_state_json) |owned| alloc.free(owned);
     const err_body = if (result.err_body) |body| try alloc.dupe(u8, body) else null;
     errdefer if (err_body) |owned| alloc.free(owned);
+    // Billing carries a model name the provider owns, and `result.deinit` frees
+    // it on the way out of this function, so the caller's copy needs its own.
+    var billing = result.completion.billing;
+    if (billing) |*carried| carried.model = try alloc.dupe(u8, carried.model);
+    errdefer if (billing) |carried| alloc.free(@constCast(carried.model));
 
     const status = result.status;
     const finish_reason = result.completion.finish_reason;
@@ -141,6 +146,7 @@ pub fn streamGatewayCompletion(
             .content = content,
             .tool_calls = tool_calls,
             .generation_id = generation_id,
+            .billing = billing,
             .generation_metadata_invalid = generation_metadata_invalid,
             .delivery_ambiguous = delivery_ambiguous,
             .provider_result_identity_failure = provider_result_identity_failure,

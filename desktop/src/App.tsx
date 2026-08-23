@@ -5,7 +5,7 @@ import { PromptField, TriggerPicker, useTaskCommands, WorkflowGraph } from "./sc
 import { activityDays, plural } from "./activity";
 import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
-import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
+import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
 import { defaultPaneLayout, validatePaneLayout, type PaneLayout } from "./layout";
 import { hasPersistedPrompt } from "./drafts";
@@ -29,6 +29,7 @@ import { ARTIFACT_LABELS, artifactWritten, type Artifact, type ArtifactMeta } fr
 import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolders, threadMode, threadTags, threadUses, toolCommands, UNFILED_CATEGORY } from "./context";
 import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeMenu, ModePicker, ModeTrigger, PermissionPrompt, TabStrip, ThreadCard, useAgents, type AgentTab } from "./agents";
 import { FileMark, GitPanel, useGit } from "./git";
+import { OpenIn } from "./editors";
 import { worktreeName, type GitSnapshot } from "../shared/git";
 import { BrandIcon, ClipIcon, InfoDot, ToolIcon, TrashIcon } from "./icons";
 import { syncImprovements } from "./improvements";
@@ -152,12 +153,8 @@ function Turn({ item, blocks, index }: { item: Message; blocks?: Block[]; index?
 /**
  * A turn in the order it happened, rather than all of its words followed by all of
  * its tool calls. Consecutive calls fold into one list, so a burst of them reads as
- * a block of work and not as a stack of one-row lists.
- *
- * Three rows of them, for the whole turn. The budget is spent across the turn and
- * not per burst, because a turn is normally a call, a line about it, another call —
- * so per-burst every group is one row long, nothing ever reaches the fold, and the
- * transcript is the wall of tool calls the fold exists to stop.
+ * a block of work and not as a stack of one-row lists — and a call made after a line
+ * of narration opens its own list under that line, because that is where it happened.
  */
 function Blocks({ blocks }: { blocks: Block[] }) {
   // Reasoning arrives on its own channel here, and inline as <think> in the text;
@@ -342,6 +339,8 @@ function useArtifactCount() {
 const LAYOUT_KEY = "emma.layout.v2";
 const IMPORTS_SEEN_KEY = "emma.importsSeen.v1";
 const SETUP_SEEN_KEY = "emma.setupSeen.v1";
+/** The host calls that sit behind a model until it has written a whole document. */
+const SLOW_METHODS = new Set(["analyzePage", "chatAboutPage", "revisePageDocument"]);
 const readLayout = () => {
   try { return validatePaneLayout(JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null"), window.innerWidth); }
   catch { return defaultPaneLayout; }
@@ -715,9 +714,16 @@ function Workspace() {
   };
 
   const act = async (method: string, params: Record<string, string> = {}) => {
-    if (actionInFlight.current) { setError("Wait for the current action to finish, then try again."); return undefined; }
-    actionInFlight.current = true;
-    setBusy(true);
+    // A call that waits on a model runs for minutes, and `busy` disables the whole
+    // window — the nav, every view, every thread. Taking the app-wide lock for one
+    // froze Emma behind a page that was still building. These keep their pending
+    // state where they are shown instead, so the rest of the app stays live.
+    const holds = !SLOW_METHODS.has(method);
+    if (holds) {
+      if (actionInFlight.current) { setError("Wait for the current action to finish, then try again."); return undefined; }
+      actionInFlight.current = true;
+      setBusy(true);
+    }
     setError("");
     try {
       const result = await window.emma.request<unknown>(method, params);
@@ -726,8 +732,10 @@ function Workspace() {
       await load();
       setError(reasonText(reason));
     } finally {
-      actionInFlight.current = false;
-      setBusy(false);
+      if (holds) {
+        actionInFlight.current = false;
+        setBusy(false);
+      }
     }
   };
 
@@ -745,6 +753,12 @@ function Workspace() {
         return;
       }
       try {
+        // Emma's own key, not a catalogued model: it re-selects the way the picker does,
+        // and throws into the reset below when nothing in the chain is listed any more.
+        if (settings.selectedModel === FREE_ROUTER_KEY) {
+          await selectModelKey(settings, FREE_ROUTER_KEY, (method, params) => window.emma.request(method, params));
+          return;
+        }
         if (settings.selectedModel.startsWith("local:")) {
           const profile = settings.localModels.find((item) => item.id === settings.selectedModel.slice("local:".length));
           if (!profile) throw new Error("The saved local model profile is missing");
@@ -860,7 +874,7 @@ function Workspace() {
       </aside>
       </Region>
       <main id="content" className="content">
-        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelLabel={modelLabel} modelTag={modelTag} modelBrand={modelBrand} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} selected={page?.id} onSelect={setPageId} openThread={openThread} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView snapshot={snapshot} page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
+        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={settings.selectedModel} modelLabel={modelLabel} modelTag={modelTag} modelBrand={modelBrand} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} layout={layout} pane={pane} /> : view === "knowledge" ? <PageView key={page?.id} page={page} snapshot={snapshot} act={act} busy={uiBusy} selected={page?.id} onSelect={setPageId} openThread={openThread} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView snapshot={snapshot} page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
       {/* The tag field is the whole of manual filing, and the only way back from a
@@ -1539,7 +1553,7 @@ function TagPicker({ threadId }: { threadId: string }) {
   </div>;
 }
 
-function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, onSendingChange, onModelChanged, onManageModels, onManageImports, modelLabel, modelTag, modelBrand, defaultMode, contextTokens, contextPages, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[] } & PaneProps) {
+function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, defaultMode, contextTokens, contextPages, layout, pane }: { thread?: Thread; snapshot: Snapshot; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[] } & PaneProps) {
   // ThreadView is keyed by thread id, so a thread opened from the Artifacts page
   // mounts this fresh and the seeded question is what the composer starts with.
   // Read here and cleared in the effect, never taken in the initializer, which
@@ -1671,8 +1685,10 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     if (!threadId) return;
     setThreadFolders(threadId, folderIds);
     setThreadMode(threadId, mode);
-    void window.emma.setThreadContext({ threadId, folderIds, mode, model: modelLabel }).catch(() => undefined);
-  }, [folderIds, mode, modelLabel, threadId]);
+    // The key, not the name on the button: main routes the turn off this, and a
+    // model named by its last path segment is not a route anything can take.
+    void window.emma.setThreadContext({ threadId, folderIds, mode, model: modelKey }).catch(() => undefined);
+  }, [folderIds, mode, modelKey, threadId]);
   // Re-listed when a turn ends too: a turn that creates files or folders would otherwise
   // leave "@" offering the tree as it looked before the agent touched it.
   useEffect(() => {
@@ -1937,7 +1953,10 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
           if (!named || named === thread.title) { event.currentTarget.value = threadLabel(thread); return; }
           void act("renameThread", { threadId: thread.id, title: named }).then(reload);
         }}
-      /><TagPicker threadId={thread.id} /><div className="thread-actions"><button className="agent-button" onClick={() => setAgentOpen(true)}>Agent</button></div></header>
+      /><TagPicker threadId={thread.id} /><div className="thread-actions">{/* Only once this thread has actually touched code: with a clean tree the row
+          would be three app icons offering to open nothing in particular. */}
+        {folderIds[0] && (!!git?.diff.trim() || changes.length > 0) && <OpenIn folderId={folderIds[0]} label />}
+        <button className="agent-button" onClick={() => setAgentOpen(true)}>Agent</button></div></header>
       <div className="transcript-wrap">
       <TranscriptRail messages={thread.messages} scroller={transcript} />
       <div className="transcript" ref={transcript} onScroll={transcriptScroll}>
@@ -2080,11 +2099,11 @@ function ImageCarousel({ blocks }: { blocks: ArtifactBlock[] }) {
  * label and tag the site had — so it is shown as the clip it is: the pictures it came
  * with, the text folded away, and the one button that turns it into a page.
  */
-function CapturedClip({ blocks, busy, onBuild }: { blocks: ArtifactBlock[]; busy: boolean; onBuild: () => void }) {
+function CapturedClip({ blocks, busy, building, onBuild }: { blocks: ArtifactBlock[]; busy: boolean; building: boolean; onBuild: () => void }) {
   const images = blocks.filter((block) => block.type === "image");
   const clipped = (blocks.find((block) => block.id === "body") ?? blocks.find((block) => block.type !== "image"))?.fallback ?? "";
-  return <section className="page-clip">
-    <header><span><i />Raw clip</span><button type="button" className="dialog-primary" disabled={busy} onClick={onBuild}>Build document</button></header>
+  return <section className="page-clip" data-building={building || undefined} aria-busy={building}>
+    <header><span><i />{building ? "Building document…" : "Raw clip"}</span><button type="button" className="dialog-primary" disabled={busy} onClick={onBuild}>{building ? "Building…" : "Build document"}</button></header>
     {images.length > 0 && <ImageCarousel blocks={images} />}
     <details><summary>What was clipped · {clipped.length.toLocaleString()} characters</summary><pre>{clipped}</pre></details>
   </section>;
@@ -2190,23 +2209,30 @@ function PageVersions({ page, act, busy, onRestored }: { page: KnowledgePage; ac
 
 function PageConversation({ page, snapshot, act, busy, openThread, onProposal }: { page: KnowledgePage; snapshot: Snapshot; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean; openThread: (id: string) => void; onProposal: (blocks: ArtifactBlock[]) => void }) {
   const [draft, setDraft] = useState("");
+  // Held here for the same reason the build is: these wait on a model, and the
+  // app-wide lock is not theirs to take.
+  const [sending, setSending] = useState(false);
+  const pending = busy || sending;
   const conversation = snapshot.threads.find((item) => item.id === page.conversationThreadId);
   const send = async (method: "chatAboutPage" | "revisePageDocument") => {
     const instruction = draft.trim();
-    if (busy || !instruction) return;
-    const result = await act(method, method === "chatAboutPage" ? { pageId: page.id, content: instruction } : { pageId: page.id, instruction });
-    if (result === undefined) return;
-    setDraft("");
-    if (method === "revisePageDocument") onProposal(result as ArtifactBlock[]);
+    if (pending || !instruction) return;
+    setSending(true);
+    try {
+      const result = await act(method, method === "chatAboutPage" ? { pageId: page.id, content: instruction } : { pageId: page.id, instruction });
+      if (result === undefined) return;
+      setDraft("");
+      if (method === "revisePageDocument") onProposal(result as ArtifactBlock[]);
+    } finally { setSending(false); }
   };
   return <section className="page-chat">
-    <header><span>Document conversation</span>{conversation && <button type="button" disabled={busy} onClick={() => openThread(conversation.id)}>Open in threads</button>}</header>
+    <header><span>Document conversation</span>{conversation && <button type="button" disabled={pending} onClick={() => openThread(conversation.id)}>Open in threads</button>}</header>
     <div className="page-chat-log">
       {conversation?.messages.map((message, index) => <p key={index} className={`chat-${message.role}`}><b>{message.role}</b>{message.content}</p>)}
       {!conversation?.messages.length && <small>Ask about this document, or describe a change and Emma will propose a revision you approve.</small>}
     </div>
-    <label><span className="sr-only">Message about this document</span><textarea value={draft} disabled={busy} maxLength={16_000} rows={3} placeholder="Ask about this document, or describe a change…" onChange={(event) => setDraft(event.target.value)} /></label>
-    <div className="page-chat-actions"><button type="button" disabled={busy || !draft.trim()} onClick={() => void send("chatAboutPage")}>Send</button><button type="button" disabled={busy || !draft.trim()} onClick={() => void send("revisePageDocument")}>Propose revision</button></div>
+    <label><span className="sr-only">Message about this document</span><textarea value={draft} disabled={pending} maxLength={16_000} rows={3} placeholder="Ask about this document, or describe a change…" onChange={(event) => setDraft(event.target.value)} /></label>
+    <div className="page-chat-actions"><button type="button" disabled={pending || !draft.trim()} onClick={() => void send("chatAboutPage")}>{sending ? "Working…" : "Send"}</button><button type="button" disabled={pending || !draft.trim()} onClick={() => void send("revisePageDocument")}>Propose revision</button></div>
   </section>;
 }
 
@@ -2220,6 +2246,8 @@ function PageEditor({ page, snapshot, act, busy, openThread, onBack }: { page: K
   // Held locally so building the document changes this pane at once, rather than
   // waiting for the board's next snapshot to say the page is no longer a clip.
   const [model, setModel] = useState(page.telemetry.model);
+  const [building, setBuilding] = useState(false);
+  const pending = busy || building;
   const clip = model === CAPTURE_MODEL;
   const sourceUrl = externalArtifactUrl(page.context.sourceUrl);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -2234,25 +2262,31 @@ function PageEditor({ page, snapshot, act, busy, openThread, onBack }: { page: K
     return () => removeEventListener("pointerdown", outside);
   }, [closeInfo, infoOpen]);
   // Turns a raw capture into a document — Emma files it and writes the blocks.
+  // Minutes of model, so the wait is held here rather than app-wide: this pane
+  // says it is building and the rest of Emma stays usable meanwhile.
   const analyze = async () => {
-    const next = await act("analyzePage", { pageId: page.id }) as KnowledgePage | undefined;
-    if (!next) return;
-    setTitle(next.title);
-    setCategory(next.category);
-    setBlocks(next.artifacts ?? []);
-    setModel(next.telemetry.model);
-    setProposal(null);
-    setEditing(false);
+    if (pending) return;
+    setBuilding(true);
+    try {
+      const next = await act("analyzePage", { pageId: page.id }) as KnowledgePage | undefined;
+      if (!next) return;
+      setTitle(next.title);
+      setCategory(next.category);
+      setBlocks(next.artifacts ?? []);
+      setModel(next.telemetry.model);
+      setProposal(null);
+      setEditing(false);
+    } finally { setBuilding(false); }
   };
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (busy) return;
+    if (pending) return;
     if (await act("updatePageDocument", { pageId: page.id, title: title.trim(), category: category.trim(), summary: artifactMarkdown(blocks, "summary", page.analysis.summary), body: artifactMarkdown(blocks, "body", page.analysis.body), artifacts: JSON.stringify(blocks) }) !== undefined) setEditing(false);
   };
-  return <form className="page page-editor" onSubmit={(event) => void save(event)}><header className="page-head"><div className="page-eyebrow"><button type="button" className="page-back" onClick={onBack}>← Board</button><span>{base?.name} / {clip ? "raw clip" : "artifact document"}</span><button ref={infoTrigger} type="button" className="page-info-button" aria-label="Show page details" aria-haspopup="dialog" aria-expanded={infoOpen} onClick={() => infoOpen ? closeInfo() : setInfoOpen(true)}>i</button>{infoOpen && <div className="page-info" role="dialog" aria-label="Page details" tabIndex={-1} ref={info} onKeyDown={(event) => { if (event.key === "Escape") closeInfo(); }}><header><span>Page details</span><button type="button" aria-label="Close page details" onClick={closeInfo}>×</button></header><dl><div><dt>Added</dt><dd>{date(page.addedAt)} · {time(page.addedAt)}</dd></div><div><dt>Analyzed</dt><dd>{date(page.analyzedAt)} · {time(page.analyzedAt)}</dd></div><div><dt>Model</dt><dd><i />{page.telemetry.model}</dd></div><div><dt>Tokens</dt><dd>{(page.telemetry.inputTokens + page.telemetry.outputTokens).toLocaleString()} total <small>{page.telemetry.inputTokens.toLocaleString()} in · {page.telemetry.outputTokens.toLocaleString()} out</small></dd></div><div><dt>Subagents</dt><dd>{page.telemetry.subagentCount}</dd></div>{page.sourceThreadId && <div><dt>Source thread</dt><dd><code>{page.sourceThreadId}</code></dd></div>}</dl></div>}</div><div className="page-title-row"><label><span className="sr-only">Page title</span><textarea className="page-title" value={title} disabled={busy} maxLength={256} rows={2} onChange={(event) => setTitle(event.target.value)} /></label></div>{!editing && <>{/* A clip has no summary — the first line of the scrape is not one. */}{!clip && <p className="page-summary">{artifactMarkdown(blocks, "summary", page.analysis.summary)}</p>}{sourceUrl &&<p className="page-source"><a href={sourceUrl} target="_blank" rel="noreferrer">{new URL(sourceUrl).hostname} ↗</a>{page.context.sourceApplication ? ` · clipped from ${page.context.sourceApplication}` : ""}</p>}</>}<div className="page-category"><label>Category<input value={category} list="page-categories" disabled={busy} maxLength={64} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" onChange={(event) => setCategory(event.target.value)} /></label><datalist id="page-categories">{(base?.categories ?? []).map((item) => <option key={item} value={item} />)}</datalist><button type="button" className={clip ? "dialog-primary" : ""} disabled={busy} onClick={() => void analyze()}>{clip ? "Build document" : "Rebuild with Emma"}</button><button type="button" disabled={busy} onClick={() => setEditing(!editing)}>{editing ? "Preview document" : "Edit & reorder"}</button>{editing && <button disabled={busy || !title.trim() || !category.trim()}>Save document</button>}</div></header><div className="page-body"><div className="artifact-heading"><small>{blocks.length} / 64 · explicit save only</small></div>{editing ? <ArtifactEditor blocks={blocks} setBlocks={setBlocks} busy={busy} /> : clip ? <CapturedClip blocks={blocks} busy={busy} onBuild={() => void analyze()} /> : <ArtifactDocument blocks={blocks} />}
-    {proposal && <section className="page-proposal"><header><span>Proposed revision · {proposal.length} {plural(proposal.length, "block")}</span><small>Nothing is saved until you accept it and save the document.</small></header><ArtifactDocument blocks={proposal} lead="" /><div className="page-chat-actions"><button type="button" disabled={busy} onClick={() => { setBlocks(proposal); setProposal(null); setEditing(true); }}>Use this revision</button><button type="button" onClick={() => setProposal(null)}>Discard</button></div></section>}
-    <PageVersions page={page} act={act} busy={busy} onRestored={(restored) => { setTitle(restored.title); setCategory(restored.category); setBlocks(restored.artifacts ?? []); setProposal(null); setEditing(false); }} />
-    <PageConversation page={page} snapshot={snapshot} act={act} busy={busy} openThread={openThread} onProposal={setProposal} />
+  return <form className="page page-editor" onSubmit={(event) => void save(event)}><header className="page-head"><div className="page-eyebrow"><button type="button" className="page-back" onClick={onBack}>← Board</button><span>{base?.name} / {clip ? "raw clip" : "artifact document"}</span><button ref={infoTrigger} type="button" className="page-info-button" aria-label="Show page details" aria-haspopup="dialog" aria-expanded={infoOpen} onClick={() => infoOpen ? closeInfo() : setInfoOpen(true)}>i</button>{infoOpen && <div className="page-info" role="dialog" aria-label="Page details" tabIndex={-1} ref={info} onKeyDown={(event) => { if (event.key === "Escape") closeInfo(); }}><header><span>Page details</span><button type="button" aria-label="Close page details" onClick={closeInfo}>×</button></header><dl><div><dt>Added</dt><dd>{date(page.addedAt)} · {time(page.addedAt)}</dd></div><div><dt>Analyzed</dt><dd>{date(page.analyzedAt)} · {time(page.analyzedAt)}</dd></div><div><dt>Model</dt><dd><i />{page.telemetry.model}</dd></div><div><dt>Tokens</dt><dd>{(page.telemetry.inputTokens + page.telemetry.outputTokens).toLocaleString()} total <small>{page.telemetry.inputTokens.toLocaleString()} in · {page.telemetry.outputTokens.toLocaleString()} out</small></dd></div><div><dt>Subagents</dt><dd>{page.telemetry.subagentCount}</dd></div>{page.sourceThreadId && <div><dt>Source thread</dt><dd><code>{page.sourceThreadId}</code></dd></div>}</dl></div>}</div><div className="page-title-row"><label><span className="sr-only">Page title</span><textarea className="page-title" value={title} disabled={pending} maxLength={256} rows={2} onChange={(event) => setTitle(event.target.value)} /></label></div>{!editing && <>{/* A clip has no summary — the first line of the scrape is not one. */}{!clip && <p className="page-summary">{artifactMarkdown(blocks, "summary", page.analysis.summary)}</p>}{sourceUrl &&<p className="page-source"><a href={sourceUrl} target="_blank" rel="noreferrer">{new URL(sourceUrl).hostname} ↗</a>{page.context.sourceApplication ? ` · clipped from ${page.context.sourceApplication}` : ""}</p>}</>}<div className="page-category"><label>Category<input value={category} list="page-categories" disabled={pending} maxLength={64} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" onChange={(event) => setCategory(event.target.value)} /></label><datalist id="page-categories">{(base?.categories ?? []).map((item) => <option key={item} value={item} />)}</datalist><button type="button" className={clip ? "dialog-primary" : ""} disabled={pending} onClick={() => void analyze()}>{building ? "Building…" : clip ? "Build document" : "Rebuild with Emma"}</button><button type="button" disabled={pending} onClick={() => setEditing(!editing)}>{editing ? "Preview document" : "Edit & reorder"}</button>{editing && <button disabled={pending || !title.trim() || !category.trim()}>Save document</button>}</div></header><div className="page-body"><div className="artifact-heading"><small>{blocks.length} / 64 · explicit save only</small></div>{editing ? <ArtifactEditor blocks={blocks} setBlocks={setBlocks} busy={pending} /> : clip ? <CapturedClip blocks={blocks} busy={pending} building={building} onBuild={() => void analyze()} /> : <ArtifactDocument blocks={blocks} />}
+    {proposal && <section className="page-proposal"><header><span>Proposed revision · {proposal.length} {plural(proposal.length, "block")}</span><small>Nothing is saved until you accept it and save the document.</small></header><ArtifactDocument blocks={proposal} lead="" /><div className="page-chat-actions"><button type="button" disabled={pending} onClick={() => { setBlocks(proposal); setProposal(null); setEditing(true); }}>Use this revision</button><button type="button" onClick={() => setProposal(null)}>Discard</button></div></section>}
+    <PageVersions page={page} act={act} busy={pending} onRestored={(restored) => { setTitle(restored.title); setCategory(restored.category); setBlocks(restored.artifacts ?? []); setProposal(null); setEditing(false); }} />
+    <PageConversation page={page} snapshot={snapshot} act={act} busy={pending} openThread={openThread} onProposal={setProposal} />
   </div></form>;
 }
 
@@ -2278,7 +2312,23 @@ function persistSettings(settings: UserSettings): UserSettings {
   return valid;
 }
 
+/**
+ * Emma's own row: one line item standing for the whole free chain. It is not in
+ * anyone's catalog, so it carries its own name, mark, and detail line.
+ */
+const FREE_ROUTER_NAME = "Emma Free Router";
+const freeRouterBrand: BrandDefinition = { id: FREE_ROUTER_KEY, label: "Emma", fallback: "∞" };
+const freeRouterEntry: CatalogEntry = {
+  maker: "other",
+  key: FREE_ROUTER_KEY,
+  name: FREE_ROUTER_NAME,
+  detail: `${FREE_ROUTER_MODELS.length} free models, best first · falls through when one is rate-limited`,
+  brand: freeRouterBrand,
+  free: true,
+};
+
 function modelKeyLabel(settings: UserSettings, key: string): string {
+  if (key === FREE_ROUTER_KEY) return FREE_ROUTER_NAME;
   if (key === "fallback") return "Local fallback";
   if (key.startsWith("openrouter:")) return key.slice("openrouter:".length).split("/").at(-1) ?? "OpenRouter";
   if (key.startsWith("local:")) return settings.localModels.find((profile) => profile.id === key.slice("local:".length))?.name ?? "Local model";
@@ -2286,6 +2336,7 @@ function modelKeyLabel(settings: UserSettings, key: string): string {
 }
 
 function modelKeyBrand(settings: UserSettings, key: string): BrandDefinition | undefined {
+  if (key === FREE_ROUTER_KEY) return freeRouterBrand;
   if (key.startsWith("openrouter:")) return brandForModel(key.slice("openrouter:".length), "openrouter");
   if (key.startsWith("local:")) {
     const profile = settings.localModels.find((item) => item.id === key.slice("local:".length));
@@ -2296,6 +2347,7 @@ function modelKeyBrand(settings: UserSettings, key: string): BrandDefinition | u
 
 /** Who made the model and which route Emma reaches it through, e.g. "Anthropic · via OpenRouter". */
 function modelKeyRoute(settings: UserSettings, key: string): string {
+  if (key === FREE_ROUTER_KEY) return `${FREE_ROUTER_MODELS.length} free models · via OpenRouter`;
   if (key === "fallback") return "Emma · on this Mac";
   if (key.startsWith("openrouter:")) return `${modelKeyBrand(settings, key)?.label ?? "Community"} · via OpenRouter`;
   if (key.startsWith("local:")) return `${modelKeyBrand(settings, key)?.label ?? "Custom"} · via local server`;
@@ -2303,7 +2355,7 @@ function modelKeyRoute(settings: UserSettings, key: string): string {
 }
 
 /** The short route qualifier that sits dimmed beside the model name in the composer. A paid OpenRouter route is the default, so it gets no tag. */
-const modelKeyTag = (key: string) => key === "fallback" || key.startsWith("local:") ? "Local" : isFreeModel(key) ? "Free" : "";
+const modelKeyTag = (key: string) => key === "fallback" || key.startsWith("local:") ? "Local" : isFreeModel(key) || key === FREE_ROUTER_KEY ? "Free" : "";
 
 const selectedModelLabel = (settings: UserSettings) => modelKeyLabel(settings, settings.selectedModel);
 const selectedModelBrand = (settings: UserSettings) => modelKeyBrand(settings, settings.selectedModel);
@@ -2370,7 +2422,12 @@ function ThinkingSlider({ level, stops, setLevel, disabled }: { level: ThinkingL
  * model's own default rather than a refused selection.
  */
 async function selectModelKey(settings: UserSettings, key: string, act: (method: string, params?: Record<string, string>) => Promise<unknown>, effort = ""): Promise<UserSettings | undefined> {
-  if (key.startsWith("openrouter:")) {
+  if (key === FREE_ROUTER_KEY) {
+    // The chain itself is expanded in main, where the turn is routed. The host still wants
+    // one model on its side, so it gets the same primary: the best link still in the catalog.
+    const ids = await window.emma.request<OpenRouterCatalog>("listOpenRouterModels").then((catalog) => catalog.models.map((model) => model.id)).catch(() => []);
+    if (await act("selectOpenRouterModel", { modelId: freeRouterChain(ids).split(",")[0], effort: "" }) === undefined) return undefined;
+  } else if (key.startsWith("openrouter:")) {
     if (await act("selectOpenRouterModel", { modelId: key.slice("openrouter:".length), effort }) === undefined) return undefined;
   } else if (key.startsWith("local:")) {
     const profile = settings.localModels.find((item) => item.id === key.slice("local:".length));
@@ -2422,7 +2479,7 @@ const settingsPages: { id: SettingsPage; label: string; copy: string; group: str
   { id: "harness", label: "Harness", copy: "Experimental context hooks", group: "Coding" },
   { id: "imports", label: "Imports & plugins", copy: "Skills and MCP sources", group: "Integrations" },
   { id: "connections", label: "Connections", copy: "Third-party CLI tools", group: "Integrations" },
-  { id: "privacy", label: "Privacy", copy: "Data boundaries", group: "Coding" },
+  { id: "privacy", label: "Data & privacy", copy: "Boundaries and reset", group: "Coding" },
   { id: "about", label: "About Emma", copy: "Build and architecture", group: "Coding" },
 ];
 
@@ -2765,6 +2822,14 @@ function SettingsBody({ snapshot, page, act, busy, onModelChanged }: { snapshot:
      looking at it, and a Save button under a drag-and-drop canvas is a second
      gesture for something the first gesture already finished. */
   const saveContextPages = (contextPages: ContextPage[]) => { try { setSettings(persistSettings({ ...settings, contextPages })); } catch { setSettings((current) => ({ ...current, contextPages })); } };
+  /* The renderer's own store goes first: main deletes the folder it lives in and
+     exits, and a clear here is what stops the leveldb writing settings back out
+     on the way. Main takes the rest and relaunches, so this never resolves. */
+  const resetData = () => {
+    if (!confirm("Delete all Emma data and start fresh?\n\nEvery thread, knowledge page, artifact, connected folder, saved key, and setting on this Mac goes, and Emma restarts empty. This cannot be undone.")) return;
+    localStorage.clear();
+    void window.emma.resetData();
+  };
   if (page === "contextbar") return <section className="settings-view settings-wide"><header><span>Settings / thread inspector</span><h2>Context bar</h2><p>The panel down the right of a thread, as components you arrange. Drag them in and out of the column, reorder them, and lay a component across instead of down. Keep up to {MAX_CONTEXT_PAGES} pages; the bar's own tabs switch between them. The preview is the real components over a made-up thread.</p></header><ContextBarSettings pages={settings.contextPages} onChange={saveContextPages} busy={busy} /></section>;
   if (page === "appearance") return <section className="settings-view"><header><span>Settings / appearance</span><h2>Fonts</h2></header><div className="settings-lines"><section><div><h3>Interface font</h3><p>Everything on the grid: the sidebar, tabs, buttons, model picker, and every label in Settings.</p></div><div className="font-values"><label>Face<select value={settings.interfaceFont} disabled={busy} onChange={(event) => saveFont("interfaceFont", event.target.value as FontChoice)}>{FONT_CHOICES.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}</select></label><p className="font-sample" style={{ fontFamily: fontStack(settings.interfaceFont) }}>Threads · Knowledge · Agent 0123</p></div></section><section><div><h3>Agent font</h3><p>What the agent writes in a thread, plus the composer you answer it in.</p></div><div className="font-values"><label>Face<select value={settings.agentFont} disabled={busy} onChange={(event) => saveFont("agentFont", event.target.value as FontChoice)}>{FONT_CHOICES.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}</select></label><p className="font-sample" style={{ fontFamily: fontStack(settings.agentFont) }}>The quick brown fox jumps over the lazy dog.</p></div></section></div></section>;
   if (page === "models") return <section className="settings-view"><header><span>Settings / models &amp; providers</span><h2>Models</h2></header><ModelCatalog settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><LocalModelSettings settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><VerifierPanel settings={settings} onSave={saveVerifier} busy={busy} /><TaggerPanel settings={settings} onSave={saveTagger} busy={busy} /><AdvisorPanel settings={settings} onSave={(advisor) => saveTools({ ...settings.tools, advisor })} busy={busy} /><VisionPanel settings={settings} onSave={(vision) => saveTools({ ...settings.tools, vision })} busy={busy} /><ProviderKeys settings={settings} act={act} busy={busy} /><div className="settings-lines"><section><div><h3>Private routing</h3><p>On, Emma demands endpoints that neither train on nor retain your prompts. OpenRouter offers no free endpoint that qualifies, so every free model fails while this is on — leave it off unless you route to a paid or local model. Changing it restarts the local agent.</p><label className="check"><input type="checkbox" checked={settings.requireZeroRetention} disabled={busy} onChange={(event) => void saveZeroRetention(event.target.checked)} /> Require no-training, zero-retention endpoints (blocks every free model)</label></div></section><section><div><h3>Automatic fallback</h3><p>If the selected model fails — no key, rate limit, provider outage — Emma answers with its deterministic local reply rather than quietly routing your turn to a different model. A local selection never escalates to a provider.</p></div><strong className="status-live"><i /> Always on</strong></section><section><div><h3>Local deterministic profile</h3><p>Without a selected provider, Emma uses its deterministic local fallback. Configure an environment-backed provider with `EMMA_PROVIDER_*` only when you need a remote OpenAI-compatible route.</p></div><strong className="status-live"><i /> Available</strong></section><section><div><h3>Speech to text</h3><p>Dictation runs against local OpenAI-compatible servers and is set up on its own page — the microphone grant, the speech server, and the S1-mini cleanup pass all live in <b>Settings → Voice</b>.</p></div><div className="voice-values"><strong className={settings.transcriptionEnabled ? "status-live" : "status-idle"}><i /> {settings.transcriptionEnabled ? "On" : "Off"}</strong><small>Localhost only</small></div></section></div></section>;
@@ -2775,7 +2840,7 @@ function SettingsBody({ snapshot, page, act, busy, onModelChanged }: { snapshot:
   if (page === "harness") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>Harness <b className="tag-experimental">Experimental</b></h2></header><HarnessExperimentsPanel settings={settings} onChange={saveHarnessExperiments} busy={busy} /></section>;
   if (page === "imports") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Imports & plugins</h2></header><AgentImports /></section>;
   if (page === "connections") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Connections</h2></header><ConnectionSettings settings={settings} onChange={saveConnections} busy={busy} /></section>;
-  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Privacy</h2></header><div className="settings-lines prose-lines"><section><div><h3>Threads and knowledge stay local</h3><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><h3>Annotated screens remain local</h3><p>The yellow pen captures and compresses a screen image locally. Provider transfer stays disabled until you explicitly authorize sending full-screen images to the selected model endpoint.</p></div></section><section><div><h3>Protected routing remains enforced</h3><p>Selected-model turns request no provider data collection and zero retention. OpenRouter account-level logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. Creating or updating knowledge always requires an explicit user action or a quick action configured to save.</p></div></section><section><div><h3>Every run is gated by the mode picker</h3><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Plan</em> hides it, <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through. The step ceiling, the action rate limit, the on-screen banner, and the Escape kill switch apply in every mode, and every action is logged.</p></div></section></div></section>;
+  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><h3>Start fresh</h3><p>Deletes every thread, knowledge page, artifact, plan, connected folder, saved key, and setting Emma keeps on this Mac, then restarts her empty. The Markdown mirror in your Documents folder is left where it is. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><h3>Threads and knowledge stay local</h3><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><h3>Annotated screens remain local</h3><p>The yellow pen captures and compresses a screen image locally. Provider transfer stays disabled until you explicitly authorize sending full-screen images to the selected model endpoint.</p></div></section><section><div><h3>Protected routing remains enforced</h3><p>Selected-model turns request no provider data collection and zero retention. OpenRouter account-level logging and product-improvement settings still apply.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. Creating or updating knowledge always requires an explicit user action or a quick action configured to save.</p></div></section><section><div><h3>Every run is gated by the mode picker</h3><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Plan</em> hides it, <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through. The step ceiling, the action rate limit, the on-screen banner, and the Escape kill switch apply in every mode, and every action is logged.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>Settings / about</span><h2>Emma</h2></header><div className="settings-lines prose-lines">{credits.map((credit) => <section key={credit.title}><div><h3>{credit.title}</h3><p>{credit.body}</p>{credit.href ? <a href={credit.href} target="_blank" rel="noreferrer">{credit.link}</a> : null}</div></section>)}</div></section>;
   return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Quick actions</h2></header><section className="notch-settings"><div><h3>Quick Ask hangs off the camera housing</h3><p>Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing.</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section><section className="prompt-settings"><div><h3>Standing instructions</h3><p>Added to the system context of every turn, on Emma’s own loop and on the coding harness. It is added to what each already sends — the built-in prompt carries the tool contracts, so this never replaces it.</p><label className="prompt-field">Your instructions<textarea value={settings.systemPrompt} maxLength={MAX_SYSTEM_PROMPT_CHARS} rows={6} placeholder="e.g. Answer in British English, and say what you checked before claiming something works." onChange={(event) => setSettings((current) => ({ ...current, systemPrompt: event.target.value }))} /></label><div className="prompt-footer"><small>{settings.systemPrompt.length} / {MAX_SYSTEM_PROMPT_CHARS} characters</small><button type="button" onClick={() => setSettings((current) => ({ ...current, systemPrompt: defaultSettings.systemPrompt }))}>Reset to default</button></div></div></section><div className="quick-settings">{settings.quickActions.map((action, index) => <section className="quick-action-row" key={index}><div className="shortcut"><kbd>⌘{index + 1}</kbd><span>Overlay action</span></div><div className="quick-fields"><label>Label<input value={action.label} maxLength={40} onChange={(event) => updateAction(index, "label", event.target.value)} /></label><label className="prompt-field">Prompt<textarea value={action.prompt} maxLength={4096} rows={2} onChange={(event) => updateAction(index, "prompt", event.target.value)} /></label><label>Destination<select value={resolveQuickActionDestination(action.destinationKnowledgeBaseId, snapshot.knowledgeBases) ?? ""} onChange={(event) => updateAction(index, "destinationKnowledgeBaseId", event.target.value)}><option value="">Default</option>{snapshot.knowledgeBases.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}</select></label><label>Category<input value={action.category} placeholder="optional" onChange={(event) => updateAction(index, "category", event.target.value)} /></label><label className="check"><input type="checkbox" checked={action.saveToKnowledge} onChange={(event) => updateAction(index, "saveToKnowledge", event.target.checked)} /> Save analyzed result</label></div></section>)}</div><section className="orb-settings"><div><h3>Orbs you can rearrange</h3><p>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the island when the pointer swipes below it. Pick an orb to change what it runs or where it sits. <b>Save page</b> keeps the page your browser has in front — its text, its favicon, and the pictures it leads with. Emma files captures into a category by itself once one of your categories holds {AUTO_FILE_EXAMPLES} examples to learn from; until then they land unfiled.</p>
       <label className="check"><input type="checkbox" checked={settings.cursorOrbsEnabled} onChange={(event) => setSettings((current) => ({ ...current, cursorOrbsEnabled: event.target.checked }))} /> Ring the cursor when Quick Ask opens</label>
@@ -2893,11 +2958,13 @@ function ModelRow({ entry, current, busy, onPick, starred, onStar }: {
  * screen, and selection is a fill on the row. The foot is the surface's own
  * (`children`): the effort knob, an error, the way out to the catalog.
  */
-function ModelPicker({ entries, active, onPick, busy, favorites, onStar, label, lead, children }: {
+function ModelPicker({ entries, active, onPick, busy, favorites, onStar, label, lead, freeRouter, children }: {
   entries: CatalogEntry[];
   active: string;
   onPick: (key: string) => void;
   busy?: boolean;
+  /** Offer Emma's free-model chain. Only the picker that routes turns can use it. */
+  freeRouter?: boolean;
   /** Starred keys, which also turn on the rail's star slot. Only the app-wide picker has them. */
   favorites?: string[];
   onStar?: (key: string) => void;
@@ -2956,6 +3023,9 @@ function ModelPicker({ entries, active, onPick, busy, favorites, onStar, label, 
       </div>
       <div className="model-rows">
         {lead && <ModelRow entry={lead} current={active === lead.key} busy={busy} onPick={onPick} />}
+        {/* Free-only is where the chain belongs — it is the answer to "every free model is
+            rationed". It stays on while it is what is selected, like any filtered row. */}
+        {freeRouter && (freeOnly || active === FREE_ROUTER_KEY) && <ModelRow entry={freeRouterEntry} current={active === FREE_ROUTER_KEY} busy={busy} onPick={onPick} />}
         {shown.map((entry) => <ModelRow key={entry.key} entry={entry} current={active === entry.key} busy={busy} onPick={onPick} starred={starred.includes(entry.key)} onStar={onStar} />)}
         {!shown.length && <p className="model-menu-note">Nothing matches “{query}”.</p>}
         {matched.length > shown.length && <p className="model-menu-note">{matched.length - shown.length} more · search to narrow.</p>}
@@ -3026,6 +3096,13 @@ function ModelCatalog({ settings, onChange, act, busy }: { settings: UserSetting
     </div>
     {error && <p className="local-model-error" role="alert">{error}</p>}
     {status && <p className="local-model-status" role="status">{status}</p>}
+    {/* Emma's own row, above the catalog and outside its filters: it belongs to no maker
+        and cannot be starred, because the picker already offers it under Free only. */}
+    {!filter && (!needle || `${freeRouterEntry.name} ${freeRouterEntry.key}`.toLowerCase().includes(needle)) && <div className={`catalog-row free-router ${settings.selectedModel === FREE_ROUTER_KEY ? "selected" : ""}`}>
+      <BrandIcon brand={freeRouterBrand} className="model-brand" />
+      <span><span className="model-name"><strong>{freeRouterEntry.name}</strong>{priceBadge(true)}</span><small>{freeRouterEntry.detail}</small></span>
+      <button type="button" className="catalog-use" disabled={busy || settings.selectedModel === FREE_ROUTER_KEY} onClick={() => void use(FREE_ROUTER_KEY)}>{settings.selectedModel === FREE_ROUTER_KEY ? "Active" : "Use"}</button>
+    </div>}
     <div className="model-list">{shown.map((entry) => {
       const starred = settings.favoriteModels.includes(entry.key);
       const active = settings.selectedModel === entry.key;
@@ -3756,7 +3833,8 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
     return [{ maker: brand?.id ?? "other", key: active, name: modelKeyLabel(settings, active), detail: modelKeyRoute(settings, active), brand }, ...listed];
   }, [settings, catalog, pinned, active]);
   return <section className="source-popover model-menu" ref={ref} role="dialog" aria-modal="false" aria-label="Model" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") close(); }}>
-    <ModelPicker label="models" entries={entries} active={active} busy={busy} favorites={settings.favoriteModels} onStar={star} onPick={(key) => void choose(key)}
+    {/* Not on the island: a Quick Ask pin has to be one OpenRouter route, and settings refuse anything else. */}
+    <ModelPicker label="models" entries={entries} active={active} busy={busy} favorites={settings.favoriteModels} onStar={star} freeRouter={!pinned} onPick={(key) => void choose(key)}
       /* The way back out of a pinned island: Quick Ask follows the composer's picker again. */
       lead={pinned ? { key: "", name: "Same as the workspace", detail: pinned.key ? selectedModelLabel(settings) : "Active" } : undefined}>
       {/* The knob is shown for whatever is selected, including models that publish no efforts —
@@ -4060,7 +4138,7 @@ function Overlay() {
     // rather than swallowed: the turn still goes, on the app's model.
     await window.emma.request("setThreadModel", { threadId, modelId: settings.notchModel.replace(/^openrouter:/, "") })
       .catch((reason: unknown) => setError(reasonText(reason)));
-    await window.emma.setThreadContext({ threadId, folderIds: [], mode, model: modelKeyLabel(settings, modelKey) }).catch(() => undefined);
+    await window.emma.setThreadContext({ threadId, folderIds: [], mode, model: modelKey }).catch(() => undefined);
   }, [mode, modelKey, setError, settings]);
   useEffect(() => { setOverlayMode(mode); }, [mode]);
   /* The shortcut, pressed while a turn is still running, with Settings → Notch on its

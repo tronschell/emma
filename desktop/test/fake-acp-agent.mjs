@@ -10,6 +10,7 @@ const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const notify = (sessionId, update) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
 
 let permissionReply;
+let toolReply;
 // The real harness keeps exactly one session: `session/new` and `session/resume`
 // replace it, and `session/prompt` runs against it whatever `sessionId` the call
 // names. Modelled here because that is the shape that broke a thread sharing a
@@ -24,6 +25,12 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   // A reply to the permission question this fixture asked.
   if (message.id === 99 && message.result) {
     permissionReply?.(message.result);
+    return;
+  }
+  // A reply to `_emma/callTool`. Unlike the permission round trip this one can
+  // come back as an error, so both halves are handed on.
+  if (message.id === 98 && (message.result || message.error)) {
+    toolReply?.(message);
     return;
   }
 
@@ -97,6 +104,31 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
       return;
     }
+    // One of Emma's own tools. The harness registers these natively and runs
+    // them by asking the client back down the same pipe. The reply is echoed as
+    // a chunk so a test can assert it made the whole round trip.
+    if (params.prompt.some((part) => part.text?.includes("emmatool"))) {
+      const reply = await new Promise((resolve) => {
+        toolReply = resolve;
+        send({
+          jsonrpc: "2.0",
+          id: 98,
+          method: "_emma/callTool",
+          params: {
+            // A session Emma never handed out, for the branch that has to refuse.
+            sessionId: params.prompt.some((part) => part.text?.includes("nosession")) ? "sess_nobody" : sessionId,
+            toolCallId: "call_1",
+            name: "threads",
+            arguments: { action: "list", limit: 5 },
+          },
+        });
+      });
+      const text = reply.error ? `error:${reply.error.message}` : `output:${reply.result.output.length}:${reply.result.output.slice(0, 12)}`;
+      notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+      send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
+      return;
+    }
+
     notify(sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "weighing it up" } });
     notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "thinking " } });
     notify(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_1", title: "bash", kind: "execute", status: "pending" });

@@ -2844,6 +2844,11 @@ fn processQueuedPromptLoop(
     var continuation_injected = false;
     var last_step_ctx = finish_trace.ctx;
     var current_step_index: usize = 0;
+    // What the previous step's response was billed for, and the context
+    // experiment's only view of how warm the prompt cache is. Zero until a step
+    // comes back with billing metadata, and an unknown reads as a cold cache.
+    var previous_cache_read_tokens: u64 = 0;
+    var previous_input_tokens: u64 = 0;
     var last_tool_call_name: []const u8 = "none";
     var last_tool_call_id: []const u8 = "none";
     var last_gateway_message_count: usize = stable_prefix.items.len + history_messages.items.len + 1;
@@ -3107,10 +3112,13 @@ fn processQueuedPromptLoop(
             // step: this is the one that becomes the request, and it is rebuilt
             // per provider attempt, so anything done to the earlier copy is
             // thrown away before it reaches a model.
+            var experiment_settings = experimentSettings(config, request_capabilities);
+            experiment_settings.previous_cache_read_tokens = previous_cache_read_tokens;
+            experiment_settings.previous_input_tokens = previous_input_tokens;
             const experiment = try context_experiments.apply(
                 overlay_arena,
                 &gateway_messages,
-                experimentSettings(config, request_capabilities),
+                experiment_settings,
                 current_step_index,
                 job.prompt,
             );
@@ -4155,6 +4163,13 @@ fn processQueuedPromptLoop(
         };
 
         var completion = stream_result.completion;
+        // Carried into the next step's context experiment: a prefix the provider
+        // mostly answered out of its cache is one that pruning would pay to have
+        // re-processed. A provider that reports no billing leaves it unknown.
+        if (completion.billing) |billing| {
+            previous_cache_read_tokens = billing.cache_read_tokens;
+            previous_input_tokens = billing.input_tokens;
+        }
         const filtered_provider_calls = try filterMaterializedProviderCalls(
             arena,
             within_turn_suffix.items,

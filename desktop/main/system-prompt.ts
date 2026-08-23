@@ -1,9 +1,8 @@
 /* The user's standing instructions, from Settings, added to every turn.
-   Both agent paths already have a channel for extra instructions, so neither
-   grew a new parameter for this: Emma's own loop takes it as skill context —
-   the system message the sidecar writes for attached skills and folders — and
-   the harness reads it from the global `AGENTS.md` under the profile HOME Emma
-   hands it. */
+   The harness already has a channel for extra instructions, so this grew no new
+   parameter: it reads them from the global `AGENTS.md` under the profile HOME
+   Emma hands it. The one thing that cannot go in that file is the arm a turn
+   landed on, which changes per turn — that rides the turn's skill context. */
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -94,22 +93,18 @@ export function verifierLessons(threadId: string): string {
 }
 
 /**
- * Emma's own loop: the standing instructions lead the skill-context system
- * message, ahead of any attached folder or selected skill.
+ * Where a turn's arm is decided — once, before the prompt goes out — and where
+ * the change on trial rides the half of turns that landed on it.
  *
- * ponytail: the sidecar wraps that channel in skill-scoped framing
- * (`buildSkillPrompt` in agent/src/openai_compatible.zig). Give the prompt its
- * own `system_prompt` field through host, core and sidecar if that framing ever
- * has to differ.
+ * Only the trial addition: the standing instructions reach the harness through
+ * `AGENTS.md` below, and repeating them here would say everything twice. The
+ * arm has to come per turn instead, because it is a coin flip per turn.
  */
-/// Also where a turn's arm is decided: this runs once per turn, before the first
-/// request, on the one path whose prompt Emma assembles itself.
-export function withSystemPrompt(turn: TurnRequest, extra: readonly string[] = []): TurnRequest {
+export function withTrialArm(turn: TurnRequest): TurnRequest {
   const arm = turnArm(turn.threadId, turn.parentThreadId);
-  const trial = improvements.trial?.lever === "instructions" && arm === "b" ? lessonBlock([improvements.trial.addition]) : "";
-  const block = [settingsBlock(), trial, ...extra].filter(Boolean).join("\n\n");
-  if (!block) return turn;
-  return { ...turn, params: { ...turn.params, skillContext: mergeSkillContext(block, turn.params?.skillContext ?? "") } };
+  if (improvements.trial?.lever !== "instructions" || arm !== "b") return turn;
+  const trial = lessonBlock([improvements.trial.addition]);
+  return { ...turn, params: { ...turn.params, skillContext: mergeSkillContext(trial, turn.params?.skillContext ?? "") } };
 }
 
 /**

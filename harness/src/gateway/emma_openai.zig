@@ -106,8 +106,27 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     defer out.deinit();
     const w = &out.writer;
 
+    // Emma's free router arrives as one comma-separated chain of model IDs,
+    // best first. OpenRouter's own `models` array takes it from there: a model
+    // that is rate-limited, down, or refuses on moderation falls through to the
+    // next in the list, on the provider's side of the wire. The primary is
+    // repeated as `model` so an endpoint that has never heard of `models` — a
+    // local llama-server on EMMA_PROVIDER_CHAT_URL — still gets a routable
+    // request rather than one with no model on it.
+    var chain = std.mem.tokenizeScalar(u8, request.model, ',');
+    const primary = chain.next() orelse return error.InvalidGatewayHistory;
     try w.writeAll("{\"model\":");
-    try std.json.Stringify.value(request.model, .{}, w);
+    try std.json.Stringify.value(primary, .{}, w);
+    if (chain.peek() != null) {
+        try w.writeAll(",\"models\":[");
+        var listed = std.mem.tokenizeScalar(u8, request.model, ',');
+        var index: usize = 0;
+        while (listed.next()) |model| : (index += 1) {
+            if (index > 0) try w.writeByte(',');
+            try std.json.Stringify.value(model, .{}, w);
+        }
+        try w.writeByte(']');
+    }
 
     try w.writeAll(",\"messages\":[");
     for (request.messages, 0..) |message, index| {
@@ -607,6 +626,34 @@ test "request body is OpenAI shaped and rewrites fx tool advertisements" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"function\":{\"name\":\"read_file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"inputSchema\"") == null);
+}
+
+test "one model stays one model, and a chain becomes OpenRouter's fallback array" {
+    const alloc = std.testing.allocator;
+    const messages = [_]types.ChatMessage{.{ .role = .user, .content = "Hi" }};
+
+    const one = try build(null, alloc, .{
+        .model = "nvidia/nemotron-3-super-120b-a12b:free",
+        .serialized_tools = "[]",
+        .messages = &messages,
+        .tool_choice = .auto,
+        .provider_options = .{},
+    });
+    defer alloc.free(one);
+    try std.testing.expect(std.mem.indexOf(u8, one, "\"model\":\"nvidia/nemotron-3-super-120b-a12b:free\"") != null);
+    // No chain, no array: every ordinary turn sends exactly what it used to.
+    try std.testing.expect(std.mem.indexOf(u8, one, "\"models\"") == null);
+
+    const chained = try build(null, alloc, .{
+        .model = "a/one:free,b/two:free,c/three:free",
+        .serialized_tools = "[]",
+        .messages = &messages,
+        .tool_choice = .auto,
+        .provider_options = .{},
+    });
+    defer alloc.free(chained);
+    try std.testing.expect(std.mem.indexOf(u8, chained, "\"model\":\"a/one:free\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chained, "\"models\":[\"a/one:free\",\"b/two:free\",\"c/three:free\"]") != null);
 }
 
 test "zero retention rides Emma's toggle instead of every request" {

@@ -1,27 +1,25 @@
-/* The one agent loop. Every input surface — the composer, Quick Ask, a quick
-   action, a page chat, a scheduled job, a subagent — runs a turn through here, so
-   there is exactly one place that decides how many steps a turn gets, what asks
-   permission, and what the agent list is showing.
-   Execution of a tool call itself stays in main.ts, next to the runtimes that own
-   the filesystem, the pointer and the sidecar; this file only decides whether and
-   when it happens. */
+/* What Emma knows about a run that the harness does not.
+
+   This used to be an agent loop of its own — ask the model, gate what it asked
+   for, submit the results, repeat — running beside the one in `emma-cli`. Two
+   loops meant every rule had to be written twice and the second copy drifted, so
+   the loop is gone and the harness is the only one left.
+
+   What stays is everything the harness has no idea about: the agent rail and its
+   spans, the durable traces, the permission channel and Auto mode's verifier, and
+   the four tools whose answers are this file's own records — `threads`,
+   `read_trace`, `agents` and `advisor`. A harness turn is *adopted* here (see
+   `adopt`), which is what keeps the rail live for a run this file no longer drives. */
 
 import { randomUUID } from "node:crypto";
 import { agentColor, collapseChanges, editStat, fromThread, MAX_AGENT_DEPTH, MAX_LIVE_SUBAGENTS, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
-import { isBareGrep, toolGate, type PermissionMode } from "../shared/permissions";
-import { takeArm, withSystemPrompt } from "./system-prompt";
+import type { PermissionMode } from "../shared/permissions";
+import { takeArm } from "./system-prompt";
 import { decodeSpans, encodeSpans, renderTrace, type TraceSpan, type TraceStatus } from "../shared/trace";
-import { describeToolCall, parseToolArgs, toolDefinitions, MAX_TOOL_OUTPUT_BYTES, MAX_TRACES_READ, type AnyToolArgs, type LoopArgs, type ToolArgs, type ToolAvailability } from "./tools";
+import { MAX_TOOL_OUTPUT_BYTES, MAX_TRACES_READ, type AnyToolArgs, type LoopArgs } from "./tools";
 import type { VerifierRequest, VerifierReview } from "./verifier";
 import type { Advice } from "./advisor";
-import { MEMORY_PROTOCOL } from "./memory";
-import { PLANNING_PROTOCOL } from "./plans";
 
-/** Model steps in one turn. The sidecar refuses past its own ceiling too. */
-export const MAX_TURN_STEPS = 120;
-/** Wall clock for one turn, subagents included. Long enough to build something, short enough to notice. */
-export const MAX_TURN_MS = 30 * 60 * 1000;
-const MAX_CALLS_PER_STEP = 8;
 /** How long a permission dialog may sit unanswered before the call is treated as declined. */
 const MAX_ASK_MS = 10 * 60 * 1000;
 /** ponytail: ~4 characters a token, the same estimate the context inspector uses. */
@@ -34,10 +32,6 @@ const CHARS_PER_TOKEN = 4;
  */
 export const OWN_TOOLS = new Set(["read_trace", "threads", "agents", "advisor"]);
 const ownedHere = (args: AnyToolArgs): args is LoopArgs => OWN_TOOLS.has(args.name);
-
-/** What a stopped run's abandoned request rejects with, so the turn ends as stopped rather than failed. */
-class Stopped extends Error {}
-const STOP_NOTE = "You stopped this run.";
 
 export type TurnRequest = {
   threadId: string;
@@ -59,10 +53,6 @@ export type TurnRequest = {
 export type LoopDeps = {
   /** One host request. Rejects on a host error, exactly as `Host.request` does. */
   request(method: string, params: Record<string, string>): Promise<unknown>;
-  /** Runs one validated call. Throwing is fine: the message goes back to the model. */
-  execute(args: ToolArgs, turn: TurnRequest): Promise<string>;
-  /** What is connected right now for this thread. */
-  available(threadId: string, depth: number): ToolAvailability;
   /** Puts the question in front of the user. The reply comes back through `answer`. */
   ask(request: PermissionAsk): void;
   /** Auto mode's second model. Never rejects: a review it could not get back is a review without a verdict. */
@@ -70,22 +60,19 @@ export type LoopDeps = {
   verify(request: VerifierRequest, threadId: string): Promise<VerifierReview>;
   /** The advisor's second model. Never rejects either: no advice is a turn that carries on unadvised. */
   advise(transcript: string): Promise<Advice>;
-  /** Tool names switched off in Settings → Tools, read per call so a change lands on the next one. */
-  disabledTools(): readonly string[];
-  /** A JPEG data URL of the screen, attached only while the computer tool is advertised. */
-  screenshot(): Promise<string | undefined>;
   /**
-   * Starts a turn on another thread and does not wait for it — how a `threads`
-   * spawn puts an agent to work beside this one. Optional because the fallback
-   * is this loop's own `run`; main passes the door every other surface uses, so
-   * a spawned thread runs on the harness whenever the harness is what Emma is
-   * running, and carries its project's standing instructions either way.
+   * Runs one turn on the harness, through the same door every other surface takes.
+   *
+   * Required, not optional: it used to fall back to this file's own loop, and
+   * with that loop gone there is nothing behind it. Both callers here are spawns
+   * — a `threads` spawn, which does not wait, and a `task` delegation, which
+   * waits for the answer to hand back as a tool result.
    *
    * `owner` is the thread the spawn came out of, when there is one: a brand new
    * thread has no folder of its own yet, and it is meant to work where the
    * thread that started it works.
    */
-  spawnTurn?(turn: TurnRequest, owner?: string): Promise<unknown> | void;
+  spawnTurn(turn: TurnRequest, owner?: string): Promise<unknown> | void;
   /** Called whenever the agent list changes, and when a run ends. */
   changed(): void;
   /** One tool call's live status, so the transcript shows the work while it happens. */
@@ -97,24 +84,15 @@ type Run = LiveAgent & {
   goal: string;
   /** The verdict on the call being gated right now, so a refusal can be quoted back to the model. */
   review?: VerifierReview;
-  /** Text the user typed at this agent while it was working, delivered with the next results. */
-  steering: string[];
   stopped: boolean;
-  /** Rejects the moment this run is stopped, so a request in flight is abandoned rather than waited out. */
-  halt: Promise<never>;
-  halted: (reason: Stopped) => void;
   depth: number;
   changes: FileChange[];
-  /** What each call wrote, by call id, so its step can carry the `+145 −1`. */
-  edits: Map<string, ThreadStep["edit"]>;
   /** Call ids already counted, so a repeated status update is not a second call. */
   tools: Set<string>;
   /** This run's own spans, root first. Subagents keep theirs on their own Run. */
   spans: TraceSpan[];
   /** True when an external loop drives this run, so waiting on the model is timed from its deltas. */
   adopted: boolean;
-  /** The call being performed right now, so a `task` it spawns can nest under it. */
-  activeSpan?: string;
   /** Set once the trace has been handed to the host, so a run flushes exactly once. */
   traced: boolean;
 };
@@ -209,63 +187,12 @@ export class AgentRuntime {
   }
 
   /**
-   * One request to the model, timed. This is where a turn's wall clock mostly
-   * goes, so without these spans a waterfall shows a few milliseconds of tools
-   * inside a thirty-second bar and explains none of it.
-   */
-  private async requestSpan(run: Run, name: string, method: string, params: Record<string, string>): Promise<unknown> {
-    const span: TraceSpan = {
-      id: `model:${run.threadId}:${run.spans.length}`,
-      parentId: run.spans[0].id,
-      name,
-      kind: "model",
-      startedAt: Date.now(),
-      status: "running",
-      // What this request carried, which is what the span is for: a slow step is
-      // only diagnosable next to what was sent. Screen captures and tool schemas
-      // are left out — they are megabytes, and neither is what changed.
-      input: params.content ?? params.results,
-    };
-    run.spans.push(span);
-    this.deps.changed();
-    try {
-      // Raced against the stop rather than simply awaited. Every layer under this
-      // one is serial and takes no cancellation, so the request cannot be called
-      // back — it can only be walked away from, and its rejection is pre-handled
-      // because nothing is left to await it once the race is over.
-      // ponytail: the provider bills for the rest of that answer, and the host
-      // still writes it to the thread. Truly cancelling it needs a cancel path
-      // through the Rust host and the Zig sidecar, which are both one-at-a-time.
-      const pending = this.deps.request(method, params);
-      pending.catch(() => undefined);
-      const result = await Promise.race([pending, run.halt]);
-      // Only for the label: an unreadable turn is the caller's error to raise.
-      const calls = ((): { name: string }[] => { try { return toolCalls(result); } catch { return []; } })();
-      span.status = "ok";
-      span.output = calls.length ? `asked for ${calls.map((call) => call.name).join(", ")}` : "answered";
-      return result;
-    } catch (error) {
-      span.status = "failed";
-      span.output = error instanceof Error ? error.message : String(error);
-      throw error;
-    } finally {
-      span.endedAt = Date.now();
-      // The prompt this request carried, on top of the answer the deltas already
-      // added. Tool results are deliberately not counted here: they are already
-      // on the call spans that produced them, and the context axis lays every
-      // span end to end, so counting them twice would double the turn's growth.
-      if (params.content) span.tokens = (span.tokens ?? 0) + Math.ceil(params.content.length / CHARS_PER_TOKEN);
-      this.deps.changed();
-    }
-  }
-
-  /**
    * The tools this class answers itself, run on behalf of a caller that has no
    * `Run` of its own.
    *
    * The harness owns its own loop, so its turns never reach `runTool`; without
-   * this its MCP bridge would advertise `threads` and friends and then fail
-   * on the call, which is worse than not offering them. `advisor` works too: a
+   * this it would advertise `threads` and friends and then fail on the call,
+   * which is worse than not offering them. `advisor` works too: a
    * harness turn is adopted, so its `Run` and the spans the advisor reads are
    * both here.
    */
@@ -278,7 +205,7 @@ export class AgentRuntime {
     switch (args.name) {
       case "read_trace": return await this.readTrace(turn, args.thread, args.limit);
       case "threads": return await this.runThreadsTool(args, turn);
-      case "agents": return this.runAgentsTool(args, turn.mode, turn.parentThreadId ?? turn.threadId);
+      case "agents": return this.runAgentsTool(args, turn.mode);
       case "advisor": {
         if (!run) throw new Error("The advisor reads this run's own transcript, which is not available here.");
         return await this.consultAdvisor(run, turn, args.question);
@@ -287,14 +214,14 @@ export class AgentRuntime {
   }
 
   /** The live agent rail as the model reads it: what is running, and the two levers on it. */
-  private runAgentsTool(args: Extract<LoopArgs, { name: "agents" }>, mode: PermissionMode, sender: string): string {
+  private runAgentsTool(args: Extract<LoopArgs, { name: "agents" }>, mode: PermissionMode): string {
     // The gate table is per tool, and this one both reads and acts. Listing is a
     // read and belongs in plan mode; steering and stopping are not, so they are
     // refused here rather than by hiding the whole tool.
     if (mode === "plan" && (args.message !== undefined || args.stop)) {
       throw new Error("Plan mode does not steer or stop a running agent. Read the list and say what should change.");
     }
-    if (args.message !== undefined) { this.steer(args.agent!, args.message, sender); return `Queued for ${args.agent}. It arrives with that agent's next batch of tool results.`; }
+    if (args.message !== undefined) this.steer(args.agent!, args.message);
     if (args.stop) { this.stop(args.agent!); return `Stopped ${args.agent} and anything running under it.`; }
     const live = this.list();
     if (!live.length) return "Nothing is running. Emma clears finished agents when a new turn starts, so an empty list is normal between turns.";
@@ -310,22 +237,19 @@ export class AgentRuntime {
   }
 
   /**
-   * Queues a message for a running agent; it arrives with the next batch of tool
-   * results. `from` is the thread that sent it, when it was a thread and not the
-   * user — the queue holds the finished line so there is one place that decides
-   * who a mid-run message is attributed to.
+   * Refuses a message aimed at a turn already in flight.
+   *
+   * Every run is the harness's now, and its top-level session takes nothing
+   * mid-turn: a second `session/prompt` is held until the first one ends rather
+   * than folded into it. Only a subagent can be steered, over
+   * `session/steer_child`, and main routes that before it reaches here.
+   *
+   * Refused rather than queued because a queue this loop no longer drains would
+   * take the message and never deliver it, which is the worse of the two.
    */
-  steer(threadId: string, text: string, from?: string) {
-    const run = this.runs.get(threadId);
-    if (!run) throw new Error("That agent is no longer running.");
-    // An adopted run belongs to the coding harness, and the queue below is drained
-    // by this loop alone: a message left on one is taken and never delivered. The
-    // harness steers its own subagents — that path is handled before this one.
-    if (run.adopted) throw new Error("That thread is running on the coding harness, which takes nothing mid-turn. Wait for it to finish, then send it again.");
-    if (run.steering.length >= 8) throw new Error("That agent already has messages waiting.");
-    run.steering.push(from ? `Thread ${from} says, while you work: ${text}` : `The user says, while you work: ${text}`);
-    run.activity = "steering queued";
-    this.deps.changed();
+  steer(threadId: string, _text: string) {
+    if (!this.runs.has(threadId)) throw new Error("That agent is no longer running.");
+    throw new Error("That thread is running on the coding harness, which takes nothing mid-turn. Wait for it to finish, then send it again.");
   }
 
   /**
@@ -341,35 +265,26 @@ export class AgentRuntime {
     this.deps.changed();
   }
 
+  /**
+   * Marks a run stopped. The harness is what actually ends it — main cancels the
+   * session alongside this — and the flag is what stops the abandoned turn's
+   * remaining text reaching the transcript, and what makes `finish` report the
+   * run as stopped rather than as whatever the cancelled prompt returned.
+   */
   stop(threadId: string) {
     const run = this.runs.get(threadId);
     if (!run) return;
-    this.halt(run);
+    run.stopped = true;
     // Children die with their parent: nothing is left driving a thread nobody is reading.
-    for (const child of this.runs.values()) if (child.parentThreadId === threadId) this.halt(child);
+    for (const child of this.runs.values()) if (child.parentThreadId === threadId) child.stopped = true;
     this.deps.changed();
   }
 
   stopAll() {
-    for (const run of this.runs.values()) this.halt(run);
+    for (const run of this.runs.values()) run.stopped = true;
     for (const resolve of this.asks.values()) resolve(false);
     this.asks.clear();
     this.deps.changed();
-  }
-
-  /**
-   * Sets the flag and abandons whatever the run is waiting on.
-   *
-   * The flag alone only landed at the top of the next step, so a stop pressed
-   * mid-answer sat there while the model finished talking — which is not what the
-   * button says it does. Rejecting `halt` is what ends the turn where it stands.
-   */
-  private halt(run: Run) {
-    run.stopped = true;
-    // Idempotent on purpose rather than guarded on the flag: `close` sets the flag
-    // before its own wrap-up request, and a stop pressed during that one still has
-    // to reach it. Rejecting a settled promise is a no-op.
-    run.halted(new Stopped(STOP_NOTE));
   }
 
   /** Resolves a pending permission ask. Unknown ids are ignored, not an error. */
@@ -387,14 +302,14 @@ export class AgentRuntime {
     return collapseChanges(collected.sort((left, right) => left.at - right.at));
   }
 
+  /**
+   * One file a run rewrote, for the review sheet. The `+145 −1` on the call's
+   * own step is main's to report — it holds the before-and-after and the call
+   * it belongs to, and this only ever knew which call was running because it
+   * was making them.
+   */
   noteChange(threadId: string, change: FileChange) {
-    const run = this.runs.get(threadId);
-    if (!run) return;
-    run.changes.push(change);
-    // The call that is running right now is the one that wrote it, and its step
-    // is reported after the tool returns — so this is in time to ride along.
-    const call = run.activeSpan?.startsWith("call:") ? run.activeSpan.slice("call:".length) : undefined;
-    if (call) run.edits.set(call, editStat(change));
+    this.runs.get(threadId)?.changes.push(change);
   }
 
   /** Clears finished agents for a thread, so a new turn starts with a clean list. */
@@ -408,12 +323,6 @@ export class AgentRuntime {
   private open(turn: TurnRequest): Run {
     const depth = turn.depth ?? 0;
     if (this.runs.get(turn.threadId)?.status === "running") throw new Error("That thread already has a turn in flight.");
-    let halted!: (reason: Stopped) => void;
-    // Rejects on a stop and is raced against every host request. Nothing awaits it
-    // on a run that finishes normally, so its rejection is pre-handled here rather
-    // than left to come back as an unhandled one.
-    const halt = new Promise<never>((_, reject) => { halted = reject; });
-    halt.catch(() => undefined);
     const run: Run = {
       threadId: turn.threadId,
       parentThreadId: turn.parentThreadId,
@@ -430,13 +339,9 @@ export class AgentRuntime {
       outputTokens: 0,
       generationMs: 0,
       goal: turn.content,
-      steering: [],
       stopped: false,
-      halt,
-      halted,
       depth,
       changes: [],
-      edits: new Map(),
       tools: new Set(),
       spans: [],
       adopted: false,
@@ -589,20 +494,22 @@ export class AgentRuntime {
   }
 
   /**
-   * Where a run spawned by this thread hangs in the trace: the call it came out
-   * of, or the thread's own root when nothing here is driving the calls — an
-   * adopted run's tool calls are made by someone else's loop and never open one.
+   * Where a run spawned by this thread hangs in the trace: its root span. The
+   * calls themselves are made by the harness's loop, which never tells this one
+   * which of them is in flight, so a spawn nests under the thread rather than
+   * under the `task` call that asked for it.
    */
   spanFor(threadId: string): string | undefined {
-    const run = this.runs.get(threadId);
-    return run?.activeSpan ?? run?.spans[0]?.id;
+    return this.runs.get(threadId)?.spans[0]?.id;
   }
 
   /** Closes out an adopted run. An error message marks it failed instead of done. */
   finish(threadId: string, error?: string): void {
     const run = this.runs.get(threadId);
     if (!run) return;
-    run.status = error ? "failed" : "done";
+    // A cancelled prompt comes back looking like an ordinary end, so what the
+    // rail says about a stopped run has to come from the stop, not from here.
+    run.status = run.stopped ? "stopped" : error ? "failed" : "done";
     run.activity = error ?? "finished";
     run.error = error;
     run.endedAt = Date.now();
@@ -616,110 +523,6 @@ export class AgentRuntime {
     for (const span of run.spans) if (span.endedAt === undefined && span.status === "running") span.endedAt = run.endedAt;
     this.flushTrace(run);
     this.deps.changed();
-  }
-
-  /**
-   * Drives one turn to a real answer: ask the model, run what it asks for behind
-   * the mode's gate, submit the results, repeat. Returns the host's final turn.
-   */
-  /**
-   * The user's standing instructions ride every turn, including a subagent's:
-   * `delegate` reaches `run` directly without passing through main's `driveTurn`,
-   * so applying them here is what keeps the two paths saying the same thing.
-   */
-  async run(request: TurnRequest): Promise<unknown> {
-    const depth = request.depth ?? 0;
-    // Rebuilt every step off the run's live mode, so switching out of Plan mid-run
-    // hands the model the writes it was not offered a moment ago.
-    const advertised = () => toolDefinitions(this.runs.get(request.threadId)?.mode ?? request.mode, this.deps.available(request.threadId, depth), this.deps.disabledTools());
-    const advertises = (name: string) => advertised().some((tool) => tool.name === name);
-    // The Anthropic API prepends the memory protocol to the system prompt whenever
-    // the memory tool is in `tools`. Emma advertises it over an OpenAI-compatible
-    // route where nothing does that for us, so the turn carries it instead — and
-    // only when the tool is actually there to obey it with.
-    // Same rule for planning, plus a depth of zero: this run is the one that would
-    // break a job up, and a step's subagent already has its brief.
-    const turn = withSystemPrompt(request, [
-      ...(advertises("memory") ? [MEMORY_PROTOCOL] : []),
-      ...(depth === 0 && advertises("plan") ? [PLANNING_PROTOCOL] : []),
-    ]);
-    const run = this.open(turn);
-    const startedAt = run.startedAt;
-    try {
-      const tools = () => JSON.stringify(advertised());
-      const screen = async () => (advertises("computer") ? await this.deps.screenshot() : undefined);
-      const firstScreen = await screen();
-      run.inputTokens += Math.ceil(turn.content.length / CHARS_PER_TOKEN);
-      let result = await this.requestSpan(run, "model · prompt", "sendMessage", {
-        ...turn.params,
-        threadId: turn.threadId,
-        content: turn.content,
-        tools: tools(),
-        ...(firstScreen ? { screenContext: firstScreen } : {}),
-      });
-      while (true) {
-        // Ahead of reading the answer, not after it: a stop that landed while a
-        // tool ran used to be ignored whenever the model came back with nothing
-        // left to call, and the run reported itself finished.
-        if (run.stopped) return await this.close(run, turn, "stopped", STOP_NOTE, false);
-        const calls = toolCalls(result);
-        if (!calls.length) {
-          run.status = "done";
-          run.activity = "finished";
-          run.endedAt = Date.now();
-          this.closeRun(run, "ok");
-          this.deps.changed();
-          return result;
-        }
-        run.steps += 1;
-        if (run.steps > MAX_TURN_STEPS) return await this.close(run, turn, "stopped", `I stopped after ${MAX_TURN_STEPS} steps without finishing. Ask me to continue if the rest is still worth doing.`);
-        if (Date.now() - startedAt > MAX_TURN_MS) return await this.close(run, turn, "stopped", "I ran out of time on this turn. Ask me to continue where I left off.");
-        const results = [];
-        for (const call of calls.slice(0, MAX_CALLS_PER_STEP)) {
-          results.push({ id: call.id, content: bounded(await this.perform(run, turn, call)) });
-        }
-        for (const message of run.steering.splice(0)) {
-          // Steering rides on the last result rather than as a user turn: the thread
-          // is mid-step, and a second user message there is not a shape the sidecar has.
-          results[results.length - 1].content = bounded(`${results[results.length - 1].content}\n\n[${message}]`);
-        }
-        run.activity = "thinking";
-        this.deps.changed();
-        const nextScreen = await screen();
-        const payload = JSON.stringify(results);
-        // Estimated, not reported: the host gives back output tokens only, so the
-        // input side counts what this loop actually handed over.
-        run.inputTokens += Math.ceil(payload.length / CHARS_PER_TOKEN);
-        result = await this.requestSpan(run, `model · step ${run.steps}`, "submitToolResult", {
-          threadId: turn.threadId,
-          results: payload,
-          tools: tools(),
-          ...(nextScreen ? { screenContext: nextScreen } : {}),
-        });
-      }
-    } catch (error) {
-      // The request this run walked away from is not a failure to report — the
-      // user asked for it — so it ends the turn the same way the flag does.
-      if (error instanceof Stopped) return await this.close(run, turn, "stopped", STOP_NOTE, false);
-      run.status = "failed";
-      run.error = error instanceof Error ? error.message : String(error);
-      run.activity = "failed";
-      run.endedAt = Date.now();
-      this.closeRun(run, "failed", run.error);
-      this.deps.changed();
-      throw error;
-    } finally {
-      if (run.status === "running" || run.status === "waiting") {
-        run.status = "stopped";
-        run.endedAt = Date.now();
-      }
-      run.generationMs = Math.max(run.generationMs, 1);
-      // A stop is not a success, and the trace is about what happened rather than
-      // whose fault it was, so it lands with the failures.
-      this.closeRun(run, run.status === "done" ? "ok" : "failed", run.error);
-      this.flushTrace(run);
-      this.deps.changed();
-    }
   }
 
   /** Spawns a subagent on its own thread and returns its final answer as a tool result. */
@@ -745,7 +548,10 @@ export class AgentRuntime {
         console.error("Emma: the subagent's model could not be set", error);
       }
     }
-    const outcome = await this.run({
+    // The same door every other surface takes, so a subagent runs on the harness
+    // like everything else. It used to call this file's own `run` directly, which
+    // is how a `task` from a harness turn ended up on a second loop entirely.
+    const outcome = await this.deps.spawnTurn({
       threadId,
       content: prompt,
       mode: parent.mode,
@@ -755,112 +561,13 @@ export class AgentRuntime {
       depth,
       // Inherited, so a subagent's own subagent takes the same route.
       subagent: parent.subagent,
-      // The `task` call currently being performed on the parent, so the child's
-      // whole tree hangs under the call that asked for it.
-      parentSpanId: this.runs.get(parent.threadId)?.activeSpan,
-    });
+      // So the child's whole tree hangs inside the parent's rather than beside it.
+      parentSpanId: this.spanFor(parent.threadId),
+    }, parent.threadId);
     // A subagent can be stopped on its own from the agent rail, and the parent
     // reads this string — "finished without an answer" would be a lie about why.
     if (!lastAssistantMessage(outcome) && this.runs.get(threadId)?.status === "stopped") return "That subagent was stopped before it answered.";
     return lastAssistantMessage(outcome) ?? "That subagent finished without an answer.";
-  }
-
-  /**
-   * Runs one call behind the mode's gate, turning every refusal into something the
-   * model can read, and leaves a span behind either way.
-   *
-   * The span is opened here rather than in `executeTool`, because a refused, a
-   * declined and an invalidly-argued call are all things a run got stuck on and
-   * all things the trace has to show.
-   */
-  private async perform(run: Run, turn: TurnRequest, call: { id: string; name: string; arguments: string }): Promise<string> {
-    const span: TraceSpan = {
-      id: `call:${call.id}`,
-      parentId: run.spans[0].id,
-      name: call.name,
-      kind: call.name,
-      startedAt: Date.now(),
-      status: "running",
-      input: call.arguments,
-    };
-    run.spans.push(span);
-    const outer = run.activeSpan;
-    run.activeSpan = span.id;
-    // The renderer's step list is fed from here rather than from the trace: the
-    // trace flushes when the run ends, and this is the half worth watching live.
-    const report = (status: ThreadStep["status"], output?: string) => this.deps.step({
-      threadId: turn.threadId, toolCallId: call.id, title: span.name, kind: call.name,
-      status, input: call.arguments, output, at: Date.now(), edit: run.edits.get(call.id),
-    });
-    report("in_progress");
-    const settle = (output: string, status: TraceStatus) => {
-      span.status = status;
-      span.output = output;
-      // What the model is handed back, which is exactly what this call cost the
-      // context. A refusal is a cost too, and a short one, which is half of why
-      // the trace shows both.
-      span.tokens = Math.ceil(output.length / CHARS_PER_TOKEN);
-      return output;
-    };
-    try {
-      return await this.attempt(run, turn, call, settle);
-    } finally {
-      span.endedAt = Date.now();
-      run.activeSpan = outer;
-      report(span.status === "failed" ? "failed" : "completed", span.output);
-    }
-  }
-
-  private async attempt(
-    run: Run,
-    turn: TurnRequest,
-    call: { id: string; name: string; arguments: string },
-    settle: (output: string, status: TraceStatus) => string,
-  ): Promise<string> {
-    let args: AnyToolArgs;
-    try { args = parseToolArgs(call.name, call.arguments); }
-    catch (error) { return settle(error instanceof Error ? error.message : "Those tool arguments were invalid.", "failed"); }
-    // `run.mode`, not the mode the turn opened on: the picker is live, and a user
-    // who switches to Auto mid-run means the next call, not the next turn.
-    let gate = toolGate(run.mode, call.name, this.deps.disabledTools());
-    if (gate === "hidden") {
-      return settle(this.deps.disabledTools().includes(call.name)
-        ? `${call.name} is switched off in Settings → Tools, so it is not available. Do the work another way, or tell the user where to turn it back on.`
-        : `Emma is in ${run.mode} mode, which does not allow ${call.name}.`, "failed");
-    }
-    // Accept edits already lets writes through. A bare grep is strictly less than that
-    // — it reads, and reads are auto in every mode — so it does not stop the run either.
-    if (gate === "ask" && run.mode === "acceptEdits" && args.name === "bash" && isBareGrep(args.command)) gate = "auto";
-    run.activity = describeToolCall(args);
-    run.toolCalls += 1;
-    this.deps.changed();
-    if (gate === "ask") {
-      run.status = "waiting";
-      this.deps.changed();
-      const allowed = await this.confirm(run, args);
-      run.status = run.stopped ? "stopped" : "running";
-      this.deps.changed();
-      // A verifier's refusal goes back as feedback rather than as a bare no: the
-      // model has to know *why* it was rejected, or its next attempt is the same
-      // call with the argument order changed.
-      const rejected = run.mode === "auto" ? run.review?.verdict : undefined;
-      if (!allowed) {
-        return settle(rejected && !rejected.allow
-          ? `The auto verifier rejected that, and the user did not override it. Its reason: ${rejected.reason || "none given"}. Do not run it again as written — do the thing the user actually asked for, or ask them what they want.`
-          : "The user declined that. Ask them what to do instead, or try another way.", "failed");
-      }
-    }
-    if (run.stopped) return settle("The user stopped this run.", "failed");
-    // Answered here rather than in main's executor: the traces this reads are the
-    // ones this class writes, and the threads it reads and starts are the ones it
-    // runs, so nothing outside it has to know either exists.
-    if (ownedHere(args)) {
-      try { return settle(await this.runOwnTool(args, turn, run), "ok"); }
-      catch (error) { return settle(`That failed: ${error instanceof Error ? error.message : "unknown error"}`, "failed"); }
-    }
-    // A failed tool is the model's problem to solve, not a dead turn.
-    try { return settle(await this.deps.execute(args, turn), "ok"); }
-    catch (error) { return settle(`That failed: ${error instanceof Error ? error.message : "unknown error"}`, "failed"); }
   }
 
   /** The stored traces of a thread's past turns, newest last, as the model reads them. */
@@ -1001,10 +708,8 @@ export class AgentRuntime {
   }
 
   /**
-   * Sends text into another thread: steering the agent working there if one is,
-   * and starting a turn of its own if none is. One door, because from out here
-   * "talk to that thread" is one intention — whether something happens to be
-   * running in it at this instant is Emma's business, not the model's.
+   * Sends text into another thread, starting a turn of its own there. A thread
+   * with a turn already in flight is refused rather than queued — see `steer`.
    */
   private async messageThread(turn: TurnRequest, thread: string, text: string): Promise<string> {
     const sender = turn.parentThreadId ?? turn.threadId;
@@ -1013,10 +718,7 @@ export class AgentRuntime {
     // a turn nobody is reading, after this call had already said it was sent.
     const found = await this.findThread(thread);
     const run = this.runs.get(thread);
-    if (run && (run.status === "running" || run.status === "waiting")) {
-      this.steer(thread, text, sender);
-      return `Queued for ${thread}. It arrives with that agent's next batch of tool results.`;
-    }
+    if (run && (run.status === "running" || run.status === "waiting")) this.steer(thread, text);
     this.start({ threadId: thread, content: fromThread(sender, text), mode: turn.mode, model: turn.model, title: found.title });
     return `Sent to "${found.title}" (${thread}). Nothing was running there, so this starts a turn of its own; read it back with threads read ${thread}.`;
   }
@@ -1029,8 +731,7 @@ export class AgentRuntime {
    * row in the agent list rather than coming back here as a tool error.
    */
   private start(turn: TurnRequest, owner?: string): void {
-    const drive = this.deps.spawnTurn ?? ((request: TurnRequest) => this.run(request));
-    void Promise.resolve(drive(turn, owner)).catch((error: unknown) => console.error("Emma: a thread's own turn failed", error));
+    void Promise.resolve(this.deps.spawnTurn(turn, owner)).catch((error: unknown) => console.error("Emma: a thread's own turn failed", error));
   }
 
   /** Every thread Emma has stored, which is what the model reads its library as. */
@@ -1109,9 +810,9 @@ export class AgentRuntime {
     const toolCallId = `verify:${run.threadId}:${this.verifications}`;
     const span: TraceSpan = {
       id: `call:${toolCallId}`,
-      // Under the call being reviewed where there is one; the harness asks without
-      // one in hand, and then the run's own root is the honest parent.
-      parentId: run.activeSpan ?? run.spans[0].id,
+      // The harness asks without the call in hand, so the run's own root is the
+      // honest parent.
+      parentId: run.spans[0].id,
       name: "auto agent · reviewing",
       kind: "verifier",
       startedAt: Date.now(),
@@ -1142,31 +843,6 @@ export class AgentRuntime {
     return review;
   }
 
-  private confirm(run: Run, args: AnyToolArgs): Promise<boolean> {
-    return this.question({ threadId: run.threadId, tool: args.name, summary: describeToolCall(args), detail: detailOf(args) });
-  }
-
-  /**
-   * Ends a turn with words rather than a silent stop, so the thread has an answer in it.
-   *
-   * `summarise` is off for a user stop, and has to be: asking the model to sum up
-   * is one more generation, which is exactly what the button was pressed to end —
-   * the stop read as making Emma talk more. There is nowhere to put it either,
-   * since the host is still finishing the request this run just abandoned.
-   */
-  private async close(run: Run, turn: TurnRequest, status: Run["status"], message: string, summarise = true) {
-    run.stopped = true;
-    const result = summarise
-      ? await this.requestSpan(run, "model · wrap up", "sendMessage", { threadId: turn.threadId, content: `[System] ${message} Say so, briefly, and summarise what you got done.` })
-        .catch(() => undefined)
-      : undefined;
-    run.status = status;
-    run.activity = message;
-    run.endedAt = Date.now();
-    this.closeRun(run, "failed", message);
-    this.deps.changed();
-    return result;
-  }
 }
 
 /** One thread as the snapshot carries it. Only the parts `threads` reads. */
@@ -1180,22 +856,6 @@ type SnapshotThread = {
   messages?: { role: string; content: string; timestamp: string }[];
 };
 
-function detailOf(args: AnyToolArgs): string {
-  switch (args.name) {
-    case "bash": return args.command;
-    case "write_file": return `${args.path} · ${args.content.length.toLocaleString()} characters`;
-    case "computer": return JSON.stringify(args.args).slice(0, 512);
-    // Which of Emma's own tools, and what it is handed. The script itself is not
-    // repeated here: `write_tool` put it in this transcript when it was written.
-    case "run_tool": return `${args.tool ?? ""} ${args.input ?? ""}`.trim().slice(0, 512);
-    case "mcp_tool": return `${args.tool} ${JSON.stringify(args.args)}`.slice(0, 512);
-    // The process this starts, spelled out. Environment values are named, never
-    // shown: the question is which program runs, not what it is handed.
-    case "install_mcp": return `${[args.command, ...args.argv].join(" ")}${Object.keys(args.env).length ? ` · env: ${Object.keys(args.env).sort().join(", ")}` : ""}`.slice(0, 512);
-    default: return "";
-  }
-}
-
 const TRUNCATION_NOTICE = "\n[truncated]";
 
 /** The sidecar's ceiling is bytes, not characters, and the notice counts against it. */
@@ -1205,19 +865,6 @@ export function bounded(value: string): string {
   let kept = value;
   while (Buffer.byteLength(kept) > limit) kept = kept.slice(0, Math.floor(kept.length * (limit / Buffer.byteLength(kept))));
   return `${kept}${TRUNCATION_NOTICE}`;
-}
-
-export function toolCalls(result: unknown): { id: string; name: string; arguments: string }[] {
-  if (!result || typeof result !== "object") throw new Error("Emma host returned an invalid turn");
-  const calls = (result as Record<string, unknown>).toolCalls;
-  if (calls === undefined) return [];
-  if (!Array.isArray(calls) || calls.length > MAX_CALLS_PER_STEP) throw new Error("Emma host returned an invalid turn");
-  return calls.map((call) => {
-    if (!call || typeof call !== "object") throw new Error("Emma host returned an invalid tool call");
-    const candidate = call as Record<string, unknown>;
-    if (typeof candidate.id !== "string" || typeof candidate.name !== "string" || typeof candidate.arguments !== "string") throw new Error("Emma host returned an invalid tool call");
-    return { id: candidate.id, name: candidate.name, arguments: candidate.arguments };
-  });
 }
 
 /** The answer a finished turn ended on, as the host reports the thread back. */

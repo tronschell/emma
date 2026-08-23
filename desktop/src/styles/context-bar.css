@@ -72,7 +72,6 @@
 .bar-page-fields { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); }
 .bar-page-fields label { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .bar-page-fields input { min-height: 28px; padding: 0 var(--s-2); color: var(--text); border: 1px solid var(--border); background: var(--bg); font: var(--fs-sm)/1 var(--font-mono); }
-.bar-page-fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .bar-editor .bar-page-remove { min-height: 28px; padding: 0 var(--s-3); color: var(--danger); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: border-color var(--t), background-color var(--t); }
 .bar-editor .bar-page-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--danger-surface); }
 .bar-editor .bar-page-remove:disabled { color: var(--text-3); }

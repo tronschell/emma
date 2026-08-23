@@ -572,6 +572,9 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-body > * { flex: 0 0 auto; }
 /* Unboxed: the rule under it is the field's only edge. */
 .model-search { min-height: 30px; padding: 0 var(--s-3); color: var(--text); border: 0; border-bottom: 1px solid var(--border); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); }
+/* Three classes deep only to outrank settings.css's copy of the field's border,
+   so the focus edge index.css asks for survives in the settings catalog too. */
+.model-find .model-search:focus-visible { border-bottom-color: var(--accent); }
 /* Free-only sits on the search line, and carries the field's own rule so the line
    under it stays unbroken across the two controls. */
 .model-find { display: flex; }

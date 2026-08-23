@@ -160,6 +160,11 @@ export class CatalogCache {
     return this.models.find((model) => model.id === id)?.contextLength;
   }
 
+  /** Every model this cache has seen, for callers checking that an ID is still listed. */
+  ids(): string[] {
+    return this.models.map((model) => model.id);
+  }
+
   /** Runs `fetch`, diffs it against the cache, and falls back to the cache when it fails. */
   async refresh(fetch: () => Promise<Catalog>): Promise<CatalogResult> {
     const previous = new Set(this.models.map((model) => model.id));

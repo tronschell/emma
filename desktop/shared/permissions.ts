@@ -41,7 +41,6 @@ export const AGENT_TOOLS = [
   "background",
   "cli",
   "cli_runs",
-  "connect_folder",
   "computer",
   "write_skill",
   "write_tool",
@@ -143,10 +142,6 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   // on the Mac changes, but the library grows, so `plan` — where nothing at all
   // happens — does not offer it.
   save_page: { plan: "hidden", ask: "auto", acceptEdits: "auto", full: "auto" },
-  // The picker is the permission: nothing happens until the user chooses a
-  // folder in their own dialog, so no mode has a second question to ask. Plan
-  // included — a grant is Emma's own configuration, not a change to the Mac.
-  connect_folder: { plan: "auto", ask: "auto", acceptEdits: "auto", full: "auto" },
   write_file: { plan: "hidden", ask: "ask", acceptEdits: "auto", full: "auto" },
   bash: { plan: "hidden", ask: "ask", acceptEdits: "ask", full: "auto" },
   // Listing, reading and stopping commands Emma itself started. Starting one went
@@ -215,7 +210,6 @@ export function toolGate(mode: PermissionMode, tool: string, disabled: readonly 
  * cover exactly the same names.
  */
 export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; group: string }[] = [
-  { name: "connect_folder", label: "Connect folder", blurb: "Opens your folder picker so a thread gets a project to work in.", group: "Files" },
   { name: "read_file", label: "Read file", blurb: "Reads a text file from a connected folder.", group: "Files" },
   { name: "list_files", label: "List files", blurb: "Lists the text files in a connected folder, with sizes.", group: "Files" },
   { name: "ripgrep", label: "Search files", blurb: "Searches a connected folder with the bundled ripgrep.", group: "Files" },

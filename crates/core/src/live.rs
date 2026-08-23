@@ -1654,6 +1654,11 @@ where
                     page_id,
                 ));
             }
+            // ponytail: the model call runs on this thread, and the host answers one
+            // request at a time, so a page being written holds up every other host
+            // call — reads still queue, they are just no longer shown as the whole
+            // app being busy. Move the agent behind an `Arc<Mutex<_>>` and apply the
+            // analysis in a follow-up command if the queueing itself starts to bite.
             Command::AnalyzePage {
                 page_id,
                 keep_category,

@@ -40,6 +40,11 @@ button:disabled { cursor: default; opacity: .45; }
    in the product. A region that wants a different offset or none at all still
    outranks this with one class. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Text fields are the exception: a box around a box: the ring traced an edge the
+   field already draws, and every autofocused one opened wearing it. Focus moves
+   into the field's own border instead, alongside the caret. Checkbox, range and
+   file keep the ring: no caret, no border of their own to colour. */
+:is(input:not([type="checkbox"], [type="range"], [type="file"]), textarea):focus-visible { border-color: var(--accent); outline: none; }
 
 /* One control language, defined once. Regions own layout (size, margin, grid
    placement); the control's own chrome lives here so no region can ship a stock

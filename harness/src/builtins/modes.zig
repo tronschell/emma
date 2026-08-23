@@ -63,8 +63,11 @@ test "built-in modes register exact ACP order and permission policy" {
     try std.testing.expect(lookup("code") == null);
 }
 
-test "ask and code mode projections carry included custom provider guidance" {
-    inline for (&.{ "ask", "acceptEdits", "full" }) |mode_id| {
+test "every mode opens with the search door and nothing else" {
+    // The whole catalog now waits behind `search_tools`, so what a turn starts
+    // with is two tools whatever rung it is on. Plan included: it used to be the
+    // one mode with a shorter list, and an empty one would strand it.
+    inline for (&.{ "plan", "ask", "acceptEdits", "full" }) |mode_id| {
         var projection = try registry.buildGatewayToolProjection(
             std.testing.allocator,
             builtin_tools.advertisement_set,
@@ -73,15 +76,22 @@ test "ask and code mode projections carry included custom provider guidance" {
         );
         defer projection.deinit(std.testing.allocator);
 
-        try std.testing.expect(std.mem.find(u8, projection.tools_json, "gateway.perplexity_search") != null);
-        try std.testing.expectEqualStrings(builtin_tools.web_search.description, projection.custom_guidance);
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, projection.tools_json, .{});
+        defer parsed.deinit();
+        const advertised = parsed.value.array.items;
+        try std.testing.expectEqual(@as(usize, 2), advertised.len);
+        try std.testing.expectEqualStrings("search_tools", advertised[0].object.get("name").?.string);
+        try std.testing.expectEqualStrings("select_tool", advertised[1].object.get("name").?.string);
+        // Nothing custom is left to advertise, so no tool contributes guidance.
+        try std.testing.expectEqualStrings("", projection.custom_guidance);
     }
 }
 
 test "built-in mode projections use the supplied tool set" {
-    const tools = [_]builtin_tools.ToolSpec{
-        builtin_tools.lookup("read_file") orelse return error.TestExpectedEqual,
-    };
+    var read_file = builtin_tools.lookup("read_file") orelse return error.TestExpectedEqual;
+    // The supplied set is what is under test, not the advertisement policy.
+    read_file.advertisement = .always;
+    const tools = [_]builtin_tools.ToolSpec{read_file};
     const ordered_names = [_][]const u8{ "write_file", "read_file" };
     const read_only_names = [_][]const u8{ "write_file", "read_file" };
     const tool_set = tool_set_contract.ToolSet{

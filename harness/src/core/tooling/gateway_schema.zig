@@ -1,11 +1,20 @@
 const std = @import("std");
 
-pub const description_max_bytes: usize = 1024;
+/// Emma's own ceiling, from `desktop/main/tools.ts`, rather than fx's 1024.
+///
+/// Several of Emma's tools are a list of actions with a line each, and at 1024
+/// `plan` lost its `update` and `delete` lines and `threads` lost the sentence
+/// telling the model when to reach for `task` instead. A tool whose description
+/// is cut mid-list is worse than one that costs a few hundred more tokens.
+pub const description_max_bytes: usize = 4 * 1024;
 pub const truncation_marker = "... [truncated]";
 
 pub const JsonType = enum {
     string,
     integer,
+    /// Fractional values, which `integer` silently narrows away. Emma's
+    /// `computer` tool takes a `duration` in seconds and means 0.5 by it.
+    number,
     boolean,
     object,
     array,
@@ -58,7 +67,7 @@ test "static property representation stays within the measured size budget" {
     try std.testing.expect(@sizeOf(Property) <= 96);
 }
 
-fn cappedDescriptionAlloc(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
+pub fn cappedDescriptionAlloc(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
     if (text.len <= description_max_bytes) return alloc.dupe(u8, text);
 
     const prefix_len = description_max_bytes - truncation_marker.len;

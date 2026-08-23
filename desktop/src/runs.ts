@@ -80,14 +80,14 @@ export type Grouped =
 
 /**
  * Consecutive calls fold into one list, so a burst of them reads as a block of work
- * and not as a stack of one-row lists — and only `keep` rows of them for the whole
- * turn, with the rest going to one collapsed list where the call that broke the
- * budget happened.
+ * and not as a stack of one-row lists — `keep` of its rows plainly, the rest behind
+ * the caret.
  *
- * The budget is spent across the turn and not per burst, because a turn is normally
- * a call, a line about it, another call — so per-burst every group is one row long,
- * nothing ever reaches the fold, and the transcript is the wall of tool calls the
- * fold exists to stop.
+ * A burst ends where prose does. The budget used to be spent across the whole turn
+ * into a single shared list, which was pushed where the *first* call happened and
+ * then went on collecting every call after it — so a turn read as one lump of tool
+ * calls at the top followed by all of its words, whatever order it really went in,
+ * and a call made after a line of narration was drawn above the line it followed.
  *
  * A `visualize` call is the exception, and it leaves the list entirely: the fold
  * exists because a call is machinery beside the answer, and a picture drawn to
@@ -96,20 +96,13 @@ export type Grouped =
  */
 export function groupBlocks(blocks: Block[], keep: number): Grouped[] {
   const grouped: Grouped[] = [];
-  /// Everything past the budget, still being appended to as the turn goes on.
-  const rest: ThreadStep[] = [];
-  let rows = 0;
   for (const block of blocks) {
-    const tail = grouped.at(-1);
     const visual = block.kind === "step" ? readVisualization(block.step) : undefined;
     if (visual) grouped.push({ kind: "visual", visual });
     else if (block.kind !== "step") grouped.push(block);
-    else if (rows >= keep) {
-      if (!rest.length) grouped.push({ kind: "steps", steps: rest, keep: 0 });
-      rest.push(block.step);
-    } else {
-      rows += 1;
-      if (tail?.kind === "steps" && tail.keep) tail.steps.push(block.step);
+    else {
+      const tail = grouped.at(-1);
+      if (tail?.kind === "steps") tail.steps.push(block.step);
       else grouped.push({ kind: "steps", steps: [block.step], keep });
     }
   }

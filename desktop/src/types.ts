@@ -321,6 +321,8 @@ declare global {
       openPrivacySettings(permission: LinkedPermission): Promise<void>;
       /** Points the knowledge mirror at the default Documents folder, or one the user picks. */
       setKnowledgeDir(mode: "pick" | "default"): Promise<SetupStatus>;
+      /** Deletes everything Emma stores on this Mac and restarts her empty. Never resolves — the app is gone. */
+      resetData(): Promise<void>;
       listFolders(): Promise<FolderGrant[]>;
       onFolderAttached(listener: (value: { threadId: string; folderId: string }) => void): () => void;
       pickFolder(): Promise<FolderGrant[]>;

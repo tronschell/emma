@@ -1335,6 +1335,52 @@ test "a tool hidden behind search never enters a projection it was not selected 
     }
 }
 
+test "a selected native tool reaches the advertisement through the dynamic schema sink" {
+    const alloc = std.testing.allocator;
+    const hidden = blk: {
+        var spec = test_read_file;
+        spec.name = "emma_hidden";
+        spec.description = "Hidden until selected.";
+        spec.gateway_schema = .{
+            .name = "emma_hidden",
+            .description = spec.description,
+            .input_schema = .{
+                .properties = &.{
+                    .{ .name = "path", .json_type = .string, .description = "Target path." },
+                },
+            },
+        };
+        spec.advertisement = .on_select;
+        break :blk spec;
+    };
+    const tools = test_all_tools ++ [_]tool_dispatch.Tool{hidden};
+
+    var projection = try buildToolProjection(
+        alloc,
+        testToolSetForRegistry(tools[0..]),
+        .full,
+        .{ .subagent_available = true },
+    );
+    defer projection.deinit(alloc);
+
+    // `select_tool` reports exactly this schema, and the sink it reports through
+    // is the one MCP selection already uses. Nothing downstream reads the name.
+    const selected_schema = try gateway_schema.builtinFunctionSchemaJsonAlloc(alloc, hidden.gateway_schema);
+    defer alloc.free(selected_schema);
+    const json = try buildGatewayToolsJsonWithSelectedDynamicSchemas(
+        alloc,
+        projection.tools_json,
+        &.{selected_schema},
+    );
+    defer alloc.free(json);
+
+    var names = try collectToolNames(alloc, json);
+    defer freeNames(alloc, &names);
+    try expectContainsName(names.items, "emma_hidden");
+    try std.testing.expectEqual(@as(usize, 1), countName(names.items, "emma_hidden"));
+    try std.testing.expect(std.mem.find(u8, json, "\"path\"") != null);
+}
+
 test "MCP dynamic tools are deferred from the base gateway advertisement" {
     const alloc = std.testing.allocator;
     var runtime = mcp_runtime.McpRuntime.init(alloc);

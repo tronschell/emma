@@ -153,7 +153,6 @@
 .thread-card > small, .thread-card-sent { overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
 .thread-card > form { display: flex; align-items: center; gap: var(--s-2); }
 .thread-card input { flex: 1; min-width: 0; min-height: 24px; padding: 0 var(--s-2); color: var(--text); background: var(--surface); border: 1px solid var(--border); font-family: var(--font-mono); font-size: var(--fs-2xs); }
-.thread-card input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .thread-card .capability-error { margin: 0; }
 
 /* Subagents in the inspector --------------------------------------------- */
@@ -337,12 +336,25 @@
 .git-file[open] > summary { color: var(--text); }
 .git-file .diff { max-height: 40vh; }
 
-/* Each installed editor's own app icon; the row appears only in the full-width tab. */
-.git-editors { display: flex; gap: var(--s-1); }
-.git-editors button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; background: transparent; border: 1px solid transparent; opacity: 0.65; transition: opacity var(--t), border-color var(--t); }
-.git-editors button:hover { opacity: 1; border-color: var(--border-strong); }
-.git-editors img { width: 16px; height: 16px; }
-.git-editors b { color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; }
+/* Each installed editor's own app icon, beside whatever the row names. */
+.open-in { display: flex; align-items: center; gap: var(--s-1); flex: 0 0 auto; }
+.open-in button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; background: transparent; border: 1px solid transparent; opacity: 0.65; transition: opacity var(--t), border-color var(--t); }
+.open-in button:hover { opacity: 1; border-color: var(--border-strong); }
+.open-in img { width: 16px; height: 16px; }
+.open-in b { color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; }
+/* In the 260px rail the marks would take a quarter of the path they belong to, so
+   there they wait for the pointer — or a tab, which is why it is opacity and not
+   display. The full-width tab has the room and keeps them out. */
+.git-panel:not(.git-page) .open-in { opacity: 0; transition: opacity var(--t); }
+.git-panel:not(.git-page) .git-file > summary:hover .open-in, .git-panel:not(.git-page) .open-in:focus-within { opacity: 1; }
+/* Standing on its own on the thread bar rather than trailing a path, it takes the
+   app's button box and says what it is: same 1px outline and mono small caps as
+   the Agent button beside it, holding marks instead of a word. */
+.open-in.boxed { gap: var(--s-2); min-height: 28px; padding: 0 var(--s-2); border: 1px solid var(--border); transition: border-color var(--t); }
+.open-in.boxed:hover { border-color: var(--border-strong); }
+.open-in.boxed small { color: var(--text-3); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.open-in.boxed button { width: 20px; height: 20px; opacity: 0.8; }
+.open-in.boxed img { width: 15px; height: 15px; }
 
 /* The same panel as its own tab: it scrolls, and no diff inside it is boxed. */
 .git-page { align-content: start; max-width: var(--content-column); margin: 0 auto; padding: var(--s-4) var(--s-4) var(--s-6); overflow: auto; }

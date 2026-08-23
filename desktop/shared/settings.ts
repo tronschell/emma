@@ -903,6 +903,63 @@ export function freeModels<T extends { key: string; free?: boolean }>(entries: T
   return entries.filter((entry) => entry.free === true || entry.key === active);
 }
 
+/**
+ * Emma's own row in the model list: not a model, a chain of free ones.
+ *
+ * A free model is free because it is rationed — every one of these has a rate
+ * limit that a working agent hits in the middle of a turn, and hitting it is
+ * the end of that turn. Selecting this sends the whole chain instead, and the
+ * first one that will answer answers. OpenRouter does the falling through
+ * itself, from the `models` array Emma's transport builds out of this list, so
+ * nothing is retried on this side and no context is sent twice.
+ *
+ * Its own key rather than `openrouter:…`: the host validates that prefix
+ * against the live catalog, and this names something the catalog has never
+ * heard of.
+ */
+export const FREE_ROUTER_KEY = "free-router";
+
+/**
+ * The chain, strongest first — every free tool-capable model on OpenRouter that
+ * is built for agentic work, checked on 2026-08-22.
+ *
+ * Ordered by what each is for rather than by its size alone: frontier
+ * reasoners, then the coding agents, then the small fast ones. Left out
+ * deliberately: models under a 256K window (Emma's tool preamble alone crowds
+ * one), the vision-only and perception sub-agent models, LiquidAI's 2.6B (its
+ * own card advises against agentic coding), and stealth/cloaked routes, whose
+ * vendor is unnamed and whose prompts are logged for training.
+ *
+ * Refresh it against `openrouter.ai/api/v1/models?supported_parameters=tools`,
+ * filtered to zero prompt and completion price. An ID that has since been
+ * retired is dropped by `freeRouterChain` rather than sent.
+ */
+export const FREE_ROUTER_MODELS = [
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "thinkingmachines/inkling:free",
+  "z-ai/glm-5.2:free",
+  "poolside/laguna-s-2.1:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "thinkingmachines/inkling-small:free",
+  "dots-studio/dots-3-note-preview:free",
+  "poolside/laguna-xs-2.1:free",
+  "cohere/north-mini-code:free",
+  "nvidia/nemotron-3.5-lightning:free",
+];
+
+/**
+ * The chain as the transport takes it: one comma-separated list, best first.
+ *
+ * Filtered against the catalog the app actually has, because a model OpenRouter
+ * has retired is an error in the fallback array rather than a link in it. An
+ * empty catalog means the list is unchecked rather than empty — a first launch
+ * that has not fetched yet still routes.
+ */
+export function freeRouterChain(catalogued: readonly string[] = []): string {
+  const listed = catalogued.length ? FREE_ROUTER_MODELS.filter((id) => catalogued.includes(id)) : FREE_ROUTER_MODELS;
+  return (listed.length ? listed : FREE_ROUTER_MODELS).join(",");
+}
+
 export function forgetLocalModel(settings: UserSettings, profileId: string): UserSettings {
   return { ...settings, localModels: settings.localModels.filter((item) => item.id !== profileId), favoriteModels: settings.favoriteModels.filter((key) => key !== `local:${profileId}`) };
 }

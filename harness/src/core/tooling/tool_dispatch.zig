@@ -415,6 +415,9 @@ pub const ExecutorKind = enum {
     mcp_search_tools,
     mcp_select_tool,
     mcp_features,
+    /// The native twin of the MCP discovery pair. See `tool_native_dispatch`.
+    search_tools,
+    select_tool,
     ask_user_question,
     vision,
     /// Executed by the ACP client, not here. See `EmmaToolResponder`.

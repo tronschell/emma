@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld("emma", {
   setupStatus: () => ipcRenderer.invoke("emma:setup-status"),
   openPrivacySettings: (permission: string) => ipcRenderer.invoke("emma:open-privacy-settings", permission),
   setKnowledgeDir: (mode: "pick" | "default") => ipcRenderer.invoke("emma:set-knowledge-dir", mode),
+  resetData: () => ipcRenderer.invoke("emma:reset-data"),
   pickFolder: () => ipcRenderer.invoke("emma:pick-folder"),
   forgetFolder: (id: string) => ipcRenderer.invoke("emma:forget-folder", id),
   listFolderFiles: (id: string) => ipcRenderer.invoke("emma:list-folder-files", id),

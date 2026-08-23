@@ -15,10 +15,10 @@ skill and it will survive.
 ## First: get the repository
 
 Everything here needs the Emma checkout connected as this thread's folder. If
-nothing is connected, call `connect_folder` with a reason like "the Emma
-repository, to change the app itself" — do not describe what the user should do
-by hand instead. Confirm you have the right folder: `AGENTS.md`, `desktop/`,
-`crates/`, `agent/` and `harness/` sit at its root.
+nothing is connected, ask the user to connect it — the folder button in the
+sidebar opens the picker — and say which folder you need and why. Confirm you
+have the right one: `AGENTS.md`, `desktop/`, `crates/`, `agent/` and `harness/`
+sit at its root.
 
 Work on a branch. `git status` first, and leave the tree as you found it apart
 from your change.

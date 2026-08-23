@@ -133,16 +133,14 @@ test("auto gates exactly what ask gates, so the verifier is asked the same quest
 
 test("a call the verifier clears runs without asking, and the whole review is on the record", async () => {
   const seen: VerifierRequest[] = [];
-  const { runtime, asked, live, ran, traced } = harness({
+  const { runtime, gate, asked, live, traced } = harness({
     verify: async (request) => {
       seen.push(request);
       return { model: "small/model", prompt: verifierPrompt(request), reply: '{"allow": true, "reason": "runs the tests"}', verdict: { allow: true, reason: "runs the tests" }, attempts: 1 };
     },
   });
-  await runtime.run({ threadId: "t1", content: "run the tests", mode: "auto", title: "This thread" });
-
-  assert.equal(asked.length, 0, "a cleared call never reaches the user");
-  assert.deepEqual(ran, ["npm test"]);
+  assert.equal(await gate(), true, "a cleared call is allowed");
+  assert.equal(asked.length, 0, "and never reaches the user");
   // What the verifier was told: the goal, what the agent is doing, and the command itself.
   assert.equal(seen[0].goal, "run the tests");
   assert.equal(seen[0].detail, "npm test");
@@ -151,42 +149,37 @@ test("a call the verifier clears runs without asking, and the whole review is on
   assert.equal(record.status, "completed");
   assert.match(record.input!, /The user asked: run the tests/);
   assert.match(record.output!, /"allow": true/);
-  // And the same exchange is in the waterfall the finished turn stored, under the call it was about.
+  // And the same exchange is in the waterfall the finished turn stored. It hangs
+  // off the run rather than off the call: the harness asks without telling Emma
+  // which of its calls the question is about.
+  runtime.finish("t1");
   const span = traced.find((candidate) => candidate.kind === "verifier")!;
   assert.match(span.name, /auto agent approved/);
-  assert.equal(span.parentId, "call:c1");
+  assert.equal(span.parentId, "agent:t1");
   assert.equal(span.input, record.input);
 });
 
-test("a call the verifier will not clear goes back to the user, and the model is told why", async () => {
-  const { runtime, asked, live, ran, told } = harness({
+test("a call the verifier will not clear goes back to the user, and the dialog says why", async () => {
+  const { gate, asked, live } = harness({
     verify: async (request) => ({ model: "small/model", prompt: verifierPrompt(request), reply: '{"allow": false, "reason": "wipes a directory the user never mentioned"}', verdict: { allow: false, reason: "wipes a directory the user never mentioned" }, attempts: 1 }),
     answer: false,
   });
-  await runtime.run({ threadId: "t1", content: "run the tests", mode: "auto", title: "This thread" });
-
+  assert.equal(await gate(), false, "and the user said no");
   assert.equal(asked.length, 1, "a blocked call is a question, not a refusal");
   assert.match(asked[0].detail, /npm test/);
   assert.match(asked[0].detail, /\[auto agent\] blocked this: wipes a directory the user never mentioned/);
-  assert.deepEqual(ran, [], "and the user said no");
   assert.equal(live.find((step) => step.kind === "verifier")?.title, "auto agent blocked");
-  // The refusal the model reads is feedback, not a bare no: without the reason its
-  // next step is the same command with the arguments shuffled.
-  assert.match(told[0], /rejected that/);
-  assert.match(told[0], /wipes a directory the user never mentioned/);
 });
 
 test("a verifier that cannot answer asks the user rather than deciding for them", async () => {
-  const { runtime, asked, live, ran } = harness({
+  const { gate, asked, live } = harness({
     verify: async () => ({ model: "", prompt: "p", reply: "", attempts: 1, error: "No verifier model is configured in Settings → Models." }),
     answer: true,
   });
-  await runtime.run({ threadId: "t1", content: "run the tests", mode: "auto", title: "This thread" });
-
+  // The user said yes, so the call still runs: a missing verifier costs a dialog, not the turn.
+  assert.equal(await gate(), true);
   assert.equal(asked.length, 1);
   assert.match(asked[0].detail, /\[auto agent\] could not answer: No verifier model is configured/);
-  // The user said yes, so the call still runs: a missing verifier costs a dialog, not the turn.
-  assert.deepEqual(ran, ["npm test"]);
   assert.equal(live.find((step) => step.kind === "verifier")?.title, "auto agent could not answer");
 });
 
@@ -194,30 +187,28 @@ function request(): VerifierRequest {
   return { goal: "run the tests", title: "This thread", activity: "running npm test", tool: "bash", summary: "running npm test", detail: "rm -rf /tmp/build && npm test" };
 }
 
-/** One turn that asks for one gated command, with the answers the test wants. */
+/**
+ * One gated command put through the channel the harness uses — `question` — with
+ * the answers the test wants. The turn itself is the harness's; all Emma sees is
+ * the one call it stopped to ask about.
+ */
 function harness({ verify, answer }: { verify: (request: VerifierRequest) => Promise<VerifierReview>; answer?: boolean }) {
   const asked: PermissionAsk[] = [];
   const live: ThreadStep[] = [];
-  const ran: string[] = [];
-  const told: string[] = [];
   const traced: TraceSpan[] = [];
-  let step = 0;
   const runtime: AgentRuntime = new AgentRuntime({
     request: async (method, params) => {
-      if (method === "recordTrace") { traced.push(...decodeSpans(params.trace)); return {}; }
-      if (method === "submitToolResult") for (const result of JSON.parse(params.results) as { content: string }[]) told.push(result.content);
-      step += 1;
-      return step === 1 ? { toolCalls: [{ id: "c1", name: "bash", arguments: JSON.stringify({ command: "npm test" }) }] } : { messages: [] };
+      if (method === "recordTrace") traced.push(...decodeSpans(params.trace));
+      return {};
     },
-    execute: async (args) => { if (args.name === "bash") ran.push(args.command); return "ok"; },
-    available: () => ({ folders: true, computer: false, mcp: false, canSpawn: false }),
     ask: (request) => { asked.push(request); runtime.answer(request.id, answer === true); },
     advise: async () => ({ model: "", text: "no advisor" }),
-    disabledTools: () => [],
     verify,
-    screenshot: async () => undefined,
+    spawnTurn: () => {},
     changed: () => {},
     step: (value) => live.push(value),
   });
-  return { runtime, asked, live, ran, told, traced };
+  runtime.adopt({ threadId: "t1", content: "run the tests", mode: "auto", title: "This thread" });
+  const gate = () => runtime.question({ threadId: "t1", tool: "bash", summary: "running npm test", detail: "npm test" });
+  return { runtime, gate, asked, live, traced };
 }

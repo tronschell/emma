@@ -14,7 +14,11 @@ const fakeAgent = path.join(process.cwd(), "test", "fake-acp-agent.mjs");
 /** A real directory: `spawn` reports a missing cwd as ENOENT on the binary. */
 const workspace = tmpdir();
 
-function harness(answer: (ask: PermissionAsk, options: PermissionOption[]) => Promise<string | null>, idleMs?: number) {
+function harness(
+  answer: (ask: PermissionAsk, options: PermissionOption[]) => Promise<string | null>,
+  idleMs?: number,
+  runTool: (threadId: string, name: string, args: Record<string, unknown>) => Promise<string> = async () => "",
+) {
   const deltas: { threadId: string; delta: string }[] = [];
   const thoughts: string[] = [];
   const calls: HarnessToolCall[] = [];
@@ -22,6 +26,7 @@ function harness(answer: (ask: PermissionAsk, options: PermissionOption[]) => Pr
   const contexts: PermissionContext[] = [];
   const children: { parentThreadId: string; childId: string; title: string }[] = [];
   const ended: string[] = [];
+  const toolRequests: { threadId: string; name: string; args: Record<string, unknown> }[] = [];
   const client = new Harness({
     binaryPath: process.execPath,
     args: [fakeAgent],
@@ -41,8 +46,12 @@ function harness(answer: (ask: PermissionAsk, options: PermissionOption[]) => Pr
       contexts.push(context);
       return answer(ask, options);
     },
+    onToolRequest: (threadId, name, args) => {
+      toolRequests.push({ threadId, name, args });
+      return runTool(threadId, name, args);
+    },
   });
-  return { client, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended };
+  return { client, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, toolRequests };
 }
 
 test("every mode that can change something routes its decision back to Emma", () => {
@@ -132,15 +141,15 @@ test("tool output keeps text blocks and ignores everything else", () => {
   );
 });
 
-// Every Emma tool reaches the harness over the MCP bridge, and its answer comes
-// back wrapped. Unwrapped, the transcript shows the tool's own words; wrapped,
-// it showed a line of raw JSON and the artifact marker was unreachable.
+// A tool from a user's MCP server answers through the harness wrapped in an
+// envelope. Unwrapped, the transcript shows the tool's own words; wrapped, it
+// showed a line of raw JSON and the artifact marker was unreachable.
 test("an MCP result is unwrapped from the envelope the harness reports it in", () => {
   const envelope = (text: string) => JSON.stringify({
-    server: "emma", tool: "mcp_emma_artifact",
+    server: "linear", tool: "mcp_linear_create_issue",
     result: { resultType: "complete", content: [{ type: "text", text }] },
   });
-  const wrote = '[artifact:harness-probe] Created the artifact "Harness Probe"\nIt is on the Artifacts page.';
+  const wrote = 'Created ENG-412 "Ship the migration"\nIt is assigned to you.';
   assert.equal(unwrapMcpResult(envelope(wrote)), wrote);
   assert.equal(
     toolOutput([{ type: "content", content: { type: "text", text: envelope(wrote) } }]),
@@ -150,17 +159,19 @@ test("an MCP result is unwrapped from the envelope the harness reports it in", (
 
   // The case that actually happens. The harness passes on a 200-byte prefix of
   // any tool's output, so the envelope arrives cut mid-string and unparseable —
-  // which is why there is a fallback at all, and why the marker leads the text.
-  const cut = envelope(wrote).slice(0, 200);
+  // which is why there is a fallback at all.
+  const long = `${wrote}${" and it has a long tail".repeat(6)}`;
+  const cut = envelope(long).slice(0, 200);
   assert.throws(() => JSON.parse(cut), "the fixture has to be genuinely broken or this proves nothing");
-  assert.equal(unwrapMcpResult(cut), wrote.slice(0, unwrapMcpResult(cut).length), "what survived is the tool's words, not a brace fragment");
-  assert.ok(unwrapMcpResult(cut).startsWith("[artifact:harness-probe] Created"));
-  assert.equal(artifactWritten({ status: "completed", output: unwrapMcpResult(cut) }), "harness-probe");
+  assert.equal(unwrapMcpResult(cut), long.slice(0, unwrapMcpResult(cut).length), "what survived is the tool's words, not a brace fragment");
 
-  // A title long enough to push a trailing marker off the cut. This is the
-  // regression: the card vanished for exactly these, and only these.
-  const longTitle = envelope(`[artifact:long-one] Created the artifact "${"x".repeat(200)}"`).slice(0, 200);
-  assert.equal(artifactWritten({ status: "completed", output: unwrapMcpResult(longTitle) }), "long-one");
+  // Emma's own tools are native, so their answer arrives as plain text and the
+  // whole 200 bytes are theirs. The `[artifact:…]` marker leads the line for
+  // exactly this reason: a title long enough to push a trailing marker off the
+  // cut is the regression the card used to vanish for.
+  const artifact = `[artifact:long-one] Created the artifact "${"x".repeat(200)}"`.slice(0, 200);
+  assert.equal(unwrapMcpResult(artifact), artifact, "a native tool's words are not an envelope");
+  assert.equal(artifactWritten({ status: "completed", output: artifact }), "long-one");
 
   // Left alone unless it is really one of these: no `tool` key, not JSON, or
   // JSON that simply is the answer.
@@ -223,6 +234,55 @@ test("a subagent's words land on a thread of its own, never in its parent's answ
     assert.equal(calls.filter((call) => call.threadId === "thread-parent" && call.toolCallId === "call_1").length, 0);
     // Ended exactly once, so nothing is left showing as running forever.
     assert.deepEqual(ended, ["thread_for_child_1"]);
+  } finally {
+    client.close();
+  }
+});
+
+test("one of Emma's own tools runs in Emma and its answer reaches the harness", async () => {
+  // The harness advertises these natively and has no implementation for them:
+  // the call comes back down the pipe as `_emma/callTool`, and if this round
+  // trip breaks every Emma tool is advertised and then fails on use.
+  const { client, text, toolRequests } = harness(async () => "allow_once", undefined, async () => "two threads");
+  try {
+    await client.prompt("thread-1", workspace, "emmatool", "ask");
+    assert.deepEqual(toolRequests, [{ threadId: "thread-1", name: "threads", args: { action: "list", limit: 5 } }]);
+    assert.equal(text().at(-1), "output:11:two threads");
+  } finally {
+    client.close();
+  }
+});
+
+test("a tool that throws in Emma answers the harness instead of hanging it", async () => {
+  // The harness blocks on this request with no deadline of its own — a rejected
+  // promise that never became a reply would strand the turn forever.
+  const { client, text } = harness(async () => "allow_once", undefined, async () => { throw new Error("not in plan mode"); });
+  try {
+    await client.prompt("thread-1", workspace, "emmatool", "ask");
+    assert.equal(text().at(-1), "output:16:not in plan ");
+  } finally {
+    client.close();
+  }
+});
+
+test("a tool that answers with more than the cap is cut, not sent whole", async () => {
+  const { client, text } = harness(async () => "allow_once", undefined, async () => "x".repeat(70_000));
+  try {
+    await client.prompt("thread-1", workspace, "emmatool", "ask");
+    assert.equal(text().at(-1), `output:${64 * 1024}:xxxxxxxxxxxx`);
+  } finally {
+    client.close();
+  }
+});
+
+test("a call naming a session Emma does not know is refused, not run", async () => {
+  const { client, text, toolRequests } = harness(async () => "allow_once", undefined, async () => "ran anyway");
+  try {
+    await client.prompt("thread-1", workspace, "emmatool nosession", "ask");
+    // `threadId` is what decides whose folder, mode and settings the call is
+    // checked against, so a request Emma cannot place must not reach a tool.
+    assert.deepEqual(toolRequests, []);
+    assert.equal(text().at(-1), "error:Unknown session or tool");
   } finally {
     client.close();
   }

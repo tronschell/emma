@@ -33,6 +33,16 @@ test("a read cannot escape the granted folder, and an unknown grant is refused",
   assert.throws(() => store.read("not-a-grant", "readme.md"));
 });
 
+/* What the "Open in" row on the thread bar sends when it names no file: the editor
+   is handed the project, and the same walk still refuses anything above it. */
+test("the folder itself is a path inside the grant, and cannot be climbed out of", () => {
+  const { project, store } = workspace();
+  const [grant] = store.add(project);
+  assert.equal(store.within(grant.id, "."), ".");
+  assert.equal(path.join(store.directory(grant.id), store.within(grant.id, ".")), store.directory(grant.id));
+  assert.throws(() => store.within(grant.id, "../secret.md"));
+});
+
 test("adding the same folder twice keeps one grant, and forgetting drops it", () => {
   const { project, store } = workspace();
   const [grant] = store.add(project);

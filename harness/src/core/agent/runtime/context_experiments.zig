@@ -39,6 +39,13 @@ pub const Settings = struct {
     /// capability table only knows a handful of model prefixes, so Emma sends
     /// the real number; zero leaves the percent triggers inert.
     context_window_tokens: usize = 0,
+    /// What the previous step's response was billed for, straight off
+    /// `GatewayBilling`, and the only observation of the prompt cache the loop
+    /// has in hand. Zero input means no observation — the first step of a turn,
+    /// a model that does not cache, missing billing metadata — and every
+    /// unknown reads as a cold cache, so pruning behaves as it always has.
+    previous_cache_read_tokens: u64 = 0,
+    previous_input_tokens: u64 = 0,
 
     pub fn enabled(self: Settings) bool {
         return self.reinject_prompt_steps != 0 or self.reinject_prompt_percent != 0 or
@@ -82,7 +89,15 @@ pub fn apply(
 
     // Pruning first: the reminder is appended after it, so it is never the thing
     // that gets pruned, and both triggers are judged against the same estimate.
-    if (fires(settings.prune_tools_steps, settings.prune_tools_percent, step_index, outcome.percent_used)) {
+    //
+    // The two prune triggers part company on a warm cache. Window pressure is a
+    // resource limit, so it fires whatever the cache is doing — cache economics
+    // must never be the reason a turn overflows its window. The periodic trigger
+    // is only ever a cost optimization, and on a warm cache it is a losing one,
+    // so it stands down and waits for the cache to cool.
+    const prune_pressure = firesOnPercent(settings.prune_tools_percent, outcome.percent_used);
+    const prune_hygiene = firesOnStep(settings.prune_tools_steps, step_index) and !cacheWasWarm(settings);
+    if (prune_pressure or prune_hygiene) {
         const pruned = pruneToolResults(messages.items);
         outcome.pruned_results = pruned.results;
         // Net of the notices that replaced the bodies, and saturating: a tool
@@ -102,8 +117,32 @@ pub fn apply(
 }
 
 fn fires(every_steps: usize, at_percent: usize, step_index: usize, percent_used: usize) bool {
-    if (every_steps != 0 and step_index != 0 and step_index % every_steps == 0) return true;
+    return firesOnStep(every_steps, step_index) or firesOnPercent(at_percent, percent_used);
+}
+
+fn firesOnStep(every_steps: usize, step_index: usize) bool {
+    return every_steps != 0 and step_index != 0 and step_index % every_steps == 0;
+}
+
+fn firesOnPercent(at_percent: usize, percent_used: usize) bool {
     return at_percent != 0 and percent_used >= at_percent;
+}
+
+/// Cache reads are a subset of the input tokens they are reported beside, so a
+/// warm cache is one where the read covered at least this much of the input.
+/// Half, because the trade only has to beat a coin flip: below half the prefix
+/// is being re-processed at full price anyway, and pruning it is free money.
+const warm_cache_input_share: u64 = 2;
+
+/// Whether the previous step's prefix came back out of the provider's cache.
+///
+/// Prompt caching is prefix-based: rewriting a tool result in the middle of the
+/// transcript invalidates every cached byte after it. On a warm cache that
+/// trades a tenth-price cache read for a full-price re-processing of everything
+/// downstream, which usually costs more than the pruned tokens save.
+fn cacheWasWarm(settings: Settings) bool {
+    if (settings.previous_input_tokens == 0) return false;
+    return settings.previous_cache_read_tokens * warm_cache_input_share >= settings.previous_input_tokens;
 }
 
 pub fn estimateTokens(messages: []const ChatMessage) usize {
@@ -265,6 +304,96 @@ test "a tool result smaller than the notice reports no saving" {
     const outcome = try apply(alloc, &messages, .{ .prune_tools_steps = 1 }, 1, "");
     try std.testing.expectEqual(@as(usize, 1), outcome.pruned_results);
     try std.testing.expectEqual(@as(usize, 0), outcome.saved_tokens);
+}
+
+/// Two tool results, the older one prunable, in the ordering `pruneToolResults`
+/// expects. Every cache-temperature test needs the same shape.
+fn appendPrunableTranscript(alloc: std.mem.Allocator, messages: *std.ArrayList(ChatMessage), old_file: []const u8) !void {
+    const calls = &[_]types.ToolCall{.{ .id = "call_1", .name = "read_file", .arguments_json = "{}" }};
+    try messages.append(alloc, .{ .role = .assistant, .content = "reading", .tool_calls = calls });
+    try messages.append(alloc, .{ .role = .tool, .tool_call_id = "call_1", .tool_name = "read_file", .content = old_file });
+    try messages.append(alloc, .{ .role = .assistant, .content = "reading again", .tool_calls = calls });
+    try messages.append(alloc, .{ .role = .tool, .tool_call_id = "call_1", .tool_name = "read_file", .content = "the newest file, in full" });
+}
+
+test "a warm cache stands the periodic prune down" {
+    const alloc = std.testing.allocator;
+    const old_file = try alloc.alloc(u8, 4_000);
+    defer alloc.free(old_file);
+    @memset(old_file, 'x');
+
+    var messages: std.ArrayList(ChatMessage) = .empty;
+    defer messages.deinit(alloc);
+    try appendPrunableTranscript(alloc, &messages, old_file);
+
+    // Half the input read back out of the cache is warm enough to wait.
+    const outcome = try apply(alloc, &messages, .{
+        .prune_tools_steps = 2,
+        .previous_cache_read_tokens = 5_000,
+        .previous_input_tokens = 10_000,
+    }, 4, "build the thing");
+    try std.testing.expectEqual(@as(usize, 0), outcome.pruned_results);
+    try std.testing.expectEqual(@as(usize, 0), outcome.saved_tokens);
+    try std.testing.expect(!outcome.changedAnything());
+    try std.testing.expectEqualStrings(old_file, messages.items[1].content.?);
+
+    // One token short of half is cold, and prunes as it always did.
+    var cooled: std.ArrayList(ChatMessage) = .empty;
+    defer cooled.deinit(alloc);
+    try appendPrunableTranscript(alloc, &cooled, old_file);
+    const cold = try apply(alloc, &cooled, .{
+        .prune_tools_steps = 2,
+        .previous_cache_read_tokens = 4_999,
+        .previous_input_tokens = 10_000,
+    }, 4, "build the thing");
+    try std.testing.expectEqual(@as(usize, 1), cold.pruned_results);
+}
+
+test "a warm cache never stands the window-pressure prune down" {
+    const alloc = std.testing.allocator;
+    const old_file = try alloc.alloc(u8, 4_000);
+    defer alloc.free(old_file);
+    @memset(old_file, 'x');
+
+    var messages: std.ArrayList(ChatMessage) = .empty;
+    defer messages.deinit(alloc);
+    try appendPrunableTranscript(alloc, &messages, old_file);
+
+    // The same warm cache as above, and the step trigger firing alongside the
+    // percent one: an overflow is not a price the cache gets to negotiate.
+    const outcome = try apply(alloc, &messages, .{
+        .prune_tools_steps = 2,
+        .prune_tools_percent = 50,
+        .context_window_tokens = 2_000,
+        .previous_cache_read_tokens = 10_000,
+        .previous_input_tokens = 10_000,
+    }, 4, "build the thing");
+    try std.testing.expect(outcome.percent_used >= 50);
+    try std.testing.expectEqual(@as(usize, 1), outcome.pruned_results);
+    try std.testing.expectEqualStrings(pruned_notice, messages.items[1].content.?);
+}
+
+test "unknown billing prunes exactly as it did before the cache gate" {
+    const alloc = std.testing.allocator;
+    const old_file = try alloc.alloc(u8, 4_000);
+    defer alloc.free(old_file);
+    @memset(old_file, 'x');
+
+    // Nothing observed, a cache read with no input to be a share of, and a step
+    // that read nothing back: every one of them is cold.
+    const unknown = [_]Settings{
+        .{ .prune_tools_steps = 2 },
+        .{ .prune_tools_steps = 2, .previous_cache_read_tokens = 9_000 },
+        .{ .prune_tools_steps = 2, .previous_input_tokens = 10_000 },
+    };
+    for (unknown) |settings| {
+        var messages: std.ArrayList(ChatMessage) = .empty;
+        defer messages.deinit(alloc);
+        try appendPrunableTranscript(alloc, &messages, old_file);
+        const outcome = try apply(alloc, &messages, settings, 4, "build the thing");
+        try std.testing.expectEqual(@as(usize, 1), outcome.pruned_results);
+        try std.testing.expectEqual(@as(usize, 964), outcome.saved_tokens);
+    }
 }
 
 test "the reminder reports what it put back in" {

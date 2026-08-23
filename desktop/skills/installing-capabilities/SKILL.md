@@ -64,8 +64,9 @@ the next turn. That is the whole install — there is no registry step.
 
 To install one that already exists, fetch it and hand over its text:
 
-1. `connect_folder` if nothing is connected, then `bash` — `git clone`, `curl`,
-   or just read it out of a folder the user already gave you.
+1. `bash` — `git clone`, `curl`, or just read it out of a folder the user
+   already gave you. If nothing is connected, ask them to pick one: the folder
+   button in the sidebar.
 2. `read_file` the `SKILL.md`.
 3. `write_skill` with its name and the file's contents verbatim.
 

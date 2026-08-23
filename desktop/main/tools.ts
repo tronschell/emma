@@ -111,21 +111,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // Always advertised, including with folders already connected: this is the
-    // only way out of "no folder, therefore no filesystem, therefore a tutorial
-    // instead of the work". The picker is the user's own native dialog, so the
-    // grant it produces is consent, not an escalation.
-    name: "connect_folder",
-    needs: "always",
-    description:
-      "Open the folder picker so the user can choose a folder on this Mac, then attach it to this thread as its project. Call it the moment work needs files and no folder is connected — never explain what the user should create by hand instead. Comes back cancelled if they close the picker.",
-    inputSchema: {
-      type: "object",
-      properties: { reason: { type: "string", description: "One short line naming what the folder is for. Shown to the user in the picker." } },
-      required: [],
-    },
-  },
-  {
     name: "bash",
     needs: "folders",
     description: "Run one shell command with a connected folder as the working directory. Returns combined stdout and stderr, truncated. Prefer one self-contained command per call. Anything that does not exit on its own — a dev server, a watcher, a tail — must set background, or the call blocks the turn until it is killed at the deadline.",
@@ -648,6 +633,18 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
   },
 ];
 
+/**
+ * What a tool needs before it can run: a connected folder, this being a Mac, an
+ * imported MCP server, or nothing.
+ *
+ * The harness advertises Emma's tools natively and for the whole process, so it
+ * cannot leave one out of a turn's catalog the way `toolDefinitions` does. It
+ * asks this instead and refuses the call in words the model can act on.
+ */
+export function toolNeeds(name: string): keyof ToolAvailability | "always" | undefined {
+  return DEFINITIONS.find((tool) => tool.name === name)?.needs;
+}
+
 /** The tools a turn advertises: switched on in Settings, gated by mode, then by what is actually connected. */
 export function toolDefinitions(mode: PermissionMode, available: ToolAvailability, disabled: readonly string[] = []): ToolDefinition[] {
   return DEFINITIONS
@@ -665,7 +662,6 @@ export type ToolArgs =
   | { name: "background"; id?: string; stop: boolean }
   | { name: "cli"; action: CliAction; cli?: string; id?: string; prompt?: string; unattended: boolean; folder?: string }
   | { name: "cli_runs"; id?: string; stop: boolean }
-  | { name: "connect_folder"; reason?: string }
   | { name: "computer"; args: Record<string, unknown> }
   | { name: "write_skill"; skill: string; instructions: string }
   | { name: "write_tool"; tool: string; description: string; code: string }
@@ -783,8 +779,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
     }
     case "cli_runs":
       return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop") };
-    case "connect_folder":
-      return { name, reason: optionalText(args.reason, "reason", 200) };
     case "computer":
       return { name, args };
     case "write_skill":
@@ -1092,7 +1086,6 @@ export function describeToolCall(args: AnyToolArgs): string {
     case "background": return args.stop ? `stopping ${args.id ?? "a background command"}` : args.id ? `checking ${args.id}` : "listing background commands";
     case "cli": return args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`;
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
-    case "connect_folder": return "asking for a folder";
     case "computer": return typeof args.args.action === "string" ? String(args.args.action).replace(/_/g, " ") : "using the computer";
     case "write_skill": return `saving the skill ${args.skill}`;
     case "write_tool": return `writing the tool ${args.tool}`;

@@ -455,10 +455,10 @@ const SAMPLE_SUBTHREADS: Thread[] = [
 const SAMPLE_SPANS: TraceSpan[] = [
   { id: "root", name: "Turn", kind: "agent", startedAt: 0, endedAt: 43_170, status: "ok", tokens: 2_400 },
   { id: "m1", parentId: "root", name: "model", kind: "model", startedAt: 120, endedAt: 10_400, status: "ok", tokens: 5_100 },
-  { id: "s1", parentId: "root", name: "Selecting MCP tool", kind: "search", startedAt: 10_500, endedAt: 12_600, status: "ok", tokens: 900 },
+  { id: "s1", parentId: "root", name: "Selecting tool", kind: "search", startedAt: 10_500, endedAt: 12_600, status: "ok", tokens: 900 },
   { id: "m2", parentId: "root", name: "model", kind: "model", startedAt: 12_700, endedAt: 26_800, status: "ok", tokens: 4_300 },
-  { id: "t1", parentId: "root", name: "mcp_emma_artifact", kind: "mcp", startedAt: 26_900, endedAt: 32_520, status: "ok", tokens: 6_200 },
-  { id: "t2", parentId: "t1", name: "auto agent approved · mcp_emma_artifact", kind: "permission", startedAt: 26_910, endedAt: 32_520, status: "ok" },
+  { id: "t1", parentId: "root", name: "artifact", kind: "mcp", startedAt: 26_900, endedAt: 32_520, status: "ok", tokens: 6_200 },
+  { id: "t2", parentId: "t1", name: "auto agent approved · artifact", kind: "permission", startedAt: 26_910, endedAt: 32_520, status: "ok" },
   { id: "m3", parentId: "root", name: "model", kind: "model", startedAt: 32_600, endedAt: 43_170, status: "ok", tokens: 3_800 },
 ];
 

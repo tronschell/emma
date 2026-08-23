@@ -3,18 +3,26 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setSystemPrompt, withSystemPrompt, writeHarnessPrompt } from "../main/system-prompt";
+import { setImprovements, setSystemPrompt, withTrialArm, writeHarnessPrompt } from "../main/system-prompt";
 import { assertCatalog, CONNECTIONS, describeConnections, detectConnections, outdatedConnections, setUpConnection } from "../main/connections";
 import { defaultSettings, MAX_CONNECTIONS, MAX_SYSTEM_PROMPT_CHARS, validateConnections, validateOverlayPreferences, validateSettings } from "../shared/settings";
 
 const turn = { threadId: "thread-1", content: "Hi", mode: "ask", title: "This thread" } as const;
 
-test("the standing instructions lead the skill context, and an empty prompt changes nothing", () => {
-  setSystemPrompt("");
-  assert.equal(withSystemPrompt({ ...turn }).params, undefined);
-  setSystemPrompt("Answer in French.");
-  const withSkill = withSystemPrompt({ ...turn, params: { skillContext: "Follow the review procedure." } });
-  assert.match(withSkill.params!.skillContext, /^The user's standing instructions[\s\S]*Answer in French\.\n\nFollow the review procedure\.$/);
+test("only the change on trial rides the turn, and only on the half that drew it", () => {
+  // Nothing on trial: every turn goes out exactly as it came in, because the
+  // standing instructions reach the harness through its own file.
+  setImprovements({ kept: { instructions: "Answer in French.", verifier: "" } });
+  assert.equal(withTrialArm({ ...turn }).params, undefined);
+
+  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  // One turn lands on one arm, so this is read across enough of them to see both.
+  const carried = Array.from({ length: 40 }, (_value, index) => withTrialArm({ ...turn, threadId: `thread-${index}`, params: { skillContext: "Follow the review procedure." } }));
+  const b = carried.filter((sent) => /Cite the file you read it in\./.test(sent.params!.skillContext));
+  assert.ok(b.length > 0 && b.length < carried.length, `every turn landed on the same arm (${b.length} of ${carried.length})`);
+  // The attached skill is still there underneath it, whichever way the turn landed.
+  assert.ok(carried.every((sent) => /Follow the review procedure\./.test(sent.params!.skillContext)));
+  setImprovements({ kept: { instructions: "", verifier: "" } });
 });
 
 test("the harness gets the same block as its global instructions file", () => {

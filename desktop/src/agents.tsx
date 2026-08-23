@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { diffLines, diffStat, tokensPerSecond, type BackgroundTask, type FileChange, type LiveAgent, type PermissionAsk } from "../shared/agents";
 import { PERMISSION_MODES, permissionModeGlyphs, permissionModeHints, permissionModeNames, type PermissionMode } from "../shared/permissions";
 import { plural } from "./activity";
+import { OpenIn } from "./editors";
 import { reasonText } from "./errors";
 
 /** The live tree, refreshed by main whenever an agent starts, steps, or ends. */
@@ -335,6 +336,7 @@ export function ChangesPanel({ changes, busy, onReverted }: { changes: FileChang
         <header>
           <strong>{change.path}</strong>
           <ChangeCount stat={diffStat([change])} />
+          <OpenIn folderId={change.folderId} path={change.path} />
           {/* A created file has nothing to put back, and deleting is the user's call, not a button's. */}
           <button type="button" disabled={busy || change.before === null} title={change.before === null ? "Emma created this file — delete it yourself if you don't want it" : "Restore the text from before this turn"} onClick={() => revert(change)}>Revert</button>
         </header>
