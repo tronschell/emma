@@ -55,6 +55,34 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_edited_outside_the_host_is_reread_even_when_its_size_is_unchanged() {
+        let root = temp_child("thread-cache");
+        let store = ThreadStore::new(root.clone());
+        let mut thread = Thread::new("aaaa", Timestamp::from_unix_seconds(10)).unwrap();
+        let path = store.save(&thread).unwrap();
+        assert_eq!(store.load(&thread.id).unwrap().title, "aaaa");
+        assert_eq!(store.list().unwrap().threads[0].title, "aaaa");
+
+        let stamped = fs::metadata(&path).unwrap().modified().unwrap();
+        thread.title = "bbbb".into();
+        fs::write(&path, thread.to_markdown()).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(stamped + std::time::Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(store.load(&thread.id).unwrap().title, "bbbb");
+        assert_eq!(store.list().unwrap().threads[0].title, "bbbb");
+
+        fs::remove_file(&path).unwrap();
+        assert!(store.list().unwrap().threads.is_empty());
+        assert!(store.load(&thread.id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn traces_round_trip_are_bounded_and_a_pre_trace_thread_still_loads() {
         let mut thread = Thread::new("traced", Timestamp::from_unix_seconds(1)).unwrap();
         thread.record_trace(

@@ -1,7 +1,9 @@
 use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt,
-    fs::{self, OpenOptions},
+    fs::{self, Metadata, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     str::FromStr,
@@ -643,17 +645,51 @@ impl Thread {
 }
 
 #[derive(Debug)]
+struct ParsedThread {
+    modified: SystemTime,
+    length: u64,
+    thread: Thread,
+}
+
+fn file_stamp(metadata: &Metadata) -> Option<(SystemTime, u64)> {
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+#[derive(Debug)]
 pub struct ThreadStore {
     root: PathBuf,
+    parsed: RefCell<HashMap<ThreadId, ParsedThread>>,
 }
 
 impl ThreadStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            parsed: RefCell::new(HashMap::new()),
+        }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn take_parsed(&self, id: &ThreadId, stamp: (SystemTime, u64)) -> Option<Thread> {
+        self.parsed
+            .borrow()
+            .get(id)
+            .filter(|entry| (entry.modified, entry.length) == stamp)
+            .map(|entry| entry.thread.clone())
+    }
+
+    fn keep_parsed(&self, stamp: (SystemTime, u64), thread: &Thread) {
+        self.parsed.borrow_mut().insert(
+            thread.id.clone(),
+            ParsedThread {
+                modified: stamp.0,
+                length: stamp.1,
+                thread: thread.clone(),
+            },
+        );
     }
 
     pub fn save(&self, thread: &Thread) -> Result<PathBuf, ThreadStoreError> {
@@ -682,8 +718,6 @@ impl ThreadStore {
         let destination = self.path_for(&thread.id);
         let temporary = self.root.join(format!(".{}.tmp", thread.id));
         let result = (|| {
-            // ponytail: The single persistence worker owns this temp name; use
-            // unique temp names or locking if multi-process writers arrive.
             match fs::remove_file(&temporary) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -698,14 +732,27 @@ impl ThreadStore {
             fs::rename(&temporary, &destination)?;
             Ok(destination)
         })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        match &result {
+            Ok(written) => match fs::metadata(written).ok().and_then(|it| file_stamp(&it)) {
+                Some(stamp) => self.keep_parsed(stamp, thread),
+                None => {
+                    self.parsed.borrow_mut().remove(&thread.id);
+                }
+            },
+            Err(_) => {
+                let _ = fs::remove_file(&temporary);
+                self.parsed.borrow_mut().remove(&thread.id);
+            }
         }
         result.map_err(ThreadStoreError::Io)
     }
 
     pub fn load(&self, id: &ThreadId) -> Result<Thread, ThreadStoreError> {
         let path = self.path_for(id);
+        let stamp = fs::metadata(&path).ok().and_then(|it| file_stamp(&it));
+        if let Some(thread) = stamp.and_then(|stamp| self.take_parsed(id, stamp)) {
+            return Ok(thread);
+        }
         let markdown = fs::read_to_string(&path)?;
         let thread = Thread::from_markdown(&markdown).map_err(|error| {
             ThreadStoreError::Malformed(MalformedThread {
@@ -719,10 +766,14 @@ impl ThreadStore {
                 reason: "thread ID does not match filename".into(),
             }));
         }
+        if let Some(stamp) = stamp {
+            self.keep_parsed(stamp, &thread);
+        }
         Ok(thread)
     }
 
     pub fn delete(&self, id: &ThreadId) -> Result<(), ThreadStoreError> {
+        self.parsed.borrow_mut().remove(id);
         match fs::remove_file(self.path_for(id)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
             _ => Ok(()),
@@ -764,6 +815,10 @@ impl ThreadStore {
                 Err(ThreadStoreError::Io(error)) => return Err(ThreadStoreError::Io(error)),
             }
         }
+        let present: HashSet<&ThreadId> = listing.threads.iter().map(|thread| &thread.id).collect();
+        self.parsed
+            .borrow_mut()
+            .retain(|id, _| present.contains(id));
         listing.threads.sort_by(|left, right| {
             right
                 .updated_at
