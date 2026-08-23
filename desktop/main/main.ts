@@ -90,6 +90,8 @@ class Host {
     const value = this.send(request);
     const entry = { writes: this.writes, at: Date.now(), value };
     this.snapshot = entry;
+    const { at } = entry;
+    setTimeout(() => { if (this.snapshot?.at === at) this.snapshot = undefined; }, SNAPSHOT_CACHE_MS).unref();
     value.catch(() => { if (this.snapshot === entry) this.snapshot = undefined; });
     return value;
   }
