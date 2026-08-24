@@ -70,25 +70,32 @@ function useTurnClock(run: CliRun | undefined): number {
   return run ? turnSeconds(run) : 0;
 }
 
-/**
- * Keeps a scroller pinned to the bottom unless the user has scrolled up to read:
- * a stream that keeps growing must not drag the view back down under them.
- * `deps` is what grows; `resetKey` is what re-pins (a new thread starts at the end).
- */
 export function useTailScroll<T extends HTMLElement>(deps: unknown[], resetKey?: unknown) {
   const node = useRef<T>(null);
   const pinned = useRef(true);
+  const [end, setEnd] = useState({ key: resetKey, at: true });
+  const atEnd = end.key === resetKey ? end.at : true;
   useEffect(() => { pinned.current = true; }, [resetKey]);
   useEffect(() => {
     const element = node.current;
-    if (element && pinned.current) element.scrollTop = element.scrollHeight;
+    if (!element) return;
+    if (pinned.current) element.scrollTop = element.scrollHeight;
+    const settling = new ResizeObserver(() => { if (pinned.current) element.scrollTop = element.scrollHeight; });
+    for (const child of element.children) settling.observe(child);
+    return () => settling.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   const onScroll = () => {
     const element = node.current;
-    if (element) pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+    if (!element) return;
+    pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+    setEnd({ key: resetKey, at: pinned.current });
   };
-  return { ref: node, onScroll };
+  const toEnd = () => {
+    const element = node.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  };
+  return { ref: node, onScroll, atEnd, toEnd };
 }
 
 /**

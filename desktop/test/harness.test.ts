@@ -4,7 +4,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
 import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 
@@ -18,6 +18,7 @@ function harness(
   answer: (ask: PermissionAsk, options: PermissionOption[]) => Promise<string | null>,
   idleMs?: number,
   runTool: (threadId: string, name: string, args: Record<string, unknown>) => Promise<string> = async () => "",
+  home = path.join(tmpdir(), `emma-harness-${process.pid}`),
 ) {
   const deltas: { threadId: string; delta: string }[] = [];
   const thoughts: string[] = [];
@@ -31,7 +32,7 @@ function harness(
   const client = new Harness({
     binaryPath: process.execPath,
     args: [fakeAgent],
-    home: tmpdir(),
+    home,
     cwd: workspace,
     idleMs,
     mcpServers: async () => [],
@@ -445,12 +446,41 @@ test("separately-streamed reasoning rejoins the answer as one foldable message",
   assert.equal(withThinking("  why  ", "answer"), "<think>why</think>\nanswer");
 });
 
+test("a thread keeps its harness session across a restart", async () => {
+  const home = path.join(tmpdir(), `emma-harness-restart-${process.pid}`);
+  const index = (dir: string) => JSON.parse(readFileSync(path.join(dir, "emma-sessions.json"), "utf8")) as Record<string, string>;
+
+  const first = harness(async () => "allow_once", undefined, async () => "", home);
+  try {
+    await first.client.prompt("thread-a", workspace, "one", "ask");
+    await first.client.prompt("thread-b", workspace, "two", "ask");
+  } finally {
+    first.client.close();
+  }
+  const before = index(home)["thread-b"];
+  assert.ok(before?.startsWith("sess_2_"), before);
+  assert.notEqual(index(home)["thread-a"], before);
+
+  const alias = path.join(tmpdir(), `emma-harness-alias-${process.pid}`);
+  try { symlinkSync(home, alias); } catch { /* left by an earlier run */ }
+  const second = harness(async () => "allow_once", undefined, async () => "", alias);
+  try {
+    const { stopReason } = await second.client.prompt("thread-b", workspace, "again", "ask");
+    assert.equal(stopReason, "end_turn");
+    assert.ok(second.text().join("").endsWith("done"), second.text().join(""));
+    assert.deepEqual(second.deltas.map((entry) => entry.threadId).at(-1), "thread-b");
+  } finally {
+    second.client.close();
+  }
+  assert.equal(index(alias)["thread-b"], before);
+});
+
 test("a session forgotten mid-turn still routes the rest of that turn", async () => {
   // Forgotten from inside the turn, which is when `install_mcp` does it: the
   // next turn must build a session that includes the new server, but the
   // running one has to keep reporting. Clearing the reverse map here silenced
   // every remaining update and cancelled every remaining permission request.
-  const made = harness(async () => { made.client.forgetAllSessions(); return "allow_once"; });
+  const made = harness(async () => { made.client.forgetSession("thread-4"); return "allow_once"; });
   const { client, text, calls } = made;
   try {
     const { stopReason } = await client.prompt("thread-4", workspace, "do it", "ask");

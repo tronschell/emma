@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { PLAN_PAD, PLAN_ROW, mergePlan, parsePlan, parsePlanSteps, planLayout, planProblems, planProgress, planRows, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
+import { PLAN_PAD, PLAN_ROW, mergePlan, parsePlan, parsePlanSteps, planLayout, planProblems, planProgress, planRows, planState, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
 import { deletePlan, editPlan, listPlans, readPlan, savePlan } from "../main/plans";
 import { parseToolArgs } from "../main/tools";
 
@@ -132,6 +132,15 @@ test("progress counts steps and boxes separately", () => {
     step("b", ["a"], { tasks: [{ text: "three", done: false }] }),
   ]));
   assert.deepEqual(progress, { done: 1, steps: 2, tasks: 3, doneTasks: 2 });
+});
+
+test("a plan says where it got to, so the row of them says which one is live", () => {
+  assert.equal(planState(plan([])), "todo");
+  assert.equal(planState(plan([step("a"), step("b", ["a"])])), "todo");
+  assert.equal(planState(plan([step("a", [], { status: "done" }), step("b", ["a"], { status: "running" })])), "running");
+  assert.equal(planState(plan([step("a", [], { status: "failed" }), step("b", ["a"])])), "failed");
+  assert.equal(planState(plan([step("a", [], { status: "failed" }), step("b", [], { status: "running" })])), "running", "a wave still going outranks a step that fell over in the one before it");
+  assert.equal(planState(plan([step("a", [], { status: "done" }), step("b", ["a"], { status: "done" })])), "done");
 });
 
 test("a plan write that cannot be run is refused with every reason at once", () => {

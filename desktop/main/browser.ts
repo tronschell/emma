@@ -30,6 +30,7 @@ type Payload = Record<string, unknown> | string;
 export class Browsers {
   private sessions = new Map<string, Session>();
   private lookup?: Promise<string | null>;
+  private path: string | null = null;
   private expires = 0;
   private loginPath?: string;
 
@@ -85,6 +86,15 @@ export class Browsers {
     }
     this.onChange();
     return this.status(threadId);
+  }
+
+  stopAll() {
+    for (const session of this.sessions.values()) {
+      if (!session.running || !this.path) continue;
+      session.running = false;
+      session.stream = undefined;
+      spawn(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore" }).unref();
+    }
   }
 
   private session(threadId: string): Session {
@@ -145,7 +155,8 @@ export class Browsers {
   private async find(): Promise<string | null> {
     this.loginPath ??= (await shell('printf %s "$PATH"')) || process.env.PATH || "";
     const found = await shell("command -v agent-browser");
-    return found.startsWith("/") ? found : null;
+    this.path = found.startsWith("/") ? found : null;
+    return this.path;
   }
 }
 

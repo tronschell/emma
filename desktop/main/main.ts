@@ -249,11 +249,7 @@ let harnessExperiments: HarnessExperiments = defaultHarnessExperiments;
    one says so here, and the page re-reads rather than waiting for a relaunch. */
 const toolsChanged = () => {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:tools-changed");
-  // The harness takes MCP servers only when a session is created, so a server
-  // installed now cannot appear in a session that already exists. Dropping the
-  // sessions makes the next turn build one that has it — without this,
-  // `install_mcp` reports success and the tools show up a relaunch later.
-  for (const client of harnesses.values()) client.forgetAllSessions();
+  for (const client of harnesses.values()) client.rebindServers();
   // A skill written or switched off now should be in the harness's catalog for
   // the next turn, not the next launch.
   syncHarnessSkills();
@@ -3618,6 +3614,7 @@ app.on("will-quit", () => {
   // port after the app is gone is nobody's to find.
   background.stopAll();
   clis.stopAll();
+  browsers.stopAll();
   skillAttachment.clearAll();
   for (const client of harnesses.values()) client.close();
   harnesses.clear();

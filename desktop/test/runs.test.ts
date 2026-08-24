@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, dropQueued, groupBlocks, mergeStep, pairBlocks, sendTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, dropQueued, groupBlocks, mergeStep, pairBlocks, sendTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
 import type { Message } from "../src/types";
@@ -192,6 +192,24 @@ test("a turn whose reply has not landed yet is drawn, but not cached against the
   const paired = pairBlocks(messages, [blocks], {});
   assert.deepEqual(paired[0], blocks);
   assert.equal(wrote(messages[0].content, paired[0]!), false);
+});
+
+test("a finished turn stays drawn where it happened until the reply it wrote arrives", () => {
+  const messages = [
+    said("user", "one", "2026-08-22T10:00:00Z"), said("assistant", "the first answer", "2026-08-22T10:00:01Z"),
+    said("user", "two", "2026-08-22T10:01:00Z"),
+  ];
+  const first: Block[] = [{ kind: "text", text: "the first answer" }];
+  const second: Block[] = [{ kind: "text", text: "the answer to the second prompt" }];
+  assert.equal(arrived(messages, second), false);
+  const paired = pairBlocks(messages, [first, second], {});
+  assert.deepEqual(paired[1], second);
+  const held = pairBlocks(messages, [first, second].slice(0, -1), {});
+  assert.deepEqual(held[1], first);
+
+  const answered = [...messages, said("assistant", "the answer to the second prompt, at length", "2026-08-22T10:01:01Z")];
+  assert.equal(arrived(answered, second), true);
+  assert.deepEqual(pairBlocks(answered, [first, second], {})[3], second);
 });
 
 test("a turn the host refuses hands its text back once", async () => {

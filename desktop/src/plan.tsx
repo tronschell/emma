@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PLAN_ROW, planEdges, planLayout, planProgress, planRows, readySteps, type Plan, type PlanSpot, type PlanStep } from "../shared/plan";
+import { PLAN_ROW, planEdges, planLayout, planProgress, planRows, planState, readySteps, type Plan, type PlanSpot, type PlanStep } from "../shared/plan";
 import { plural } from "./plural";
 import { ExpandIcon } from "./icons";
 import { Markdown } from "./markdown";
@@ -98,7 +98,10 @@ export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: strin
   const [pick, setPick] = useState("");
   const [pinned, setPinned] = useState("");
   const [reading, setReading] = useState(false);
-  const plan = plans.find((item) => item.id === pick) ?? plans[0];
+  const shown = useMemo(() => [...plans].sort((left, right) => left.id.localeCompare(right.id)), [plans]);
+  const plan = plans.find((item) => item.id === pick)
+    ?? plans.find((item) => planState(item) === "running")
+    ?? plans[0];
   const shape = usePlanShape(plan);
   const progress = plan ? planProgress(plan) : undefined;
   const step = plan?.steps.find((item) => item.id === pinned)
@@ -116,8 +119,22 @@ export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: strin
 
   return <section className="plan-widget">
     <span><span className="context-title">Plan · {progress.done} of {progress.steps} {plural(progress.steps, "step")}<button type="button" className="context-expand" aria-haspopup="dialog" aria-label="Read the plan file" title={`Read ${plan.id}.md`} onClick={() => setReading(true)}><ExpandIcon /></button></span></span>
-    {plans.length > 1 && <div className="plan-switch">
-      {plans.map((item) => <button key={item.id} type="button" className={item.id === plan.id ? "active" : ""} title={item.title} onClick={() => { setPick(item.id); setPinned(""); }}>{item.title}</button>)}
+    {shown.length > 1 && <div className="plan-switch">
+      {shown.map((item) => {
+        const state = planState(item);
+        const at = planProgress(item);
+        const said = `${item.title} — ${state}, ${at.done} of ${at.steps} ${plural(at.steps, "step")}`;
+        return <button
+          key={item.id}
+          type="button"
+          data-status={state}
+          className={item.id === plan.id ? "active" : ""}
+          aria-current={item.id === plan.id || undefined}
+          aria-label={said}
+          title={said}
+          onClick={() => { setPick(item.id); setPinned(""); }}
+        ><i aria-hidden="true" /><span>{item.title}</span></button>;
+      })}
     </div>}
     <div className="plan-head">
       <strong title={plan.goal || plan.title}>{plan.title}</strong>
@@ -161,7 +178,7 @@ function PlanFile({ plan, agents, at, close }: { plan: Plan; agents: LiveAgent[]
   }, [pick]);
   const dismiss = () => dialog.current?.close();
   const wave = pick ? shape.spots.get(pick)?.wave : undefined;
-  return <dialog ref={dialog} className="modal-backdrop plan-modal" aria-labelledby="plan-file-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }}>
+  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="plan-file-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
     <section className="agent-dialog plan-dialog">
       <header><div><span>{plan.id}.md</span><h2 id="plan-file-title">{plan.title}</h2></div><button type="button" onClick={dismiss} aria-label="Close the plan file">×</button></header>
       <div className="plan-split">

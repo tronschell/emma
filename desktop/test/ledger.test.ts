@@ -76,6 +76,7 @@ test("the harness prefix is named category by category, and never invented", () 
     [["system", "System prompt", 4_000], ["tools", "System tools", 2_000], ["skills", "Skills", 1_000], ["memory", "Memory files", 1_000]],
     "a workspace with no MCP server gets no MCP row rather than a zero one",
   );
+  assert.deepEqual([...named.rows].sort((a, b) => b.chars - a.chars), named.rows, "the ledger is ordered biggest first, whatever a segment is");
   const unreported = buildLedger(thread(1), [], 200_000, [], NO_EXPERIMENTS);
   assert.equal(unreported.rows.every((row) => row.kind === "messages"), true, "a thread the harness has not reported on states no prefix at all");
 });

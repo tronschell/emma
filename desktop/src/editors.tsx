@@ -31,10 +31,12 @@ export function OpenIn({ folderId, path, label }: { folderId?: string; path?: st
   if (!editors.length) return null;
   const named = path ?? "this folder";
   return <span className={`open-in${label ? " boxed" : ""}`}>
-    {label && <small>Open in</small>}
-    {editors.map((editor) => <button
+    {editors.map((editor, index) => <button
       type="button" key={editor.id} title={`Open ${named} in ${editor.label}`} aria-label={`Open ${named} in ${editor.label}`}
       onClick={(event) => { event.preventDefault(); void window.emma.openInEditor({ ...(folderId ? { folderId } : {}), path: path ?? ".", editorId: editor.id }).catch(() => undefined); }}>
+      {/* The words belong to the first editor's button rather than the row, so the
+          whole chip is the target and the mark inside it is not a second one. */}
+      {label && !index && <small>Open in</small>}
       {editor.icon ? <img src={editor.icon} alt="" /> : <b>{editor.label.slice(0, 1)}</b>}
     </button>)}
   </span>;

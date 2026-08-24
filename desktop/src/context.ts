@@ -438,7 +438,11 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
   const prefix = thread ? prefixUses(breakdown, replies) : [];
   const named = measured.reduce((sum, row) => sum + row.chars, 0) - running + prefix.reduce((sum, row) => sum + row.chars, 0);
   const system = thread ? systemUse(thread, named) : undefined;
-  const rows: ContextUse[] = [...measured, ...(system ? [{ ...system, turns: replies }] : []), ...prefix];
+  /* Biggest first. The reader is here to find what is eating the window, and a
+     stack grouped by where a segment came from buries a folder listing that has
+     outgrown the whole harness prefix. Ties keep declaration order. Free space is
+     not in the sort: it is what nothing claimed, and it is drawn last either way. */
+  const rows: ContextUse[] = [...measured, ...(system ? [{ ...system, turns: replies }] : []), ...prefix].sort((a, b) => b.chars - a.chars);
   const total = rows.reduce((sum, row) => sum + row.chars, 0);
   // Only the OpenRouter catalog states a window; on the fallback and local routes the
   // shares are of what this thread has sent, and there is no free tail to draw.

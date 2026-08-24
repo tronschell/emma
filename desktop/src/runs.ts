@@ -71,6 +71,13 @@ export function wrote(content: string, blocks: Block[]): boolean {
   return !said || content.includes((said as { text: string }).text.trim().slice(0, 40));
 }
 
+export function arrived(messages: Message[], blocks: Block[]): boolean {
+  for (let at = messages.length - 1; at >= 0; at -= 1) {
+    if (messages[at].role === "assistant") return wrote(messages[at].content, blocks);
+  }
+  return false;
+}
+
 /**
  * A turn's whole scratchpad, in order: the reasoning channel's own blocks and any
  * `<think>` a provider inlined in the text, joined as the one train of thought they

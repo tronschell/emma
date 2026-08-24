@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoundedLines } from "./ndjson";
@@ -228,14 +228,45 @@ export const HARNESS_MODE_ID = "ask";
 export const harnessKey = (cwd: string, nestedThreadId?: string) =>
   nestedThreadId ? `${cwd}\u0000${nestedThreadId}` : cwd;
 
+const SESSION_INDEX = "emma-sessions.json";
+
+const sessionIndexes = new Map<string, Map<string, string>>();
+
+function sessionIndex(home: string) {
+  const loaded = sessionIndexes.get(home);
+  if (loaded) return loaded;
+  const known = new Map<string, string>();
+  try {
+    const raw: unknown = JSON.parse(readFileSync(path.join(home, SESSION_INDEX), "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [threadId, sessionId] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof sessionId === "string" && sessionId.length > 0) known.set(threadId, sessionId);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("Emma: could not read the harness session index", error);
+  }
+  sessionIndexes.set(home, known);
+  return known;
+}
+
+function saveSessionIndex(home: string) {
+  const known = sessionIndexes.get(home);
+  if (!known) return;
+  try {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(path.join(home, SESSION_INDEX), JSON.stringify(Object.fromEntries(known)));
+  } catch (error) {
+    console.error("Emma: could not save the harness session index", error);
+  }
+}
+
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; touch: () => void };
 
 export class Harness {
   private child: ChildProcessWithoutNullStreams | undefined;
   private readonly lines = new BoundedLines(MAX_LINE_BYTES);
   private readonly pending = new Map<number, Pending>();
-  /** One harness session per Emma thread, so history and cwd stay per project. */
-  private readonly sessions = new Map<string, string>();
   private readonly threadsBySession = new Map<string, string>();
   /**
    * The one session this process has active.
@@ -263,6 +294,7 @@ export class Harness {
       question can be answered the way that mode promises. */
   private readonly modes = new Map<string, PermissionMode>();
   private nextId = 1;
+  private rebind = false;
   private failure: Error | undefined;
 
   constructor(private readonly deps: HarnessDeps) {}
@@ -421,67 +453,54 @@ export class Harness {
     if (!child.killed) child.kill();
   }
 
-  /**
-   * This thread's session, made active before it is prompted.
-   *
-   * A session another thread displaced is resumed rather than replaced: the
-   * harness restores it from its own durable log, so the thread keeps the
-   * history it had. Only when that restore fails — a pruned log, an older
-   * binary — does the thread start over on a new session, which costs it its
-   * history but still answers the prompt.
-   */
+  private get sessions() {
+    return sessionIndex(this.deps.home);
+  }
+
+  private remember() {
+    saveSessionIndex(this.deps.home);
+  }
+
   private async activeSession(threadId: string, cwd: string) {
     const sessionId = await this.session(threadId, cwd);
-    if (this.active === sessionId) return sessionId;
+    if (this.active === sessionId && !this.rebind) return sessionId;
     try {
       await this.request("session/resume", { sessionId, mcpServers: await this.deps.mcpServers(threadId) });
       this.active = sessionId;
+      this.rebind = false;
       return sessionId;
     } catch (error) {
       console.error("Emma: could not resume the harness session for this thread, starting a new one", error);
       this.sessions.delete(threadId);
       this.threadsBySession.delete(sessionId);
+      this.remember();
       return await this.session(threadId, cwd);
     }
   }
 
   private async session(threadId: string, cwd: string) {
     const existing = this.sessions.get(threadId);
-    if (existing) return existing;
-    // Every MCP server the user configured. This was an empty array, so their
-    // servers silently did not exist on this path — no error, no warning, the
-    // tools simply were not there.
+    if (existing) {
+      this.threadsBySession.set(existing, threadId);
+      return existing;
+    }
     const result = await this.request("session/new", { cwd, mcpServers: await this.deps.mcpServers(threadId) });
     const sessionId = (result as { sessionId?: unknown } | null)?.sessionId;
     if (typeof sessionId !== "string" || sessionId.length === 0) throw new Error("Harness returned no session id");
     this.sessions.set(threadId, sessionId);
     this.threadsBySession.set(sessionId, threadId);
-    // `session/new` is what makes it active, here as in the harness.
+    this.remember();
     this.active = sessionId;
     return sessionId;
   }
 
-  /**
-   * Drops a thread's session so the next turn builds a new one.
-   *
-   * The harness takes MCP servers only at `session/new`, so a server installed
-   * mid-turn cannot appear in the session that installed it. Restarting is what
-   * makes `install_mcp` mean anything here.
-   *
-   * Only the forward map: `install_mcp` is called from inside a running turn, and
-   * dropping the reverse routing would silence the rest of it — every update and
-   * every permission request for the live session would arrive with no thread to
-   * belong to. The stale reverse entry is one small record per session.
-   */
   forgetSession(threadId: string) {
     this.sessions.delete(threadId);
+    this.remember();
   }
 
-  forgetAllSessions() {
-    for (const [threadId, sessionId] of this.sessions) {
-      void this.lifecycle("SessionEnd", threadId, sessionId, this.modes.get(threadId) ?? "ask", undefined, { reason: "other" });
-    }
-    this.sessions.clear();
+  rebindServers() {
+    this.rebind = true;
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -749,7 +768,6 @@ export class Harness {
     this.failure ??= error;
     for (const pending of this.pending.values()) pending.reject(this.failure);
     this.pending.clear();
-    this.sessions.clear();
     this.threadsBySession.clear();
     this.active = undefined;
     this.calls.clear();

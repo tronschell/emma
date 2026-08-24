@@ -14,7 +14,7 @@ import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor,
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { dropQueued, groupBlocks, pairBlocks, sendTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block } from "./runs";
+import { arrived, dropQueued, groupBlocks, pairBlocks, sendTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { brandForConnection, brandForImporter, brandForModel, brandForProvider, providerBrands, type BrandDefinition } from "./brands";
 import { DEFAULT_SYSTEM_PROMPT, forkPreset, MAX_PROMPTS, MAX_PROMPT_NAME_CHARS, MODEL_FAMILIES, newPresetId, promptApplies, promptSegments, PROMPT_VARIABLES, type PromptPreset } from "../shared/prompts";
@@ -40,6 +40,7 @@ import { OpenIn } from "./editors";
 import { worktreeName, type GitSnapshot } from "../shared/git";
 import { BrandIcon, ClipIcon, EmmaMark, GlobeIcon, InfoDot, ToolIcon } from "./icons";
 import { BrowserPane } from "./browser";
+import { PaneSwitch } from "./pane-switch";
 import { syncImprovements } from "./improvements";
 import { CliDock, CliPanel, useCliRuns, useTailScroll } from "./cli";
 import { cliHarness } from "../shared/cli";
@@ -1739,10 +1740,11 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   const queued = sending ? run.queue.slice(1) : run.queue;
   const input = useRef<HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
-  const { ref: transcript, onScroll: transcriptScroll } = useTailScroll<HTMLDivElement>(
+  const { ref: transcript, onScroll: transcriptScroll, atEnd, toEnd } = useTailScroll<HTMLDivElement>(
     [thread?.id, thread?.messages.length, run.blocks],
     thread?.id,
   );
+  useEffect(() => { if (tab === "thread" && !thread?.messages.length) input.current?.focus(); }, [tab, thread?.messages.length]);
   /// What a shell fence in this thread's replies can reach: the folder its
   /// commands run in, and the composer, so what one printed can become the next
   /// question. It lands in the composer rather than sending by itself — the user
@@ -1923,10 +1925,9 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   // when it was sent, so queueing the same text twice hides the second echo early.
   // Carry a per-turn id if that ever reads wrong.
   const echo = run.pending && !hasPersistedPrompt(snapshot, thread.id, run.pending.after, run.pending.content) ? run.pending.content : null;
-  // Only while the turn is in flight: once it lands the host's own copy renders,
-  // and showing both would double the reply for a frame.
-  const streaming = sending && run.blocks.length ? run.blocks : null;
-  const landedBlocks = pairBlocks(thread.messages, run.landed, cached);
+  const unlanded = !sending && run.blocks.length > 0 && !arrived(thread.messages, run.blocks);
+  const streaming = (sending || unlanded) && run.blocks.length ? run.blocks : null;
+  const landedBlocks = pairBlocks(thread.messages, unlanded ? run.landed.slice(0, -1) : run.landed, cached);
   const setCapabilityRunning = (value: boolean) => { setCapabilityBusy(value); onSendingChange(value); };
   const localContext = contextCommands(folders, folderIds, folderFiles, snapshot);
   // "/" is capabilities only — skills, MCP servers, built-in tools. Files and
@@ -2075,15 +2076,18 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     ...(changes.length ? [{ id: "changes", label: "Changes", closable: false }] : []),
     ...(git ? [{ id: "git", label: `Git · ${git.branch}`, closable: false }] : []),
   ];
+  const panel = openCli ? <CliPanel run={openCli} busy={locked} />
+    : tab === "changes" ? <ChangesPanel changes={changes} busy={locked} onReverted={reloadChanges} />
+    : tab === "git" && git ? <GitPanel snapshot={git} folderId={folderIds[0]} full />
+    : openAgent ? <AgentPanel agent={openAgent} transcript={<AgentTranscript threadId={openAgent.threadId} thread={agentThread} />} />
+    : null;
   return <div className="thread-layout">
     <div className="thread-column">
       <CliDock runs={threadClis} active={tab} onOpen={setTab} />
       <TabStrip tabs={tabs} active={tab} onPick={setTab} onClose={(id) => { if (tab === id) setTab("thread"); }} />
-      {openCli ? <CliPanel run={openCli} busy={locked} />
-        : tab === "changes" ? <ChangesPanel changes={changes} busy={locked} onReverted={reloadChanges} />
-        : tab === "git" && git ? <GitPanel snapshot={git} folderId={folderIds[0]} full />
-        : openAgent ? <AgentPanel agent={openAgent} transcript={<AgentTranscript threadId={openAgent.threadId} thread={agentThread} />} />
-        : <Region name="chat" props={{
+      {panel}
+      <div className="chat-pane" hidden={!!panel}>
+        <Region name="chat" props={{
           thread, messages: thread.messages, busy: locked, sending,
           // The composer's own path, so a region Emma wrote sends exactly what the
           // built-in sends: the turn is queued, streamed and stopped the same way.
@@ -2109,7 +2113,13 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       /><TagPicker threadId={thread.id} /><div className="thread-actions">{/* Only once this thread has actually touched code: with a clean tree the row
           would be three app icons offering to open nothing in particular. */}
         {folderIds[0] && (!!git?.diff.trim() || changes.length > 0) && <OpenIn folderId={folderIds[0]} label />}
-        <button type="button" className="browser-toggle" aria-label={layout.browserOpen ? "Close the browser pane" : "Open the browser pane"} aria-pressed={layout.browserOpen} title={layout.browserOpen ? "Close the browser" : "Open the browser"} onClick={() => pane({ browserOpen: !layout.browserOpen })}><GlobeIcon /></button>
+        <PaneSwitch open={layout.browserOpen}
+          running={() => window.emma.browserStatus(thread.id).then((status) => status.running)}
+          onOpen={() => pane({ browserOpen: true })}
+          onHide={() => pane({ browserOpen: false })}
+          onClose={() => { pane({ browserOpen: false }); void window.emma.browserNav({ threadId: thread.id, action: "close" }).catch(() => undefined); }}
+          openLabel="Open the browser pane" closeLabel="Close the browser pane"
+          hideNote="Keeps the page, its cookies and its memory" closeNote="Quits Chrome and frees what it holds"><GlobeIcon /></PaneSwitch>
         <button type="button" className="page-info-button" aria-label="Show thread details" aria-haspopup="dialog" onClick={() => setAgentOpen(true)}>i</button></div></header>
       <div className="transcript-wrap">
       <TranscriptRail messages={thread.messages} scroller={transcript} />
@@ -2124,6 +2134,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
         {!sending && run.stopped && <p className="waiting stopped" role="status">Agent stopped. Ask Emma to continue where it left off.</p>}
         </RunContext.Provider>
       </div>
+      {!atEnd && <button type="button" className="transcript-tail" onClick={toEnd} aria-label="Scroll to the latest message" title="Jump to the end">↓</button>}
       </div>
       <ProjectBar folders={folders} ids={folderIds} setFolders={setFolders} setIds={setFolderIds} git={git} name={worktreeName(thread.id)} busy={locked} />
       {/* Above the composer, one size down: what is waiting reads in the order it
@@ -2142,7 +2153,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
             ? <button type="button" className="composer-send steering" disabled={locked} onClick={steer} aria-label="Steer this turn" title="Steer — arrives with the next tool result">⤳</button>
             : <button type="button" className="composer-send stopping" onClick={() => window.emma.stopAgent(thread.id)} aria-label="Stop this turn" title="Stop this turn">■</button>)
           : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={onModelChanged} onManage={onManageModels} />}{runError && <p className="capability-error" role="alert">{runError}</p>}{run.error && <p className="capability-error" role="alert">{run.error}</p>}{run.draft && <div className="composer-attachment queued-turn"><span>Not sent · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{picks.map((pick) => pick.kind === "attachment" ? null : <div className="composer-attachment" key={pickKey(pick)}><span>{KIND_LABELS[pick.kind]} · {pickLabel(pick, folders, snapshot)} · next turn only</span><button type="button" disabled={locked} onClick={() => dropPick(pick)} aria-label={`Clear ${pickLabel(pick, folders, snapshot)}`}>×</button></div>)}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping or pasting into the composer works too</small></div></button><span className="add-section">Files &amp; knowledge categories</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search files and knowledge categories</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, categories, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length && <p className="project-empty">Pick a folder in the project chip, or capture pages into a knowledge category.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this Mac.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>⌘</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or see the MCP servers every turn is handed</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent runtime</strong><small>Inspect Emma's Zig harness and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div></>}</section>}</form>
-    </section></Region>}
+    </section></Region></div>
     </div>
     <Region name="context" props={{
       thread, messages: thread.messages, ledger, busy: locked, sending, agents, subagents, subthreads, git,

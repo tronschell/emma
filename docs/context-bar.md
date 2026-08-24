@@ -138,6 +138,13 @@ tasks, six to a page. The expand button prints the plan file itself. Not
 orientable. With no plan it says
 `Nothing planned yet — Emma writes one per plan write.`
 
+Several plans under one thread put a row of tabs above the graph, one per plan,
+sorted by id rather than the folder's newest-first — a row that reshuffles every
+time a step ticks is not one you can go through. Each tab carries a dot in the
+graph's own colours for where that plan as a whole got to, so the one Emma is
+running right now pulses accent whichever you are reading. The widget opens on
+that one, and stays on whichever you press.
+
 ### Subagents
 
 One row per subagent: a coloured square (pulsing while running or

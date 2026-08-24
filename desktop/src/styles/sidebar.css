@@ -24,6 +24,14 @@
    ponytail: collapsed to the 46px rail the lights overhang the content column;
    move them with setWindowButtonPosition if that ever reads as broken. */
 .sidebar > .drag-region { height: 40px; -webkit-app-region: drag; }
+
+/* ...and the content column reclaimed those 40px, so over there its own top
+   bands are the handle: the tab strip, the thread bar, and the context bar's
+   page row all drag the window and zoom on double-click, exactly as the strip
+   beside them does. Controls and popovers opt back out. The Settings preview of
+   a context bar is a picture of one, not one — it keeps its pointer. */
+:is(.agent-tabs, .thread-bar, .inspector:not(.bar-preview) > .inspector-body > header > span) { -webkit-app-region: drag; }
+:is(.agent-tabs, .thread-bar, .inspector:not(.bar-preview) > .inspector-body > header > span) :is(button, input, .tag-picker, .thread-actions) { -webkit-app-region: no-drag; }
 .sidebar .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Rows are full-bleed, so an outset ring would be clipped by the pane edge and by
    the projects scroller. Drawn inside instead — same 2px, still unmistakable. */

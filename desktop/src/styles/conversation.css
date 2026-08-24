@@ -17,24 +17,34 @@
    right, and no rule — the name is a label on the pane, not a section of it, and
    a full-bleed line under it read as a divider the transcript did not need.
    The name is a value the user recognises rather than a sentence, so it sits on
-   the grid in mono and keeps its own case, at the pane's own gutter rather than
+   the grid in mono and keeps its own case, at the pane's own corner rather than
    indented onto the transcript column: it names the pane, so it starts where the
    pane does. */
-/* The gap is the pane's own gutter so the name sits with the same air on both
+/* One inset all round, not the transcript's gutter: at --content-gutter the name
+   started 28px in while sitting 12px down, so the corner it hangs off read as
+   lopsided. The gap repeats the inset so the name keeps the same air on both
    sides: the pane edge to its first glyph, its last glyph to the tag. */
-.thread-bar { display: flex; align-items: center; gap: var(--content-gutter); min-height: 34px; padding: var(--s-2) var(--content-gutter); }
+.thread-bar { display: flex; align-items: center; gap: var(--s-4); min-height: 34px; padding: var(--s-2) var(--s-4); }
 .thread-bar h2 { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 400; letter-spacing: normal; text-overflow: ellipsis; white-space: nowrap; }
 /* Reads as the heading it replaces until you point at it, when it admits it is a
-   field. `field-sizing` keeps the box on the text: an input at its default 20ch
+   field. The pull-back owes the 1px border as well as the padding, or the name
+   starts a pixel past the inset the rail below it lines up on.
+   `field-sizing` keeps the box on the text: an input at its default 20ch
    drew a hover border across empty pane, which said "type here" about a name
    that is already written. The cap is so a long name still leaves the tag on screen. */
-.thread-bar .thread-name { min-width: 6ch; max-width: min(60ch, 60%); field-sizing: content; margin: 0 calc(var(--s-2) * -1); padding: 0 var(--s-2); color: var(--text); background: transparent; border: 1px solid transparent; font: var(--fs-md)/1.6 var(--font-mono); text-overflow: ellipsis; }
+.thread-bar .thread-name { min-width: 6ch; max-width: min(60ch, 60%); field-sizing: content; margin: 0 calc(var(--s-2) * -1 - 1px); padding: 0 var(--s-2); color: var(--text); background: transparent; border: 1px solid transparent; font: var(--fs-md)/1.6 var(--font-mono); text-overflow: ellipsis; }
 .thread-bar .thread-name:hover { border-color: var(--border); }
 .thread-bar .thread-name:focus { background: var(--surface-2); border-color: var(--border-strong); outline: none; }
 .thread-actions { display: flex; align-items: center; gap: var(--s-1); margin-left: auto; }
-.thread-actions .browser-toggle { display: grid; place-items: center; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); color: var(--text-2); background: transparent; transition: color var(--t), border-color var(--t), background-color var(--t); }
-.thread-actions .browser-toggle:hover { color: var(--text); border-color: var(--border-strong); }
-.thread-actions .browser-toggle[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+.thread-actions .pane-toggle { display: grid; place-items: center; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); color: var(--text-2); background: transparent; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.thread-actions .pane-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+.thread-actions .pane-toggle[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+.pane-switch { position: relative; display: flex; }
+.source-popover.pane-menu { top: calc(100% + var(--s-2)); bottom: auto; left: auto; right: 0; width: max-content; max-width: min(280px, 70vw); padding: var(--s-1); }
+.pane-menu > button { display: grid; justify-items: start; gap: 2px; width: 100%; padding: var(--s-2); color: var(--text); background: transparent; text-align: left; transition: background-color var(--t); }
+.pane-menu > button:hover { background: var(--surface-3); }
+.pane-menu strong { font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; }
+.pane-menu small { color: var(--text-3); font: var(--fs-xs)/1.4 var(--font); }
 
 .browser-column { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); min-width: 0; }
 .browser-column > .resize-handle { position: absolute; z-index: 8; top: 0; left: -10px; right: auto; width: 12px; height: 100%; padding: 0; cursor: col-resize; background: transparent; }
@@ -78,13 +88,17 @@
    under it and the log needs no runway: the same band gap top and bottom. */
 .transcript-wrap { position: relative; display: grid; min-height: 0; }
 .transcript { overflow-y: auto; padding: var(--s-5) var(--content-gutter); scrollbar-gutter: stable; }
+.transcript-tail { position: absolute; z-index: 3; bottom: var(--s-4); left: 50%; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; color: var(--text); background: var(--surface-4); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font: var(--fs-md)/1 var(--font-mono); transform: translateX(-50%); transition: color var(--t), border-color var(--t), background-color var(--t); }
+.transcript-tail:hover { background: var(--surface-3); }
 
 /* Rail --------------------------------------------------------------------
    A tick per question, in the margin the centred column leaves behind. Ticks
    are the only thing at rest; the preview is drawn on hover, over the prose,
-   because a permanent one would be a second column of text to read past. */
+   because a permanent one would be a second column of text to read past.
+   Ticks start on the bar's inset: a spine that begins anywhere else is a second
+   left edge under the one the thread name already drew. */
 
-.rail { position: absolute; top: var(--s-5); left: var(--s-2); z-index: 2; display: flex; flex-direction: column; gap: var(--rail-gap, 6px); }
+.rail { position: absolute; top: var(--s-5); left: var(--s-4); z-index: 2; display: flex; flex-direction: column; gap: var(--rail-gap, 6px); }
 .rail-mark { position: relative; width: 14px; height: 2px; padding: 0; background: var(--border-strong); border: none; transition: width var(--t), background-color var(--t); }
 /* The pointer is coarse against a 2px line, so each tick keeps a 12px band of
    its own to be caught by — invisible, and only over the rail's own gutter. */
@@ -238,9 +252,10 @@
 .steps-more[open] > summary .caret { transform: rotate(90deg); }
 /* Keyed by the call it names, so this replays every time the agent moves on. */
 .steps-latest { overflow: hidden; color: var(--text-2); white-space: nowrap; text-overflow: ellipsis; animation: step-swap 240ms ease-out; }
-/* Right-hand column, where the edit rows keep their own chevrons: butted up
-   against the name it follows, "Run npm test 5 more" reads as one sentence. */
-.steps-count { flex: none; margin-left: auto; }
+/* Butted up against the name it follows, so "Run npm test · 5 more" reads as
+   one line instead of two columns the eye has to cross. */
+.steps-count { flex: none; }
+.steps-count::before { content: "· "; }
 .steps-more > .steps { margin-top: var(--s-1); }
 @keyframes step-swap { from { opacity: 0; transform: translateY(2px); } }
 @media (prefers-reduced-motion: reduce) { .steps-latest { animation: none; } }

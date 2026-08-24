@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { platform, release } from "node:os";
 import path from "node:path";
 import { mergeSkillContext } from "../shared/folders";
-import { familiesOf, familyLabel, resolvePrompt, type PromptPreset, type PromptVariables } from "../shared/prompts";
+import { familiesOf, familyLabel, normalizeModel, resolvePrompt, type PromptPreset, type PromptVariables } from "../shared/prompts";
 import { MAX_SYSTEM_PROMPT_CHARS, systemPromptBlock } from "../shared/settings";
 import { toolDefinitions } from "./tools";
 import type { PermissionMode } from "../shared/permissions";
@@ -54,7 +54,10 @@ export interface PromptContext {
 }
 
 function promptVariables(context: PromptContext): PromptVariables {
-  const model = context.model ?? "";
+  // The picker's key, not a model id: the routing prefix has to come off before
+  // the prompt names the model, or the turn reads its own model back as
+  // `openrouter:vendor/name` and hands that to `.emma` as a subagent route.
+  const model = normalizeModel(context.model ?? "");
   const mode = context.mode ?? "ask";
   const families = familiesOf(model).map(familyLabel);
   return {

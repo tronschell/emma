@@ -266,6 +266,12 @@ export function planProgress(plan: Plan): { done: number; steps: number; tasks: 
   };
 }
 
+export const planState = (plan: Plan): PlanStatus =>
+  plan.steps.some((step) => step.status === "running") ? "running"
+    : plan.steps.some((step) => step.status === "failed") ? "failed"
+      : plan.steps.length > 0 && plan.steps.every((step) => step.status === "done") ? "done"
+        : "todo";
+
 /**
  * A rewritten plan, keeping what the old one had already lived through: a step
  * that kept its id keeps its status and result, and a task that kept its text

@@ -66,6 +66,8 @@ test("the variables a prompt writes are filled from the turn, and unknown braces
   assert.match(written, /Model anthropic\/claude-sonnet-4\.5, family Sonnet, in \/tmp\/work on ask\./);
   assert.match(written, /Tools: [a-z_]+(, [a-z_]+)+\./);
   assert.match(written, /Left \{alone\}\./);
+  writeHarnessPrompt(home, { model: "openrouter:deepseek/deepseek-chat", workspace: "/tmp/work", mode: "ask" });
+  assert.match(readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8"), /Model deepseek\/deepseek-chat,/);
   setSystemPrompt("");
 });
 
