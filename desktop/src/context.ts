@@ -626,6 +626,7 @@ export function pickLabel(pick: ContextPick, folders: FolderGrant[], snapshot: S
   if (pick.kind === "attachment") return pick.name;
   if (pick.kind === "artifact") return pick.title;
   if (pick.kind === "page") return snapshot.pages.find((item) => item.id === pick.id)?.title ?? "page";
+  if (pick.kind === "terminal") return `${pick.lines} ${plural(pick.lines, "line")} of output`;
   return `${snapshot.knowledgeBases.find((item) => item.id === pick.baseId)?.name ?? "base"} · ${pick.category}`;
 }
 
@@ -671,6 +672,11 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
       } catch (reason) {
         sections.push({ heading: `Artifact ${pick.title}`, body: `Could not be read: ${reasonText(reason)}`, label: pick.title });
       }
+      continue;
+    }
+    if (pick.kind === "terminal") {
+      const label = pickLabel(pick, folders, snapshot);
+      sections.push({ heading: `Terminal selection (${label})`, body: pick.text, label });
       continue;
     }
     if (pick.kind === "page") {

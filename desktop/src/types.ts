@@ -9,6 +9,7 @@ import type { Plan } from "../shared/plan";
 import type { PluginCatalog, PluginDetail } from "../shared/plugins";
 import type { FrontApplication } from "../shared/screen-context";
 import type { LinkedPermission, SetupStatus } from "../shared/setup";
+import type { TerminalTab } from "../shared/terminal";
 import type { TraceSpan } from "../shared/trace";
 import type { VoiceStatus } from "../shared/voice";
 import type { HarnessExperiments, TaggerSettings, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
@@ -393,6 +394,15 @@ declare global {
       browserNav(value: { threadId: string; action: "back" | "forward" | "reload" | "close" }): Promise<BrowserStatus>;
       browserStream(threadId: string): Promise<{ port: number }>;
       onBrowser(listener: () => void): () => void;
+      openTerminal(value: { threadId: string; columns: number; rows: number }): Promise<TerminalTab>;
+      writeTerminal(value: { id: string; data: string }): Promise<void>;
+      resizeTerminal(value: { id: string; columns: number; rows: number }): Promise<void>;
+      closeTerminal(id: string): Promise<void>;
+      listTerminals(threadId: string): Promise<TerminalTab[]>;
+      readTerminal(id: string): Promise<{ data: Uint8Array; at: number }>;
+      onTerminalData(listener: (value: { id: string; data: Uint8Array; at: number }) => void): () => void;
+      onTerminals(listener: () => void): () => void;
+      openLink(url: string): Promise<void>;
       listAgents(): Promise<LiveAgent[]>;
       /** Every live turn's spans, keyed by the thread the turn is on. */
       listSpans(): Promise<Record<string, TraceSpan[]>>;

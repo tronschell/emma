@@ -51,6 +51,8 @@ import { MAX_TAGGER_TEXT_CHARS, MAX_THREAD_TAGS, tagThread } from "./tagger";
 import { runMemoryCommand } from "./memory";
 import { browserArgv, BROWSER_NAVIGATIONS, describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolNeeds, type ToolArgs } from "./tools";
 import { Browsers, type BrowserStatus } from "./browser";
+import { Terminals } from "./terminal";
+import { MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT } from "../shared/terminal";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, toolGate, type PermissionMode } from "../shared/permissions";
 import { editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 
@@ -165,6 +167,11 @@ const background = new BackgroundCommands(() => broadcast("emma:background"));
 /** The other coding CLIs, and what Emma has running in them. Same deal — empty until asked. */
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
 const browsers = new Browsers(() => broadcast("emma:browser"));
+const terminals = new Terminals(
+  () => nativeHelper("emma-pty"),
+  (id, data, at) => broadcast("emma:terminal-data", { id, data, at }),
+  () => broadcast("emma:terminals"),
+);
 let runBanner: BrowserWindow | null = null;
 /**
  * What the composer has set for a thread: the folders it works out of, the mode
@@ -301,10 +308,10 @@ function binary(name: string) {
     : path.join(app.getAppPath(), "..", DEV_BINARIES[name] ?? name);
 }
 
-function nativeHelper() {
+function nativeHelper(name = "emma-option-tap") {
   return app.isPackaged
-    ? path.join(process.resourcesPath, "emma-option-tap")
-    : path.join(app.getAppPath(), "dist-native/emma-option-tap");
+    ? path.join(process.resourcesPath, name)
+    : path.join(app.getAppPath(), `dist-native/${name}`);
 }
 
 /** The skills shipped in the bundle, seeded into Emma's own skill root at launch. */
@@ -943,6 +950,18 @@ function browserNavRequest(value: unknown) {
   const action = BROWSER_NAVIGATIONS.find((known) => known === candidate.action);
   if (!action) throw new Error("Browser navigation is invalid");
   return { threadId, action };
+}
+
+function terminalRequest(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Terminal request is invalid");
+  return value as Record<string, unknown>;
+}
+
+function terminalSize(candidate: Record<string, unknown>) {
+  const { columns, rows } = candidate;
+  const valid = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= MAX_TERMINAL_COLUMNS;
+  if (!valid(columns) || !valid(rows)) throw new Error("Terminal size is invalid");
+  return { columns: columns as number, rows: rows as number };
 }
 
 /** A follow-up turn typed into a run's tab. Bounded to what the `cli` tool accepts. */
@@ -2893,6 +2912,44 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return { port: await browsers.ensureStream(boundedCapabilityId(value, "Browser thread")) };
   });
+  ipcMain.handle("emma:terminal-open", (event, value: unknown) => {
+    mainWindowSender(event);
+    const candidate = terminalRequest(value);
+    const threadId = boundedCapabilityId(candidate.threadId, "Terminal thread");
+    const { columns, rows } = terminalSize(candidate);
+    return terminals.open({ threadId, cwd: folders!.directory(grantFor(threadId, undefined)), columns, rows });
+  });
+  ipcMain.handle("emma:terminal-write", (event, value: unknown) => {
+    mainWindowSender(event);
+    const candidate = terminalRequest(value);
+    if (typeof candidate.data !== "string" || candidate.data.length > MAX_TERMINAL_INPUT) throw new Error("Terminal input is invalid");
+    terminals.write(boundedCapabilityId(candidate.id, "Terminal"), candidate.data);
+  });
+  ipcMain.handle("emma:terminal-resize", (event, value: unknown) => {
+    mainWindowSender(event);
+    const candidate = terminalRequest(value);
+    const { columns, rows } = terminalSize(candidate);
+    terminals.resize(boundedCapabilityId(candidate.id, "Terminal"), columns, rows);
+  });
+  ipcMain.handle("emma:terminal-close", (event, value: unknown) => {
+    mainWindowSender(event);
+    terminals.close(boundedCapabilityId(value, "Terminal"));
+  });
+  ipcMain.handle("emma:terminal-list", (event, value: unknown) => {
+    mainWindowSender(event);
+    return terminals.list(boundedCapabilityId(value, "Terminal thread"));
+  });
+  ipcMain.handle("emma:terminal-buffer", (event, value: unknown) => {
+    mainWindowSender(event);
+    return terminals.buffer(boundedCapabilityId(value, "Terminal"));
+  });
+  ipcMain.handle("emma:open-link", (event, value: unknown) => {
+    mainWindowSender(event);
+    if (typeof value !== "string" || value.length > 2048) throw new Error("Link is invalid");
+    const target = externalUrl(value);
+    if (!target) throw new Error("Emma opens http and https addresses only.");
+    void shell.openExternal(target.href);
+  });
   /** This turn's spans, so a panel that mounts mid-run is not blank until the next change. */
   ipcMain.handle("emma:list-spans", (event) => {
     mainWindowSender(event);
@@ -3618,6 +3675,7 @@ app.on("will-quit", () => {
   // port after the app is gone is nobody's to find.
   background.stopAll();
   clis.stopAll();
+  terminals.stopAll();
   skillAttachment.clearAll();
   for (const client of harnesses.values()) client.close();
   harnesses.clear();

@@ -1,3 +1,5 @@
+import { DEFAULT_TERMINAL_HEIGHT, MAX_TERMINAL_HEIGHT, MIN_TERMINAL_HEIGHT } from "../shared/terminal";
+
 /** What one graph's boxes measure, and the room left around and between them. */
 export type GraphBox = { width: number; height: number; gapX: number; gapY: number; lane: number };
 
@@ -50,6 +52,8 @@ export interface PaneLayout {
   sidebarCollapsed: boolean;
   inspectorCollapsed: boolean;
   browserOpen: boolean;
+  terminalOpen: boolean;
+  terminalHeight: number;
   /* Section nav as one horizontal row of glyph tiles, Arc's pinned strip. */
   navIcons: boolean;
   navOrder: string[];
@@ -63,6 +67,8 @@ export const defaultPaneLayout: PaneLayout = {
   sidebarCollapsed: false,
   inspectorCollapsed: false,
   browserOpen: false,
+  terminalOpen: false,
+  terminalHeight: DEFAULT_TERMINAL_HEIGHT,
   navIcons: false,
   navOrder: [],
   projectOrder: [],
@@ -98,6 +104,8 @@ export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITI
     sidebarCollapsed: typeof input.sidebarCollapsed === "boolean" ? input.sidebarCollapsed : false,
     inspectorCollapsed: typeof input.inspectorCollapsed === "boolean" ? input.inspectorCollapsed : false,
     browserOpen: typeof input.browserOpen === "boolean" ? input.browserOpen : false,
+    terminalOpen: typeof input.terminalOpen === "boolean" ? input.terminalOpen : false,
+    terminalHeight: number(input.terminalHeight, DEFAULT_TERMINAL_HEIGHT, MIN_TERMINAL_HEIGHT, MAX_TERMINAL_HEIGHT),
     navIcons: typeof input.navIcons === "boolean" ? input.navIcons : false,
     navOrder: idList(input.navOrder, NAV_VIEWS),
     projectOrder: idList(input.projectOrder),

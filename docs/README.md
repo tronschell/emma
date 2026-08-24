@@ -22,6 +22,7 @@ is the tour; this is the reference.
 | [Privacy](privacy.md) | What leaves this Mac and what doesn't, subsystem by subsystem |
 | [Knowledge](knowledge.md) | Knowledge bases, save & analyze, auto-categorisation, the Markdown mirror |
 | [Notch surfaces](notch.md) | The Option double-tap, Quick Ask, the island, quick actions, the radial ring |
+| [Terminal](terminal.md) | The shell panel under a thread: the pty helper, selecting output as context, ⌘-click links |
 | [Voice](voice.md) | Dictation's two engines, the local-only rule, and drawing |
 | [Computer use](computer-use.md) | Emma driving the Mac, and every safety rail as implemented |
 | [Jobs](jobs.md) | Scheduled workflows: triggers, node graphs, validation, execution |
