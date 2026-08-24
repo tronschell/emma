@@ -988,7 +988,7 @@ fn resolveOrdinaryPermissionOutcome(
         if (default_outcome.execution_authority != null) return default_outcome;
     }
     if (toolApprovalPolicy(input, call.name) == .ask_only) {
-        return if (permission_mode == .auto)
+        return if (permission_mode == .auto or visionCallNamesAuthorizedImages(arena, call))
             ordinaryPermissionOutcome(.once)
         else
             .{ .decision = .permission_required };
@@ -2081,6 +2081,13 @@ fn ordinaryPermissionOutcome(decision: ToolPermissionDecision) command_admission
         .decision = decision,
         .execution_authority = if (decision.isDenied()) null else .ordinary,
     };
+}
+
+fn visionCallNamesAuthorizedImages(arena: Allocator, call: ToolCall) bool {
+    if (!std.mem.eql(u8, call.name, "vision")) return false;
+    var request = vision_contracts.parse_vision_request(arena, call.arguments_json) catch return false;
+    defer request.deinit(arena);
+    return request.image_ids() != null;
 }
 
 fn visionPathExecutionAuthority(

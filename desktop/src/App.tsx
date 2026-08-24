@@ -2024,7 +2024,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     const content = (text ?? message).trim();
     if (!content) return;
     if (text === undefined) { setMessage(""); setHistory(-1); }
-    const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles, snapshot) : { text: "", uses: [] };
+    const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles, snapshot) : { text: "", uses: [], images: [] };
     const attachedSkill = skill;
     const after = thread.messages.length;
     /// Recorded against the message this turn is about to write, so the tiles the
@@ -2035,7 +2035,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     sendTurn(thread.id, {
       content,
       after,
-      params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
+      params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
       // Only a delivered turn goes in the ledger: it records what Emma was actually sent.
       delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skill" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
     }, reload);
@@ -4495,11 +4495,12 @@ function Overlay() {
       const attachedSkill = skill ? await window.emma.selectImportedSkill({ id: skill.id, threadId: active.id }).catch(() => undefined) : undefined;
       const paths = mentions(content, "@");
       const picks = atItems.filter((item) => item.pick && paths.includes(item.name)).map((item) => item.pick!);
-      const attached = picks.length ? await buildAttachedContext(folders, [], picks, files, snapshot) : { text: "" };
+      const attached = picks.length ? await buildAttachedContext(folders, [], picks, files, snapshot) : { text: "", images: [] };
       const turn = await window.emma.request<Thread>("sendMessage", {
         threadId: active.id,
         content,
         ...(attached.text ? { attachedContext: attached.text } : {}),
+        ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}),
         ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}),
         ...(screenContextId ? { screenContextId } : {}),
       });

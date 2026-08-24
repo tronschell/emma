@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { BoundedLines } from "./ndjson";
 export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
@@ -54,6 +55,8 @@ export const failedTurn = (reason: StopReason) => reason === "refused";
  */
 export type TurnUsage = { inputTokens: number; outputTokens: number };
 
+const mediaType =(file: string) => `image/${path.extname(file).slice(1).toLowerCase().replace("jpg", "jpeg")}`;
+
 /**
  * Everything a turn carries besides its words.
  *
@@ -62,7 +65,7 @@ export type TurnUsage = { inputTokens: number; outputTokens: number };
  * composer chip cleared and the attachment was marked delivered while the
  * instructions never left this process.
  */
-export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; compact?: boolean };
+export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; compact?: boolean; images?: string[] };
 
 /** The stop the picker is on, with the stops the turn's model publishes. Blank asks for the model's default. */
 export type ThinkingRoute = { level: string; published: string[] };
@@ -343,12 +346,11 @@ export class Harness {
     if (extra.compact) {
       await this.request("session/compact", { sessionId }).catch((error: unknown) => console.error("Emma: the harness would not compact", error));
     }
-    // Skills, attached folders, files and knowledge all ride this one channel.
-    // It is a second block rather than a prefix on the prompt so the harness's
-    // own transcript keeps the user's words separate from Emma's context.
-    const prompt = extra.skillContext
-      ? [{ type: "text", text: extra.skillContext }, { type: "text", text }]
-      : [{ type: "text", text }];
+    const prompt = [
+      ...(extra.skillContext ? [{ type: "text", text: extra.skillContext }] : []),
+      { type: "text", text },
+      ...(extra.images ?? []).map((file) => ({ type: "image", mimeType: mediaType(file), uri: pathToFileURL(file).href })),
+    ];
     await this.lifecycle("UserPromptSubmit", threadId, sessionId, mode, model, { prompt: text });
     const result = (await this.request("session/prompt", {
       sessionId,

@@ -43,6 +43,7 @@ test("IPC accepts only exact allowlisted payloads", () => {
   });
   assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", screenContextId: "context-1" } }).params.screenContextId, "context-1");
   assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", skillAttachmentId: "skill:codex:0:review" } }).params.skillAttachmentId, "skill:codex:0:review");
+  assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", attachedImages: "[\"a\",\"b\"]" } }).params.attachedImages, "[\"a\",\"b\"]");
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", screenContext: "data:image/jpeg;base64,/9j/" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "shell", params: {} }), /not allowed/);
   // Only main writes assistant turns: a renderer that could call these would be

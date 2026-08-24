@@ -49,6 +49,25 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   the session supports children. Delegation is a first-class Emma feature — the
   app draws every child as a thread of its own — and a tool the model has to go
   looking for is one it does not use. The `subagent_available` gate is untouched.
+- **Attached pictures.** Upstream's ACP server rejects every `image` prompt
+  block, because fx only ever attaches a picture through its own TUI. Emma is an
+  ACP client with a composer of its own, so a block naming a local `file://`
+  image is loaded into the turn's attachment catalogue instead — the same
+  catalogue `/image` fills — and snapshotted into the session's `images`
+  directory the way every other surface snapshots one.
+- **Model catalogue shape.** Upstream reads `vision` and `file-input` off a
+  Vercel AI Gateway model's `tags`. OpenRouter publishes neither; it publishes
+  `architecture.input_modalities`. Emma reads both shapes, so a model that can
+  see is known to be able to.
+- **Native vision gate.** Upstream routes a picture to the model itself only
+  when it reports both vision *and* file input, then falls back to the forced
+  `vision` tool. Emma gates on vision alone: the native part is an `image_url`,
+  file input has nothing to do with it, and on OpenRouter a third of the models
+  that can see do not claim it.
+- **Vision approval.** A `vision` call naming `image_ids` resolves only against
+  the catalogue the user themselves attached, so Emma admits it without a
+  prompt. A call naming `paths` is the model choosing a file, and keeps its
+  per-path gate.
 
 ### De-Vercel pass (removals)
 
