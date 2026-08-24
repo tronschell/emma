@@ -253,17 +253,7 @@ fn fieldNameLessThan(_: void, left: []const u8, right: []const u8) bool {
     return std.mem.order(u8, left, right) == .lt;
 }
 
-/// The advertised schema requires every public field and tells the model to
-/// send null for the ones the selected action does not use. Models routinely
-/// serialize that null as the literal text "null", so the decoder treats it as
-/// the absence it was meant to express.
-fn isNullPlaceholder(value: std.json.Value) bool {
-    return switch (value) {
-        .null => true,
-        .string => |text| tool_args.isNullPlaceholderText(text),
-        else => false,
-    };
-}
+const isNullPlaceholder = tool_args.isNullPlaceholder;
 
 fn elideKnownNullFields(object: *std.json.ObjectMap) void {
     for (public_field_names[1..]) |field_name| {
@@ -350,6 +340,37 @@ const OwnedInput = struct {
     }
 };
 
+const action_names = blk: {
+    var names: []const u8 = "";
+    for (std.meta.tags(Action), 0..) |tag, index| {
+        names = names ++ (if (index == 0) "" else ", ") ++ @tagName(tag);
+    }
+    break :blk names;
+};
+
+const action_field_lists = blk: {
+    var lists: [std.meta.tags(Action).len][]const u8 = undefined;
+    for (std.meta.tags(Action), 0..) |tag, index| {
+        var names: []const u8 = "";
+        for (actionFieldContract(tag).allowed, 0..) |field_name, field_index| {
+            names = names ++ (if (field_index == 0) "" else ", ") ++ field_name;
+        }
+        lists[index] = names;
+    }
+    break :blk lists;
+};
+
+const exec_example = "{\"action\":\"exec\",\"command\":\"ls -la\"}";
+const unreadable_arguments_message =
+    "terminal arguments must be one JSON object, for example " ++ exec_example ++ ".";
+const missing_action_message =
+    "terminal needs an action. To run one command send " ++ exec_example ++
+    ", or send only a command and terminal runs it as exec. Actions: " ++ action_names ++ ".";
+const unknown_action_message =
+    "terminal has no action by that name. Actions: " ++ action_names ++ ".";
+const composite_arguments_message =
+    "terminal object fields (shell, return_when, dimensions, initial_monitors, write, monitor) must be JSON objects, not strings holding JSON.";
+
 pub fn decode(
     ctx: tool_dispatch.DispatchContext,
     args_json: []const u8,
@@ -357,41 +378,34 @@ pub fn decode(
     var arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const normalized_arguments = try tool_args.normalizedTerminalArguments(arena, args_json);
     var raw = std.json.parseFromSliceLeaky(
         std.json.Value,
         arena,
-        args_json,
+        normalized_arguments orelse args_json,
         .{ .allocate = .alloc_always },
     ) catch {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "terminal arguments must match the advertised action schema",
-        ) };
+        return .{ .failure = try ctx.allocator.dupe(u8, unreadable_arguments_message) };
     };
     if (raw != .object) {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "terminal arguments must match the advertised action schema",
-        ) };
+        return .{ .failure = try ctx.allocator.dupe(u8, unreadable_arguments_message) };
     }
     const raw_action = raw.object.get("action") orelse {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "terminal arguments must match the advertised action schema",
-        ) };
+        return .{ .failure = try ctx.allocator.dupe(u8, missing_action_message) };
     };
-    if (raw_action != .string) {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "terminal arguments must match the advertised action schema",
-        ) };
+    if (isNullPlaceholder(raw_action)) {
+        return .{ .failure = try ctx.allocator.dupe(u8, missing_action_message) };
     }
-    const action = std.meta.stringToEnum(Action, raw_action.string) orelse {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "terminal arguments must match the advertised action schema",
-        ) };
+    if (raw_action != .string) {
+        return .{ .failure = try ctx.allocator.dupe(u8, unknown_action_message) };
+    }
+    const action = std.meta.stringToEnum(
+        Action,
+        std.mem.trim(u8, raw_action.string, &std.ascii.whitespace),
+    ) orelse {
+        return .{ .failure = try ctx.allocator.dupe(u8, unknown_action_message) };
     };
+    try raw.object.put(arena, "action", .{ .string = @tagName(action) });
     elideKnownNullFields(&raw.object);
     var correction_scratch: ActionFieldCorrectionScratch = .{};
     defer correction_scratch.deinit(ctx.allocator);
@@ -405,10 +419,7 @@ pub fn decode(
     normalizeCompositeArguments(arena, &raw) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            return .{ .failure = try ctx.allocator.dupe(
-                u8,
-                "terminal arguments must match the advertised action schema",
-            ) };
+            return .{ .failure = try ctx.allocator.dupe(u8, composite_arguments_message) };
         },
     };
 
@@ -425,9 +436,10 @@ pub fn decode(
         normalized_json,
         .{ .allocate = .alloc_always },
     ) catch {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "terminal arguments must match the advertised action schema",
+        return .{ .failure = try std.fmt.allocPrint(
+            ctx.allocator,
+            "terminal {s} arguments have a field with the wrong type. {s} takes: {s}.",
+            .{ @tagName(action), @tagName(action), action_field_lists[@intFromEnum(action)] },
         ) };
     };
     const owned = try ctx.allocator.create(OwnedInput);
@@ -1778,11 +1790,62 @@ test "terminal decoder rejects malformed gateway composite strings" {
         },
         .failure => |message| {
             defer alloc.free(message);
-            try std.testing.expectEqualStrings(
-                "terminal arguments must match the advertised action schema",
-                message,
-            );
+            try std.testing.expectEqualStrings(composite_arguments_message, message);
         },
+    }
+}
+
+test "terminal decoder runs a bare command as exec" {
+    const alloc = std.testing.allocator;
+    inline for (&.{
+        "{\"command\":\"printf ok\"}",
+        "{\"request\":{\"command\":\"printf ok\"}}",
+        "{\"action\":\"None\",\"command\":\"printf ok\"}",
+        "{\"action\":\" exec \",\"command\":\"printf ok\",\"cwd\":\"none\"}",
+    }) |arguments_json| {
+        const decoded = try decode(.{ .allocator = alloc }, arguments_json);
+        switch (decoded) {
+            .failure => |message| {
+                defer alloc.free(message);
+                return error.TestUnexpectedResult;
+            },
+            .input => |input| {
+                defer input.deinit(alloc);
+                const parsed = input.as(OwnedInput).parsed.value;
+                try std.testing.expectEqual(Action.exec, parsed.action);
+                try std.testing.expectEqualStrings("printf ok", parsed.command.?);
+                try std.testing.expect(parsed.cwd == null);
+            },
+        }
+    }
+}
+
+test "terminal decoder names what an unusable call is missing" {
+    const alloc = std.testing.allocator;
+    const cases = [_]struct { arguments_json: []const u8, message: []const u8 }{
+        .{ .arguments_json = "not-json", .message = unreadable_arguments_message },
+        .{ .arguments_json = "[]", .message = unreadable_arguments_message },
+        .{ .arguments_json = "{}", .message = missing_action_message },
+        .{ .arguments_json = "{\"action\":null}", .message = missing_action_message },
+        .{ .arguments_json = "{\"action\":\"run\",\"command\":\"printf ok\"}", .message = unknown_action_message },
+        .{ .arguments_json = "{\"action\":7}", .message = unknown_action_message },
+        .{
+            .arguments_json = "{\"action\":\"exec\",\"command\":[\"printf\",\"ok\"]}",
+            .message = "terminal exec arguments have a field with the wrong type. exec takes: action, command, cwd, profile.",
+        },
+    };
+    for (cases) |case| {
+        const decoded = try decode(.{ .allocator = alloc }, case.arguments_json);
+        switch (decoded) {
+            .input => |input| {
+                input.deinit(alloc);
+                return error.TestUnexpectedResult;
+            },
+            .failure => |message| {
+                defer alloc.free(message);
+                try std.testing.expectEqualStrings(case.message, message);
+            },
+        }
     }
 }
 

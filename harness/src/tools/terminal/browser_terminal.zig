@@ -1,5 +1,6 @@
 const std = @import("std");
 const js_host_workspace = @import("../../core/hosts/js_host_workspace.zig");
+const tool_args = @import("../../core/tooling/tool_args.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const terminal = @import("terminal.zig");
 
@@ -9,7 +10,10 @@ pub fn decode(
     ctx: tool_dispatch.DispatchContext,
     args_json: []const u8,
 ) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
-    var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, args_json, .{}) catch {
+    const normalized = try tool_args.normalizedTerminalArguments(ctx.allocator, args_json);
+    defer if (normalized) |owned| ctx.allocator.free(owned);
+    const source = normalized orelse args_json;
+    var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, source, .{}) catch {
         return failure(ctx.allocator, "browser terminal arguments must be valid JSON");
     };
     defer parsed.deinit();
@@ -34,7 +38,7 @@ pub fn decode(
     if (command.string.len > js_host_workspace.max_command_bytes) {
         return failure(ctx.allocator, "browser terminal field \"command\" exceeds 65536 bytes");
     }
-    return terminal.decode(ctx, args_json);
+    return terminal.decode(ctx, source);
 }
 
 fn failure(alloc: Allocator, message: []const u8) Allocator.Error!tool_dispatch.DecodeResult {

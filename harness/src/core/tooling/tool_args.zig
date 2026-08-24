@@ -2,8 +2,6 @@ const std = @import("std");
 
 pub fn parseToolArgsObject(alloc: std.mem.Allocator, args_json: []const u8) !std.json.ObjectMap {
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, args_json, .{});
-    // The returned object map is backed by the parse allocation; callers should
-    // use an arena or allocator lifetime that outlives all borrowed values.
     if (parsed.value != .object) return error.InvalidToolArguments;
     return parsed.value.object;
 }
@@ -20,15 +18,76 @@ pub fn optionalStringArg(args: std.json.ObjectMap, key: []const u8) ?[]const u8 
     return value.string;
 }
 
-/// Tool schemas that require every field tell the model to send null for the
-/// fields its selected action does not use. Models routinely serialize that null
-/// as the literal text "null", so readers treat it as the absence it expresses.
+const null_placeholder_words = [_][]const u8{ "null", "none", "nil", "undefined" };
+
 pub fn isNullPlaceholderText(text: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, text, &std.ascii.whitespace), "null");
+    const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+    for (null_placeholder_words) |word| {
+        if (std.ascii.eqlIgnoreCase(trimmed, word)) return true;
+    }
+    return false;
 }
 
-/// Reads an optional string argument from a schema whose unused fields arrive as
-/// nulls, so textual null placeholders read as absent instead of as a value.
+pub fn isNullPlaceholder(value: std.json.Value) bool {
+    return switch (value) {
+        .null => true,
+        .string => |text| isNullPlaceholderText(text),
+        else => false,
+    };
+}
+
+pub fn normalizedTerminalArguments(
+    alloc: std.mem.Allocator,
+    args_json: []const u8,
+) std.mem.Allocator.Error!?[]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const root = std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        args_json,
+        .{ .allocate = .alloc_always },
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    if (root != .object) return null;
+
+    var object = root.object;
+    var changed = false;
+    if (object.count() == 1) {
+        const request = object.get("request") orelse .null;
+        if (request == .object) {
+            object = request.object;
+            changed = true;
+        }
+    }
+    if (impliesCapturedExec(object)) {
+        try object.put(arena, "action", .{ .string = "exec" });
+        changed = true;
+    }
+    if (!changed) return null;
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    std.json.Stringify.value(
+        std.json.Value{ .object = object },
+        .{},
+        &out.writer,
+    ) catch return error.OutOfMemory;
+    return try out.toOwnedSlice();
+}
+
+fn impliesCapturedExec(object: std.json.ObjectMap) bool {
+    if (object.get("action")) |action| {
+        if (!isNullPlaceholder(action)) return false;
+    }
+    const command = object.get("command") orelse return false;
+    return command == .string and !isNullPlaceholderText(command.string);
+}
+
 pub fn nullablePlaceholderStringArg(args: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const text = optionalStringArg(args, key) orelse return null;
     if (isNullPlaceholderText(text)) return null;
@@ -114,4 +173,54 @@ test "null placeholder reads treat textual nulls as absent" {
     try std.testing.expectEqualStrings("echo null", nullablePlaceholderStringArg(args, "command").?);
     try std.testing.expectEqualStrings("nullify", nullablePlaceholderStringArg(args, "dir").?);
     try std.testing.expectEqualStrings("null", optionalStringArg(args, "cwd").?);
+}
+
+test "terminal argument normalization fills in the captured exec action" {
+    const alloc = std.testing.allocator;
+
+    const bare = (try normalizedTerminalArguments(alloc, "{\"command\":\"pwd\"}")).?;
+    defer alloc.free(bare);
+    try std.testing.expectEqualStrings("{\"command\":\"pwd\",\"action\":\"exec\"}", bare);
+
+    const placeholder = (try normalizedTerminalArguments(
+        alloc,
+        "{\"action\":\"None\",\"command\":\"pwd\"}",
+    )).?;
+    defer alloc.free(placeholder);
+    try std.testing.expectEqualStrings("{\"action\":\"exec\",\"command\":\"pwd\"}", placeholder);
+
+    const nested = (try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":{\"action\":\"exec\",\"command\":\"pwd\"}}",
+    )).?;
+    defer alloc.free(nested);
+    try std.testing.expectEqualStrings("{\"action\":\"exec\",\"command\":\"pwd\"}", nested);
+
+    const nested_bare = (try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":{\"command\":\"pwd\"}}",
+    )).?;
+    defer alloc.free(nested_bare);
+    try std.testing.expectEqualStrings("{\"command\":\"pwd\",\"action\":\"exec\"}", nested_bare);
+}
+
+test "terminal argument normalization leaves complete and unreadable calls alone" {
+    const alloc = std.testing.allocator;
+
+    try std.testing.expect(try normalizedTerminalArguments(
+        alloc,
+        "{\"action\":\"start\",\"command\":\"pwd\"}",
+    ) == null);
+    try std.testing.expect(try normalizedTerminalArguments(alloc, "{\"action\":\"list\"}") == null);
+    try std.testing.expect(try normalizedTerminalArguments(alloc, "{}") == null);
+    try std.testing.expect(try normalizedTerminalArguments(alloc, "not-json") == null);
+    try std.testing.expect(try normalizedTerminalArguments(alloc, "[]") == null);
+    try std.testing.expect(try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":\"exec\"}",
+    ) == null);
+    try std.testing.expect(try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":{\"action\":\"exec\"},\"action\":\"list\"}",
+    ) == null);
 }
