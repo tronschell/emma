@@ -19,7 +19,8 @@ export type ContextPick =
       what reopens the file from the turn it was handed to, long after the id has
       stopped meaning anything to this window. */
   | { kind: "attachment"; id: string; name: string; path: string; thumbnail?: string }
-  | { kind: "page"; id: string };
+  | { kind: "page"; id: string }
+  | { kind: "terminal"; id: string; text: string; lines: number };
 
 export const MAX_FOLDERS = 16;
 export const MAX_FOLDER_FILES = 400;

@@ -41,6 +41,8 @@ import { worktreeName, type GitSnapshot } from "../shared/git";
 import { BrandIcon, ClipIcon, EmmaMark, GlobeIcon, InfoDot, ToolIcon } from "./icons";
 import { BrowserPane } from "./browser";
 import { PaneSwitch } from "./pane-switch";
+import { closeTerminals, TerminalIcon, TerminalPanel } from "./terminal";
+import { MAX_TERMINAL_HEIGHT, MIN_TERMINAL_HEIGHT } from "../shared/terminal";
 import { syncImprovements } from "./improvements";
 import { CliDock, CliPanel, useCliRuns, useTailScroll } from "./cli";
 import { cliHarness } from "../shared/cli";
@@ -413,15 +415,17 @@ const readLayout = () => {
   catch { return defaultPaneLayout; }
 };
 
-function ResizeHandle({ label, value, min, max, direction = 1, onChange }: { label: string; value: number; min: number; max: number; direction?: 1 | -1; onChange: (value: number) => void }) {
-  const drag = useRef<{ x: number; value: number } | undefined>(undefined);
+function ResizeHandle({ label, value, min, max, direction = 1, axis = "x", onChange }: { label: string; value: number; min: number; max: number; direction?: 1 | -1; axis?: "x" | "y"; onChange: (value: number) => void }) {
+  const drag = useRef<{ at: number; value: number } | undefined>(undefined);
   const clamp = (next: number) => Math.min(max, Math.max(min, Math.round(next)));
+  const along = (event: { clientX: number; clientY: number }) => axis === "x" ? event.clientX : event.clientY;
+  const [less, more] = axis === "x" ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
   const key = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (event.key !== less && event.key !== more) return;
     event.preventDefault();
-    onChange(clamp(value + (event.key === "ArrowRight" ? 8 : -8) * direction));
+    onChange(clamp(value + (event.key === more ? 8 : -8) * direction));
   };
-  return <button type="button" className="resize-handle" role="separator" aria-label={label} aria-orientation="vertical" aria-valuemin={min} aria-valuemax={max} aria-valuenow={value} onKeyDown={key} onPointerDown={(event: ReactPointerEvent<HTMLButtonElement>) => { drag.current = { x: event.clientX, value }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (drag.current) onChange(clamp(drag.current.value + (event.clientX - drag.current.x) * direction)); }} onPointerUp={() => { drag.current = undefined; }} />;
+  return <button type="button" className="resize-handle" role="separator" aria-label={label} aria-orientation={axis === "x" ? "vertical" : "horizontal"} aria-valuemin={min} aria-valuemax={max} aria-valuenow={value} onKeyDown={key} onPointerDown={(event: ReactPointerEvent<HTMLButtonElement>) => { drag.current = { at: along(event), value }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (drag.current) onChange(clamp(drag.current.value + (along(event) - drag.current.at) * direction)); }} onPointerUp={() => { drag.current = undefined; }} />;
 }
 
 function App() {
@@ -705,6 +709,7 @@ function Workspace() {
     "--sidebar-width": `${layout.sidebarCollapsed ? 46 : layout.sidebarWidth}px`,
     "--inspector-width": `${layout.inspectorCollapsed ? 30 : layout.inspectorWidth}px`,
     "--browser-width": `${layout.browserOpen ? layout.browserWidth : 0}px`,
+    "--terminal-height": `${layout.terminalOpen ? layout.terminalHeight : 0}px`,
   } as CSSProperties;
   // A due run opens an ordinary thread, but it is not one the user started, so it
   // is listed under its job at the foot of the rail rather than in a project.
@@ -1937,7 +1942,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   const imported = commands.filter((item) => item.kind === "skill" || item.kind === "mcp");
   // The "@" menu names what Emma made and saved before the files on disk, all by path.
   const atItems = atCommands(artifacts, snapshot, folders, folderIds, folderFiles);
-  const addPick = (pick: ContextPick) => setPicks((current) => current.some((item) => pickKey(item) === pickKey(pick)) ? current : [...current, pick]);
+  const addPick = (pick: ContextPick) => setPicks((current) => current.some((item) => pickKey(item) === pickKey(pick)) ? current.map((item) => pickKey(item) === pickKey(pick) ? pick : item) : [...current, pick]);
   const noteUses = (added: Omit<ContextUse, "turns">[]) => { recordUses(thread.id, added); ledgerChanged((current) => current + 1); };
   const dropPick = (pick: ContextPick) => setPicks((current) => current.filter((item) => pickKey(item) !== pickKey(pick)));
   /// Files handed to this message: a screenshot, a CSV, whichever file is the point
@@ -2113,6 +2118,13 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       /><TagPicker threadId={thread.id} /><div className="thread-actions">{/* Only once this thread has actually touched code: with a clean tree the row
           would be three app icons offering to open nothing in particular. */}
         {folderIds[0] && (!!git?.diff.trim() || changes.length > 0) && <OpenIn folderId={folderIds[0]} label />}
+        <PaneSwitch open={layout.terminalOpen}
+          running={() => window.emma.listTerminals(thread.id).then((tabs) => tabs.some((tab) => tab.running))}
+          onOpen={() => pane({ terminalOpen: true })}
+          onHide={() => pane({ terminalOpen: false })}
+          onClose={() => { pane({ terminalOpen: false }); void closeTerminals(thread.id); }}
+          openLabel="Open the terminal" closeLabel="Close the terminal"
+          hideNote="Keeps every shell running where it is" closeNote="Ends every shell and frees what it holds"><TerminalIcon /></PaneSwitch>
         <PaneSwitch open={layout.browserOpen}
           running={() => window.emma.browserStatus(thread.id).then((status) => status.running)}
           onOpen={() => pane({ browserOpen: true })}
@@ -2175,6 +2187,13 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     {layout.browserOpen && <div className="browser-column">
       <ResizeHandle label="Resize browser" value={layout.browserWidth} min={MIN_BROWSER_WIDTH} max={720} direction={-1} onChange={(browserWidth) => pane({ browserWidth })} />
       <BrowserPane threadId={thread.id} />
+    </div>}
+    {layout.terminalOpen && <div className="terminal-row">
+      <ResizeHandle label="Resize terminal" axis="y" value={layout.terminalHeight} min={MIN_TERMINAL_HEIGHT} max={MAX_TERMINAL_HEIGHT} direction={-1} onChange={(terminalHeight) => pane({ terminalHeight })} />
+      <TerminalPanel threadId={thread.id}
+        onSelect={(value) => addPick({ kind: "terminal", id: value.id, text: value.text, lines: value.lines })}
+        onHide={() => pane({ terminalOpen: false })}
+        onOpenInEmma={(url) => { pane({ browserOpen: true }); void window.emma.browserOpen({ threadId: thread.id, url }).catch((reason: unknown) => setRunError(reasonText(reason))); }} />
     </div>}{agentOpen && <AgentDialog thread={thread} close={() => setAgentOpen(false)} />}
   </div>;
 }

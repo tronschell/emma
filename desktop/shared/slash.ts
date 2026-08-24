@@ -6,7 +6,7 @@
 
 import type { ContextPick } from "./folders";
 
-export type SlashKind = "tool" | "skill" | "mcp" | "builtin" | "file" | "category" | "artifact" | "page";
+export type SlashKind = "tool" | "skill" | "mcp" | "builtin" | "file" | "category" | "artifact" | "page" | "terminal";
 export interface SlashCommand {
   id: string;
   name: string;
@@ -27,6 +27,7 @@ export const KIND_LABELS: Record<SlashKind, string> = {
   category: "Category",
   artifact: "Artifact",
   page: "Knowledge",
+  terminal: "Terminal",
 };
 
 /** Hues a "/" token cycles through. Orange is the accent and stays out of it. */

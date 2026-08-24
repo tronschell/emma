@@ -225,6 +225,26 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:browser", wrapped);
     return () => ipcRenderer.removeListener("emma:browser", wrapped);
   },
+  openTerminal: (value: { threadId: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:terminal-open", value),
+  writeTerminal: (value: { id: string; data: string }) => ipcRenderer.invoke("emma:terminal-write", value),
+  resizeTerminal: (value: { id: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:terminal-resize", value),
+  closeTerminal: (id: string) => ipcRenderer.invoke("emma:terminal-close", id),
+  listTerminals: (threadId: string) => ipcRenderer.invoke("emma:terminal-list", threadId),
+  readTerminal: (id: string) => ipcRenderer.invoke("emma:terminal-buffer", id),
+  onTerminalData: (listener: (value: { id: string; data: Uint8Array; at: number }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const chunk = value as { id?: unknown; data?: unknown; at?: unknown };
+      if (typeof chunk?.id === "string" && chunk.data instanceof Uint8Array && typeof chunk.at === "number") listener({ id: chunk.id, data: chunk.data, at: chunk.at });
+    };
+    ipcRenderer.on("emma:terminal-data", wrapped);
+    return () => ipcRenderer.removeListener("emma:terminal-data", wrapped);
+  },
+  onTerminals: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:terminals", wrapped);
+    return () => ipcRenderer.removeListener("emma:terminals", wrapped);
+  },
+  openLink: (url: string) => ipcRenderer.invoke("emma:open-link", url),
   listAgents: () => ipcRenderer.invoke("emma:list-agents"),
   listSpans: () => ipcRenderer.invoke("emma:list-spans"),
   threadTraces: (threadId: string) => ipcRenderer.invoke("emma:thread-traces", threadId),
