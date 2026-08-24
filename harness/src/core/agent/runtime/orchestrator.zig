@@ -17,6 +17,7 @@ const host_target = @import("../../hosts/target.zig");
 const secret = @import("../../auth/secret.zig");
 const credentials = @import("../../auth/credentials.zig");
 const tool_dispatch = @import("../../tooling/tool_dispatch.zig");
+const tool_args = @import("../../tooling/tool_args.zig");
 const tool_result_errors = @import("../../tooling/tool_result_errors.zig");
 const tooling_tool_admission = @import("../../tooling/tool_admission.zig");
 const hooks = @import("../../hooks/hooks.zig");
@@ -72,75 +73,11 @@ const TurnFinalizationGuard = runtime_finalization.TurnFinalizationGuard;
 const PromptFinishTrace = runtime_finalization.PromptFinishTrace;
 const ToolExecutionResult = runtime_tool_contracts.ToolExecutionResult;
 
-fn terminal_request_schema_advertised(
-    alloc: Allocator,
-    tools_json: []const u8,
-) Allocator.Error!bool {
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, tools_json, .{}) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return false,
-    };
-    defer parsed.deinit();
-    if (parsed.value != .array) return false;
-
-    for (parsed.value.array.items) |tool_value| {
-        if (tool_value != .object) continue;
-        const name = tool_value.object.get("name") orelse continue;
-        if (name != .string or !std.mem.eql(u8, name.string, "terminal")) continue;
-        const input_schema = tool_value.object.get("inputSchema") orelse return false;
-        if (input_schema != .object) return false;
-        const input_type = input_schema.object.get("type") orelse return false;
-        if (input_type != .string or !std.mem.eql(u8, input_type.string, "object")) return false;
-        const properties = input_schema.object.get("properties") orelse return false;
-        if (properties != .object or properties.object.count() != 1) return false;
-        const request = properties.object.get("request") orelse return false;
-        if (request != .object) return false;
-        const alternatives = request.object.get("oneOf") orelse return false;
-        if (alternatives != .array or alternatives.array.items.len == 0) return false;
-        const required = input_schema.object.get("required") orelse return false;
-        if (required != .array or required.array.items.len != 1) return false;
-        const required_name = required.array.items[0];
-        if (required_name != .string or !std.mem.eql(u8, required_name.string, "request")) return false;
-        const additional_properties = input_schema.object.get("additionalProperties") orelse return false;
-        return additional_properties == .bool and !additional_properties.bool;
-    }
-    return false;
-}
-
-fn terminal_request_normalization_eligible(
-    base_nested_terminal_advertised: bool,
-    vision_mode: runtime_gateway_step.VisionToolMode,
-) bool {
-    return base_nested_terminal_advertised and vision_mode != .required;
-}
-
-fn normalized_terminal_request_arguments(
-    alloc: Allocator,
-    arguments_json: []const u8,
-) Allocator.Error!?[]u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments_json, .{}) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
-    defer parsed.deinit();
-    if (parsed.value != .object or parsed.value.object.count() != 1) return null;
-    const request = parsed.value.object.get("request") orelse return null;
-    if (request != .object) return null;
-
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    std.json.Stringify.value(request, .{}, &out.writer) catch return error.OutOfMemory;
-    return try out.toOwnedSlice();
-}
-
 fn normalize_terminal_request_tool_calls(
     alloc: Allocator,
     registry: tool_dispatch.Registry,
-    attempt_eligible: bool,
     source: []const ToolCall,
 ) Allocator.Error![]const ToolCall {
-    if (!attempt_eligible) return source;
-
     var normalized: ?[]ToolCall = null;
     errdefer if (normalized) |calls| {
         for (calls, source) |call, original| {
@@ -155,7 +92,7 @@ fn normalize_terminal_request_tool_calls(
         if (call.argument_integrity != .valid) continue;
         const tool = registry.lookup(call.name) orelse continue;
         if (tool.executor_kind != .terminal) continue;
-        const arguments_json = try normalized_terminal_request_arguments(
+        const arguments_json = try tool_args.normalizedTerminalArguments(
             alloc,
             call.arguments_json,
         ) orelse continue;
@@ -170,23 +107,7 @@ fn normalize_terminal_request_tool_calls(
     return normalized orelse source;
 }
 
-test "terminal request normalization follows effective attempt advertisement" {
-    const nested_tools_json =
-        "[{\"type\":\"function\",\"name\":\"terminal\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"request\":{\"oneOf\":[{\"type\":\"object\"}]}},\"required\":[\"request\"],\"additionalProperties\":false}}]";
-    const flat_tools_json =
-        "[{\"type\":\"function\",\"name\":\"terminal\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\"}},\"required\":[\"action\"],\"additionalProperties\":false}}]";
-
-    try std.testing.expect(try terminal_request_schema_advertised(std.testing.allocator, nested_tools_json));
-    try std.testing.expect(!try terminal_request_schema_advertised(std.testing.allocator, flat_tools_json));
-    try std.testing.expect(!try terminal_request_schema_advertised(std.testing.allocator, "[]"));
-    try std.testing.expect(!try terminal_request_schema_advertised(std.testing.allocator, "{"));
-    try std.testing.expect(terminal_request_normalization_eligible(true, .unavailable));
-    try std.testing.expect(terminal_request_normalization_eligible(true, .optional));
-    try std.testing.expect(!terminal_request_normalization_eligible(true, .required));
-    try std.testing.expect(!terminal_request_normalization_eligible(false, .unavailable));
-}
-
-test "terminal request normalization unwraps only exact eligible native calls" {
+test "terminal request normalization unwraps only exact native terminal calls" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -227,7 +148,6 @@ test "terminal request normalization unwraps only exact eligible native calls" {
     const normalized = try normalize_terminal_request_tool_calls(
         arena,
         native_registry,
-        true,
         &calls,
     );
     try std.testing.expect(normalized.ptr != calls[0..].ptr);
@@ -241,11 +161,7 @@ test "terminal request normalization unwraps only exact eligible native calls" {
     try std.testing.expectEqual(calls[0].provenance, normalized[0].provenance);
     try std.testing.expectEqualStrings(calls[1].arguments_json, normalized[1].arguments_json);
 
-    const ineligible = try normalize_terminal_request_tool_calls(arena, native_registry, false, &calls);
-    try std.testing.expectEqual(calls[0..].ptr, ineligible.ptr);
-    try std.testing.expectEqual(wrapped.ptr, ineligible[0].arguments_json.ptr);
-
-    const browser = try normalize_terminal_request_tool_calls(arena, browser_registry, true, &calls);
+    const browser = try normalize_terminal_request_tool_calls(arena, browser_registry, &calls);
     try std.testing.expectEqual(calls[0..].ptr, browser.ptr);
     try std.testing.expectEqual(wrapped.ptr, browser[0].arguments_json.ptr);
 
@@ -254,7 +170,7 @@ test "terminal request normalization unwraps only exact eligible native calls" {
         .name = "terminal",
         .arguments_json = "{\"request\":{\"action\":\"exec\",\"command\":\"true\"},\"extra\":true}",
     }};
-    const non_exact = try normalize_terminal_request_tool_calls(arena, native_registry, true, &non_exact_calls);
+    const non_exact = try normalize_terminal_request_tool_calls(arena, native_registry, &non_exact_calls);
     try std.testing.expectEqual(non_exact_calls[0..].ptr, non_exact.ptr);
 
     const malformed_calls = [_]ToolCall{.{
@@ -263,16 +179,11 @@ test "terminal request normalization unwraps only exact eligible native calls" {
         .arguments_json = "{",
         .argument_integrity = .malformed_json,
     }};
-    const malformed = try normalize_terminal_request_tool_calls(arena, native_registry, true, &malformed_calls);
+    const malformed = try normalize_terminal_request_tool_calls(arena, native_registry, &malformed_calls);
     try std.testing.expectEqual(malformed_calls[0..].ptr, malformed.ptr);
 }
 
 fn check_terminal_request_normalization_allocation_failures(alloc: Allocator) !void {
-    const nested_tools_json =
-        "[{\"type\":\"function\",\"name\":\"terminal\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"request\":{\"oneOf\":[{\"type\":\"object\"}]}},\"required\":[\"request\"],\"additionalProperties\":false}}]";
-    if (!try terminal_request_schema_advertised(alloc, nested_tools_json)) {
-        return error.TestUnexpectedResult;
-    }
     const native_terminal = tool_dispatch.Tool{
         .name = "terminal",
         .description = "terminal",
@@ -289,7 +200,7 @@ fn check_terminal_request_normalization_allocation_failures(alloc: Allocator) !v
         .{ .id = "one", .name = "terminal", .arguments_json = "{\"request\":{\"action\":\"exec\",\"command\":\"true\"}}" },
         .{ .id = "two", .name = "terminal", .arguments_json = "{\"request\":{\"action\":\"start\"}}" },
     };
-    const normalized = try normalize_terminal_request_tool_calls(alloc, registry, true, &source);
+    const normalized = try normalize_terminal_request_tool_calls(alloc, registry, &source);
     if (normalized.ptr == source[0..].ptr) return error.TestUnexpectedResult;
     defer {
         for (normalized, source) |call, original| {
@@ -2023,11 +1934,6 @@ fn processQueuedPromptInner(
     var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const base_nested_terminal_advertised = try terminal_request_schema_advertised(
-        arena,
-        config.gateway_tools_json,
-    );
-
     var stable_prefix: std.ArrayList(ChatMessage) = .empty;
     defer stable_prefix.deinit(arena);
 
@@ -2157,7 +2063,6 @@ fn processQueuedPromptInner(
         config,
         job,
         request_capabilities,
-        base_nested_terminal_advertised,
         finalization,
         arena,
         turn_id,
@@ -2787,7 +2692,6 @@ fn processQueuedPromptLoop(
     config: Config,
     job: QueuedPrompt,
     request_capabilities: model_capabilities.Capabilities,
-    base_nested_terminal_advertised: bool,
     finalization: *TurnFinalizationGuard,
     arena: Allocator,
     turn_id: u64,
@@ -3612,10 +3516,6 @@ fn processQueuedPromptLoop(
             stream_result.completion.tool_calls = try normalize_terminal_request_tool_calls(
                 arena,
                 deps.tool_registry,
-                terminal_request_normalization_eligible(
-                    base_nested_terminal_advertised,
-                    vision_mode,
-                ),
                 stream_result.completion.tool_calls,
             );
             if (recovery_strategy == .reconcile_tool and

@@ -35,6 +35,15 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   vendor login surface anywhere in Emma.
 - **Branding and hosted endpoints.** `fx.sh` docs links, feedback and upgrade
   URLs, and telemetry paths are removed rather than repointed.
+- **Terminal arguments.** Upstream's `terminal` tool rejects anything that is
+  not the exact advertised shape, with one sentence that repeats no matter what
+  is wrong, so a model that sends `{"command":"pwd"}` loops until the retry
+  guard stops the turn. Emma normalizes the two shapes models actually send —
+  a lone `{"request":{...}}` envelope, and a call carrying only a command,
+  which runs as `exec` — reads `"None"`/`"nil"`/`"undefined"` as the absent
+  field they mean, and names what is wrong when it still cannot run the call.
+  Each action's branch requires only its own required fields instead of every
+  field it allows, so a command no longer costs two dozen explicit nulls.
 - **Subagent advertisement.** Upstream hides the `subagent` tool behind
   `search_tools` (`.advertisement = .on_select`); Emma advertises it whenever
   the session supports children. Delegation is a first-class Emma feature — the

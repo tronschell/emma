@@ -1039,7 +1039,7 @@ test "required Vision rejects non-Vision before effects and stays required until
         }
     }
     try std.testing.expectEqualStrings(
-        wrapped_terminal_arguments,
+        "{\"action\":\"exec\",\"command\":\"printf must-not-run\"}",
         persisted_arguments orelse return error.TestExpectedEqual,
     );
     try std.testing.expectEqualStrings("Final after ordinary read", hooks.finish_assistant_text.?);

@@ -267,7 +267,7 @@ describe("fx ask presentation", () => {
       { name: "terminal", status: "success" },
       { name: "terminal", status: "success" },
       { name: "terminal", status: "error" },
-      { name: "terminal", status: "error" },
+      { name: "terminal", status: "success" },
       { name: "terminal", status: "success" },
     ]);
     expect(gateway.requests).toHaveLength(7);
@@ -298,16 +298,16 @@ describe("fx ask presentation", () => {
       "cwd",
       "profile",
     ]);
-    expect(terminalSchema?.required).toEqual(["action", "command", "cwd", "profile"]);
+    expect(terminalSchema?.required).toEqual(["action", "command"]);
     expect(terminalSchema?.additionalProperties).toBe(false);
     expect(terminalSchema?.properties?.command?.description).toBe(
-      "Command to run. Set null when the selected action does not use this field.",
+      "Command to run.",
     );
     expect(terminalSchema?.properties?.cwd?.description).toBe(
-      "Working directory; defaults to the workspace. Set null when the selected action does not use this field.",
+      "Working directory; defaults to the workspace. Omit when the selected action does not use it.",
     );
     expect(terminalSchema?.properties?.profile?.description).toBe(
-      "Profile for exec; omission defaults to user, while clean skips user initialization files. User execution supports the configured Bash or zsh login shell. Bash login execution reads login initialization files; .bashrc is available only when sourced by the login profile. Set null when the selected action does not use this field.",
+      "Profile for exec; omission defaults to user, while clean skips user initialization files. User execution supports the configured Bash or zsh login shell. Bash login execution reads login initialization files; .bashrc is available only when sourced by the login profile. Omit when the selected action does not use it.",
     );
     const serializedTerminalTool = JSON.stringify(terminalTool);
     expect(serializedTerminalTool).not.toContain("Use start");
@@ -329,12 +329,9 @@ describe("fx ask presentation", () => {
     );
     expect(gateway.requests[4]!.body).not.toContain("authority_denied");
     expect(gateway.requests[4]!.body).not.toContain("tool_permission_denied");
-    expect(gateway.requests[5]!.body).toContain(
-      "terminal arguments must match the advertised action schema",
-    );
     expect(gateway.requests[5]!.body).not.toContain("tool_permission_denied");
-    expect(gateway.requests[5]!.body).toContain('"request"');
-    expect(existsSync(nestedExecMarker)).toBe(false);
+    expect(gateway.requests[5]!.body).not.toContain('"request"');
+    expect(existsSync(nestedExecMarker)).toBe(true);
     expect(gateway.requests[6]!.body).toContain("neighbor-exec");
     expect(
       existsSync(join(root.home, ".fx", "terminal-host", "host.json")),
