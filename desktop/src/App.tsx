@@ -2100,7 +2100,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
         <RunContext.Provider value={runFences}>
         {!thread.messages.length && echo === null && !sending && <div className="welcome"><Mark /><h3>What are we working on?</h3><p>Ask Emma to research, plan, write, or think. Nothing enters knowledge unless you choose it.</p></div>}
         {thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} blocks={landedBlocks[index]} index={index} attached={attachedTurns[index]} />)}
-        {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span><span className="pending-note">Sending…</span></footer></article>}
+        {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span></footer></article>}
         {streaming !== null && <Streaming blocks={streaming} threadId={thread.id} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> Emma is working…</p>}
         {!sending && run.stopped && <p className="waiting stopped" role="status">Agent stopped. Ask Emma to continue where it left off.</p>}
