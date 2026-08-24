@@ -2873,6 +2873,12 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return agents!.changes(boundedCapabilityId(value, "Changes thread"));
   });
+  ipcMain.handle("emma:clear-thread-context", (event, value: unknown) => {
+    mainWindowSender(event);
+    const threadId = boundedCapabilityId(value, "Clear context thread");
+    compactNext.delete(threadId);
+    for (const client of harnesses.values()) client.forgetSession(threadId);
+  });
   ipcMain.handle("emma:revert-change", (event, value: unknown) => {
     mainWindowSender(event);
     if (!value || typeof value !== "object") throw new Error("Revert request is invalid");

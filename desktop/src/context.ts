@@ -238,6 +238,24 @@ export function recordUses(threadId: string, uses: Omit<ContextUse, "turns">[]):
   localStorage.setItem(USES_KEY, JSON.stringify({ ...allUses(), [threadId]: mergeUses(threadUses(threadId), uses) }));
 }
 
+const CLEARED_KEY = "emma.threadCleared.v1";
+
+function allCleared(): Record<string, number> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(CLEARED_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(stored).filter(([, value]) => typeof value === "number" && Number.isInteger(value) && value >= 0)) as Record<string, number>;
+  } catch { return {}; }
+}
+
+export function clearedAt(threadId: string): number {
+  return allCleared()[threadId] ?? 0;
+}
+
+export function markCleared(threadId: string, at: number): void {
+  localStorage.setItem(CLEARED_KEY, JSON.stringify({ ...allCleared(), [threadId]: at }));
+  localStorage.setItem(USES_KEY, JSON.stringify({ ...allUses(), [threadId]: [] }));
+}
+
 /* What the Harness experiments did to this thread's window, totalled over its
    turns. Both levers act on one step's request and leave nothing behind in the
    transcript, so a running total is the only way their effect is countable:

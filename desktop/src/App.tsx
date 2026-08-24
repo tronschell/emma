@@ -33,7 +33,7 @@ import { openPreview, PreviewHost } from "./preview";
 import { ArtifactCard, ArtifactsView } from "./artifacts";
 import { Region } from "./regions";
 import { ARTIFACT_LABELS, artifactWritten, type Artifact, type ArtifactMeta } from "../shared/artifacts";
-import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
+import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, clearedAt, contextCommands, handTags, markCleared, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
 import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeMenu, ModePicker, ModeTrigger, PermissionPrompt, TabStrip, ThreadCard, useAgents, type AgentTab } from "./agents";
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
@@ -164,6 +164,10 @@ function TranscriptRail({ messages, scroller }: { messages: Message[]; scroller:
       </button>;
     })}
   </nav>;
+}
+
+function ContextCut() {
+  return <p className="context-cut" role="separator" aria-label="Context cleared">Context cleared</p>;
 }
 
 function Turn({ item, blocks, index, attached }: { item: Message; blocks?: Block[]; index?: number; attached?: TurnAttachment[] }) {
@@ -1626,6 +1630,8 @@ function CapabilityPopover({ threadId, locked, close, skill, setSkill, setBusy }
 const BUILTIN_COMMANDS: SlashCommand[] = [
   { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig coding harness" },
   { id: "import", name: "import", kind: "builtin", detail: "built-in · import skills & MCP" },
+  { id: "new", name: "new", kind: "builtin", detail: "built-in · new thread in this project" },
+  { id: "clear", name: "clear", kind: "builtin", detail: "built-in · empty the context window" },
 ];
 
 const onTagsChanged = (fire: () => void) => {
@@ -1864,13 +1870,15 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   useEffect(() => { writeContextPage(page.id); }, [page.id]);
   // The ledger lives in localStorage, so it is read on render and a turn just asks for another one.
   const uses = threadUses(threadId ?? "");
+  const cleared = Math.min(clearedAt(threadId ?? ""), thread?.messages.length ?? 0);
+  const carried = useMemo(() => thread && cleared ? { ...thread, messages: thread.messages.slice(cleared) } : thread, [thread, cleared]);
   // Measured once for the whole bar. The stats tiles, the context window and the
   // timeline's context axis are three readings of one number, and the ledger's own
   // figure leans on an async fetch and the provider's input count — a second copy
   // of that arithmetic is a second thing to keep in step. It is measured whether or
   // not the widget that draws it is on the page you happen to be looking at.
   const landedCalls = useThreadCalls(threadId, sending);
-  const ledger = useContextLedger(thread, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls);
+  const ledger = useContextLedger(carried, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls);
   const git = useGit(folderIds[0], sending);
   const [changes, setChanges] = useState<FileChange[]>([]);
   const reloadChanges = useCallback(() => {
@@ -1968,6 +1976,12 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     else if (command.kind === "skill") void window.emma.selectImportedSkill({ id: command.id, threadId: thread.id }).then(setSkill).catch(() => undefined);
     else if (command.id === "agent") setAgentOpen(true);
     else if (command.id === "import") onManageImports();
+    else if (command.id === "new") newThread();
+    else if (command.id === "clear") {
+      markCleared(thread.id, thread.messages.length);
+      ledgerChanged((current) => current + 1);
+      void window.emma.clearThreadContext(thread.id).catch((reason: unknown) => setRunError(reasonText(reason)));
+    }
     else openCapabilities();
   };
   const composerKeys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -2099,7 +2113,8 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       <div className="transcript" ref={transcript} onScroll={transcriptScroll}>
         <RunContext.Provider value={runFences}>
         {!thread.messages.length && echo === null && !sending && <div className="welcome"><Mark /><h3>What are we working on?</h3><p>Ask Emma to research, plan, write, or think. Nothing enters knowledge unless you choose it.</p></div>}
-        {thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} blocks={landedBlocks[index]} index={index} attached={attachedTurns[index]} />)}
+        {thread.messages.map((item, index) => <Fragment key={`${item.timestamp}-${index}`}>{cleared > 0 && index === cleared && <ContextCut />}<Turn item={item} blocks={landedBlocks[index]} index={index} attached={attachedTurns[index]} /></Fragment>)}
+        {cleared > 0 && cleared === thread.messages.length && <ContextCut />}
         {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span><span className="pending-note">Sending…</span></footer></article>}
         {streaming !== null && <Streaming blocks={streaming} threadId={thread.id} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> Emma is working…</p>}

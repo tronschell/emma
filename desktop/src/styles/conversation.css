@@ -259,6 +259,9 @@
 .waiting .mark { animation: waiting-pulse 1.4s ease-in-out infinite; }
 @keyframes waiting-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .waiting .mark { animation: none; } }
+.context-cut { display: flex; align-items: center; gap: var(--s-2); max-width: var(--content-column); margin: var(--s-4) auto; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.context-cut::before, .context-cut::after { flex: 1; height: 1px; background: var(--border); content: ""; }
+
 /* The turn ended because the user ended it — not an error, and not a finished answer. */
 .waiting.stopped { color: var(--text-2); }
 

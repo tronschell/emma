@@ -340,6 +340,7 @@ declare global {
       attachData(value: { name: string; data: ArrayBuffer }): Promise<HeldAttachment>;
       /** What the turn carries: a text file's contents, or a picture's path for the vision tool. */
       readAttachment(id: string): Promise<HeldAttachment & { text?: string }>;
+      clearThreadContext(threadId: string): Promise<void>;
       discoverAgentImports(): Promise<AgentImportSource[]>;
       detectConnections(): Promise<Connection[]>;
       /** Ids Homebrew has a newer build for; slower than detection, so it is asked for separately. */
