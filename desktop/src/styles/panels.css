@@ -155,6 +155,9 @@
 .rate-curve li { display: grid; grid-template-columns: 32px 1fr 30px; align-items: center; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-variant-numeric: tabular-nums; }
 /* width/height override the 6px status dot every bare `i` gets in index.css. */
 .rate-curve i { display: block; min-width: 1px; height: 6px; background: var(--orange); }
+/* A rung this thread never landed a turn in is still drawn, so the ladder reads
+   as a scale rather than as one bar — but it is a tick, not a measurement. */
+.rate-curve i[data-empty] { background: var(--border); }
 .rate-curve b { color: var(--text); font-weight: 400; text-align: right; }
 .rate-curve p { margin: var(--s-3) 0 0; color: var(--text-3); font-size: var(--fs-2xs); }
 
