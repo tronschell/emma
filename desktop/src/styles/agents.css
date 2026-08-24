@@ -177,10 +177,27 @@
 
 /* The plan in the inspector ---------------------------------------------- */
 
-/* A plan is a graph of subagents, so it is drawn as one. */
-/* The file behind the graph, in the ledger's and the timeline's dialog. */
-.plan-dialog { width: min(760px, 100%); }
-.plan-file { margin: 0; padding: var(--s-4); border-left: 0; color: var(--text-2); }
+.plan-modal { padding: 0; }
+.plan-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; max-height: none; overflow: hidden; border: 0; }
+.plan-split { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); min-height: 0; }
+.plan-map { display: grid; align-content: start; gap: var(--s-4); min-height: 0; overflow-y: auto; padding: var(--s-5); border-right: 1px solid var(--border); }
+.plan-map .plan-head strong { color: var(--text-2); font-size: var(--fs-xs); }
+.plan-map .plan-node { width: 26px; height: 26px; font-size: var(--fs-sm); }
+.plan-map .plan-key { font-size: var(--fs-xs); }
+.plan-doc { min-height: 0; overflow-y: auto; padding: var(--s-5) var(--s-7) var(--s-8); }
+.plan-goal, .plan-entry { max-width: 76ch; }
+.plan-goal { margin-bottom: var(--s-5); color: var(--text-2); }
+.plan-entry { display: grid; gap: var(--s-2); padding: var(--s-4) var(--s-5); border-left: 2px solid transparent; scroll-margin-top: var(--s-5); transition: background-color var(--t), border-color var(--t); }
+.plan-entry + .plan-entry { margin-top: var(--s-3); }
+.plan-entry.lit { background: var(--surface-2); }
+.plan-entry.active { border-left-color: var(--accent); background: var(--surface-3); }
+.plan-entry-title { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; align-items: baseline; gap: var(--s-3); margin: 0; color: var(--text); font: var(--fs-lg)/1.4 var(--font-mono); font-weight: 400; }
+.plan-entry-title b { color: var(--text-3); font-weight: 400; }
+.plan-entry-needs { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); margin: 0; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plan-entry-needs code { color: var(--violet); font-family: var(--font-code); }
+.plan-entry-needs em { font-style: normal; }
+.plan-doc .plan-list li { font-size: var(--fs-md); }
+.plan-doc .plan-result b { color: var(--text-3); font-weight: 400; }
 
 .plan-switch { display: flex; flex-wrap: wrap; gap: var(--s-1); }
 .plan-widget .plan-switch button { max-width: 100%; min-height: 20px; padding: 0 var(--s-2); overflow: hidden; color: var(--text-3); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; transition: color var(--t), border-color var(--t); }
