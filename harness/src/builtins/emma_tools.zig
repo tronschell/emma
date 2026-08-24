@@ -13,12 +13,14 @@ const gateway_schema = @import("../core/tooling/gateway_schema.zig");
 const threads_group = @import("emma/threads.zig");
 const knowledge_group = @import("emma/knowledge.zig");
 const system_group = @import("emma/system.zig");
+const browser_group = @import("emma/browser.zig");
 const extensions_group = @import("emma/extensions.zig");
 const overrides_group = @import("emma/overrides.zig");
 
 pub const all = threads_group.all ++
     knowledge_group.all ++
     system_group.all ++
+    browser_group.all ++
     extensions_group.all ++
     overrides_group.all;
 

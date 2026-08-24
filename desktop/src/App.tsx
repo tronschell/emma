@@ -9,7 +9,7 @@ import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
-import { defaultPaneLayout, NAV_VIEWS, ordered, validatePaneLayout, type PaneLayout } from "./layout";
+import { defaultPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, type PaneLayout } from "./layout";
 import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -38,7 +38,8 @@ import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeM
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
 import { worktreeName, type GitSnapshot } from "../shared/git";
-import { BrandIcon, ClipIcon, EmmaMark, InfoDot, ToolIcon } from "./icons";
+import { BrandIcon, ClipIcon, EmmaMark, GlobeIcon, InfoDot, ToolIcon } from "./icons";
+import { BrowserPane } from "./browser";
 import { syncImprovements } from "./improvements";
 import { CliDock, CliPanel, useCliRuns, useTailScroll } from "./cli";
 import { cliHarness } from "../shared/cli";
@@ -698,6 +699,7 @@ function Workspace() {
   const shellStyle = {
     "--sidebar-width": `${layout.sidebarCollapsed ? 46 : layout.sidebarWidth}px`,
     "--inspector-width": `${layout.inspectorCollapsed ? 30 : layout.inspectorWidth}px`,
+    "--browser-width": `${layout.browserOpen ? layout.browserWidth : 0}px`,
   } as CSSProperties;
   // A due run opens an ordinary thread, but it is not one the user started, so it
   // is listed under its job at the foot of the rail rather than in a project.
@@ -2093,6 +2095,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       /><TagPicker threadId={thread.id} /><div className="thread-actions">{/* Only once this thread has actually touched code: with a clean tree the row
           would be three app icons offering to open nothing in particular. */}
         {folderIds[0] && (!!git?.diff.trim() || changes.length > 0) && <OpenIn folderId={folderIds[0]} label />}
+        <button type="button" className="browser-toggle" aria-label={layout.browserOpen ? "Close the browser pane" : "Open the browser pane"} aria-pressed={layout.browserOpen} title={layout.browserOpen ? "Close the browser" : "Open the browser"} onClick={() => pane({ browserOpen: !layout.browserOpen })}><GlobeIcon /></button>
         <button type="button" className="page-info-button" aria-label="Show thread details" aria-haspopup="dialog" onClick={() => setAgentOpen(true)}>i</button></div></header>
       <div className="transcript-wrap">
       <TranscriptRail messages={thread.messages} scroller={transcript} />
@@ -2142,7 +2145,11 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
         </span> : <span>{page.name}</span>}
         {changes.length > 0 && <button type="button" className="changes-open" title={`${changes.length} ${plural(changes.length, "file")} changed — open the diff`} onClick={() => setTab("changes")}><ChangeCount stat={diffStat(changes)} /></button>}<button onClick={() => void act("saveToKnowledge", { threadId: thread.id })} disabled={locked || !thread.messages.some((item) => item.role === "assistant")}>Save & analyze</button></header>
       <ContextWidgets page={page} context={{ ledger, threadId: thread.id, sending, subagents, subthreads, agents, onOpenThread: openThreadPage, tab, onPick: setTab, git, onOpenGit: () => setTab("git") }} onChange={(widgets) => onContextPages(contextPages.map((item) => item.id === page.id ? { ...item, widgets } : item))} /></div>}
-    </aside></Region>{agentOpen && <AgentDialog thread={thread} close={() => setAgentOpen(false)} />}
+    </aside></Region>
+    {layout.browserOpen && <div className="browser-column">
+      <ResizeHandle label="Resize browser" value={layout.browserWidth} min={MIN_BROWSER_WIDTH} max={720} direction={-1} onChange={(browserWidth) => pane({ browserWidth })} />
+      <BrowserPane threadId={thread.id} />
+    </div>}{agentOpen && <AgentDialog thread={thread} close={() => setAgentOpen(false)} />}
   </div>;
 }
 

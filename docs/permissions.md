@@ -74,6 +74,7 @@ order.
 | `write_file` | ask | auto | auto |
 | `bash` | ask | ask | auto |
 | `background` | auto | auto | auto |
+| `browser` | ask | ask | auto |
 | `cli` | ask | ask | auto |
 | `cli_runs` | auto | auto | auto |
 | `computer` | ask | ask | auto |
@@ -110,10 +111,11 @@ Reading the table sideways:
   user owns.
 - **Asks in `ask`, free in `acceptEdits`** — `write_file`, alone. That is the
   whole difference between the two modes.
-- **Asks in `ask` and in `acceptEdits`** — `bash`, `cli`, `run_tool`, `computer`,
-  `install_mcp`, `workflow`, `autoresearch`. `acceptEdits` promises
+- **Asks in `ask` and in `acceptEdits`** — `bash`, `browser`, `cli`, `run_tool`,
+  `computer`, `install_mcp`, `workflow`, `autoresearch`. `acceptEdits` promises
   edits, not commands, and each of these runs a program: `run_tool` runs a script
-  in the connected folder, `cli` hands the folder to another coding agent,
+  in the connected folder, `browser` drives a real Chrome that is already signed
+  in to the user's sites, `cli` hands the folder to another coding agent,
   `install_mcp` puts one on the list the harness launches, `workflow` and
   `autoresearch` hand out agent turns that run later with nobody watching.
 - **Free in `full`** — everything. Nothing asks.

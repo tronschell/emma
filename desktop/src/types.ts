@@ -234,6 +234,14 @@ export interface PageClip {
   images: string[];
 }
 
+export interface BrowserStatus {
+  installed: boolean;
+  running: boolean;
+  streamPort?: number;
+  url?: string;
+  title?: string;
+}
+
 export interface UiPlugin {
   id: string;
   name: string;
@@ -378,6 +386,11 @@ declare global {
       installedClis(): Promise<{ id: string; label: string; bin: string; path: string }[]>;
       sendCliRun(value: { id: string; prompt: string }): Promise<CliRun | null>;
       onCliRuns(listener: () => void): () => void;
+      browserStatus(threadId: string): Promise<BrowserStatus>;
+      browserOpen(value: { threadId: string; url: string }): Promise<BrowserStatus>;
+      browserNav(value: { threadId: string; action: "back" | "forward" | "reload" | "close" }): Promise<BrowserStatus>;
+      browserStream(threadId: string): Promise<{ port: number }>;
+      onBrowser(listener: () => void): () => void;
       listAgents(): Promise<LiveAgent[]>;
       /** Every live turn's spans, keyed by the thread the turn is on. */
       listSpans(): Promise<Record<string, TraceSpan[]>>;

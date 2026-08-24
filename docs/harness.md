@@ -188,7 +188,7 @@ A permission dialog titled `file_mutation` is retitled with the path. `describeP
 
 Emma's tools read and write Electron's durable stores, so the harness never executes one. It advertises the tool, checks the arguments are a JSON object, and hands the raw JSON to the client.
 
-**Now:** a native outbound request. [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig) is one shared implementation behind all twenty-two tools; what differs per tool is only its spec. `callEmmaTool` in [`acp/prompt.zig`](../harness/src/acp/prompt.zig) writes `_emma/callTool` with `{sessionId, toolCallId, name, arguments}` on the same outbound registry permission and elicitation use, then blocks. There is no deadline, because connecting a folder or running a thread can legitimately take minutes. The only way out other than a reply is the user cancelling.
+**Now:** a native outbound request. [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig) is one shared implementation behind all twenty-three tools; what differs per tool is only its spec. `callEmmaTool` in [`acp/prompt.zig`](../harness/src/acp/prompt.zig) writes `_emma/callTool` with `{sessionId, toolCallId, name, arguments}` on the same outbound registry permission and elicitation use, then blocks. There is no deadline, because connecting a folder or running a thread can legitimately take minutes. The only way out other than a reply is the user cancelling.
 
 **Before:** a localhost MCP server in `desktop/main/bridge.ts`. One HTTP server, modern MCP, one JSON-RPC object in and one out. The harness's only door for a tool it does not ship is MCP, so Emma used that door and its tools reached the model under the `mcp_emma` server prefix. That file is deleted. The MCP hop cost an HTTP round trip, a bearer token and a second protocol.
 
@@ -206,7 +206,7 @@ The harness only takes MCP servers at session creation, so `forgetSession` / `fo
 
 ## Tool discovery: two tools, then the rest
 
-Every tool in the registry except two is marked `.on_select`. The base advertisement is exactly `search_tools` and `select_tool`. `vision` is `.never`, reachable only by the gateway forcing it by name. Everything else — every file tool, `terminal`, `subagent`, `skill`, all twenty-two Emma tools — costs nothing until the model asks for it.
+Every tool in the registry except two is marked `.on_select`. The base advertisement is exactly `search_tools` and `select_tool`. `vision` is `.never`, reachable only by the gateway forcing it by name. Everything else — every file tool, `terminal`, `subagent`, `skill`, all twenty-three Emma tools — costs nothing until the model asks for it.
 
 [`tool_native_dispatch.zig`](../harness/src/core/tooling/tool_native_dispatch.zig) implements the pair, mirroring `mcp_search_tools` / `mcp_select_tool`:
 
@@ -271,7 +271,7 @@ Skills work the same way. `mirrorSkillsToHarness` in [capabilities.ts](../deskto
 | Directory | Owns |
 | --- | --- |
 | `acp/` | The JSON-RPC server. `server.zig` (dispatch, session state, outbound registry), `prompt.zig` (one turn, 4600 lines), `sessions.zig` (new/load/resume/list/remove), `types.zig` (update writers, stop reasons), `jsonrpc.zig` (framing), `mcp_servers.zig` (parsing `mcpServers`). |
-| `builtins/` | The registries. `tools.zig` (the tool table and `advertisement_set`), `emma_tools.zig` + `emma/` (Emma's twenty-two), `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (the system prompt and `AGENTS.md`), `providers.zig`, `gateway.zig`. |
+| `builtins/` | The registries. `tools.zig` (the tool table and `advertisement_set`), `emma_tools.zig` + `emma/` (Emma's twenty-three), `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (the system prompt and `AGENTS.md`), `providers.zig`, `gateway.zig`. |
 | `core/` | Everything with state. `agent/` (the loop: `runtime/orchestrator.zig`, `runtime/gateway_step.zig`, `runtime/context_experiments.zig`), `tooling/` (dispatch, admission, advertisement, result limits, MCP and native discovery), `permissions/`, `session/`, `mcp/`, `lsp/` (language server client, pool and registry), `skills/`, `hooks/`, `subagent/`, `config/`, `modes/`, `gateway/`, `cli/` (`acp_runner.zig`, `cli_ask.zig`, `cli_surface.zig`, `doctor_runtime.zig`), `workspace/`, `background/`, `terminal/`, `execution/`, `auth/`, `output/`, `shared/`, plus smaller ones. |
 | `gateway/` | Provider transport only. `emma_openai.zig` is the OpenAI-compatible Chat Completions client and holds `default_chat_url` and `chat_url_env`; also `client.zig`, `web_search.zig`, `generation_usage.zig`, and the JS-host stream and catalog providers for the WASM build. |
 | `tools/` | Tool implementations: `filesystem/`, `shell/`, `web/`, `terminal/`, `lsp/`, `agent/` (`subagent.zig`, `vision.zig`, `ask_user_question.zig`), `skills/`, `session/`, `memory/`, and `emma/bridge.zig`. Specs live in `builtins/tools.zig`, not here. |

@@ -207,6 +207,15 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:cli-runs", wrapped);
     return () => ipcRenderer.removeListener("emma:cli-runs", wrapped);
   },
+  browserStatus: (threadId: string) => ipcRenderer.invoke("emma:browser-status", threadId),
+  browserOpen: (value: { threadId: string; url: string }) => ipcRenderer.invoke("emma:browser-open", value),
+  browserNav: (value: { threadId: string; action: "back" | "forward" | "reload" | "close" }) => ipcRenderer.invoke("emma:browser-nav", value),
+  browserStream: (threadId: string) => ipcRenderer.invoke("emma:browser-stream", threadId),
+  onBrowser: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:browser", wrapped);
+    return () => ipcRenderer.removeListener("emma:browser", wrapped);
+  },
   listAgents: () => ipcRenderer.invoke("emma:list-agents"),
   listSpans: () => ipcRenderer.invoke("emma:list-spans"),
   threadTraces: (threadId: string) => ipcRenderer.invoke("emma:thread-traces", threadId),
