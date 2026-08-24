@@ -73,6 +73,10 @@ test("the drawn graph puts a wave on a row, and folds one too wide to fit", () =
   assert.equal(wide.spots.get("s6")!.wave, 0, "the fold is a line, not a new wave");
   assert.equal(wide.spots.get("last")!.y, wide.spots.get("s6")!.y + PLAN_ROW);
   assert.equal(planLayout([]).height, 0, "no steps, no canvas");
+
+  const roomy = planLayout([["a", "b"], ["c"]], [], 56);
+  assert.equal(roomy.spots.get("c")!.y - roomy.spots.get("a")!.y, 56, "the fullscreen map spaces its rows out");
+  assert.equal(roomy.height, PLAN_PAD * 2 + 56);
 });
 
 test("a tree draws as a tree: a step sits over the branch it fans out into", () => {
