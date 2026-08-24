@@ -163,12 +163,12 @@
    of the window nothing has claimed. One bar of 48 cells rather than free-width
    segments: at 210px the cell floor keeps the smallest kind ~4px wide, not a sliver. */
 .context-usage { --kind: var(--text-3); }
-.context-usage [data-kind="history"] { --kind: var(--blue); }
-.context-usage [data-kind="knowledge"] { --kind: var(--violet); }
-.context-usage [data-kind="attachment"] { --kind: var(--teal); }
-.context-usage [data-kind="skill"] { --kind: var(--rose); }
+.context-usage [data-kind="messages"] { --kind: var(--blue); }
 .context-usage [data-kind="system"] { --kind: var(--lime); }
 .context-usage [data-kind="tools"] { --kind: var(--orange); }
+.context-usage [data-kind="mcp"] { --kind: var(--violet); }
+.context-usage [data-kind="skills"] { --kind: var(--rose); }
+.context-usage [data-kind="memory"] { --kind: var(--teal); }
 .context-usage [data-kind="free"] { --kind: var(--border-strong); }
 /* The used total sits at the end of the label band, as its right-hand readout. */
 /* The label and the readout stack — `.inspector-body section > span` is a grid and

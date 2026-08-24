@@ -33,7 +33,7 @@ import { openPreview, PreviewHost } from "./preview";
 import { ArtifactCard, ArtifactsView } from "./artifacts";
 import { Region } from "./regions";
 import { ARTIFACT_LABELS, artifactWritten, type Artifact, type ArtifactMeta } from "../shared/artifacts";
-import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
+import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadBreakdown, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
 import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeMenu, ModePicker, ModeTrigger, PermissionPrompt, TabStrip, ThreadCard, useAgents, type AgentTab } from "./agents";
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
@@ -1870,7 +1870,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   // of that arithmetic is a second thing to keep in step. It is measured whether or
   // not the widget that draws it is on the page you happen to be looking at.
   const landedCalls = useThreadCalls(threadId, sending);
-  const ledger = useContextLedger(thread, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls);
+  const ledger = useContextLedger(thread, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls, threadBreakdown(threadId ?? ""));
   const git = useGit(folderIds[0], sending);
   const [changes, setChanges] = useState<FileChange[]>([]);
   const reloadChanges = useCallback(() => {
@@ -2021,7 +2021,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       after,
       params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
       // Only a delivered turn goes in the ledger: it records what Emma was actually sent.
-      delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skill" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
+      delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skills" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
     }, reload);
     setSkill(null);
     setPicks([]);

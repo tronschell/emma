@@ -17,7 +17,8 @@ import { reasonText } from "./errors";
 // Move it into the host store if these need to survive a machine change.
 const FOLDERS_KEY = "emma.threadFolders.v1";
 const MODES_KEY = "emma.threadModes.v1";
-const USES_KEY = "emma.threadContextUses.v1";
+const USES_KEY = "emma.threadContextUses.v2";
+const BREAKDOWN_KEY = "emma.threadContextBreakdown.v1";
 
 export function threadFolderMap(): Record<string, string[]> {
   try {
@@ -290,18 +291,54 @@ export function recordExperiment(threadId: string, fired: { prunedResults: numbe
   localStorage.setItem(EXPERIMENTS_KEY, JSON.stringify({ ...allExperiments(), [threadId]: total }));
 }
 
-/** The transcript itself, which rides every turn — derived, never recorded. */
 export function historyUse(thread: Thread): Omit<ContextUse, "turns"> {
   const chars = thread.messages.reduce((sum, message) => sum + message.content.length, 0);
-  return { kind: "history", label: `${thread.messages.length} durable ${thread.messages.length === 1 ? "message" : "messages"}`, chars };
+  return { kind: "messages", label: `${thread.messages.length} ${thread.messages.length === 1 ? "message" : "messages"}`, chars };
 }
 
-/* The parts of a turn that are assembled below Emma — the system prompt, the tool
-   schemas, the skills the harness injects, the knowledge the host retrieves, an
-   attached screen capture. The renderer cannot see any of them, and estimating
-   them would be inventing numbers. What it can have is the provider's own input
-   count for the last turn, which includes all of it: subtract the segments this
-   side did measure and the remainder is exactly the invisible mass. */
+export interface ContextBreakdown {
+  systemPromptBytes: number;
+  systemToolsBytes: number;
+  mcpToolsBytes: number;
+  skillsBytes: number;
+  memoryBytes: number;
+}
+
+export const NO_BREAKDOWN: ContextBreakdown = { systemPromptBytes: 0, systemToolsBytes: 0, mcpToolsBytes: 0, skillsBytes: 0, memoryBytes: 0 };
+
+const PREFIX_ROWS:{ kind: ContextUse["kind"]; label: string; of: keyof ContextBreakdown }[] = [
+  { kind: "system", label: "System prompt", of: "systemPromptBytes" },
+  { kind: "tools", label: "System tools", of: "systemToolsBytes" },
+  { kind: "mcp", label: "MCP tools", of: "mcpToolsBytes" },
+  { kind: "skills", label: "Skills", of: "skillsBytes" },
+  { kind: "memory", label: "Memory files", of: "memoryBytes" },
+];
+
+function allBreakdowns(): Record<string, ContextBreakdown> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(BREAKDOWN_KEY) ?? "{}") as Record<string, Partial<ContextBreakdown> | undefined>;
+    return Object.fromEntries(Object.entries(stored).map(([threadId, parts]) => [threadId, {
+      systemPromptBytes: number(parts?.systemPromptBytes),
+      systemToolsBytes: number(parts?.systemToolsBytes),
+      mcpToolsBytes: number(parts?.mcpToolsBytes),
+      skillsBytes: number(parts?.skillsBytes),
+      memoryBytes: number(parts?.memoryBytes),
+    }]));
+  } catch { return {}; }
+}
+
+export function threadBreakdown(threadId: string): ContextBreakdown {
+  return allBreakdowns()[threadId] ?? NO_BREAKDOWN;
+}
+
+export function recordBreakdown(threadId: string, parts: ContextBreakdown): void {
+  localStorage.setItem(BREAKDOWN_KEY, JSON.stringify({ ...allBreakdowns(), [threadId]: parts }));
+}
+
+export function prefixUses(breakdown: ContextBreakdown, turns: number): ContextUse[] {
+  return PREFIX_ROWS.filter((row) => breakdown[row.of] > 0).map((row) => ({ kind: row.kind, label: row.label, chars: breakdown[row.of], turns }));
+}
+
 
 /** ponytail: `generation.inputTokens` is read through a cast until `types.ts`
     declares it. Drop the cast once it does — the host already sends it. */
@@ -319,17 +356,9 @@ export function lastInputTokens(thread: Thread): number {
   return 0;
 }
 
-/**
- * What is left of the last turn's input once every segment this side can measure
- * is subtracted: the harness's own system prompt, whatever tool schemas it chose
- * to advertise, host-retrieved knowledge, injected skills, and whatever a retried
- * step resent. Undefined when no turn reported usage: a residual is never
- * negative and never invented, so a thread that has not run yet shows no row
- * rather than a guess at what a request would have carried.
- */
 export function systemUse(thread: Thread, measuredChars: number): Omit<ContextUse, "turns"> | undefined {
   const chars = systemChars(lastInputTokens(thread), measuredChars);
-  return chars > 0 ? { kind: "knowledge", label: "Prompt, tools & retrieval", chars } : undefined;
+  return chars > 0 ? { kind: "messages", label: "Tool results & retries", chars } : undefined;
 }
 
 /* The ledger itself: what this thread's turns literally carried, measured once
@@ -372,7 +401,7 @@ export interface Ledger {
  * far. A trace is written when its turn ends, so the two never overlap and the
  * tile does not step as one becomes the other.
  */
-export function buildLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally, landedCalls = 0): Ledger {
+export function buildLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally, landedCalls = 0, breakdown: ContextBreakdown = NO_BREAKDOWN): Ledger {
   const messages: Message[] = thread?.messages ?? [];
   const replies = messages.filter((message) => message.role === "assistant").length;
   // A turn is one durable message however many steps it took, so a ledger read
@@ -385,23 +414,13 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
   const liveTurns = inFlight.filter((agent) => agent.threadId === thread?.id);
   const measured: ContextUse[] = thread ? [
     { ...historyUse(thread), turns: messages.filter((message) => message.role === "user").length },
-    ...(running > 0 ? [{ kind: "history" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1 }] : []),
+    ...(running > 0 ? [{ kind: "messages" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1 }] : []),
     ...uses,
   ] : [];
-  // Whatever is left of the provider's own input count once every measured
-  // segment is subtracted: the harness's system prompt, the schemas it advertised,
-  // retrieved knowledge, injected skills, resent steps. Emma used to state the
-  // prompt and the schemas as their own rows, measured off the catalog its own
-  // loop assembled — but that loop is gone, the harness decides what a turn
-  // advertises and most of its tools wait behind `search_tools`, so the rows were
-  // sizing a request nobody sends. Worse, they were shown before the first turn:
-  // a brand new thread read "8.2k tokens sent" having sent nothing at all. What is
-  // reported now is only what a turn really carried, so an empty thread reads zero.
-  // `running` is left out of the subtraction: the residual is what the *last
-  // landed* turn's input count could not account for, and the turn in flight has
-  // not reported one yet. Counting it here would eat the row instead.
-  const system = thread ? systemUse(thread, measured.reduce((sum, row) => sum + row.chars, 0) - running) : undefined;
-  const rows: ContextUse[] = [...(system ? [{ ...system, turns: replies }] : []), ...measured];
+  const prefix = thread ? prefixUses(breakdown, replies) : [];
+  const named = measured.reduce((sum, row) => sum + row.chars, 0) - running + prefix.reduce((sum, row) => sum + row.chars, 0);
+  const system = thread ? systemUse(thread, named) : undefined;
+  const rows: ContextUse[] = [...measured, ...(system ? [{ ...system, turns: replies }] : []), ...prefix];
   const total = rows.reduce((sum, row) => sum + row.chars, 0);
   // Only the OpenRouter catalog states a window; on the fallback and local routes the
   // shares are of what this thread has sent, and there is no free tail to draw.
@@ -422,7 +441,7 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
     kinds: new Map<string, string>([...rows.map((row) => [usageKey(row), row.kind] as const), ["free", "free"]]),
     messages: messages.length + liveTurns.length * 2,
     replies: replies + liveTurns.length,
-    attachments: rows.filter((row) => row.kind === "attachment" || row.kind === "skill").length,
+    attachments: uses.length,
     calls: landedCalls + liveCalls,
     tokens,
     elapsed: messages.reduce((sum, message) => sum + (message.generation?.durationMilliseconds ?? 0), 0) + liveTurns.reduce((sum, agent) => sum + agent.generationMs, 0),
@@ -649,6 +668,6 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
   }
   return {
     text: contextBlock(sections),
-    uses: sections.map((section) => ({ kind: "attachment" as const, label: section.label, chars: section.heading.length + section.body.length })),
+    uses: sections.map((section) => ({ kind: "messages" as const, label: section.label, chars: section.heading.length + section.body.length })),
   };
 }

@@ -273,6 +273,7 @@ declare global {
       onDelta(listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void): () => void;
       onStep(listener: (value: ThreadStep) => void): () => void;
       onContextExperiment(listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void): () => void;
+      onContextBreakdown(listener: (value: { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }) => void): () => void;
       startScreenAnnotation(): Promise<void>;
       captureScreenContext(): Promise<{ id: string; image: string; source?: FrontApplication }>;
       getScreenAnnotationFrame(): Promise<{ image: string; width: number; height: number }>;

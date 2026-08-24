@@ -128,6 +128,17 @@ const AcpContext = struct {
     /// reporting still under-count; fixing that means giving the ledger a path
     /// for usage with no billing identity.
     turn_usage: acp_types.TurnUsage = .{},
+    context_breakdown: acp_types.ContextBreakdown = .{},
+    context_breakdown_sent: bool = false,
+
+    fn sendContextBreakdown(self: *AcpContext) void {
+        if (self.context_breakdown_sent) return;
+        self.context_breakdown_sent = true;
+        var out: std.Io.Writer.Allocating = .init(self.alloc);
+        defer out.deinit();
+        acp_types.writeContextBreakdownInfoUpdate(&out.writer, self.context_breakdown) catch return;
+        self.sendUpdate(out.writer.buffered()) catch {};
+    }
 
     fn noteTurnUsage(self: *AcpContext, usage: types.Usage) void {
         if (usage.input_tokens) |input| self.turn_usage.input_tokens = input;
@@ -827,6 +838,14 @@ pub fn handlePrompt(
         .gateway_tools_json = tool_projection.tools_json,
         .custom_tool_guidance = tool_projection.custom_guidance,
     });
+    ctx.context_breakdown = .{
+        .system_prompt_bytes = agent_config.system_prompt.len +
+            (if (agent_config.model_prompt_overlay) |overlay| overlay.len else 0) +
+            agent_config.custom_tool_guidance.len,
+        .system_tools_bytes = agent_config.gateway_tools_json.len,
+        .skills_bytes = agent_config.skills_prompt_section.len,
+    };
+    ctx.context_breakdown_sent = false;
     agent_config.session_child_capability = if (session.writable) |*writable|
         writable.childCapability() catch null
     else
@@ -1297,6 +1316,7 @@ fn reportTurnUsage(raw_ctx: *anyopaque, usage: types.Usage) void {
     }
     acp_types.writeTurnUsageInfoUpdate(&out.writer, ctx.turn_usage) catch return;
     ctx.sendUpdate(out.writer.buffered()) catch {};
+    ctx.sendContextBreakdown();
 }
 
 test "noteTurnUsage sums output but reports the last step's input" {
@@ -1479,9 +1499,15 @@ fn acknowledgeParentTurnContext(
 
 fn appendStaticContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
+    const before_static = messages.items.len;
     try ctx.state.cfg.context_registry.appendDefaultStatic(.{
         .project_context = ctx.modelVisibleProjectContext(),
     }, arena, messages);
+    var memory_bytes: usize = 0;
+    for (messages.items[before_static..]) |message| {
+        if (message.content) |content| memory_bytes +|= content.len;
+    }
+    ctx.context_breakdown.memory_bytes = memory_bytes;
     const active_session = if (ctx.state.active_session) |*session| session else null;
     var snapshot = if (active_session) |session|
         if (session.mcp) |mcp|
@@ -1492,6 +1518,7 @@ fn appendStaticContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.Arr
         try mcp_model_catalog.Snapshot.empty(arena);
     defer snapshot.deinit(arena);
     const section = try mcp_model_catalog.render(arena, snapshot);
+    ctx.context_breakdown.mcp_tools_bytes = section.text.len;
     if (section.text.len > 0) {
         try messages.append(arena, .{ .role = .system, .content = section.text });
     }

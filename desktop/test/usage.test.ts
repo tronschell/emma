@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { allocateCells, charLabel, mergeUses, rateByContext, shareLabel, systemChars, CHARS_PER_TOKEN, MAX_USES } from "../shared/usage";
 
 test("a repeated segment counts its turns and keeps its latest size", () => {
-  const first = mergeUses([], [{ kind: "attachment", label: "notes/plan.txt", chars: 100 }, { kind: "skill", label: "claude/review", chars: 40 }]);
-  const second = mergeUses(first, [{ kind: "attachment", label: "notes/plan.txt", chars: 250 }]);
-  assert.deepEqual(second[0], { kind: "attachment", label: "notes/plan.txt", chars: 250, turns: 2 });
-  assert.deepEqual(second[1], { kind: "skill", label: "claude/review", chars: 40, turns: 1 });
-  const flooded = Array.from({ length: MAX_USES + 8 }, (_, index) => ({ kind: "attachment" as const, label: `file-${index}`, chars: 1 }));
+  const first = mergeUses([], [{ kind: "messages", label: "notes/plan.txt", chars: 100 }, { kind: "skills", label: "claude/review", chars: 40 }]);
+  const second = mergeUses(first, [{ kind: "messages", label: "notes/plan.txt", chars: 250 }]);
+  assert.deepEqual(second[0], { kind: "messages", label: "notes/plan.txt", chars: 250, turns: 2 });
+  assert.deepEqual(second[1], { kind: "skills", label: "claude/review", chars: 40, turns: 1 });
+  const flooded = Array.from({ length: MAX_USES + 8 }, (_, index) => ({ kind: "messages" as const, label: `file-${index}`, chars: 1 }));
   assert.equal(mergeUses(second, flooded).length, MAX_USES);
 });
 

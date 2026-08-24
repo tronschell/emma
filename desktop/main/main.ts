@@ -1613,6 +1613,7 @@ function harnessClient(cwd: string, key = cwd): Harness {
     // Live only, and deliberately not recorded with the turn: it is what happened
     // to the window on one step, not something Emma said.
     onContextExperiment: (threadId, fired) => broadcast("emma:context-experiment", { threadId, ...fired }),
+    onContextBreakdown: (threadId, parts) => broadcast("emma:context-breakdown", { threadId, ...parts }),
     onUsage: (threadId, usage) => agents?.noteUsage(threadId, usage),
     // A subagent the harness spawned, seen for the first time. It gets a thread of
     // its own so its transcript is not glued into its parent's answer, and an

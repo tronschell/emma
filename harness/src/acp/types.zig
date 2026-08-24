@@ -82,6 +82,26 @@ pub fn writeTurnUsageInfoUpdate(writer: *std.Io.Writer, usage: TurnUsage) !void 
     try writer.writeAll("}}}}");
 }
 
+pub const ContextBreakdown = struct {
+    system_prompt_bytes: usize = 0,
+    system_tools_bytes: usize = 0,
+    mcp_tools_bytes: usize = 0,
+    skills_bytes: usize = 0,
+    memory_bytes: usize = 0,
+};
+
+pub fn writeContextBreakdownInfoUpdate(writer: *std.Io.Writer, parts: ContextBreakdown) !void {
+    try writer.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"contextBreakdown\":{\"systemPromptBytes\":");
+    try writer.print("{d},\"systemToolsBytes\":{d},\"mcpToolsBytes\":{d},\"skillsBytes\":{d},\"memoryBytes\":{d}", .{
+        parts.system_prompt_bytes,
+        parts.system_tools_bytes,
+        parts.mcp_tools_bytes,
+        parts.skills_bytes,
+        parts.memory_bytes,
+    });
+    try writer.writeAll("}}}}");
+}
+
 pub const StopReason = enum {
     end_turn,
     max_output_tokens,
@@ -555,6 +575,23 @@ test "context experiment info update reports both levers" {
     try writeContextExperimentInfoUpdate(&out.writer, 0, true, 0, 310);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"reinjected\":true") != null);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"addedTokens\":310") != null);
+}
+
+test "context breakdown info update names every prefix section" {
+    const alloc = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeContextBreakdownInfoUpdate(&out.writer, .{
+        .system_prompt_bytes = 9_100,
+        .system_tools_bytes = 84_000,
+        .mcp_tools_bytes = 34_400,
+        .skills_bytes = 5_500,
+        .memory_bytes = 915,
+    });
+    try std.testing.expectEqualStrings(
+        "{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"contextBreakdown\":{\"systemPromptBytes\":9100,\"systemToolsBytes\":84000,\"mcpToolsBytes\":34400,\"skillsBytes\":5500,\"memoryBytes\":915}}}}",
+        out.writer.buffered(),
+    );
 }
 
 test "turn usage info update carries both sides" {

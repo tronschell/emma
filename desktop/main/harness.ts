@@ -123,6 +123,21 @@ export function contextExperimentFired(update: Record<string, unknown>): Context
     : undefined;
 }
 
+export type ContextBreakdown ={ systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number };
+
+export function contextBreakdownReported(update: Record<string, unknown>): ContextBreakdown | undefined {
+  const parts = (update._meta as { fx?: { contextBreakdown?: unknown } } | undefined)?.fx?.contextBreakdown as
+    { systemPromptBytes?: unknown; systemToolsBytes?: unknown; mcpToolsBytes?: unknown; skillsBytes?: unknown; memoryBytes?: unknown } | undefined;
+  if (!parts || typeof parts !== "object") return undefined;
+  return {
+    systemPromptBytes: count(parts.systemPromptBytes),
+    systemToolsBytes: count(parts.systemToolsBytes),
+    mcpToolsBytes: count(parts.mcpToolsBytes),
+    skillsBytes: count(parts.skillsBytes),
+    memoryBytes: count(parts.memoryBytes),
+  };
+}
+
 export function turnUsageReported(update: Record<string, unknown>): TurnUsage | undefined {
   const usage = (update._meta as { fx?: { turnUsage?: unknown } } | undefined)?.fx?.turnUsage as
     { inputTokens?: unknown; outputTokens?: unknown } | undefined;
@@ -163,6 +178,7 @@ export type HarnessDeps = {
    * switched it on, so the turn it silently rewrites has to say that it did.
    */
   onContextExperiment: (threadId: string, fired: ContextExperimentFired) => void;
+  onContextBreakdown: (threadId: string, parts: ContextBreakdown) => void;
   onUsage: (threadId: string, usage: TurnUsage) => void;
   /**
    * A subagent seen for the first time. Resolves with the Emma thread its
@@ -637,6 +653,11 @@ export class Harness {
         const fired = contextExperimentFired(update);
         if (fired) {
           this.deps.onContextExperiment(threadId, fired);
+          return;
+        }
+        const breakdown = contextBreakdownReported(update);
+        if (breakdown) {
+          this.deps.onContextBreakdown(threadId, breakdown);
           return;
         }
         const recovery =((update._meta as { fx?: { modelResponseRecovery?: unknown } } | undefined)?.fx?.modelResponseRecovery ?? null) as

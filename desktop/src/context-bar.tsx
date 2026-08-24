@@ -26,7 +26,7 @@ import type { Plan } from "../shared/plan";
 import type { GitSnapshot } from "../shared/git";
 import { countCalls, decodeSpans, type TraceSpan } from "../shared/trace";
 import type { Thread } from "./types";
-import { buildLedger, NO_EXPERIMENTS, type ExperimentTally, type Ledger } from "./context";
+import { buildLedger, NO_BREAKDOWN, NO_EXPERIMENTS, type ContextBreakdown, type ExperimentTally, type Ledger } from "./context";
 import { plural } from "./plural";
 import { since, threadLabel } from "./threads";
 import { brandForModel } from "./brands";
@@ -42,7 +42,7 @@ import { Timeline } from "./timeline";
    4M-char budget, which is the same fraction but reads as a window four times
    larger than the model's. */
 const tokenLabel = (chars: number): string => charLabel(Math.round(chars / CHARS_PER_TOKEN));
-const KIND_NAMES: Record<ContextUse["kind"], string> = { history: "Transcript", system: "System prompt", tools: "Tool schemas", knowledge: "Knowledge", attachment: "Attachment", skill: "Skill" };
+const KIND_NAMES: Record<ContextUse["kind"], string> = { messages: "Messages", system: "System prompt", tools: "System tools", mcp: "MCP tools", skills: "Skills", memory: "Memory files" };
 
 /**
  * Measured once in the pane, read by every widget that shows a piece of it.
@@ -51,8 +51,8 @@ const KIND_NAMES: Record<ContextUse["kind"], string> = { history: "Transcript", 
  * total for its context axis, and because the ledger has to stay right whether
  * or not the widget that draws it is on the page you are looking at.
  */
-export function useContextLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally = NO_EXPERIMENTS, landedCalls = 0): Ledger {
-  return useMemo(() => buildLedger(thread, uses, contextTokens, inFlight, experiments, landedCalls), [thread, uses, contextTokens, inFlight, experiments, landedCalls]);
+export function useContextLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally = NO_EXPERIMENTS, landedCalls = 0, breakdown: ContextBreakdown = NO_BREAKDOWN): Ledger {
+  return useMemo(() => buildLedger(thread, uses, contextTokens, inFlight, experiments, landedCalls, breakdown), [thread, uses, contextTokens, inFlight, experiments, landedCalls, breakdown]);
 }
 
 /**
@@ -388,10 +388,17 @@ const SAMPLE_THREAD: Thread = {
 };
 
 const SAMPLE_USES: ContextUse[] = [
-  { kind: "knowledge", label: "Prompt, tools & retrieval", chars: 20_000 * CHARS_PER_TOKEN, turns: 3 },
-  { kind: "attachment", label: "Experiments/ · file list", chars: 3_700 * CHARS_PER_TOKEN, turns: 3 },
-  { kind: "skill", label: "review-diff", chars: 1_900 * CHARS_PER_TOKEN, turns: 1 },
+  { kind: "messages", label: "Experiments/ · file list", chars: 3_700 * CHARS_PER_TOKEN, turns: 3 },
+  { kind: "skills", label: "review-diff", chars: 1_900 * CHARS_PER_TOKEN, turns: 1 },
 ];
+
+const SAMPLE_BREAKDOWN: ContextBreakdown = {
+  systemPromptBytes: 5_200 * CHARS_PER_TOKEN,
+  systemToolsBytes: 21_000 * CHARS_PER_TOKEN,
+  mcpToolsBytes: 8_600 * CHARS_PER_TOKEN,
+  skillsBytes: 5_500 * CHARS_PER_TOKEN,
+  memoryBytes: 915 * CHARS_PER_TOKEN,
+};
 
 /* A thread that ran with both Harness levers on, so the line they add is part of
    what you arrange rather than something that appears later on a real thread. */
@@ -456,7 +463,7 @@ const SAMPLE_GIT: GitSnapshot = {
 
 /** The widgets, over the sample thread, at the real width of the bar. */
 function usePreviewContext(): WidgetContext {
-  const ledger = useContextLedger(SAMPLE_THREAD, SAMPLE_USES, 1_049_000, [], SAMPLE_EXPERIMENTS);
+  const ledger = useContextLedger(SAMPLE_THREAD, SAMPLE_USES, 1_049_000, [], SAMPLE_EXPERIMENTS, 0, SAMPLE_BREAKDOWN);
   const sampleTrace = useMemo(() => ({ label: "3:41:42 PM", spans: SAMPLE_SPANS }), []);
   return {
     ledger,

@@ -1,8 +1,7 @@
 /* What a turn actually carried, kept as a ledger so the thread inspector can
    draw it. Pure helpers: the renderer owns the storage and the pixels. */
 
-/** The kinds a context segment can be. One hue each in panels.css. */
-export type UsageKind = "history" | "knowledge" | "attachment" | "skill" | "system" | "tools";
+export type UsageKind = "messages" | "system" | "tools" | "mcp" | "skills" | "memory";
 
 export interface ContextUse {
   kind: UsageKind;

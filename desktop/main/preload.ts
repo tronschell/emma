@@ -78,6 +78,14 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:context-experiment", wrapped);
     return () => ipcRenderer.removeListener("emma:context-experiment", wrapped);
   },
+  onContextBreakdown:(listener: (value: { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const parts = value as { threadId?: unknown; systemPromptBytes?: unknown; systemToolsBytes?: unknown; mcpToolsBytes?: unknown; skillsBytes?: unknown; memoryBytes?: unknown };
+      if (typeof parts?.threadId === "string") listener({ threadId: parts.threadId, systemPromptBytes: Number(parts.systemPromptBytes) || 0, systemToolsBytes: Number(parts.systemToolsBytes) || 0, mcpToolsBytes: Number(parts.mcpToolsBytes) || 0, skillsBytes: Number(parts.skillsBytes) || 0, memoryBytes: Number(parts.memoryBytes) || 0 });
+    };
+    ipcRenderer.on("emma:context-breakdown", wrapped);
+    return () => ipcRenderer.removeListener("emma:context-breakdown", wrapped);
+  },
   startScreenAnnotation: () => ipcRenderer.invoke("emma:start-screen-annotation"),
   onScreenContext: (listener: (value: { id: string; image: string; source?: { application: string; window: string } } | null) => void) => {
     const wrapped = (_event: unknown, value: unknown) => listener(value === null ? null : value as { id: string; image: string });

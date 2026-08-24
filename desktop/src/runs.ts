@@ -9,7 +9,7 @@ import { readVisualization, type Visualization } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
 import type { Message } from "./types";
-import { recordExperiment } from "./context";
+import { recordBreakdown, recordExperiment } from "./context";
 import { reasonText } from "./errors";
 
 /** One prompt, ready to hand over: the composer resolves its context at Enter, not at send. */
@@ -255,6 +255,7 @@ export function wire() {
     recordExperiment(threadId, fired);
     write(threadId, (run) => ({ blocks: [...run.blocks, { kind: "notice", text: experimentNotice(prunedResults, reinjected, savedTokens, addedTokens) }] }));
   });
+  window.emma.onContextBreakdown(({ threadId, ...parts }) => recordBreakdown(threadId, parts));
 }
 
 /// What the two levers did, in the user's words. Both can fire on the same step,

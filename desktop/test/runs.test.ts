@@ -33,6 +33,7 @@ let pushAgents: (value: LiveAgent[]) => void = () => undefined;
     onDelta: (listener: typeof pushDelta) => { pushDelta = listener; return () => undefined; },
     onStep: () => () => undefined,
     onContextExperiment: () => () => undefined,
+    onContextBreakdown: () => () => undefined,
     onAgents: (listener: typeof pushAgents) => { pushAgents = listener; return () => undefined; },
   },
 };

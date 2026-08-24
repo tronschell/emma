@@ -6,7 +6,7 @@ import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
-import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
+import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 
 /** The fixture lives beside this test in source, not in the compiled output. */
 const fakeAgent = path.join(process.cwd(), "test", "fake-acp-agent.mjs");
@@ -39,6 +39,7 @@ function harness(
     onThought: (_threadId, delta) => thoughts.push(delta),
     onToolCall: (call) => calls.push(call),
     onContextExperiment: () => {},
+    onContextBreakdown: () => {},
     onUsage: (threadId, usage) => usages.push({ threadId, ...usage }),
     onChildStart: (child) => { children.push(child); return Promise.resolve(`thread_for_${child.childId}`); },
     onChildEnd: (threadId) => ended.push(threadId),
@@ -519,4 +520,16 @@ test("a step's usage is read off the same info channel", () => {
   assert.equal(turnUsageReported({ _meta: { fx: { contextExperiment: { prunedResults: 2, reinjected: false } } } }), undefined);
   assert.equal(turnUsageReported({ _meta: { fx: { modelResponseRecovery: { message: "retrying" } } } }), undefined);
   assert.equal(turnUsageReported({}), undefined);
+});
+
+test("the prefix breakdown crosses the same channel, byte for byte with the Zig that writes it", () => {
+  const wire = '{"sessionUpdate":"session_info_update","_meta":{"fx":{"contextBreakdown":{"systemPromptBytes":9100,"systemToolsBytes":84000,"mcpToolsBytes":34400,"skillsBytes":5500,"memoryBytes":915}}}}';
+  assert.deepEqual(contextBreakdownReported(JSON.parse(wire)), {
+    systemPromptBytes: 9_100, systemToolsBytes: 84_000, mcpToolsBytes: 34_400, skillsBytes: 5_500, memoryBytes: 915,
+  });
+  assert.deepEqual(contextBreakdownReported({ _meta: { fx: { contextBreakdown: {} } } }), {
+    systemPromptBytes: 0, systemToolsBytes: 0, mcpToolsBytes: 0, skillsBytes: 0, memoryBytes: 0,
+  });
+  assert.equal(contextBreakdownReported({ _meta: { fx: { turnUsage: { inputTokens: 10 } } } }), undefined);
+  assert.equal(contextBreakdownReported({}), undefined);
 });
