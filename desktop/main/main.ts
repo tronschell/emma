@@ -49,7 +49,8 @@ import { advise } from "./advisor";
 import { look } from "./vision";
 import { MAX_TAGGER_TEXT_CHARS, MAX_THREAD_TAGS, tagThread } from "./tagger";
 import { runMemoryCommand } from "./memory";
-import { describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolNeeds, type ToolArgs } from "./tools";
+import { browserArgv, BROWSER_NAVIGATIONS, describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolNeeds, type ToolArgs } from "./tools";
+import { Browsers, type BrowserStatus } from "./browser";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, toolGate, type PermissionMode } from "../shared/permissions";
 import { editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 
@@ -163,6 +164,7 @@ let agents: AgentRuntime | undefined;
 const background = new BackgroundCommands(() => broadcast("emma:background"));
 /** The other coding CLIs, and what Emma has running in them. Same deal — empty until asked. */
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
+const browsers = new Browsers(() => broadcast("emma:browser"));
 let runBanner: BrowserWindow | null = null;
 /**
  * What the composer has set for a thread: the folders it works out of, the mode
@@ -924,6 +926,25 @@ function boundedCapabilityId(value: unknown, label: string) {
   return value;
 }
 
+function browserRequest(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Browser request is invalid");
+  const candidate = value as Record<string, unknown>;
+  return { candidate, threadId: boundedCapabilityId(candidate.threadId, "Browser thread") };
+}
+
+function browserOpenRequest(value: unknown) {
+  const { candidate, threadId } = browserRequest(value);
+  if (typeof candidate.url !== "string" || !candidate.url.trim() || candidate.url.length > 2048) throw new Error("Browser address is invalid");
+  return { threadId, url: candidate.url };
+}
+
+function browserNavRequest(value: unknown) {
+  const { candidate, threadId } = browserRequest(value);
+  const action = BROWSER_NAVIGATIONS.find((known) => known === candidate.action);
+  if (!action) throw new Error("Browser navigation is invalid");
+  return { threadId, action };
+}
+
 /** A follow-up turn typed into a run's tab. Bounded to what the `cli` tool accepts. */
 function cliSendRequest(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CLI send request is invalid");
@@ -1220,6 +1241,8 @@ async function reportContext(turn: TurnRequest, compact: boolean): Promise<strin
   return `${head}\n\nCompaction is set for your next turn: everything before the most recent turn becomes one summary. This turn keeps the history it started with, so finish here — say in one line what you compacted, and stop.`;
 }
 
+const browserPage = (status: BrowserStatus) => `${status.url ?? "about:blank"}${status.title ? ` — ${status.title}` : ""}`;
+
 /** Runs one already-permitted call. Throwing here reaches the model as a tool result. */
 async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
   switch (args.name) {
@@ -1266,6 +1289,13 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       reportRunProgress(computerRuntime!.steps, String(args.args.action ?? "act"), computerRuntime!.actions);
       if (!computerRuntime!.step()) throw new Error("This computer run reached its step limit.");
       return await computerRuntime!.execute(args.args);
+    }
+    case "browser": {
+      if (args.action === "open") return `Opened ${browserPage(await browsers.open(turn.threadId, args.url!))}. Snapshot it to see what is on it.`;
+      const navigation = BROWSER_NAVIGATIONS.find((candidate) => candidate === args.action);
+      if (!navigation) return await browsers.run(turn.threadId, browserArgv(args));
+      const status = await browsers.navigate(turn.threadId, navigation);
+      return navigation === "close" ? "Closed this thread's browser." : `Now on ${browserPage(status)}.`;
     }
     case "write_skill": {
       const skill = await writeLearnedSkill(app.getPath("userData"), args.skill, args.instructions);
@@ -1849,11 +1879,6 @@ async function runEmmaTool(threadId: string, wireName: string, args: Record<stri
   const unavailable = whyUnavailable(threadId, name, wireName);
   if (unavailable) throw new Error(unavailable);
   const parsed = parseToolArgs(name, JSON.stringify(args));
-  // Emma's tools are registered with the harness as needing no approval, on the
-  // grounds that Emma gates them itself — this is where it does. Seven of them
-  // land on `ask`, and they reach the same dialog and the same Auto verifier as
-  // the harness's own `terminal` and `write_file`, which ask over ACP instead. The
-  // raw call is the detail, because that is what the harness's door shows too.
   if (gate === "ask") {
     const allowed = await agents!.question({
       threadId,
@@ -2065,6 +2090,19 @@ function recordTurn(turn: RecordedTurn): Promise<unknown> {
   return host!.request({ method: "recordTurn", params: recordedTurn(turn) });
 }
 
+function attachedImagePaths(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  let ids: unknown;
+  try { ids = JSON.parse(value); } catch { return []; }
+  if (!Array.isArray(ids)) return [];
+  return ids.flatMap((id) => {
+    try {
+      const file = attachments!.read(id);
+      return file.text === undefined ? [file.path] : [];
+    } catch { return []; }
+  });
+}
+
 /**
  * One turn on the harness, then written back into the durable thread.
  *
@@ -2089,6 +2127,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
       // field. It was being dropped entirely: the chip cleared, the attachment
       // was marked delivered, and the instructions never left this process.
       skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
+      images: attachedImagePaths(turn.params?.attachedImages),
       contextWindow: contextWindowFor(route),
       effort: thinkingRoute(route, turn.effort),
       experiments: harnessExperiments,
@@ -2734,7 +2773,7 @@ if (primaryInstance) app.whenReady().then(() => {
         skillClaimed = true;
         request = {
           method: request.method,
-          params: { threadId: request.params.threadId, content: request.params.content, ...(request.params.attachedContext ? { attachedContext: request.params.attachedContext } : {}), ...(request.params.screenContext ? { screenContext: request.params.screenContext } : {}), skillContext: skill.instructions },
+          params: { threadId: request.params.threadId, content: request.params.content, ...(request.params.attachedContext ? { attachedContext: request.params.attachedContext } : {}), ...(request.params.attachedImages ? { attachedImages: request.params.attachedImages } : {}), ...(request.params.screenContext ? { screenContext: request.params.screenContext } : {}), skillContext: skill.instructions },
         };
       }
       // Attached folders, files, and knowledge categories ride the same channel a skill
@@ -2836,6 +2875,24 @@ if (primaryInstance) app.whenReady().then(() => {
     await clis.send(id, prompt);
     return clis.get(id) ?? null;
   });
+  ipcMain.handle("emma:browser-status", (event, value: unknown) => {
+    mainWindowSender(event);
+    return browsers.status(boundedCapabilityId(value, "Browser thread"));
+  });
+  ipcMain.handle("emma:browser-open", (event, value: unknown) => {
+    mainWindowSender(event);
+    const { threadId, url } = browserOpenRequest(value);
+    return browsers.open(threadId, url);
+  });
+  ipcMain.handle("emma:browser-nav", (event, value: unknown) => {
+    mainWindowSender(event);
+    const { threadId, action } = browserNavRequest(value);
+    return browsers.navigate(threadId, action);
+  });
+  ipcMain.handle("emma:browser-stream", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return { port: await browsers.ensureStream(boundedCapabilityId(value, "Browser thread")) };
+  });
   /** This turn's spans, so a panel that mounts mid-run is not blank until the next change. */
   ipcMain.handle("emma:list-spans", (event) => {
     mainWindowSender(event);
@@ -2873,6 +2930,12 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:thread-changes", (event, value: unknown) => {
     mainWindowSender(event);
     return agents!.changes(boundedCapabilityId(value, "Changes thread"));
+  });
+  ipcMain.handle("emma:clear-thread-context", (event, value: unknown) => {
+    mainWindowSender(event);
+    const threadId = boundedCapabilityId(value, "Clear context thread");
+    compactNext.delete(threadId);
+    for (const client of harnesses.values()) client.forgetSession(threadId);
   });
   ipcMain.handle("emma:revert-change", (event, value: unknown) => {
     mainWindowSender(event);

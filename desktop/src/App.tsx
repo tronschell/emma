@@ -9,7 +9,7 @@ import { nested, threadDepth, threadLabel } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { canRemoveLocalModel, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, FREE_ROUTER_KEY, FREE_ROUTER_MODELS, freeRouterChain, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetLocalModel, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultVerifierSystem, defaultTaggerSystem, verifierFromKey, verifierKey, migrateQuickActionDestinations, OPENROUTER_CHAT_ENDPOINT, providerCredentials, resolveQuickActionDestination, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type CursorCommand, type FontChoice, type LocalModelProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
-import { defaultPaneLayout, NAV_VIEWS, ordered, validatePaneLayout, type PaneLayout } from "./layout";
+import { defaultPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, type PaneLayout } from "./layout";
 import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -33,12 +33,13 @@ import { openPreview, PreviewHost } from "./preview";
 import { ArtifactCard, ArtifactsView } from "./artifacts";
 import { Region } from "./regions";
 import { ARTIFACT_LABELS, artifactWritten, type Artifact, type ArtifactMeta } from "../shared/artifacts";
-import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, contextCommands, handTags, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadBreakdown, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
+import { atCommands, AUTO_FILE_EXAMPLES, autoFileStatus, autoTagStatus, buildAttachedContext, cachedBlocks, clearedAt, contextCommands, handTags, markCleared, overlayMode, pickLabel, recordUses, rememberBlocks, rememberTurnAttachments, setOverlayMode, setThreadFolders, setThreadMode, setThreadTag, threadBreakdown, threadExperiments, threadFolderMap, threadFolders, threadMode, threadTags, threadUses, toolCommands, turnAttachments, UNFILED_CATEGORY, type TurnAttachment } from "./context";
 import { AgentPanel, AgentRail, BackgroundRail, ChangeCount, ChangesPanel, ModeMenu, ModePicker, ModeTrigger, PermissionPrompt, TabStrip, ThreadCard, useAgents, type AgentTab } from "./agents";
 import { FileMark, GitPanel, useGit } from "./git";
 import { OpenIn } from "./editors";
 import { worktreeName, type GitSnapshot } from "../shared/git";
-import { BrandIcon, ClipIcon, EmmaMark, InfoDot, ToolIcon } from "./icons";
+import { BrandIcon, ClipIcon, EmmaMark, GlobeIcon, InfoDot, ToolIcon } from "./icons";
+import { BrowserPane } from "./browser";
 import { syncImprovements } from "./improvements";
 import { CliDock, CliPanel, useCliRuns, useTailScroll } from "./cli";
 import { cliHarness } from "../shared/cli";
@@ -164,6 +165,10 @@ function TranscriptRail({ messages, scroller }: { messages: Message[]; scroller:
       </button>;
     })}
   </nav>;
+}
+
+function ContextCut() {
+  return <p className="context-cut" role="separator" aria-label="Context cleared">Context cleared</p>;
 }
 
 function Turn({ item, blocks, index, attached }: { item: Message; blocks?: Block[]; index?: number; attached?: TurnAttachment[] }) {
@@ -698,6 +703,7 @@ function Workspace() {
   const shellStyle = {
     "--sidebar-width": `${layout.sidebarCollapsed ? 46 : layout.sidebarWidth}px`,
     "--inspector-width": `${layout.inspectorCollapsed ? 30 : layout.inspectorWidth}px`,
+    "--browser-width": `${layout.browserOpen ? layout.browserWidth : 0}px`,
   } as CSSProperties;
   // A due run opens an ordinary thread, but it is not one the user started, so it
   // is listed under its job at the foot of the rail rather than in a project.
@@ -1626,6 +1632,8 @@ function CapabilityPopover({ threadId, locked, close, skill, setSkill, setBusy }
 const BUILTIN_COMMANDS: SlashCommand[] = [
   { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig coding harness" },
   { id: "import", name: "import", kind: "builtin", detail: "built-in · import skills & MCP" },
+  { id: "new", name: "new", kind: "builtin", detail: "built-in · new thread in this project" },
+  { id: "clear", name: "clear", kind: "builtin", detail: "built-in · empty the context window" },
 ];
 
 const onTagsChanged = (fire: () => void) => {
@@ -1864,13 +1872,15 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
   useEffect(() => { writeContextPage(page.id); }, [page.id]);
   // The ledger lives in localStorage, so it is read on render and a turn just asks for another one.
   const uses = threadUses(threadId ?? "");
+  const cleared = Math.min(clearedAt(threadId ?? ""), thread?.messages.length ?? 0);
+  const carried = useMemo(() => thread && cleared ? { ...thread, messages: thread.messages.slice(cleared) } : thread, [thread, cleared]);
   // Measured once for the whole bar. The stats tiles, the context window and the
   // timeline's context axis are three readings of one number, and the ledger's own
   // figure leans on an async fetch and the provider's input count — a second copy
   // of that arithmetic is a second thing to keep in step. It is measured whether or
   // not the widget that draws it is on the page you happen to be looking at.
   const landedCalls = useThreadCalls(threadId, sending);
-  const ledger = useContextLedger(thread, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls, threadBreakdown(threadId ?? ""));
+  const ledger = useContextLedger(carried, uses, contextTokens, inFlight, threadExperiments(threadId ?? ""), landedCalls, threadBreakdown(threadId ?? ""));
   const git = useGit(folderIds[0], sending);
   const [changes, setChanges] = useState<FileChange[]>([]);
   const reloadChanges = useCallback(() => {
@@ -1968,6 +1978,12 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     else if (command.kind === "skill") void window.emma.selectImportedSkill({ id: command.id, threadId: thread.id }).then(setSkill).catch(() => undefined);
     else if (command.id === "agent") setAgentOpen(true);
     else if (command.id === "import") onManageImports();
+    else if (command.id === "new") newThread();
+    else if (command.id === "clear") {
+      markCleared(thread.id, thread.messages.length);
+      ledgerChanged((current) => current + 1);
+      void window.emma.clearThreadContext(thread.id).catch((reason: unknown) => setRunError(reasonText(reason)));
+    }
     else openCapabilities();
   };
   const composerKeys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -2008,7 +2024,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     const content = (text ?? message).trim();
     if (!content) return;
     if (text === undefined) { setMessage(""); setHistory(-1); }
-    const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles, snapshot) : { text: "", uses: [] };
+    const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles, snapshot) : { text: "", uses: [], images: [] };
     const attachedSkill = skill;
     const after = thread.messages.length;
     /// Recorded against the message this turn is about to write, so the tiles the
@@ -2019,7 +2035,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
     sendTurn(thread.id, {
       content,
       after,
-      params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
+      params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
       // Only a delivered turn goes in the ledger: it records what Emma was actually sent.
       delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skills" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
     }, reload);
@@ -2093,14 +2109,16 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
       /><TagPicker threadId={thread.id} /><div className="thread-actions">{/* Only once this thread has actually touched code: with a clean tree the row
           would be three app icons offering to open nothing in particular. */}
         {folderIds[0] && (!!git?.diff.trim() || changes.length > 0) && <OpenIn folderId={folderIds[0]} label />}
+        <button type="button" className="browser-toggle" aria-label={layout.browserOpen ? "Close the browser pane" : "Open the browser pane"} aria-pressed={layout.browserOpen} title={layout.browserOpen ? "Close the browser" : "Open the browser"} onClick={() => pane({ browserOpen: !layout.browserOpen })}><GlobeIcon /></button>
         <button type="button" className="page-info-button" aria-label="Show thread details" aria-haspopup="dialog" onClick={() => setAgentOpen(true)}>i</button></div></header>
       <div className="transcript-wrap">
       <TranscriptRail messages={thread.messages} scroller={transcript} />
       <div className="transcript" ref={transcript} onScroll={transcriptScroll}>
         <RunContext.Provider value={runFences}>
         {!thread.messages.length && echo === null && !sending && <div className="welcome"><Mark /><h3>What are we working on?</h3><p>Ask Emma to research, plan, write, or think. Nothing enters knowledge unless you choose it.</p></div>}
-        {thread.messages.map((item, index) => <Turn key={`${item.timestamp}-${index}`} item={item} blocks={landedBlocks[index]} index={index} attached={attachedTurns[index]} />)}
-        {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span><span className="pending-note">Sending…</span></footer></article>}
+        {thread.messages.map((item, index) => <Fragment key={`${item.timestamp}-${index}`}>{cleared > 0 && index === cleared && <ContextCut />}<Turn item={item} blocks={landedBlocks[index]} index={index} attached={attachedTurns[index]} /></Fragment>)}
+        {cleared > 0 && cleared === thread.messages.length && <ContextCut />}
+        {echo !== null && <article className="message user pending"><div className="message-body"><p>{echo}</p></div><footer className="message-meta"><span>You</span></footer></article>}
         {streaming !== null && <Streaming blocks={streaming} threadId={thread.id} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> Emma is working…</p>}
         {!sending && run.stopped && <p className="waiting stopped" role="status">Agent stopped. Ask Emma to continue where it left off.</p>}
@@ -2115,7 +2133,7 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
         onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
         onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); attachDropped(event.dataTransfer.files); } }}><label className="sr-only" htmlFor="message">Message Emma</label>{/* Attached files sit above what is being typed, in reading order: they are part
           of the message, and a picture has to be seen for the chip to say anything. */}
-        {picks.some((pick) => pick.kind === "attachment") && <div className="composer-tray">{picks.map((pick) => pick.kind !== "attachment" ? null : <div className="composer-tile" key={pickKey(pick)} title={pick.name}>{pick.thumbnail ? <img src={pick.thumbnail} alt="" /> : <><FileMark path={pick.name} /><small>{pick.name}</small></>}<button type="button" disabled={locked} onClick={() => dropPick(pick)} aria-label={`Remove ${pick.name}`}>×</button></div>)}</div>}<div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} id="message" value={message} disabled={locked} maxLength={65_536} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, ⤳ steers…" : "Ask Emma to continue…"} rows={2} /></div>{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, knowledge pages and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, knowledge pages and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} /></div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}${modelTag ? ` · ${modelTag}` : ""}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span>{modelTag && <em className={`model-route ${modelTag === "Local" ? "local" : "remote"}`}>{modelTag}</em>}<span aria-hidden="true">▾</span></button>{sending
+        {picks.some((pick) => pick.kind === "attachment") && <div className="composer-tray">{picks.map((pick) => pick.kind !== "attachment" ? null : <div className="composer-tile" key={pickKey(pick)} title={pick.name}>{pick.thumbnail ? <img src={pick.thumbnail} alt="" /> : <><FileMark path={pick.name} /><small>{pick.name}</small></>}<button type="button" disabled={locked} onClick={() => dropPick(pick)} aria-label={`Remove ${pick.name}`}>×</button></div>)}</div>}<div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={65_536} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, ⤳ steers…" : "Ask Emma to continue…"} rows={2} /></div>{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, knowledge pages and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, knowledge pages and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} /></div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}${modelTag ? ` · ${modelTag}` : ""}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span>{modelTag && <em className={`model-route ${modelTag === "Local" ? "local" : "remote"}`}>{modelTag}</em>}<span aria-hidden="true">▾</span></button>{sending
           // ponytail: stop, not pause — neither loop can be resumed mid-turn, so
           // the run ends keeping what it already wrote and "continue" picks it up.
           // Mid-turn the corner holds one door at a time: stop while the composer is
@@ -2142,7 +2160,11 @@ function ThreadView({ thread, snapshot, busy, act, reload, agents, tab, setTab, 
         </span> : <span>{page.name}</span>}
         {changes.length > 0 && <button type="button" className="changes-open" title={`${changes.length} ${plural(changes.length, "file")} changed — open the diff`} onClick={() => setTab("changes")}><ChangeCount stat={diffStat(changes)} /></button>}<button onClick={() => void act("saveToKnowledge", { threadId: thread.id })} disabled={locked || !thread.messages.some((item) => item.role === "assistant")}>Save & analyze</button></header>
       <ContextWidgets page={page} context={{ ledger, threadId: thread.id, sending, subagents, subthreads, agents, onOpenThread: openThreadPage, tab, onPick: setTab, git, onOpenGit: () => setTab("git") }} onChange={(widgets) => onContextPages(contextPages.map((item) => item.id === page.id ? { ...item, widgets } : item))} /></div>}
-    </aside></Region>{agentOpen && <AgentDialog thread={thread} close={() => setAgentOpen(false)} />}
+    </aside></Region>
+    {layout.browserOpen && <div className="browser-column">
+      <ResizeHandle label="Resize browser" value={layout.browserWidth} min={MIN_BROWSER_WIDTH} max={720} direction={-1} onChange={(browserWidth) => pane({ browserWidth })} />
+      <BrowserPane threadId={thread.id} />
+    </div>}{agentOpen && <AgentDialog thread={thread} close={() => setAgentOpen(false)} />}
   </div>;
 }
 
@@ -4473,11 +4495,12 @@ function Overlay() {
       const attachedSkill = skill ? await window.emma.selectImportedSkill({ id: skill.id, threadId: active.id }).catch(() => undefined) : undefined;
       const paths = mentions(content, "@");
       const picks = atItems.filter((item) => item.pick && paths.includes(item.name)).map((item) => item.pick!);
-      const attached = picks.length ? await buildAttachedContext(folders, [], picks, files, snapshot) : { text: "" };
+      const attached = picks.length ? await buildAttachedContext(folders, [], picks, files, snapshot) : { text: "", images: [] };
       const turn = await window.emma.request<Thread>("sendMessage", {
         threadId: active.id,
         content,
         ...(attached.text ? { attachedContext: attached.text } : {}),
+        ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}),
         ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}),
         ...(screenContextId ? { screenContextId } : {}),
       });

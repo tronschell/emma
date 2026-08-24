@@ -4,7 +4,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
 import { asPermissionMode, toolGate } from "../shared/permissions";
-import { describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
+import { browserArgv, describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
+import { parseStreamMessage } from "../src/browser-stream";
 import { AgentRuntime, bounded, type LoopDeps } from "../main/agent-loop";
 import type { VerifierReview } from "../main/verifier";
 import { decodeSpans } from "../shared/trace";
@@ -41,7 +42,7 @@ test("every tool that gates to ask has a door that asks", () => {
   // Emma's tools are registered with the harness as needing no approval on the
   // grounds that `runEmmaTool` asks instead — which it only does for what is
   // listed here. A new tool at `ask` fails this until someone says so.
-  assert.deepEqual(asked.sort(), ["autoresearch", "cli", "computer", "install_mcp", "run_tool", "workflow"]);
+  assert.deepEqual(asked.sort(), ["autoresearch", "browser", "cli", "computer", "install_mcp", "run_tool", "workflow"]);
 });
 
 test("a tool is only offered once the thing it drives is actually connected", () => {
@@ -63,6 +64,39 @@ test("tool arguments are validated before anything runs", () => {
   assert.deepEqual(parse("save_page", {}), { name: "save_page", url: undefined });
   assert.equal(describeToolCall(parse("save_page", {})), "saving the page in front");
   assert.equal(describeToolCall(parse("save_page", { url: "https://example.com/a" })), "saving https://example.com/a");
+});
+
+test("a browser call becomes agent-browser's own command line, in its own argument order", () => {
+  const argv = (args: Record<string, unknown>) => browserArgv(parseToolArgs("browser", JSON.stringify(args)) as Parameters<typeof browserArgv>[0]);
+  assert.deepEqual(argv({ action: "get", field: "attr", selector: "@e1", name: "href" }), ["get", "attr", "@e1", "href"]);
+  assert.deepEqual(argv({ action: "scroll" }), ["scroll", "down"]);
+  assert.deepEqual(argv({ action: "scroll", direction: "up", amount: 400.7 }), ["scroll", "up", "400"]);
+  assert.deepEqual(argv({ action: "snapshot", interactive: true, selector: "main" }), ["snapshot", "-i", "-s", "main"]);
+  assert.deepEqual(argv({ action: "type", selector: "@e2", text: "hi" }), ["type", "@e2", "hi"]);
+  assert.deepEqual(argv({ action: "type", text: "hi" }), ["keyboard", "type", "hi"]);
+  assert.deepEqual(argv({ action: "back" }), ["back"]);
+
+  const parse = (args: unknown) => parseToolArgs("browser", JSON.stringify(args));
+  assert.throws(() => parse({ action: "surf" }), /action must be one of/);
+  assert.throws(() => parse({ action: "click" }), /selector/);
+  assert.throws(() => parse({ action: "open" }), /url/);
+  assert.throws(() => parse({ action: "get", field: "attr", selector: "@e1" }), /name/);
+  assert.throws(() => parse({ action: "scroll", amount: -80 }), /pixels/);
+  assert.equal(describeToolCall(parse({ action: "click", selector: "@e1" })), "clicking @e1");
+  assert.equal(describeToolCall(parse({ action: "snapshot" })), "looking at the page");
+});
+
+test("the browser pane follows the page from whichever message the stream sends", () => {
+  const sent = (message: unknown) => parseStreamMessage(JSON.stringify(message));
+  assert.deepEqual(sent({ type: "url", url: "https://iana.org/" }), { kind: "page", url: "https://iana.org/" });
+  assert.deepEqual(sent({ type: "tabs", tabs: [{ active: false, url: "https://old.example" }, { active: true, url: "https://example.com/" }] }), { kind: "page", url: "https://example.com/" });
+  assert.deepEqual(sent({ type: "frame", seq: 7, data: "/9j/4AAQ" }), { kind: "frame", data: "/9j/4AAQ", seq: 7 });
+  assert.equal(sent({ type: "frame", data: "<script>" }), null);
+  assert.equal(sent({ type: "url", url: "javascript:alert(1)" }), null);
+  assert.equal(sent({ type: "tabs", tabs: [{ active: false, url: "https://example.com/" }] }), null);
+  assert.equal(sent({ type: "console", text: "hello" }), null);
+  assert.equal(parseStreamMessage("not json"), null);
+  assert.equal(parseStreamMessage(new ArrayBuffer(8)), null);
 });
 
 test("a tool Emma wrote herself is listed before it is run, and runs as one shell word", async () => {

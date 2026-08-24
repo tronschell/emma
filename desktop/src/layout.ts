@@ -46,8 +46,10 @@ export const NAV_VIEWS = ["threads", "knowledge", "artifacts", "agent", "schedul
 export interface PaneLayout {
   sidebarWidth: number;
   inspectorWidth: number;
+  browserWidth: number;
   sidebarCollapsed: boolean;
   inspectorCollapsed: boolean;
+  browserOpen: boolean;
   /* Section nav as one horizontal row of glyph tiles, Arc's pinned strip. */
   navIcons: boolean;
   navOrder: string[];
@@ -57,8 +59,10 @@ export interface PaneLayout {
 export const defaultPaneLayout: PaneLayout = {
   sidebarWidth: 260,
   inspectorWidth: 288,
+  browserWidth: 420,
   sidebarCollapsed: false,
   inspectorCollapsed: false,
+  browserOpen: false,
   navIcons: false,
   navOrder: [],
   projectOrder: [],
@@ -83,19 +87,25 @@ const idList = (value: unknown, allowed?: readonly string[]) => {
   return [...new Set(list)].filter((id) => !allowed || allowed.includes(id)).slice(0, 64);
 };
 
+export const MIN_BROWSER_WIDTH = 260;
+
 export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITIVE_INFINITY): PaneLayout {
   const input = value && typeof value === "object" ? value as Partial<PaneLayout> : {};
   const layout = {
     sidebarWidth: number(input.sidebarWidth, defaultPaneLayout.sidebarWidth, 200, 340),
     inspectorWidth: number(input.inspectorWidth, defaultPaneLayout.inspectorWidth, 260, 360),
+    browserWidth: number(input.browserWidth, defaultPaneLayout.browserWidth, MIN_BROWSER_WIDTH, 720),
     sidebarCollapsed: typeof input.sidebarCollapsed === "boolean" ? input.sidebarCollapsed : false,
     inspectorCollapsed: typeof input.inspectorCollapsed === "boolean" ? input.inspectorCollapsed : false,
+    browserOpen: typeof input.browserOpen === "boolean" ? input.browserOpen : false,
     navIcons: typeof input.navIcons === "boolean" ? input.navIcons : false,
     navOrder: idList(input.navOrder, NAV_VIEWS),
     projectOrder: idList(input.projectOrder),
   };
-  const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 30 : 260);
-  const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200) + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260);
+  const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 30 : 260) + (layout.browserOpen ? MIN_BROWSER_WIDTH : 0);
+  const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200)
+    + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260)
+    + (layout.browserOpen ? layout.browserWidth - MIN_BROWSER_WIDTH : 0);
   // A window that has not been laid out yet reports innerWidth 0. Treating that as
   // a real viewport shrinks both panes to their minimums and the caller persists it,
   // so an unmeasured window is no constraint at all.
@@ -103,5 +113,6 @@ export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITI
   const ratio = requestedSlack ? Math.min(1, Math.max(0, (Math.floor(width) - fixedWidth) / requestedSlack)) : 1;
   if (!layout.sidebarCollapsed) layout.sidebarWidth = 200 + Math.floor((layout.sidebarWidth - 200) * ratio);
   if (!layout.inspectorCollapsed) layout.inspectorWidth = 260 + Math.floor((layout.inspectorWidth - 260) * ratio);
+  if (layout.browserOpen) layout.browserWidth = MIN_BROWSER_WIDTH + Math.floor((layout.browserWidth - MIN_BROWSER_WIDTH) * ratio);
   return layout;
 }

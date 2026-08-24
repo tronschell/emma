@@ -43,6 +43,22 @@ export const PLAN_ACTIONS = ["read", "write", "run", "update", "delete"] as cons
 export type PlanAction = (typeof PLAN_ACTIONS)[number];
 const PLAN_VERBS: Record<PlanAction, string> = { read: "reading", write: "writing", run: "running", update: "updating", delete: "deleting" };
 
+export const BROWSER_NAVIGATIONS = ["back", "forward", "reload", "close"] as const;
+export type BrowserNavigation = (typeof BROWSER_NAVIGATIONS)[number];
+export const BROWSER_ACTIONS = ["open", "snapshot", "click", "fill", "type", "press", "hover", "scroll", "get", "eval", "screenshot", "wait", ...BROWSER_NAVIGATIONS] as const;
+export type BrowserAction = (typeof BROWSER_ACTIONS)[number];
+export const BROWSER_FIELDS = ["text", "html", "value", "attr", "title", "url", "count"] as const;
+export type BrowserField = (typeof BROWSER_FIELDS)[number];
+export const BROWSER_DIRECTIONS = ["up", "down", "left", "right"] as const;
+export type BrowserDirection = (typeof BROWSER_DIRECTIONS)[number];
+export const MAX_SCROLL_PIXELS = 20_000;
+const BROWSER_VERBS: Record<BrowserAction, string> = {
+  open: "opening", snapshot: "looking at the page", click: "clicking", fill: "filling", type: "typing",
+  press: "pressing", hover: "hovering over", scroll: "scrolling", get: "reading", eval: "running JavaScript in the page",
+  screenshot: "taking a screenshot", wait: "waiting for", back: "going back", forward: "going forward",
+  reload: "reloading", close: "closing the browser",
+};
+
 const FOLDER_FIELD = {
   folder: { type: "string", description: "Name of this thread's connected folder. A thread works in exactly one, so omit this." },
 } as const;
@@ -90,6 +106,32 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
   },
   { ...computerTools[0], needs: "computer", inputSchema: computerTools[0].inputSchema as unknown as Record<string, unknown> },
   { ...computerTools[1], needs: "always", inputSchema: computerTools[1].inputSchema as unknown as Record<string, unknown> },
+  {
+    name: "browser",
+    needs: "always",
+    description:
+      "Drive a real Chrome browser: open pages, read them, click, fill and check your own work. The user watches the same browser in Emma's browser pane and can take the wheel, so what you do here is visible and what they do is yours to read.\n" +
+      "action \"open\" navigates; \"snapshot\" is how you see — it returns the page as an accessibility tree whose elements carry refs like @e1, and every later action takes a ref or a CSS selector. Snapshot first, then act on a ref: guessing a selector is the common failure.\n" +
+      "Use it to check a web project you are working on — open the dev server, look at the page, click through the change you just made — and to read a page when web_fetch or web_search could not.\n" +
+      "\"get\" reads one thing off the page: text, html, value, attr, title, url or count. \"eval\" runs JavaScript in the page when nothing else will do. \"close\" ends the session; leave it open between turns otherwise, the browser is this thread's and it keeps its cookies and its place.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: [...BROWSER_ACTIONS], description: "What to do. snapshot first whenever the next step needs a selector; back, forward, reload and close take nothing else." },
+        url: { type: "string", description: "Where to go, for open. http:// or https:// only." },
+        selector: { type: "string", description: "Which element to act on: a ref the last snapshot gave it, like @e1, or a CSS selector. Prefer the ref — a selector you guessed rather than read is the usual reason a click lands on nothing." },
+        text: { type: "string", description: "What to put in: fill replaces the value of the element at selector, type sends the keystrokes to that element, or to whatever has focus when you give no selector." },
+        key: { type: "string", description: "One key for press: Enter, Tab, Escape, ArrowDown, or a combination such as Control+A." },
+        field: { type: "string", enum: [...BROWSER_FIELDS], description: "What get reads: text, html, value or attr off the element at selector, or title, url or count for the page. Defaults to text." },
+        direction: { type: "string", enum: [...BROWSER_DIRECTIONS], description: "Which way scroll goes. Defaults to down." },
+        amount: { type: "number", description: "How far scroll travels, in pixels. Defaults to one screenful." },
+        name: { type: "string", description: "Which attribute to read, for get with field \"attr\": href, src, aria-label." },
+        js: { type: "string", description: "JavaScript to run in the page, for eval, returning its result. It runs with the page's own signed-in session, so keep it to reading what snapshot and get cannot reach." },
+        interactive: { type: "boolean", description: "For snapshot, return only the elements you can act on. Smaller and usually enough; take the whole tree when you need the page's text." },
+      },
+      required: ["action"],
+    },
+  },
   {
     // Anthropic's memory tool, which the API supplies server-side to its own
     // models. Emma talks to OpenAI-compatible routes, so it is advertised here
@@ -543,6 +585,7 @@ export type ToolArgs =
   | { name: "cli"; action: CliAction; cli?: string; id?: string; prompt?: string; unattended: boolean; folder?: string }
   | { name: "cli_runs"; id?: string; stop: boolean }
   | { name: "computer"; args: Record<string, unknown> }
+  | { name: "browser"; action: BrowserAction; url?: string; selector?: string; text?: string; key?: string; field?: BrowserField; direction?: BrowserDirection; amount?: number; attribute?: string; js?: string; interactive: boolean }
   | { name: "write_skill"; skill: string; instructions: string }
   | { name: "write_tool"; tool: string; description: string; code: string }
   | { name: "write_plugin"; plugin: WrittenPlugin }
@@ -633,6 +676,39 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop") };
     case "computer":
       return { name, args };
+    case "browser": {
+      const action = BROWSER_ACTIONS.find((candidate) => candidate === args.action);
+      if (!action) throw new Error(`action must be one of ${BROWSER_ACTIONS.join(", ")}.`);
+      const field = args.field === undefined || args.field === null ? undefined : BROWSER_FIELDS.find((candidate) => candidate === args.field);
+      if (args.field !== undefined && args.field !== null && !field) throw new Error(`field must be one of ${BROWSER_FIELDS.join(", ")}.`);
+      const direction = args.direction === undefined || args.direction === null ? undefined : BROWSER_DIRECTIONS.find((candidate) => candidate === args.direction);
+      if (args.direction !== undefined && args.direction !== null && !direction) throw new Error(`direction must be one of ${BROWSER_DIRECTIONS.join(", ")}.`);
+      const parsed = {
+        name,
+        action,
+        url: optionalText(args.url, "url", 2048),
+        selector: optionalText(args.selector, "selector", 1024),
+        text: args.text === undefined || args.text === null ? undefined : bounded(args.text, "text", MAX_COMMAND_CHARS),
+        key: optionalText(args.key, "key", 64),
+        field,
+        direction,
+        amount: args.amount === undefined || args.amount === null ? undefined : pixels(args.amount),
+        attribute: optionalText(args.name, "name", 128),
+        js: optionalText(args.js, "js", MAX_COMMAND_CHARS),
+        interactive: flag(args.interactive, "interactive"),
+      } as const;
+      if (action === "open" && !parsed.url) throw new Error('The "url" argument is required for open.');
+      if ((action === "click" || action === "fill" || action === "hover" || action === "wait") && !parsed.selector) {
+        throw new Error(`The "selector" argument is required for ${action}: a ref from the last snapshot, like @e1, or a CSS selector.`);
+      }
+      if ((action === "fill" || action === "type") && parsed.text === undefined) throw new Error(`The "text" argument is required for ${action}.`);
+      if (action === "press" && !parsed.key) throw new Error('The "key" argument is required for press.');
+      if (action === "eval" && !parsed.js) throw new Error('The "js" argument is required for eval.');
+      if (action === "get" && field === "attr" && (!parsed.selector || !parsed.attribute)) {
+        throw new Error('Reading an attribute needs both "selector" and "name" — which element, and which attribute of it.');
+      }
+      return parsed;
+    }
     case "write_skill":
       return { name, skill: requiredText(args.name, "name", 128), instructions: requiredText(args.instructions, "instructions", 32 * 1024) };
     case "write_tool":
@@ -818,6 +894,22 @@ export function shellQuoted(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+export function browserArgv(args: Extract<ToolArgs, { name: "browser" }>): string[] {
+  switch (args.action) {
+    case "snapshot": return ["snapshot", ...(args.interactive ? ["-i"] : []), ...(args.selector ? ["-s", args.selector] : [])];
+    case "click": case "hover": case "wait": return [args.action, args.selector!];
+    case "fill": return ["fill", args.selector!, args.text!];
+    case "type": return args.selector ? ["type", args.selector, args.text!] : ["keyboard", "type", args.text!];
+    case "press": return ["press", args.key!];
+    case "scroll": return ["scroll", args.direction ?? "down", ...(args.amount === undefined ? [] : [String(args.amount)])];
+    case "get": return args.field === "attr"
+      ? ["get", "attr", args.selector!, args.attribute!]
+      : ["get", args.field ?? "text", ...(args.selector ? [args.selector] : [])];
+    case "eval": return ["eval", args.js!];
+    default: return [args.action];
+  }
+}
+
 function requiredText(value: unknown, field: string, max: number): string {
   const parsed = optionalText(value, field, max);
   if (parsed === undefined) throw new Error(`The "${field}" argument is required.`);
@@ -842,6 +934,11 @@ function budget(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`The "${field}" argument must be a number, or 0 for no limit.`);
   return Math.floor(value);
+}
+
+function pixels(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error('The "amount" argument must be a distance in pixels, greater than 0. Which way it goes is "direction".');
+  return Math.min(MAX_SCROLL_PIXELS, Math.floor(value));
 }
 
 /** A small positive count, clamped rather than refused: it is only how much to read. */
@@ -934,6 +1031,11 @@ export function describeToolCall(args: AnyToolArgs): string {
     case "cli": return args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`;
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
     case "computer": return typeof args.args.action === "string" ? String(args.args.action).replace(/_/g, " ") : "using the computer";
+    case "browser": {
+      if (args.action === "get") return `reading the page's ${args.field ?? "text"}`;
+      const target = args.action === "open" ? args.url : args.action === "press" ? args.key : args.selector;
+      return target ? `${BROWSER_VERBS[args.action]} ${target.slice(0, 64)}` : BROWSER_VERBS[args.action];
+    }
     case "write_skill": return `saving the skill ${args.skill}`;
     case "write_tool": return `writing the tool ${args.tool}`;
     case "write_plugin": return `packaging the plugin ${args.plugin.name}`;

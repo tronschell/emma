@@ -2,7 +2,7 @@
 
 Every tool a turn can call: what it takes, what it gives back, what it costs in
 permission, and which file runs it. The list is `AGENT_TOOLS` in
-[permissions.ts](../desktop/shared/permissions.ts) — thirty-one names, and nothing
+[permissions.ts](../desktop/shared/permissions.ts) — thirty-two names, and nothing
 outside it is a built-in tool.
 
 Schemas and descriptions live in [tools.ts](../desktop/main/tools.ts). Gates live
@@ -26,6 +26,7 @@ carries in the default `ask` mode.
 | [`web_search`](#web_search) | Searches the web through the configured provider. | auto |
 | [`web_fetch`](#web_fetch) | Fetches one URL and returns its readable text. | auto |
 | [`save_page`](#save_page) | Clips a web page into the knowledge base and files it. | auto |
+| [`browser`](#browser) | Drives a real Chrome, mirrored in the pane the user can take over. | **ask** |
 | [`computer`](#computer) | Takes the real pointer and keyboard, and looks at the screen. | **ask** |
 | [`cli`](#cli) | Runs Claude Code, Codex, Pi, OpenCode or Cursor in a folder. | **ask** |
 | [`cli_runs`](#cli_runs) | Lists installed CLIs and watches the runs already going. | auto |
@@ -47,8 +48,8 @@ carries in the default `ask` mode.
 | [`workflow`](#workflow) | Builds and runs the workflows in the Scheduled section. | **ask** |
 | [`autoresearch`](#autoresearch) | Builds and runs the long experiment loops. | **ask** |
 
-Eight ask in `ask` mode. Only `write_file` relaxes in `acceptEdits`; the other
-seven still ask, because they run a program rather than edit a file.
+Nine ask in `ask` mode. Only `write_file` relaxes in `acceptEdits`; the other
+eight still ask, because they run a program rather than edit a file.
 
 ## How a call reaches an implementation
 
@@ -276,6 +277,61 @@ window they are typing in.
   whole clip, minutes not seconds, and holding it open blew the tool deadline and
   produced duplicate clips. When it lands it fires a `page-saved` event, which is
   a trigger a scheduled task can hang off. See [knowledge.md](knowledge.md).
+
+### `browser`
+
+Drives a real Chrome, one per thread, and mirrors it in the browser pane so the
+user can watch and take the wheel. It is one browser with two drivers: what the
+agent does appears in the pane, and a page the user opened there is a page the
+agent can read. That is what makes it the way to check a web project — open the
+dev server, look at the page, click through the change just made — and the
+fallback when `web_fetch` or `web_search` could not reach something.
+
+- **Input** — `action` (required): `open`, `snapshot`, `click`, `fill`, `type`,
+  `press`, `hover`, `scroll`, `get`, `eval`, `screenshot`, `wait`, `back`,
+  `forward`, `reload`, `close`. Then whatever that action needs — `url` for
+  open, `selector` for click, fill, hover and wait, `text` for fill and type,
+  `key` for press, `field` and `name` for get, `direction` and `amount` for
+  scroll, `js` for eval, `interactive` for snapshot. `parseToolArgs` rejects the
+  combinations that cannot work: open with no url, `get attr` missing either the
+  element or the attribute name.
+- **Returns** — what the CLI printed, capped at `MAX_TOOL_OUTPUT_BYTES`. Its
+  plain output, not its `--json`: `Example Domain` rather than the same string
+  inside a wrapper that repeats the tree and carries a launch record on every
+  call. `snapshot` is the one to read — an accessibility tree whose elements
+  carry refs like `@e1`, and every later action takes a ref where it takes a
+  selector. Snapshot, then act on a ref; a guessed CSS selector is the usual
+  reason a click lands on nothing.
+- **Gate** — **ask** in `ask` and in `acceptEdits`, `auto` in `full`. It runs a
+  program and reaches the network, so agreeing to file edits does not relax it.
+- **Needs** — nothing (`always`), but the CLI has to be on the Mac:
+  `npm install -g agent-browser && agent-browser install`. When it is missing the
+  pane says so and offers that line to copy; nothing is bundled or installed
+  behind the user's back.
+- **Where** — [browser.ts](../desktop/main/browser.ts) is the only file that
+  knows the CLI exists. It resolves the binary through a login shell, the same
+  way [cli.ts](../desktop/main/cli.ts) finds Claude Code and Codex, names the
+  session `emma-<thread>` so each thread keeps its own cookies and its own place,
+  and spawns argv as an array rather than a shell string. `browserArgv` in
+  [tools.ts](../desktop/main/tools.ts) turns one validated call into that command
+  line; the orderings there are the CLI's rather than the schema's, so `get attr`
+  names the element before the attribute, and `type` with no element becomes
+  `keyboard type`, which sends its keystrokes to whatever has focus.
+
+`open` validates through `externalUrl` rather than `publicUrl`, so unlike
+`web_fetch` this one *can* reach `localhost:3000` — which is the point, since
+checking your own work means opening the dev server. That reach is why it asks:
+`web_fetch` is free in every mode and stays on the public web, while `browser`
+goes through the gate and can then look at the machine it is running on.
+
+The pane is [browser.tsx](../desktop/src/browser.tsx). agent-browser streams the
+viewport as JPEG frames over a WebSocket on loopback; the pane draws them to a
+canvas and sends mouse and keyboard back down the same socket, so taking the
+wheel needs no second browser and no embedded web view.
+
+`eval` runs in the page with the page's own signed-in session, which is more
+reach than `snapshot` and `get` have. It is there for what they cannot read, not
+as the first thing to try.
 
 ## This Mac
 

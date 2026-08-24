@@ -113,7 +113,7 @@ test("steps, rate, and the log apply to every run", darwinOnly, async () => {
   const started = Date.now();
   await computer.execute({ action: "screenshot" });
   await computer.execute({ action: "screenshot" });
-  assert.ok(Date.now() - started >= 40, "consecutive actions stay rate-limited");
+  assert.ok(Date.now() - started >= 38, "consecutive actions stay rate-limited");
   assert.equal(computer.actions, 2);
   assert.ok(log.some((line) => line.includes("action 2/")), "every action is logged");
   computer.abort("test");

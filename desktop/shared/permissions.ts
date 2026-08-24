@@ -26,6 +26,7 @@ export const permissionModeHints: Record<PermissionMode, string> = {
 
 /** Every tool the agent loop can advertise. `computer` and `write_skill` predate this table. */
 export const AGENT_TOOLS = [
+  "browser",
   "cli",
   "cli_runs",
   "computer",
@@ -76,6 +77,7 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   cli: { ask: "ask", acceptEdits: "ask", full: "auto" },
   cli_runs: { ask: "auto", acceptEdits: "auto", full: "auto" },
   computer: { ask: "ask", acceptEdits: "ask", full: "auto" },
+  browser: { ask: "ask", acceptEdits: "ask", full: "auto" },
   agents: { ask: "auto", acceptEdits: "auto", full: "auto" },
   install_mcp: { ask: "ask", acceptEdits: "ask", full: "auto" },
   workflow: { ask: "ask", acceptEdits: "ask", full: "auto" },
@@ -110,6 +112,7 @@ export function toolGate(mode: PermissionMode, tool: string, disabled: readonly 
 export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; group: string }[] = [
   { name: "web_search", label: "Web search", blurb: "Searches the web through the provider configured below.", group: "Web" },
   { name: "save_page", label: "Save page", blurb: "Clips a web page into your knowledge base and files it.", group: "Web" },
+  { name: "browser", label: "Browser", blurb: "Drives a real Chrome browser, mirrored in the browser pane so you can watch it and take the wheel.", group: "Web" },
   { name: "computer", label: "Control this Mac", blurb: "Takes the real pointer and keyboard, and looks at the screen.", group: "This Mac" },
   { name: "cli", label: "Run another CLI", blurb: "Runs Claude Code, Codex, Pi, OpenCode or Cursor in a folder.", group: "This Mac" },
   { name: "cli_runs", label: "CLI runs", blurb: "Lists the installed CLIs and watches the runs already going.", group: "This Mac" },

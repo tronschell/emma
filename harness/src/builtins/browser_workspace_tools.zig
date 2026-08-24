@@ -80,9 +80,22 @@ fn expectDecodeFailure(arguments_json: []const u8) !void {
     }
 }
 
-test "browser workspace rejects missing action native fields and unknown arguments" {
-    try expectDecodeFailure("{\"command\":\"pwd\"}");
-    try expectDecodeFailure("{\"request\":{\"action\":\"exec\",\"command\":\"pwd\"}}");
+fn expectDecodeSuccess(arguments_json: []const u8) !void {
+    const decoded = try registry.tools[0].decode(.{
+        .allocator = std.testing.allocator,
+    }, arguments_json);
+    switch (decoded) {
+        .input => |input| input.deinit(std.testing.allocator),
+        .failure => |body| {
+            defer std.testing.allocator.free(body);
+            return error.TestUnexpectedDecodeFailure;
+        },
+    }
+}
+
+test "browser workspace reads command-only calls and rejects native fields and unknown arguments" {
+    try expectDecodeSuccess("{\"command\":\"pwd\"}");
+    try expectDecodeSuccess("{\"request\":{\"action\":\"exec\",\"command\":\"pwd\"}}");
     try expectDecodeFailure("{\"action\":\"start\",\"command\":\"pwd\"}");
     try expectDecodeFailure("{\"action\":\"exec\",\"command\":\"pwd\",\"cwd\":\"/tmp\"}");
     try expectDecodeFailure("{\"action\":\"exec\",\"command\":\"pwd\",\"profile\":\"clean\"}");

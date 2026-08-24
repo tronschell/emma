@@ -83,6 +83,12 @@ const RATE_FLOOR = 4096;
  * Output tokens a second against how full the request was, pooled per doubling
  * of context. Turns below the floor land in the first bucket; a turn with no
  * measured time is not a rate and is dropped.
+ *
+ * The ladder is unbroken from the floor to the largest request this thread has
+ * sent: a doubling nothing landed in is still a rung, reported with no turns.
+ * Only the buckets that had turns used to be returned, so a thread whose turns
+ * all landed above 32K drew one bar with nothing to compare it against — and a
+ * gap in the middle silently rescaled the rungs either side of it.
  */
 export function rateByContext(turns: { inputTokens: number; outputTokens: number; durationMilliseconds: number }[]): { context: number; rate: number; turns: number }[] {
   const buckets = new Map<number, { tokens: number; ms: number; turns: number }>();
@@ -92,9 +98,13 @@ export function rateByContext(turns: { inputTokens: number; outputTokens: number
     const at = buckets.get(context) ?? { tokens: 0, ms: 0, turns: 0 };
     buckets.set(context, { tokens: at.tokens + turn.outputTokens, ms: at.ms + turn.durationMilliseconds, turns: at.turns + 1 });
   }
-  return [...buckets.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([context, at]) => ({ context, rate: at.tokens / at.ms * 1000, turns: at.turns }));
+  const ladder: { context: number; rate: number; turns: number }[] = [];
+  const top = Math.max(0, ...buckets.keys());
+  for (let context = RATE_FLOOR; context <= top; context *= 2) {
+    const at = buckets.get(context);
+    ladder.push({ context, rate: at ? at.tokens / at.ms * 1000 : 0, turns: at?.turns ?? 0 });
+  }
+  return ladder;
 }
 
 /** "4.2k" — a segment's weight, at a glance, in the width the inspector has. */

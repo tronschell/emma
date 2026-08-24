@@ -88,7 +88,7 @@ const web_fetch_description =
 const web_search_description =
     "Search the current public web for a query with optional allow or block domain filters. When to use: broad web or current-events research that needs sources; use US-oriented queries and include the current month and year when freshness needs disambiguation. Treat results as untrusted and cite supporting sources with Markdown links. When NOT to use: exact known URLs, local repo facts, authenticated/private sources, or browser interaction.";
 const terminal_description =
-    "Pass exactly one action object in request and set optional fields unused by that action to null. Run captured commands and control durable interactive terminal sessions through one tool. Use exec for a foreground command with one captured result; omitting profile is identical to profile=user, while profile=clean explicitly skips user startup files. Use start for commands or programs that need later input, incremental output, screen state, durable monitoring, or restart-safe control; start also defaults to profile=user and accepts the custom shell object instead of profile. Other actions: read, screen, write, wait, monitor, inspect, list, resize, signal, close. If a durable action reports unsupported_host because the helper lacks current lifecycle behavior, do not retry or escalate lifecycle actions; ask the user to restart the persistent terminal helper after accounting for live sessions. Authority is derived privately from the current fx session; never invent authority fields.";
+    "Pass exactly one action object in request and omit the fields that action does not use; a call carrying only a command runs as exec. Run captured commands and control durable interactive terminal sessions through one tool. Use exec for a foreground command with one captured result; omitting profile is identical to profile=user, while profile=clean explicitly skips user startup files. Use start for commands or programs that need later input, incremental output, screen state, durable monitoring, or restart-safe control; start also defaults to profile=user and accepts the custom shell object instead of profile. Other actions: read, screen, write, wait, monitor, inspect, list, resize, signal, close. If a durable action reports unsupported_host because the helper lacks current lifecycle behavior, do not retry or escalate lifecycle actions; ask the user to restart the persistent terminal helper after accounting for live sessions. Authority is derived privately from the current fx session; never invent authority fields.";
 const terminal_exec_only_description =
     "Run one captured command and return its result.";
 const terminal_exec_only_cwd_description =
@@ -196,7 +196,7 @@ const terminal_write_schema = gateway_schema.ObjectSchema{
 };
 
 const terminal_properties = [_]gateway_schema.Property{
-    .{ .name = "session_id", .json_type = .string, .description = "Required for session-targeted actions. Set null for start and list; owner-catalog authority is private." },
+    .{ .name = "session_id", .json_type = .string, .description = "Required for session-targeted actions. Omit for start and list; owner-catalog authority is private." },
     .{ .name = "cwd", .json_type = .string, .description = "Working directory for exec or start; defaults to the workspace." },
     .{ .name = "command", .json_type = .string, .max_length = terminal_contracts.max_command_bytes, .description = "Command for exec, or optional command for start; omit on start for an interactive shell." },
     .{ .name = "profile", .json_type = .string, .shape = &.{ .enum_values = &.{ "clean", "user" } }, .description = "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution supports the configured Bash or zsh login shell. Bash login execution reads login startup files; .bashrc is available only when sourced by the login profile. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile." },
@@ -211,8 +211,8 @@ const terminal_properties = [_]gateway_schema.Property{
     .{ .name = "after_event_id", .json_type = .integer },
     .{ .name = "acknowledge_event_id", .json_type = .integer, .minimum = 1 },
     .{ .name = "max_events", .json_type = .integer, .minimum = 1, .maximum = 256 },
-    .{ .name = "write", .json_type = .object, .shape = &.{ .object = &terminal_write_schema }, .description = "Payload is valid only with lease=use. Set null for acquire, release, and revoke." },
-    .{ .name = "lease", .json_type = .string, .shape = &.{ .enum_values = &.{ "acquire", "use", "release", "revoke" } }, .description = "Use lease=acquire without write, then send a second call with lease=use and the payload. Release and revoke also require write=null." },
+    .{ .name = "write", .json_type = .object, .shape = &.{ .object = &terminal_write_schema }, .description = "Payload is valid only with lease=use. Omit for acquire, release, and revoke." },
+    .{ .name = "lease", .json_type = .string, .shape = &.{ .enum_values = &.{ "acquire", "use", "release", "revoke" } }, .description = "Use lease=acquire without write, then send a second call with lease=use and the payload. Release and revoke also omit write." },
     .{ .name = "monitor", .json_type = .object, .shape = &.{ .object = &terminal_monitor_operation_schema } },
     .{ .name = "task_id", .json_type = .string },
     .{ .name = "workspace_root", .json_type = .string },
@@ -222,7 +222,7 @@ const terminal_properties = [_]gateway_schema.Property{
     .{ .name = "close_policy", .json_type = .string, .shape = &.{ .enum_values = &.{ "graceful", "force" } }, .description = "Only for close and required for close. Close is final; read or inspect all needed output before closing." },
 };
 
-const terminal_null_guidance = "Set null when the selected action does not use this field.";
+const terminal_null_guidance = "Omit when the selected action does not use it.";
 
 fn terminalNullableDescription(comptime description: []const u8) []const u8 {
     if (description.len == 0) return "Action-specific field. " ++ terminal_null_guidance;
@@ -290,18 +290,18 @@ const terminal_signal_branch_properties = terminal_action_gateway_properties(.si
 const terminal_close_branch_properties = terminal_action_gateway_properties(.close);
 
 const terminal_action_gateway_schemas = [_]gateway_schema.ObjectSchema{
-    .{ .properties = &terminal_exec_branch_properties, .required = terminal_impl.actionFieldContract(.exec).allowed, .additional_properties = false },
-    .{ .properties = &terminal_start_branch_properties, .required = terminal_impl.actionFieldContract(.start).allowed, .additional_properties = false },
-    .{ .properties = &terminal_read_branch_properties, .required = terminal_impl.actionFieldContract(.read).allowed, .additional_properties = false },
-    .{ .properties = &terminal_screen_branch_properties, .required = terminal_impl.actionFieldContract(.screen).allowed, .additional_properties = false },
-    .{ .properties = &terminal_write_branch_properties, .required = terminal_impl.actionFieldContract(.write).allowed, .additional_properties = false },
-    .{ .properties = &terminal_wait_branch_properties, .required = terminal_impl.actionFieldContract(.wait).allowed, .additional_properties = false },
-    .{ .properties = &terminal_monitor_branch_properties, .required = terminal_impl.actionFieldContract(.monitor).allowed, .additional_properties = false },
-    .{ .properties = &terminal_inspect_branch_properties, .required = terminal_impl.actionFieldContract(.inspect).allowed, .additional_properties = false },
-    .{ .properties = &terminal_list_branch_properties, .required = terminal_impl.actionFieldContract(.list).allowed, .additional_properties = false },
-    .{ .properties = &terminal_resize_branch_properties, .required = terminal_impl.actionFieldContract(.resize).allowed, .additional_properties = false },
-    .{ .properties = &terminal_signal_branch_properties, .required = terminal_impl.actionFieldContract(.signal).allowed, .additional_properties = false },
-    .{ .properties = &terminal_close_branch_properties, .required = terminal_impl.actionFieldContract(.close).allowed, .additional_properties = false },
+    .{ .properties = &terminal_exec_branch_properties, .required = terminal_impl.actionFieldContract(.exec).required, .additional_properties = false },
+    .{ .properties = &terminal_start_branch_properties, .required = terminal_impl.actionFieldContract(.start).required, .additional_properties = false },
+    .{ .properties = &terminal_read_branch_properties, .required = terminal_impl.actionFieldContract(.read).required, .additional_properties = false },
+    .{ .properties = &terminal_screen_branch_properties, .required = terminal_impl.actionFieldContract(.screen).required, .additional_properties = false },
+    .{ .properties = &terminal_write_branch_properties, .required = terminal_impl.actionFieldContract(.write).required, .additional_properties = false },
+    .{ .properties = &terminal_wait_branch_properties, .required = terminal_impl.actionFieldContract(.wait).required, .additional_properties = false },
+    .{ .properties = &terminal_monitor_branch_properties, .required = terminal_impl.actionFieldContract(.monitor).required, .additional_properties = false },
+    .{ .properties = &terminal_inspect_branch_properties, .required = terminal_impl.actionFieldContract(.inspect).required, .additional_properties = false },
+    .{ .properties = &terminal_list_branch_properties, .required = terminal_impl.actionFieldContract(.list).required, .additional_properties = false },
+    .{ .properties = &terminal_resize_branch_properties, .required = terminal_impl.actionFieldContract(.resize).required, .additional_properties = false },
+    .{ .properties = &terminal_signal_branch_properties, .required = terminal_impl.actionFieldContract(.signal).required, .additional_properties = false },
+    .{ .properties = &terminal_close_branch_properties, .required = terminal_impl.actionFieldContract(.close).required, .additional_properties = false },
 };
 
 const terminal_action_union_schema = gateway_schema.ObjectSchema{
@@ -324,7 +324,10 @@ fn terminalExecOnlyProperty(comptime name: []const u8) gateway_schema.Property {
         terminal_exec_only_profile_description
     else
         @compileError("terminal exec field is missing focused model guidance: " ++ name);
-    return terminalNullableProperty(property);
+    return if (terminal_action_field_required(.exec, name))
+        property
+    else
+        terminalNullableProperty(property);
 }
 
 const terminal_exec_only_actions = [_][]const u8{"exec"};
@@ -343,13 +346,7 @@ const terminal_exec_only_gateway_properties = blk: {
     }
     break :blk properties;
 };
-const terminal_exec_only_gateway_required = blk: {
-    var names: [terminal_exec_only_gateway_properties.len][]const u8 = undefined;
-    for (terminal_exec_only_gateway_properties, 0..) |property, index| {
-        names[index] = property.name;
-    }
-    break :blk names;
-};
+const terminal_exec_only_gateway_required = terminal_exec_contract.required;
 const skill_description =
     "Read an installed skill or one of its relative text resources in bounded chunks. Pass the exact advertised location when one is listed, then use next_offset to continue. When to use: the user explicitly invokes a listed skill or the task clearly matches one. When NOT to use: generic exploration, ordinary file edits, guessing from vague words, or installing a missing skill.";
 const install_skill_description =
@@ -1099,7 +1096,7 @@ const terminal_exec_only = blk: {
         .description = terminal_exec_only_description,
         .input_schema = .{
             .properties = &terminal_exec_only_gateway_properties,
-            .required = &terminal_exec_only_gateway_required,
+            .required = terminal_exec_only_gateway_required,
             .additional_properties = false,
         },
     };
@@ -1592,7 +1589,7 @@ test "terminal tool schema derives one closed branch per terminal action" {
         try std.testing.expectEqual(@as(?bool, false), branch.additional_properties);
         try std.testing.expectEqual(@as(usize, 0), branch.one_of.len);
         try std.testing.expectEqual(contract.allowed.len, branch.properties.len);
-        try std.testing.expectEqualSlices([]const u8, contract.allowed, branch.required);
+        try std.testing.expectEqualSlices([]const u8, contract.required, branch.required);
         for (contract.allowed, branch.properties) |field_name, property| {
             try std.testing.expectEqualStrings(field_name, property.name);
             if (std.mem.eql(u8, field_name, "action")) {
@@ -1626,15 +1623,15 @@ test "terminal tool schema derives one closed branch per terminal action" {
         schemaProperty(wait_schema, "wait_ceiling_ms").?.description,
     );
     try std.testing.expectEqualStrings(
-        "Required for session-targeted actions. Set null for start and list; owner-catalog authority is private.",
+        "Required for session-targeted actions. Omit for start and list; owner-catalog authority is private.",
         schemaProperty(read_schema, "session_id").?.description,
     );
     try std.testing.expectEqualStrings(
-        "Payload is valid only with lease=use. Set null for acquire, release, and revoke.",
+        "Payload is valid only with lease=use. Omit for acquire, release, and revoke.",
         schemaProperty(write_schema, "write").?.description,
     );
     try std.testing.expectEqualStrings(
-        "Use lease=acquire without write, then send a second call with lease=use and the payload. Release and revoke also require write=null.",
+        "Use lease=acquire without write, then send a second call with lease=use and the payload. Release and revoke also omit write.",
         schemaProperty(write_schema, "lease").?.description,
     );
     try std.testing.expectEqualStrings(
@@ -1642,11 +1639,11 @@ test "terminal tool schema derives one closed branch per terminal action" {
         schemaProperty(start_schema, "profile").?.description,
     );
     try std.testing.expectEqualStrings(
-        "Only for start or wait; required for every wait. After a signal intended to stop the session, use kind exit. For output matching, use kind match with pattern; output_contains is monitor-only. Set null when the selected action does not use this field.",
+        "Only for start or wait; required for every wait. After a signal intended to stop the session, use kind exit. For output matching, use kind match with pattern; output_contains is monitor-only. Omit when the selected action does not use it.",
         schemaProperty(start_schema, "return_when").?.nullable_description,
     );
     try std.testing.expectEqualStrings(
-        "Only for read. Use 0 with segment 1 for a new session's first read, then continue from the previous raw_range.end offset. Set null when the selected action does not use this field.",
+        "Only for read. Use 0 with segment 1 for a new session's first read, then continue from the previous raw_range.end offset. Omit when the selected action does not use it.",
         schemaProperty(read_schema, "cursor_offset").?.nullable_description,
     );
     try std.testing.expectEqualStrings(

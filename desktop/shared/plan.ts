@@ -195,7 +195,7 @@ export type PlanSpot = { x: number; y: number; wave: number };
 
 const PULL = 0.4;
 
-export function planLayout(waves: string[][], steps: PlanStep[] = []): { spots: Map<string, PlanSpot>; height: number } {
+export function planLayout(waves: string[][], steps: PlanStep[] = [], row = PLAN_ROW): { spots: Map<string, PlanSpot>; height: number } {
   const spots = new Map<string, PlanSpot>();
   const needsOf = new Map(steps.map((step) => [step.id, step.needs]));
   const branch = (id: string) => steps.filter((step) => step.needs.length === 1 && step.needs[0] === id).map((step) => step.id);
@@ -213,7 +213,7 @@ export function planLayout(waves: string[][], steps: PlanStep[] = []): { spots: 
       const line = under.slice(at, at + LANE).map((item) => item.id);
       line.forEach((id, i) => spots.set(id, { x: ((i + 1) / (line.length + 1)) * 100, y, wave: index }));
       lines.push(line);
-      y += PLAN_ROW;
+      y += row;
     }
   });
   for (const line of lines.reverse()) {
@@ -224,7 +224,7 @@ export function planLayout(waves: string[][], steps: PlanStep[] = []): { spots: 
       spots.set(id, { ...spots.get(id)!, x: Math.min(Math.max(mid, (i + 1 - PULL) * slot), (i + 1 + PULL) * slot) });
     });
   }
-  return { spots, height: spots.size ? y - PLAN_ROW + PLAN_PAD : 0 };
+  return { spots, height: spots.size ? y - row + PLAN_PAD : 0 };
 }
 
 /** Written for whoever is fixing them: the model reads them back as a tool result. */

@@ -39,6 +39,7 @@ const skill_runtime = @import("../core/skills/skill_runtime.zig");
 const skill_invocation = @import("../core/skills/skill_invocation.zig");
 const context_contract = @import("../core/workspace/context_contract.zig");
 const context_experiments = @import("../core/agent/runtime/context_experiments.zig");
+const image_attachments = @import("../core/images/image_attachments.zig");
 const config_runtime = @import("../core/config/config_runtime.zig");
 const model_capabilities = @import("../core/config/model_capabilities.zig");
 const mode_registry = @import("../core/modes/mode_registry.zig");
@@ -661,6 +662,27 @@ fn appendMarkdownLinkClose(alloc: Allocator, out: *std.ArrayList(u8), uri: []con
 
 /// Runs a prompt turn under the mode and permission policy captured at
 /// dispatch. Mid-turn session/set_mode changes only affect later prompts.
+fn captureSessionImageSnapshots(
+    alloc: Allocator,
+    session: *server.ActiveSessionState,
+    images: []types.ImageAttachment,
+) !void {
+    const durable = session.store != null and session.writable != null;
+    const snapshot_dir = try session_store.imageSnapshotStorageDir(
+        alloc,
+        if (durable) session.store.?.sessions_dir else null,
+        if (durable) session.writable.?.active_id else null,
+        &session.image_snapshot_temp_dir,
+    );
+    defer alloc.free(snapshot_dir);
+    try image_attachments.captureImageSnapshots(
+        alloc,
+        images,
+        snapshot_dir,
+        .{ .cancel_flag = &session.cancel_flag },
+    );
+}
+
 pub fn handlePrompt(
     state: *server.ServerState,
     alloc: Allocator,
@@ -690,7 +712,19 @@ pub fn handlePrompt(
         error.UnsupportedPromptImage => return .{
             .rpc_error = .{
                 .code = ErrorCode.invalid_params,
-                .message = "Image prompt blocks are not supported",
+                .message = "Image prompt blocks need a local file:// uri",
+            },
+        },
+        error.UnreadablePromptImage => return .{
+            .rpc_error = .{
+                .code = ErrorCode.invalid_params,
+                .message = "That image could not be read as PNG, JPEG, GIF or WebP",
+            },
+        },
+        error.TooManyPromptImages => return .{
+            .rpc_error = .{
+                .code = ErrorCode.invalid_params,
+                .message = "A prompt carries at most 8 images",
             },
         },
         else => return err,
@@ -797,7 +831,14 @@ pub fn handlePrompt(
     );
     defer alloc.free(root_user_intent_context);
 
-    const current_images = if (recovery_checkpoint) |checkpoint| checkpoint.user.images else &.{};
+    const current_images = if (recovery_checkpoint) |checkpoint| checkpoint.user.images else stamp: {
+        const carried = try session.session_rt.snapshotImageCatalog(alloc, &.{});
+        defer types.freeImageAttachmentSlice(alloc, carried);
+        const bounds = try image_attachments.calculate_next_image_id(carried);
+        for (prompt_input.images, 0..) |*image, offset| image.id = bounds.next_id + offset;
+        if (prompt_input.images.len > 0) try captureSessionImageSnapshots(alloc, session, prompt_input.images);
+        break :stamp prompt_input.images;
+    };
     const authorized_image_catalog = try session.session_rt.snapshotImageCatalog(alloc, current_images);
     defer types.freeImageAttachmentSlice(alloc, authorized_image_catalog);
 
@@ -1057,12 +1098,15 @@ fn buildAgentConfig(state: *server.ServerState, session: *server.ActiveSessionSt
     };
 }
 
+const max_prompt_images: usize = 8;
+
 const ParsedPromptInput = struct {
     text: []u8,
     continue_recovery: bool = false,
     targets: []context_contract.ApplicableTarget = &.{},
     omissions: []context_contract.ContextOmissionInput = &.{},
     omission_summary: ?context_contract.ContextOmissionSummary = null,
+    images: []types.ImageAttachment = &.{},
 
     fn deinit(self: *ParsedPromptInput, alloc: Allocator) void {
         alloc.free(self.text);
@@ -1070,6 +1114,7 @@ const ParsedPromptInput = struct {
         if (self.targets.len > 0) alloc.free(self.targets);
         for (self.omissions) |omission| alloc.free(@constCast(omission.source));
         if (self.omissions.len > 0) alloc.free(self.omissions);
+        types.freeImageAttachmentSlice(alloc, self.images);
         self.* = undefined;
     }
 };
@@ -1107,6 +1152,11 @@ fn parsePromptInput(alloc: Allocator, params_json: []const u8) !ParsedPromptInpu
         for (omissions.items) |omission| alloc.free(@constCast(omission.source));
         omissions.deinit(alloc);
     }
+    var images: std.ArrayList(types.ImageAttachment) = .empty;
+    defer {
+        for (images.items) |image| types.freeImageAttachment(alloc, image);
+        images.deinit(alloc);
+    }
 
     for (prompt_arr.array.items) |block| {
         if (block != .object) continue;
@@ -1121,7 +1171,17 @@ fn parsePromptInput(alloc: Allocator, params_json: []const u8) !ParsedPromptInpu
                 }
             }
         } else if (std.mem.eql(u8, block_type.string, "image")) {
-            return error.UnsupportedPromptImage;
+            const uri = if (block.object.get("uri")) |uri_value|
+                if (uri_value == .string) uri_value.string else ""
+            else
+                "";
+            const path = (try localFileTargetPath(alloc, uri)) orelse return error.UnsupportedPromptImage;
+            defer alloc.free(path);
+            if (images.items.len >= max_prompt_images) return error.TooManyPromptImages;
+            const image = image_attachments.loadImageAttachment(alloc, path) catch
+                return error.UnreadablePromptImage;
+            errdefer types.freeImageAttachment(alloc, image);
+            try images.append(alloc, image);
         } else if (std.mem.eql(u8, block_type.string, "resource")) {
             if (block.object.get("resource")) |resource| {
                 if (resource == .object) {
@@ -1179,6 +1239,7 @@ fn parsePromptInput(alloc: Allocator, params_json: []const u8) !ParsedPromptInpu
     result.targets = try targets.toOwnedSlice(alloc);
     result.omissions = try omissions.toOwnedSlice(alloc);
     result.omission_summary = omission_summary.finish();
+    result.images = try images.toOwnedSlice(alloc);
     return result;
 }
 
@@ -3243,10 +3304,37 @@ test "parsePromptInput accepts explicit recovery continuation metadata" {
     try std.testing.expect(result.continue_recovery);
 }
 
-test "parsePromptInput rejects image blocks" {
+test "parsePromptInput rejects image blocks without a local file uri" {
     const alloc = std.testing.allocator;
     const params = "{\"sessionId\":\"s1\",\"prompt\":[{\"type\":\"text\",\"text\":\"Only text\"},{\"type\":\"image\",\"data\":\"aGVsbG8=\",\"mimeType\":\"image/png\"}]}";
     try std.testing.expectError(error.UnsupportedPromptImage, parsePromptInput(alloc, params));
+}
+
+test "parsePromptInput carries local image blocks as attachments" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(std.testing.io, "shot.png", .{});
+    try file.writeStreamingAll(std.testing.io, "\x89PNG\r\n\x1a\nrest");
+    file.close(std.testing.io);
+    const expected_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "shot.png");
+    defer alloc.free(expected_path);
+    const params = try std.fmt.allocPrint(
+        alloc,
+        "{{\"sessionId\":\"s1\",\"prompt\":[" ++
+            "{{\"type\":\"text\",\"text\":\"look\"}}," ++
+            "{{\"type\":\"image\",\"mimeType\":\"image/png\",\"uri\":\"file://{s}\"}}]}}",
+        .{expected_path},
+    );
+    defer alloc.free(params);
+
+    var parsed = try parsePromptInput(alloc, params);
+    defer parsed.deinit(alloc);
+
+    try std.testing.expectEqualStrings("look", parsed.text);
+    try std.testing.expectEqual(@as(usize, 1), parsed.images.len);
+    try std.testing.expectEqualStrings(expected_path, parsed.images[0].path);
+    try std.testing.expectEqualStrings("image/png", parsed.images[0].media_type);
 }
 
 test "parsePromptInput preserves resource text and accepts only local absolute file targets" {
