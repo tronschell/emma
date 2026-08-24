@@ -126,7 +126,7 @@ test("picking a catalogued model is picking a route, and only a stranger needs t
 test("auto gates exactly what ask gates, so the verifier is asked the same questions", () => {
   assert.equal(toolGate("auto", "run_tool"), "ask");
   assert.equal(toolGate("auto", "computer"), "ask");
-  assert.equal(toolGate("auto", "save_page"), "auto");
+  assert.equal(toolGate("auto", "keep"), "auto");
   // Auto is not a way to reach a tool the mode table hides from everyone.
   assert.equal(toolGate("auto", "rm_rf"), "hidden");
 });

@@ -1,35 +1,17 @@
 import { Buffer } from "node:buffer";
 import { MAX_ATTACHED_CONTEXT_CHARS } from "../shared/folders";
+import { isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
 
 const MAX_HOST_REQUEST_BYTES = 128 * 1024;
 export const MAX_ANNOTATION_INPUT_CHARS = 16 * 1024 * 1024;
-// Keep the encoded image below the host's 128 KiB NDJSON request ceiling.
 export const MAX_SCREEN_CONTEXT_CHARS = 96 * 1024;
-export const MAX_ARTIFACT_EDIT_CHARS = 96 * 1024;
-// A clipped page carries several pictures in one request, alongside its text.
-export const MAX_CAPTURE_IMAGES_CHARS = 72 * 1024;
 
 export const methods = [
   "snapshot",
   "createThread",
-  "createKnowledgeBase",
-  "selectThreadKnowledgeBase",
-  "selectThreadSources",
   "setThreadArchived",
   "renameThread",
-  "addKnowledgeBaseCategory",
-  "removeKnowledgeBaseCategory",
-  "updatePage",
-  "updatePageDocument",
-  "captureToKnowledge",
-  "analyzePage",
-  "listPageVersions",
-  "restorePageVersion",
-  "chatAboutPage",
-  "revisePageDocument",
-  "readPageAsset",
   "sendMessage",
-  "saveToKnowledge",
   "saveScheduledJob",
   "deleteScheduledJob",
   "runScheduledJob",
@@ -52,24 +34,9 @@ export type Request = { method: Method; params: Record<string, string> };
 const fields: Record<Method, readonly string[]> = {
   snapshot: [],
   createThread: [],
-  createKnowledgeBase: ["name"],
-  selectThreadKnowledgeBase: ["threadId", "knowledgeBaseId"],
-  selectThreadSources: ["threadId", "knowledgeBaseIds"],
   setThreadArchived: ["threadId", "archived"],
   renameThread: ["threadId", "title"],
-  addKnowledgeBaseCategory: ["knowledgeBaseId", "category"],
-  removeKnowledgeBaseCategory: ["knowledgeBaseId", "category"],
-  updatePage: ["pageId", "title", "category", "summary", "body"],
-  updatePageDocument: ["pageId", "title", "category", "summary", "body", "artifacts"],
-  captureToKnowledge: ["knowledgeBaseId", "category", "title", "text"],
-  analyzePage: ["pageId"],
-  listPageVersions: ["pageId"],
-  restorePageVersion: ["pageId", "name"],
-  chatAboutPage: ["pageId", "content"],
-  revisePageDocument: ["pageId", "instruction"],
-  readPageAsset: ["name"],
   sendMessage: ["threadId", "content"],
-  saveToKnowledge: ["threadId"],
   saveScheduledJob: ["title", "schedule", "prompt", "sourceDomains", "permissionMode"],
   deleteScheduledJob: ["jobId"],
   runScheduledJob: ["jobId"],
@@ -81,7 +48,6 @@ const fields: Record<Method, readonly string[]> = {
   recordResearchIteration: ["jobId", "outcome", "durationMilliseconds", "inputTokens", "outputTokens", "microDollars"],
   listOpenRouterModels: [],
   selectOpenRouterModel: ["modelId"],
-  // Quick Ask pins its own thread here when Settings → Notch decouples it from the picker.
   setThreadModel: ["threadId", "modelId"],
   selectLocalModel: ["baseUrl", "modelId", "credentialEnv"],
   selectFallbackModel: [],
@@ -91,16 +57,8 @@ const optionalFields: Partial<Record<Method, readonly string[]>> = {
   sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages"],
   selectOpenRouterModel: ["effort"],
   setThreadModel: ["effort"],
-  // `pageId` re-reads a page the base already keeps instead of shelving a second copy.
-  captureToKnowledge: ["sourceUrl", "sourceApplication", "image", "images", "pageId"],
-  analyzePage: ["keepCategory"],
-  // Absent creates rather than rewrites, and absent nodes means the task is one
-  // step on its prompt. Neither may be sent blank: blank is not a value here.
   saveScheduledJob: ["jobId", "nodes"],
   runScheduledJob: ["variables"],
-  // Absent creates rather than rewrites, and a grep job has no rubric. A crashed
-  // iteration has no value and a turn that changed nothing has no commit, so both
-  // are omitted rather than sent blank.
   saveResearchJob: ["jobId", "metricPrompt", "prompt"],
   setResearchJobStatus: ["note"],
   recordResearchIteration: ["value", "note", "commit"],
@@ -125,11 +83,9 @@ export function validateRequest(value: unknown): Request {
   }
   for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
-    // Blank is a value, not an omission: no credential, no effort override, and — on a
-    // thread pin — the app's own model instead of one of the thread's.
     const optionalCredential = (method === "selectLocalModel" && key === "credentialEnv") || key === "effort" || (method === "setThreadModel" && key === "modelId");
-    const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "artifacts" ? MAX_ARTIFACT_EDIT_CHARS : key === "image" ? MAX_SCREEN_CONTEXT_CHARS : key === "images" ? MAX_CAPTURE_IMAGES_CHARS : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
-    if (text.length > maxLength || (!["body", "content"].includes(key) && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
+    const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
+    if (text.length > maxLength || (key !== "content" && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {
     throw new Error("Request is too large");
@@ -137,10 +93,6 @@ export function validateRequest(value: unknown): Request {
   return { method, params: params as Record<string, string> };
 }
 
-/* A command the user pressed play on, next to a fence Emma printed. The click is
-   the permission — the same rule Stop follows — so this only bounds what crosses
-   the bridge: one command, bounded in length, and at most one connected folder
-   to run it in. */
 export function runCommandRequest(value: unknown): { command: string; folderId?: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Command is invalid");
   const candidate = value as { command?: unknown; folderId?: unknown };
@@ -152,10 +104,56 @@ export function runCommandRequest(value: unknown): { command: string; folderId?:
   return { command, folderId };
 }
 
-export function validJpegDataUrl(value: unknown, maxChars = MAX_ANNOTATION_INPUT_CHARS): value is string {
-  if (typeof value !== "string" || value.length > maxChars || !value.startsWith("data:image/jpeg;base64,")) return false;
-  const encoded = value.slice("data:image/jpeg;base64,".length);
+function bounded(value: unknown, bytes: number, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > bytes) throw new Error(label);
+  return value.trim() ? value : undefined;
+}
+
+export function vaultRequest(value: unknown): { kind: VaultKind; name: string; folder?: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Vault choice is invalid");
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind !== "obsidian" && candidate.kind !== "folder") throw new Error("Vault choice is invalid");
+  const name = candidate.name === undefined ? "" : bounded(candidate.name, 256, "Vault choice is invalid") ?? "";
+  if (candidate.kind === "obsidian" && !name) throw new Error("Vault choice is invalid");
+  if (candidate.folder !== undefined && !validVaultFolder(candidate.folder)) throw new Error("Vault folder is invalid");
+  return { kind: candidate.kind, name, ...(candidate.folder === undefined ? {} : { folder: candidate.folder as string }) };
+}
+
+export function keepRequest(value: unknown): KeepRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Keep request is invalid");
+  const candidate = value as Record<string, unknown>;
+  if (!isKeepKind(candidate.kind)) throw new Error("Keep request is invalid");
+  const sourceUrl = bounded(candidate.sourceUrl, 2048, "Keep source is invalid");
+  if (sourceUrl && !externalUrl(sourceUrl)) throw new Error("Keep source is invalid");
+  if (candidate.image !== undefined && !validImageDataUrl(candidate.image, MAX_ATTACHMENT_BYTES)) throw new Error("Keep image is invalid");
+  const request: KeepRequest = { kind: candidate.kind };
+  const title = bounded(candidate.title, MAX_TITLE_BYTES, "Keep title is invalid");
+  const text = bounded(candidate.text, MAX_NOTE_BYTES, "Keep text is invalid");
+  const sourceApplication = bounded(candidate.sourceApplication, 256, "Keep source is invalid");
+  if (title) request.title = title;
+  if (text) request.text = text;
+  if (sourceUrl) request.sourceUrl = sourceUrl;
+  if (sourceApplication) request.sourceApplication = sourceApplication;
+  if (candidate.image !== undefined) request.image = candidate.image as string;
+  if (request.kind !== "page" && !request.text && !request.image) throw new Error("Keep request is empty");
+  return request;
+}
+
+function dataUrl(value: unknown, maxChars: number, types: RegExp): boolean {
+  if (typeof value !== "string" || value.length > maxChars) return false;
+  const prefix = types.exec(value);
+  if (!prefix) return false;
+  const encoded = value.slice(prefix[0].length);
   return encoded.length > 0 && encoded.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(encoded);
+}
+
+export function validJpegDataUrl(value: unknown, maxChars = MAX_ANNOTATION_INPUT_CHARS): value is string {
+  return dataUrl(value, maxChars, /^data:image\/jpeg;base64,/);
+}
+
+export function validImageDataUrl(value: unknown, maxChars: number): value is string {
+  return dataUrl(value, maxChars, /^data:image\/(?:jpeg|png);base64,/);
 }
 
 export function externalUrl(value: string): URL | null {
@@ -167,13 +165,6 @@ export function externalUrl(value: string): URL | null {
   }
 }
 
-/**
- * The addresses a page on the public web never has: loopback, the link-local
- * metadata range, and the private LAN blocks. A person pasting a link may well
- * mean `localhost:3000`, so `externalUrl` still allows it — this is the stricter
- * check for URLs the *model* chose, where "fetch this page" must not reach the
- * user's own router, Ollama, or dev server.
- */
 export function publicUrl(value: string): URL | null {
   const url = externalUrl(value);
   if (!url) return null;
@@ -189,7 +180,6 @@ export function publicUrl(value: string): URL | null {
     if (a === 100 && b >= 64 && b <= 127) return null;
     if (a > 255 || b > 255) return null;
   } else if (host.includes(":")) {
-    // IPv6 literal: loopback, unique-local (fc00::/7) and link-local (fe80::/10).
     if (host === "::1" || host === "::" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return null;
   }
   return url;
@@ -210,33 +200,20 @@ function decodeEntities(value: string): string {
   });
 }
 
-/** One attribute off one tag, in whichever of the three HTML quotings the page used. */
 export function attribute(tag: string, name: string): string | undefined {
   const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
   return match ? match[1] ?? match[2] ?? match[3] : undefined;
 }
 
-/** `og:image` must not answer with `og:image:width`, so the name has to end where it ends. */
 export function metaContent(html: string, name: string): string {
   const tag = new RegExp(`<meta\\b[^>]*\\b(?:property|name)\\s*=\\s*["']?${name}(?=["'\\s>])[^>]*>`, "i").exec(html)?.[0];
   return (tag && attribute(tag, "content")) || "";
 }
 
-/**
- * The page's own content, not the site's furniture. A mega-menu is markup like any
- * other, so stripping tags alone files forty lines of link text — "Solutions BY
- * COMPANY SIZE Enterprises" — as the thing the user wanted to remember.
- *
- * ponytail: `<main>` plus a boilerplate blacklist, not a readability score. Nested
- * same-name elements end their match early; what survives is still tag-stripped.
- * Swap in a real extractor if the wrong half keeps coming through.
- */
 function articleHtml(html: string): string {
   const body = /<body\b[^>]*>([\s\S]*)<\/body>/i.exec(html)?.[1] ?? html;
   const article = /<main\b[^>]*>([\s\S]*)<\/main>/i.exec(body)?.[1]
     ?? [...body.matchAll(/<article\b[^>]*>([\s\S]*?)<\/article>/gi)].map((match) => match[1]).sort((left, right) => right.length - left.length)[0];
-  // An article carries its own header and footer — the headline and the byline live
-  // there. Only the whole-page fallback is boilerplate all the way down.
   return article && article.length > 500
     ? article.replace(/<(nav|aside)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
     : body.replace(/<(nav|header|footer|aside)\b[^>]*>[\s\S]*?<\/\1>/gi, " ");
@@ -249,18 +226,12 @@ export function readablePage(html: string): { title: string; text: string } {
     .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1>/gi, " ")
     .replace(/<\/(p|div|section|article|li|ul|ol|h[1-6]|tr|table|blockquote|pre)>/gi, "\n\n")
     .replace(/<br\s*\/?>/gi, "\n")
-    // A tag ends at the first `>` outside its attribute values. Hydration markup
-    // parks a whole JSON blob in `data-props="…"`, and `>` is legal unescaped in
-    // there — stopping at it spills the blob into the page text.
     .replace(/<[a-z!/][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/gi, " ")
     .split("\n")
     .map((line) => decodeEntities(line).replace(/[ \t\u00a0]+/g, " ").trim())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  // A page whose body is written by script — a video, a feed — leaves nothing to
-  // strip. Its own description is what it would have shown, so that is what a
-  // YouTube link saves instead of an empty page.
   const description = decodeEntities(metaContent(html, "og:description") || metaContent(html, "description")).trim();
   const body = text.length >= 400 || !description ? text : `${description}\n\n${text}`.trim();
   return { title: decodeEntities(title).replace(/\s+/g, " ").trim().slice(0, 256), text: body.slice(0, MAX_FETCHED_TEXT_CHARS) };

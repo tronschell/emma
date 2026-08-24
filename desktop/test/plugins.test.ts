@@ -6,7 +6,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { hookRuns, matchesPluginQuery, parseHooksFile, parseHostedApps, parseMarketplace, parseMarketplaceSource, parsePluginInterface, parsePluginManifest, pluginCategories, type HookEvent } from "../shared/plugins";
-import { addMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
+import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
 import { mirrorSkillsToHarness, parseMcpConfig } from "../main/capabilities";
 
 test("a marketplace source is a GitHub repo, a Git URL, or a folder — and nothing else", () => {
@@ -229,6 +229,25 @@ async function seedMarketplace(root: string) {
     plugins: [{ name: "ship-it", description: "Ships things.", category: "Developer tools", source: "./plugins/ship-it" }],
   }));
 }
+
+test("the marketplace Emma ships with is added once, and stays gone once it is removed", async () => {
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-plugins-")));
+  try {
+    const userData = path.join(home, "user-data");
+    const shared = path.join(home, "acme");
+    await mkdir(userData, { recursive: true });
+    await seedMarketplace(shared);
+
+    const first = await ensureDefaultMarketplace(userData, shared);
+    assert.deepEqual(first.marketplaces.map((entry) => entry.id), ["acme"]);
+    assert.deepEqual((await ensureDefaultMarketplace(userData, shared)).marketplaces.map((entry) => entry.id), ["acme"]);
+
+    await removeMarketplace(userData, "acme");
+    assert.deepEqual((await ensureDefaultMarketplace(userData, shared)).marketplaces, []);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 test("adding a local marketplace, installing from it, and removing it moves the plugin's skills and servers in and out of Emma's capabilities", async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-plugins-")));

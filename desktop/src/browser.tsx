@@ -1,158 +1,144 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
-import type { BrowserStatus } from "./types";
-import { parseStreamMessage } from "./browser-stream";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { BrowserStatus, BrowserTab } from "./types";
 
-const INSTALL_COMMAND = "npm install -g agent-browser && agent-browser install";
-const MAX_FPS = 10;
-const MOVE_MS = 40;
-const BUTTONS = ["left", "middle", "right"] as const;
+const BLANK: BrowserStatus = { running: false, loading: false, canGoBack: false, canGoForward: false, tabs: [] };
 
-export function BrowserPane({ threadId }: { threadId: string }) {
+function NavIcon({ path, size = 15 }: { path: string; size?: number }) {
+  return <svg viewBox="0 0 16 16" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={path} /></svg>;
+}
+
+const BACK = "M10 3.5 5.5 8l4.5 4.5";
+const FORWARD = "M6 3.5 10.5 8 6 12.5";
+const RELOAD = "M13.2 6.6A5.4 5.4 0 1 0 13.4 9M13.4 2.8v3.8h-3.8";
+const PLUS = "M8 3.4v9.2M3.4 8h9.2";
+const CLOSE = "M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6";
+const WIDEN = "M9.5 2H14v4.5M14 2l-5.5 5.5M6.5 14H2V9.5M2 14l5.5-5.5";
+const HIDE = "M3 8h10";
+const MORE = "M8 3.6h.01M8 8h.01M8 12.4h.01";
+
+function host(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "") || url;
+  } catch {
+    return url;
+  }
+}
+
+function tabName(tab: BrowserTab): string {
+  return tab.title.trim() || host(tab.url) || "New tab";
+}
+
+export function BrowserPane({ threadId, onHide, onClose, wide, onToggleWide }: {
+  threadId: string;
+  onHide: () => void;
+  onClose: () => void;
+  wide: boolean;
+  onToggleWide: () => void;
+}) {
   const [known, setKnown] = useState<{ threadId: string; status: BrowserStatus }>();
   const [typed, setTyped] = useState<{ threadId: string; url: string }>();
-  const [live, setLive] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const socket = useRef<WebSocket | null>(null);
+  const stage = useRef<HTMLDivElement>(null);
   const showing = useRef(threadId);
-  const moved = useRef(0);
 
   useEffect(() => {
     showing.current = threadId;
     let alive = true;
-    const take = (status: BrowserStatus) => { if (alive) setKnown({ threadId, status }); };
     const read = () => void window.emma.browserStatus(threadId)
-      .then(take)
-      .catch(() => take({ installed: false, running: false }));
+      .then((status) => { if (alive) setKnown({ threadId, status }); })
+      .catch(() => { if (alive) setKnown({ threadId, status: BLANK }); });
     read();
     const stop = window.emma.onBrowser(read);
     return () => { alive = false; stop(); };
   }, [threadId]);
 
-  const status = known?.threadId === threadId ? known.status : undefined;
-  const installed = status?.installed ?? false;
-  const running = status?.running ?? false;
+  const place = useCallback(() => {
+    const box = stage.current;
+    if (!box) return;
+    const rect = box.getBoundingClientRect();
+    const blocked = !!document.querySelector("dialog[open]") || rect.width < 1 || rect.height < 1;
+    void window.emma.browserPlace({ threadId, bounds: blocked ? null : { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }).catch(() => undefined);
+  }, [threadId]);
 
   useEffect(() => {
-    if (!installed || !running) return;
-    let alive = true;
-    let stream: WebSocket | undefined;
-    const image = new Image();
-    image.onload = () => {
-      const target = canvas.current;
-      const context = target?.getContext("2d");
-      if (!target || !context) return;
-      if (target.width !== image.naturalWidth || target.height !== image.naturalHeight) {
-        target.width = image.naturalWidth;
-        target.height = image.naturalHeight;
-      }
-      context.drawImage(image, 0, 0);
-    };
-    void window.emma.browserStream(threadId).then(({ port }) => {
-      if (!alive) return;
-      const open = new WebSocket(`ws://127.0.0.1:${port}/?pacing=ack&maxFps=${MAX_FPS}`);
-      stream = open;
-      socket.current = open;
-      open.onopen = () => setLive(true);
-      open.onclose = () => setLive(false);
-      open.onerror = () => setLive(false);
-      open.onmessage = (event: MessageEvent<unknown>) => {
-        const message = parseStreamMessage(event.data);
-        if (!message) return;
-        if (message.kind === "page") {
-          const seen = message.url;
-          setKnown((last) => last?.threadId === threadId && last.status.url !== seen ? { threadId, status: { ...last.status, url: seen } } : last);
-          return;
-        }
-        if (message.seq !== undefined) open.send(JSON.stringify({ type: "ack", seq: message.seq }));
-        image.src = `data:image/jpeg;base64,${message.data}`;
-      };
-    }).catch(() => undefined);
+    const box = stage.current;
+    if (!box) return;
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(box);
+    const dialogs = new MutationObserver(place);
+    dialogs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open"] });
+    addEventListener("resize", place);
+    addEventListener("scroll", place, true);
     return () => {
-      alive = false;
-      image.onload = null;
-      stream?.close();
-      socket.current = null;
-      setLive(false);
+      observer.disconnect();
+      dialogs.disconnect();
+      removeEventListener("resize", place);
+      removeEventListener("scroll", place, true);
+      void window.emma.browserPlace({ threadId, bounds: null }).catch(() => undefined);
     };
-  }, [threadId, installed, running]);
+  }, [threadId, place]);
 
-  const send = (message: Record<string, unknown>) => {
-    const stream = socket.current;
-    if (stream?.readyState === WebSocket.OPEN) stream.send(JSON.stringify(message));
-  };
-
-  const at = (event: ReactPointerEvent<HTMLCanvasElement> | ReactWheelEvent<HTMLCanvasElement>) => {
-    const target = event.currentTarget;
-    const rect = target.getBoundingClientRect();
-    if (!rect.width || !rect.height) return { x: 0, y: 0 };
-    return {
-      x: Math.round((event.clientX - rect.left) * target.width / rect.width),
-      y: Math.round((event.clientY - rect.top) * target.height / rect.height),
-    };
-  };
-
-  const mouse = (eventType: "mousePressed" | "mouseReleased", event: ReactPointerEvent<HTMLCanvasElement>) =>
-    send({ type: "input_mouse", eventType, ...at(event), button: BUTTONS[event.button] ?? "left", clickCount: event.detail || 1 });
-
-  const key = (eventType: "keyDown" | "keyUp", event: ReactKeyboardEvent<HTMLCanvasElement>) => {
-    if (event.key === "Tab" || event.metaKey || event.ctrlKey) return;
-    if (event.key !== "Escape") event.preventDefault();
-    const text = event.key.length === 1 ? event.key : undefined;
-    send({ type: "input_keyboard", eventType, key: event.key, ...(text && eventType === "keyDown" ? { text } : {}) });
-  };
-
+  const status = known?.threadId === threadId ? known.status : BLANK;
   const apply = (next: BrowserStatus) => { if (showing.current === threadId) setKnown({ threadId, status: next }); };
-
   const nav = (action: "back" | "forward" | "reload") =>
     void window.emma.browserNav({ threadId, action }).then(apply).catch(() => undefined);
 
   const draft = typed?.threadId === threadId ? typed.url : undefined;
-
   const go = () => {
-    const wanted = (draft ?? status?.url ?? "").trim();
-    if (!wanted) return;
+    const wanted = (draft ?? "").trim();
     setTyped(undefined);
+    if (!wanted) return;
     const url = /^[a-z][a-z0-9+.-]*:/i.test(wanted) ? wanted : `https://${wanted}`;
     void window.emma.browserOpen({ threadId, url }).then(apply).catch(() => undefined);
   };
 
-  if (!status) return <section className="browser-pane" aria-label="Browser" />;
-
-  if (!installed) return <section className="browser-pane" aria-label="Browser">
-    <div className="browser-install">
-      <span>Not installed</span>
-      <code>{INSTALL_COMMAND}</code>
-      <button type="button" onClick={() => void navigator.clipboard.writeText(INSTALL_COMMAND).then(() => setCopied(true)).catch(() => undefined)}>{copied ? "Copied" : "Copy"}</button>
-    </div>
-  </section>;
-
   return <section className="browser-pane" aria-label="Browser">
-    <header className="browser-bar">
-      <button type="button" aria-label="Back" title="Back" disabled={!running} onClick={() => nav("back")}>←</button>
-      <button type="button" aria-label="Forward" title="Forward" disabled={!running} onClick={() => nav("forward")}>→</button>
-      <button type="button" aria-label="Reload" title="Reload" disabled={!running} onClick={() => nav("reload")}>↺</button>
-      <input className="browser-url" aria-label="Address" value={draft ?? status.url ?? ""} spellCheck={false} autoComplete="off" placeholder="Open a page" enterKeyHint="go"
-        onChange={(event) => setTyped({ threadId, url: event.target.value })}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") { event.preventDefault(); go(); }
-          if (event.key === "Escape") setTyped(undefined);
-        }} />
-      <i className="browser-live" data-live={live} title={live ? "Streaming" : "Not streaming"} aria-hidden="true" />
+    <header className="browser-tabs">
+      <div className="browser-tab-strip" role="tablist" aria-label="Browser tabs">
+        {status.tabs.map((tab) => <div key={tab.id} className="browser-tab" data-active={tab.id === status.activeTab}>
+          <button type="button" role="tab" aria-selected={tab.id === status.activeTab} title={tab.url || tabName(tab)}
+            onClick={() => void window.emma.browserSelectTab({ threadId, tabId: tab.id }).then(apply).catch(() => undefined)}>
+            {tab.favicon ? <img className="browser-favicon" src={tab.favicon} alt="" /> : <i className="browser-favicon browser-favicon-blank" aria-hidden="true" />}
+            <span>{tabName(tab)}</span>
+          </button>
+          <button type="button" className="browser-tab-close" aria-label={`Close ${tabName(tab)}`}
+            onClick={() => void window.emma.browserCloseTab({ threadId, tabId: tab.id }).then(apply).catch(() => undefined)}><NavIcon path={CLOSE} size={11} /></button>
+        </div>)}
+        <button type="button" className="browser-icon browser-new-tab" aria-label="New tab" title="New tab"
+          onClick={() => void window.emma.browserNewTab({ threadId }).then(apply).catch(() => undefined)}><NavIcon path={PLUS} size={13} /></button>
+      </div>
+      <div className="browser-window-controls">
+        <button type="button" className="browser-icon" aria-label={wide ? "Narrow the browser" : "Widen the browser"} aria-pressed={wide} title={wide ? "Narrow" : "Widen"} onClick={onToggleWide}><NavIcon path={WIDEN} size={12} /></button>
+        <button type="button" className="browser-icon" aria-label="Hide the browser" title="Hide — keeps the page and its cookies" onClick={onHide}><NavIcon path={HIDE} size={13} /></button>
+        <button type="button" className="browser-icon" aria-label="Close the browser" title="Close — frees what it holds" onClick={onClose}><NavIcon path={CLOSE} size={12} /></button>
+      </div>
     </header>
-    <div className="browser-stage" data-idle={!live}>
-      <canvas ref={canvas} tabIndex={0} role="img" aria-label="Live browser view"
-        onPointerDown={(event) => { event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); mouse("mousePressed", event); }}
-        onPointerUp={(event) => mouse("mouseReleased", event)}
-        onPointerMove={(event) => {
-          if (event.timeStamp - moved.current < MOVE_MS) return;
-          moved.current = event.timeStamp;
-          send({ type: "input_mouse", eventType: "mouseMoved", ...at(event), button: "none" });
-        }}
-        onWheel={(event) => send({ type: "input_mouse", eventType: "mouseWheel", ...at(event), button: "none", deltaX: Math.round(event.deltaX), deltaY: Math.round(event.deltaY) })}
-        onContextMenu={(event) => event.preventDefault()}
-        onKeyDown={(event) => key("keyDown", event)}
-        onKeyUp={(event) => key("keyUp", event)} />
+    <nav className="browser-bar" aria-label="Page">
+      <button type="button" className="browser-icon" aria-label="Back" title="Back" disabled={!status.canGoBack} onClick={() => nav("back")}><NavIcon path={BACK} /></button>
+      <button type="button" className="browser-icon" aria-label="Forward" title="Forward" disabled={!status.canGoForward} onClick={() => nav("forward")}><NavIcon path={FORWARD} /></button>
+      <button type="button" className="browser-icon" aria-label="Reload" title="Reload" disabled={!status.running} onClick={() => nav("reload")}><NavIcon path={RELOAD} size={13} /></button>
+      {draft === undefined
+        ? <button type="button" className="browser-address" title={status.url ?? "Open a page"} onClick={() => setTyped({ threadId, url: status.url ?? "" })}>
+            {status.loading ? <em className="browser-loading" aria-label="Loading" /> : null}
+            <span>{status.url ? host(status.url) : "Open a page"}</span>
+          </button>
+        : <input className="browser-address browser-address-field" autoFocus aria-label="Address" value={draft} spellCheck={false} autoComplete="off" placeholder="Search or enter address" enterKeyHint="go"
+            onChange={(event) => setTyped({ threadId, url: event.target.value })}
+            onBlur={() => setTyped(undefined)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); go(); }
+              if (event.key === "Escape") setTyped(undefined);
+            }} />}
+      <button type="button" className="browser-icon" aria-label="Open in a new tab" title="New tab"
+        onClick={() => void window.emma.browserNewTab({ threadId }).then(apply).catch(() => undefined)}><NavIcon path={PLUS} size={13} /></button>
+      <button type="button" className="browser-icon" aria-label="Open this page in your default browser" title="Open in your browser" disabled={!status.url}
+        onClick={() => { if (status.url) void window.emma.openLink(status.url).catch(() => undefined); }}><NavIcon path={MORE} size={14} /></button>
+    </nav>
+    <div className="browser-stage" ref={stage} data-idle={!status.running}>
+      {!status.running && <div className="browser-empty">
+        <p>Nothing open</p>
+        <button type="button" onClick={() => void window.emma.browserNewTab({ threadId }).then(apply).catch(() => undefined)}>New tab</button>
+      </div>}
     </div>
   </section>;
 }

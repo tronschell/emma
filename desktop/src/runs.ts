@@ -5,7 +5,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { ThreadStep } from "../shared/agents";
-import { readVisualization, type Visualization } from "../shared/visualize";
+import { visualDrawn } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
 import type { Message } from "./types";
@@ -115,7 +115,7 @@ export type Grouped =
   /** `keep` is how many of these rows the list may show before the rest fold away. */
   | { kind: "steps"; steps: ThreadStep[]; keep: number }
   /** A picture the turn drew, in the flow where it drew it. */
-  | { kind: "visual"; visual: Visualization };
+  | { kind: "visual"; id: string };
 
 /**
  * Consecutive calls fold into one list, so a burst of them reads as a block of work
@@ -136,8 +136,8 @@ export type Grouped =
 export function groupBlocks(blocks: Block[], keep: number): Grouped[] {
   const grouped: Grouped[] = [];
   for (const block of blocks) {
-    const visual = block.kind === "step" ? readVisualization(block.step) : undefined;
-    if (visual) grouped.push({ kind: "visual", visual });
+    const visual = block.kind === "step" ? visualDrawn(block.step) : undefined;
+    if (visual) grouped.push({ kind: "visual", id: visual });
     else if (block.kind !== "step") grouped.push(block);
     else {
       const tail = grouped.at(-1);

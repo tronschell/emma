@@ -29,6 +29,7 @@ import {
   type WrittenPlugin,
 } from "../shared/plugins";
 
+const DEFAULT_MARKETPLACE = "openai/plugins";
 const MAX_JSON_BYTES = 512 * 1024;
 const MAX_MARKETPLACES = 32;
 const MAX_INSTALLED = 128;
@@ -54,6 +55,10 @@ export function marketplaceRoot(userData: string) {
 
 function sourcesFile(userData: string) {
   return path.join(marketplaceRoot(userData), "sources.json");
+}
+
+function defaultMarketplaceMark(userData: string) {
+  return path.join(marketplaceRoot(userData), ".default-added");
 }
 
 function installedFile(userData: string) {
@@ -475,6 +480,14 @@ export async function addMarketplace(userData: string, request: { source: unknow
   }
   await writeJson(sourcesFile(userData), { version: 1, sources: [...sources, stored] });
   return readCatalog(userData);
+}
+
+export async function ensureDefaultMarketplace(userData: string, source: string = DEFAULT_MARKETPLACE): Promise<PluginCatalog> {
+  const mark = defaultMarketplaceMark(userData);
+  if (await exists(mark) || (await readSources(userData)).length) return readCatalog(userData);
+  const catalog = await addMarketplace(userData, { source });
+  await writeFile(mark, "", { encoding: "utf8", mode: 0o600 });
+  return catalog;
 }
 
 export async function removeMarketplace(userData: string, id: unknown): Promise<PluginCatalog> {

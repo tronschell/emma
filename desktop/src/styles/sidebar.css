@@ -1,10 +1,3 @@
-/* Window shell and the single sidebar: brand, primary nav, projects, status foot.
-
-   The sidebar is a terminal pane, not a stack of cards: one hairline right edge,
-   and inside it the bands are separated by full-bleed rules. The pane itself
-   carries no inline padding — every band pads itself — so a band's rule and a
-   row's hover fill both run edge to edge without negative margins. */
-
 /* No fill of its own: .content paints itself, so the only bare cell is the
    sidebar's — which is the hole the window's vibrancy shows through. */
 .app-shell { height: 100%; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); background: transparent; }
@@ -95,11 +88,11 @@
 .sidebar-nav button[data-view="knowledge"] > span:first-child { color: var(--teal); }
 .sidebar-nav button[data-view="agent"] > span:first-child { color: var(--lime); }
 .sidebar-nav button[data-view="scheduled"] > span:first-child { color: var(--violet); }
+:root[data-nav-mono] .sidebar-nav button[data-view] > span:first-child { color: var(--text-3); }
 /* Counts are metadata on a fixed tab stop: never allowed to widen or shift the row.
    Pinned to the last column — a hidden actions span drops out of auto-placement, so
    an auto-placed count would slide one column left whenever the row is at rest. */
 .sidebar-nav b, .project-group > summary b { grid-column: -2; justify-self: end; overflow: hidden; color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; font-variant-numeric: tabular-nums; text-align: right; }
-
 
 /* Icon mode: the same sections as one horizontal strip of glyph tiles, the way Arc
    pins sit above its list. Labels go to the title tooltip. The tile is one column
@@ -126,7 +119,7 @@
 
 /* Tier 3 — the project tree. Its label is a band header, rule included. */
 .sidebar-projects { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: var(--s-3); }
-.sidebar-label { display: block; padding: var(--s-3) var(--pad) var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: var(--s-3) var(--pad) var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 /* Four columns, not the shared three: caret, folder, name, and one trailing tab
    stop the count and the ＋ take turns in — the count is what the row says at rest,
    the ＋ what it offers on hover. One cell for both is what keeps the swap from
@@ -208,7 +201,9 @@
 .thread-selection button { padding: 0 var(--s-2); color: var(--text-2); background: var(--surface-2); }
 .thread-selection button:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 /* The row's one control, in the count's own cell and on the count's own tab stop. */
-.project-new { grid-column: -2; justify-self: end; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t); }
+.project-new { grid-column: -2; justify-self: end; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t), opacity var(--t); }
+.sidebar-label .project-new { margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0; }
+.sidebar-label:not(:hover):not(:focus-within) .project-new { opacity: 0; }
 .project-new:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 /* The ⋮ rides over the row's right gutter instead of taking a grid column: the row
    keeps its own shape and hover fill, and the title already fades out under it.
@@ -240,8 +235,9 @@
    wordmark yields the row, since the pane is only 200px wide at its narrowest and
    EMMA plus a field plus two controls does not fit. A drawn magnifier, not the
    Unicode one, which renders as a soft blob in a pixel face. */
-.sidebar > .brand .sidebar-search { display: grid; grid-template-columns: 28px 0fr; align-items: center; flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; transition: grid-template-columns 120ms ease-out; }
+.sidebar > .brand .sidebar-search { display: grid; grid-template-columns: 28px 0fr; align-items: center; flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; transition: grid-template-columns 120ms ease-out, opacity var(--t); }
 .sidebar > .brand .sidebar-search.open { grid-template-columns: 28px 1fr; }
+.sidebar > .brand:not(:hover):not(:focus-within) .sidebar-search:not(.open) { opacity: 0; }
 .sidebar > .brand:has(.sidebar-search.open) strong { display: none; }
 /* The two controls are one pair pinned to the gutter, so the band gap is cancelled
    between them — each glyph already carries ~8px of air inside its own 28px square,
@@ -298,7 +294,7 @@
 .resize-handle:hover::after, .resize-handle:focus-visible::after { background: color-mix(in srgb, var(--text-3) 70%, transparent); }
 
 @media (prefers-reduced-motion: reduce) {
-  .new-thread, .sidebar-nav button, .project-group > summary, .project-thread, .thread-actions, .rail-toggle, .sidebar-search, .resize-handle::after { transition: none; }
+.new-thread, .sidebar-nav button, .project-group > summary, .project-thread, .thread-actions, .rail-toggle, .sidebar-search, .resize-handle::after { transition: none; }
   /* Frame one still says which state it is — the colour and glyph carry it. */
   .thread-status::before { animation: none; }
 }

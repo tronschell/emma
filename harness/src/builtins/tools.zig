@@ -3092,7 +3092,7 @@ test "built-in read-only tool set matches plan inspection tools" {
     try std.testing.expect(!isReadOnlyToolName("run_command"));
     // The tools that change the Mac or the user's library, named so a careless
     // addition to the list above fails here rather than in plan mode.
-    inline for (.{ "terminal", "edit_file", "delete_file", "cli", "computer", "memory", "save_page", "workflow", "write_skill", "write_tool", "write_plugin" }) |name| {
+    inline for (.{ "terminal", "edit_file", "delete_file", "cli", "computer", "memory", "keep", "workflow", "write_skill", "write_tool", "write_plugin" }) |name| {
         try std.testing.expect(!isReadOnlyToolName(name));
     }
 }

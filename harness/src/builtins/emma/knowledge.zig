@@ -11,27 +11,40 @@ const bridge = @import("../../tools/emma/bridge.zig");
 
 const ToolSpec = tool_dispatch.Tool;
 
-const save_page_description =
-    "Save a web page into the user's knowledge base — their \"kb\". With no arguments it reads the page they are looking at: the one in front in their browser, even while Emma is the window they are typing in. Files it under a category and starts the document Emma builds from it, which finishes on its own after this call returns. Use it whenever they ask to add, save, clip or file a page, this page, or a link into their kb or knowledge base. One call per page: it comes back before the document is written, so calling it again only shelves the same page twice.";
+const keep_description =
+    "Keep something in the user's knowledge base — their \"kb\" — as a plain Markdown note in the vault folder they chose, next to whatever else they write there. Use it whenever they say save this, keep this, clip this page, note this down, remember this, or add it to their kb.\n" ++
+    "With no arguments it keeps the page they are looking at: the one in front in their browser, even while Emma is the window they are typing in.\n" ++
+    "kind \"page\" keeps a web page, \"note\" keeps text you or they wrote out, \"selection\" keeps something they highlighted somewhere else. Screenshots are not yours to keep: Emma files those herself when the user presses the capture key.\n" ++
+    "The note lands immediately; its title and tags are filled in a moment later by a small model, so leave title out unless they named it, do not wait for the result, and do not call again for the same thing.";
 
-pub const save_page = ToolSpec{
-    .name = "save_page",
-    .description = save_page_description,
+pub const keep = ToolSpec{
+    .name = "keep",
+    .description = keep_description,
     .gateway_schema = .{
-        .name = "save_page",
-        .description = save_page_description,
+        .name = "keep",
+        .description = keep_description,
         .input_schema = .{
             .properties = &.{
                 .{
-                    .name = "url",
+                    .name = "kind",
                     .json_type = .string,
-                    .description = "The page to save. Omit to save the page the user has in front of them.",
+                    .description = "What is being kept. Omit to keep the page in front of them, or when \"text\" is the whole note.",
+                    .shape = &.{ .enum_values = &.{ "page", "note", "selection" } },
                 },
                 .{
-                    .name = "existing",
+                    .name = "title",
                     .json_type = .string,
-                    .description = "Only when a previous call reported the page is already saved: \"refresh\" re-reads it into the page they already have, \"new\" shelves a second copy. Ask the user which before sending either.",
-                    .shape = &.{ .enum_values = &.{ "refresh", "new" } },
+                    .description = "What to call it, only if the user named it. Otherwise Emma names it from the capture and a model retitles it.",
+                },
+                .{
+                    .name = "text",
+                    .json_type = .string,
+                    .description = "The note itself, for kind \"note\", or the words they highlighted, for \"selection\".",
+                },
+                .{
+                    .name = "url",
+                    .json_type = .string,
+                    .description = "The page to keep. Omit to keep the page the user has in front of them.",
                 },
             },
         },
@@ -39,11 +52,9 @@ pub const save_page = ToolSpec{
     .advertisement = .on_select,
     .executor_kind = .emma,
     .activity_kind = .write,
-    // Emma gates its own tools at execution, by thread mode and by Settings →
-    // Tools, so a second prompt here would only ask the user twice.
     .requires_approval = false,
-    .action_label = "Saving page",
-    .completed_action_label = "Saved page",
+    .action_label = "Keeping",
+    .completed_action_label = "Kept",
     .permission_target_kind = .none,
     .decode = bridge.decode,
     .validate = bridge.validate,
@@ -219,10 +230,11 @@ pub const workflow = ToolSpec{
 };
 
 const visualize_description =
-    "Draw a chart inline in this conversation, where you are answering. Reach for it whenever numbers are the answer — a trend over time, a breakdown across categories, a before and after — instead of listing them in prose or a table.\n" ++
-    "kind is bar, line or area. labels and values are arrays of the same length, one number per label, at most 12 points. caption is the single line under it.\n" ++
-    "This is not an artifact. Nothing is saved, nothing appears on the Artifacts page, and it cannot be reopened, edited or read by a later thread — it is a picture that belongs to this answer. Use artifact instead when the user should keep what you made.\n" ++
-    "The result comes back starting with a [visual] token, which is how Emma draws it. Leave it there, and do not repeat the numbers in your prose: the chart is the explanation.";
+    "Draw a picture inline in this conversation, where you are answering. Reach for it whenever something lands better seen than read — a trend, a breakdown, a comparison, a diagram, a small table.\n" ++
+    "html is one whole self-contained document, and it can hold as many charts, panels and widgets as the answer needs. Write your own <style> and <script>; draw with inline SVG, canvas or CSS. There is no network: no CDN, no web fonts, no images by URL. The page is dark and Emma's palette arrives as CSS variables — --bg, --text, --text-2, --text-3, --border, --accent, and --rose, --orange, --lime, --teal, --blue, --violet for series. Use those, not your own.\n" ++
+    "title is a short name for what it shows.\n" ++
+    "Not an artifact: nothing is saved and it dies with this conversation, though the user can export a PNG or keep it from the buttons on it. Use artifact when they should keep what you made.\n" ++
+    "The result leads with a [visual:id] token, which is how Emma draws it. Leave it there, and do not repeat in prose what the picture says.";
 
 pub const visualize = ToolSpec{
     .name = "visualize",
@@ -233,42 +245,25 @@ pub const visualize = ToolSpec{
         .input_schema = .{
             .properties = &.{
                 .{
-                    .name = "kind",
+                    .name = "title",
                     .json_type = .string,
-                    .description = "bar for categories, line for a series over time, area for a total that accumulates. Defaults to bar.",
-                    // VISUAL_KINDS, from desktop/shared/visualize.ts.
-                    .shape = &.{ .enum_values = &.{ "bar", "line", "area" } },
+                    .description = "Short name for what this shows. Names the exported file, and the artifact if the user keeps it.",
                 },
                 .{
-                    .name = "labels",
-                    .json_type = .array,
-                    // MAX_VISUAL_POINTS is 12, in desktop/shared/visualize.ts.
-                    .description = "What each point is called, along the bottom. At most 12.",
-                    .shape = &.{ .array_values = .{ .json_type = .string } },
-                },
-                .{
-                    .name = "values",
-                    .json_type = .array,
-                    .description = "The number for each label, in the same order. Plain finite numbers, not formatted strings.",
-                    .shape = &.{ .array_values = .{ .json_type = .number } },
-                },
-                .{
-                    .name = "caption",
+                    .name = "html",
                     .json_type = .string,
-                    .description = "One line saying what the chart shows. Shown under it and in its tooltip.",
+                    .description = "The whole document: markup, its own <style>, its own <script>. Self-contained — nothing is fetched.",
                 },
             },
-            .required = &.{ "labels", "values" },
+            .required = &.{ "title", "html" },
         },
     },
     .advertisement = .on_select,
     .executor_kind = .emma,
-    // Nothing is written: the chart lives in this answer's transcript and dies
-    // with it, so there is no store for the call to touch.
     .activity_kind = .read,
     .requires_approval = false,
-    .action_label = "Drawing chart",
-    .completed_action_label = "Drew chart",
+    .action_label = "Drawing",
+    .completed_action_label = "Drew a picture",
     .permission_target_kind = .none,
     .decode = bridge.decode,
     .validate = bridge.validate,
@@ -391,4 +386,4 @@ pub const autoresearch = ToolSpec{
     .irreversible_fn = bridge.isIrreversible,
 };
 
-pub const all = [_]ToolSpec{ save_page, artifact, workflow, visualize, autoresearch };
+pub const all = [_]ToolSpec{ keep, artifact, workflow, visualize, autoresearch };

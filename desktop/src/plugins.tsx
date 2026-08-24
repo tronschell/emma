@@ -17,6 +17,7 @@ export function PluginsView({ busy }: { busy: boolean }) {
   const [error, setError] = useState("");
   const [showing, setShowing] = useState<{ marketplace: Marketplace; plugin: MarketplacePlugin } | null>(null);
   const [reviewing, setReviewing] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const run = useCallback(async (id: string, work: () => Promise<PluginCatalog>) => {
     setPending(id);
@@ -30,7 +31,8 @@ export function PluginsView({ busy }: { busy: boolean }) {
     let active = true;
     void window.emma.pluginCatalog()
       .then((found) => { if (active) setCatalog(found); })
-      .catch((reason: unknown) => { if (active) setError(reasonText(reason)); });
+      .catch((reason: unknown) => { if (active) setError(reasonText(reason)); })
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
 
@@ -69,7 +71,12 @@ export function PluginsView({ busy }: { busy: boolean }) {
       {categories.map((name) => <button key={name} type="button" className={`shelf-chip ${category === name ? "on" : ""}`} disabled={working} onClick={() => setCategory(name)}>{name}</button>)}
     </div>}
 
-    {!catalog.marketplaces.length && <div className="content-empty">
+    {loading && !catalog.marketplaces.length && <div className="content-empty" role="status" aria-live="polite">
+      <span className="mark" aria-hidden="true">◈</span>
+      <p>Fetching the official Codex marketplace…</p>
+    </div>}
+
+    {!loading && !catalog.marketplaces.length && <div className="content-empty">
       <span className="mark" aria-hidden="true">◈</span>
       <h2>No marketplaces yet</h2>
       <p>A marketplace is a catalog of plugins: a GitHub repo, a Git URL, or a folder on this Mac. Emma files the ones she writes here too.</p>

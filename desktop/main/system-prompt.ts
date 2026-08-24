@@ -54,15 +54,12 @@ export interface PromptContext {
 }
 
 function promptVariables(context: PromptContext): PromptVariables {
-  // The picker's key, not a model id: the routing prefix has to come off before
-  // the prompt names the model, or the turn reads its own model back as
-  // `openrouter:vendor/name` and hands that to `.emma` as a subagent route.
   const model = normalizeModel(context.model ?? "");
   const mode = context.mode ?? "ask";
   const families = familiesOf(model).map(familyLabel);
   return {
     available_tools: toolDefinitions(mode, { folders: true, computer: true }, context.disabledTools ?? []).map((tool) => tool.name).join(", "),
-    model: model || "the local fallback",
+    model: model || "the agent's own default model",
     model_family: families.join(" and ") || "unknown",
     workspace: context.workspace || "no folder",
     os: `${platform()} ${release()}`,

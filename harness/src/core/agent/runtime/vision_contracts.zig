@@ -7,7 +7,6 @@ const Allocator = std.mem.Allocator;
 
 const max_focus_bytes: usize = 4096;
 const max_provider_images_per_batch: usize = 8;
-pub const native_route_unavailable_message = "Vision is unavailable for this request.";
 pub const provider_response_format_name = "fx_vision_evidence";
 pub const provider_response_format_description = "Factual evidence extracted from the requested images.";
 
@@ -483,154 +482,29 @@ pub noinline fn project_text_only_messages(
     return projected;
 }
 
-/// Produces arena-scoped native-route messages with raw images. Retains only
-/// root-turn Vision calls followed by contiguous structured route rejections.
-/// Canonical history is unchanged.
-pub noinline fn project_native_messages(
+pub fn project_named_native_messages(
     alloc: Allocator,
     messages: []const types.ChatMessage,
     current_user_message_index: usize,
-) Allocator.Error![]const types.ChatMessage {
-    std.debug.assert(current_user_message_index < messages.len);
-    std.debug.assert(messages[current_user_message_index].role == .user);
-
-    var contains_vision = false;
-    for (messages) |chat_message| {
-        if (std.mem.eql(u8, chat_message.tool_name orelse "", "vision")) {
-            contains_vision = true;
-            break;
-        }
-        for (chat_message.tool_calls) |call| {
-            if (std.mem.eql(u8, call.name, "vision")) {
-                contains_vision = true;
-                break;
-            }
-        }
-        if (contains_vision) break;
+    catalog: []const types.ImageAttachment,
+) ![]const types.ChatMessage {
+    if (catalog.len == 0 or
+        current_user_message_index >= messages.len or
+        messages[current_user_message_index].role != .user or
+        messages[current_user_message_index].permission_feedback)
+    {
+        return messages;
     }
-    if (!contains_vision) return messages;
-
-    var projected: std.ArrayList(types.ChatMessage) = .empty;
-    errdefer projected.deinit(alloc);
-    var filtered_call_slices: std.ArrayList([]types.ToolCall) = .empty;
-    defer filtered_call_slices.deinit(alloc);
-    errdefer for (filtered_call_slices.items) |calls| alloc.free(calls);
-
-    for (messages, 0..) |chat_message, message_index| {
-        if (chat_message.role == .tool and
-            std.mem.eql(u8, chat_message.tool_name orelse "", "vision") and
-            !(message_index >= current_user_message_index and
-                is_paired_native_route_rejection_result(messages, message_index)))
-        {
-            continue;
-        }
-
-        var projected_message = chat_message;
-        var vision_call_count: usize = 0;
-        for (chat_message.tool_calls, 0..) |call, call_index| {
-            if (std.mem.eql(u8, call.name, "vision") and
-                !(message_index >= current_user_message_index and
-                    native_route_rejection_result_index(
-                        messages,
-                        message_index,
-                        call_index,
-                    ) != null))
-            {
-                vision_call_count += 1;
-            }
-        }
-        if (vision_call_count > 0) {
-            const retained_count = chat_message.tool_calls.len - vision_call_count;
-            if (retained_count == 0) {
-                projected_message.tool_calls = &.{};
-                if (projected_message.content == null or projected_message.content.?.len == 0) {
-                    continue;
-                }
-            } else {
-                const retained = try alloc.alloc(types.ToolCall, retained_count);
-                errdefer alloc.free(retained);
-                try filtered_call_slices.append(alloc, retained);
-                var retained_index: usize = 0;
-                for (chat_message.tool_calls, 0..) |call, call_index| {
-                    if (std.mem.eql(u8, call.name, "vision") and
-                        !(message_index >= current_user_message_index and
-                            native_route_rejection_result_index(
-                                messages,
-                                message_index,
-                                call_index,
-                            ) != null))
-                    {
-                        continue;
-                    }
-                    retained[retained_index] = call;
-                    retained_index += 1;
-                }
-                projected_message.tool_calls = retained;
-            }
-        }
-        try projected.append(alloc, projected_message);
-    }
-    return projected.toOwnedSlice(alloc);
-}
-
-fn is_native_route_rejection(message: types.ChatMessage) bool {
-    const content = message.content orelse "";
-    return tool_result_errors.isToolExecutionFailedOutput(content) and std.mem.find(
-        u8,
-        content,
-        native_route_unavailable_message,
-    ) != null;
-}
-
-fn native_route_rejection_result_index(
-    messages: []const types.ChatMessage,
-    assistant_message_index: usize,
-    call_index: usize,
-) ?usize {
-    if (assistant_message_index >= messages.len) return null;
-    const assistant_message = messages[assistant_message_index];
-    if (assistant_message.role != .assistant or call_index >= assistant_message.tool_calls.len) {
-        return null;
-    }
-    const call = assistant_message.tool_calls[call_index];
-    if (!std.mem.eql(u8, call.name, "vision")) return null;
-
-    var result_index = assistant_message_index + 1;
-    while (result_index < messages.len and messages[result_index].role == .tool) : (result_index += 1) {
-        const result = messages[result_index];
-        if (std.mem.eql(u8, result.tool_name orelse "", "vision") and
-            std.mem.eql(u8, result.tool_call_id orelse "", call.id) and
-            is_native_route_rejection(result))
-        {
-            return result_index;
-        }
-    }
-    return null;
-}
-
-fn is_paired_native_route_rejection_result(
-    messages: []const types.ChatMessage,
-    result_index: usize,
-) bool {
-    if (result_index >= messages.len or messages[result_index].role != .tool) return false;
-
-    var block_start = result_index;
-    while (block_start > 0 and messages[block_start - 1].role == .tool) {
-        block_start -= 1;
-    }
-    if (block_start == 0) return false;
-    const assistant_message_index = block_start - 1;
-    const assistant_message = messages[assistant_message_index];
-    if (assistant_message.role != .assistant) return false;
-
-    for (assistant_message.tool_calls, 0..) |_, call_index| {
-        if (native_route_rejection_result_index(
-            messages,
-            assistant_message_index,
-            call_index,
-        ) == result_index) return true;
-    }
-    return false;
+    const named = try alloc.dupe(types.ChatMessage, messages);
+    errdefer alloc.free(named);
+    const references = try project_image_references(alloc, catalog);
+    defer alloc.free(references);
+    const content = named[current_user_message_index].content orelse "";
+    named[current_user_message_index].content = if (content.len == 0)
+        try alloc.dupe(u8, references)
+    else
+        try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ content, references });
+    return named;
 }
 
 pub const VisionBatchIterator = struct {
@@ -1474,175 +1348,6 @@ test "text-only projection preserves typed permission feedback byte-exact" {
     ));
     try std.testing.expectEqualStrings(feedback, messages[3].content.?);
     try std.testing.expectEqualStrings("Make the requested changes.", messages[0].content.?);
-}
-
-test "native message projection retains only the current turn structured rejection" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const images = [_]types.ImageAttachment{.{
-        .id = 2,
-        .path = @constCast("/tmp/native.png"),
-        .media_type = @constCast("image/png"),
-    }};
-    const historical_calls = [_]types.ToolCall{
-        .{ .id = "historical-success", .name = "vision", .arguments_json = "{}" },
-        .{ .id = "read-call", .name = "read_file", .arguments_json = "{}" },
-    };
-    const rejected_call = [_]types.ToolCall{
-        .{ .id = "reused-call-id", .name = "vision", .arguments_json = "{}" },
-    };
-    const reused_success_call = [_]types.ToolCall{
-        .{ .id = "reused-call-id", .name = "vision", .arguments_json = "{}" },
-    };
-    const rejection = try tool_result_errors.toolExecutionFailureJson(arena, .{
-        .tool_name = "vision",
-        .message = native_route_unavailable_message,
-        .suggestion = "Continue using the model's native image input without Vision.",
-    });
-    const messages = [_]types.ChatMessage{
-        .{ .role = .user, .content = "inspect", .images = &images },
-        .{ .role = .assistant, .tool_calls = &historical_calls },
-        .{ .role = .tool, .content = "historical vision evidence", .tool_call_id = "historical-success", .tool_name = "vision" },
-        .{ .role = .tool, .content = "file evidence", .tool_call_id = "read-call", .tool_name = "read_file" },
-        .{ .role = .user, .content = "recover now" },
-        .{ .role = .assistant, .tool_calls = &rejected_call },
-        .{ .role = .tool, .content = rejection, .tool_call_id = "reused-call-id", .tool_name = "vision" },
-        .{ .role = .assistant, .content = "recovered" },
-        .{ .role = .user, .content = "continue later" },
-        .{ .role = .assistant, .tool_calls = &reused_success_call },
-        .{ .role = .tool, .content = "current successful evidence", .tool_call_id = "reused-call-id", .tool_name = "vision" },
-        .{ .role = .assistant, .content = "later answer" },
-    };
-
-    const immediate = try project_native_messages(arena, messages[0..8], 4);
-    try std.testing.expectEqual(@as(usize, 7), immediate.len);
-    try std.testing.expectEqual(@as(usize, 1), immediate[0].images.len);
-    try std.testing.expectEqual(@as(usize, 1), immediate[1].tool_calls.len);
-    try std.testing.expectEqualStrings("read_file", immediate[1].tool_calls[0].name);
-    try std.testing.expectEqualStrings("read_file", immediate[2].tool_name.?);
-    try std.testing.expectEqualStrings("vision", immediate[4].tool_calls[0].name);
-    try std.testing.expectEqualStrings("reused-call-id", immediate[4].tool_calls[0].id);
-    try std.testing.expectEqualStrings("vision", immediate[5].tool_name.?);
-    try std.testing.expectEqualStrings("reused-call-id", immediate[5].tool_call_id.?);
-    try std.testing.expectEqualStrings(rejection, immediate[5].content.?);
-
-    const later = try project_native_messages(arena, &messages, 8);
-    try std.testing.expectEqual(@as(usize, 7), later.len);
-    try std.testing.expectEqual(@as(usize, 1), later[0].images.len);
-    try std.testing.expectEqualStrings("read_file", later[1].tool_calls[0].name);
-    try std.testing.expectEqualStrings("recover now", later[3].content.?);
-    try std.testing.expectEqualStrings("recovered", later[4].content.?);
-    try std.testing.expectEqualStrings("continue later", later[5].content.?);
-    try std.testing.expectEqualStrings("later answer", later[6].content.?);
-    for (later) |chat_message| {
-        try std.testing.expect(!std.mem.eql(u8, chat_message.tool_name orelse "", "vision"));
-        for (chat_message.tool_calls) |call| {
-            try std.testing.expect(!std.mem.eql(u8, call.name, "vision"));
-        }
-    }
-
-    const success_then_rejection_first_calls = [_]types.ToolCall{
-        .{ .id = "success-then-rejection", .name = "vision", .arguments_json = "{}" },
-        .{ .id = "first-read", .name = "read_file", .arguments_json = "{}" },
-    };
-    const success_then_rejection_second_calls = [_]types.ToolCall{
-        .{ .id = "success-then-rejection", .name = "vision", .arguments_json = "{}" },
-        .{ .id = "second-read", .name = "read_file", .arguments_json = "{}" },
-    };
-    const success_then_rejection_messages = [_]types.ChatMessage{
-        .{ .role = .user, .content = "inspect two steps" },
-        .{ .role = .assistant, .tool_calls = &success_then_rejection_first_calls },
-        .{ .role = .tool, .content = "successful evidence", .tool_call_id = "success-then-rejection", .tool_name = "vision" },
-        .{ .role = .tool, .content = "first file", .tool_call_id = "first-read", .tool_name = "read_file" },
-        .{ .role = .assistant, .tool_calls = &success_then_rejection_second_calls },
-        .{ .role = .tool, .content = rejection, .tool_call_id = "success-then-rejection", .tool_name = "vision" },
-        .{ .role = .tool, .content = "second file", .tool_call_id = "second-read", .tool_name = "read_file" },
-        .{ .role = .assistant, .content = "recovered after two steps" },
-    };
-    const success_then_rejection = try project_native_messages(
-        arena,
-        &success_then_rejection_messages,
-        0,
-    );
-    try std.testing.expectEqual(@as(usize, 7), success_then_rejection.len);
-    try std.testing.expectEqual(@as(usize, 1), success_then_rejection[1].tool_calls.len);
-    try std.testing.expectEqualStrings("first-read", success_then_rejection[1].tool_calls[0].id);
-    try std.testing.expectEqualStrings("first-read", success_then_rejection[2].tool_call_id.?);
-    try std.testing.expectEqual(@as(usize, 2), success_then_rejection[3].tool_calls.len);
-    try std.testing.expectEqualStrings("success-then-rejection", success_then_rejection[3].tool_calls[0].id);
-    try std.testing.expectEqualStrings("second-read", success_then_rejection[3].tool_calls[1].id);
-    try std.testing.expectEqualStrings("success-then-rejection", success_then_rejection[4].tool_call_id.?);
-    try std.testing.expectEqualStrings(rejection, success_then_rejection[4].content.?);
-    try std.testing.expectEqualStrings("second-read", success_then_rejection[5].tool_call_id.?);
-
-    const rejection_then_success_calls = [_]types.ToolCall{
-        .{ .id = "rejection-then-success", .name = "vision", .arguments_json = "{}" },
-    };
-    const rejection_then_success_messages = [_]types.ChatMessage{
-        .{ .role = .user, .content = "inspect both routes" },
-        .{ .role = .assistant, .tool_calls = &rejection_then_success_calls },
-        .{ .role = .tool, .content = rejection, .tool_call_id = "rejection-then-success", .tool_name = "vision" },
-        .{ .role = .assistant, .tool_calls = &rejection_then_success_calls },
-        .{ .role = .tool, .content = "successful evidence", .tool_call_id = "rejection-then-success", .tool_name = "vision" },
-        .{ .role = .assistant, .content = "recovered before success" },
-    };
-    const rejection_then_success = try project_native_messages(
-        arena,
-        &rejection_then_success_messages,
-        0,
-    );
-    try std.testing.expectEqual(@as(usize, 4), rejection_then_success.len);
-    try std.testing.expectEqualStrings("rejection-then-success", rejection_then_success[1].tool_calls[0].id);
-    try std.testing.expectEqualStrings("rejection-then-success", rejection_then_success[2].tool_call_id.?);
-    try std.testing.expectEqualStrings("recovered before success", rejection_then_success[3].content.?);
-}
-
-test "native message projection rejects reversed and unmatched Vision evidence" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const rejection = try tool_result_errors.toolExecutionFailureJson(arena, .{
-        .tool_name = "vision",
-        .message = native_route_unavailable_message,
-        .suggestion = "Continue using the model's native image input without Vision.",
-    });
-    const before_call = [_]types.ToolCall{
-        .{ .id = "before-call", .name = "vision", .arguments_json = "{}" },
-    };
-    const no_result = [_]types.ToolCall{
-        .{ .id = "no-result", .name = "vision", .arguments_json = "{}" },
-    };
-    const noncontiguous = [_]types.ToolCall{
-        .{ .id = "noncontiguous", .name = "vision", .arguments_json = "{}" },
-    };
-    const messages = [_]types.ChatMessage{
-        .{ .role = .user, .content = "reject malformed evidence" },
-        .{ .role = .tool, .content = rejection, .tool_call_id = "before-call", .tool_name = "vision" },
-        .{ .role = .assistant, .tool_calls = &before_call },
-        .{ .role = .assistant, .content = "before-call separator" },
-        .{ .role = .assistant, .tool_calls = &no_result },
-        .{ .role = .assistant, .content = "no-result separator" },
-        .{ .role = .assistant, .tool_calls = &noncontiguous },
-        .{ .role = .assistant, .content = "noncontiguous separator" },
-        .{ .role = .tool, .content = rejection, .tool_call_id = "noncontiguous", .tool_name = "vision" },
-        .{ .role = .tool, .content = rejection, .tool_call_id = "unmatched", .tool_name = "vision" },
-        .{ .role = .assistant, .content = "finished" },
-    };
-
-    const projected = try project_native_messages(arena, &messages, 0);
-    try std.testing.expectEqual(@as(usize, 5), projected.len);
-    try std.testing.expectEqualStrings("reject malformed evidence", projected[0].content.?);
-    try std.testing.expectEqualStrings("before-call separator", projected[1].content.?);
-    try std.testing.expectEqualStrings("no-result separator", projected[2].content.?);
-    try std.testing.expectEqualStrings("noncontiguous separator", projected[3].content.?);
-    try std.testing.expectEqualStrings("finished", projected[4].content.?);
-    for (projected) |chat_message| {
-        try std.testing.expect(!std.mem.eql(u8, chat_message.tool_name orelse "", "vision"));
-        for (chat_message.tool_calls) |call| {
-            try std.testing.expect(!std.mem.eql(u8, call.name, "vision"));
-        }
-    }
 }
 
 test "Vision pending transition gates text routes and cancellation is neutral" {

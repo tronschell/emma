@@ -169,6 +169,95 @@ static int print_screens(void) {
     return 0;
 }
 
+static NSString *attribute_string(AXUIElementRef element, CFStringRef attribute) {
+    if (!element) return nil;
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(element, attribute, &value) != kAXErrorSuccess || !value) return nil;
+    if (CFGetTypeID(value) != CFStringGetTypeID()) {
+        CFRelease(value);
+        return nil;
+    }
+    return (__bridge_transfer NSString *)value;
+}
+
+static NSString *accessibility_selection(pid_t pid, NSString **window_title) {
+    AXUIElementRef application = AXUIElementCreateApplication(pid);
+    if (!application) return nil;
+    NSString *selected = nil;
+    CFTypeRef focused = NULL;
+    if (AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute, &focused) == kAXErrorSuccess && focused) {
+        selected = attribute_string((AXUIElementRef)focused, kAXSelectedTextAttribute);
+        CFRelease(focused);
+    }
+    CFTypeRef window = NULL;
+    if (AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute, &window) == kAXErrorSuccess && window) {
+        *window_title = attribute_string((AXUIElementRef)window, kAXTitleAttribute);
+        CFRelease(window);
+    }
+    CFRelease(application);
+    return selected;
+}
+
+static NSString *copied_selection(void) {
+    NSPasteboard *board = [NSPasteboard generalPasteboard];
+    NSInteger before = board.changeCount;
+    NSString *held = [board stringForType:NSPasteboardTypeString];
+
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    CGEventRef down = CGEventCreateKeyboardEvent(source, (CGKeyCode)8, true);
+    CGEventRef up = CGEventCreateKeyboardEvent(source, (CGKeyCode)8, false);
+    if (!down || !up) {
+        if (down) CFRelease(down);
+        if (up) CFRelease(up);
+        if (source) CFRelease(source);
+        return nil;
+    }
+    CGEventSetFlags(down, kCGEventFlagMaskCommand);
+    CGEventSetFlags(up, kCGEventFlagMaskCommand);
+    CGEventPost(kCGHIDEventTap, down);
+    CGEventPost(kCGHIDEventTap, up);
+    CFRelease(down);
+    CFRelease(up);
+    if (source) CFRelease(source);
+
+    NSString *copied = nil;
+    for (int attempt = 0; attempt < 40; attempt += 1) {
+        [NSThread sleepForTimeInterval:0.01];
+        if (board.changeCount == before) continue;
+        copied = [board stringForType:NSPasteboardTypeString];
+        break;
+    }
+    if (copied && held) {
+        [board clearContents];
+        [board setString:held forType:NSPasteboardTypeString];
+    }
+    return copied;
+}
+
+static int print_selection(void) {
+    NSMutableDictionary *item = [NSMutableDictionary dictionary];
+    if (!AXIsProcessTrusted()) {
+        item[@"error"] = @"accessibility";
+    } else {
+        NSRunningApplication *front = [NSWorkspace sharedWorkspace].frontmostApplication;
+        NSString *window = nil;
+        NSString *text = front ? accessibility_selection(front.processIdentifier, &window) : nil;
+        if (!text.length) text = copied_selection();
+        if (text.length) item[@"text"] = text;
+        if (front.localizedName.length) item[@"application"] = front.localizedName;
+        if (window.length) item[@"window"] = window;
+    }
+    NSData *json = [NSJSONSerialization dataWithJSONObject:item options:0 error:NULL];
+    if (!json) {
+        fputs("Emma: unable to serialize the selection.\n", stderr);
+        return 1;
+    }
+    fwrite(json.bytes, 1, json.length, stdout);
+    fputc('\n', stdout);
+    fflush(stdout);
+    return 0;
+}
+
 // Bounded computer-use input. One JSON action per stdin line, one JSON result per line.
 // Emma's Electron main process owns the permission gate; this helper only validates and posts.
 #define kMaxInputLine (64 * 1024)
@@ -677,6 +766,7 @@ int main(int argc, const char *argv[]) {
             return 0;
         }
         if (argc == 2 && strcmp(argv[1], "--screens") == 0) return print_screens();
+        if (argc == 2 && strcmp(argv[1], "--selection") == 0) return print_selection();
         if (argc == 2 && strcmp(argv[1], "--input") == 0) return run_input();
 
         NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};

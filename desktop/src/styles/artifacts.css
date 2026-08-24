@@ -1,125 +1,63 @@
-/* The Artifacts page, the card a thread shows inline, and the dialog either one
-   opens.
-
-   Same grammar as panels.css — rules not boxes, mono is the interface face, fill
-   only ever means state. The one deliberate exception is .artifact-card: a card
-   here is a frame around someone else's document, and the picture inside needs a
-   ground of its own to end against, which is also what the clip fades into.
-
-   Everything the app already owns is borrowed rather than restated: .content-empty
-   for the empty page, .shelf-chip for the kind filter, .modal-backdrop and
-   .agent-dialog for both dialogs, and panels.css's own .artifact-code for source —
-   only the token colours are new, because that rule never met a highlighted block
-   before. */
-
 .artifacts-view { height: 100%; overflow-y: auto; padding: var(--s-5) var(--content-gutter) var(--s-8); }
-/* The grid runs the full width of the window; the prose above it stays on the
-   reading column, like every other view's head. */
 .artifacts-view > header, .artifacts-view > .dialog-error { max-width: var(--content-column); }
 .artifacts-view > header > span { display: block; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .artifacts-view > header h2 { margin-top: var(--s-2); color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .artifacts-view > header p { max-width: 68ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
 .artifacts-view > .dialog-error { padding-inline: 0; }
 
-/* One filter row of intrinsically sized controls, the knowledge board's. */
 .artifacts-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-4); }
 .artifacts-toolbar input { min-width: 0; width: 220px; min-height: 26px; padding: 0 var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); transition: border-color var(--t); }
 .artifacts-toolbar input:hover { border-color: var(--border-strong); }
 
-/* ---------- The grid ---------- */
-
-/* auto-fill, not auto-fit: two artifacts should be two cards, not two half-window
-   billboards. 280px is the narrowest a rendered page still reads at. */
 .artifact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); align-content: start; gap: var(--s-3); margin-top: var(--s-4); }
 .artifact-grid:empty { display: none; }
 
 .artifact-card { display: grid; align-content: start; gap: var(--s-2); min-width: 0; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface); text-align: left; transition: border-color var(--t), background-color var(--t); }
 .artifact-card:hover { border-color: var(--border-strong); }
-/* On the grid the header and the picture sit inside the card's own open button;
-   inline in a thread the card is that button. Both spellings, one look. */
 :is(.artifact-card, .artifact-card-open) > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s-1) var(--s-2); min-width: 0; }
 :is(.artifact-card, .artifact-card-open) > header > span { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 :is(.artifact-card, .artifact-card-open) > header > strong { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t); }
-/* The revision count is a quantity read as data, so it takes orange like every other. */
 :is(.artifact-card, .artifact-card-open) > header > small { color: var(--orange); font: var(--fs-2xs)/1.4 var(--font-mono); white-space: nowrap; }
 
-/* The card's own hit target: everything but the action row. No box of its own —
-   it stands in for the card, so the title taking the accent is the whole hover. */
 .artifact-card-open { display: grid; align-content: start; gap: var(--s-2); width: 100%; min-width: 0; padding: 0; background: transparent; text-align: left; }
 .artifact-card-open:hover > header > strong { color: var(--accent); }
-
-/* The whole card is the hit target inline in a thread, so it is a button there —
-   .page-tile's composition, with the artifact itself where the tile has its image. */
 .artifact-card-inline { width: 100%; margin: var(--s-2) 0; }
 .artifact-card-inline:hover { background: var(--surface-2); }
 .artifact-card-inline:focus-visible { outline-offset: -2px; }
-/* In the transcript the card is a child of a .step, which conversation.css draws as
-   a baseline flex row. Rather than fight that rule, the row is allowed to wrap and
-   the card takes the whole of the line under the step's title. */
 .step:has(> .artifact-card) { flex-wrap: wrap; }
 .step > .artifact-card { flex: 1 0 100%; min-width: 0; }
 
-/* ---------- Clip and fade ---------- */
-
-/* A card shows enough to recognise the thing and no more. The fade is the card's
-   own ground, so what is cut off reads as cut off rather than as the end. */
 .artifact-clip { position: relative; max-height: 190px; overflow: hidden; min-width: 0; }
 .artifact-clip::after { content: ""; position: absolute; inset: auto 0 0; height: var(--s-7); background: linear-gradient(to bottom, transparent, var(--surface)); }
 .artifact-card-inline .artifact-clip { max-height: 150px; }
-/* The frame takes the clip's own height rather than 60vh with a window cut in it:
-   a page laid out for 640px and shown through 190px is a strip of its header. */
 .artifact-clip .artifact-frame { height: 190px; }
 .artifact-clip .artifact-code, .artifact-body .artifact-code { margin: 0; }
 .artifact-clip .artifact-prose { font-size: var(--fs-sm); }
 
-/* ---------- The renders ---------- */
-
-/* A page or a drawing brings its own colours and, almost always, assumes light
-   paper: on --surface a black-stroked SVG would be a black square. --solid is the
-   app's own light token, so the frame is legible without a pasted #fff. */
 .artifact-frame { display: block; width: 100%; height: min(60vh, 640px); border: 1px solid var(--border); background: var(--solid); }
-/* Highlighting is the same six colours off the shared palette markdown.css uses;
-   the rest of .artifact-code is panels.css's and stays there. */
 .artifact-code .tok-comment { color: var(--text-3); font-style: italic; }
 .artifact-code .tok-string { color: var(--lime); }
 .artifact-code .tok-number { color: var(--orange); }
 .artifact-code .tok-keyword { color: var(--violet); }
 .artifact-code .tok-tag { color: var(--blue); }
 .artifact-code .tok-attr { color: var(--teal); }
-/* Prose the user reads in sentences, so Inter, on the reading column. */
 .artifact-prose { max-width: 72ch; color: var(--text); font: var(--fs-md)/1.65 var(--font); }
 .artifact-mermaid { display: grid; justify-items: center; gap: var(--s-3); margin: 0; }
 .artifact-mermaid svg { max-width: 100%; height: auto; }
 .artifact-missing { margin-top: var(--s-3); color: var(--text-3); font: var(--fs-sm)/1.6 var(--font); }
 
-/* ---------- Actions ---------- */
-
-/* One outlined mono label per action, on the 28px target the rest of the app uses.
-   Delete is the only one that wears a hue, and it wears the one that means failure. */
 .artifact-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .artifact-actions button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
 .artifact-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
-/* On a grid card the three are marks, not words, so each is the same square the
-   dialog headers use — the name is on the button, read out rather than drawn. */
 .artifact-icons button { display: grid; place-items: center; width: 28px; padding: 0; }
 .artifact-actions .artifact-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .artifact-actions .artifact-danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--danger-surface); }
 
-/* ---------- The dialogs ---------- */
-
-/* Banded like the file preview and for the same reason: header, location, body.
-   Wider than a decision dialog because it holds a document. */
 .artifact-dialog { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; width: min(900px, 100%); max-height: 88vh; }
 .artifact-dialog > header { gap: var(--s-2); }
-/* The title band takes the slack so the toggles sit together at the right end. */
 .artifact-dialog > header > div { flex: 1; margin-right: auto; }
-/* panels.css sizes every button in a dialog header as a 24px square, which is what
-   the close glyph wants and what a word cannot live in — these two are labels, so
-   they are let out to the width of their text. */
 .artifact-dialog > header .artifact-toggle { width: auto; height: 24px; padding: 0 var(--s-2); border: 1px solid var(--border); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .artifact-dialog > header .artifact-toggle:hover { color: var(--text); border-color: var(--border-strong); }
-/* Where the file is, is half the question, so it is the whole width and clicking
-   it is the reveal. */
 .artifact-location { display: block; width: 100%; padding: var(--s-2) var(--s-4); overflow: hidden; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-3); font: var(--fs-xs)/1.4 var(--font-code); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-location:hover { color: var(--accent); }
 .artifact-body { min-height: 0; overflow: auto; padding: var(--s-4); }
@@ -130,14 +68,4 @@
 .artifact-confirm > p b { color: var(--text); font-weight: 400; }
 .artifact-confirm .artifact-actions { padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
 
-/* ---------- What Emma mounted into Emma ---------- */
-
-/* A region Emma wrote needs no styling of its own — it is inside the app's tree
-   and reaches the same stylesheet the built-in region does. This is the one thing
-   that is not the region's: the note saying the built-in came back, and why.
-
-   `fixed` is the whole point of it: a region sits in the workspace grid, so an
-   in-flow sibling would take the grid cell next to it and shove every pane one
-   place over — the layout would break worse than the module did. Out of flow it
-   cannot be a grid item at all, and the same rule works in the island's window. */
 .region-error { position: fixed; z-index: 60; bottom: var(--s-3); left: var(--s-3); max-width: min(420px, calc(100vw - 2 * var(--s-3))); margin: 0; padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: var(--danger-surface); color: var(--text-2); font: var(--fs-xs)/1.5 var(--font); }

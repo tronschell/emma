@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { externalUrl, runCommandRequest, MAX_ARTIFACT_EDIT_CHARS, MAX_FETCHED_TEXT_CHARS, MAX_SCREEN_CONTEXT_CHARS, metaContent, readablePage, trustedSender, validJpegDataUrl, validateRequest } from "../main/ipc";
+import { externalUrl, keepRequest, runCommandRequest, MAX_FETCHED_TEXT_CHARS, metaContent, readablePage, trustedSender, validJpegDataUrl, validateRequest, vaultRequest } from "../main/ipc";
+import { MAX_NOTE_BYTES, MAX_TITLE_BYTES } from "../shared/vault";
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
-import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveLocalModel, defaultSettings, fontStack, forgetLocalModel, isEnvName, localEndpoint, localModelEndpoint, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, migrateQuickActionDestinations, normalizeLocalModelEndpoint, printableSecret, resolveQuickActionDestination, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
+import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveLocalModel, defaultSettings, fontStack, forgetLocalModel, isEnvName, localEndpoint, localModelEndpoint, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, normalizeLocalModelEndpoint, printableSecret, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { hotspotLayout, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
@@ -46,46 +47,46 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", attachedImages: "[\"a\",\"b\"]" } }).params.attachedImages, "[\"a\",\"b\"]");
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", screenContext: "data:image/jpeg;base64,/9j/" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "shell", params: {} }), /not allowed/);
-  // Only main writes assistant turns: a renderer that could call these would be
-  // able to forge an answer into a thread or submit tool output nobody ran.
   assert.throws(() => validateRequest({ method: "recordTurn", params: { threadId: "thread-123456789", prompt: "p", response: "r" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "submitToolResult", params: { threadId: "thread-123456789", results: "[]" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
   assert.deepEqual(validateRequest({ method: "selectLocalModel", params: { baseUrl: "http://127.0.0.1:1234/v1", modelId: "qwen3:8b", credentialEnv: "" } }).params, { baseUrl: "http://127.0.0.1:1234/v1", modelId: "qwen3:8b", credentialEnv: "" });
-  // The picker sends a blank effort to mean "the model's own default", not "no field".
   assert.deepEqual(validateRequest({ method: "selectOpenRouterModel", params: { modelId: "google/gemma-4-26b-a4b-it:free", effort: "" } }).params, { modelId: "google/gemma-4-26b-a4b-it:free", effort: "" });
   assert.equal(validateRequest({ method: "selectOpenRouterModel", params: { modelId: "x/y" } }).params.modelId, "x/y");
-  // Quick Ask sends a blank model to unpin the thread it pinned, which is a value too.
   assert.equal(validateRequest({ method: "setThreadModel", params: { threadId: "thread-123456789", modelId: "" } }).params.modelId, "");
   assert.throws(() => validateRequest({ method: "setThreadModel", params: { threadId: "", modelId: "x/y" } }), /Invalid parameters/);
   assert.deepEqual(validateRequest({ method: "saveScheduledJob", params: { title: "Weekly", schedule: "0 9 * * 1", prompt: "Find reading", sourceDomains: "[]", permissionMode: "ask" } }).method, "saveScheduledJob");
-  // A rewrite names the job and carries its graph; a blank one of either is not a value.
   assert.equal(validateRequest({ method: "saveScheduledJob", params: { jobId: "job-123456789012", title: "Weekly", schedule: "manual", prompt: "Find reading", nodes: "[]", sourceDomains: "[]", permissionMode: "ask" } }).params.jobId, "job-123456789012");
   assert.throws(() => validateRequest({ method: "saveScheduledJob", params: { jobId: "", title: "Weekly", schedule: "manual", prompt: "Find reading", sourceDomains: "[]", permissionMode: "ask" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "setScheduledJobEnabled", params: { jobId: "job-123456789012", enabled: true } }), /Invalid parameters/);
-  assert.equal(validateRequest({ method: "updatePage", params: { pageId: "p", title: "x", category: "c", summary: "x", body: "" } }).params.body, "");
-  assert.throws(() => validateRequest({ method: "updatePage", params: { pageId: "p", title: "x".repeat(65_536), category: "c", summary: "x".repeat(65_536), body: "x".repeat(65_536) } }), /too large/);
-  const artifacts = JSON.stringify([{ id: "summary", type: "rich-text", version: 1, source: {}, payload: { markdown: "Summary" }, fallback: "Summary" }]);
-  assert.equal(validateRequest({ method: "updatePageDocument", params: { pageId: "p", title: "x", category: "c", summary: "Summary", body: "Body", artifacts } }).method, "updatePageDocument");
-  assert.throws(() => validateRequest({ method: "updatePageDocument", params: { pageId: "p", title: "x", category: "c", summary: "x", body: "x", artifacts: "x".repeat(MAX_ARTIFACT_EDIT_CHARS + 1) } }), /Invalid parameters/);
+  assert.throws(() => validateRequest({ method: "captureToKnowledge", params: { knowledgeBaseId: "base-1", category: "research", title: "Paper", text: "Body" } }), /not allowed/);
+  assert.throws(() => validateRequest({ method: "analyzePage", params: { pageId: "p" } }), /not allowed/);
+  assert.throws(() => validateRequest({ method: "saveToKnowledge", params: { threadId: "thread-123456789" } }), /not allowed/);
 });
 
-test("knowledge capture and document methods stay inside the host request budget", () => {
-  const capture = { knowledgeBaseId: "base-1", category: "research", title: "Paper", text: "Body" };
-  assert.equal(validateRequest({ method: "captureToKnowledge", params: capture }).method, "captureToKnowledge");
-  assert.equal(validateRequest({ method: "captureToKnowledge", params: { ...capture, sourceUrl: "https://example.com", image: "data:image/jpeg;base64,/9j/" } }).params.image, "data:image/jpeg;base64,/9j/");
-  assert.throws(() => validateRequest({ method: "captureToKnowledge", params: { ...capture, image: "x".repeat(MAX_SCREEN_CONTEXT_CHARS + 1) } }), /Invalid parameters/);
-  // An image at the field ceiling plus a full text body still has to fit one host request.
-  assert.throws(() => validateRequest({ method: "captureToKnowledge", params: { ...capture, text: "x".repeat(60_000), image: `data:image/jpeg;base64,${"A".repeat(MAX_SCREEN_CONTEXT_CHARS - 24)}` } }), /too large/);
-  assert.throws(() => validateRequest({ method: "captureToKnowledge", params: { ...capture, unexpected: "x" } }), /Invalid parameters/);
-  assert.equal(validateRequest({ method: "listPageVersions", params: { pageId: "p" } }).method, "listPageVersions");
-  assert.equal(validateRequest({ method: "restorePageVersion", params: { pageId: "p", name: "0000000001-000000000" } }).method, "restorePageVersion");
-  assert.equal(validateRequest({ method: "analyzePage", params: { pageId: "p" } }).method, "analyzePage");
-  assert.equal(validateRequest({ method: "chatAboutPage", params: { pageId: "p", content: "What changed?" } }).method, "chatAboutPage");
-  assert.equal(validateRequest({ method: "revisePageDocument", params: { pageId: "p", instruction: "Add a chart" } }).method, "revisePageDocument");
-  assert.equal(validateRequest({ method: "readPageAsset", params: { name: "asset-1.jpeg" } }).method, "readPageAsset");
-  assert.throws(() => validateRequest({ method: "readPageAsset", params: { name: "" } }), /Invalid parameters/);
+test("a vault is named, never handed over as a path", () => {
+  assert.deepEqual(vaultRequest({ kind: "obsidian", name: "Second Brain" }), { kind: "obsidian", name: "Second Brain" });
+  assert.deepEqual(vaultRequest({ kind: "folder", folder: "notes/kept" }), { kind: "folder", name: "", folder: "notes/kept" });
+  assert.throws(() => vaultRequest({ kind: "obsidian" }), /Vault choice is invalid/);
+  assert.throws(() => vaultRequest({ kind: "dropbox", name: "x" }), /Vault choice is invalid/);
+  assert.deepEqual(vaultRequest({ kind: "folder", root: "/Users/someone/Notes" }), { kind: "folder", name: "" });
+  assert.throws(() => vaultRequest({ kind: "folder", folder: "../../etc" }), /Vault folder is invalid/);
+  assert.throws(() => vaultRequest({ kind: "folder", folder: "/absolute" }), /Vault folder is invalid/);
+  assert.throws(() => vaultRequest("obsidian"), /Vault choice is invalid/);
+});
+
+test("a keep carries bounded text, one image, and a public source at most", () => {
+  assert.deepEqual(keepRequest({ kind: "note", text: "Remember this" }), { kind: "note", text: "Remember this" });
+  assert.deepEqual(keepRequest({ kind: "page", title: "", text: "Body", sourceUrl: "https://example.com/a" }), { kind: "page", text: "Body", sourceUrl: "https://example.com/a" });
+  assert.equal(keepRequest({ kind: "screenshot", image: "data:image/png;base64,iVBORw0=" }).image, "data:image/png;base64,iVBORw0=");
+  assert.throws(() => keepRequest({ kind: "note" }), /Keep request is empty/);
+  assert.throws(() => keepRequest({ kind: "wiki", text: "x" }), /Keep request is invalid/);
+  assert.throws(() => keepRequest({ kind: "note", text: "x", sourceUrl: "file:///etc/passwd" }), /Keep source is invalid/);
+  assert.throws(() => keepRequest({ kind: "note", text: "x".repeat(MAX_NOTE_BYTES + 1) }), /Keep text is invalid/);
+  assert.throws(() => keepRequest({ kind: "note", title: "x".repeat(MAX_TITLE_BYTES + 1), text: "x" }), /Keep title is invalid/);
+  assert.throws(() => keepRequest({ kind: "screenshot", image: "data:text/html;base64,PHA+" }), /Keep image is invalid/);
+  assert.throws(() => keepRequest({ kind: "screenshot", image: "data:image/png;base64,not base64" }), /Keep image is invalid/);
 });
 
 test("host response lines are framed and bounded before JSON parsing", () => {
@@ -105,13 +106,9 @@ test("host response lines are framed and bounded before JSON parsing", () => {
   assert.deepEqual(parseHostLine('{"id":"1","ok":true,"result":null}'), { id: "1", ok: true, result: null });
   assert.throws(() => parseHostLine('{"id":"1","ok":true}'), /envelope/);
   assert.throws(() => parseHostLine('{"id":"1","ok":false,"error":null}'), /envelope/);
-  // The host pushes due jobs and nothing else; a line that resolves no request and is
-  // not a job is a protocol the two sides no longer share.
   assert.throws(() => parseHostLine('{"threadId":"t","delta":"hi"}'), /Invalid host response/);
   assert.deepEqual(parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full","depth":0}}'), { dueJob: { jobId: "j", threadId: "t", title: "T", prompt: "p", nodes: "", variables: "{}", permissionMode: "full", depth: 0 } });
   assert.throws(() => parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p"}}'), /due job envelope/);
-  // The graph, its starting variables and how deep the trigger chain is are part of
-  // the envelope: a run missing them would silently become a bare one-step run.
   assert.throws(() => parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full"}}'), /due job envelope/);
 });
 
@@ -121,13 +118,9 @@ test("a recorded turn is cut to fit the host's request line", () => {
   assert.deepEqual(small, { ...telemetry, prompt: "hi", response: "<think>weighing it up</think>\ndone" });
   const huge = recordedTurn({ ...telemetry, prompt: "hi", thinking: "thought\n".repeat(50_000), answer: "answer\n".repeat(50_000) });
   assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= MAX_RECORDED_TURN_BYTES);
-  // Both tags survive the cut, or `splitThinking` reads the whole turn as an
-  // unfinished scratchpad and the answer disappears from the transcript.
   assert.match(huge.response, /^<think>thought/);
   assert.match(huge.response, /<\/think>\nanswer/);
   assert.match(huge.response, /characters elided/);
-  // One long line loses its middle rather than the whole answer, and the cut
-  // never lands between the halves of a surrogate pair.
   const unbroken = recordedTurn({ ...telemetry, prompt: "hi", answer: `x${"🙂".repeat(200_000)}done` });
   assert.ok(Buffer.byteLength(JSON.stringify(unbroken)) <= MAX_RECORDED_TURN_BYTES);
   assert.ok(unbroken.response.startsWith("x🙂"));
@@ -201,12 +194,10 @@ test("the default permission mode round-trips, and a store that predates it open
   const legacy = { ...defaultSettings } as Record<string, unknown>;
   delete legacy.defaultPermissionMode;
   assert.equal(validateSettings(legacy).defaultPermissionMode, DEFAULT_PERMISSION_MODE);
-  // A rung nobody ships is not a reason to lose the rest of the settings.
   assert.equal(validateSettings({ ...defaultSettings, defaultPermissionMode: "root" }).defaultPermissionMode, DEFAULT_PERMISSION_MODE);
 });
 
 test("voice settings stay local and survive stores that predate them", () => {
-  // The whole point of the cleanup stage is that it is another local server, not a cloud one.
   assert.throws(() => validateSettings({ ...defaultSettings, voiceCleanupEndpoint: "https://api.openai.com/v1/chat/completions" }), /local/);
   assert.throws(() => validateSettings({ ...defaultSettings, voiceHoldMs: 5 }), /Voice/);
   assert.throws(() => validateSettings({ ...defaultSettings, voiceCleanupModel: "" }), /Voice/);
@@ -234,11 +225,9 @@ test("main re-checks the voice payload the renderer sends it", () => {
 
 test("cleanup can improve a transcript but never replace it with something else", () => {
   assert.equal(cleanedTranscript("um so i think we should ship it", "So I think we should ship it."), "So I think we should ship it.");
-  // A wrong model under the same name answers *about* the transcript; keep what was heard.
   assert.equal(cleanedTranscript("ship it", "Certainly! Here is an analysis of the transcript you provided, along with several suggestions for how it might be improved."), "ship it");
   assert.equal(cleanedTranscript("um", ""), "");
   assert.equal(cleanedTranscript("a real sentence that was definitely spoken", ""), "a real sentence that was definitely spoken");
-  // Thinking mode left on is the model card's named failure: strip the block, keep the answer.
   assert.equal(cleanedTranscript("ship it friday", "<think>\nThe user said friday.\n</think>\n\nShip it Friday."), "Ship it Friday.");
   assert.ok(isVoiceModel("s1-mini-q4_k_m.gguf") && isVoiceModel("superwhisper/s1-mini-GGUF") && !isVoiceModel("Qwen3-ASR-0.6B"));
 });
@@ -248,12 +237,10 @@ test("the island names the one thing blocking dictation", () => {
   const live = { ...unknownVoiceStatus, microphone: "granted" as const, speech: true };
   assert.equal(voiceReady(live, on), true);
   assert.equal(voiceBlocker(live, on), "");
-  // Cleanup being absent costs punctuation, not speech — it must not block.
   assert.equal(voiceReady({ ...live, cleanup: false, model: false }, on), true);
   assert.match(voiceBlocker(live, { ...on, transcriptionEnabled: false }), /off/);
   assert.match(voiceBlocker({ ...live, microphone: "denied" }, on), /Microphone/);
   assert.match(voiceBlocker({ ...live, speech: false }, on), /speech-to-text/);
-  // The macOS engine knows why it cannot hear, and that sentence is what the island shows.
   const apple = { ...on, transcriptionEngine: "apple" as const };
   assert.match(voiceBlocker({ ...live, speech: false, speechError: "Dictation is off." }, apple), /Dictation is off/);
   assert.match(voiceBlocker({ ...live, speech: false }, apple), /macOS recognizer/);
@@ -261,11 +248,9 @@ test("the island names the one thing blocking dictation", () => {
 
 test("the macOS engine needs no endpoint, and the server engine still does", () => {
   assert.equal(validateSettings({ ...defaultSettings, transcriptionEnabled: true }).transcriptionEngine, "apple");
-  // The endpoint is meaningless to the macOS recognizer, so a broken one must not block a save.
   assert.equal(validateSettings({ ...defaultSettings, transcriptionEnabled: true, transcriptionEndpoint: "https://example.com/v1/audio/transcriptions" }).transcriptionEngine, "apple");
   assert.throws(() => validateSettings({ ...defaultSettings, transcriptionEnabled: true, transcriptionEngine: "server", transcriptionEndpoint: "https://example.com/v1/audio/transcriptions" }), /local/);
   assert.throws(() => validateSettings({ ...defaultSettings, transcriptionEngine: "sphinx" }), /Transcription/);
-  // Settings saved before the engine existed configured the server one, and keep it.
   const legacy = { ...defaultSettings } as Record<string, unknown>;
   delete legacy.transcriptionEngine;
   assert.equal(validateSettings(legacy).transcriptionEngine, "server");
@@ -275,21 +260,15 @@ test("font choices survive a round trip and reject anything unlisted", () => {
   const settings = validateSettings({ ...defaultSettings, interfaceFont: "serif", agentFont: "mono" });
   assert.equal(settings.interfaceFont, "serif");
   assert.match(fontStack(settings.agentFont), /ui-monospace/);
-  // Older stored settings predate the fields and must still load.
   const legacy = { ...defaultSettings } as Record<string, unknown>;
   delete legacy.interfaceFont; delete legacy.agentFont;
   assert.equal(validateSettings(legacy).interfaceFont, defaultSettings.interfaceFont);
   assert.throws(() => validateSettings({ ...defaultSettings, agentFont: "comic-sans" }), /Font/);
 });
 
-test("quick action destinations use base IDs and migrate legacy names", () => {
-  const bases = [{ id: "kb-research-opaque", name: "Research" }, { id: "kb-writing-opaque", name: "Writing" }];
-  const legacy = validateSettings({ ...defaultSettings, quickActions: defaultSettings.quickActions.map((action, index) => index === 0 ? { ...action, destinationKnowledgeBaseId: "Research" } : action) });
-  const migrated = migrateQuickActionDestinations(legacy, bases);
-  assert.equal(migrated.quickActions[0].destinationKnowledgeBaseId, "kb-research-opaque");
-  assert.equal(resolveQuickActionDestination("kb-writing-opaque", bases), "kb-writing-opaque");
-  assert.equal(resolveQuickActionDestination("removed-base", bases), undefined);
-  assert.equal(migrated.quickActions[0].prompt, legacy.quickActions[0].prompt);
+test("a quick action keeps only what it is, so a dead knowledge destination cannot ride along", () => {
+  const [first] = validateSettings({ ...defaultSettings, quickActions: defaultSettings.quickActions.map((action, index) => index === 0 ? { ...action, destinationKnowledgeBaseId: "Research", saveToKnowledge: true } : action) }).quickActions;
+  assert.deepEqual(Object.keys(first).sort(), ["category", "label", "prompt"]);
 });
 
 test("local model profiles stay loopback-only and support keyless servers", () => {
@@ -330,22 +309,17 @@ test("starred models cap at six and drop with their local profile", () => {
 test("overlay settings migrate old values and keep calibration bounded", () => {
   const legacy = { quickActions: defaultSettings.quickActions, transcriptionEnabled: defaultSettings.transcriptionEnabled, transcriptionEndpoint: defaultSettings.transcriptionEndpoint, transcriptionModel: defaultSettings.transcriptionModel };
   assert.deepEqual(validateSettings(legacy).notchGap, defaultSettings.notchGap);
-  // Old stores predate the cursor ring; it comes back with its defaults rather than failing.
   assert.deepEqual(validateSettings(legacy).cursorOrbs, defaultSettings.cursorOrbs);
   assert.equal(validateSettings(legacy).cursorOrbsEnabled, true);
-  // An older renderer sends no notch behaviour; it comes back on the default rather than failing.
   assert.deepEqual(validateOverlayPreferences({ notchGap: 196, cursorOrbsEnabled: false }), { notchGap: 196, cursorOrbsEnabled: false, notchConcurrency: "separate" });
   assert.equal(validateOverlayPreferences({ notchGap: 196, cursorOrbsEnabled: false, notchConcurrency: "continue" }).notchConcurrency, "continue");
   assert.equal(validateOverlayPreferences({ notchGap: 196, cursorOrbsEnabled: false, notchConcurrency: "both" }).notchConcurrency, "separate");
   assert.throws(() => validateOverlayPreferences({ notchGap: 261, cursorOrbsEnabled: true }), /invalid/);
   assert.throws(() => validateOverlayPreferences({ notchGap: 196 }), /invalid/);
-  // The ring holds 1 to MAX_CURSOR_ORBS known commands, in any order, duplicates allowed.
   assert.deepEqual(validateSettings({ ...defaultSettings, cursorOrbs: ["draw", "draw", "workspace"] }).cursorOrbs, ["draw", "draw", "workspace"]);
   assert.throws(() => validateSettings({ ...defaultSettings, cursorOrbs: [] }), /cursor orbs/);
   assert.throws(() => validateSettings({ ...defaultSettings, cursorOrbs: Array(MAX_CURSOR_ORBS + 1).fill("screen") }), /cursor orbs/);
   assert.throws(() => validateSettings({ ...defaultSettings, cursorOrbs: ["rm -rf"] }), /cursor orbs/);
-  // The notch defaults to the workspace's model and to a task of its own; only an
-  // OpenRouter route can be pinned to a thread, so nothing else may be saved as one.
   assert.equal(validateSettings(legacy).notchModel, "");
   assert.equal(validateSettings(legacy).notchConcurrency, "separate");
   assert.equal(validateSettings({ ...defaultSettings, notchModel: "openrouter:vendor/model" }).notchModel, "openrouter:vendor/model");
@@ -357,20 +331,15 @@ test("overlay settings migrate old values and keep calibration bounded", () => {
 test("overlay geometry hangs off the reported camera housing and falls back to the calibrated gap", () => {
   const notched = { bounds: { x: 0, y: 0, width: 1512, height: 982 }, workArea: { x: 0, y: 38, width: 1512, height: 944 } };
   const housing = { id: 1, x: 663, width: 185, height: 38 };
-  // The island covers the menu bar and centres on the housing.
   const island = overlayLayout(notched, { notchGap: 180 }, housing);
   assert.deepEqual(island.bounds, { x: 446, y: 0, width: 620, height: 261 });
   assert.deepEqual(island.notch, { left: 217, width: 185, height: 38 });
-  // No housing: a virtual notch of the calibrated gap, centred on the display.
   const external = { bounds: { x: -1920, y: 0, width: 1920, height: 1080 }, workArea: { x: -1920, y: 25, width: 1920, height: 1055 } };
   const plain = overlayLayout(external, { notchGap: 180 });
   assert.deepEqual(plain.bounds, { x: -1270, y: 0, width: 620, height: 248 });
   assert.deepEqual(plain.notch, { left: 220, width: 180, height: 25 });
-  // The idle hover target is the housing plus a small margin, hanging just below the menu bar.
   const target = hotspotLayout(notched, housing);
   assert.deepEqual(target, { bounds: { x: 649, y: 0, width: 213, height: 82 }, notch: { left: 14, width: 185, height: 38 } });
-  // The sliver only exists while the cursor is near it, so the hover radius and the wider
-  // radius that builds the window ahead of the cursor both have to hold at their edges.
   assert.equal(nearBounds(target.bounds, { x: 700, y: 20 }), true);
   assert.equal(nearBounds(target.bounds, { x: 649, y: 82 }), true);
   assert.equal(nearBounds(target.bounds, { x: 648, y: 20 }), false);
@@ -378,10 +347,8 @@ test("overlay geometry hangs off the reported camera housing and falls back to t
   assert.equal(nearBounds(target.bounds, { x: 500, y: 250 }, 220), true);
   assert.equal(nearBounds(target.bounds, { x: 428, y: 20 }, 220), false);
   assert.equal(nearBounds(target.bounds, { x: 700, y: 303 }, 220), false);
-  // The island stays inside the display when the housing sits near an edge.
   const edge = overlayLayout(notched, { notchGap: 180 }, { ...housing, x: 1300 });
   assert.deepEqual(edge.bounds.x, 892);
-  // The quick thread may extend the island, bounded, and only through a finite number.
   assert.equal(overlayGrowth(120.4), 120);
   assert.equal(overlayGrowth(9999), 260);
   assert.equal(overlayGrowth(-5), 0);
@@ -395,25 +362,19 @@ test("overlay geometry hangs off the reported camera housing and falls back to t
 
 test("the status chip parks inside the work area and the island opens beside it", () => {
   const display = { bounds: { x: 0, y: 0, width: 1512, height: 982 }, workArea: { x: 0, y: 38, width: 1512, height: 944 } };
-  // Nothing dragged yet: the top right corner, under the menu bar rather than through it.
   assert.deepEqual(pillLayout(display), { x: 1452, y: 54, width: 44, height: 44 });
-  // Dragged: where the user put it, and never past an edge it could not be grabbed back from.
   assert.deepEqual(pillLayout(display, { x: 300, y: 500 }), { x: 300, y: 500, width: 44, height: 44 });
   assert.deepEqual(pillLayout(display, { x: 4000, y: 4000 }), { x: 1468, y: 938, width: 44, height: 44 });
   assert.deepEqual(pillLayout(display, { x: -40, y: -40 }), { x: 0, y: 38, width: 44, height: 44 });
-  // The island hangs off the chip: its own inset to the left of it, and as tall as the
-  // thread it collapsed with.
   const beside = popoutLayout(display, { x: 300, y: 500 }, 120);
   assert.deepEqual(beside, { bounds: { x: 280, y: 500, width: 620, height: 245 }, base: 125 });
-  // A chip parked in the corner pulls the island back onto the display rather than off it.
   assert.deepEqual(popoutLayout(display, { x: 1452, y: 938 }).bounds, { x: 892, y: 857, width: 620, height: 125 });
-  // Growth arrives from the renderer, so the same bound applies here as to the island.
   assert.equal(popoutLayout(display, { x: 300, y: 500 }, 9999).bounds.height, 385);
   assert.equal(popoutLayout(display, { x: 300, y: 500 }, "120").bounds.height, 125);
 });
 
 test("draft reconciliation checks only messages persisted by the attempted turn", () => {
-  const snapshot: Snapshot = { threads: [{ id: "thread-1", title: "Draft test", knowledgeBaseId: "default", sourceKnowledgeBaseIds: ["default"], createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] }], knowledgeBases: [], pages: [], scheduledJobs: [], researchJobs: [], warnings: [] };
+  const snapshot: Snapshot = { threads: [{ id: "thread-1", title: "Draft test", createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] }], scheduledJobs: [], researchJobs: [], warnings: [] };
   assert.equal(hasPersistedPrompt(snapshot, "thread-1", 1, "retry"), true);
   assert.equal(hasPersistedPrompt(snapshot, "thread-1", 2, "retry"), false);
 });
@@ -442,8 +403,6 @@ test("pane layout restores only bounded persisted values", () => {
   const fitted = validatePaneLayout({ sidebarWidth: 340, inspectorWidth: 360 }, 900);
   assert.deepEqual([fitted.sidebarWidth, fitted.inspectorWidth], [270, 310]);
   assert.ok(900 - fitted.sidebarWidth - fitted.inspectorWidth >= 320);
-  // An unpainted window reports 0 — it must not be read as "no room", or the widths
-  // shrink to their minimums and the caller persists that over the user's own.
   const saved = { sidebarWidth: 340, inspectorWidth: 360 };
   assert.deepEqual(validatePaneLayout(saved, 0), validatePaneLayout(saved));
 });
@@ -467,15 +426,12 @@ test("a clipped page keeps the article and drops the site's furniture", () => {
     <body><header><nav><a href="/pricing">Solutions BY COMPANY SIZE Enterprises</a><a href="/copilot">Platform AI CODE CREATION</a></nav></header>
       <main><h1>hermes-agent</h1><p>${"The agent that grows with you. ".repeat(20)}</p><nav>On this page</nav></main>
       <footer>© GitHub</footer></body></html>`);
-  // og:title over <title>: the page's own name for itself, without the site's suffix.
   assert.equal(page.title, "NousResearch/hermes-agent");
   assert.match(page.text, /^hermes-agent/);
   assert.doesNotMatch(page.text, /COMPANY SIZE|CODE CREATION|On this page|© GitHub/);
 });
 
 test("a page built by script is captured as its own description", () => {
-  // A video page: the body is a script and a mount point, so stripping tags leaves
-  // nothing worth filing. The description is what the page would have shown.
   const page = readablePage(`<html><head><title>Some talk - YouTube</title>
     <meta property="og:description" content="A talk about agents that grow with you.">
     <meta property="og:image" content="https://i.ytimg.com/vi/x/hq.jpg"></head>
@@ -492,18 +448,15 @@ test("a meta name ends where it ends", () => {
 test("keybinds refuse what macOS and app menus already own", () => {
   assert.equal(keybindProblem("Command+Alt+E"), "");
   assert.equal(keybindProblem("Control+Shift+Space"), "");
-  // No ⌘/⌃/⌥ means it fires mid-sentence; ⌘ plus one key is menu-bar territory.
   assert.match(keybindProblem("Shift+K"), /Add ⌘/);
   assert.match(keybindProblem("Command+S"), /app menus/);
   assert.notEqual(keybindProblem("Command+Space"), "");
   assert.match(keybindProblem("Command+Shift+4"), /macOS already/);
   assert.match(keybindProblem("Control+Up"), /macOS already/);
   assert.match(keybindProblem("Command+Alt+Sleep"), /normal key/);
-  // Modifier order never changes which shortcut this is.
   assert.equal(normalizeAccelerator("Shift+Alt+Command+K"), "Command+Alt+Shift+K");
   assert.equal(accelLabel("Alt+Command+Space"), "⌘⌥␣");
   assert.deepEqual(validateSettings({ ...defaultSettings, keybinds: { toggle: comboKeybind("Alt+Shift+Command+E"), draw: comboKeybind("") } }).keybinds, { toggle: comboKeybind("Command+Alt+Shift+E") });
-  // Old stores have no keybinds at all, and one combination cannot run two actions.
   assert.deepEqual(validateSettings({ ...defaultSettings, keybinds: undefined }).keybinds, {});
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { toggle: comboKeybind("Control+Alt+E"), draw: comboKeybind("Alt+Control+E") } }), /bound twice/);
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { nope: comboKeybind("Control+Alt+E") } }), /invalid/);
@@ -513,12 +466,9 @@ test("holds are modifiers only, and reach the native listener as key codes", () 
   const held = validateSettings({ ...defaultSettings, keybinds: { voice: holdKeybind("AltLeft", 500) } }).keybinds;
   assert.deepEqual(held, { voice: holdKeybind("AltLeft", 500) });
   assert.equal(keybindLabel(held.voice!), "Hold ⌥ left · 500ms");
-  // Only what the listener needs: which physical key, and for how long.
   assert.deepEqual(holdBindings({ voice: holdKeybind("AltRight", 750), toggle: comboKeybind("Control+Alt+E") }), [{ id: "voice", keyCode: 61, ms: 750 }]);
-  // A held letter would autorepeat into whatever is in front, so it is not bindable.
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { voice: holdKeybind("KeyE", 500) } }), /modifier key/);
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { voice: holdKeybind("AltLeft", 5000) } }), /too short or too long/);
-  // The same modifier cannot run two actions, whatever each one's duration is.
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { voice: holdKeybind("AltLeft", 500), draw: holdKeybind("AltLeft", 1000) } }), /bound twice/);
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { voice: { accelerator: "Control+Alt+E", hold: "AltLeft", ms: 500 } } }), /invalid/);
 });

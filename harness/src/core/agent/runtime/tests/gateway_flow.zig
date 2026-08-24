@@ -2394,7 +2394,7 @@ test "processQueuedPrompt routes images natively whenever the model can see" {
     }
 }
 
-test "processQueuedPrompt rejects native-route attachment ID Vision calls before permission or execution" {
+test "processQueuedPrompt runs native-route attachment ID Vision calls" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2411,8 +2411,8 @@ test "processQueuedPrompt rejects native-route attachment ID Vision calls before
     )};
     const completions = [_]FakeCompletion{
         .{ .tool_calls = &calls },
-        .{ .content = "Recovered after unavailable Vision" },
-        .{ .content = "Pre-fix provider continuation" },
+        .{ .content = "{\"images\":[{\"image_id\":1,\"status\":\"ok\",\"summary\":\"FX logo\",\"visible_text\":[],\"details\":[]}]}" },
+        .{ .content = "Answered from Vision evidence" },
     };
     var gateway = FakeGateway.init(alloc, &completions);
     defer gateway.deinit();
@@ -2440,29 +2440,16 @@ test "processQueuedPrompt rejects native-route attachment ID Vision calls before
 
     try runFakePrompt(&gateway, &hooks, fixture.config(), job);
 
-    try std.testing.expectEqual(@as(usize, 2), gateway.request_models.items.len);
-    try std.testing.expectEqualStrings("native/test-vision", gateway.request_models.items[0]);
-    try std.testing.expectEqualStrings("native/test-vision", gateway.request_models.items[1]);
+    try std.testing.expectEqual(@as(usize, 3), gateway.request_models.items.len);
     try expectBodyContains(&gateway, 0, "\"type\":\"image_url\"");
     try expectBodyContains(&gateway, 0, "\"name\":\"vision\"");
-    try expectBodyNotContains(&gateway, 1, image_path);
-    try std.testing.expectEqual(@as(usize, 0), hooks.permission_names.items.len);
-    try std.testing.expectEqual(@as(usize, 0), hooks.executed_names.items.len);
-    try std.testing.expectEqual(@as(usize, 0), hooks.lifecycle_events.items.len);
-    try std.testing.expectEqual(@as(usize, 0), vision_runtime.execution_count);
-    try std.testing.expectEqual(@as(usize, 0), vision_runtime.result_count);
-    try std.testing.expectEqual(@as(usize, 1), hooks.rejected_names.items.len);
-    try std.testing.expectEqualStrings("vision", hooks.rejected_names.items[0]);
-    try std.testing.expectEqual(@as(usize, 0), hooks.system_notices.items.len);
-    try std.testing.expectEqual(@as(usize, 0), hooks.interactive_notices.items.len);
-    try std.testing.expectEqual(@as(usize, 1), hooks.history_turns.items.len);
-    const results = hooks.history_turns.items[0].assistant.execution.tool_steps[0].tool_results;
-    try std.testing.expectEqual(@as(usize, 1), results.len);
-    try std.testing.expectEqual(types.PersistedToolStatus.failure, results[0].status);
-    try std.testing.expectEqualStrings("vision", results[0].tool_name);
-    try std.testing.expect(std.mem.find(u8, results[0].output, "Vision is unavailable for this request.") != null);
-    try expectBodyContains(&gateway, 1, "Vision is unavailable for this request.");
-    try std.testing.expectEqualStrings("Recovered after unavailable Vision", hooks.finish_assistant_text.?);
+    try expectBodyContains(&gateway, 0, "[Image #1]");
+    try expectBodyNotContains(&gateway, 0, image_path);
+    try std.testing.expectEqual(@as(usize, 0), hooks.rejected_names.items.len);
+    try std.testing.expectEqual(@as(usize, 1), vision_runtime.execution_count);
+    try expectBodyContains(&gateway, 2, "FX logo");
+    try expectBodyNotContains(&gateway, 2, image_path);
+    try std.testing.expectEqualStrings("Answered from Vision evidence", hooks.finish_assistant_text.?);
 }
 
 test "processQueuedPrompt routes a user-supplied image path through Vision" {
