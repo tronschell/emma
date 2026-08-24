@@ -151,6 +151,7 @@ contextBridge.exposeInMainWorld("emma", {
   /** The same, from a drop or a paste — which hands the renderer contents, never a path. */
   attachData: (value: { name: string; data: ArrayBuffer }) => ipcRenderer.invoke("emma:attach-data", value),
   readAttachment: (id: string) => ipcRenderer.invoke("emma:read-attachment", id),
+  clearThreadContext: (threadId: string) => ipcRenderer.invoke("emma:clear-thread-context", threadId),
   discoverAgentImports: () => ipcRenderer.invoke("emma:discover-agent-imports"),
   detectConnections: () => ipcRenderer.invoke("emma:detect-connections"),
   outdatedConnections: () => ipcRenderer.invoke("emma:outdated-connections"),
