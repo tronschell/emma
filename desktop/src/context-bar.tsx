@@ -121,7 +121,7 @@ function ContextStats({ ledger, orientation }: { ledger: Ledger; orientation: Wi
     {curveOpen && <div className="rate-curve" id="rate-curve">
       {curve.length ? <ol>
         {curve.map((point) => <li key={point.context} title={`${point.turns} ${plural(point.turns, "reply", "replies")} sent with ${charLabel(point.context)}–${charLabel(point.context * 2)} tokens of input`}>
-          <span>{point.context / 1024}K</span><i style={{ width: `${point.rate / peak * 100}%` }} /><b>{Math.round(point.rate)}</b>
+          <span>{point.context / 1024}K</span><i data-empty={point.turns === 0 || undefined} style={{ width: `${point.rate / peak * 100}%` }} /><b>{point.turns ? Math.round(point.rate) : "—"}</b>
         </li>)}
       </ol> : <p>No timed replies yet.</p>}
     </div>}

@@ -38,11 +38,15 @@ test("speed is pooled per doubling of context, ascending", () => {
     turn(8_192, 100, 2_000),   // 8K — exactly on the boundary, not in 4K
     turn(9_000, 0, 0),         // no measured time is not a rate
   ]);
-  assert.deepEqual(curve.map((point) => point.context), [4096, 8192, 65_536]);
+  // Every doubling from the floor to the largest request, including the 16K and
+  // 32K rungs nothing landed in — the ladder is the scale the bars are read on.
+  assert.deepEqual(curve.map((point) => point.context), [4096, 8192, 16_384, 32_768, 65_536]);
   // 400 tokens over 2s pooled, not the average of 100/s and 300/s.
-  assert.deepEqual(curve.map((point) => Math.round(point.rate)), [200, 50, 50]);
-  assert.deepEqual(curve.map((point) => point.turns), [2, 1, 1]);
+  assert.deepEqual(curve.map((point) => Math.round(point.rate)), [200, 50, 0, 0, 50]);
+  assert.deepEqual(curve.map((point) => point.turns), [2, 1, 0, 0, 1]);
   assert.deepEqual(rateByContext([]), []);
+  // A thread whose every turn was big still gets the rungs below it.
+  assert.deepEqual(rateByContext([turn(70_000, 500, 10_000)]).map((point) => point.context), [4096, 8192, 16_384, 32_768, 65_536]);
 });
 
 test("sizes read at a glance", () => {
