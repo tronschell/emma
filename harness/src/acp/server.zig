@@ -35,6 +35,7 @@ const terminal_client_runtime = @import("../core/terminal/client.zig");
 const subagent_tool_host = @import("../core/subagent/tool_host.zig");
 const subagent_domain = @import("../core/subagent/domain.zig");
 const subagent_authority = @import("../core/subagent/authority.zig");
+const image_attachments = @import("../core/images/image_attachments.zig");
 const types = @import("../core/shared/types.zig");
 const context_contract = @import("../core/workspace/context_contract.zig");
 const workspace_access = @import("../core/workspace/workspace_access.zig");
@@ -166,6 +167,7 @@ pub const ActiveSessionState = struct {
     writable: ?session_store.LoadedWritableSession = null,
     wasm_state: ?session_codec.DurableSessionState = null,
     wasm_revision: ?[]u8 = null,
+    image_snapshot_temp_dir: ?[]u8 = null,
     session_write_mutex: std.Io.Mutex = .init,
     model: []u8,
     provider: model_provider.ProviderId = .gateway,
@@ -432,6 +434,10 @@ fn destroyActiveSession(state: *ServerState) void {
     if (active.store) |*store| store.deinit(state.alloc);
     if (active.wasm_state) |*wasm_state| wasm_state.deinit(state.alloc);
     if (active.wasm_revision) |revision| state.alloc.free(revision);
+    if (active.image_snapshot_temp_dir) |dir| {
+        image_attachments.cleanupSnapshotDir(dir);
+        state.alloc.free(dir);
+    }
     state.active_session = null;
 }
 
@@ -1837,8 +1843,7 @@ fn handleCancelChild(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Messag
         .code = ErrorCode.invalid_request,
         .message = "Subagents are not available on this connection",
     });
-    const session = if (state.active_session) |*active| active else
-        return state.writer.writeError(alloc, msg.id, prompt_handler.no_active_session_rpc_error);
+    const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, prompt_handler.no_active_session_rpc_error);
 
     state.subagent_authority_mutex.lockUncancelable(io_mod.getIo());
     defer state.subagent_authority_mutex.unlock(io_mod.getIo());

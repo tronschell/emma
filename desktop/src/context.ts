@@ -612,8 +612,9 @@ export function pickLabel(pick: ContextPick, folders: FolderGrant[], snapshot: S
 
 /** Read everything attached to this thread into the bounded block the turn
     carries, and report what each attachment weighed for the context ledger. */
-export async function buildAttachedContext(folders: FolderGrant[], folderIds: string[], picks: ContextPick[], files: Record<string, FolderFile[]>, snapshot: Snapshot): Promise<{ text: string; uses: Omit<ContextUse, "turns">[] }> {
+export async function buildAttachedContext(folders: FolderGrant[], folderIds: string[], picks: ContextPick[], files: Record<string, FolderFile[]>, snapshot: Snapshot): Promise<{ text: string; uses: Omit<ContextUse, "turns">[]; images: string[] }> {
   const sections: { heading: string; body: string; label: string }[] = [];
+  const images: string[] = [];
   for (const folderId of folderIds) {
     const folder = folders.find((item) => item.id === folderId);
     if (!folder) continue;
@@ -632,15 +633,12 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
       }
       continue;
     }
-    /* A file the user handed this message. Text comes in whole; a picture comes in
-       as the path to look at, because most of the catalogue cannot see one and the
-       vision tool is the route to it either way — Emma's own loop reads the path
-       here, and the harness resolves the same path on its side. */
     if (pick.kind === "attachment") {
       try {
         const file = await window.emma.readAttachment(pick.id);
+        if (file.text === undefined) images.push(pick.id);
         sections.push(file.text === undefined
-          ? { heading: `Image ${file.name}`, body: `The user attached this image. It is at ${file.path} on this Mac — give the vision tool exactly that path to look at it.`, label: pick.name }
+          ? { heading: `Image ${file.name}`, body: "The user attached this image to this message.", label: pick.name }
           : { heading: `File ${file.name} (${file.path})`, body: file.text, label: pick.name });
       } catch (reason) {
         sections.push({ heading: `File ${pick.name}`, body: `Could not be read: ${reasonText(reason)}`, label: pick.name });
@@ -668,5 +666,6 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
   return {
     text: contextBlock(sections),
     uses: sections.map((section) => ({ kind: "attachment" as const, label: section.label, chars: section.heading.length + section.body.length })),
+    images,
   };
 }

@@ -88,7 +88,7 @@ const fields: Record<Method, readonly string[]> = {
 };
 
 const optionalFields: Partial<Record<Method, readonly string[]>> = {
-  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext"],
+  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages"],
   selectOpenRouterModel: ["effort"],
   setThreadModel: ["effort"],
   // `pageId` re-reads a page the base already keeps instead of shelving a second copy.

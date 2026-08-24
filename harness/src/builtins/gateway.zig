@@ -1895,8 +1895,10 @@ fn parseModelCatalogEntry(alloc: std.mem.Allocator, entry: std.json.Value) !?Mod
     errdefer reasoning_efforts.deinit(alloc);
     const has_reasoning = optionalTagListContains(tags_value, "reasoning") or reasoning_efforts.items.len > 0;
     const supports_fast_mode = supportsFastMode(entry.object);
-    const has_vision = optionalTagListContains(tags_value, "vision");
-    const has_file_input = optionalTagListContains(tags_value, "file-input");
+    const has_vision = optionalTagListContains(tags_value, "vision") or
+        inputModalityListed(entry.object, "image");
+    const has_file_input = optionalTagListContains(tags_value, "file-input") or
+        inputModalityListed(entry.object, "file");
     const has_web_search = optionalTagListContains(tags_value, "web-search");
     const has_explicit_caching = optionalTagListContains(tags_value, "explicit-caching");
     const has_implicit_caching = optionalTagListContains(tags_value, "implicit-caching");
@@ -2011,6 +2013,12 @@ fn parseWebSearchPrice(alloc: std.mem.Allocator, pricing: ?std.json.Value) !?[]u
 
 fn optionalTagListContains(value: ?std.json.Value, needle: []const u8) bool {
     return if (value) |actual| tagListContains(actual, needle) else false;
+}
+
+fn inputModalityListed(entry: std.json.ObjectMap, needle: []const u8) bool {
+    const architecture = entry.get("architecture") orelse return false;
+    if (architecture != .object) return false;
+    return optionalTagListContains(architecture.object.get("input_modalities"), needle);
 }
 
 fn tagListContains(value: std.json.Value, needle: []const u8) bool {

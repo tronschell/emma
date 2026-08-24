@@ -2064,6 +2064,19 @@ function recordTurn(turn: RecordedTurn): Promise<unknown> {
   return host!.request({ method: "recordTurn", params: recordedTurn(turn) });
 }
 
+function attachedImagePaths(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  let ids: unknown;
+  try { ids = JSON.parse(value); } catch { return []; }
+  if (!Array.isArray(ids)) return [];
+  return ids.flatMap((id) => {
+    try {
+      const file = attachments!.read(id);
+      return file.text === undefined ? [file.path] : [];
+    } catch { return []; }
+  });
+}
+
 /**
  * One turn on the harness, then written back into the durable thread.
  *
@@ -2088,6 +2101,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
       // field. It was being dropped entirely: the chip cleared, the attachment
       // was marked delivered, and the instructions never left this process.
       skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
+      images: attachedImagePaths(turn.params?.attachedImages),
       contextWindow: contextWindowFor(route),
       effort: thinkingRoute(route, turn.effort),
       experiments: harnessExperiments,
@@ -2733,7 +2747,7 @@ if (primaryInstance) app.whenReady().then(() => {
         skillClaimed = true;
         request = {
           method: request.method,
-          params: { threadId: request.params.threadId, content: request.params.content, ...(request.params.attachedContext ? { attachedContext: request.params.attachedContext } : {}), ...(request.params.screenContext ? { screenContext: request.params.screenContext } : {}), skillContext: skill.instructions },
+          params: { threadId: request.params.threadId, content: request.params.content, ...(request.params.attachedContext ? { attachedContext: request.params.attachedContext } : {}), ...(request.params.attachedImages ? { attachedImages: request.params.attachedImages } : {}), ...(request.params.screenContext ? { screenContext: request.params.screenContext } : {}), skillContext: skill.instructions },
         };
       }
       // Attached folders, files, and knowledge categories ride the same channel a skill

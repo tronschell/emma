@@ -3154,7 +3154,7 @@ fn processQueuedPromptLoop(
                 if (job.authorized_image_catalog.len == 0 and job.images.len == 0) {
                     break :blk recovery_source_messages;
                 }
-                if (request_capabilities.supports_vision and request_capabilities.supports_file_input) {
+                if (request_capabilities.supports_vision) {
                     break :blk try runtime_vision_contracts.project_native_messages(
                         overlay_arena,
                         recovery_source_messages,
