@@ -4847,7 +4847,7 @@ test "permission review receives bounded proven root request context" {
     try std.testing.expect(std.mem.find(u8, context, "excluded runtime credential") == null);
 }
 
-test "permission review reaches serial and parallel tools after native history projection" {
+test "permission review reaches serial and parallel tools alongside carried Vision history" {
     const alloc = std.testing.allocator;
     const serial_calls = [_]ToolCall{toolCall(
         "serial_write",
@@ -4920,7 +4920,7 @@ test "permission review reaches serial and parallel tools after native history p
 
         try std.testing.expectEqual(calls.len, hooks.permission_names.items.len);
         try std.testing.expectEqual(@as(usize, 0), hooks.executed_names.items.len);
-        try expectBodyNotContains(&gateway, 0, "history_vision");
+        try expectBodyContains(&gateway, 0, "history_vision");
     }
 }
 

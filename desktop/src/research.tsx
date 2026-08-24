@@ -7,11 +7,6 @@ import { DEFAULT_PERMISSION_MODE, type PermissionMode } from "../shared/permissi
 import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
 import { zoned } from "./dates";
 
-/* Its own module so recharts stays out of the overlay and the quick-ask bundles:
-   the workspace loads it only when the Autoresearch section is opened. */
-
-// Recharts takes colour as props, not CSS, so read the tokens once rather than
-// pasting hex that drifts when tokens.css moves — the chart-artifact idiom.
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const chart = { grid: token("--border"), axis: token("--text-3"), line: token("--teal"), keep: token("--lime"), crash: token("--rose"), mark: token("--orange") };
 
@@ -19,17 +14,13 @@ const stampFormat = zoned({ month: "short", day: "numeric", hour: "numeric", min
 const stamp = (value: string) => stampFormat(new Date(value));
 const num = (value: number | null) => value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 6 });
 const pct = (value: number | null) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
-// $1 = 1_000_000 micro-dollars. A cent is 10_000, so a run that has spent less
-// than a cent still reads as a number instead of as $0.00.
 const cash = (micro: number) => `$${(micro / 1_000_000).toFixed(micro > 0 && micro < 10_000 ? 4 : 2)}`;
 const clock = (seconds: number) => seconds < 60 ? `${Math.round(seconds)}s` : seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h ${String(Math.round(seconds % 3600 / 60)).padStart(2, "0")}m`;
 const OUTCOMES = { keep: "◆ kept", discard: "◇ discarded", crash: "✕ crashed" };
 
-/** The first number the job ever measured: every improvement is read against it. */
 const baselineOf = (job: ResearchJob) => job.iterations.find((item) => item.value !== null)?.value ?? null;
 const bestOf = (job: ResearchJob) => [...job.iterations].reverse().find((item) => item.best !== null)?.best ?? null;
 
-/** How much better than the baseline a number is, as a percentage in the job's direction. */
 function gainOf(job: ResearchJob, value: number | null): number | null {
   const base = baselineOf(job);
   if (base === null || value === null || base === 0) return null;
@@ -42,7 +33,6 @@ const counts = (job: ResearchJob) => ({
   crash: job.iterations.filter((item) => item.outcome === "crash").length,
 });
 
-/** `0` is the host's "no limit", so a budget line only appears when one was set. */
 const spentOf = (spent: string, max: number, format: (value: number) => string) => max ? `${spent} of ${format(max)}` : `${spent} · no limit`;
 
 type Act = (method: string, params?: Record<string, string>) => Promise<unknown>;
@@ -52,10 +42,10 @@ export default function ResearchView({ snapshot, act, busy }: { snapshot: Snapsh
   const jobs = snapshot.researchJobs;
   const [picked, setPicked] = useState("");
   const job = jobs.find((item) => item.id === picked);
-  if (job) return <JobDetail key={job.id} job={job} snapshot={snapshot} act={act} busy={busy} back={() => setPicked("")} />;
+  if (job) return <JobDetail key={job.id} job={job} act={act} busy={busy} back={() => setPicked("")} />;
   if (picked === "new") return <section className="research-view">
     <header className="research-head"><button type="button" className="research-back" onClick={() => setPicked("")}>← All experiments</button><span>Autoresearch · new experiment</span><h2>What are you optimising?</h2><p>Emma proposes one change at a time, runs your eval command, reads the metric, and keeps the change only when the number improved. Everything below can be edited later except the metric and the folder.</p></header>
-    <ResearchForm snapshot={snapshot} act={act} busy={busy} onSaved={setPicked} />
+    <ResearchForm act={act} busy={busy} onSaved={setPicked} />
   </section>;
   return <section className="research-view">
     <header className="research-head"><span>Autoresearch · long-running experiments</span><h2>Experiments</h2><p>An experiment is a git repository, a metric, and a budget. Emma edits, measures, and commits or reverts, over and over, until a budget runs out or you pause it.</p></header>
@@ -83,13 +73,11 @@ function JobCard({ job, act, busy, open }: { job: ResearchJob; act: Act; busy: b
       <div><dt>Best</dt><dd>{num(best)} · {pct(gainOf(job, best))} vs baseline {num(baselineOf(job))}</dd></div>
       <div><dt>Attempts</dt><dd>{job.iterations.length} {plural(job.iterations.length, "iteration")} · {tally.keep} kept · {tally.discard} discarded · {tally.crash} crashed</dd></div>
     </dl>
-    {/* The note is how the user learns which budget stopped the job, so it is the
-        loudest thing on a paused card rather than a line in a details list. */}
     {job.statusNote && <p className="research-note"><b>{job.status === "failed" ? "Failed" : "Paused"}</b> {job.statusNote}</p>}
   </article>;
 }
 
-function JobDetail({ job, snapshot, act, busy, back }: { job: ResearchJob; snapshot: Snapshot; act: Act; busy: boolean; back: () => void }) {
+function JobDetail({ job, act, busy, back }: { job: ResearchJob; act: Act; busy: boolean; back: () => void }) {
   const logId = useId();
   const [confirming, setConfirming] = useState(false);
   const best = bestOf(job);
@@ -125,7 +113,6 @@ function JobDetail({ job, snapshot, act, busy, back }: { job: ResearchJob; snaps
         <th scope="row">{item.index}</th>
         <td>{stamp(item.at)}</td>
         <td>{num(item.value)}</td>
-        {/* Glyph, word and hue: the outcome never rests on colour alone. */}
         <td className={`research-outcome ${item.outcome}`}>{OUTCOMES[item.outcome]}</td>
         <td className="research-note-cell">{item.note}</td>
         <td>{item.commit}</td>
@@ -136,14 +123,12 @@ function JobDetail({ job, snapshot, act, busy, back }: { job: ResearchJob; snaps
     </table>
     <details className="research-edit">
       <summary>Edit experiment</summary>
-      <ResearchForm job={job} snapshot={snapshot} act={act} busy={busy} onSaved={() => undefined} />
+      <ResearchForm job={job} act={act} busy={busy} onSaved={() => undefined} />
       <div className="research-actions"><button type="button" className="research-danger" disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete experiment"}</button></div>
     </details>
   </section>;
 }
 
-// Core carries best-so-far forward already; carrying it again is what keeps the
-// line unbroken when an iteration crashed and recorded no number of its own.
 function pointsOf(job: ResearchJob): Point[] {
   let carried: number | null = null;
   return job.iterations.map((item) => {
@@ -162,7 +147,6 @@ function ProgressGraph({ job, logId }: { job: ResearchJob; logId: string }) {
       <LineChart accessibilityLayer data={data} margin={{ left: 8, right: 44, top: 16, bottom: 8 }}>
         <CartesianGrid stroke={chart.grid} vertical={false} />
         <XAxis dataKey="index" stroke={chart.axis} fontSize={10} tickFormatter={(value: number) => `#${value}`} />
-        {/* Values read on the right, as on the reference: the line starts at the left edge. */}
         <YAxis orientation="right" domain={["auto", "auto"]} stroke={chart.axis} fontSize={10} width={40} />
         {baseline !== null && <ReferenceLine y={baseline} stroke={chart.axis} strokeDasharray="4 4" label={{ value: "baseline", position: "insideLeft", fill: chart.axis, fontSize: 10 }} />}
         {last && <ReferenceLine x={last.index} stroke={chart.axis} strokeDasharray="2 4" label={{ value: "now", position: "top", fill: chart.axis, fontSize: 10 }} />}
@@ -180,8 +164,6 @@ function ProgressGraph({ job, logId }: { job: ResearchJob; logId: string }) {
           const point = props.payload as Point;
           const { cx, cy, index } = props;
           if (typeof cx !== "number" || typeof cy !== "number") return <g key={index} />;
-          // A crash has no number, so it is drawn as a cross on the carried line
-          // rather than as a dot pretending something was measured.
           if (point.outcome === "crash") return <path key={index} d={`M${cx - 3.5} ${cy - 3.5}l7 7M${cx + 3.5} ${cy - 3.5}l-7 7`} stroke={chart.crash} strokeWidth={1.5} />;
           return <rect key={index} x={cx - 3} y={cy - 3} width={6} height={6} fill={point.outcome === "keep" ? chart.keep : chart.axis} stroke="none" />;
         }} />
@@ -190,13 +172,12 @@ function ProgressGraph({ job, logId }: { job: ResearchJob; logId: string }) {
   </figure>;
 }
 
-/** Worked examples, shown in the form itself: the metric kind is the one thing a job can never change. */
 const KINDS = {
   grep: { label: "grep a number out of the output", detail: "Emma runs the eval command and greps ^<name>: out of what it printed.", example: "eval    uv run train.py 2>&1\nprints  val_bpb: 0.997900\nname    val_bpb\nbetter  lower" },
   judge: { label: "have a model score the output", detail: "Emma runs the eval command, then a model scores its output against your rubric and returns one number.", example: "eval    npm test\nrubric  score 0-100: how many suites pass,\n        and how readable is the failure output\nname    test_health\nbetter  higher" },
 };
 
-function ResearchForm({ job, snapshot, act, busy, onSaved }: { job?: ResearchJob; snapshot: Snapshot; act: Act; busy: boolean; onSaved: (id: string) => void }) {
+function ResearchForm({ job, act, busy, onSaved }: { job?: ResearchJob; act: Act; busy: boolean; onSaved: (id: string) => void }) {
   const frozenId = useId();
   const [title, setTitle] = useState(job?.title ?? "");
   const [projectDir, setProjectDir] = useState(job?.projectDir ?? "");
@@ -206,18 +187,14 @@ function ResearchForm({ job, snapshot, act, busy, onSaved }: { job?: ResearchJob
   const [rubric, setRubric] = useState(job?.metricPrompt ?? "");
   const [evalCommand, setEvalCommand] = useState(job?.evalCommand ?? "");
   const [prompt, setPrompt] = useState(job?.prompt ?? "");
-  const { skills, tools, atItems } = useTaskCommands(snapshot);
+  const { skills, tools, atItems } = useTaskCommands();
   const [model, setModel] = useState(job?.proposerModel ?? "");
   const [mode, setMode] = useState<PermissionMode>(job?.permissionMode ?? DEFAULT_PERMISSION_MODE);
   const [hours, setHours] = useState(job ? String(Number((job.maxSeconds / 3600).toFixed(2))) : "6");
   const [tokens, setTokens] = useState(job ? String(job.maxTokens) : "2000000");
   const [dollars, setDollars] = useState(job ? String(job.maxMicroDollars / 1_000_000) : "5");
-  // The metric and the folder are what every earlier iteration was measured
-  // against, so the host refuses to change them on a saved job.
   const frozen = Boolean(job);
   const ready = Boolean(title.trim() && projectDir.trim() && metricName.trim() && evalCommand.trim() && model.trim() && (kind === "grep" || rubric.trim()));
-  // Every param travels as a string and a blank one is rejected, so an unset
-  // budget is "0" — the host's own word for unlimited — and never "".
   const whole = (value: string, scale: number) => String(Math.max(0, Math.round(Number(value) * scale) || 0));
   const save = async () => {
     if (!ready || busy) return;
@@ -241,8 +218,6 @@ function ResearchForm({ job, snapshot, act, busy, onSaved }: { job?: ResearchJob
   };
   return <div className="task-detail research-form">
     <div className="research-kind" role="radiogroup" aria-label="Metric kind">
-      {/* The name is spelled out rather than read off the card, or a screen reader
-          would announce the whole worked example as the option's label. */}
       {(Object.keys(KINDS) as (keyof typeof KINDS)[]).map((name) => <button key={name} type="button" role="radio" aria-checked={kind === name} aria-label={`${name} — ${KINDS[name].label}`} className={kind === name ? "active" : ""} disabled={busy || frozen} onClick={() => setKind(name)}>
         <b>{kind === name ? "◆" : "◇"} {name}</b>
         <span>{KINDS[name].label}</span>

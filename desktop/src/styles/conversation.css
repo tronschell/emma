@@ -1,37 +1,9 @@
-/* Thread column: bar, transcript, messages, composer, and the composer's popovers.
-   One centred column drawn with rules. Nothing here is rounded and nothing is a
-   card: a region is a 1px outline, its bands are separated by full-bleed rules,
-   and a fill only ever means hover, selection, or active. */
-
 .content { min-width: 0; overflow: hidden; background: var(--bg); }
 .thread-layout { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) var(--inspector-width) var(--browser-width, 0px); grid-template-rows: minmax(0, 1fr) min(var(--terminal-height, 0px), 60%); }
-/* The column is pinned, not `auto`: an auto track sizes to its widest child, so
-   one nowrap band — "Not sent · <the whole failed prompt>" — grew the track past
-   the pane, and every child that centres itself on `(100% - --content-column)/2`
-   (the bar, each message, the composer) went with it, off under the inspector. */
 .conversation { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
 
-/* Thread bar ------------------------------------------------------------- */
-
-/* The header band of the content column: thread name and its tag left, actions
-   right, and no rule — the name is a label on the pane, not a section of it, and
-   a full-bleed line under it read as a divider the transcript did not need.
-   The name is a value the user recognises rather than a sentence, so it sits on
-   the grid in mono and keeps its own case, at the pane's own corner rather than
-   indented onto the transcript column: it names the pane, so it starts where the
-   pane does. */
-/* One inset all round, not the transcript's gutter: at --content-gutter the name
-   started 28px in while sitting 12px down, so the corner it hangs off read as
-   lopsided. The gap repeats the inset so the name keeps the same air on both
-   sides: the pane edge to its first glyph, its last glyph to the tag. */
 .thread-bar { display: flex; align-items: center; gap: var(--s-4); min-height: 34px; padding: var(--s-2) var(--s-4); }
 .thread-bar h2 { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 400; letter-spacing: normal; text-overflow: ellipsis; white-space: nowrap; }
-/* Reads as the heading it replaces until you point at it, when it admits it is a
-   field. The pull-back owes the 1px border as well as the padding, or the name
-   starts a pixel past the inset the rail below it lines up on.
-   `field-sizing` keeps the box on the text: an input at its default 20ch
-   drew a hover border across empty pane, which said "type here" about a name
-   that is already written. The cap is so a long name still leaves the tag on screen. */
 .thread-bar .thread-name { min-width: 6ch; max-width: min(60ch, 60%); field-sizing: content; margin: 0 calc(var(--s-2) * -1 - 1px); padding: 0 var(--s-2); color: var(--text); background: transparent; border: 1px solid transparent; font: var(--fs-md)/1.6 var(--font-mono); text-overflow: ellipsis; }
 .thread-bar .thread-name:hover { border-color: var(--border); }
 .thread-bar .thread-name:focus { background: var(--surface-2); border-color: var(--border-strong); outline: none; }
@@ -54,24 +26,12 @@
 .terminal-row > .resize-handle { position: absolute; z-index: 8; top: -6px; left: 0; right: 0; width: auto; height: 12px; padding: 0; cursor: row-resize; background: transparent; }
 .terminal-row > .resize-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Tag picker --------------------------------------------------------------
-   The thread's one tag, beside its name. At rest it is the sidebar's chip; with
-   nothing filed it is the dimmest thing on the bar, so an untagged thread reads
-   as untagged rather than as a control waiting to be used. */
 .tag-picker { position: relative; display: flex; align-items: center; flex: 0 0 auto; }
 .tag-trigger { max-width: 16ch; overflow: hidden; min-height: 0; height: 20px; padding: 0 var(--s-2); color: var(--text-3); background: var(--surface-3); border: 1px solid transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t), opacity var(--t); }
 .tag-trigger:hover, .tag-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-4); }
-/* Emma's own guess is dashed — the mark the sidebar row uses, so a tag reads the
-   same in both places. Untagged is an offer rather than a fact, so it waits for
-   the pointer, and only for opacity: it keeps its place in the layout and in the
-   tab order, so nothing shifts and the keyboard can still reach it. */
 .tag-trigger[data-state="none"] { background: transparent; border-color: var(--border); opacity: 0; }
 .thread-bar:hover .tag-trigger[data-state="none"], .tag-trigger[data-state="none"]:focus-visible, .tag-trigger[data-state="none"][aria-expanded="true"] { opacity: 1; }
 .tag-trigger[data-state="auto"] { background: transparent; border-color: var(--border); border-style: dashed; }
-/* Hangs below the bar, left-aligned on the chip — the popover's default is above,
-   which is right over the composer and wrong under a header. Doubled up on the
-   base class because that block is further down this file, and a menu 20px wide
-   is what one class alone gets you: `min(100%, 420px)` off a chip-sized parent. */
 .source-popover.tag-menu { top: calc(100% + var(--s-2)); bottom: auto; width: min(260px, 80vw); padding: 0; }
 .tag-menu > input { display: block; width: 100%; padding: var(--s-2) var(--s-3); border: 0; border-bottom: 1px solid var(--border); color: var(--text); background: transparent; font: var(--fs-sm)/1.4 var(--font-mono); outline: none; }
 .tag-row { display: flex; align-items: center; gap: var(--s-2); width: 100%; min-height: 30px; padding: 0 var(--s-3); color: var(--text-2); background: transparent; border: 0; font: var(--fs-sm)/1 var(--font-mono); text-align: left; transition: background-color var(--t), color var(--t); }
@@ -79,38 +39,20 @@
 .tag-row > strong { min-width: 0; overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .tag-row > em { margin-left: auto; color: var(--accent); font-size: var(--fs-2xs); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .tag-row.clear { border-top: 1px solid var(--border); color: var(--text-3); }
-/* The app's one button language, set in panels.css: a mono small-caps label in
-   a 1px --border box on a 28px target, never a pill and never a filled slab.
-   This one opens a dialog, so it commits nothing and stays uncoloured. */
 .agent-button { display: flex; align-items: center; gap: var(--s-2); min-height: 28px; padding: 0 var(--s-3); color: var(--text-2); background: transparent; border: 1px solid var(--border); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
 .agent-button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
 .agent-button:disabled { color: var(--text-3); }
 
-/* Transcript ------------------------------------------------------------- */
-
-/* The composer is the conversation grid's own third row, so nothing scrolls
-   under it and the log needs no runway: the same band gap top and bottom. */
 .transcript-wrap { position: relative; display: grid; min-height: 0; }
 .transcript { overflow-y: auto; padding: var(--s-5) var(--content-gutter); scrollbar-gutter: stable; }
 .transcript-tail { position: absolute; z-index: 3; bottom: var(--s-4); left: 50%; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; color: var(--text); background: var(--surface-4); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font: var(--fs-md)/1 var(--font-mono); transform: translateX(-50%); transition: color var(--t), border-color var(--t), background-color var(--t); }
 .transcript-tail:hover { background: var(--surface-3); }
 
-/* Rail --------------------------------------------------------------------
-   A tick per question, in the margin the centred column leaves behind. Ticks
-   are the only thing at rest; the preview is drawn on hover, over the prose,
-   because a permanent one would be a second column of text to read past.
-   Ticks start on the bar's inset: a spine that begins anywhere else is a second
-   left edge under the one the thread name already drew. */
-
 .rail { position: absolute; top: var(--s-5); left: var(--s-4); z-index: 2; display: flex; flex-direction: column; gap: var(--rail-gap, 6px); }
 .rail-mark { position: relative; width: 14px; height: 2px; padding: 0; background: var(--border-strong); border: none; transition: width var(--t), background-color var(--t); }
-/* The pointer is coarse against a 2px line, so each tick keeps a 12px band of
-   its own to be caught by — invisible, and only over the rail's own gutter. */
 .rail-mark::before { position: absolute; inset: -5px -4px; content: ""; }
 .rail-mark:hover, .rail-mark:focus-visible { width: 20px; background: var(--text); outline: none; }
 
-/* Hangs down from its tick rather than straddling it: the rail starts at the top
-   of the pane now, so a centred preview on the first tick spilled over the thread bar. */
 .rail-peek { position: absolute; top: 0; left: calc(100% + var(--s-3)); display: grid; gap: var(--s-1); width: max-content; max-width: 320px; padding: var(--s-2) var(--s-3); color: var(--text); background: var(--surface-2); border: 1px solid var(--border); pointer-events: none; }
 .rail-peek b { display: -webkit-box; overflow: hidden; font-size: var(--fs-sm); font-weight: 450; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .rail-peek i { display: -webkit-box; overflow: hidden; color: var(--text-3); font-size: var(--fs-sm); font-style: normal; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -120,51 +62,17 @@
 .welcome h3 { font-size: var(--fs-2xl); font-weight: 450; letter-spacing: -.02em; }
 .welcome p { margin-top: var(--s-2); color: var(--text-2); font-size: var(--fs-md); line-height: 1.6; }
 
-/* Messages ---------------------------------------------------------------
-   A ruled transcript, not a chat. Every turn is a band: a rule across the full
-   column width separates it from the turn before, and it opens with a mono
-   header line carrying the role on the left and its metadata on the right —
-   the same composition as a region header and its count.
-
-   A user turn is told apart from an assistant turn by a quiet fill hung off the
-   right edge of the column, never by a hue or a radius. The assistant keeps a
-   transparent left border so its body stays on the column's left edge. */
-
 .message { display: flex; flex-direction: column; max-width: var(--content-column); margin: 0 auto; padding-left: var(--s-4); border-left: 1px solid transparent; }
-/* Chromium's own list virtualization: an offscreen turn keeps its box but skips
-   layout, style and paint, so a thousand-turn thread costs what the screenful
-   costs. `auto` remembers each turn's measured height after its first render,
-   so the scrollbar settles instead of guessing. Unlike a windowing library the
-   turn stays in the DOM — Cmd+F, the rail's scrollIntoView, tail-pinning and
-   selection all keep working, and nothing has to measure rows in JS.
-   ponytail: skips paint, not DOM nodes; window the list if node count itself
-   becomes the ceiling. */
 .message { content-visibility: auto; contain-intrinsic-size: auto 180px; }
-/* One step of the scale either side of the rule, not two: a log's turns sit on
-   top of each other, and the rule is what separates them, not the air. */
 .message + .message { margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--border); }
-/* This turn is yours: the fill is the whole marker, so the turn carries no rule
-   of its own — neither its own top rule nor the next turn's, which would read as
-   the box's bottom edge. It stops short of the full column and hangs off its
-   right edge, so a question reads as an aside to the answer under it rather than
-   another band of the same width. */
 .message.user { max-width: min(90%, calc(var(--content-column) * 0.72)); margin-left: auto; margin-right: max(0px, calc((100% - var(--content-column)) / 2)); padding: var(--s-3) var(--s-4); background: var(--surface-3); }
 .message.user, .message.user + .message { border-top: 0; }
 
-/* Prose ------------------------------------------------------------------ */
-
 .message-body { max-width: 72ch; color: var(--text); font-size: var(--fs-md); line-height: 1.6; overflow-wrap: anywhere; }
 .message-body > * + * { margin-top: var(--s-3); }
-/* A turn is several bodies now — one per stretch of talking, with what it did in
-   between. A line of narration and the calls it made are one block; the next
-   line of narration starts the next one. So the air inside a block is tighter
-   than the air between blocks — at one flat rhythm every line in the turn sits
-   the same distance from every other and the whole turn reads as one wall. */
 .message-body + .message-body { margin-top: var(--s-3); }
 .steps + .message-body, .steps-more + .message-body { margin-top: var(--s-5); }
 .message-body + .steps, .message-body + .steps-more { margin-top: var(--s-2); }
-/* The UA's own block margins would double the rhythm * + * just set, and its
-   40px inline margin on a blockquote would push the quote off the column. */
 .message-body > * { margin-bottom: 0; margin-inline: 0; }
 .message-body p { white-space: pre-wrap; color: inherit; font-size: inherit; line-height: inherit; }
 .message-body h1, .message-body h2, .message-body h3, .message-body h4 { font-weight: 500; letter-spacing: -.01em; line-height: 1.35; }
@@ -175,58 +83,40 @@
 .message-body li + li { margin-top: var(--s-1); }
 .message-body li > ul, .message-body li > ol { margin-top: var(--s-1); }
 .message-body blockquote { padding-left: var(--s-3); border-left: 1px solid var(--border-strong); color: var(--text-2); }
-/* Colour alone is not enough of a signal in a chrome this flat. */
 .message-body a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
 .message-body hr { height: 1px; border: 0; background: var(--border); }
-/* Departure Mono is a display face; anything read as code uses --font-code.
-   A code span in prose is a machine identifier — a path, a symbol, a command —
-   which is violet's duty across panels.css. No chip, no fill, no radius. */
 .message-body code { color: var(--violet); font-family: var(--font-code); font-size: var(--fs-sm); }
-/* A block quoted out of the machine, marked by a left rule rather than a box —
-   the same device panels.css uses for artifact fallbacks and the agent CLI. */
 .message-body pre { max-width: 100%; padding: 0 0 0 var(--s-3); overflow-x: auto; color: var(--text-2); background: none; border-left: 1px solid var(--border); font-family: var(--font-code); font-size: var(--fs-sm); line-height: 1.55; white-space: pre; overflow-wrap: normal; }
 .message-body pre code { color: inherit; font-size: inherit; }
 
-/* Stream, echo, wait ------------------------------------------------------ */
-
-/* The scratchpad is machinery, not prose — mono, demoted, and shut. One row for
-   the whole turn, above the answer, because the harness thinks between every
-   tool call and a caret per burst was a stack of them down the turn. Open, it
-   takes the same left rule as a code block: it is the same kind of thing, a
-   block quoted out of the machine. <details> does the open/close, no state here.
-   No disclosure mark either — it is one demoted line and the triangle beside it
-   was the loudest thing about it. The row lights on hover, which is the offer. */
 .message > .thinking { max-width: 72ch; margin-bottom: var(--s-3); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-sm); }
 .message > .thinking > summary { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; list-style: none; transition: color var(--t); }
 .message > .thinking > summary::-webkit-details-marker { display: none; }
 .message > .thinking > summary:hover, .message > .thinking[open] > summary { color: var(--text-2); }
 .message > .thinking > p { margin-top: var(--s-2); padding-left: var(--s-3); border-left: 1px solid var(--border); color: var(--text-3); font-size: inherit; line-height: 1.55; white-space: pre-wrap; }
-/* Live, the row is the turn's status line and sits under the work it reports on.
-   The whole line breathes rather than a glyph beside it: at this size a 10px mark
-   pulsing on its own is a tic in the corner of the eye, and the line is the thing
-   that is still going. Same pulse the waiting line uses, so it reads the same. */
 .message > .thinking[data-live] { margin-top: var(--s-3); margin-bottom: 0; }
 .message > .thinking[data-live] > summary { animation: waiting-pulse 1.4s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) { .message > .thinking[data-live] > summary { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+.message > .thinking[data-live] > summary { animation: none; }
+}
 
-/* A picture the turn drew, in the flow where it drew it. Sized to the prose
-   column, because it is a sentence in the answer rather than a panel beside it —
-   an artifact's card, with its title bar and its way in, is exactly what this is
-   not. `.artifact-chart` in panels.css draws the rest. */
-.message > .artifact-chart { max-width: 72ch; margin-top: var(--s-3); }
+.visual { max-width: 72ch; margin: var(--s-3) 0 0; border: 1px solid var(--border); background: var(--surface); }
+.visual > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--border); }
+.visual > header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-2xs); font-weight: 500; color: var(--text-2); }
+.visual > header span { display: flex; flex: none; gap: var(--s-1); }
+.visual > header button { padding: 2px var(--s-2); border: 1px solid transparent; background: none; color: var(--text-3); font-size: var(--fs-2xs); }
+.visual > header button:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.visual > header button:disabled { opacity: 0.6; }
+.visual > header button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.visual iframe { display: block; width: 100%; border: 0; }
+.visual figcaption { padding: var(--s-2) var(--s-3); border-top: 1px solid var(--border); color: var(--text-3); font-size: var(--fs-2xs); overflow-wrap: anywhere; }
+.visual-missing { max-width: 72ch; margin-top: var(--s-3); color: var(--text-3); font-size: var(--fs-2xs); }
 
-/* What the agent did, above what it said. Mono and demoted like the scratchpad,
-   because it is the same kind of thing — machinery, not prose — but a flat list
-   rather than a dropdown: the point is that it is visible without a click. */
 .steps { display: flex; flex-direction: column; gap: var(--s-1); margin-top: var(--s-3); padding: 0; list-style: none; font-family: var(--font-mono); font-size: var(--fs-2xs); }
 .step { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; color: var(--text-3); }
 .step > svg { flex: none; align-self: center; opacity: 0.7; }
 .step-title { flex: none; color: var(--text-2); }
 .step-output { overflow: hidden; color: var(--text-3); white-space: nowrap; text-overflow: ellipsis; }
-/* Auto mode's review sits in the step list like any other row until it is opened,
-   and then it is the whole exchange: what the verifier was told, what it said. A
-   cleared call is quiet — it is the ordinary case — and one that came back to the
-   user wears the same orange a failed call does. */
 .step-review { flex: 1; min-width: 0; }
 .step-review > summary { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; cursor: pointer; list-style: none; }
 .step-review > summary::-webkit-details-marker { display: none; }
@@ -236,153 +126,83 @@
 .step-review > b { display: block; margin-top: var(--s-2); color: var(--text-3); font-weight: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .step-review > pre { margin-top: var(--s-1); padding-left: var(--s-3); border-left: 1px solid var(--border); color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* A write reads as what it did to the file rather than as arguments: the name,
-   then how much of it moved. Tabular figures so a run of edits lines up, and the
-   same lime and danger the diff itself uses. The caret opens that diff. */
 .step-diff { display: flex; gap: var(--s-2); font-variant-numeric: tabular-nums; }
 .step-diff > b { color: var(--lime); font-weight: normal; }
 .step-diff > i { color: var(--danger); font-style: normal; }
 .step-open { display: flex; flex: none; align-self: center; margin-left: auto; padding: 0 0 0 var(--s-2); color: var(--text-3); background: transparent; border: 0; cursor: pointer; transition: color var(--t); }
 .step-open:hover { color: var(--text-1); }
 
-/* Past three calls the rest fold in here: closed it is one row that names the
-   call happening right now, open it is the list, in place. A long run otherwise
-   pushes the answer off the screen with the least re-read thing in a transcript. */
 .steps-more { margin-top: var(--s-1); font-family: var(--font-mono); font-size: var(--fs-2xs); }
 .steps-more > summary { display: flex; align-items: center; gap: var(--s-2); min-width: 0; color: var(--text-3); cursor: pointer; list-style: none; }
 .steps-more > summary::-webkit-details-marker { display: none; }
 .steps-more > summary:hover { color: var(--text-2); }
 .steps-more > summary .caret { flex: none; opacity: 0.7; transition: transform var(--t); }
 .steps-more[open] > summary .caret { transform: rotate(90deg); }
-/* Keyed by the call it names, so this replays every time the agent moves on. */
 .steps-latest { overflow: hidden; color: var(--text-2); white-space: nowrap; text-overflow: ellipsis; animation: step-swap 240ms ease-out; }
-/* Butted up against the name it follows, so "Run npm test · 5 more" reads as
-   one line instead of two columns the eye has to cross. */
 .steps-count { flex: none; }
 .steps-count::before { content: "· "; }
 .steps-more > .steps { margin-top: var(--s-1); }
 @keyframes step-swap { from { opacity: 0; transform: translateY(2px); } }
-@media (prefers-reduced-motion: reduce) { .steps-latest { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+.steps-latest { animation: none; }
+}
 
-/* Only the two ends read as status: a call still running pulses, a failed one
-   is the one worth spotting. Completed is the resting state and stays quiet. */
 .step.pending, .step.in_progress { animation: step-working 1.6s ease-in-out infinite; }
 .step.failed, .step.failed .step-title { color: var(--orange); }
 @keyframes step-working { 50% { opacity: 0.55; } }
-@media (prefers-reduced-motion: reduce) { .step.pending, .step.in_progress { animation: none; opacity: 0.7; } }
+@media (prefers-reduced-motion: reduce) {
+.step.pending, .step.in_progress { animation: none; opacity: 0.7; }
+}
 
-/* The window being rewritten mid-turn. Violet, which nothing else in a transcript
-   wears, because it is neither the agent's words nor its work — it is Emma acting
-   on a setting, and the way back to that setting rides along with it. */
 .context-notice { display: flex; align-items: baseline; gap: var(--s-3); margin-top: var(--s-3); padding-left: var(--s-3); border-left: 1px solid color-mix(in srgb, var(--violet) 45%, transparent); color: var(--violet); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .context-notice > span { min-width: 0; }
 .context-notice > button { flex: none; margin-left: auto; padding: 0; color: var(--violet); background: none; font: inherit; letter-spacing: inherit; text-transform: inherit; text-decoration: underline; text-underline-offset: 2px; opacity: .7; transition: opacity var(--t); }
 .context-notice > button:hover { opacity: 1; }
 
-/* The prompt before the host has it: the turn as it will read, one step dimmer. */
 .message.pending .message-body { color: var(--text-2); }
 .waiting { display: flex; align-items: center; gap: var(--s-2); max-width: var(--content-column); margin: var(--s-3) auto 0; padding-left: var(--s-4); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .waiting .mark { animation: waiting-pulse 1.4s ease-in-out infinite; }
 @keyframes waiting-pulse { 50% { opacity: .3; } }
-@media (prefers-reduced-motion: reduce) { .waiting .mark { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+.waiting .mark { animation: none; }
+}
 .context-cut { display: flex; align-items: center; gap: var(--s-2); max-width: var(--content-column); margin: var(--s-4) auto; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .context-cut::before, .context-cut::after { flex: 1; height: 1px; background: var(--border); content: ""; }
 
-/* The turn ended because the user ended it — not an error, and not a finished answer. */
 .waiting.stopped { color: var(--text-2); }
 
-/* The turn's header line. order:-1 lifts the <footer> above the body without
-   touching the markup, so it still reads as a footer to a screen reader.
-   Timestamp and rate stay hidden until hover — opacity, not display, keeps
-   both in the accessibility tree — and they are right-aligned, so revealing
-   them never shifts the line. */
 .message-meta { order: -1; display: flex; align-items: baseline; gap: var(--s-3); margin-bottom: var(--s-1); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.4; letter-spacing: var(--ls-caps); text-transform: uppercase; }
-/* The role is the anchor of the line, so it takes the brighter ink — but no
-   hue. Teal already means "runs on this Mac" on the model route two bands
-   below, and a reader who meets teal twice in one frame learns it wrong once.
-   The turn's own left rule and the word itself carry the role; the label does
-   not need to carry it a third time. */
 .message-meta > span:first-child { margin-right: auto; color: var(--text-2); }
 .message-meta time, .generation-rate, .message-copy { opacity: 0; transition: opacity var(--t); }
-/* At rest the two readouts take no width at all — the negative margin eats the
-   flex gap they would otherwise leave — so the model name ends the line flush
-   right. Hovering grows them back and pushes the model left. Centred, not
-   baselined, because a clipped flex item has no baseline of its own and would
-   otherwise hand the row its bottom edge. */
 .message-meta time, .generation-rate { align-self: center; max-width: 0; margin-left: calc(-1 * var(--s-3)); overflow: hidden; white-space: nowrap; transition: opacity var(--t), max-width var(--t), margin-left var(--t); }
 .message:hover .message-meta time, .message:focus-within .message-meta time,
 .message:hover .generation-rate, .message:focus-within .generation-rate,
 .message:hover .message-copy, .message:focus-within .message-copy { opacity: 1; max-width: 20ch; margin-left: 0; }
-/* Same line, same ink as the timestamp beside it: an action, but a quiet one.
-   A glyph has no baseline to sit on, so it centres against the row instead. */
 .message-copy { display: grid; place-items: center; align-self: center; width: 16px; height: 16px; padding: 0; color: inherit; background: transparent; cursor: pointer; }
 .message-copy:hover { color: var(--text); }
-/* Which model answered this turn. Stays at rest rather than waiting for hover,
-   because the whole point of it is spotting the turn where the route changed —
-   something you cannot hover your way to finding. The maker's mark carries it;
-   the name beside it is the value, in the row's own case. */
-/* Centred rather than baselined for the reason .message-copy is: a mark has no
-   baseline of its own, and a flex box that starts with one hands the row its
-   bottom edge instead. */
-/* The meta line is one line. A long model id is the only thing here that can
-   grow without bound, so it is the one thing that gives: it shrinks to an
-   ellipsis rather than wrapping the row to a second line and pushing the answer
-   down. The full id is on the title, a hover away. */
 .message-model { display: flex; align-items: center; align-self: center; gap: var(--s-2); min-width: 0; white-space: nowrap; }
 .message-model > span { overflow: hidden; text-overflow: ellipsis; }
 .message-model-mark { display: grid; place-items: center; flex: 0 0 auto; width: 12px; height: 12px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
 .message-model-mark.brand-image { object-fit: contain; }
-/* The dots exist only to part the model from what follows it, so they belong to
-   the followers — a user turn names no model and gets no leading dot, and the
-   dot fades out with the timestamp it is attached to rather than dangling. */
 .message-model ~ time::before, .message-model ~ .generation-rate::before { color: var(--text-3); content: "· "; }
-/* A literal quantity meant to be read as data, which is what the accent means
-   outside of action and state. */
 .generation-rate { color: var(--orange); font-family: var(--font-mono); font-size: var(--fs-2xs); font-variant-numeric: tabular-nums; letter-spacing: var(--ls-caps); }
 
-/* Composer --------------------------------------------------------------- */
-
-/* An outlined region, not a card: square corners, one strong rule around it,
-   and bands inside separated by full-bleed rules. Each band pads itself, so
-   the rules run edge to edge. It is the conversation grid's own third row, not
-   a floating panel: an on-page region is separated by its rule and casts no
-   shadow, and nothing scrolls under it to need a scrim. The border stays neutral
-   on focus — the caret is the focus cue for the field you are typing in. */
 .composer { position: relative; width: 100%; max-width: min(var(--content-column), calc(100% - 2 * var(--content-gutter))); margin: 0 auto var(--s-4); border: 1px solid var(--border-strong); background: var(--bg); }
-/* The project band: which folder this thread's turns run in, what git has checked out
-   there, and whether it works in a worktree beside it. Same band rules as the action
-   row at the other end of the composer, on the same column and half its height:
-   three short chips the eye passes over on its way to the message, so they sit at
-   20px with no air of their own.
-   It is not a band of the composer, though — it says what this thread is attached
-   to, which outlives the message being typed. So it stands off the box with a gap
-   and carries no outline of its own: chips over the page, not a fourth row of the
-   field. .folder-nudge above took the same shape for the same reason. */
 .composer-project { position: relative; display: flex; align-items: center; gap: var(--s-1); width: 100%; max-width: min(var(--content-column), calc(100% - 2 * var(--content-gutter))); margin: 0 auto var(--s-2); padding: 0 var(--s-1); font-family: var(--font-mono); font-size: var(--fs-sm); }
 .composer-project .project-button, .composer-project .project-branch, .composer-project label {
   display: flex; align-items: center; gap: var(--s-2); flex: 0 1 auto; min-width: 0; height: 20px; padding: 0 var(--s-2);
   color: var(--text-2); border: 0; background: transparent; font: inherit; white-space: nowrap; transition: background-color var(--t), color var(--t);
 }
-/* Each chip owns the menu it opens, so a popover hangs off the chip it belongs to
-   rather than off the left edge of the band. */
 .composer-project .project-chip { position: relative; display: flex; min-width: 0; }
-/* The folder is the value here, so it keeps the ink. It opens the app's own menu
-   rather than the platform one: a select would drop a rounded, opaque list from the
-   window server in the middle of an interface drawn entirely in rules. */
 .composer-project .project-button { color: var(--text); }
 .composer-project .project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .composer-project .project-button > span[aria-hidden] { flex: 0 0 auto; color: var(--text-3); }
 .composer-project .project-button:hover:not(:disabled), .composer-project label:hover { color: var(--text); background: var(--surface-3); }
 .composer-project .project-button[aria-expanded="true"] { background: var(--surface-3); }
 .composer-project .project-button:disabled, .composer-project label:has(:disabled) { color: var(--text-3); }
-/* The menu is the ＋ menu's panel: rows only, so no header. It keeps that panel's
-   own placement — above the chip, the way every other composer popover opens. The
-   chip is narrow, so the width is stated here rather than taken from it. */
 .composer-project .project-menu { width: 320px; max-height: min(50vh, 320px); padding: var(--s-1) 0; }
 .composer-project .project-menu .slash-row { gap: var(--s-2); }
 .composer-project .branch-menu { width: 260px; }
-/* The one field in the band, on the row it replaces: it opens where "New branch…"
-   was, so the name is typed on the line the eye is already on. */
 .branch-new { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-1) var(--s-3); }
 .branch-new input { flex: 1; min-width: 0; height: 22px; padding: 0 var(--s-2); color: var(--text); border: 1px solid var(--border); background: transparent; font: var(--fs-sm)/1.5 var(--font-mono); }
 .branch-new input:focus-visible { border-color: var(--border-strong); outline: none; }
@@ -393,20 +213,11 @@
 .composer-project .project-branch:hover:not(:disabled), .composer-project .project-branch[aria-expanded="true"] { color: var(--text-2); background: var(--surface-3); }
 .composer-project > small { flex: 1; min-width: 0; color: var(--danger); font-size: var(--fs-xs); }
 
-/* Zero-specificity reset so every button in the composer subtree opts out of the UA
-   grey without out-ranking the class rules below. */
 button:where(.composer *) { background: transparent; color: inherit; }
-/* The message band: prose the user reads in sentences, so this is the one part
-   of the composer set in --font. --s-4 inline puts the caret 13px from the
-   outline — the column every message body above it starts on. */
 .composer textarea { display: block; width: 100%; max-height: 40vh; resize: none; field-sizing: content; padding: var(--s-3) var(--s-4); border: 0; color: var(--text); background: transparent; font-size: var(--fs-md); line-height: 1.55; }
 .composer textarea::placeholder { color: var(--text-3); }
 .composer textarea:focus-visible { outline: none; }
 
-/* A "/name" token is a value inside prose, so it has to be coloured per word —
-   which a textarea cannot do. The text is painted once by a mirror layer sitting
-   in the same box, and the textarea above it keeps only its caret. Every metric
-   below must match the textarea rule above or the two layers drift apart. */
 .composer-input { position: relative; }
 .composer-input textarea { position: relative; color: transparent; caret-color: var(--text); }
 .composer-highlight {
@@ -414,30 +225,19 @@ button:where(.composer *) { background: transparent; color: inherit; }
   color: var(--text); font-family: var(--font); font-size: var(--fs-md); line-height: 1.55;
   white-space: pre-wrap; overflow-wrap: break-word; pointer-events: none;
 }
-/* Hues in order of first appearance, so a name keeps its colour as the message
-   grows. Orange is the accent and stays out of the rotation. */
 .slash-token { color: var(--teal); }
 .slash-token[data-hue="1"] { color: var(--violet); }
 .slash-token[data-hue="2"] { color: var(--lime); }
 .slash-token[data-hue="3"] { color: var(--blue); }
 .slash-token[data-hue="4"] { color: var(--rose); }
-/* An "@" file mention is not a command and never joins the rotation: it always
-   takes the accent, so a path reads as the literal data it attaches. */
 .slash-token[data-hue="5"] { color: var(--accent); }
 
-/* The "/" menu reuses the ＋ menu's panel; it is a list, so it drops the header
-   and its rows are one line each. */
 .slash-menu { padding: var(--s-1) 0; }
 .slash-empty { padding: var(--s-2) var(--s-3); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-sm); }
 .slash-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); width: 100%; min-height: 28px; padding: 0 var(--s-3); border: 0; color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); text-align: left; transition: background-color var(--t), color var(--t); }
 .slash-row.active { color: var(--text); background: var(--surface-3); }
 .slash-row strong { flex: 0 0 auto; white-space: nowrap; font-weight: 400; }
-/* The blurb gives up every pixel before the name gives up one — a row the eye
-   cannot name is useless, a clipped description is not. The rest sits on `title`. */
 .slash-row small { flex: 0 20 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--fs-xs); }
-/* What a row *is*, hued by kind and sat against the name — a built-in tool never
-   reads as an imported skill. `margin-right: auto` keeps the pair left while the
-   detail stays on the right edge. */
 .slash-kind { flex: 0 0 auto; margin-right: auto; color: var(--text-3); font-style: normal; font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .slash-kind[data-kind="tool"] { color: var(--teal); }
 .slash-kind[data-kind="skill"] { color: var(--violet); }
@@ -445,12 +245,6 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .slash-kind[data-kind="artifact"] { color: var(--lime); }
 .slash-kind[data-kind="page"] { color: var(--rose); }
 
-/* The action band, ruled off from the message above it. Bare mono text and
-   glyphs; the only filled control is send. Left is the ＋ menu, the model
-   button and send sit right.
-   Content aligns, hit areas bleed: --s-1 inline lands both end glyphs — each
-   centred in a 26px target — on the same 13px column the caret above them
-   starts on, and on its mirror at the right. */
 .composer-row { display: flex; align-items: center; gap: var(--s-1); padding: var(--s-2) var(--s-1); border-top: 1px solid var(--border); }
 .composer-tools { display: flex; align-items: center; flex: 1; gap: var(--s-1); min-width: 0; }
 
@@ -462,49 +256,26 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .composer-row .source-trigger:hover:not(:disabled), .composer-row .model-button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 .composer-row .source-trigger:disabled, .composer-row .model-button:disabled { color: var(--text-3); }
 .composer-row .source-trigger[aria-expanded="true"], .composer-row .model-button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
-/* A bare glyph: square hit area, no circle, no outline. */
 .composer-row .source-trigger { justify-content: center; width: 26px; padding: 0; font-size: var(--fs-lg); line-height: 1; }
 
-/* The model name is a value, not a label, so it stays in its own case. The
-   route tag beside it is hued by where the turn actually runs: teal never
-   leaves this Mac, violet goes out to OpenRouter. */
 .composer-row .model-button { flex: 0 1 auto; min-width: 0; color: var(--text); }
 .composer-row .model-button .model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* Same 16px mark column the picker rows hold, so the button reads as their heading.
-   The padding is repeated from .brand-image because it has to reach the fallback
-   glyph too, which is a span and never picks that rule up. */
 .composer-row .model-button .model-brand { display: grid; flex: 0 0 auto; place-items: center; width: 16px; height: 16px; padding: 2px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
 .composer-row .model-button > span[aria-hidden] { flex: 0 0 auto; color: var(--text-3); }
 .model-route { flex: 0 0 auto; font-style: normal; text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .model-route.local { color: var(--teal); }
 .model-route.remote { color: var(--violet); }
+.model-effort { --hue: var(--text-3); flex: 0 0 auto; color: var(--hue); font-style: normal; text-transform: uppercase; letter-spacing: var(--ls-caps); }
 
-/* The committing action, in the language .agent-proposal button settles on: an
-   accent glyph, no border and no fill, with --accent-soft arriving only on
-   hover. A four-sided box around it would be the one rounded-rectangle-shaped
-   thing in an app drawn entirely with rules — the hue is what sets it apart
-   from the bare ＋ beside it, not an outline. */
 .composer-send { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; color: var(--accent); border: 0; background: transparent; font-size: var(--fs-lg); line-height: 1; transition: background-color var(--t), color var(--t); }
 .composer-send:hover:not(:disabled) { background: var(--accent-soft); }
-/* Opts out of the global disabled fade: nothing to ghost out now that the box
-   is gone, so it just steps off the accent onto the quiet ink. */
 .composer-send:disabled { opacity: 1; color: var(--text-3); }
-/* Mid-turn the same button stops the run: one control, so there is never a send
-   and a stop competing for the corner the user already looks at. */
 .composer-send.stopping { color: var(--danger); font-size: var(--fs-sm); }
 .composer-send.stopping:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
-/* Mid-turn the corner holds one door: stop while the composer is empty, steer
-   once something is typed. Steering is the quieter send, so it steps off the
-   accent until hovered. */
 .composer-send.steering { color: var(--text-2); }
 .composer-send.steering:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
-/* Same band as an attachment — a queued prompt is another thing riding along —
-   but it can be long, so it keeps to one line. */
 .queued-turn > span { font-style: italic; }
 
-/* Queued prompts stack above the composer rather than under it, in a box a size
-   down: the reading order is the sending order, and the smaller type says this
-   is the composer's overflow and not another message. */
 .queued-stack { width: 100%; max-width: min(var(--content-column), calc(100% - 2 * var(--content-gutter))); margin: 0 auto var(--s-2); border: 1px solid var(--border); background: var(--bg); }
 .queued-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: var(--s-1) var(--s-2); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-xs); font-style: italic; line-height: 1.4; }
 .queued-row + .queued-row { border-top: 1px solid var(--border); }
@@ -513,24 +284,14 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .queued-row button:hover { color: var(--text); background: var(--surface-3); }
 
 .composer > .capability-error { padding: var(--s-2) var(--s-3); border-top: 1px solid var(--border); }
-/* Another band, not a card inside a card: the rule separates it, and the row
-   only exists while something is attached, so it does not need a hue too. */
 .composer-attachment { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: var(--s-2) var(--s-3); border-top: 1px solid var(--border); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.4; }
 .composer-attachment > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Attached files ride above the message rather than under the action row: they are
-   part of what is being written, so they read before it, not after the send button.
-   Tiles, not bands — the name alone says nothing about which screenshot, and a
-   picture that shows itself is the whole reason to attach one. */
 .composer-tray { display: flex; flex-wrap: wrap; gap: var(--s-2); padding: var(--s-3) var(--s-4) 0; }
 .composer-tile { position: relative; display: grid; align-content: center; justify-items: center; gap: 2px; width: 56px; height: 56px; padding: 0 var(--s-1); overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); }
 .composer-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .composer-tile > .git-type { display: grid; place-items: center; height: 18px; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); }
 .composer-tile > .git-type img { position: static; width: 18px; height: 18px; opacity: 0.7; }
 .composer-tile small { max-width: 100%; overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
-/* Revealed on hover, but always in the tab order — the tile is small and a
-   permanent × on a thumbnail is a second thing to look at in every one. */
-/* The same tiles once the turn has been sent: above the message, in reading
-   order, and the whole tile is the way into the file. */
 .message-tray { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-3); }
 .message-tray .composer-tile { padding: 0 var(--s-1); cursor: pointer; transition: border-color var(--t); }
 .message-tray .composer-tile:hover, .message-tray .composer-tile:focus-visible { border-color: var(--border-strong); }
@@ -540,79 +301,41 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .composer-attachment button { display: grid; place-items: center; flex: 0 0 auto; width: 24px; height: 24px; color: inherit; font-size: var(--fs-lg); line-height: 1; transition: background-color var(--t), color var(--t); }
 .composer-attachment button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 
-/* The ＋ menu ------------------------------------------------------------ */
-
-/* Capped at menu width: at the composer's full 760px the rows stretch so wide
-   that a label and its trailing tag lose all visual relationship. */
 .source-popover { position: absolute; z-index: 12; left: 0; bottom: calc(100% + var(--s-2)); width: min(100%, 420px); max-height: min(60vh, calc(100vh - 180px)); overflow-y: auto; padding: var(--s-3); border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); }
-/* The dialog is tabindex="-1" and takes focus programmatically so Escape lands
-   on it. index.css only rings controls, so Chromium was painting its own
-   off-palette blue ring around the whole menu; the controls inside keep theirs. */
 .source-popover:focus, .source-popover:focus-visible { outline: none; }
-/* Header band: its rule is full-bleed, so it runs to the outline instead of
-   stopping short at the padding. */
 .source-popover > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); min-height: 30px; margin: 0 calc(-1 * var(--s-3)) var(--s-2); padding: 0 var(--s-3) var(--s-2); border-bottom: 1px solid var(--border); }
 .source-popover h3 { color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .source-popover > header button { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; color: var(--text-2); font-size: var(--fs-lg); line-height: 1; transition: background-color var(--t), color var(--t); }
 .source-popover > header button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 
-/* The file/category rows the ＋ menu offers as "/" does. */
 .add-context { display: grid; gap: 0; max-height: 200px; overflow-y: auto; }
 .add-context input { min-height: 28px; margin: var(--s-2) var(--s-3); padding: 0 var(--s-2); color: var(--text); border: 1px solid var(--border); background: var(--surface-2); font-family: var(--font-mono); font-size: var(--fs-sm); }
 .add-context .slash-row:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
-/* The same type mark the Git panel draws, in the same fixed column so every name
-   starts on one left edge — a category, which is no file, holds the column empty.
-   The name takes the free space beside it so the detail keeps the right edge. */
 .add-context .slash-row > .git-type { display: grid; place-items: center; flex: 0 0 20px; align-self: center; overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); }
 .add-context .slash-row > .git-type img { width: 14px; height: 14px; opacity: 0.55; transition: opacity var(--t); }
 .add-context .slash-row:hover > .git-type img { opacity: 0.9; }
 .add-context .slash-row > .git-type + strong { margin-right: auto; }
 
-/* The ＋ menu is the same table of bands as the model menu: no padding on the
-   region, every band pads itself, so each rule and each hover run the full
-   width of the outline. */
 .add-menu { padding: 0; }
 .add-menu > header { margin: 0; padding: 0 var(--s-2) 0 var(--s-3); }
 
 .add-row { display: flex; align-items: flex-start; gap: var(--s-3); width: 100%; min-height: 34px; padding: var(--s-2) var(--s-3); text-align: left; color: var(--text); border: 0; background: transparent; font-size: inherit; transition: background-color var(--t), color var(--t); }
-/* Same table of bands as the model menu: consecutive rows are separated by a
-   rule, not by air, so the two popovers read as one component family. Rows
-   split by an .add-section already have that section's own rules. */
 .add-row + .add-row { border-top: 1px solid var(--border); }
 button.add-row:hover:not(:disabled) { background: var(--surface-3); }
-/* Bare glyph, no tile: a filled chip here is a box inside the popover box. Its
-   box is the height of one label line so it sits on the title, not halfway down
-   a description that may wrap to three. */
 .add-row > b { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 16px; color: var(--text-3); font-size: var(--fs-lg); font-weight: 400; line-height: 1; }
 .add-row > div { display: grid; gap: 2px; min-width: 0; }
-/* The name is a label on the grid; the line under it is a sentence, so the
-   pair splits across the two faces. 12px is the body floor. */
 .add-row strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 400; }
 .add-row small { color: var(--text-2); font-size: var(--fs-sm); line-height: 1.45; }
 .add-row.muted { cursor: default; }
 .add-row.muted > b, .add-row.muted strong { color: var(--text-2); }
-/* The entries are a set of kinds, so they take distinct hues in palette order
-   rather than three copies of the accent — which stays reserved for action and
-   state. The hint row keeps no hue because it is not a kind you can pick. */
 .add-row.kind-knowledge > b { color: var(--teal); }
 .add-row.kind-capability > b { color: var(--violet); }
 .add-row.kind-agent > b { color: var(--lime); }
 
-/* A band header, rules included — the same shape as the sidebar's section label. */
 .add-section { display: block; margin: 0; padding: var(--s-3) var(--s-3) var(--s-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
-/* The model menu --------------------------------------------------------- */
-
-/* One picker, drawn the same in all three surfaces that choose a model — the
-   composer, the island, and the second models in Settings. Two columns: a rail
-   of maker marks that filters, and the list with its search over it. The panel
-   itself never scrolls; the rail and the list scroll inside it, so the search
-   and the foot stay put while the list moves. */
 .model-menu { right: 0; left: auto; display: flex; width: 100%; max-height: min(60vh, 420px); padding: 0; overflow: hidden; }
 
-/* Icon-only marks in catalog order. A mark the search empties dims rather than
-   disappearing: a rail that reflows while you type moves the next mark out from
-   under the pointer. */
 .model-rail { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: var(--s-1); width: 34px; padding: var(--s-2) 0; overflow-y: auto; border-right: 1px solid var(--border); scrollbar-width: none; }
 .model-rail::-webkit-scrollbar { width: 0; }
 .model-rail hr { width: 16px; margin: var(--s-1) 0; border: 0; border-top: 1px solid var(--border); }
@@ -621,17 +344,10 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-mark[aria-pressed="true"] { background: var(--surface-4); }
 .model-mark .model-brand { width: 18px; height: 18px; }
 
-/* Every band of the body pads itself, so its rule runs the full width of the
-   column; only the list takes the leftover height and scrolls. */
 .model-body { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .model-body > * { flex: 0 0 auto; }
-/* Unboxed: the rule under it is the field's only edge. */
 .model-search { min-height: 30px; padding: 0 var(--s-3); color: var(--text); border: 0; border-bottom: 1px solid var(--border); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); }
-/* The field is autofocused the moment the picker opens, so the accent edge
-   index.css gives focused inputs would just be permanent decoration. Caret only. */
 .model-find .model-search:focus-visible { border-bottom-color: var(--border); }
-/* Free-only sits on the search line, and carries the field's own rule so the line
-   under it stays unbroken across the two controls. */
 .model-find { display: flex; }
 .model-find .model-search { flex: 1 1 auto; min-width: 0; }
 .model-free-only { flex: 0 0 auto; padding: 0 var(--s-3); color: var(--text-3); background: transparent; border-bottom: 1px solid var(--border); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: color var(--t), background-color var(--t); }
@@ -639,12 +355,7 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-free-only[aria-pressed="true"] { color: var(--accent); background: var(--surface-4); }
 .model-rows { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 
-/* Two lines: the model, then who made it. No rule between rows — a two-line row
-   already reads as its own block, and the fill on the selected one is the only
-   mark this list needs. */
 .model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; transition: background-color var(--t); }
-/* The window sits with the star, not in the name line: it is a property of the
-   row, and a fixed right edge lets the numbers be compared down the column. */
 .model-context { color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); white-space: nowrap; }
 .model-row:hover, .model-row.current { background: var(--surface-3); }
 .model-row-pick { display: grid; gap: 2px; min-width: 0; padding: var(--s-2) var(--s-3); text-align: left; color: var(--text); background: transparent; }
@@ -654,13 +365,11 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-row-pick .model-brand { width: 14px; height: 14px; }
 .model-row-pick:disabled { color: var(--text-3); }
 .model-menu .model-brand { display: grid; flex: 0 0 auto; place-items: center; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
-/* `i` is the app's 6px status dot (index.css); the star is a glyph, not a dot. */
 .model-star { color: var(--text-3); background: transparent; font: var(--fs-md)/1 var(--font); font-style: normal; transition: color var(--t), background-color var(--t); }
 .model-star[aria-pressed="true"] { color: #ffd60a; }
 .model-row > .model-star { display: grid; place-items: center; width: 26px; height: 26px; margin-right: var(--s-2); }
 .model-row > .model-star:hover { color: var(--text); background: var(--surface-4); }
 
-/* The rows the foot is built from: a label, and what it does at the end of it. */
 .model-menu-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); width: 100%; min-height: 30px; padding: var(--s-1) var(--s-3); text-align: left; color: var(--text); border: 0; background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: background-color var(--t), color var(--t); }
 .model-menu-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-menu-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -669,32 +378,18 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-menu-row.quiet { color: var(--text-2); }
 .model-menu-row:disabled { color: var(--text-3); }
 
-/* The action band. --border-strong outlines a region; every rule inside one is
-   --border, including this one — the band is set apart by being an action, not
-   by a heavier line. */
 .model-menu-foot { border-top: 1px solid var(--border); }
-/* Help text and the policy disclosure are read as sentences, so --font. */
 .model-menu-note { padding: var(--s-2) var(--s-3); color: var(--text-2); font-size: var(--fs-sm); line-height: 1.5; }
 .model-menu-note + .model-menu-row, .model-menu-note + .model-menu-note { border-top: 1px solid var(--border); }
 .model-menu-note a { display: inline-block; margin-top: var(--s-2); color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
 .model-menu .capability-error { padding: var(--s-2) var(--s-3); border-top: 1px solid var(--border); }
 
-/* Capability panel -------------------------------------------------------
-   This renders inside the ＋ menu's outline, so it draws none of its own: the
-   header, the attachment line, and each section are bands that pad themselves,
-   separated by full-bleed rules. The menu carries no padding, so no negative
-   margins are needed to reach the outline. */
-
 .capability-panel { display: grid; color: var(--text-2); font-size: var(--fs-sm); }
 .capability-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); padding: var(--s-3); }
 .capability-label { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
 .capability-panel > header span, .capability-label > span { color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
-/* Sentences the user reads, so --font at the 12px body floor. */
 .capability-panel > header small, .capability-section > small { display: block; margin-top: var(--s-1); color: var(--text-2); font-size: var(--fs-sm); line-height: 1.45; }
 
-/* Controls are the one exemption from "never nest outlines": a hit target, not
-   a region, so a 1px --border box one step quieter than the menu's own
-   --border-strong. Same language as panels.css. */
 .capability-panel > header button, .capability-action {
   flex: 0 0 auto; justify-self: start; min-height: 28px; padding: 0 var(--s-3);
   color: var(--text-2); background: transparent; border: 1px solid var(--border);
@@ -704,8 +399,6 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .capability-panel > header button:hover:not(:disabled), .capability-action:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
 
 .capability-section { display: grid; gap: var(--s-2); padding: var(--s-3); border-top: 1px solid var(--border); }
-/* Full reset of the label's metadata type: uppercase would inherit into the
-   field and mangle what the user typed. */
 .capability-section label { display: grid; gap: var(--s-1); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .capability-section input, .capability-section textarea { display: block; width: 100%; min-height: 28px; padding: var(--s-1) var(--s-2); color: var(--text); background: transparent; border: 1px solid var(--border); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; line-height: 1.5; letter-spacing: 0; text-transform: none; transition: border-color var(--t); }
 .capability-section textarea { padding: var(--s-2); resize: vertical; font-family: var(--font-code); }
@@ -715,73 +408,45 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .capability-row { display: grid; gap: 2px; min-height: 30px; margin-inline: calc(-1 * var(--s-3)); padding: var(--s-2) var(--s-3); text-align: left; color: var(--text-2); border: 0; background: transparent; transition: background-color var(--t); }
 .capability-row + .capability-row { margin-top: calc(-1 * var(--s-2)); border-top: 1px solid var(--border); }
 button.capability-row:hover:not(:disabled) { background: var(--surface-2); }
-/* The name is an identifier on the grid; the line under it is a sentence. */
 .capability-row strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; }
 .capability-row small { color: var(--text-2); font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
 
-/* Something is attached to the next turn — a state, which is what the accent
-   means. */
 .capability-attached { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: var(--s-2) var(--s-3); border-top: 1px solid var(--border); color: var(--accent); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.4; letter-spacing: 0; }
 .capability-attached button { flex: 0 0 auto; color: inherit; font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; text-decoration: underline; text-underline-offset: 2px; }
 
 .capability-error { color: var(--danger); font-size: var(--fs-sm); line-height: 1.45; }
-/* The panel's own bands pad themselves, and a failure is one of them. */
 .capability-panel > .capability-error { padding: var(--s-3); border-top: 1px solid var(--border); }
 
-/* The effort band under the model list: a label on the left, the slider on the
-   right, on the same rule the menu's other rows sit on. */
 .model-menu-thinking { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); min-height: 28px; padding: 0 var(--s-3); border-top: 1px solid var(--border); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
-/* The thinking slider: how hard the model is asked to think, as a bar the user
-   drags. The reference was iOS's rounded pill; this is its square cousin —
-   ticks on a rule, a fill that eases between stops rather than snapping, and a
-   hue per step so the effort reads as colour before it reads as a word. Cool
-   at the bottom, --accent at the top, because the top costs the most.
-   The range input carries the interaction — keyboard, drag, screen readers —
-   and is laid transparent over the drawing, which is what keeps the whole
-   control one native element instead of a pile of pointer handlers. */
 .thinking-slider {
   --hue: var(--text-3);
   position: relative; display: flex; align-items: center; gap: var(--s-2); flex: 0 0 auto; height: 26px; padding: 0 var(--s-2);
   color: var(--hue); font-family: var(--font-mono); font-size: var(--fs-sm); white-space: nowrap;
   transition: background-color var(--t), color var(--t);
 }
-/* One hue per effort, cool to hot. The stops on screen are the model's own, so a
-   model that offers three of these simply never shows the other four. */
-.thinking-slider[data-level="minimal"] { --hue: var(--teal); }
-.thinking-slider[data-level="low"] { --hue: var(--blue); }
-.thinking-slider[data-level="medium"] { --hue: var(--violet); }
-.thinking-slider[data-level="high"] { --hue: var(--accent); }
-.thinking-slider[data-level="xhigh"] { --hue: var(--accent); }
-.thinking-slider[data-level="max"] { --hue: var(--rose); }
+:is(.thinking-slider, .model-effort)[data-level="minimal"] { --hue: var(--teal); }
+:is(.thinking-slider, .model-effort)[data-level="low"] { --hue: var(--blue); }
+:is(.thinking-slider, .model-effort)[data-level="medium"] { --hue: var(--violet); }
+:is(.thinking-slider, .model-effort)[data-level="high"] { --hue: var(--accent); }
+:is(.thinking-slider, .model-effort)[data-level="xhigh"] { --hue: var(--accent); }
+:is(.thinking-slider, .model-effort)[data-level="max"] { --hue: var(--rose); }
 .thinking-slider:hover:not(:has(input:disabled)) { background: var(--surface-3); }
 .thinking-slider:has(input:disabled) { color: var(--text-3); opacity: 0.6; }
 .thinking-slider:has(input:focus-visible) { outline: 1px solid var(--hue); outline-offset: -1px; }
-/* "Very high" is the longest label, and the face is monospace, so 9ch holds
-   every word. Without it the label's width lands back on the track and the
-   whole control slides out from under the cursor mid-drag. */
 .thinking-slider em { flex: 0 0 auto; width: 9ch; font-style: normal; font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-align: left; text-transform: uppercase; }
 
-/* 60px of track, however many stops the model publishes. The tick positions and the fill both read the same
-   --stop, so nothing can drift out of step with the value. */
-/* The input covers the track and nothing else, so the value the cursor lands on
-   is the stop under the cursor. Its thumb is zero-width and invisible: the
-   visible head is .thinking-knob, which reads the same --stop the fill does. */
 .thinking-control { position: relative; display: block; flex: 0 0 auto; width: 60px; height: 26px; }
 .thinking-track { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; }
 .thinking-track::before { content: ""; position: absolute; inset-inline: 0; height: 3px; background: var(--surface-4); }
 .thinking-fill { position: absolute; left: 0; height: 3px; width: calc(var(--stop) / var(--stops) * 100%); background: var(--hue); transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color var(--t); }
 .thinking-track i { position: relative; z-index: 1; width: 3px; height: 3px; background: var(--border-strong); transition: background-color var(--t); }
 .thinking-track i[data-on="true"] { background: var(--bg); }
-/* The head: a 2px-wide bar that slides between the ticks, easing on the same
-   curve as the fill so the two move as one object. */
-/* `left`, not `translate`: a percentage in `translate` resolves against the
-   knob's own 3px, which would pin it to the first stop. */
 .thinking-knob { position: absolute; left: calc(var(--stop) / var(--stops) * (100% - 3px)); z-index: 2; width: 3px; height: 13px; background: var(--hue); transition: left 180ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color var(--t); }
 .thinking-slider input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; appearance: none; background: none; cursor: ew-resize; }
 .thinking-slider input::-webkit-slider-thumb { appearance: none; width: 3px; height: 26px; background: none; }
 .thinking-slider input::-webkit-slider-runnable-track { height: 26px; background: none; }
 .thinking-slider input:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
-  .thinking-fill, .thinking-knob { transition: background-color var(--t); }
+.thinking-fill, .thinking-knob { transition: background-color var(--t); }
 }

@@ -24,7 +24,6 @@ export const permissionModeHints: Record<PermissionMode, string> = {
   full: "Nothing asks. Escape still stops a run.",
 };
 
-/** Every tool the agent loop can advertise. `computer` and `write_skill` predate this table. */
 export const AGENT_TOOLS = [
   "browser",
   "cli",
@@ -42,7 +41,7 @@ export const AGENT_TOOLS = [
   "threads",
   "read_trace",
   "context",
-  "save_page",
+  "keep",
   "agents",
   "install_mcp",
   "workflow",
@@ -52,12 +51,8 @@ export const AGENT_TOOLS = [
 ] as const;
 export type AgentToolName = (typeof AGENT_TOOLS)[number];
 
-/** `hidden` is never advertised, so the model cannot even ask for it. */
 export type ToolGate = "hidden" | "ask" | "auto";
 
-/* `auto` has no column of its own: it reads `ask`'s, and the question goes to the
-   verifier model instead of to the user. One column, so the two can never drift —
-   whatever asks a person in `ask` is exactly what a verifier is asked to clear. */
 type GatedMode = Exclude<PermissionMode, "auto">;
 
 const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
@@ -73,7 +68,7 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   advisor: { ask: "auto", acceptEdits: "auto", full: "auto" },
   vision: { ask: "auto", acceptEdits: "auto", full: "auto" },
   web_search: { ask: "auto", acceptEdits: "auto", full: "auto" },
-  save_page: { ask: "auto", acceptEdits: "auto", full: "auto" },
+  keep: { ask: "auto", acceptEdits: "auto", full: "auto" },
   cli: { ask: "ask", acceptEdits: "ask", full: "auto" },
   cli_runs: { ask: "auto", acceptEdits: "auto", full: "auto" },
   computer: { ask: "ask", acceptEdits: "ask", full: "auto" },
@@ -86,32 +81,16 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   visualize: { ask: "auto", acceptEdits: "auto", full: "auto" },
 };
 
-/**
- * What one tool may do in one mode, with the user's own switches applied.
- *
- * `disabled` comes from Settings → Tools and is checked here rather than at the
- * point a tool is advertised, so a switched-off tool is hidden from the model
- * *and* refused if it is asked for anyway — one place, both halves.
- */
 export function toolGate(mode: PermissionMode, tool: string, disabled: readonly string[] = []): ToolGate {
   if (disabled.includes(tool)) return "hidden";
   const row = GATES[tool as AgentToolName];
-  // An unknown name is not a tool Emma advertises, so there is nothing to allow.
+
   return row ? row[mode === "auto" ? "ask" : mode] : "hidden";
 }
 
-/**
- * Every built-in tool as Settings → Tools shows it: what it is for, in one line,
- * and which group it belongs under.
- *
- * Here rather than beside the schemas in `main/tools.ts` because the renderer
- * cannot import that file — it pulls in Electron — and because sitting next to
- * `GATES` is what stops the two lists from drifting apart. The test asserts they
- * cover exactly the same names.
- */
 export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; group: string }[] = [
   { name: "web_search", label: "Web search", blurb: "Searches the web through the provider configured below.", group: "Web" },
-  { name: "save_page", label: "Save page", blurb: "Clips a web page into your knowledge base and files it.", group: "Web" },
+  { name: "keep", label: "Keep", blurb: "Saves a page, a highlight or a note into your knowledge base as Markdown.", group: "Web" },
   { name: "browser", label: "Browser", blurb: "Drives a real Chrome browser, mirrored in the browser pane so you can watch it and take the wheel.", group: "Web" },
   { name: "computer", label: "Control this Mac", blurb: "Takes the real pointer and keyboard, and looks at the screen.", group: "This Mac" },
   { name: "cli", label: "Run another CLI", blurb: "Runs Claude Code, Codex, Pi, OpenCode or Cursor in a folder.", group: "This Mac" },
@@ -132,7 +111,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "workflow", label: "Scheduled tasks", blurb: "Builds and runs the workflows in the Scheduled section.", group: "Automation" },
   { name: "autoresearch", label: "Autoresearch", blurb: "Builds and runs the long experiment loops in the Autoresearch section.", group: "Automation" },
   { name: "artifact", label: "Artifacts", blurb: "Writes and edits the documents, pages and drawings kept on the Artifacts page.", group: "Thinking" },
-  { name: "visualize", label: "Visualize", blurb: "Draws a chart inline in the conversation. Nothing is saved — it belongs to the answer it explains.", group: "Thinking" },
+  { name: "visualize", label: "Visualize", blurb: "Draws a picture inline in the conversation — charts, panels, anything it can draw. Nothing is saved until you keep it.", group: "Thinking" },
 ];
 
 export function isPermissionMode(value: unknown): value is PermissionMode {

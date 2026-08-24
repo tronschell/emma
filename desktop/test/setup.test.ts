@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { knowledgeDirWritable, readKnowledgeDir, saveKnowledgeDir } from "../main/setup";
+import { defaultVaultRoot, vaultReady } from "../main/setup";
 import { privacySettingsUrl, SETUP_PERMISSIONS } from "../shared/setup";
+import { DEFAULT_VAULT_FOLDER, type VaultChoice } from "../shared/vault";
 
 const workspace = () => mkdtempSync(path.join(tmpdir(), "emma-setup-"));
 
@@ -17,23 +18,17 @@ test("only the permissions Emma asks for open a settings pane", () => {
   assert.throws(() => privacySettingsUrl(undefined), /not a permission/);
 });
 
-test("the chosen knowledge folder survives a restart, and a relative one is refused", () => {
-  const userData = workspace();
-  const chosen = path.join(workspace(), "Second Brain");
-  assert.equal(readKnowledgeDir(userData), process.env.EMMA_KNOWLEDGE_DIR ?? path.join(process.env.HOME ?? "", "Documents", "Emma Knowledge"));
-  assert.equal(saveKnowledgeDir(userData, chosen), chosen);
-  assert.equal(readKnowledgeDir(userData), chosen);
-  assert.ok(readdirSync(chosen).length === 0, "the folder is created, empty");
-  assert.throws(() => saveKnowledgeDir(userData, "Documents/Emma"), /full path/);
+test("the vault picker opens where a person keeps documents", () => {
+  assert.equal(defaultVaultRoot(), path.join(homedir(), "Documents"));
 });
 
-test("writability is answered by writing, so a folder Emma cannot write reads as denied", { skip: process.getuid?.() === 0 && "root writes anywhere" }, () => {
-  const root = workspace();
-  const locked = path.join(root, "locked");
-  assert.equal(knowledgeDirWritable(locked), true);
-  chmodSync(locked, 0o500);
-  assert.equal(knowledgeDirWritable(locked), false);
-  assert.equal(readdirSync(locked).length, 0, "the probe file is taken away again");
-  // An empty path is the mirror switched off, which nothing can deny.
-  assert.equal(knowledgeDirWritable(""), true);
+test("readiness is answered by writing, so a vault Emma cannot write reads as denied", { skip: process.getuid?.() === 0 && "root writes anywhere" }, () => {
+  const root = path.join(workspace(), "Second Brain");
+  mkdirSync(root, { mode: 0o500 });
+  const vault: VaultChoice = { root, folder: DEFAULT_VAULT_FOLDER, kind: "folder", name: "Second Brain" };
+  assert.equal(vaultReady(vault), false);
+  chmodSync(root, 0o700);
+  assert.equal(vaultReady(vault), true);
+  assert.deepEqual(readdirSync(path.join(root, DEFAULT_VAULT_FOLDER)), [], "the probe leaves nothing behind");
+  assert.equal(vaultReady(null), true, "nothing is denied before a vault is chosen");
 });

@@ -94,6 +94,7 @@ const idList = (value: unknown, allowed?: readonly string[]) => {
 };
 
 export const MIN_BROWSER_WIDTH = 260;
+export const WIDE_BROWSER_WIDTH = 720;
 
 export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITIVE_INFINITY): PaneLayout {
   const input = value && typeof value === "object" ? value as Partial<PaneLayout> : {};

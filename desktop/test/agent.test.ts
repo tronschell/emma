@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 import { collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
 import { asPermissionMode, toolGate } from "../shared/permissions";
 import { browserArgv, describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
-import { parseStreamMessage } from "../src/browser-stream";
 import { AgentRuntime, bounded, type LoopDeps } from "../main/agent-loop";
 import type { VerifierReview } from "../main/verifier";
 import { decodeSpans } from "../shared/trace";
@@ -27,7 +26,7 @@ const runtime = (deps: Partial<LoopDeps> = {}) => new AgentRuntime({
 });
 
 test("the gate loosens one rung at a time, and never for a name Emma does not advertise", () => {
-  assert.equal(toolGate("ask", "save_page"), "auto");
+  assert.equal(toolGate("ask", "keep"), "auto");
   assert.equal(toolGate("ask", "run_tool"), "ask");
   assert.equal(toolGate("acceptEdits", "run_tool"), "ask");
   assert.equal(toolGate("full", "run_tool"), "auto");
@@ -61,9 +60,9 @@ test("tool arguments are validated before anything runs", () => {
   assert.throws(() => parseToolArgs("run_tool", "not json"), /JSON/);
   assert.equal(describeToolCall(parse("cli_runs", { id: "cli1" })), "reading cli1");
   // "Add this page to my kb" carries no URL: the tool goes and finds the page itself.
-  assert.deepEqual(parse("save_page", {}), { name: "save_page", url: undefined });
-  assert.equal(describeToolCall(parse("save_page", {})), "saving the page in front");
-  assert.equal(describeToolCall(parse("save_page", { url: "https://example.com/a" })), "saving https://example.com/a");
+  assert.deepEqual(parse("keep", {}), { name: "keep", kind: "page", title: undefined, text: undefined, url: undefined });
+  assert.equal(describeToolCall(parse("keep", {})), "keeping the page in front");
+  assert.equal(describeToolCall(parse("keep", { url: "https://example.com/a" })), "keeping https://example.com/a");
 });
 
 test("a browser call becomes agent-browser's own command line, in its own argument order", () => {
@@ -84,19 +83,6 @@ test("a browser call becomes agent-browser's own command line, in its own argume
   assert.throws(() => parse({ action: "scroll", amount: -80 }), /pixels/);
   assert.equal(describeToolCall(parse({ action: "click", selector: "@e1" })), "clicking @e1");
   assert.equal(describeToolCall(parse({ action: "snapshot" })), "looking at the page");
-});
-
-test("the browser pane follows the page from whichever message the stream sends", () => {
-  const sent = (message: unknown) => parseStreamMessage(JSON.stringify(message));
-  assert.deepEqual(sent({ type: "url", url: "https://iana.org/" }), { kind: "page", url: "https://iana.org/" });
-  assert.deepEqual(sent({ type: "tabs", tabs: [{ active: false, url: "https://old.example" }, { active: true, url: "https://example.com/" }] }), { kind: "page", url: "https://example.com/" });
-  assert.deepEqual(sent({ type: "frame", seq: 7, data: "/9j/4AAQ" }), { kind: "frame", data: "/9j/4AAQ", seq: 7 });
-  assert.equal(sent({ type: "frame", data: "<script>" }), null);
-  assert.equal(sent({ type: "url", url: "javascript:alert(1)" }), null);
-  assert.equal(sent({ type: "tabs", tabs: [{ active: false, url: "https://example.com/" }] }), null);
-  assert.equal(sent({ type: "console", text: "hello" }), null);
-  assert.equal(parseStreamMessage("not json"), null);
-  assert.equal(parseStreamMessage(new ArrayBuffer(8)), null);
 });
 
 test("a tool Emma wrote herself is listed before it is run, and runs as one shell word", async () => {

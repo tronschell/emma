@@ -14,9 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{
-    KnowledgeBaseId, ScheduledJobId, Timestamp, ValidationError, quote, unquote, validate_text,
-};
+use crate::{ScheduledJobId, Timestamp, ValidationError, quote, unquote, validate_text};
 use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -79,12 +77,6 @@ impl ThreadRole {
     }
 }
 
-/// What kind of agent owns a thread. `Main` is a thread the user talks to: a root
-/// thread, or a sub thread another main thread started and owns. `Subagent` is the
-/// transcript of one `task` call — work delegated inside a turn, several of which
-/// can run under one thread, and none of which belongs in the projects list.
-///
-/// Both shapes carry `parent_thread_id`; this is what tells them apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThreadKind {
@@ -113,11 +105,9 @@ impl FromStr for ThreadKind {
     }
 }
 
+const THREAD_FORMAT: u64 = 12;
+
 pub const MAX_THREAD_MESSAGES: usize = 1_024;
-pub const MAX_THREAD_SOURCE_BASES: usize = 256;
-/// Traces a thread keeps, oldest dropped first. A runaway agent must not be able
-/// to grow a thread file without bound, so the two ceilings together cap the
-/// trace section of one thread at a megabyte.
 pub const MAX_THREAD_TRACES: usize = 64;
 pub const MAX_TRACE_BYTES: usize = 16 * 1024;
 
@@ -139,22 +129,10 @@ impl FromStr for ThreadRole {
 pub struct GenerationTelemetry {
     pub output_tokens: u64,
     pub duration_milliseconds: u64,
-    /// Everything the provider billed as input for this turn: the system prompt,
-    /// the tool schemas, retrieved knowledge and the transcript. It is the only
-    /// honest measure of what a turn carried, because the parts assembled below
-    /// Emma are not visible to the app that draws the context inspector.
     pub input_tokens: u64,
-    /// Which model wrote this turn, as the composer's picker named it. Stored per
-    /// message rather than read off the current picker, because the picker moves:
-    /// a thread half answered by one model and half by another has to read back
-    /// as what actually happened. Empty when the caller reported no model, and on
-    /// every thread written before format 11 — the transcript then shows no route
-    /// rather than attributing an old turn to today's pick.
     pub model: String,
 }
 
-/// Long enough for any real `vendor/model-version:variant`, short enough that a
-/// junk value cannot bloat the thread file.
 const MAX_MODEL_NAME_CHARS: usize = 128;
 
 impl GenerationTelemetry {
@@ -171,8 +149,6 @@ impl GenerationTelemetry {
         if duration_milliseconds == 0 {
             return Err(ValidationError::new("generation duration must be positive"));
         }
-        // Clamped rather than refused: the model name is a label on the turn, and
-        // losing a whole recorded turn over a cosmetic field is the worse failure.
         let model: String = model
             .into()
             .trim()
@@ -215,12 +191,6 @@ impl ThreadMessage {
     }
 }
 
-/// One finished turn as an execution trace: every tool call, every subagent, and
-/// every subagent's own calls, already rendered as the indented outline a model
-/// reads. Core stores it as opaque bounded text rather than a parsed span tree
-/// because nothing here reasons about it — `desktop/shared/trace.ts` is the one
-/// place the format is written, and a second implementation of it would only
-/// drift.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTrace {
@@ -229,9 +199,6 @@ pub struct ThreadTrace {
 }
 
 impl ThreadTrace {
-    /// An oversized trace loses its middle rather than the whole turn: what a
-    /// run set out to do and where it ended up are what diagnose it, and the
-    /// repetitive middle is exactly what a stuck agent produces.
     pub fn new(timestamp: Timestamp, text: &str) -> Result<Self, ValidationError> {
         let text = elide_middle(text, MAX_TRACE_BYTES);
         validate_text("thread trace", &text, true)?;
@@ -244,8 +211,6 @@ pub(crate) fn elide_middle(text: &str, max: usize) -> String {
         return text.to_owned();
     }
     let lines: Vec<&str> = text.lines().collect();
-    // Split by line, so the cut is never inside a character, and spend the budget
-    // from both ends at once.
     let budget = max.saturating_sub(64);
     let mut head: Vec<&str> = Vec::new();
     let mut tail: Vec<&str> = Vec::new();
@@ -283,24 +248,13 @@ pub(crate) fn elide_middle(text: &str, max: usize) -> String {
 pub struct Thread {
     pub id: ThreadId,
     pub title: String,
-    /// The thread that owns this one: the parent of a sub thread, or the thread
-    /// whose turn spawned a subagent. Roots leave it empty. Ownership alone says
-    /// nothing about which of the two this is — `kind` does.
     pub parent_thread_id: Option<ThreadId>,
     pub kind: ThreadKind,
-    /// Set when a scheduled job's due run opened this thread. It is an ordinary
-    /// main thread either way; this is what files it under Scheduled tasks
-    /// instead of a project the user put threads in themselves.
     pub scheduled_job_id: Option<ScheduledJobId>,
-    pub knowledge_base_id: KnowledgeBaseId,
-    pub source_knowledge_base_ids: Vec<KnowledgeBaseId>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub archived_at: Option<Timestamp>,
     pub messages: Vec<ThreadMessage>,
-    /// Kept out of the snapshot on purpose: at the ceilings above a thread can
-    /// hold a megabyte of trace, and every window would carry every thread's.
-    /// `read_trace` is how a caller asks for one.
     #[serde(skip)]
     pub traces: Vec<ThreadTrace>,
 }
@@ -315,8 +269,6 @@ impl Thread {
             parent_thread_id: None,
             kind: ThreadKind::Main,
             scheduled_job_id: None,
-            knowledge_base_id: KnowledgeBaseId::default_id(),
-            source_knowledge_base_ids: vec![KnowledgeBaseId::default_id()],
             created_at,
             updated_at: created_at,
             archived_at: None,
@@ -325,9 +277,6 @@ impl Thread {
         })
     }
 
-    /// Appends one turn's trace, dropping the oldest once the thread is full.
-    /// Deliberately does not touch `updated_at`: a trace records what a turn did,
-    /// it is not itself something said in the thread.
     pub fn record_trace(&mut self, trace: ThreadTrace) {
         self.traces.push(trace);
         while self.traces.len() > MAX_THREAD_TRACES {
@@ -356,24 +305,8 @@ impl Thread {
         Ok(())
     }
 
-    pub fn select_knowledge_base(&mut self, id: KnowledgeBaseId) {
-        self.knowledge_base_id = id.clone();
-        if !self.source_knowledge_base_ids.contains(&id) {
-            self.source_knowledge_base_ids.push(id);
-        }
-    }
-
-    pub fn select_source_knowledge_bases(&mut self, ids: Vec<KnowledgeBaseId>) {
-        self.source_knowledge_base_ids.clear();
-        for id in std::iter::once(self.knowledge_base_id.clone()).chain(ids) {
-            if !self.source_knowledge_base_ids.contains(&id) {
-                self.source_knowledge_base_ids.push(id);
-            }
-        }
-    }
-
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-thread-format: 11\n");
+        let mut output = format!("---\nemma-thread-format: {THREAD_FORMAT}\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(
@@ -391,18 +324,6 @@ impl Thread {
                 .as_ref()
                 .map_or("", |job| job.as_str()),
         );
-        field(
-            &mut output,
-            "knowledge-base-id",
-            self.knowledge_base_id.as_str(),
-        );
-        output.push_str(&format!(
-            "source-knowledge-base-count: {}\n",
-            self.source_knowledge_base_ids.len()
-        ));
-        for (index, id) in self.source_knowledge_base_ids.iter().enumerate() {
-            field(&mut output, &format!("source-{index}-id"), id.as_str());
-        }
         field(&mut output, "created-at", &self.created_at.to_string());
         field(&mut output, "updated-at", &self.updated_at.to_string());
         field(
@@ -435,8 +356,6 @@ impl Thread {
             output.push_str(&quote(&message.content));
             output.push('\n');
         }
-        // After the messages, so a reader that stops at the transcript still sees
-        // a well-formed thread and the trailing-content check below still holds.
         for (index, trace) in self.traces.iter().enumerate() {
             output.push_str(&format!("\n## Trace {}\n\n", index + 1));
             output.push_str(&format!("Time: {}\n\n", trace.timestamp));
@@ -449,119 +368,55 @@ impl Thread {
     pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
         let mut parser = Parser::new(markdown);
         parser.exact("---")?;
-        let format = match parser.next()? {
-            "emma-thread-format: 1" => 1,
-            "emma-thread-format: 2" => 2,
-            "emma-thread-format: 3" => 3,
-            "emma-thread-format: 4" => 4,
-            "emma-thread-format: 5" => 5,
-            "emma-thread-format: 6" => 6,
-            "emma-thread-format: 7" => 7,
-            "emma-thread-format: 8" => 8,
-            "emma-thread-format: 9" => 9,
-            "emma-thread-format: 10" => 10,
-            "emma-thread-format: 11" => 11,
-            _ => return Err(ValidationError::new("unsupported thread format")),
-        };
-        let id = ThreadId::parse(parser.field("id")?)?;
-        let title = parser.field("title")?;
+        let header = Header::read(&mut parser)?;
+        let format = header.number("emma-thread-format")?;
+        if format == 0 || format > THREAD_FORMAT {
+            return Err(ValidationError::new("unsupported thread format"));
+        }
+        let id = ThreadId::parse(header.field("id")?)?;
+        let title = header.field("title")?;
         validate_text("thread title", &title, true)?;
-        let parent_thread_id = if format < 6 {
-            None
-        } else {
-            match parser.field("parent-thread-id")? {
-                value if value.is_empty() => None,
-                value => Some(ThreadId::parse(value)?),
-            }
+        let parent_thread_id = match header.optional("parent-thread-id")? {
+            value if value.is_empty() => None,
+            value => Some(ThreadId::parse(value)?),
         };
         if parent_thread_id.as_ref() == Some(&id) {
             return Err(ValidationError::new("a thread cannot be its own parent"));
         }
-        // Before format 9 the only thing that ever had a parent was a subagent's
-        // transcript, so that is exactly what an owned older thread reads back as.
-        let kind = if format < 9 {
-            if parent_thread_id.is_some() {
-                ThreadKind::Subagent
-            } else {
-                ThreadKind::Main
-            }
-        } else {
-            parser.field("kind")?.parse()?
+        let kind = match header.optional("kind")?.as_str() {
+            "" => match parent_thread_id {
+                Some(_) => ThreadKind::Subagent,
+                None => ThreadKind::Main,
+            },
+            value => value.parse()?,
         };
         if kind == ThreadKind::Subagent && parent_thread_id.is_none() {
             return Err(ValidationError::new("a subagent thread must have a parent"));
         }
-        // Threads written before format 10 predate scheduled runs being tagged;
-        // they read back unfiled rather than being refused.
-        let scheduled_job_id = if format < 10 {
-            None
-        } else {
-            match parser.field("scheduled-job-id")? {
-                value if value.is_empty() => None,
-                value => Some(ScheduledJobId::parse(value)?),
-            }
+        let scheduled_job_id = match header.optional("scheduled-job-id")? {
+            value if value.is_empty() => None,
+            value => Some(ScheduledJobId::parse(value)?),
         };
-        let knowledge_base_id = if format == 1 {
-            KnowledgeBaseId::default_id()
-        } else {
-            KnowledgeBaseId::parse(parser.field("knowledge-base-id")?)?
+        let created_at = header.field("created-at")?.parse()?;
+        let updated_at = header.field("updated-at")?.parse()?;
+        let archived_at = match header.optional("archived-at")? {
+            value if value.is_empty() => None,
+            value => Some(value.parse()?),
         };
-        let source_knowledge_base_ids = if format < 3 {
-            vec![knowledge_base_id.clone()]
-        } else {
-            let count: usize = parser
-                .number("source-knowledge-base-count")?
-                .try_into()
-                .map_err(|_| ValidationError::new("source base count is too large"))?;
-            if count == 0 || count > MAX_THREAD_SOURCE_BASES {
-                return Err(ValidationError::new("source base count is invalid"));
-            }
-            let mut ids = Vec::with_capacity(count);
-            for index in 0..count {
-                let id = KnowledgeBaseId::parse(parser.field(&format!("source-{index}-id"))?)?;
-                if ids.contains(&id) {
-                    return Err(ValidationError::new("source base IDs must be unique"));
-                }
-                ids.push(id);
-            }
-            if !ids.contains(&knowledge_base_id) {
-                return Err(ValidationError::new(
-                    "destination base must also be a source",
-                ));
-            }
-            ids
-        };
-        let created_at = parser.field("created-at")?.parse()?;
-        let updated_at = parser.field("updated-at")?.parse()?;
-        let archived_at = if format < 5 {
-            None
-        } else {
-            match parser.field("archived-at")? {
-                value if value.is_empty() => None,
-                value => Some(value.parse()?),
-            }
-        };
-        let count: usize = parser
+        let count: usize = header
             .number("message-count")?
             .try_into()
             .map_err(|_| ValidationError::new("message count is too large"))?;
         if count > MAX_THREAD_MESSAGES {
             return Err(ValidationError::new("thread message count is too large"));
         }
-        // Threads written before format 8 carry no traces; they read back with
-        // none rather than being refused.
-        let trace_count: usize = if format < 8 {
-            0
-        } else {
-            parser
-                .number("trace-count")?
-                .try_into()
-                .map_err(|_| ValidationError::new("trace count is too large"))?
-        };
+        let trace_count: usize = header
+            .optional_number("trace-count")?
+            .try_into()
+            .map_err(|_| ValidationError::new("trace count is too large"))?;
         if trace_count > MAX_THREAD_TRACES {
             return Err(ValidationError::new("thread trace count is too large"));
         }
-        parser.exact("---")?;
         let mut messages = Vec::with_capacity(count);
         let mut last = created_at;
         for index in 0..count {
@@ -577,8 +432,6 @@ impl Thread {
             } else {
                 let generation = match parser.prefixed("Generation: ")? {
                     "none" => None,
-                    // Threads written before format 7 have no input count; they
-                    // read back as zero rather than being refused.
                     "present" => Some(GenerationTelemetry::measured(
                         parser.number("Output-Tokens")?,
                         parser.number("Duration-Milliseconds")?,
@@ -587,8 +440,6 @@ impl Thread {
                         } else {
                             parser.number("Input-Tokens")?
                         },
-                        // Threads written before format 11 name no model; they read
-                        // back unattributed rather than being refused.
                         if format < 11 {
                             String::new()
                         } else {
@@ -641,8 +492,6 @@ impl Thread {
             parent_thread_id,
             kind,
             scheduled_job_id,
-            knowledge_base_id,
-            source_knowledge_base_ids,
             created_at,
             updated_at,
             archived_at,
@@ -712,13 +561,6 @@ impl ThreadStore {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("thread cannot have more than {MAX_THREAD_TRACES} traces"),
-            )
-            .into());
-        }
-        if thread.source_knowledge_base_ids.len() > MAX_THREAD_SOURCE_BASES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("thread cannot have more than {MAX_THREAD_SOURCE_BASES} source bases"),
             )
             .into());
         }
@@ -891,6 +733,53 @@ fn field(output: &mut String, name: &str, value: &str) {
     output.push_str(": ");
     output.push_str(&quote(value));
     output.push('\n');
+}
+
+struct Header(HashMap<String, String>);
+
+impl Header {
+    fn read(parser: &mut Parser<'_>) -> Result<Self, ValidationError> {
+        let mut fields = HashMap::new();
+        loop {
+            let line = parser.next()?;
+            if line == "---" {
+                return Ok(Self(fields));
+            }
+            if let Some((name, value)) = line.split_once(": ") {
+                fields.insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+
+    fn field(&self, name: &str) -> Result<String, ValidationError> {
+        match self.0.get(name) {
+            Some(value) => unquote(value),
+            None => Err(ValidationError::new(format!("expected field {name}"))),
+        }
+    }
+
+    fn optional(&self, name: &str) -> Result<String, ValidationError> {
+        match self.0.get(name) {
+            Some(value) => unquote(value),
+            None => Ok(String::new()),
+        }
+    }
+
+    fn number(&self, name: &str) -> Result<u64, ValidationError> {
+        match self.0.get(name) {
+            Some(value) => value
+                .parse()
+                .map_err(|_| ValidationError::new(format!("field {name} is not a number"))),
+            None => Err(ValidationError::new(format!("expected field {name}"))),
+        }
+    }
+
+    fn optional_number(&self, name: &str) -> Result<u64, ValidationError> {
+        match self.0.contains_key(name) {
+            true => self.number(name),
+            false => Ok(0),
+        }
+    }
 }
 
 struct Parser<'a> {

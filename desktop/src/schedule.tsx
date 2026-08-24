@@ -1,7 +1,3 @@
-/* The three pieces of the Scheduled section that are not a form field: the
-   trigger picker, the prompt box with the composer's "/" and "@" menus, and the
-   node graph drawn as a graph. Everything that decides what a trigger or an edge
-   means lives in shared/workflow.ts — this file only draws it. */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { buildTrigger, describeTrigger, MONTH_NAMES, parseTrigger, triggerProblem, WEEKDAY_NAMES, workflowEdges, workflowRows, type Trigger, type TriggerKind, type WorkflowNode } from "../shared/workflow";
@@ -10,10 +6,9 @@ import { atCommands, toolCommands } from "./context";
 import { edgePath, placeRows } from "./layout";
 import type { FolderFile, FolderGrant } from "../shared/folders";
 import type { ArtifactMeta } from "../shared/artifacts";
-import type { ImportedSkill, Snapshot } from "./types";
+import type { ImportedSkill } from "./types";
+import type { KeptNote } from "../shared/vault";
 import { zoned } from "./dates";
-
-/* ---------- Trigger ---------- */
 
 const KIND_LABELS: Record<TriggerKind, string> = {
   minutes: "Every N minutes",
@@ -26,19 +21,12 @@ const KIND_LABELS: Record<TriggerKind, string> = {
   cron: "Cron expression",
 };
 
-/**
- * The <select> replacement for this page: a field on the outside, the app's own
- * popover and rows on the inside. Blink paints a native option list as a light
- * system panel with a blue row in a dark mono app, so the same keys ModePicker
- * redoes are redone here — arrows, Home/End, type-ahead, Escape, listbox roles.
- */
 function Picker<T extends string | number>({ value, options, onChange, disabled, label }: { value: T; options: { value: T; label: string }[]; onChange: (value: T) => void; disabled: boolean; label: string }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const close = () => { setOpen(false); queueMicrotask(() => trigger.current?.focus()); };
-  // Roving DOM focus, which is what the select's own highlight was.
   useEffect(() => { if (open) menu.current?.querySelectorAll<HTMLButtonElement>("[role=option]")[active]?.focus(); }, [open, active]);
   useEffect(() => {
     if (!open) return;
@@ -57,8 +45,6 @@ function Picker<T extends string | number>({ value, options, onChange, disabled,
       return;
     }
     if (event.key === "Home" || event.key === "End") { event.preventDefault(); setActive(event.key === "Home" ? 0 : options.length - 1); return; }
-    // Type-ahead from the row after the current one, so January, June and July
-    // take three presses of "j" rather than pinning to the first match.
     if (event.key.length === 1) {
       const wrapped = [...options.slice(active + 1), ...options.slice(0, active + 1)];
       const found = wrapped.find((option) => option.label.toLowerCase().startsWith(event.key.toLowerCase()));
@@ -90,7 +76,6 @@ const two = (value: number) => String(value).padStart(2, "0");
 const hintFormat = zoned({ hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
 const clockValue = (trigger: Trigger) => `${two(trigger.hour)}:${two(trigger.minute)}`;
 
-/** The same instant in the reader's own zone, so a UTC cron is not a puzzle. */
 function localHint(hour: number, minute: number): string {
   const now = new Date();
   const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute));
@@ -98,8 +83,6 @@ function localHint(hour: number, minute: number): string {
 }
 
 export function TriggerPicker({ value, onChange, disabled }: { value: string; onChange: (trigger: string) => void; disabled: boolean }) {
-  // The cron line is the state; this is only how it is read back for the
-  // controls, so a task Emma wrote by hand opens on the preset it means.
   const trigger = parseTrigger(value);
   const set = (patch: Partial<Trigger>) => onChange(buildTrigger({ ...trigger, ...patch }));
   const problem = triggerProblem(value);
@@ -117,8 +100,6 @@ export function TriggerPicker({ value, onChange, disabled }: { value: string; on
   return <div className="trigger-picker">
     <label className="trigger-field trigger-repeats"><span>Repeats</span>
       <Picker label="Repeats" value={trigger.kind} options={KIND_OPTIONS} disabled={disabled} onChange={(kind) => {
-        // Leaving cron behind starts from the preset's own shape rather than from
-        // whatever the hand-written line happened to parse as.
         onChange(kind === "cron" ? value : buildTrigger({ ...trigger, kind }));
       }} />
     </label>
@@ -144,14 +125,9 @@ export function TriggerPicker({ value, onChange, disabled }: { value: string; on
   </div>;
 }
 
-/* ---------- Prompt, with the composer's menus ---------- */
-
-/** What a prompt written outside the composer can name: imported skills and every
-    built-in tool behind "/", and behind "@" the artifacts, the knowledge pages and
-    the files of every granted folder. All of it is resolved when the run happens —
-    in the island as it sends, and in `resolveMentions` when a task fires. */
-export function useTaskCommands(snapshot?: Snapshot, disabledTools: readonly string[] = []) {
+export function useTaskCommands(disabledTools: readonly string[] = []) {
   const [skills, setSkills] = useState<SlashCommand[]>([]);
+  const [notes, setNotes] = useState<KeptNote[]>([]);
   const [folders, setFolders] = useState<FolderGrant[]>([]);
   const [files, setFiles] = useState<Record<string, FolderFile[]>>({});
   const [artifacts, setArtifacts] = useState<ArtifactMeta[]>([]);
@@ -167,30 +143,21 @@ export function useTaskCommands(snapshot?: Snapshot, disabledTools: readonly str
         void window.emma.listFolderFiles(folder.id).then((listing: FolderFile[]) => { if (active) setFiles((current) => ({ ...current, [folder.id]: listing })); }).catch(() => undefined);
       }
     }).catch(() => undefined);
+    void window.emma.listNotes().then((list) => { if (active) setNotes(list); }).catch(() => undefined);
     const loadArtifacts = () => void window.emma.listArtifacts().then((list) => { if (active) setArtifacts(list); }).catch(() => undefined);
     loadArtifacts();
     const stopArtifacts = window.emma.onArtifactsChanged(loadArtifacts);
     return () => { active = false; stopArtifacts(); };
   }, []);
-  // Cheap enough to rebuild on a render — the catalog is one static table.
   const tools = toolCommands(disabledTools);
-  const atItems = useMemo(() => atCommands(artifacts, snapshot, folders, folders.map((folder) => folder.id), files), [artifacts, snapshot, folders, files]);
-  // The grants and their listings come back too: whoever resolves an "@" token has
-  // to read the file behind it, and that needs the folder it belongs to.
+  const atItems = useMemo(() => atCommands(artifacts, notes, folders, folders.map((folder) => folder.id), files), [artifacts, notes, folders, files]);
   return { skills, tools, atItems, folders, files };
 }
 
-/**
- * A textarea that opens the same "/" and "@" menus the composer does. The
- * grammar, the matching and the insertion are the composer's own functions —
- * only the popover is drawn again, because this one is not a composer.
- */
 export function PromptField({ value, onChange, commands, atItems, disabled, rows = 3, placeholder, label }: {
   value: string;
   onChange: (text: string) => void;
-  /** What "/" offers: imported skills, then every built-in tool. */
   commands: SlashCommand[];
-  /** What "@" offers: artifacts, knowledge pages, then files. */
   atItems: SlashCommand[];
   disabled: boolean;
   rows?: number;
@@ -234,22 +201,19 @@ export function PromptField({ value, onChange, commands, atItems, disabled, rows
       onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)}
       onKeyDown={keys}
     />
-    {slash && <section className="source-popover slash-menu" role="listbox" aria-label={slash.sigil === "@" ? "Artifacts, knowledge pages and files" : "Built-in tools and imported skills"}>
+    {slash && <section className="source-popover slash-menu" role="listbox" aria-label={slash.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools and imported skills"}>
       {matches.map((item, index) => <button type="button" role="option" aria-selected={index === active} className={`slash-row ${index === active ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setPick(index)} onClick={() => choose(item)}>
         <strong>{slash.sigil}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{SLASH_KINDS[item.kind]}</em><small>{item.detail}</small>
       </button>)}
-      {!matches.length && <p className="slash-empty">Nothing matches “{slash.query}”. {slash.sigil === "@" ? "Artifacts, knowledge pages and the files of granted folders appear here." : "Built-in tools and imported skills appear here — use /import in a thread to scan this Mac."}</p>}
+      {!matches.length && <p className="slash-empty">Nothing matches “{slash.query}”. {slash.sigil === "@" ? "Artifacts, saved notes and the files of granted folders appear here." : "Built-in tools and imported skills appear here — use /import in a thread to scan this Mac."}</p>}
     </section>}
   </div>;
 }
-
-/* ---------- The graph ---------- */
 
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 76;
 const GAP_X = 36;
 const GAP_Y = 64;
-/** Margin either side of the boxes, where an edge that skips past a row runs. */
 const LANE = 40;
 const GRAPH_BOX = { width: NODE_WIDTH, height: NODE_HEIGHT, gapX: GAP_X, gapY: GAP_Y, lane: LANE };
 const KIND_HUE = { agent: "var(--blue)", set: "var(--text-3)", if: "var(--orange)" } as const;
@@ -258,8 +222,6 @@ const END_ID = "end";
 
 type Placed = { node?: WorkflowNode; id: string; x: number; y: number };
 
-/** The grid, plus the terminal every finished run lands on. The geometry is
-    `placeRows`, shared with the plan graph; which row a node is in is decided in shared. */
 function place(nodes: WorkflowNode[], rows: string[][], hasEnd: boolean): { placed: Placed[]; width: number; height: number } {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const grid = placeRows(hasEnd ? [...rows, [END_ID]] : rows, { width: NODE_WIDTH, height: NODE_HEIGHT, gapX: GAP_X, gapY: GAP_Y, lane: LANE });

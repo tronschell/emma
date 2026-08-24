@@ -1,44 +1,33 @@
-/* Every tool Emma advertises, in one place, plus the argument checking main does
-   before it runs one. Definitions are pure so the gate, the schemas, and the
-   refusal messages can be tested without Electron; execution lives in main.ts
-   next to the runtimes that own the filesystem, the pointer, and the harness. */
-
 import { computerTools } from "./computer";
 import { MEMORY_COMMANDS, type MemoryCommand } from "./memory";
 import { ARTIFACT_KINDS, ARTIFACT_SURFACES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TITLE_CHARS } from "../shared/artifacts";
-import { MAX_VISUAL_POINTS, parseVisualization, VISUAL_KINDS, type Visualization } from "../shared/visualize";
+import { parseVisual, type Visual } from "../shared/visualize";
 import { CLI_IDS } from "../shared/cli";
 import type { WrittenPlugin } from "../shared/plugins";
 import { MAX_PLAN_BYTES, MAX_PLAN_TITLE_CHARS, PLAN_STATUSES, type PlanStatus } from "../shared/plan";
+import { KEEP_KINDS, MAX_NOTE_BYTES, isKeepKind, keepKindLabel, type KeepKind } from "../shared/vault";
 import { toolGate, type PermissionMode } from "../shared/permissions";
 
 export const MAX_COMMAND_CHARS = 4096;
 export const MAX_TASK_PROMPT_CHARS = 8192;
-/** Mirrors the store's byte ceiling. The bytes are counted where the file is written; this only keeps a runaway argument out of the parser. */
+
 export const MAX_ARTIFACT_CONTENT_CHARS = MAX_ARTIFACT_BYTES;
-/** Mirrors core's ceiling on a stored node graph, so a refusal reads here rather than from the store. */
+
 export const MAX_WORKFLOW_NODE_CHARS = 32 * 1024;
-/** A tool result's ceiling, in bytes. The harness bridge truncates again at its own,
-    larger limit, so a result that survives this one survives the trip. */
+
 export const MAX_TOOL_OUTPUT_BYTES = 16 * 1024;
 
-/** What this turn actually has access to. A tool with nothing behind it is never advertised. */
 export type ToolAvailability = {
-  /** At least one folder grant is attached to the thread. */
   folders: boolean;
-  /** macOS, and the computer runtime is usable. */
+
   computer: boolean;
 };
 
 export type ToolDefinition = { name: string; description: string; inputSchema: Record<string, unknown> };
 
-/* What the `threads` tool can do to a durable conversation. Declared up here
-   rather than beside the other action lists below, because the table itself
-   reads it while the module is still evaluating. */
 export const THREAD_ACTIONS = ["spawn", "list", "read", "message", "rename"] as const;
 export type ThreadAction = (typeof THREAD_ACTIONS)[number];
 
-/** What `plan` can do to the markdown file a job is planned in. Up here for the same reason. */
 export const PLAN_ACTIONS = ["read", "write", "run", "update", "delete"] as const;
 export type PlanAction = (typeof PLAN_ACTIONS)[number];
 const PLAN_VERBS: Record<PlanAction, string> = { read: "reading", write: "writing", run: "running", update: "updating", delete: "deleting" };
@@ -65,10 +54,6 @@ const FOLDER_FIELD = {
 
 const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" })[] = [
   {
-    // The meta harness. Emma does not reimplement the user's other coding agents,
-    // it runs the one they already have in this thread's folder and shows its
-    // terminal — so this tool is deliberately described in terms of *choosing*
-    // one, since picking the wrong CLI is the only real mistake available here.
     name: "cli",
     needs: "folders",
     description:
@@ -133,10 +118,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // Anthropic's memory tool, which the API supplies server-side to its own
-    // models. Emma talks to OpenAI-compatible routes, so it is advertised here
-    // like any other function — same commands, same arguments, same result
-    // strings, so a model that already knows this tool needs no retraining.
     name: "memory",
     needs: "always",
     description:
@@ -167,11 +148,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // Anthropic's advisor tool. Theirs runs server-side and takes no input at
-    // all; this one keeps that shape — the agent picks the moment, Emma decides
-    // what the advisor is shown — and adds nothing but an optional question,
-    // which is how a second consult reconciles a conflict rather than repeating
-    // the first.
     name: "advisor",
     needs: "always",
     description:
@@ -186,10 +162,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The advisor's shape pointed at an image: Emma holds the route, the agent
-    // holds the question. Always advertised, including to a model that can see —
-    // a dedicated vision model reads small text and places boxes better than a
-    // generalist, and this is the only route to an image the turn never attached.
     name: "vision",
     needs: "always",
     description:
@@ -209,9 +181,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The two levers on your own window, in one tool: reading it is what decides
-    // whether pulling the other one is worth a turn, and a model that can only
-    // compact blind either never does or does it every time.
     name: "context",
     needs: "always",
     description:
@@ -259,11 +228,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The one deterministic door onto Emma's threads. A thread is a durable
-    // conversation timeline — a row in the user's sidebar that outlives every
-    // agent that ever ran in it; an agent is the loop doing a job inside one.
-    // Keeping spawn, list, read, message and rename in a single tool is what
-    // stops a model from reaching for a subagent when the user asked for a thread.
     name: "threads",
     needs: "always",
     description:
@@ -287,9 +251,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The live half of `threads`, which only ever sees what has already been
-    // written down. Steering is the same lever the user has in the agent rail:
-    // a message queued for a run in flight, delivered with its next tool results.
     name: "agents",
     needs: "always",
     description:
@@ -305,14 +266,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // Always advertised, because the point of it is the loop: read what the last
-    // run actually did, find the part that was wasted, and write a skill so the
-    // next run does not repeat it. `write_skill` is the other half and is also
-    // advertised everywhere.
-    //
-    // The harness reaches this the same way it reaches the rest of this table:
-    // over the MCP bridge in `main/bridge.ts`, which is the client-bound channel
-    // ACP itself does not carry.
     name: "read_trace",
     needs: "always",
     description:
@@ -341,18 +294,20 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The knowledge base is what the user calls their "kb". Saving a page is one
-    // call because every step after the clip — the category, the document Emma
-    // builds off it — is work the analysis already does.
-    name: "save_page",
+    name: "keep",
     needs: "always",
     description:
-      "Save a web page into the user's knowledge base — their \"kb\". With no arguments it reads the page they are looking at: the one in front in their browser, even while Emma is the window they are typing in. Files it under a category and starts the document Emma builds from it, which finishes on its own after this call returns. Use it whenever they ask to add, save, clip or file a page, this page, or a link into their kb or knowledge base. One call per page: it comes back before the document is written, so calling it again only shelves the same page twice.",
+      "Keep something in the user's knowledge base — their \"kb\" — as a plain Markdown note in the vault folder they chose, next to whatever else they write there. Use it whenever they say save this, keep this, clip this page, note this down, remember this, or add it to their kb.\n" +
+      "With no arguments it keeps the page they are looking at: the one in front in their browser, even while Emma is the window they are typing in.\n" +
+      'kind "page" keeps a web page, "note" keeps text you or they wrote out, "selection" keeps something they highlighted somewhere else, "screenshot" keeps a picture of their screen.\n' +
+      "The note lands immediately; its title and tags are filled in a moment later by a small model, so leave title out unless they named it, do not wait for the result, and do not call again for the same thing.",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "The page to save. Omit to save the page the user has in front of them." },
-        existing: { type: "string", enum: ["refresh", "new"], description: 'Only when a previous call reported the page is already saved: "refresh" re-reads it into the page they already have, "new" shelves a second copy. Ask the user which before sending either.' },
+        kind: { type: "string", enum: ["page", "note", "selection"], description: 'What is being kept. Omit to keep the page in front of them, or when "text" is the whole note.' },
+        title: { type: "string", description: "What to call it, only if the user named it. Otherwise Emma names it from the capture and a model retitles it." },
+        text: { type: "string", description: 'The note itself, for kind "note", or the words they highlighted, for "selection".' },
+        url: { type: "string", description: "The page to keep. Omit to keep the page the user has in front of them." },
       },
       required: [],
     },
@@ -402,17 +357,9 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The one thing a conversation makes that is meant to outlive it. The criteria
-    // are stated here rather than left to the skill because the mistake this tool
-    // invites — an artifact for every answer — is made before any skill is read.
     name: "artifact",
     needs: "always",
-    /* Kept under 1024 bytes. The harness truncates an MCP tool's description at
-       that, and this tool reaches it that way — over 1024 the tail is simply cut,
-       so the actions would be described and the argument rules would not. The
-       "when is one worth making" criteria are not repeated here for the same
-       reason: they are in the `artifact` skill, which is mirrored to the harness
-       whole, and one copy that survives beats two that are cut in half. */
+
     description:
       "Make and look after artifacts: a document, code, page, drawing, diagram or app the user keeps outside this conversation. They sit on the Artifacts page, and any later thread or scheduled task can read and rewrite one by its id. The artifact skill says when one is worth making; err strongly against making one.\n" +
       "Actions: list — id, title, kind and when each last changed. get — one in full, by id. create — title, kind and content; the id comes back and is what you address it by afterwards. update — one replacement, where old_str appears exactly once, verbatim, and new_str takes its place. rewrite — whole new content for an id that exists. No delete: an artifact is the user's to remove, from the Artifacts page.\n" +
@@ -428,9 +375,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
         language: { type: "string", description: 'Highlighting hint for kind "code", e.g. "python".' },
         content: { type: "string", description: "The artifact's whole text. Required on create and rewrite." },
         file: { type: "string", description: 'For an "app": a file beside its page, like "app.js" or "style.css", which get, rewrite and update address instead of the page itself. Its <script src> resolves to it.' },
-        /* The one argument that puts an artifact inside Emma rather than beside her.
-           It is described here rather than in the tool's own description because that
-           is at its 1024-byte ceiling; the artifact skill carries the rest. */
+
         surface: {
           type: "string",
           enum: [...ARTIFACT_SURFACES, "none"],
@@ -443,14 +388,11 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // Always advertised: a scheduled task is how work the user does over and over
-    // stops being work they ask for. The grammar is small enough to state here, so
-    // Emma can write one without reading a skill first.
     name: "workflow",
     needs: "always",
     description:
       "Build and look after the user's scheduled tasks — the workflows in the Scheduled tasks section. Call it with no arguments to list them, or set action to get, save, delete, run or test.\n" +
-      "A task is a trigger plus a graph of nodes. trigger is a five-field UTC cron expression (\"0 9 * * 1\"), \"manual\", \"after <job-id>\" to run when another task finishes, or \"on <event>\" for an app event (\"on launch\", \"on page-saved\").\n" +
+      "A task is a trigger plus a graph of nodes. trigger is a five-field UTC cron expression (\"0 9 * * 1\"), \"manual\", \"after <job-id>\" to run when another task finishes, or an app event: \"on launch\" when Emma starts, or \"on note-kept\" when a note is kept, which arrives with {{title}} and {{tags}}. Those two are the only events there are.\n" +
       "nodes is a JSON array. Each node has an id, a kind, and text: kind \"agent\" runs text as a full turn and can saveAs a variable; kind \"set\" stores text in saveAs without running anything; kind \"if\" reads text as a condition and goes to next when it holds, otherwise to otherwise.\n" +
       "Templates: {{name}} anywhere in text becomes that variable. {{last}} is the previous agent step's answer. A task triggered \"after\" another starts with that task's saved variables.\n" +
       "Conditions: <value> is|is not|contains|does not contain <value>, <value> is empty|is not empty, or a numeric >, <, >= or <=.\n" +
@@ -462,7 +404,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
         action: { type: "string", enum: ["list", "get", "save", "delete", "run", "test"], description: "What to do. Defaults to list." },
         jobId: { type: "string", description: "The task to act on. Omit on save to create a new one." },
         title: { type: "string", description: "Short name for the task." },
-        trigger: { type: "string", description: "Cron, \"manual\", \"after <job-id>\", or \"on <event>\"." },
+        trigger: { type: "string", description: "Cron, \"manual\", \"after <job-id>\", \"on launch\", or \"on note-kept\"." },
         prompt: { type: "string", description: "What the task does, for a one-step task. Also the summary shown for a graph." },
         nodes: { type: "string", description: "The node graph as a JSON array. Omit for a one-step task that just runs prompt." },
         permissionMode: { type: "string", enum: ["ask", "acceptEdits", "full"], description: "What the unattended run may do. Nobody is there to answer a question, so \"ask\" declines every gated call." },
@@ -472,34 +414,24 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The other half of `artifact`, and the reason both exist: an artifact is a
-    // thing the user keeps, this is a picture that explains the sentence next to
-    // it. Kept a separate tool rather than a seventh artifact kind precisely so
-    // the model has somewhere to draw that does not put a file on the user's disk.
     name: "visualize",
     needs: "always",
-    /* Kept under 1024 bytes, like `artifact` above: the harness truncates an MCP
-       tool's description there, and the argument rules are the tail that gets cut. */
     description:
-      "Draw a chart inline in this conversation, where you are answering. Reach for it whenever numbers are the answer — a trend over time, a breakdown across categories, a before and after — instead of listing them in prose or a table.\n" +
-      "kind is bar, line or area. labels and values are arrays of the same length, one number per label, at most 12 points. caption is the single line under it.\n" +
-      "This is not an artifact. Nothing is saved, nothing appears on the Artifacts page, and it cannot be reopened, edited or read by a later thread — it is a picture that belongs to this answer. Use artifact instead when the user should keep what you made.\n" +
-      "The result comes back starting with a [visual] token, which is how Emma draws it. Leave it there, and do not repeat the numbers in your prose: the chart is the explanation.",
+      "Draw a picture inline in this conversation, where you are answering. Reach for it whenever something lands better seen than read — a trend, a breakdown, a comparison, a diagram, a small table.\n" +
+      "html is one whole self-contained document, and it can hold as many charts, panels and widgets as the answer needs. Write your own <style> and <script>; draw with inline SVG, canvas or CSS. There is no network: no CDN, no web fonts, no images by URL. The page is dark and Emma's palette arrives as CSS variables — --bg, --text, --text-2, --text-3, --border, --accent, and --rose, --orange, --lime, --teal, --blue, --violet for series. Use those, not your own.\n" +
+      "title is a short name for what it shows.\n" +
+      "Not an artifact: nothing is saved and it dies with this conversation, though the user can export a PNG or keep it from the buttons on it. Use artifact when they should keep what you made.\n" +
+      "The result leads with a [visual:id] token, which is how Emma draws it. Leave it there, and do not repeat in prose what the picture says.",
     inputSchema: {
       type: "object",
       properties: {
-        kind: { type: "string", enum: [...VISUAL_KINDS], description: "bar for categories, line for a series over time, area for a total that accumulates. Defaults to bar." },
-        labels: { type: "array", items: { type: "string" }, description: `What each point is called, along the bottom. At most ${MAX_VISUAL_POINTS}.` },
-        values: { type: "array", items: { type: "number" }, description: "The number for each label, in the same order. Plain finite numbers, not formatted strings." },
-        caption: { type: "string", description: "One line saying what the chart shows. Shown under it and in its tooltip." },
+        title: { type: "string", description: "Short name for what this shows. Names the exported file, and the artifact if the user keeps it." },
+        html: { type: "string", description: "The whole document: markup, its own <style>, its own <script>. Self-contained — nothing is fetched." },
       },
-      required: ["labels", "values"],
+      required: ["title", "html"],
     },
   },
   {
-    // Always advertised, for the same reason `workflow` is: the loop is the point,
-    // and a user describing an experiment they keep running by hand should get one
-    // offered rather than a description of how they could build it.
     name: "autoresearch",
     needs: "always",
     description:
@@ -533,10 +465,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    // The third case beside `write_skill` and `install_mcp`, and the one neither
-    // covers: a skill is a lesson in Markdown, an MCP server is someone else's
-    // program, and this is Emma's own — one script, written once, called by name
-    // afterwards. Always advertised, for the same reason `install_mcp` is.
     name: "write_tool",
     needs: "always",
     description:
@@ -573,7 +501,6 @@ export function toolNeeds(name: string): keyof ToolAvailability | "always" | und
   return DEFINITIONS.find((tool) => tool.name === name)?.needs;
 }
 
-/** The tools a turn advertises: switched on in Settings, gated by mode, then by what is actually connected. */
 export function toolDefinitions(mode: PermissionMode, available: ToolAvailability, disabled: readonly string[] = []): ToolDefinition[] {
   return DEFINITIONS
     .filter((tool) => toolGate(mode, tool.name, disabled) !== "hidden")
@@ -594,19 +521,17 @@ export type ToolArgs =
   | { name: "vision"; question: string; path?: string; url?: string; folder?: string }
   | { name: "plan"; action: PlanAction; id?: string; title?: string; goal?: string; steps?: string; step?: string; status?: PlanStatus; result?: string; check?: number }
   | { name: "context"; compact: boolean }
-  | { name: "save_page"; url?: string; existing?: string }
+  | { name: "keep"; kind: KeepKind; title?: string; text?: string; url?: string }
   | { name: "web_search"; query: string; limit: number }
   | { name: "install_mcp"; server: string; command: string; argv: string[]; env: Record<string, string> }
   | { name: "artifact"; action: ArtifactAction; id?: string; file?: string; title?: string; kind?: string; language?: string; surface?: string; content?: string; oldStr?: string; newStr?: string }
-  /* The whole call is the picture, so it is carried validated rather than raw:
-     nothing downstream reads it again, the transcript reads the arguments. */
-  | ({ name: "visualize" } & Visualization)
+  | ({ name: "visualize" } & Visual)
   | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; variables?: string }
   | { name: "autoresearch"; action: ResearchAction; jobId?: string; title?: string; projectDir?: string; metricName?: string; metricKind?: string; metricPrompt?: string; direction?: string; evalCommand?: string; prompt?: string; proposerModel?: string; permissionMode?: string; maxSeconds?: number; maxTokens?: number; maxMicroDollars?: number };
 
 export const CLI_ACTIONS = ["run", "send"] as const;
 export type CliAction = (typeof CLI_ACTIONS)[number];
-/** A CLI turn is a whole agent run, so it gets far more room than a command line. */
+
 export const MAX_CLI_PROMPT_CHARS = 32 * 1024;
 
 export const ARTIFACT_ACTIONS = ["list", "get", "create", "update", "rewrite"] as const;
@@ -621,29 +546,18 @@ export const RESEARCH_ACTIONS = ["list", "get", "save", "delete", "start", "paus
 export type ResearchAction = (typeof RESEARCH_ACTIONS)[number];
 const RESEARCH_VERBS: Record<ResearchAction, string> = { list: "listing", get: "reading", save: "saving", delete: "deleting", start: "starting", pause: "pausing" };
 
-/**
- * The tools answered inside the agent loop rather than by main's executor — the
- * traces, threads, live agents and spawns they reach are the loop's own — so they
- * stay out of the `ToolArgs` union that executor exhausts.
- */
 export type LoopArgs =
   | { name: "read_trace"; thread?: string; limit: number }
   | { name: "agents"; agent?: string; message?: string; stop: boolean }
   | { name: "threads"; action: ThreadAction; title?: string; thread?: string; prompt?: string; limit: number }
-  // Answered in the loop for the same reason: what the advisor is shown is this
-  // turn's transcript and this run's own spans, and only the loop holds those.
+
   | { name: "advisor"; question?: string };
 export type AnyToolArgs = ToolArgs | LoopArgs;
 
-/** Traces one `read_trace` call may return. More than a handful will not fit its result anyway. */
 export const MAX_TRACES_READ = 8;
-/** Messages one `threads read` call may return, before the shared output ceiling trims them. */
+
 export const MAX_MESSAGES_READ = 60;
 
-/**
- * Validates one call's raw JSON arguments. Throws with a message written for the
- * model, since a refusal goes back as a tool result and is its next read.
- */
 export function parseToolArgs(name: string, raw: string): AnyToolArgs {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error("Those arguments were not valid JSON. Send a JSON object."); }
@@ -795,10 +709,14 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       if (action === "message" && !prompt) throw new Error("Say what to send: pass prompt with the message for that thread.");
       return { name, action, title, thread, prompt, limit: count(args.limit, 20, MAX_MESSAGES_READ) };
     }
-    case "save_page": {
-      const existing = optionalText(args.existing, "existing", 16);
-      if (existing && existing !== "refresh" && existing !== "new") throw new Error('existing must be "refresh" or "new".');
-      return { name, url: optionalText(args.url, "url", 2048), ...(existing ? { existing } : {}) };
+    case "keep": {
+      if (args.kind !== undefined && args.kind !== null && !isKeepKind(args.kind)) throw new Error(`kind must be one of ${KEEP_KINDS.join(", ")}.`);
+      const text = optionalText(args.text, "text", MAX_NOTE_BYTES);
+      const url = optionalText(args.url, "url", 2048);
+      const kind = isKeepKind(args.kind) ? args.kind : text && !url ? "note" : "page";
+      if ((kind === "note" || kind === "selection") && !text) throw new Error(`Keeping a ${kind === "note" ? "note" : "highlight"} needs "text" — the words to keep.`);
+      if (kind === "screenshot") throw new Error("Emma takes the screenshot herself; ask the user to press the capture key, or keep the page instead.");
+      return { name, kind, title: optionalText(args.title, "title", 200), text, url };
     }
     case "web_search":
       return { name, query: requiredText(args.query, "query", 512), limit: count(args.limit, 8, 20) };
@@ -834,9 +752,7 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       return parsed;
     }
     case "visualize":
-      // Checked here and nowhere else in main: the picture never lands anywhere
-      // this could be re-run against, so this parse is the whole trust boundary.
-      return { name, ...parseVisualization(args) };
+      return { name, ...parseVisual(args) };
     case "workflow": {
       const action = WORKFLOW_ACTIONS.find((candidate) => candidate === (args.action ?? "list"));
       if (!action) throw new Error(`action must be one of ${WORKFLOW_ACTIONS.join(", ")}.`);
@@ -929,7 +845,6 @@ function flag(value: unknown, field: string): boolean {
   return value;
 }
 
-/** A budget, where zero is a real answer meaning "no limit" and a negative one is not. */
 function budget(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`The "${field}" argument must be a number, or 0 for no limit.`);
@@ -941,8 +856,6 @@ function pixels(value: unknown): number {
   return Math.min(MAX_SCROLL_PIXELS, Math.floor(value));
 }
 
-/** A small positive count, clamped rather than refused: it is only how much to read. */
-/** A signed whole number, for the one argument whose sign is what it means. */
 function whole(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || !value) throw new Error(`The "${field}" argument must be a whole number, counting from 1.`);
   return Math.trunc(value);
@@ -954,20 +867,17 @@ function count(value: unknown, fallback: number, max: number): number {
   return Math.min(max, Math.max(1, Math.floor(value)));
 }
 
-/** File contents may legitimately be empty, so this one only bounds the size. */
 function text(value: unknown, field: string): string {
   if (typeof value !== "string") throw new Error(`The "${field}" argument must be a string.`);
   return value;
 }
 
-/** The same, for the arguments that may be empty but not unbounded. */
 function bounded(value: unknown, field: string, max: number): string {
   const parsed = text(value, field);
   if (parsed.length > max) throw new Error(`The "${field}" argument is longer than ${max} characters.`);
   return parsed;
 }
 
-/** A command's arguments. Bounded to match what `parseMcpServer` will accept back. */
 function stringList(value: unknown): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > 32 || value.some((item) => typeof item !== "string" || item.length > 4096)) {
@@ -976,7 +886,6 @@ function stringList(value: unknown): string[] {
   return value as string[];
 }
 
-/** Environment for a child process, so the keys are checked as strictly as the values. */
 function environmentArg(value: unknown): Record<string, string> {
   if (value === undefined || value === null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new Error('The "env" argument must be a JSON object.');
@@ -987,14 +896,6 @@ function environmentArg(value: unknown): Record<string, string> {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
-/**
- * One memory call, shaped into the discriminated union `runMemoryCommand` takes.
- *
- * Only the arguments that command actually uses are carried over, so a stray
- * `path` on a rename cannot reach the store. The paths themselves are checked
- * where they are resolved, not here: one traversal check, in the one file that
- * turns a `/memories` path into a real one.
- */
 function memoryCommand(args: Record<string, unknown>): MemoryCommand {
   const command = MEMORY_COMMANDS.find((candidate) => candidate === args.command);
   if (!command) throw new Error(`command must be one of ${MEMORY_COMMANDS.join(", ")}.`);
@@ -1057,13 +958,15 @@ export function describeToolCall(args: AnyToolArgs): string {
       return `${args.action === "read" ? "reading" : "sending to"} thread ${args.thread}`;
     case "agents":
       return args.message !== undefined ? `sending to ${args.agent}` : args.stop ? `stopping ${args.agent}` : "listing what is running";
-    case "save_page": return args.url ? `saving ${args.url}` : "saving the page in front";
+    case "keep":
+      if (args.kind === "page") return args.url ? `keeping ${args.url}` : "keeping the page in front";
+      return `keeping ${args.title ? `“${args.title}”` : keepKindLabel(args.kind).toLowerCase()}`;
     case "web_search": return `searching for ${args.query.slice(0, 64)}`;
     case "install_mcp": return `installing the ${args.server} MCP server`;
     case "artifact":
       if (args.action === "list") return "listing artifacts";
       return args.action === "create" ? `creating the artifact "${args.title ?? ""}"` : `${ARTIFACT_VERBS[args.action]} the artifact ${args.id ?? ""}`.trim();
-    case "visualize": return `drawing a ${args.kind} chart`;
+    case "visualize": return `drawing ${args.title}`;
     case "workflow": return args.action === "list" ? "listing the scheduled tasks" : `${WORKFLOW_VERBS[args.action]} the task ${args.title ?? args.jobId ?? ""}`.trim();
     case "autoresearch": return args.action === "list" ? "listing the autoresearch jobs" : `${RESEARCH_VERBS[args.action]} the experiment ${args.title ?? args.jobId ?? ""}`.trim();
   }

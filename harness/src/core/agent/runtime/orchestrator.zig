@@ -1441,8 +1441,29 @@ fn isPostVisionAssistantPrefillRejection(
     {
         return false;
     }
-    return std.mem.find(u8, detail, "does not support assistant message prefill") != null and
-        std.mem.find(u8, detail, "must end with a user message") != null;
+    return std.mem.find(u8, detail, "prefill") != null or
+        std.mem.find(u8, detail, "prefix") != null;
+}
+
+test "post-Vision prefill rejection covers every provider spelling" {
+    const vision_tail = [_]ChatMessage{.{ .role = .tool, .tool_name = "vision", .content = "{}" }};
+    const other_tail = [_]ChatMessage{.{ .role = .tool, .tool_name = "read_file", .content = "{}" }};
+    const deepseek =
+        "{\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":" ++
+        "\"{\\\"error\\\":{\\\"message\\\":\\\"Function call should not be used with prefix\\\"}}\"}}}";
+    const ai_sdk =
+        "{\"error\":{\"message\":\"AI_APICallError: This model does not support " ++
+        "assistant message prefill. The conversation must end with a user message.\"}}";
+
+    try std.testing.expect(isPostVisionAssistantPrefillRejection(.bad_request, deepseek, &vision_tail));
+    try std.testing.expect(isPostVisionAssistantPrefillRejection(.bad_request, ai_sdk, &vision_tail));
+    try std.testing.expect(!isPostVisionAssistantPrefillRejection(.bad_request, deepseek, &other_tail));
+    try std.testing.expect(!isPostVisionAssistantPrefillRejection(.too_many_requests, deepseek, &vision_tail));
+    try std.testing.expect(!isPostVisionAssistantPrefillRejection(
+        .bad_request,
+        "{\"error\":{\"message\":\"context length exceeded\"}}",
+        &vision_tail,
+    ));
 }
 
 fn waitForRecoveryDelay(
@@ -2156,18 +2177,6 @@ fn appendAuthorizedVisionAttemptIds(
         }
     }
     return true;
-}
-
-fn visionCallUsesPaths(alloc: Allocator, call: ToolCall) !bool {
-    const request = runtime_vision_contracts.parse_vision_request(
-        alloc,
-        call.arguments_json,
-    ) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return false,
-    };
-    defer request.deinit(alloc);
-    return request.paths() != null;
 }
 
 fn containsImageId(image_ids: []const usize, candidate: usize) bool {
@@ -3059,10 +3068,11 @@ fn processQueuedPromptLoop(
                     break :blk recovery_source_messages;
                 }
                 if (request_capabilities.supports_vision) {
-                    break :blk try runtime_vision_contracts.project_native_messages(
+                    break :blk try runtime_vision_contracts.project_named_native_messages(
                         overlay_arena,
                         recovery_source_messages,
                         current_user_message_index,
+                        job.authorized_image_catalog,
                     );
                 }
                 if (!model_provider.usesGatewayAuxiliaries(job.provider)) {
@@ -4583,26 +4593,6 @@ fn processQueuedPromptLoop(
                 } };
                 continue;
             }
-            if (std.mem.eql(u8, tool_call.name, "vision") and
-                successful_vision_route != .text_only and
-                !try visionCallUsesPaths(arena, tool_call))
-            {
-                const owned_call = try types.dupeToolCall(arena, tool_call);
-                errdefer types.freeToolCall(arena, owned_call);
-                prepared_tool_calls[tool_call_index] = .{ .blocked = .{
-                    .call = owned_call,
-                    .model_output = try tool_result_errors.toolExecutionFailureJson(
-                        arena,
-                        .{
-                            .tool_name = "vision",
-                            .message = runtime_vision_contracts.native_route_unavailable_message,
-                            .suggestion = "Continue using the model's native image input without Vision.",
-                        },
-                    ),
-                    .kind = .route_unavailable,
-                } };
-                continue;
-            }
             prepared_tool_calls[tool_call_index] = runtime_lifecycle.prepareToolCallForLifecycle(
                 arena,
                 lifecycle,
@@ -5325,14 +5315,6 @@ fn processQueuedPromptLoop(
                             "call_id={s} name={s} failure=malformed_json provenance=fx_local",
                             .{ tool_call.id, tool_call.name },
                         );
-                    } else if (blocked.kind == .route_unavailable) {
-                        debug_trace.eventf(
-                            "tool",
-                            "route_tool_unavailable",
-                            step_ctx,
-                            "call_id={s} name={s}",
-                            .{ tool_call.id, tool_call.name },
-                        );
                     } else if (blocked.kind == .required_vision) {
                         debug_trace.eventf(
                             "tool",
@@ -5361,7 +5343,6 @@ fn processQueuedPromptLoop(
                         execution.model_output,
                     );
                     if (blocked.kind != .malformed_arguments and
-                        blocked.kind != .route_unavailable and
                         blocked.kind != .required_vision)
                     {
                         _ = try stream_ctx.provisional_statuses.finishExecutedCall(

@@ -185,7 +185,7 @@ function AppMockup() {
               <p>
                 <b>Nothing saves silently.</b>
                 <br />
-                Saved pages mirror to ~/Documents/Emma Knowledge.
+                Each save writes one Markdown note into your vault.
               </p>
             </div>
           </aside>
@@ -488,16 +488,17 @@ function App() {
             </div>
             <div className="model-copy">
               <p>
-                Every thread points at one named knowledge base. Each saved page
-                is mirrored as ordinary Markdown — YAML front matter and the
-                document Emma built — into your Documents folder, where you and
-                any other agent on this Mac can read it without knowing Emma’s
-                storage format. The mirror is derived: Emma never reads it back.
+                Point Emma at an Obsidian vault or any plain folder you already
+                own. Each save writes one Markdown note — YAML front matter and
+                the document Emma built — into <b>knowledge-base</b>,
+                attachments alongside it. There is no second copy: the vault is
+                the store, readable and editable by anything without knowing
+                Emma.
               </p>
               <div className="endpoint">
-                <span>◇ MIRROR</span>
-                <b>~/Documents/Emma Knowledge</b>
-                <em>MOVE IT OR TURN IT OFF</em>
+                <span>◇ VAULT</span>
+                <b>a folder you already own</b>
+                <em>OBSIDIAN OR PLAIN</em>
               </div>
               <div className="endpoint">
                 <span>▸ TERMINAL</span>

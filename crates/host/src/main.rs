@@ -3,15 +3,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use emma_core::{
-    AgentBlock, ArtifactBlock, AuthoredPage, DueJob, KnowledgeBaseId, LiveClient, PageId,
-    ResearchJobId, ScheduledJobId, ThreadId, ThreadKind,
-};
+use emma_core::{DueJob, LiveClient, ResearchJobId, ScheduledJobId, ThreadId, ThreadKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
-const MAX_ARTIFACT_EDIT_BYTES: usize = 96 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,19 +20,10 @@ struct Request {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct NameParams {
-    name: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ThreadParams {
     thread_id: String,
 }
 
-/// All three fields are main's to set: the renderer's allowlist carries none of
-/// them, so a compromised window cannot graft a thread onto someone else's agent
-/// tree, nor hide one from the projects list by calling it a subagent's.
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateThreadParams {
@@ -44,32 +31,22 @@ struct CreateThreadParams {
     title: Option<String>,
     #[serde(default)]
     parent_thread_id: Option<String>,
-    /// `"subagent"` for a delegated `task` transcript. Anything else is a thread
-    /// the user talks to, which is the safe default for a missing field.
     #[serde(default)]
     kind: Option<String>,
 }
 
-/// A turn the coding harness already ran, on its way into the durable thread.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RecordTurnParams {
     thread_id: String,
     prompt: String,
     response: String,
-    /// The protocol carries every parameter as a string, numbers included.
     output_tokens: Option<String>,
     duration_milliseconds: Option<String>,
-    /// Everything the provider billed as input: system prompt, tool schemas and
-    /// history included. Absent when the harness reported no usage.
     input_tokens: Option<String>,
-    /// Which model answered, as the composer's picker named it. Absent from an
-    /// older client; the turn then records no model rather than being refused.
     model: Option<String>,
 }
 
-/// One finished turn's execution trace, already rendered by
-/// `desktop/shared/trace.ts`. Core clamps it again before it lands on the thread.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RecordTraceParams {
@@ -77,132 +54,17 @@ struct RecordTraceParams {
     trace: String,
 }
 
-/// A page the app authored, as JSON. Read as a string like every other structured
-/// parameter, and parsed here so a malformed document fails as a bad request
-/// rather than reaching the store.
-fn authored_page(raw: &str) -> Result<AuthoredPage, String> {
-    if raw.len() > MAX_ARTIFACT_EDIT_BYTES {
-        return Err("authored document is too large".into());
-    }
-    serde_json::from_str(raw).map_err(|_| "authored document is invalid JSON".to_string())
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SelectBaseParams {
-    thread_id: String,
-    knowledge_base_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SourcesParams {
-    thread_id: String,
-    knowledge_base_ids: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CategoryParams {
-    knowledge_base_id: String,
-    category: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UpdatePageParams {
-    page_id: String,
-    title: String,
-    category: String,
-    summary: String,
-    body: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UpdatePageDocumentParams {
-    page_id: String,
-    title: String,
-    category: String,
-    summary: String,
-    body: String,
-    artifacts: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CaptureParams {
-    knowledge_base_id: String,
-    category: String,
-    title: String,
-    text: String,
-    source_url: Option<String>,
-    source_application: Option<String>,
-    image: Option<String>,
-    /// A JSON array of data URLs, for captures that keep more than one picture.
-    images: Option<String>,
-    /// The page this re-read replaces, instead of filing a second copy of one URL.
-    page_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageParams {
-    page_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SaveToKnowledgeParams {
-    thread_id: String,
-    document: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AnalyzeParams {
-    page_id: String,
-    /// "true" builds the document but leaves the page where it is filed.
-    keep_category: Option<String>,
-    document: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageVersionParams {
-    page_id: String,
-    name: String,
-}
-
-/// A revision the app authored: the whole document as JSON, not an instruction.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageReviseParams {
-    page_id: String,
-    blocks: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AssetParams {
-    name: String,
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SaveScheduledJobParams {
-    /// Empty creates; anything else rewrites that job in place.
     #[serde(default)]
     job_id: String,
     title: String,
-    /// Cron, `manual`, `after <job-id>`, or `on <event>`.
     schedule: String,
     prompt: String,
-    /// The workflow graph as JSON, or empty for a job that is one step on `prompt`.
     #[serde(default)]
     nodes: String,
     source_domains: String,
-    /// The mode this job runs under, forever. An unattended run has nobody to ask.
     permission_mode: String,
 }
 
@@ -216,7 +78,6 @@ struct ScheduledJobParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunScheduledJobParams {
     job_id: String,
-    /// A JSON object the run starts with, or empty.
     #[serde(default)]
     variables: String,
 }
@@ -240,23 +101,17 @@ struct FireScheduledEventParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SaveResearchJobParams {
-    /// Absent creates; present rewrites that job in place.
     job_id: Option<String>,
     title: String,
     project_dir: String,
     metric_name: String,
-    /// `grep` reads the number out of the run's output; `judge` scores it.
     metric_kind: String,
-    /// The judge's rubric. Absent for a grep metric, which takes none.
     metric_prompt: Option<String>,
     direction: String,
     eval_command: String,
-    /// What the user wants the proposer to try, in the composer's "/" and "@"
-    /// grammar. Absent is a job steered by the loop's own instructions alone.
     prompt: Option<String>,
     proposer_model: String,
     permission_mode: String,
-    /// The three budgets, `0` for no limit.
     max_seconds: String,
     max_tokens: String,
     max_micro_dollars: String,
@@ -273,7 +128,6 @@ struct ResearchJobParams {
 struct SetResearchJobStatusParams {
     job_id: String,
     status: String,
-    /// Which budget ran out, or what failed. Absent when nothing needs saying.
     note: Option<String>,
 }
 
@@ -293,7 +147,6 @@ struct RecordResearchIterationParams {
     input_tokens: String,
     output_tokens: String,
     micro_dollars: String,
-    /// Absent when the run crashed and produced no number at all.
     value: Option<String>,
     note: Option<String>,
     commit: Option<String>,
@@ -518,7 +371,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
         match request.method.as_str() {
             "snapshot" => encode(call(live.snapshot())?),
             "createThread" => {
-                // The renderer sends this one with no params at all, which arrives as null.
                 let params: CreateThreadParams = if request.params.is_null() {
                     CreateThreadParams::default()
                 } else {
@@ -534,34 +386,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     _ => ThreadKind::Main,
                 };
                 encode(call(live.create_thread(params.title, parent, kind))?)
-            }
-            "createKnowledgeBase" => {
-                let params: NameParams = params(request)?;
-                encode(call(live.create_knowledge_base(params.name))?)
-            }
-            "selectThreadKnowledgeBase" => {
-                let params: SelectBaseParams = params(request)?;
-                encode(call(
-                    live.select_thread_knowledge_base(
-                        ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                        KnowledgeBaseId::parse(params.knowledge_base_id)
-                            .map_err(|error| error.to_string())?,
-                    ),
-                )?)
-            }
-            "selectThreadSources" => {
-                let params: SourcesParams = params(request)?;
-                let ids: Vec<String> = serde_json::from_str(&params.knowledge_base_ids)
-                    .map_err(|_| "source base IDs are invalid".to_string())?;
-                let ids = ids
-                    .into_iter()
-                    .map(KnowledgeBaseId::parse)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| error.to_string())?;
-                encode(call(live.select_thread_sources(
-                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                    ids,
-                ))?)
             }
             "setThreadArchived" => {
                 let params: SetThreadArchivedParams = params(request)?;
@@ -580,42 +404,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 encode(call(live.rename_thread(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                     params.title,
-                ))?)
-            }
-            "addKnowledgeBaseCategory" | "removeKnowledgeBaseCategory" => {
-                let params: CategoryParams = params(request)?;
-                let id = KnowledgeBaseId::parse(params.knowledge_base_id)
-                    .map_err(|error| error.to_string())?;
-                encode(call(if request.method == "addKnowledgeBaseCategory" {
-                    live.add_knowledge_base_category(id, params.category)
-                } else {
-                    live.remove_knowledge_base_category(id, params.category)
-                })?)
-            }
-            "updatePage" => {
-                let params: UpdatePageParams = params(request)?;
-                encode(call(live.update_page(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    params.title,
-                    params.category,
-                    params.summary,
-                    params.body,
-                ))?)
-            }
-            "updatePageDocument" => {
-                let params: UpdatePageDocumentParams = params(request)?;
-                if params.artifacts.len() > MAX_ARTIFACT_EDIT_BYTES {
-                    return Err("artifact document is too large".into());
-                }
-                let artifacts: Vec<ArtifactBlock> = serde_json::from_str(&params.artifacts)
-                    .map_err(|_| "artifact document is invalid JSON".to_string())?;
-                encode(call(live.update_page_document(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    params.title,
-                    params.category,
-                    params.summary,
-                    params.body,
-                    artifacts,
                 ))?)
             }
             "recordTurn" => {
@@ -654,94 +442,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 encode(call(live.read_trace(
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                 ))?)
-            }
-            "threadAuthoringContext" => {
-                let params: ThreadParams = params(request)?;
-                encode(call(live.thread_authoring_context(
-                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                ))?)
-            }
-            "saveToKnowledge" => {
-                let params: SaveToKnowledgeParams = params(request)?;
-                encode(call(live.save_to_knowledge(
-                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                    authored_page(&params.document)?,
-                ))?)
-            }
-            "captureToKnowledge" => {
-                let params: CaptureParams = params(request)?;
-                let mut images: Vec<String> = params.image.into_iter().collect();
-                if let Some(list) = params.images {
-                    let parsed: Vec<String> = serde_json::from_str(&list)
-                        .map_err(|_| "captured images are invalid JSON".to_string())?;
-                    images.extend(parsed);
-                }
-                let page_id = params
-                    .page_id
-                    .map(PageId::parse)
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                encode(call(
-                    live.capture_to_knowledge(
-                        KnowledgeBaseId::parse(params.knowledge_base_id)
-                            .map_err(|error| error.to_string())?,
-                        params.category,
-                        params.title,
-                        params.text,
-                        params.source_url,
-                        params.source_application,
-                        images,
-                        page_id,
-                    ),
-                )?)
-            }
-            "analyzePage" => {
-                let params: AnalyzeParams = params(request)?;
-                let keep_category = match params.keep_category.as_deref() {
-                    None | Some("false") => false,
-                    Some("true") => true,
-                    _ => return Err("keepCategory must be \"true\" or \"false\"".into()),
-                };
-                encode(call(live.analyze_page(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    keep_category,
-                    authored_page(&params.document)?,
-                ))?)
-            }
-            "pageAuthoringContext" => {
-                let params: PageParams = params(request)?;
-                encode(call(live.page_authoring_context(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                ))?)
-            }
-            "listPageVersions" => {
-                let params: PageParams = params(request)?;
-                encode(call(live.list_page_versions(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                ))?)
-            }
-            "restorePageVersion" => {
-                let params: PageVersionParams = params(request)?;
-                encode(call(live.restore_page_version(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    params.name,
-                ))?)
-            }
-            "revisePageDocument" => {
-                let params: PageReviseParams = params(request)?;
-                if params.blocks.len() > MAX_ARTIFACT_EDIT_BYTES {
-                    return Err("revised document is too large".into());
-                }
-                let blocks: Vec<AgentBlock> = serde_json::from_str(&params.blocks)
-                    .map_err(|_| "revised document is invalid JSON".to_string())?;
-                encode(call(live.revise_page_document(
-                    PageId::parse(params.page_id).map_err(|error| error.to_string())?,
-                    blocks,
-                ))?)
-            }
-            "readPageAsset" => {
-                let params: AssetParams = params(request)?;
-                encode(call(live.read_page_asset(params.name))?)
             }
             "saveScheduledJob" => {
                 let params: SaveScheduledJobParams = params(request)?;
@@ -794,8 +494,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
             }
             "setScheduledJobEnabled" => {
                 let params: SetScheduledJobEnabledParams = params(request)?;
-                // ponytail: enabled arrives as text like every other param; the host
-                // protocol is string-valued and this is the one boolean in it.
                 let enabled = match params.enabled.as_str() {
                     "true" => true,
                     "false" => false,
@@ -885,8 +583,6 @@ fn whole_number(name: &str, value: &str) -> Result<u64, String> {
     value.parse().map_err(|_| format!("{name} is not a number"))
 }
 
-/// A measured metric. NaN and infinity are refused here as well as in core, because
-/// a graph line and a "did it improve" comparison are both meaningless against them.
 fn measurement(name: &str, value: &str) -> Result<f64, String> {
     match value.parse::<f64>() {
         Ok(number) if number.is_finite() => Ok(number),

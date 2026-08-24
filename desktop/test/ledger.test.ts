@@ -9,8 +9,6 @@ import type { Thread } from "../src/types";
 const thread = (replies: number): Thread => ({
   id: "t1",
   title: "Ledger",
-  knowledgeBaseId: "kb",
-  sourceKnowledgeBaseIds: [],
   createdAt: "2026-08-23T10:00:00.000Z",
   updatedAt: "2026-08-23T10:04:00.000Z",
   messages: Array.from({ length: replies * 2 }, (_, index) => index % 2 === 0
@@ -34,8 +32,6 @@ const working = (toolCalls: number): LiveAgent => ({
   generationMs: 12_000,
 });
 
-/* One turn as `AgentRuntime` records it: the run's own span, a model request per
-   step, the seven `bash` calls, and one Auto review of one of them. */
 const turnSpans = (calls: number): TraceSpan[] => [
   { id: "agent:root", name: "Turn", kind: "agent", startedAt: 0, endedAt: 40_000, status: "ok" },
   { id: "model:1", parentId: "agent:root", name: "model", kind: "model", startedAt: 0, endedAt: 900, status: "ok" },
@@ -46,7 +42,6 @@ const turnSpans = (calls: number): TraceSpan[] => [
 test("a landed turn's tool calls are counted off its stored trace, not lost with the run", () => {
   const calls = countCalls(decodeSpans(encodeSpans(turnSpans(7))));
   assert.equal(calls, 7, "the run's own span, its model requests and the Auto review are not calls");
-  // What the tile read the moment the turn ended: nothing in flight any more.
   assert.equal(buildLedger(thread(1), [], 200_000, [], NO_EXPERIMENTS, calls).calls, 7);
   assert.equal(buildLedger(thread(1), [], 200_000, [], NO_EXPERIMENTS).calls, 0, "with no trace read back there is nothing to count");
 });

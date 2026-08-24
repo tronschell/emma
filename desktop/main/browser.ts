@@ -1,17 +1,24 @@
+import { app, WebContentsView, type BrowserWindow } from "electron";
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { externalUrl } from "./ipc";
 import { MAX_TOOL_OUTPUT_BYTES } from "./tools";
 
+export const INSTALL_COMMAND = "npm install -g agent-browser && agent-browser install";
+
+export type BrowserTab = { id: string; url: string; title: string; favicon?: string; loading: boolean };
 export type BrowserStatus = {
-  installed: boolean;
   running: boolean;
-  streamPort?: number;
   url?: string;
   title?: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  activeTab?: string;
+  tabs: BrowserTab[];
 };
-
-export const INSTALL_COMMAND = "npm install -g agent-browser && agent-browser install";
+export type BrowserBounds = { x: number; y: number; width: number; height: number };
 
 const NAVIGATIONS = ["back", "forward", "reload", "close"] as const;
 type Navigation = (typeof NAVIGATIONS)[number];
@@ -22,51 +29,94 @@ const RECHECK_MS = 15_000;
 const DRAIN_MS = 100;
 const MAX_STDERR = 4 * 1024;
 const MAX_SESSION_CHARS = 48;
+const MAX_TABS = 12;
+const HOME = "about:blank";
 const TRUNCATION_NOTICE = "\n[truncated — read less at a time: snapshot with interactive true, or narrow it with a selector]";
 
-type Session = { name: string; running: boolean; port?: number; url?: string; title?: string; stream?: Promise<number> };
-type Payload = Record<string, unknown> | string;
+type Tab = { id: string; view: WebContentsView; targetId?: string; favicon?: string };
+type Session = { name: string; threadId: string; tabs: Tab[]; activeId?: string; bounds?: BrowserBounds; shown: boolean; connected?: Promise<void>; pinned?: string };
 
 export class Browsers {
   private sessions = new Map<string, Session>();
-  private lookup?: Promise<string | null>;
+  private window: BrowserWindow | null = null;
   private path: string | null = null;
+  private lookup?: Promise<string | null>;
+  private port?: Promise<number | null>;
   private expires = 0;
   private loginPath?: string;
+  private counter = 0;
 
   constructor(private readonly onChange: () => void) {}
 
-  async status(threadId: string): Promise<BrowserStatus> {
-    if (!(await this.binary())) return { installed: false, running: false };
-    const session = this.session(threadId);
-    return { installed: true, running: session.running, streamPort: session.port, url: session.url, title: session.title };
-  }
-
-  async run(threadId: string, argv: readonly string[]): Promise<string> {
-    const session = this.session(threadId);
-    const out = await this.exec(session, argv);
-    if (!session.running) {
-      session.running = true;
-      this.onChange();
-    }
-    return bounded(out);
-  }
-
-  async ensureStream(threadId: string): Promise<number> {
-    const session = this.session(threadId);
-    session.stream ??= this.startStream(session).catch((error: unknown) => {
-      session.stream = undefined;
-      throw error;
+  attach(window: BrowserWindow) {
+    this.window = window;
+    window.on("closed", () => {
+      if (this.window === window) this.window = null;
     });
-    return session.stream;
+  }
+
+  status(threadId: string): BrowserStatus {
+    const session = this.sessions.get(sessionName(threadId));
+    const active = session && this.active(session);
+    if (!session?.tabs.length || !active) return { running: false, loading: false, canGoBack: false, canGoForward: false, tabs: [] };
+    const contents = active.view.webContents;
+    return {
+      running: true,
+      url: contents.getURL() || undefined,
+      title: contents.getTitle() || undefined,
+      loading: contents.isLoading(),
+      canGoBack: contents.navigationHistory.canGoBack(),
+      canGoForward: contents.navigationHistory.canGoForward(),
+      activeTab: active.id,
+      tabs: session.tabs.map((tab) => ({
+        id: tab.id,
+        url: tab.view.webContents.getURL(),
+        title: tab.view.webContents.getTitle(),
+        favicon: tab.favicon,
+        loading: tab.view.webContents.isLoading(),
+      })),
+    };
   }
 
   async open(threadId: string, url: string): Promise<BrowserStatus> {
     const target = externalUrl(url);
     if (!target) throw new Error(`Emma's browser opens http and https addresses only, and ${url.slice(0, 120)} is neither.`);
     const session = this.session(threadId);
-    const out = await this.exec(session, ["--json", "open", target.href]);
-    if (!this.record(session, out)) await this.locate(session, target.href);
+    const tab = this.active(session) ?? this.spawnTab(session);
+    await tab.view.webContents.loadURL(target.href).catch(() => undefined);
+    this.onChange();
+    return this.status(threadId);
+  }
+
+  async newTab(threadId: string, url?: string): Promise<BrowserStatus> {
+    const session = this.session(threadId);
+    if (session.tabs.length >= MAX_TABS) throw new Error(`Emma's browser holds ${MAX_TABS} tabs at once. Close one first.`);
+    const tab = this.spawnTab(session);
+    const target = url ? externalUrl(url) : null;
+    if (url && !target) throw new Error(`Emma's browser opens http and https addresses only, and ${url.slice(0, 120)} is neither.`);
+    await tab.view.webContents.loadURL(target ? target.href : HOME).catch(() => undefined);
+    this.onChange();
+    return this.status(threadId);
+  }
+
+  selectTab(threadId: string, tabId: string): BrowserStatus {
+    const session = this.session(threadId);
+    if (!session.tabs.some((tab) => tab.id === tabId)) throw new Error("That browser tab is already gone.");
+    session.activeId = tabId;
+    this.layout(session);
+    this.onChange();
+    return this.status(threadId);
+  }
+
+  closeTab(threadId: string, tabId: string): BrowserStatus {
+    const session = this.session(threadId);
+    const index = session.tabs.findIndex((tab) => tab.id === tabId);
+    if (index < 0) return this.status(threadId);
+    this.destroyTab(session, session.tabs[index]!);
+    session.tabs.splice(index, 1);
+    if (session.activeId === tabId) session.activeId = session.tabs[Math.min(index, session.tabs.length - 1)]?.id;
+    if (!session.tabs.length) this.forget(session);
+    else this.layout(session);
     this.onChange();
     return this.status(threadId);
   }
@@ -74,71 +124,146 @@ export class Browsers {
   async navigate(threadId: string, action: Navigation): Promise<BrowserStatus> {
     if (!NAVIGATIONS.includes(action)) throw new Error(`Emma's browser has no "${String(action).slice(0, 32)}" navigation.`);
     const session = this.session(threadId);
-    const out = await this.exec(session, ["--json", action]);
     if (action === "close") {
-      session.running = false;
-      session.port = undefined;
-      session.stream = undefined;
-      session.url = undefined;
-      session.title = undefined;
-    } else if (!this.record(session, out)) {
-      await this.locate(session);
+      for (const tab of session.tabs) this.destroyTab(session, tab);
+      session.tabs = [];
+      this.forget(session);
+      this.onChange();
+      return this.status(threadId);
     }
+    const contents = this.active(session)?.view.webContents;
+    if (!contents) return this.status(threadId);
+    if (action === "reload") contents.reload();
+    if (action === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
+    if (action === "forward" && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
     this.onChange();
     return this.status(threadId);
   }
 
+  place(threadId: string, bounds: BrowserBounds | null) {
+    const session = this.sessions.get(sessionName(threadId));
+    if (!session) return;
+    session.shown = bounds !== null;
+    if (bounds) session.bounds = bounds;
+    this.layout(session);
+  }
+
+  hideAllExcept(threadId: string) {
+    const keep = sessionName(threadId);
+    for (const [name, session] of this.sessions) {
+      if (name === keep) continue;
+      session.shown = false;
+      this.layout(session);
+    }
+  }
+
+  async run(threadId: string, argv: readonly string[]): Promise<string> {
+    const session = this.session(threadId);
+    const tab = this.active(session) ?? this.spawnTab(session);
+    await this.pin(session, tab);
+    return bounded(await this.exec(session, argv));
+  }
+
   stopAll() {
     for (const session of this.sessions.values()) {
-      if (!session.running || !this.path) continue;
-      session.running = false;
-      session.stream = undefined;
-      spawn(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore" }).unref();
+      for (const tab of session.tabs) this.destroyTab(session, tab);
+      session.tabs = [];
     }
+    this.sessions.clear();
   }
 
   private session(threadId: string): Session {
     const name = sessionName(threadId);
     const known = this.sessions.get(name);
     if (known) return known;
-    const created: Session = { name, running: false };
+    const created: Session = { name, threadId, tabs: [], shown: true };
     this.sessions.set(name, created);
     return created;
   }
 
-  private async startStream(session: Session): Promise<number> {
-    const bound = streamPort(await this.exec(session, ["--json", "stream", "status"]));
-    const port = bound ?? (await freePort());
-    if (bound === undefined) await this.exec(session, ["stream", "enable", "--port", String(port)]);
-    session.port = port;
-    session.running = true;
-    this.onChange();
-    return port;
+  private active(session: Session): Tab | undefined {
+    return session.tabs.find((tab) => tab.id === session.activeId) ?? session.tabs[0];
   }
 
-  private record(session: Session, out: string): string | undefined {
-    const data = parsed(out);
-    if (data === undefined) return undefined;
-    const page = typeof data === "string" ? {} : data;
-    const url = field(page, "url");
-    const title = field(page, "title");
-    const changed = !session.running || (url !== undefined && url !== session.url) || (title !== undefined && title !== session.title);
-    session.running = true;
-    if (url) session.url = url;
-    if (title) session.title = title;
-    if (changed) this.onChange();
-    return url;
+  private spawnTab(session: Session): Tab {
+    this.counter += 1;
+    const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true } });
+    const tab: Tab = { id: `t${this.counter}`, view };
+    const contents = view.webContents;
+    contents.setWindowOpenHandler(({ url }) => {
+      if (externalUrl(url) && session.tabs.length < MAX_TABS) void this.newTab(session.threadId, url);
+      return { action: "deny" };
+    });
+    contents.on("page-favicon-updated", (_event, icons) => {
+      tab.favicon = icons.find((icon) => icon.startsWith("https://") || icon.startsWith("http://"));
+      this.onChange();
+    });
+    const changed = () => this.onChange();
+    contents.on("did-navigate", changed);
+    contents.on("did-navigate-in-page", changed);
+    contents.on("page-title-updated", changed);
+    contents.on("did-start-loading", changed);
+    contents.on("did-stop-loading", changed);
+    session.tabs.push(tab);
+    session.activeId = tab.id;
+    this.window?.contentView.addChildView(view);
+    this.layout(session);
+    return tab;
   }
 
-  private async locate(session: Session, fallback?: string) {
-    const data = parsed(await this.exec(session, ["--json", "get", "url"]));
-    const found = typeof data === "string" ? data.trim() : field(data ?? {}, "url", "value", "text", "result");
-    if (found ?? fallback) session.url = found ?? fallback;
+  private destroyTab(session: Session, tab: Tab) {
+    session.connected = undefined;
+    session.pinned = undefined;
+    try {
+      this.window?.contentView.removeChildView(tab.view);
+    } catch {
+      /* the window is already gone */
+    }
+    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+  }
+
+  private forget(session: Session) {
+    session.connected = undefined;
+    session.pinned = undefined;
+    session.activeId = undefined;
+    this.sessions.delete(session.name);
+    if (this.path) spawn(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore" }).unref();
+  }
+
+  private layout(session: Session) {
+    const active = this.active(session);
+    const zoom = this.window?.webContents.getZoomFactor() ?? 1;
+    for (const tab of session.tabs) {
+      const shows = session.shown && !!session.bounds && tab.id === active?.id;
+      tab.view.setVisible(shows);
+      if (shows && session.bounds) tab.view.setBounds(whole(session.bounds, zoom));
+    }
+  }
+
+  private async pin(session: Session, tab: Tab) {
+    const port = await this.cdpPort();
+    if (port === null) throw new Error("Emma could not open a debugging port for its browser, so the agent cannot drive it.");
+    session.connected ??= this.exec(session, ["connect", String(port)]).then(() => undefined);
+    await session.connected;
+    const targetId = (tab.targetId ??= await targetOf(tab));
+    if (session.pinned === targetId) return;
+    await this.exec(session, ["tab", targetId, "--pin-tab"]);
+    session.pinned = targetId;
+  }
+
+  private cdpPort(): Promise<number | null> {
+    this.port ??= readFile(join(app.getPath("userData"), "DevToolsActivePort"), "utf8")
+      .then((body) => {
+        const port = Number(body.split("\n")[0]);
+        return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : null;
+      })
+      .catch(() => null);
+    return this.port;
   }
 
   private async exec(session: Session, argv: readonly string[]): Promise<string> {
     const binary = await this.binary();
-    if (!binary) throw new Error(`agent-browser is not installed on this Mac, so there is no browser to drive. Install it by running: ${INSTALL_COMMAND}`);
+    if (!binary) throw new Error(`agent-browser is not installed on this Mac, so the agent cannot drive Emma's browser. The pane still works. Install it by running: ${INSTALL_COMMAND}`);
     return capture(binary, ["--session", session.name, ...argv], this.loginPath ?? process.env.PATH ?? "");
   }
 
@@ -160,52 +285,38 @@ export class Browsers {
   }
 }
 
+async function targetOf(tab: Tab): Promise<string> {
+  const contents = tab.view.webContents;
+  if (contents.debugger.isAttached()) contents.debugger.detach();
+  contents.debugger.attach("1.3");
+  try {
+    const info = await contents.debugger.sendCommand("Target.getTargetInfo") as { targetInfo?: { targetId?: unknown } };
+    const id = info.targetInfo?.targetId;
+    if (typeof id !== "string" || !/^[0-9A-F]{8,}$/i.test(id)) throw new Error("Emma could not identify its browser view to the agent.");
+    return id;
+  } finally {
+    if (contents.debugger.isAttached()) contents.debugger.detach();
+  }
+}
+
+function whole(bounds: BrowserBounds, zoom: number): BrowserBounds {
+  const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return {
+    x: Math.round(bounds.x * scale),
+    y: Math.round(bounds.y * scale),
+    width: Math.max(0, Math.round(bounds.width * scale)),
+    height: Math.max(0, Math.round(bounds.height * scale)),
+  };
+}
+
 function sessionName(threadId: string): string {
   return `emma-${threadId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, MAX_SESSION_CHARS)}`;
-}
-
-function parsed(out: string): Payload | undefined {
-  try {
-    const value = JSON.parse(out) as { success?: unknown; data?: unknown };
-    if (!value || typeof value !== "object" || Array.isArray(value) || value.success === false) return undefined;
-    if (typeof value.data === "string") return value.data;
-    return value.data && typeof value.data === "object" && !Array.isArray(value.data) ? (value.data as Record<string, unknown>) : {};
-  } catch {
-    return undefined;
-  }
-}
-
-function field(data: Record<string, unknown>, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = data[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-function streamPort(out: string): number | undefined {
-  const data = parsed(out);
-  if (data === undefined || typeof data === "string" || data.enabled === false) return undefined;
-  const port = Number(data.port);
-  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : undefined;
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = address && typeof address === "object" ? address.port : 0;
-      server.close(() => (port ? resolve(port) : reject(new Error("Emma could not find a free port for the browser stream."))));
-    });
-  });
 }
 
 function bounded(value: string): string {
   if (Buffer.byteLength(value) <= MAX_TOOL_OUTPUT_BYTES) return value;
   const kept = Buffer.from(value).subarray(0, MAX_TOOL_OUTPUT_BYTES - Buffer.byteLength(TRUNCATION_NOTICE)).toString("utf8");
-  return `${kept.replace(/\uFFFD$/, "")}${TRUNCATION_NOTICE}`;
+  return `${kept.replace(/�$/, "")}${TRUNCATION_NOTICE}`;
 }
 
 function capture(binary: string, argv: readonly string[], path: string): Promise<string> {

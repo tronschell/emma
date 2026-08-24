@@ -4,7 +4,7 @@ import { FILE_HUE, highlightSegments, insertCommand, KIND_LABELS, matchCommands,
 import { atCommands, fileCommands, toolCommands } from "../src/context";
 import { pickKey } from "../shared/folders";
 import type { ArtifactMeta } from "../shared/artifacts";
-import type { Snapshot } from "../src/types";
+import type { KeptNote } from "../shared/vault";
 
 const commands: SlashCommand[] = [
   { id: "a", name: "context7", kind: "mcp", detail: "" },
@@ -43,8 +43,6 @@ test("each known name keeps one hue; unknown tokens stay prose", () => {
   assert.deepEqual(highlightSegments("/context7 /context7", ["context7"]).map((item) => item.hue), [0, undefined, 0]);
 });
 
-/* The "@" sigil: the same grammar, but the name is a path and the menu lists files. */
-
 test("an @ opens on a path at a word start, and never mid-word", () => {
   assert.deepEqual(slashQuery("@", 1), { start: 0, query: "", sigil: "@" });
   assert.deepEqual(slashQuery("read @src/App", 13), { start: 5, query: "src/App", sigil: "@" });
@@ -71,36 +69,30 @@ test("a file mention keeps its own hue, whatever colours the commands took", () 
   assert.equal(segments.map((item) => item.text).join(""), "/context7 on @src/App.tsx and @gone");
 });
 
-/* "/" also names a built-in tool, and "@" also names an artifact or a saved page. */
-
 test("every built-in tool is a / command, and Settings can switch one out of the menu", () => {
   const all = toolCommands();
   assert.ok(all.length > 20, "the whole catalog lists");
   assert.ok(all.every((item) => item.kind === "tool" && !item.pick), "tools attach nothing");
-  const saved = all.find((item) => item.name === "save_page");
+  const saved = all.find((item) => item.name === "keep");
   assert.equal(KIND_LABELS[saved!.kind], "Tool");
-  // A tool name carries an underscore, which the "/" grammar has to accept.
-  assert.deepEqual(matchCommands(all, "save_p").map((item) => item.name), ["save_page"]);
-  assert.deepEqual(slashQuery("use /save_page", 14), { start: 4, query: "save_page", sigil: "/" });
-  assert.equal(toolCommands(["save_page"]).some((item) => item.name === "save_page"), false);
+  assert.deepEqual(matchCommands(all, "kee").map((item) => item.name), ["keep"]);
+  assert.deepEqual(slashQuery("use /keep", 9), { start: 4, query: "keep", sigil: "/" });
+  assert.equal(toolCommands(["keep"]).some((item) => item.name === "keep"), false);
 });
 
 test("@ lists what Emma made and saved before the files on disk", () => {
   const artifacts = [{ id: "a1", title: "Q3 plan", kind: "markdown", language: "", createdAt: "", updatedAt: "", version: 1 }] as ArtifactMeta[];
-  const snapshot = {
-    knowledgeBases: [{ id: "b1", name: "Research" }],
-    pages: [{ id: "p1", knowledgeBaseId: "b1", title: "Ceramics primer", category: "materials" }],
-  } as unknown as Snapshot;
-  const items = atCommands(artifacts, snapshot, [{ id: "f1", path: "/Users/me/Docs", name: "Docs" }], ["f1"], { f1: [{ path: "notes/plan.md", bytes: 10 }] });
+  const notes: KeptNote[] = [{ path: "/Users/me/Vault/knowledge-base/ceramics-primer.md", relative: "ceramics-primer.md", title: "Ceramics primer", tags: ["materials"], savedAt: "2026-08-20T00:00:00Z", kind: "page" }];
+  const items = atCommands(artifacts, notes, [{ id: "f1", path: "/Users/me/Docs", name: "Docs" }], ["f1"], { f1: [{ path: "notes/plan.md", bytes: 10 }] });
   assert.deepEqual(items.map((item) => [item.kind, item.name]), [
     ["artifact", "Q3-plan"],
     ["page", "Ceramics-primer"],
     ["file", "notes/plan.md"],
   ]);
   assert.deepEqual(items[0].pick, { kind: "artifact", id: "a1", title: "Q3 plan" });
-  assert.deepEqual(items[1].pick, { kind: "page", id: "p1" });
-  assert.equal(pickKey(items[1].pick!), "page:p1");
-  // A shared word still ranks the artifact first, because it is listed first.
+  assert.deepEqual(items[1].pick, { kind: "note", path: "/Users/me/Vault/knowledge-base/ceramics-primer.md", title: "Ceramics primer" });
+  assert.equal(pickKey(items[1].pick!), "note:/Users/me/Vault/knowledge-base/ceramics-primer.md");
+  assert.equal(items[1].detail, "Page · materials");
   assert.deepEqual(matchCommands(items, "plan").map((item) => item.kind), ["artifact", "file"]);
 });
 

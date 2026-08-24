@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { ThreadStep } from "../shared/agents";
+import type { KeepRequest, VaultKind } from "../shared/vault";
 
 let nextListener = 1;
 const listeners = new Map<number, () => void>();
@@ -9,25 +10,19 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.invoke("emma:request", { method, params }),
   setOverlayPreferences: (value: unknown) => ipcRenderer.send("emma:set-overlay-preferences", value),
   setOverlayBusy: (value: boolean) => ipcRenderer.send("emma:set-overlay-busy", value),
-  /** Resolves with the actions whose shortcut the OS refused to hand over. */
   setKeybinds: (value: unknown) => ipcRenderer.invoke("emma:set-keybinds", value),
   openOverlay: () => ipcRenderer.send("emma:open-overlay"),
   setOverlayHeight: (value: number) => ipcRenderer.send("emma:set-overlay-height", value),
-  /** Where Quick Ask went: "pill" is the status chip it collapses into, "popout" the island hung off it. */
   onOverlaySurface: (listener: (value: "notch" | "pill" | "popout") => void) => {
     const wrapped = (_event: unknown, value: unknown) => { if (value === "notch" || value === "pill" || value === "popout") listener(value); };
     ipcRenderer.on("emma:overlay-surface", wrapped);
     return () => ipcRenderer.removeListener("emma:overlay-surface", wrapped);
   },
-  /** Screen coordinates the chip is being dragged to. */
   movePill: (value: { x: number; y: number }) => ipcRenderer.send("emma:move-pill", value),
   expandPill: () => ipcRenderer.send("emma:expand-pill"),
   dismissOverlay: () => ipcRenderer.send("emma:dismiss-overlay"),
-  /** Raises the workspace, optionally on a settings page — how the island hands voice setup over. */
   openWorkspace: (settingsPage?: string) => ipcRenderer.send("emma:open-workspace", settingsPage),
-  /** The page has been laid out wider than its own window — ask for the resize that clears it. */
   resyncWindow: () => ipcRenderer.send("emma:resync-window"),
-  /** Which local servers dictation can reach right now, and whether the microphone is granted. */
   voiceStatus: (settings: unknown) => ipcRenderer.invoke("emma:voice-status", settings),
   transcribe: (value: { audio: ArrayBuffer; mimeType: string; settings: unknown }) => ipcRenderer.invoke("emma:transcribe", value),
   onOpenSettings: (listener: (page: string) => void) => {
@@ -41,7 +36,6 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:quick-command", wrapped);
     return () => ipcRenderer.removeListener("emma:quick-command", wrapped);
   },
-  /** The shortcut was pressed on a busy island and Settings → Notch wants a task of its own. */
   onNewQuickSession: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:new-quick-session", wrapped);
@@ -60,7 +54,6 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:delta", wrapped);
     return () => ipcRenderer.removeListener("emma:delta", wrapped);
   },
-  /** One tool call from the coding harness, live: what it is doing, as it does it. */
   onStep: (listener: (value: ThreadStep) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
       const step = value as Partial<ThreadStep>;
@@ -69,7 +62,6 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:step", wrapped);
     return () => ipcRenderer.removeListener("emma:step", wrapped);
   },
-  /** A Harness settings lever rewrote the context window on a step of this turn. */
   onContextExperiment: (listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
       const fired = value as { threadId?: unknown; prunedResults?: unknown; reinjected?: unknown; savedTokens?: unknown; addedTokens?: unknown };
@@ -105,24 +97,21 @@ contextBridge.exposeInMainWorld("emma", {
   saveArtifact: (value: { id?: string; title: string; kind: string; language?: string; content: string }) => ipcRenderer.invoke("emma:save-artifact", value),
   deleteArtifact: (id: string) => ipcRenderer.invoke("emma:delete-artifact", id),
   revealArtifact: (id: string) => ipcRenderer.invoke("emma:reveal-artifact", id),
-  /** One statement against one app artifact's own database. The id is the caller's. */
   artifactSql: (id: string, sql: string, params: unknown[]) => ipcRenderer.invoke("emma:artifact-sql", { id, sql, params }),
-  /** An artifact was written, edited or deleted — by the agent, or on the page itself. */
   onArtifactsChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:artifacts-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:artifacts-changed", wrapped);
   },
-  /** Every plan in the Plans section, newest first, each one whole. */
+  readVisual: (id: string) => ipcRenderer.invoke("emma:read-visual", id),
+  exportVisual: (id: string, width: number) => ipcRenderer.invoke("emma:export-visual", { id, width }),
   listPlans: () => ipcRenderer.invoke("emma:list-plans"),
-  /** A wave started, a step finished, or a subagent ticked one of its own tasks off. */
   onPlansChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:plans-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:plans-changed", wrapped);
   },
   listFolders: () => ipcRenderer.invoke("emma:list-folders"),
-  /** Every marketplace Emma tracks and every plugin installed out of one. */
   pluginCatalog: () => ipcRenderer.invoke("emma:plugin-catalog"),
   addMarketplace: (value: { source: string; ref: string; sparse: string }) => ipcRenderer.invoke("emma:add-marketplace", value),
   removeMarketplace: (id: string) => ipcRenderer.invoke("emma:remove-marketplace", id),
@@ -131,7 +120,6 @@ contextBridge.exposeInMainWorld("emma", {
   uninstallPlugin: (id: string) => ipcRenderer.invoke("emma:uninstall-plugin", id),
   pluginDetail: (value: { marketplace: string; plugin: string }) => ipcRenderer.invoke("emma:plugin-detail", value),
   trustPluginHooks: (value: { id: string; trusted: boolean }) => ipcRenderer.invoke("emma:trust-plugin-hooks", value),
-  /** A folder the agent asked for mid-turn and the user picked in the native dialog. */
   onFolderAttached: (listener: (value: { threadId: string; folderId: string }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
       const attached = value as { threadId?: unknown; folderId?: unknown };
@@ -143,7 +131,20 @@ contextBridge.exposeInMainWorld("emma", {
   setupStatus: () => ipcRenderer.invoke("emma:setup-status"),
   openPrivacySettings: (permission: string) => ipcRenderer.invoke("emma:open-privacy-settings", permission),
   demoQuickAsk: () => ipcRenderer.invoke("emma:demo-quick-ask"),
-  setKnowledgeDir: (mode: "pick" | "default") => ipcRenderer.invoke("emma:set-knowledge-dir", mode),
+  pickVaultFolder: () => ipcRenderer.invoke("emma:pick-vault-folder"),
+  detectVaults: () => ipcRenderer.invoke("emma:detect-vaults"),
+  setVault: (value: { kind: VaultKind; name?: string; folder?: string }) => ipcRenderer.invoke("emma:set-vault", value),
+  vaultStatus: () => ipcRenderer.invoke("emma:vault-status"),
+  installObsidian: () => ipcRenderer.invoke("emma:install-obsidian"),
+  keep: (value: KeepRequest) => ipcRenderer.invoke("emma:keep", value),
+  listNotes: () => ipcRenderer.invoke("emma:list-notes"),
+  readNote: (value: string) => ipcRenderer.invoke("emma:read-note", value),
+  openInObsidian: (relative: string) => ipcRenderer.invoke("emma:open-in-obsidian", relative),
+  onNotesChanged: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:notes-changed", wrapped);
+    return () => ipcRenderer.removeListener("emma:notes-changed", wrapped);
+  },
   resetData: () => ipcRenderer.invoke("emma:reset-data"),
   pickFolder: () => ipcRenderer.invoke("emma:pick-folder"),
   forgetFolder: (id: string) => ipcRenderer.invoke("emma:forget-folder", id),
@@ -154,9 +155,7 @@ contextBridge.exposeInMainWorld("emma", {
   setWorktree: (value: { folderId: string; name: string; on: boolean }) => ipcRenderer.invoke("emma:set-worktree", value),
   setBranch: (value: { folderId: string; branch: string; create: boolean }) => ipcRenderer.invoke("emma:set-branch", value),
   readFolderFile: (value: { folderId: string; path: string }) => ipcRenderer.invoke("emma:read-folder-file", value),
-  /** Files for one message, chosen in the native dialog. */
   attachFiles: () => ipcRenderer.invoke("emma:attach-files"),
-  /** The same, from a drop or a paste — which hands the renderer contents, never a path. */
   attachData: (value: { name: string; data: ArrayBuffer }) => ipcRenderer.invoke("emma:attach-data", value),
   readAttachment: (id: string) => ipcRenderer.invoke("emma:read-attachment", id),
   clearThreadContext: (threadId: string) => ipcRenderer.invoke("emma:clear-thread-context", threadId),
@@ -176,30 +175,23 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:computer-run-progress", wrapped);
     return () => ipcRenderer.removeListener("emma:computer-run-progress", wrapped);
   },
-  /** Auto mode's verifier model. Rejects when the endpoint or the model id will not do. */
   setVerifier: (value: unknown) => ipcRenderer.invoke("emma:set-verifier", value),
-  /** Settings → Tools: what is switched off, plus the advisor and web-search configuration. */
   setToolSettings: (value: unknown) => ipcRenderer.invoke("emma:set-tool-settings", value),
-  /** One thread past the categorizer, which answers with one of the tags it was given, or "". */
-  tagThread: (value: { tagger: unknown; text: string; tags: string[]; examples: { tag: string; text: string }[] }) => ipcRenderer.invoke("emma:tag-thread", value),
-  /** Settings → Harness: the experimental per-step context hooks. */
+  setZoom: (value: number) => ipcRenderer.invoke("emma:set-zoom", value),
+  setTagger: (value: unknown) => ipcRenderer.invoke("emma:set-tagger", value),
   setHarnessExperiments: (value: unknown) => ipcRenderer.invoke("emma:set-harness-experiments", value),
-  /** The Agent page's record: the lessons Emma kept about itself, and the one on trial. */
   setImprovements: (value: unknown) => ipcRenderer.invoke("emma:set-improvements", value),
   listToolTargets: () => ipcRenderer.invoke("emma:list-tool-targets"),
-  /** Emma wrote a tool or skill, or installed a server: the switch list just grew. */
   onToolsChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:tools-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:tools-changed", wrapped);
   },
   setThreadContext: (value: { threadId: string; folderIds: string[]; mode: string; model: string; subagentModel?: string; subagentEffort?: string }) => ipcRenderer.invoke("emma:set-thread-context", value),
-  /** Play, pressed next to a command in a reply: it runs as a background task. */
   runCommand: (value: { command: string; folderId?: string }) => ipcRenderer.invoke("emma:run-command", value),
   listBackground: () => ipcRenderer.invoke("emma:list-background"),
   readBackground: (id: string) => ipcRenderer.invoke("emma:read-background", id),
   stopBackground: (id: string) => ipcRenderer.invoke("emma:stop-background", id),
-  /** A background command started, exited, or was stopped. */
   onBackground: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:background", wrapped);
@@ -210,7 +202,6 @@ contextBridge.exposeInMainWorld("emma", {
   stopCliRun: (id: string) => ipcRenderer.invoke("emma:stop-cli-run", id),
   installedClis: () => ipcRenderer.invoke("emma:installed-clis"),
   sendCliRun: (value: { id: string; prompt: string }) => ipcRenderer.invoke("emma:send-cli-run", value),
-  /** A CLI run started a turn, printed, or finished one. Coalesced by main. */
   onCliRuns: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:cli-runs", wrapped);
@@ -219,7 +210,10 @@ contextBridge.exposeInMainWorld("emma", {
   browserStatus: (threadId: string) => ipcRenderer.invoke("emma:browser-status", threadId),
   browserOpen: (value: { threadId: string; url: string }) => ipcRenderer.invoke("emma:browser-open", value),
   browserNav: (value: { threadId: string; action: "back" | "forward" | "reload" | "close" }) => ipcRenderer.invoke("emma:browser-nav", value),
-  browserStream: (threadId: string) => ipcRenderer.invoke("emma:browser-stream", threadId),
+  browserPlace: (value: { threadId: string; bounds: { x: number; y: number; width: number; height: number } | null }) => ipcRenderer.invoke("emma:browser-place", value),
+  browserNewTab: (value: { threadId: string; url?: string }) => ipcRenderer.invoke("emma:browser-tab-new", value),
+  browserSelectTab: (value: { threadId: string; tabId: string }) => ipcRenderer.invoke("emma:browser-tab-select", value),
+  browserCloseTab: (value: { threadId: string; tabId: string }) => ipcRenderer.invoke("emma:browser-tab-close", value),
   onBrowser: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:browser", wrapped);
@@ -258,7 +252,6 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:agents", wrapped);
     return () => ipcRenderer.removeListener("emma:agents", wrapped);
   },
-  /** Every live turn's spans, keyed by thread. */
   onSpans: (listener: (value: Record<string, unknown[]>) => void) => {
     const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object" && !Array.isArray(value)) listener(value as Record<string, unknown[]>); };
     ipcRenderer.on("emma:spans", wrapped);
