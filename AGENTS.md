@@ -31,8 +31,8 @@ owns the agent harness. Keep those boundaries visible.
 - `desktop/src`: sandboxed React views and presentation state; no Node access.
 - `crates/host`: NDJSON bridge onto the stores. It talks to no model and answers
   requests only — the app process drives every provider call.
-- `crates/core`: thread and knowledge records, validation, and atomic Markdown
-  persistence.
+- `crates/core`: thread, scheduled, and research records, validation, and atomic
+  Markdown persistence.
 - `harness`: `emma-cli`, the fork of vercel-labs/fx driven over ACP from
   `desktop/main/harness.ts`. Apache-2.0; keep `harness/FORK.md` honest.
 - `website`: separate React and Tailwind public site.

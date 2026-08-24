@@ -1,315 +1,236 @@
 # Privacy
 
-What leaves this Mac, what doesn't, and where each thing goes. Every claim here traces to a file in this repo. Where the code and the UI copy disagree, the code wins, and the disagreement gets named at the bottom of the page.
+What leaves this Mac and what does not, subsystem by subsystem. Every row traces
+to a file in this repo.
 
 ## Where data goes
 
 | Subsystem | What data | Where it goes |
 | --- | --- | --- |
-| Thread turn | Your prompt, thread history, tool results, system prompt, tool schemas | The configured chat endpoint. `https://openrouter.ai/api/v1/chat/completions` unless `EMMA_PROVIDER_CHAT_URL` says otherwise |
-| Verifier (`auto` mode) | Your request and the pending tool call | The verifier endpoint. OpenRouter by default |
-| Advisor tool | The transcript so far, up to 60,000 chars | The advisor endpoint. Off unless you set a model |
-| Vision tool | One image as a data URL, plus your question | The vision endpoint. OpenRouter by default |
-| Tagger | The top of a thread, up to 4,000 chars, plus your tag list | The tagger endpoint. OpenRouter by default |
-| Autoresearch judge | The job's output, sliced to 32 KB | The job's own proposer model |
-| Knowledge-page authoring | The captured page text, or a thread's last answer, plus your category names. A revision also sends the page's current blocks | The selected model's endpoint. OpenRouter by default; nothing at all on the local fallback |
-| Model catalog | Nothing but the HTTP request. No credential, no query text | `openrouter.ai` |
-| `web_search` | Your query string, plus a result count on Brave, Tavily and Exa | Your configured search provider. `4get.canine.tools` by default |
-| `web_fetch`, `save_page` | The URL you or the model named | That site |
-| Dictation | Recorded audio | `127.0.0.1:8080`, or macOS on-device Speech.framework. Never off this Mac |
+| Thread turn | Your prompt, thread history, tool results, system prompt, tool schemas, attached images | `EMMA_PROVIDER_CHAT_URL`, default `https://openrouter.ai/api/v1/chat/completions` |
+| Verifier (`auto` mode) | Thread title, what you asked, the pending call and its arguments | The verifier route in Settings → Models. OpenRouter by default |
+| Advisor tool | The transcript so far, up to 60 000 characters | The advisor route. Off unless you set a model |
+| Vision tool | One image as a data URL, plus the question | The vision route. OpenRouter by default |
+| Note tagger | A saved note's text, up to 6 000 characters | The tagger route. OpenRouter by default |
+| Autoresearch judge | The eval command's output | The job's own proposer model |
+| Model catalog | Nothing but the HTTP request — no credential, no query | `openrouter.ai` |
+| `web_search` | Your query string, plus a result count on Brave, Tavily and Exa | Your configured provider. `4get.canine.tools` by default |
+| `web_fetch`, page clipping | The URL you or the model named | That site |
+| Dictation | Recorded audio | `127.0.0.1:8080`, or on-device macOS Speech.framework. Never off this Mac |
 | Transcript cleanup | The raw transcript | `127.0.0.1:8081`. Never off this Mac |
 | Computer use | Screenshots, pointer and keyboard actions | Stays in Electron. The model gets text only |
 | Annotated screen context | A compressed JPEG | Stays in Electron's main process |
-| Knowledge mirror | Markdown pages | `~/Documents/Emma Knowledge` on this disk |
-| Threads, traces, jobs, plans | Markdown and JSON | `~/Library/Application Support/Emma` |
-| Provider keys | Your API keys | Keychain-encrypted on disk, plus the spawn environment of Emma's own child processes |
+| Notes you keep | Markdown and attachments | The vault folder **you** chose. Nowhere else |
+| Threads, traces, jobs, plans, memories, artifacts | Markdown and JSON | `~/Library/Application Support/Emma` (`EMMA_DATA_DIR` moves it) |
+| Provider keys | Your API keys | Keychain-encrypted on disk, plus the environment of Emma's own child processes |
+
+No telemetry, no analytics and no crash reporter exist anywhere in Emma. Grep for
+them — the only hits are `GenerationTelemetry` in
+[thread.rs](../crates/core/src/thread.rs), which is a local token count on a
+message, and never leaves the disk.
 
 ## The thread turn
 
-This sends the most, so it gets the most detail.
+This sends the most. [main.ts](../desktop/main/main.ts) catches the renderer's
+`sendMessage` and runs the turn on `emma-cli`, the Zig harness in
+[harness/](../harness) — Emma's fork of
+[vercel-labs/fx](https://github.com/vercel-labs/fx). The harness makes the HTTP
+call: [emma_openai.zig](../harness/src/gateway/emma_openai.zig) builds the body and
+posts it to `EMMA_PROVIDER_CHAT_URL`. The bearer token is
+`EMMA_PROVIDER_API_KEY`, set by [harness.ts](../desktop/main/harness.ts) from the
+stored OpenRouter key.
 
-[main.ts](../desktop/main/main.ts) catches the renderer's `sendMessage` and runs the turn on `emma-cli`, the Zig harness in [harness/](../harness). The harness makes the HTTP call. [emma_openai.zig](../harness/src/gateway/emma_openai.zig) builds the body and posts it to `EMMA_PROVIDER_CHAT_URL`, which defaults to `https://openrouter.ai/api/v1/chat/completions`. Requests carry `"stream":false` and get at most 3 retries.
+The harness runs with `cwd` set to the thread's connected folder. A thread with no
+folder gets a scratch directory under `<userData>/workspaces/<threadId>`, because
+the alternative is an agent loose in your home directory.
 
-The bearer token is `EMMA_PROVIDER_API_KEY`, set by [harness.ts](../desktop/main/harness.ts) from `process.env.OPENROUTER_API_KEY`:
+## OpenRouter, honestly
 
-```ts
-const key = this.deps.apiKey ? { AI_GATEWAY_API_KEY: this.deps.apiKey, EMMA_PROVIDER_API_KEY: this.deps.apiKey } : {};
-```
+**Prompt logging is an account-level opt-in that Emma cannot read or change.**
+Switch it on at OpenRouter and OpenRouter and the providers behind it may keep
+your prompts and Emma's replies, and train on them. Opting in is also what unlocks
+parts of the free catalog — and free routes are Emma's default path: the fallback
+chain, the verifier and the vision model are all free models. Your account setting
+sits above anything Emma sends. Check it yourself:
+<https://openrouter.ai/settings/privacy>
 
-The harness runs with `cwd` set to the thread's connected folder. A thread with no folder gets a scratch directory under `<userData>/workspaces/<threadId>`, because the alternative is an agent loose in your home directory.
+**Emma's own switch is off by default.** *Private routing* in **Settings →
+Models** (`settings.requireZeroRetention`) demands no-training, zero-retention
+endpoints and fails the turn rather than route around them. Turning it on sets
+`EMMA_OPENROUTER_ZDR` in Electron's environment and recycles the idle harnesses,
+because `emma-cli` reads the flag from its spawn environment.
 
-## Zero-retention routing
-
-**Off by default.** The switch lives in **Settings → Models**, under the heading *Private routing*, bound to `settings.requireZeroRetention`. Its label:
-
-> Require no-training, zero-retention endpoints (blocks every free model)
-
-Turning it on sets `EMMA_OPENROUTER_ZDR` in Electron's environment and recycles the idle harnesses. Turning it off deletes the variable and recycles again ([main.ts](../desktop/main/main.ts), `emma:set-zero-retention`). `emma-cli` reads the flag from its spawn environment, which is why a change has to reach the processes that are already up.
-
-### What goes on the wire
-
-With the flag set and the chat URL pointing at OpenRouter, [emma_openai.zig](../harness/src/gateway/emma_openai.zig) appends exactly this to the request body:
+With it set and the chat URL pointing at OpenRouter, `emma_openai.zig` appends
+exactly this to the request body:
 
 ```json
 "provider":{"data_collection":"deny","zdr":true}
 ```
 
-`isOpenRouter()` is a substring check for `://openrouter.ai/`. Point Emma at any other host and those keys are not sent, because they are OpenRouter's own routing vocabulary and mean nothing anywhere else.
+`isOpenRouter()` is a substring check for `://openrouter.ai/`; point Emma anywhere
+else and the keys are not sent, because they are OpenRouter's own vocabulary.
 
-That is the only place in Emma these flags are built. A Zig sidecar used to keep a second copy of this logic; the sidecar is gone and so is the copy.
+**What it does not cover.** The flag rides the harness request body only. Electron
+main's own provider calls — verifier, vision, advisor, note tagger — post a plain
+OpenAI-compatible body from [verifier.ts](../desktop/main/verifier.ts) with no
+`provider` object on it. Nor does it touch your account settings. And no free
+endpoint qualifies, so every free model fails while it is on — which is why it
+ships off.
 
-### What the toggle does not cover
+There is no privacy warning when you pick a free model. The catalog shows a
+`Free`/`Paid` badge and a "Free only" filter; that is all. The free router chain
+leaves out stealth and cloaked routes, whose vendor is unnamed and whose prompts
+are logged for training — a hardcoded list, not a runtime check.
 
-The flags ride the harness's request body, so they cover every turn and nothing else. Electron main's own provider calls — the verifier, tagger, vision, advisor, and knowledge-page authoring — post a plain OpenAI-compatible body from [verifier.ts](../desktop/main/verifier.ts) and [knowledge-author.ts](../desktop/main/knowledge-author.ts) with no `provider` object on it. Zero-retention routing does not apply to them. Point them at a local profile if that matters to you; [models.md](models.md) has the settings.
+## Web search and fetching
 
-### What the flags do
+[web-search.ts](../desktop/main/web-search.ts) sends your query to one of five back
+ends, your choice in Settings → Tools.
 
-`data_collection: "deny"` tells OpenRouter not to route your request to any upstream provider that might collect the prompt. `zdr: true` demands a zero-data-retention endpoint. If OpenRouter cannot satisfy that, the request **fails** instead of quietly falling through to a provider that might keep your prompt. The failure is the feature.
+| Provider | Endpoint | Credential |
+| --- | --- | --- |
+| 4get (default) | `https://4get.canine.tools` | none |
+| SearXNG | `http://127.0.0.1:8888` | none |
+| Brave | `https://api.search.brave.com` | `BRAVE_SEARCH_API_KEY` |
+| Tavily | `https://api.tavily.com` | `TAVILY_API_KEY` |
+| Exa | `https://api.exa.ai` | `EXA_API_KEY` |
 
-### Why it is off by default
+Every request is `credentials: "omit"` with a 20-second timeout, so no cookie or
+stored auth rides along. Results are cached in memory for 10 minutes, at most 64
+entries. Search endpoints deliberately skip `publicUrl`, because the endpoint is
+your own setting and a self-hosted SearXNG lives on `127.0.0.1` — exactly the
+address a model-supplied URL must be refused.
 
-From [settings.ts](../desktop/shared/settings.ts), on `requireZeroRetention: false`:
+Two URL validators in [ipc.ts](../desktop/main/ipc.ts): `externalUrl` for links
+*you* clicked, and `publicUrl` for any URL the *model* supplied. `publicUrl` blocks
+`localhost`, `.localhost`, `.local`, `.internal`, and `0.x`, `10.x`, `127.x`,
+`169.254.x`, `172.16–31.x`, `192.168.x`, `100.64–127.x`, `255.x`, plus `::1`,
+`::`, `fc/fd` and `fe8/fe9/fea/feb`. Your router, your Ollama and your dev server
+stay off limits however the model asks.
 
-> OpenRouter has no free zero-retention endpoint, so requiring it would block the whole free catalog.
-
-The Settings copy says the same thing: leave it off unless you route to a paid or local model.
-
-### What it does not cover
-
-Your OpenRouter account settings. Account-level logging and product-improvement toggles live on OpenRouter, not in Emma, and they still apply. **Settings → Data & privacy** links straight there:
-
-<https://openrouter.ai/settings/privacy>
-
-One more limit worth knowing: the free router chain leaves out stealth and cloaked routes, because their vendor is unnamed and their prompts are logged for training. That is a hardcoded list, not a runtime check.
-
-## Free models
-
-There is **no privacy warning when you pick a free model**. The catalog shows a `Free` or `Paid` badge per row and offers a "Free only" filter, and the *Private routing* section warns that turning it on blocks every free model. That is all of it. If you are looking for a per-model consent dialog, it is not in this code.
-
-`free` in the catalog means both `pricing.prompt` and `pricing.completion` parse to exactly `0` ([catalog.ts](../desktop/main/catalog.ts)). The renderer's own check is a suffix test: `idOrKey.endsWith(":free")`.
-
-## The model catalog
-
-Browsing models sends nothing about you. [catalog.ts](../desktop/main/catalog.ts) fetches:
-
-```
-https://openrouter.ai/api/v1/models?supported_parameters=tools&sort=most-popular
-```
-
-No credential, no body. The listing is public, and `fetchOpenRouterCatalog` is a plain `fetch` with a timeout. The response is cached at `<userData>/openrouter-catalog.json`, mode `0o600`, and a failed fetch returns the cached list with `stale: true` instead of an error page.
-
-[seed-catalog.mjs](../desktop/scripts/seed-catalog.mjs) does the same fetch at build time to regenerate [catalog-seed.ts](../desktop/main/catalog-seed.ts), the 332 rows compiled into the app so a first launch with no network still has a picker.
-
-## Web search
-
-[web-search.ts](../desktop/main/web-search.ts) sends your query string to one of five back ends. Which one is your choice in **Settings → Tools**.
-
-| Provider | Endpoint | Credential | Header |
-| --- | --- | --- | --- |
-| 4get (default) | `https://4get.canine.tools` → `/api/v1/web?s=<query>` | none | none |
-| SearXNG | `http://127.0.0.1:8888` → `/search?q=&format=json` | none | none |
-| Brave | `https://api.search.brave.com` → `/res/v1/web/search` | `BRAVE_SEARCH_API_KEY` | `X-Subscription-Token` |
-| Tavily | `https://api.tavily.com` → `/search` | `TAVILY_API_KEY` | `Authorization: Bearer` |
-| Exa | `https://api.exa.ai` → `/search` | `EXA_API_KEY` | `x-api-key` |
-
-Every request goes out as `net.fetch(url, { credentials: "omit", ... })` with a 20-second timeout, so no cookie or stored auth rides along with your query.
-
-4get gets one retry, and only at a different host: `https://search.yonderly.org`. Every other provider is one host by definition, and its failures are your endpoint or your key, which retrying cannot fix.
-
-Results are cached in memory for 10 minutes, at most 64 entries, keyed on provider, endpoint, limit and query. 4get's terms ask callers to cache rather than re-ask. Snippets get truncated to 300 characters, titles to 200, URLs to 2048.
-
-Search endpoints deliberately **skip** `publicUrl`. The endpoint is your own setting, and a self-hosted SearXNG lives on `127.0.0.1` — exactly the address `web_fetch` has to refuse when the *model* names it.
-
-## Web fetch and page clipping
-
-`web_fetch` and `save_page` reach whatever URL they are handed, so both are guarded against being aimed at your own network.
-
-Two validators in [ipc.ts](../desktop/main/ipc.ts):
-
-- **`externalUrl`** — any `http:`/`https:` URL. Used for links *you* clicked, which open in your system browser.
-- **`publicUrl`** — everything `externalUrl` accepts, minus anything private. Used for any URL the *model* supplied.
-
-`publicUrl` blocks `localhost`, `.localhost`, `.local`, `.internal`, and the ranges `0.x`, `10.x`, `127.x`, `169.254.x`, `172.16–31.x`, `192.168.x`, `100.64–127.x`, `255.x`, plus `::1`, `::`, `fc/fd` and `fe8/fe9/fea/feb`. Your router, your Ollama and your dev server stay off limits however the model asks.
-
-[clip.ts](../desktop/main/clip.ts) does the fetching, with `redirect: "manual"` and at most 5 hops. The guard runs again on **every hop**, so a public URL cannot bounce into your LAN. Requests are `credentials: "omit"` with a 20-second timeout, the content type must match `^\s*(text\/|application\/(xhtml|xml|json))`, and the body is capped at `MAX_FETCHED_PAGE_BYTES` (2 MiB) with text truncated to `MAX_FETCHED_TEXT_CHARS` (50 KiB).
-
-Fetched page text comes back to the model with a line in front of it saying it is information, not instructions. Search results carry the same warning.
+[clip.ts](../desktop/main/clip.ts) fetches with `redirect: "manual"` and at most 5
+hops, re-running the guard on **every hop**, so a public URL cannot bounce into
+your LAN. `credentials: "omit"`, 20-second timeout, content type must match
+`^\s*(text\/|application\/(xhtml|xml|json))`, body capped at
+`MAX_FETCHED_PAGE_BYTES`. Fetched page text and search results reach the model
+behind a line saying they are information, not instructions.
 
 ## Dictation
 
-Every stage of dictation runs on this Mac, and main enforces that rather than trusting the setting.
+Every stage runs on this Mac, and main enforces that rather than trusting the
+setting.
 
-Audio is recorded in the renderer, the one window granted a microphone. Two engines:
+- **macOS Speech.framework** — [transcribe.m](../desktop/native/transcribe.m) sets
+  `request.requiresOnDeviceRecognition = YES;`, Apple's switch for refusing
+  server-side recognition.
+- **A local `llama.cpp` server** — `http://127.0.0.1:8080/v1/audio/transcriptions`.
+  Optional cleanup at `http://127.0.0.1:8081/v1/chat/completions`.
 
-- **macOS Speech.framework** — [transcribe.m](../desktop/native/transcribe.m) sets `request.requiresOnDeviceRecognition = YES;`, which is Apple's switch for refusing server-side recognition.
-- **A local `llama.cpp` server** — `ggml-org/Qwen3-ASR-0.6B-GGUF` at `http://127.0.0.1:8080/v1/audio/transcriptions`.
+Checked at **two boundaries**. `validateSettings` refuses to *save* a non-local
+transcription or cleanup endpoint, and [voice.ts](../desktop/main/voice.ts) resolves
+every endpoint through `localEndpoint()` again *before use* — so a settings file
+edited by hand still cannot redirect your voice. `localEndpoint()` accepts `http:`
+or `https:` on `localhost`, `127.0.0.1` or `[::1]`, and nothing else. Cleanup that
+cannot run returns the raw transcript rather than sending it elsewhere.
 
-Optional cleanup runs `superwhisper/s1-mini-GGUF` at `http://127.0.0.1:8081/v1/chat/completions`.
+Audio never touches durable storage: a temp WAV under
+`mkdtemp(tmpdir(), "emma-voice-")` at mode `0o600`, removed in a `finally`.
+`MAX_UTTERANCE_BYTES` is 12 MiB. See [voice.md](voice.md).
 
-### How the enforcement works
+## Screens
 
-[voice.ts](../desktop/main/voice.ts) resolves every endpoint through `localEndpoint()` before it will use it:
+**Screens do not reach the model.** Three image paths, three destinations.
 
-```ts
-const endpoint = localEndpoint(settings.transcriptionEndpoint);
-if (!endpoint) throw new Error("The speech-to-text endpoint must be a local address.");
-```
+- **The `vision` tool** — the deliberate exception. It posts one image to the
+  configured vision endpoint and hands back words. A `url` argument goes through
+  `publicUrl`; a `path` argument must be inside a connected folder. Advertised to
+  the model as `look_at_image`.
+- **Computer-use screenshots** — captured with `desktopCapturer`, compressed, and
+  used inside Electron to map coordinates. The `computer` tool result is a text
+  string; `_emma/callTool` has no image channel. See
+  [computer-use.md](computer-use.md).
+- **The yellow pen's annotated capture** — compressed into `ScreenContextStore`
+  and put on `request.params.screenContext`, but `runOnHarness` reads only
+  `skillContext` and `attachedImages` off `turn.params`. The frame is dropped
+  before the turn goes out.
 
-Cleanup does the same, and hands back the raw transcript rather than sending it anywhere else:
-
-```ts
-const endpoint = localEndpoint(settings.voiceCleanupEndpoint);
-if (!... || !endpoint) return raw;
-```
-
-`localEndpoint()` in [settings.ts](../desktop/shared/settings.ts) accepts `http:` or `https:` on `localhost`, `127.0.0.1` or `[::1]`, and nothing else.
-
-This gets checked twice. `validateSettings` refuses to *save* a non-local transcription or cleanup endpoint — *"The transcript cleanup endpoint must be local"* — and [voice.ts](../desktop/main/voice.ts) checks again at use time. So a settings file edited by hand still cannot redirect your voice.
-
-Audio never touches durable storage. The utterance goes into a temp WAV under `mkdtemp(tmpdir(), "emma-voice-")` at mode `0o600` and is removed in a `finally` block. `MAX_UTTERANCE_BYTES` is 12 MiB. Timeouts: probe 1.5 s, transcribe 120 s, cleanup 20 s, authorize 60 s.
-
-Full setup in [voice.md](voice.md).
-
-## Vision and screenshots
-
-Three image paths, three different destinations.
-
-**The `vision` tool.** This one *does* send an image to a model. That is the whole job. [vision.ts](../desktop/main/vision.ts) posts an `image_url` data URL to the configured vision endpoint, `https://openrouter.ai/api/v1/chat/completions` by default, with a 60-second timeout and 1024 max tokens. A URL argument goes through `publicUrl`, not `externalUrl`, because the URL came from the model. A path argument has to be inside a connected folder.
-
-**Computer-use screenshots.** Captured with `desktopCapturer`, compressed to JPEG at quality 82, and used inside Electron to map coordinates. On this branch the `computer` tool returns **text only** to the model. The frame is never attached to a turn. The tool's own reply string still says *"The image is attached to this message"*, which is stale.
-
-**Annotated screen context.** The yellow pen captures and compresses a screen image locally into `ScreenContextStore`. `sendMessage` claims it and puts it on `request.params.screenContext`, but `runOnHarness` reads only `skillContext` off `turn.params`:
-
-```ts
-skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
-```
-
-So on this branch the annotated frame never leaves the main process. Compressed frames are capped at `MAX_SCREEN_CONTEXT_CHARS` and checked as valid JPEG data URLs before they are stored at all.
-
-## Computer use
-
-**There is no YOLO toggle.** No such setting exists anywhere in this code. What decides whether the pointer moves is the composer's permission mode, from [permissions.ts](../desktop/shared/permissions.ts):
-
-```ts
-computer: { ask: "ask", acceptEdits: "ask", full: "auto" }
-```
-
-`auto` maps onto the `ask` column, with the question going to your verifier model instead of to you. So: *Ask* and *Accept edits* stop for your yes on every call, *Auto* asks the verifier, and *Full access* lets it through.
-
-[computer.ts](../desktop/main/computer.ts) says the same thing from the other side: "`computer` is `ask` in every mode but `full`, so by the time a call reaches here the user has already said yes."
-
-Every other guard applies in every mode, with no way to turn it off:
-
-| Ceiling | Value |
-| --- | --- |
-| `MAX_RUN_STEPS` | 20 |
-| `MAX_RUN_ACTIONS` | 400 |
-| `MIN_ACTION_INTERVAL_MS` | 40 |
-| `MAX_RUN_MS` | 600,000 (10 minutes) |
-| `HELPER_TIMEOUT_MS` | 5,000 |
-| `MAX_KEY_REPEAT` | 32 |
-
-Every action is logged as it happens:
-
-```
-Emma computer action 37/400: left_click
-```
-
-The on-screen run banner appears whenever a run is live, and Escape is registered as a global shortcut for exactly as long as one is:
-
-```ts
-globalShortcut.register("Escape", () => { computerRuntime?.abort("stopped by the user"); closeRunBanner(); });
-```
-
-The runtime also aborts when the turn ends, when you stop it, and on app quit. More in [computer-use.md](computer-use.md).
+Images **you** attach to a message do go to the model — `attachedImages` becomes
+image blocks on the turn ([harness.ts](../desktop/main/harness.ts)).
 
 ## Credentials
 
-A key you paste is encrypted with the macOS keychain through Electron's `safeStorage`, base64-encoded, and written to `<userData>/credentials.json`. The write goes to a `.tmp` file at mode `0o600` inside a directory created `0o700`, then renamed into place ([credentials.ts](../desktop/main/credentials.ts)).
+A key you paste is encrypted through Electron's `safeStorage` (macOS keychain),
+base64-encoded, and written to `<userData>/credentials.json` — a `.tmp` file at
+mode `0o600` in a directory created `0o700`, renamed into place
+([credentials.ts](../desktop/main/credentials.ts)). If the keychain is
+unavailable, `save()` throws rather than settle for something weaker.
 
-If the keychain is unavailable, `save()` throws instead of settling for something weaker:
+`applyToEnv(process.env)` decrypts onto Electron's environment, which `emma-cli`
+inherits. The Rust host inherits it too but reads no key: nothing in Rust makes a
+network request. **The renderer never receives a key** — `list()` returns
+`{ env, masked }`, and `maskSecret` gives six characters, ten bullets, and four.
 
-> This Mac's keychain is unavailable, so Emma will not store a key in plain text.
-
-`applyToEnv(process.env)` decrypts the secrets onto Electron's environment. `emma-cli` inherits that environment when it is spawned. The Rust host inherits it too, but reads no key out of it: nothing in Rust makes a network request. **The renderer never receives a key.** `list()` returns `{ env, masked }`, and `maskSecret` gives the first 6 characters, ten bullets, and the last 4.
-
-The second models follow the same rule. They read `process.env[settings.credentialEnv]`, so a settings object carries the *name* of a variable and never a secret. Same for `web_search`: main reads the key and passes in just that one value, so it never travels through settings or the renderer. Knowledge-page authoring reads its key the same way, per call, so a key pasted mid-session is live at once. Full table in [models.md](models.md).
+Second models store the *name* of an environment variable, never a secret; main
+reads `process.env[settings.credentialEnv]` per call. Same for `web_search`.
 
 ## Renderer hardening
 
-Every Emma window is built by `secureWindow()` in [main.ts](../desktop/main/main.ts):
+Every window is built by `secureWindow()`: `nodeIntegration: false`,
+`contextIsolation: true`, `sandbox: true`, `webSecurity: true`.
 
-```ts
-webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
-```
+**Navigation.** `will-navigate` is prevented for any URL that differs from the
+current one. `setWindowOpenHandler` denies everything; a URL that passes
+`externalUrl` goes to `shell.openExternal`, so an ordinary link opens in your
+browser instead of inside Emma.
 
-**Navigation.** `will-navigate` is prevented for any URL that differs from the current one. `setWindowOpenHandler` returns `{ action: "deny" }` for everything. If the URL passes `externalUrl` it goes to `shell.openExternal` first, so an ordinary link opens in your browser instead of inside Emma.
+**Electron permissions.** Both handlers run through `pageMayAsk`: the request must
+come from one of Emma's own windows, and only `clipboard-sanitized-write` and
+audio-only `media` are ever granted. Camera, geolocation, notifications, clipboard
+*read*, MIDI, USB and HID are denied.
 
-**Electron permissions.** Both `setPermissionCheckHandler` and `setPermissionRequestHandler` run through one function:
-
-```ts
-function microphoneOnly(contents, permission, kinds) {
-  return permission === "media" && kinds.length > 0 && kinds.every((kind) => kind === "audio") && ownWindow(contents);
-}
-```
-
-Audio media, from one of Emma's own windows, is the only thing ever granted. Camera, geolocation, notifications, clipboard read, MIDI, USB, HID and everything else get denied.
-
-**Content Security Policy**, from [index.html](../desktop/index.html):
+**CSP**, from [index.html](../desktop/index.html):
 
 ```
-default-src 'self';
-script-src 'self' emma-artifact:;
-style-src 'self' 'unsafe-inline';
-font-src 'self' data:;
-img-src 'self' data:;
+default-src 'self'; script-src 'self' emma-artifact:; style-src 'self' 'unsafe-inline';
+font-src 'self' data:; img-src 'self' data:;
 connect-src 'self' emma-artifact: ws://127.0.0.1:* ws://localhost:*;
-frame-src 'self' emma-artifact:;
-object-src 'none';
-base-uri 'none';
-form-action 'none'
+frame-src 'self' emma-artifact: emma-visual:;
+object-src 'none'; base-uri 'none'; form-action 'none'
 ```
 
-Look at `connect-src`: no remote origin in it. The renderer cannot open a socket to the internet. Every network call goes through main, which is exactly why every guard above can be enforced in one place. The only sockets the renderer can open are loopback WebSockets, for the dev server.
+`connect-src` has no remote origin: the renderer cannot open a socket to the
+internet. Every network call goes through main, which is why every guard above can
+be enforced in one place.
 
-**Single instance.** `app.requestSingleInstanceLock()` runs before the app is ready. A second launch quits and raises the first window instead. One process, one lock on the data directory.
-
-The architecture behind all of this is in [architecture.md](architecture.md).
+**Single instance.** `app.requestSingleInstanceLock()` runs before the app is
+ready; a second launch quits and raises the first window.
 
 ## What never leaves this Mac
 
-Checked in the code, not aspirational:
+- **Recorded audio and raw transcripts.** Forced local at two boundaries.
+- **Your API keys.** Encrypted at rest, mirrored only into Emma's own child
+  processes, masked before the renderer sees them.
+- **Screens.** Computer-use frames and the annotated capture both stay in the main
+  process. `vision` is the one exception, and only for the image you name.
+- **Your notes.** `keep` writes plain Markdown into the vault folder you chose and
+  nowhere else. There is no second copy and no mirror. Nothing saves silently: a
+  note is written only when you ask for one.
+- **Threads, plans, traces, memories, artifacts, skills, tools.** Markdown and JSON
+  under `~/Library/Application Support/Emma`, moved by `EMMA_DATA_DIR`.
+- **Anything at all, until you send a turn.** The CSP has no remote `connect-src`,
+  and the catalog fetch carries no credential and no query.
 
-- **Recorded audio.** Both engines are forced local at two separate boundaries. See above.
-- **Raw transcripts.** Cleanup is local-only or skipped.
-- **Your API keys.** Encrypted at rest, mirrored only into the environment of Emma's own child processes, masked before the renderer sees them.
-- **Computer-use screenshots.** Text-only tool results on this branch.
-- **Annotated screen context.** Captured, then dropped before the turn.
-- **Threads, knowledge, plans, traces, memories, artifacts, skills, tools.** Markdown and JSON under `~/Library/Application Support/Emma`, with the Markdown mirror at `~/Documents/Emma Knowledge`. `EMMA_DATA_DIR` and `EMMA_KNOWLEDGE_DIR` move them, and an empty `EMMA_KNOWLEDGE_DIR` turns the mirror off entirely.
-- **Anything at all, until you send a turn.** The renderer's CSP has no remote `connect-src`, and the catalog fetch carries no credential and no query.
-
-Nothing about your usage is reported anywhere. No telemetry endpoint, no analytics key, no crash reporter in this codebase.
-
-**Start fresh** in **Settings → Data & privacy** deletes every thread, knowledge page, artifact, plan, connected folder, saved key and setting on this Mac, then restarts Emma empty. The Markdown mirror in your Documents folder stays where it is. It cannot be undone.
-
-## Where the UI overstates the code
-
-Listed here because a privacy doc that hides its own inaccuracies is worthless.
-
-| Claim | Where | What the code does |
-| --- | --- | --- |
-| "Selected-model turns request no provider data collection and zero retention" | Settings → Data & privacy | Only when `requireZeroRetention` is on, which is off by default. Reads as unconditional. It is not. |
-| "Emma answers with its deterministic local reply rather than quietly routing your turn to a different model" | Settings → Models, *Automatic fallback* | True of a knowledge page, which really is authored locally. Not true of a thread turn: a `fallback` key lands on the harness's `default_model` over the network. |
-| "The image is attached to this message" | `computer` tool result | It is not. The `computer` tool returns text only. |
+**Reset Emma**, in **Settings → Data & privacy**, deletes every thread, artifact,
+plan, connected folder, saved key and setting on this Mac, then restarts Emma
+empty. The notes in your vault are left where they are — they are your files, in
+your folder. It cannot be undone.
 
 ## See also
 
-- [models.md](models.md) — providers, keys, the catalog, model selection
-- [permissions.md](permissions.md) — the four modes and the gate table
+- [permissions.md](permissions.md) — the four modes and the gate matrix
 - [computer-use.md](computer-use.md) — the pointer, the ceilings, the kill switch
-- [voice.md](voice.md) — local dictation setup
-- [architecture.md](architecture.md) — process boundaries and the IPC surface
 - [tools.md](tools.md) — every tool and what it can reach
+- [models.md](models.md) — providers, keys, the catalog, the second models
+- [voice.md](voice.md) — local dictation setup
 - [data.md](data.md) — what is on disk and where
-- [knowledge.md](knowledge.md) — the Markdown mirror
-- [development.md](development.md) — running Emma from source
+- [architecture.md](architecture.md) — process boundaries and the IPC surface

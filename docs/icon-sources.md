@@ -1,47 +1,74 @@
-# Integration icon sources
+# Icon sources
 
-Emma uses neutral monograms by default. Vendor marks are bundled only when an
-official kit or a pinned, attributable Simple Icons revision supports the
-intended product-reference use; repository code licenses do not automatically
-license trademarks.
+Every vendor mark Emma ships, and the terms it came under. Files live in
+`desktop/assets/brands/`; the registry that pins each one is
+[`desktop/src/brands.ts`](../desktop/src/brands.ts). Nothing is fetched at
+runtime and no icon package is installed. Retrieved 2026-08-20.
 
-Official sources reviewed on 2026-08-20:
+A CC0 or MIT icon package licenses the packaging, not the trademark. Marks are
+normalised onto a 24-unit grid and recoloured `#fff` (or kept at the brand
+colour where the mark has one); do not redraw, distort, or combine them with
+Emma branding, and keep the accessible product label beside every image.
 
-- [OpenAI brand](https://openai.com/brand/)
-- [Anthropic brand assets](https://brandfolder.com/anthropic/)
-- [Claude product icon](https://claude.ai/images/claude_app_icon.png)
-- [Cursor brand kit](https://cursor.com/brand)
-- [Windsurf brand](https://windsurf.com/brand)
-- [Google Antigravity press assets](https://antigravity.google/press?app=antigravity)
-- [Google Press Corner](https://blog.google/intl/en-ie/press/)
-- [Pi coding-agent press kit](https://pi.dev/press-kit)
-- [Pi coding-agent favicon](https://pi.dev/favicon.svg)
-- [OpenCode brand](https://opencode.ai/brand)
-- [OpenRouter brand refresh](https://openrouter.ai/blog/announcements/brand-refresh/)
-- [OpenRouter Team logo demo](https://openrouterteam.github.io/sign-in-with-openrouter/)
-- [xAI brand guidelines](https://x.ai/legal/brand-guidelines)
-- [Mistral brand kit](https://mistral.ai/brand/)
-- [Microsoft trademark guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks)
-- [Google Brand Resource Center](https://about.google/intl/us_en/brand-resource-center/)
-- [Kimi brand guidelines](https://moonshotai.github.io/Branding-Guide/)
-- [NAVER HyperCLOVA branding](https://guide.ncloud-docs.com/docs/en/clovastudio-brand-guideline)
-- [LINE icon guidelines](https://www.line.me/ja/logo)
-- [Kakao design resources](https://developers.kakao.com/tool/resource/developers)
-- [Preferred Networks logo manual](https://www.preferred.jp/ja/company/logo)
-- [Tencent media resources](https://www.tencent.com/newsroom/media-resources/)
-- [DeepSeek official SVG](https://github.com/deepseek-ai/DeepSeek-VL/blob/main/images/logo.svg)
-- [Qwen official repository](https://github.com/QwenLM/Qwen)
-- [Simple Icons repository and license](https://github.com/simple-icons/simple-icons)
+## Official brand kits
 
-The initial local bundle is documented in
-[`desktop/assets/BRANDS-NOTICES.md`](../desktop/assets/BRANDS-NOTICES.md). It
-uses the exact official OpenAI, Claude, Gemini, Pi, OpenRouter, and Google
-Antigravity assets where available, plus pinned Simple Icons revisions for
-compact vectors. The files are shipped locally; no runtime icon CDN or icon
-package is loaded.
+| File | Source | Terms |
+| --- | --- | --- |
+| `openai.svg` | [OpenAI 2025 Blossom asset](https://images.ctfassets.net/kftzwdyauwt9/3hUGLn3ypllZ0oa01qOYVq/28e8188e6f11b84c3e876569d492734f/Blossom_Light.svg?q=90&w=3840), from the [OpenAI brand page](https://openai.com/brand/) | Official; blossom lifted from the construction sheet, recoloured `#fff` |
+| `antigravity.png` | [Google Antigravity press assets](https://www.antigravity.google/press) | Official press asset; identifies the product only |
+| `gemini.png` | [Google Press Corner Spark icon](https://storage.googleapis.com/gweb-uniblog-publish-prod/images/Gemini_SparkIcon_4C.original.png) | Official; identifies Gemini only |
+| `pi.svg` | [Pi favicon](https://pi.dev/favicon.svg), via the [Pi press kit](https://pi.dev/press-kit) | Official badge; tile dropped, glyph kept white |
+| `openrouter.svg` | [OpenRouter v2 brand asset](https://openrouter.ai/brand/v2/openrouter-dark.svg) | Official; glyph lifted from the lockup, brand `#C8FF00` kept |
 
-Cognition/Devin, Cohere, xAI, Aleph Alpha, Stability AI, Baidu ERNIE, Doubao,
-Zhipu, SenseTime, Huawei Pangu, and Sakana AI did not expose a clearly reusable
-public product-icon kit that could be retrieved and bundled during review.
-Keep neutral marks for those integrations until the owner supplies permission
-and an official asset.
+## Simple Icons — CC0 1.0
+
+[simple-icons/simple-icons](https://github.com/simple-icons/simple-icons), each
+pinned to a commit. Full hashes are in `desktop/src/brands.ts`; the raw URL is
+`raw.githubusercontent.com/simple-icons/simple-icons/<commit>/icons/<file>.svg`.
+
+| File | Commit | | File | Commit |
+| --- | --- | --- | --- | --- |
+| `anthropic.svg` | `ec4aa60` | | `naver.svg` | `77f4c6a` |
+| `meta.svg` | `a25b159` | | `obsidian.svg` | `c956d67` |
+| `cursor.svg` | `be23679` | | `github.svg` | `c956d67` |
+| `windsurf.svg` | `513d314` | | `gitlab.svg` | `c956d67` |
+| `opencode.svg` | `3237c86` | | `jira.svg` | `c956d67` |
+| `mistralai.svg` | `2a0db0d` | | `todoist.svg` | `c956d67` |
+| `deepseek.svg` | `8f56a0b` | | `xiaomi.svg` | `34c2250` |
+| `qwen.svg` | `6e41e4e` | | `kimi.svg` | `c53db56` |
+| `nvidia.svg` | `521c96f` | | | |
+
+`anthropic.svg` is also the Claude importer's mark.
+
+## Lobe Icons — MIT
+
+[lobehub/lobe-icons](https://github.com/lobehub/lobe-icons), for providers with
+no reusable official kit. Source URL is
+`raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/<file>.svg`.
+
+| File | Owner |
+| --- | --- |
+| `xai.svg` | xAI |
+| `zai.svg` | Z.ai |
+| `minimax.svg` | MiniMax |
+| `cohere.svg` | Cohere |
+| `liquid.svg` | Liquid AI |
+| `poolside.svg` | poolside |
+| `bytedance.svg` | ByteDance |
+
+## Elsewhere in the UI
+
+| Where | Source | Terms |
+| --- | --- | --- |
+| `desktop/assets/filetypes/*.svg` | Simple Icons where a language owns a mark; otherwise drawn on the same 24-unit grid | CC0 1.0 / original |
+| Nav footer gear | Lucide's [`settings`](https://lucide.dev/icons/settings) path, copied into `NavIcon`; no package installed | ISC |
+| `emma.webp`, `emma-blink.webp` | Emma's own art | — |
+
+## No mark bundled
+
+These use Emma's neutral monogram fallback because no clearly reusable public
+product-icon kit was found: Devin (Cognition), Thinking Machines, ERNIE
+(Baidu), Hunyuan (Tencent), Sakana AI. Keep the fallback until the owner
+supplies an official asset.
+
+Wider licensing is in [credits.md](credits.md).

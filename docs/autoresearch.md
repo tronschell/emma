@@ -1,195 +1,136 @@
 # Autoresearch
 
-An autoresearch job is a long-running experiment loop against a project folder on
-this Mac. It is loosely [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
-generalised: the agent proposes one change, Emma measures the metric, the change
-is kept if the metric improved and reverted if it did not, and the loop repeats
-until a budget runs out or the user pauses it.
+A long-running experiment loop against a git project on this Mac. The agent
+proposes one change, Emma measures the metric, the change is kept if the number
+improved and reverted if it did not, and the loop repeats until a budget runs out
+or you pause it.
 
-The one rule that separates it from a scheduled task: **the metric never
-changes**. Everything else about a job — the command, the model, the budgets, the
-title — can be edited while it runs. Changing what you are optimising for makes
-every earlier iteration meaningless, so it is refused; make a new job instead.
+The idea is [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+generalised — `results.tsv`, the keep/revert rule and the crash handling are its
+conventions.
 
-## Anatomy
+**The metric never changes.** `metricName`, `metricKind`, `direction` and
+`projectDir` are fixed the moment a job is saved (the judge rubric is kept too);
+everything else — title, eval command, brief, model, mode, budgets — can be
+edited while it runs. Re-saving with a different metric is refused: *"an
+autoresearch metric cannot be changed — create a new job for a different
+metric"*.
 
 ```
-job = project folder + metric + eval command + brief + proposer model + budgets
-iteration = one agent turn → run the eval command → read the metric → keep or revert
+job       = git project + metric + eval command + brief + proposer model + budgets
+iteration = one agent turn → git commit → run the eval → read the metric → keep or revert
 ```
 
-The project folder must be a git repository. Keeping and reverting is
-`git commit` and `git reset --hard`, which is the smallest reliable undo for
-"the agent changed some files and the result got worse".
+Keeping and reverting is `git commit` and `git reset --hard`, so the project must
+be a git repository with at least one commit. If it is not, the job pauses with
+the `git init` / first-commit instruction instead of starting.
 
-### The metric
-
-Two kinds, chosen when the job is created. The creation flow — the form and
-Emma's own `autoresearch` tool — must ask which one and show these examples.
+## The metric
 
 | Kind | How the number is read | Example |
-|---|---|---|
-| `grep` | Emma runs the eval command and greps `^<metricName>:` out of its output | eval `uv run train.py 2>&1`, metric `val_bpb`, the run prints `val_bpb: 0.997900` |
-| `judge` | Emma runs the eval command, then a model scores its output against a rubric and returns one number | eval `npm test -- --reporter=json`, rubric "score 0-100: how many suites pass and how readable is the failure output" |
+| --- | --- | --- |
+| `grep` | Emma runs the eval command and takes the **last** `^<metricName>:` line out of its output, up to the number and no further | eval `uv run train.py 2>&1`, metric `val_bpb`, the run prints `val_bpb: 0.997900` |
+| `judge` | Emma runs the eval command, then a model scores the output (first 32 KB) against the job's rubric on a thread of its own; the first number in the answer wins | eval `npm test`, rubric "score 0-100: how many suites pass and how readable is the failure output" |
 
-`direction` is `lower` or `higher` and says which way is better. Both are part of
-the immutable metric.
+`direction` is `lower` or `higher`. A `grep` job takes no rubric and a `judge`
+job requires one. The judge runs on `job.proposerModel` — the same model that
+proposes — in `mode: "ask"`.
 
-### Budgets
+## Budgets
 
-Three, each optional (`0` means no limit), each checked before every iteration:
+Three, all in [research.rs](../crates/core/src/research.rs), each checked before
+every iteration, each `0` for no limit. The form defaults to 6 hours, 2,000,000
+tokens and $5.
 
-- `maxSeconds` — iteration time summed across every run of the job, not per
-  iteration. Time the job spends paused does not count against it: the budget is
-  for work done, not for how long the job has existed.
-- `maxTokens` — input + output tokens summed over every iteration
-- `maxMicroDollars` — estimated spend, `tokens × the model's OpenRouter price`
-  from the cached catalog (`promptMicroUsdPerMtok`, `completionMicroUsdPerMtok`,
-  micro-dollars per million tokens). A model whose price OpenRouter never
-  published prices at zero, so the job still runs — it just cannot be stopped by
-  the spend budget.
+| Field | Counts | Note |
+| --- | --- | --- |
+| `maxSeconds` | Iteration time summed over every run of the job | Paused time does not count — the budget is for work done |
+| `maxTokens` | Input + output tokens summed over every iteration | |
+| `maxMicroDollars` | Estimated spend, `$1 = 1_000_000` | `tokens × the model's OpenRouter price` from the cached catalog (`promptMicroUsdPerMtok`, `completionMicroUsdPerMtok`). An unpublished price reads as 0, so the job runs but cannot be stopped by spend |
 
-Hitting any of them **pauses** the job with a note saying which one. Raising the
-budget and pressing play resumes it — nothing is lost, because everything is on
-disk.
+Each has a matching `spentSeconds` / `spentTokens` / `spentMicroDollars`, which
+core adds up — the app reports what happened, never the running totals. Hitting a
+budget **pauses** the job with a note naming which one; raise it, press start,
+and it carries on from disk.
 
-## Layers
+Other ceilings: `MAX_RESEARCH_ITERATIONS` 1000, `MAX_EVAL_MS` 15 minutes per eval
+run, iteration note 280 characters, brief 8192, eval command and rubric 4096,
+project folder 1024 (absolute, no `..`), metric name 64, title 128, model id 256,
+status note 512. Statuses are `running`, `paused`, `finished`, `failed`. A new
+job is created `paused`: saving does not start it, you press start.
 
-| Layer | Owns |
-|---|---|
-| `crates/core/src/research.rs` | the durable job + its iterations, Markdown round-trip, the immutable-metric rule |
-| `crates/core/src/live.rs`, `crates/host/src/main.rs` | CRUD commands, `snapshot.researchJobs` |
-| `desktop/main/research.ts` | the loop: drive a turn, run the command, read the metric, keep/revert, record |
-| `desktop/main/tools.ts`, `desktop/skills/autoresearch` | the `autoresearch` tool and the skill that teaches Emma to set one up |
-| `desktop/src/App.tsx` | the Autoresearch section: graph, logs, costs, attempts, play/pause |
-
-Core stores the job and never runs one, exactly as it does for scheduled jobs:
-the shell, the filesystem and git live in the app process.
-
-## Durable shape
-
-`ResearchJob`, one Markdown file per job under the research root, format
-`emma-research-format: 1`, written with the same `field`/`quote` helpers
-`ScheduledJob` uses.
-
-```rust
-pub struct ResearchJob {
-    pub id: ResearchJobId,          // "research-<unix>-<pid>-<nanos>-<seq>"
-    pub title: String,              // <= 128
-    pub project_dir: String,        // absolute, no "..", <= 1024
-    pub metric_name: String,        // <= 64, the grep key or the judge's label
-    pub metric_kind: String,        // "grep" | "judge"
-    pub metric_prompt: String,      // the judge rubric; "" for grep. <= 4096
-    pub direction: String,          // "lower" | "higher"
-    pub eval_command: String,       // <= 4096, run with project_dir as cwd
-    pub proposer_model: String,     // OpenRouter model id, <= 256
-    pub permission_mode: String,    // one of core::PERMISSION_MODES
-    pub max_seconds: u64,           // 0 = unlimited
-    pub max_tokens: u64,
-    pub max_micro_dollars: u64,     // $1 = 1_000_000
-    pub spent_seconds: u64,
-    pub spent_tokens: u64,
-    pub spent_micro_dollars: u64,
-    pub status: String,             // "running" | "paused" | "finished" | "failed"
-    pub status_note: String,        // why it paused or failed, <= 512
-    pub thread_id: Option<String>,  // the job's thread; the app creates it
-    pub created_at: Timestamp,
-    pub iterations: Vec<ResearchIteration>,  // <= MAX_RESEARCH_ITERATIONS (1000)
-}
-
-pub struct ResearchIteration {
-    pub index: u32,
-    pub at: Timestamp,
-    pub value: Option<f64>,   // None = the run crashed
-    pub best: Option<f64>,    // best-so-far *after* this iteration; the graph line
-    pub outcome: String,      // "keep" | "discard" | "crash"
-    pub note: String,         // the annotation shown on the graph, <= 280
-    pub commit: String,       // short hash, <= 64
-    pub duration_ms: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub micro_dollars: u64,
-}
-```
-
-`value`/`best` reject NaN and infinity on the way in. Core computes `index`,
-`best` and the three `spent_` totals when an iteration is recorded — the app
-sends what happened, never the running totals.
-
-## Host methods
-
-All reached through the existing `emma:request` path, so each one is added to
-`methods`/`fields` in `desktop/main/ipc.ts` and routed in `crates/host/src/main.rs`.
-
-| Method | Params | Returns |
-|---|---|---|
-| `saveResearchJob` | `title`, `projectDir`, `metricName`, `metricKind`, `direction`, `evalCommand`, `proposerModel`, `permissionMode`, `maxSeconds`, `maxTokens`, `maxMicroDollars`; optional `jobId` (absent creates), `metricPrompt`, `prompt` | the job |
-| `deleteResearchJob` | `jobId` | `{}` |
-| `setResearchJobStatus` | `jobId`, `status`; optional `note` | the job |
-| `setResearchJobThread` | `jobId`, `threadId` | the job |
-| `recordResearchIteration` | `jobId`, `outcome`, `durationMilliseconds`, `inputTokens`, `outputTokens`, `microDollars`; optional `value`, `note`, `commit` | the job |
-| `snapshot` | — | gains `researchJobs: ResearchJob[]` |
-
-Numbers travel as strings, as every other host param does. Saving over an
-existing job with a different `metricName`, `metricKind`, `direction` or
-`projectDir` fails with *"an autoresearch metric cannot be changed — create a new
-job for a different metric"*. `validateRequest` rejects blank values, so an
-optional param is **omitted**, never sent empty.
+Permission mode: core accepts `ask`, `acceptEdits`, `full` — the same three a
+scheduled job may be saved with, and `plan` loads as `ask`.
 
 ## The loop
 
-`desktop/main/research.ts`, one runner per job, driven by `driveTurn` so an
-iteration is an ordinary Emma turn with the job's folder attached and the job's
-permission mode.
+[research.ts](../desktop/main/research.ts), one runner per job. An iteration is
+an ordinary Emma turn with the project folder granted and attached, so the file
+and shell tools point at it.
 
 ```
-while (job.status === "running") {
-  if (a budget is exhausted)        → setResearchJobStatus paused, note which, stop
+before starting: git add -A && git commit  (carry over anything left in the tree)
+while (status === "running") {
+  budget spent?                    → pause with a note saying which, stop
   before = git rev-parse HEAD
-  resolveMentions(iteration prompt) → "/skill" attached; "@artifact", "@page"
-                                      and "@file" read in
-  driveTurn(one iteration prompt)   → the agent edits the project
-  git add -A && git commit          → or note "no change" and carry on
-  output = run evalCommand in projectDir
-  value  = grep ^metricName: output   | judge(output)
-  keep   = value beats best in `direction`
+  resolve /skill and @file tokens in the iteration prompt
+  drive one turn                   → the agent makes exactly ONE change
+  git add -A && git commit
+  run evalCommand in projectDir    → grep the metric, or ask the judge
+  keep = value beats best in `direction`
   if (!keep) git reset --hard before
-  recordResearchIteration(...)
+  append a row to results.tsv, then recordResearchIteration
 }
 ```
 
-The iteration prompt carries: the iteration number, the metric and its direction,
-the best value so far, the last few iterations with their outcomes and notes, the
-job's **brief** — the user's own free text, editable while the job runs — and the
-instruction to make **one** change and stop without running the eval command
-itself — Emma runs it, so the number cannot be reported by the thing being
-measured.
+The iteration prompt carries the iteration number, the metric and direction, the
+best value so far, the last 6 iterations with outcomes and notes, and the user's
+**brief** last. It forbids running the eval command itself — Emma runs it, so the
+number cannot be reported by the thing being measured — and forbids committing.
 
-A crash (non-zero exit, or no metric in the output) is an iteration with
-`outcome: "crash"` and no value; the working tree is reverted and the loop
-continues, exactly as karpathy's does.
+A run that exits without producing a number is `outcome: "crash"`: no value, tree
+reverted, loop continues. A turn that edited nothing is recorded as *"No
+change"*, and no eval is run for it. `results.tsv`
+(`commit  value  outcome  description`) is read before the revert and written
+after it, so a reset cannot take the earlier rows with it.
 
-**Recovery.** Nothing about a run lives only in memory. On launch, main lists the
-snapshot's jobs and restarts a runner for every job still marked `running`; a job
-that was killed mid-iteration simply loses that iteration's uncommitted work,
-which `git reset --hard` would have discarded anyway.
+The job re-reads itself from the store every iteration, which is how an edit made
+while it runs takes effect. On launch, `resumeResearchJobs` restarts a runner for
+every job still marked `running`; a job killed mid-iteration loses only that
+iteration's uncommitted work, which a revert would have discarded anyway.
+
+Pausing stops the turn in flight, not just the loop between iterations.
+
+## Where it lives
+
+| Layer | Owns |
+| --- | --- |
+| [research.rs](../crates/core/src/research.rs) | the durable job and its iterations, Markdown round-trip (`emma-research-format: 2`), the immutable-metric rule, the index/best/spent arithmetic |
+| [live.rs](../crates/core/src/live.rs), [host/main.rs](../crates/host/src/main.rs) | `saveResearchJob`, `deleteResearchJob`, `setResearchJobStatus`, `setResearchJobThread`, `recordResearchIteration`, and `researchJobs` on the snapshot |
+| [research.ts](../desktop/main/research.ts) | the loop: turn, git, eval, metric, keep/revert, record |
+| [research.tsx](../desktop/src/research.tsx) | the Autoresearch section: graph, iterations, cost, play/pause, delete |
+| [tools.ts](../desktop/main/tools.ts) | the `autoresearch` tool, gated `ask` in every mode but `full` |
+
+Core stores a job and never runs one. One file per job under `research/` in
+Emma's data dir; numbers travel to the host as strings, and an optional param is
+omitted rather than sent empty.
 
 ## Compaction
 
-Unrelated to autoresearch, required by it: an autoresearch job is nothing but a
-long run, so what happens when its conversation outgrows the window decides
-whether the run is any good.
-
-The conversation lives in the harness, so that is where the rule lives.
+A job is nothing but a long run, so what happens when its conversation outgrows
+the window decides whether the run is any good. The history lives in the harness
+(Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx)):
 `compactHistory` in
-[`harness/src/core/session/session.zig`](../harness/src/core/session/session.zig)
-fires on either of two conditions: more turns than `max_history_turns`, or
-`historyOverTokenBudget` — the estimated tokens across the history passing
-`compact_token_trigger_percent`, which is **70** — and replaces everything but
-the most recent turns with one summary. A `context_window_tokens` of `0` means
-the caller does not know the window, and only the turn-count rule applies.
+[session.zig](../harness/src/core/session/session.zig) folds everything but the
+most recent turns into one summary when the history passes `max_history_turns`,
+or when its estimated tokens pass `compact_token_trigger_percent` — **70** — of
+the context window. A window of `0` means the caller never said, and only the
+turn-count rule applies; Emma is what stops it being zero, sending the real
+number from the cached catalog as the `context_window` config option.
 
-Emma is what stops it being zero. `contextLength(id)` reads the real number off
-the cached OpenRouter catalog and `harness.ts` sends it as the `context_window`
-config option, because the harness recognises only a handful of model-id
-prefixes on its own.
+## See also
+
+- [jobs.md](jobs.md) — scheduled tasks, the other automation section
+- [models.md](models.md) — the proposer model, prices and the token accounting
+- [permissions.md](permissions.md) — the mode an iteration runs under
+- [harness.md](harness.md) — the loop that runs a turn

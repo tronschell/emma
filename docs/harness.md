@@ -1,347 +1,389 @@
 # The harness
 
-`emma-cli` is the coding agent that runs every Emma turn. It is a Zig program in [`harness/`](../harness), forked from [vercel-labs/fx](https://github.com/vercel-labs/fx), and Emma drives it over the Agent Client Protocol from [harness.ts](../desktop/main/harness.ts).
+`emma-cli` is the coding agent that runs every Emma turn. It is a Zig program in
+[`harness/`](../harness), driven over the Agent Client Protocol from
+[`desktop/main/harness.ts`](../desktop/main/harness.ts). There is no second
+agent loop; a missing binary is a broken install, not a fallback.
 
-## Where it came from
+## Attribution
+
+**`emma-cli` is a fork of [vercel-labs/fx](https://github.com/vercel-labs/fx),
+Copyright Vercel, Inc. and fx contributors, Apache License 2.0.**
 
 | | |
 | --- | --- |
 | Upstream | https://github.com/vercel-labs/fx |
-| Forked at | `580a0c5da9386317251968c09c1cee69e763487a` |
+| Forked at | [`580a0c5`](https://github.com/vercel-labs/fx/tree/580a0c5da9386317251968c09c1cee69e763487a) |
 | Upstream version | 0.0.4 |
-| License | Apache-2.0 |
-| Binary name | `emma-cli` (upstream ships `fx`) |
+| License | Apache-2.0 — [`harness/LICENSE`](../harness/LICENSE) |
+| Upstream notices | [`harness/THIRD_PARTY_NOTICES.md`](../harness/THIRD_PARTY_NOTICES.md) (cuelume, MIT; Unicode data) |
+| Provenance | [`harness/FORK.md`](../harness/FORK.md) |
 
-[harness/FORK.md](../harness/FORK.md) records what the fork changed, what it deleted, and what it kept on purpose. Read it before touching vendored files.
+Renaming the binary does not end the Apache-2.0 §4 obligation. The license
+text, the notices file, and every copyright header stay, and `FORK.md` records
+the changes. Do not delete them. Wider credits are in [credits.md](credits.md).
 
-Apache-2.0 §4 asks for three things and the fork does all three:
+fx's agent loop, permission model, hooks, skills, subagents, tool registry, MCP
+client, and ACP server are upstream's. The fork's divergences, in short:
 
-- [`harness/LICENSE`](../harness/LICENSE) stays, unmodified.
-- [`harness/THIRD_PARTY_NOTICES.md`](../harness/THIRD_PARTY_NOTICES.md) stays. It covers cuelume (MIT, interface sounds) and Unicode data tables.
-- Every Apache-2.0 file header and copyright line stays, and `FORK.md` lists the changes.
+| Area | Change |
+| --- | --- |
+| Name | `fx` → `emma-cli`; `build.zig.zon` fingerprint regenerated |
+| Transport | Vercel AI Gateway language-model v3 → OpenAI-compatible Chat Completions |
+| Auth | All Vercel and ChatGPT OAuth removed; one env var, `EMMA_PROVIDER_API_KEY` |
+| Branding | `fx.sh` links, feedback, upgrade, and telemetry endpoints removed |
+| `terminal` args | Two real-world call shapes normalized; per-action required fields |
+| `subagent` | Advertised whenever the session supports children, not hidden behind `search_tools` |
+| Images | ACP `image` prompt blocks accepted into the turn's attachment catalogue |
+| Vision | Model catalogue reads OpenRouter's `architecture.input_modalities`; gate is vision alone, not vision + file input |
 
-Renaming the binary does not end that obligation. Do not delete those files.
-
-Three things actually changed:
-
-- The binary name.
-- The model transport. Vercel AI Gateway's language-model v3 protocol became OpenAI-compatible Chat Completions.
-- Authentication. All Vercel and ChatGPT OAuth is gone, replaced by one environment variable.
-
-fx's agent loop, permission model, hooks, skills, subagents, tools and MCP client are untouched.
+[FORK.md](../harness/FORK.md) is the detailed record, including everything
+deleted and everything deliberately kept. Read it before touching a vendored
+file.
 
 ## Who owns what
 
-The harness owns the agent loop, tool execution, permission gating, hooks, skills and subagents for one turn. Emma owns the window, the durable Markdown thread, and the answer to every permission question.
+The harness owns the agent loop, tool execution, permission gating, hooks,
+skills, subagents, and the MCP client for one turn. Emma owns the window, the
+durable Markdown thread, and the answer to every permission question.
 
-That is why [harness.ts](../desktop/main/harness.ts) is a client and not a second loop. Emma used to run its own loop beside this one, which meant every rule was written twice and the second copy drifted. That loop is gone. What is left in [agent-loop.ts](../desktop/main/agent-loop.ts) is the code that starts and tracks a run, the durable traces, the permission channel, Auto mode's verifier, and four tools whose answers are that file's own records: `threads`, `read_trace`, `agents`, `advisor`.
+Four things Emma keeps away from the harness:
 
-Four things Emma deliberately keeps away from the harness:
+| | Why |
+| --- | --- |
+| The granted folder | The harness resolves `../` and `~` itself and mutates whatever its policy allows. `callEscapesWorkspace` checks every path-shaped argument against the workspace root first: paths are realpath'd, a path that does not exist yet resolves to its deepest existing ancestor, and anything unresolvable is an escape. Denied in every mode |
+| Permission modes | All four of Emma's modes map to the harness's `ask` (`HARNESS_MODE_ID`), so every decision comes back over the wire. Mapping `acceptEdits` → `auto` skipped the folder check; `full` → `yolo` left no floor at all |
+| The model | Re-applied every turn rather than trusted to persist in harness settings |
+| The context window | The harness recognises a handful of model-id prefixes; Emma has the real number from the OpenRouter catalog |
 
-- **The granted folder.** The harness resolves `../` and `~` itself and will mutate anything its policy allows. So `callEscapesWorkspace` in [harness.ts](../desktop/main/harness.ts) checks every path-shaped argument against the workspace root first. Paths are realpath'd; a path that does not exist yet is resolved down to its deepest existing ancestor; anything that will not resolve counts as an escape. An escape is denied outright, in every mode.
-- **Permission modes.** All four of Emma's modes map to the harness's `ask` — `HARNESS_MODE_ID` — so every decision comes back over the wire. It looks like it should be a per-mode mapping, and that is exactly what was unsafe: sending `acceptEdits` to the harness's `auto` skipped the folder check and handed shell commands to a hardcoded in-harness reviewer model, and sending `full` to `yolo` left no floor at all.
-- **The model.** Emma re-applies the picker every turn rather than trusting it to persist in harness settings.
-- **The context window.** The harness only recognises a handful of model-id prefixes. Emma has the real number from the OpenRouter catalog and sends it.
+[`agent-loop.ts`](../desktop/main/agent-loop.ts) is not a loop: it starts and
+tracks a run, keeps the durable traces, owns the permission channel and Auto
+mode's verifier, and answers four tools from its own records — `threads`,
+`read_trace`, `agents`, `advisor`.
 
-### It is no longer opt-in
+## Tools
 
-`EMMA_HARNESS=1` is gone. There is no such check anywhere in `desktop/` or `harness/` on this branch.
+### The harness's own
 
-The harness is the only agent loop there is. A missing binary is a broken install, not a fallback:
+Registered in [`builtins/tools.zig`](../harness/src/builtins/tools.zig):
+`list_files`, `glob_files`, `grep_files`, `read_file`, `write_file`,
+`edit_file`, `delete_file`, `rename_file`, `copy_file`, `create_folder`,
+`file_info`, `semantic_search`, `lsp`, `open_file`, `web_fetch`, `terminal`,
+`skill`, `install_skill`, `subagent`, `mcp_search_tools`, `mcp_select_tool`,
+`mcp_features`, `ask_user_question`, `read_tool_result`, `search_tools`,
+`select_tool`, `vision`.
 
-```
-Emma could not find its agent at <path>. The install is incomplete —
-reinstall Emma, or run npm run build:harness from the repo.
-```
+Emma delegates file reading, writing, search, and shell entirely — she ships no
+`bash` of her own. `lsp` asks a real language server about one file: nine
+actions (`diagnostics`, `definition`, `type_definition`, `implementation`,
+`references`, `hover`, `document_symbols`, `workspace_symbols`, `servers`) over
+a registry of about fifty servers in
+[`core/lsp/servers.zig`](../harness/src/core/lsp/servers.zig), one process per
+(server, workspace root) for the life of the CLI. `line` is 1-based and
+`symbol` finds the column, converted to LSP's 0-based UTF-16 positions on the
+way out.
 
-## What reaches Emma's tools today
+### Emma's, appended natively
 
-The old gap — "the fork does not yet reach Emma's folder, computer-use, MCP, and knowledge tools" — is closed. Twenty-two of Emma's tools are registered natively in the harness registry, appended to fx's own in [`builtins/tools.zig`](../harness/src/builtins/tools.zig) as `++ emma_tools.all`:
+Emma's 23 tools are appended to the same registry as `++ emma_tools.all`, so the
+harness advertises and dispatches them and Electron runs them. One shared
+implementation, [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig);
+only the spec differs per tool.
 
 | Group | File | Tools |
 | --- | --- | --- |
 | Threads and agents | [`emma/threads.zig`](../harness/src/builtins/emma/threads.zig) | `threads`, `context`, `plan`, `agents`, `read_trace` |
-| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `save_page`, `artifact`, `workflow`, `visualize`, `autoresearch` |
-| System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `advisor`, `install_mcp`, `computer` |
+| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `workflow`, `visualize`, `autoresearch` |
+| System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `computer`, `advisor`, `install_mcp` |
 | Extensions | [`emma/extensions.zig`](../harness/src/builtins/emma/extensions.zig) | `write_tool`, `run_tool`, `write_skill`, `write_plugin` |
+| Browser | [`emma/browser.zig`](../harness/src/builtins/emma/browser.zig) | `browser` |
 | Name collisions | [`emma/overrides.zig`](../harness/src/builtins/emma/overrides.zig) | `memory`, `look_at_image`, `web_search` |
 
-### The three name collisions
+`Registry.lookup` returns the first match, so a duplicate name is a bug.
+`memory` goes to Emma (fx's is one `~/.fx/memories.json`; Emma's is a directory
+tree under `<userData>/memories`) and so does `web_search` (fx's is dead on the
+ACP path — `.web_search_runtime_ready = false`). `web_fetch` stays fx's, already
+wired with an artifact store and progress. `vision` stays fx's because the
+gateway looks it up **by name** and forces it when a model that cannot see is
+handed an image; its advertisement is `.never`. Emma's image tool is therefore
+`look_at_image`, mapped back to Emma's internal `vision` by
+`HARNESS_TOOL_NAMES` in [`main.ts`](../desktop/main/main.ts).
 
-`overrides.zig` holds the tools whose names clash with an fx builtin. `Registry.lookup` returns the first match, so a duplicate name is a bug, not a fallback — somebody has to win each name.
+A native tool is registered process-wide, so Emma cannot hide one by omitting it
+from a per-turn list. `runEmmaTool` re-applies `toolGate(turn.mode, name,
+disabledTools)` before running anything, and `whyUnavailable` answers in words
+the model can read — "`cli` needs a connected folder", "`computer` controls this
+Mac, and this is not a Mac".
 
-- **`memory` goes to Emma.** fx's is one `~/.fx/memories.json` file. Emma's is a directory tree under `<userData>/memories`.
-- **`web_search` goes to Emma.** fx's is dead on the ACP path — `.web_search_runtime_ready = false`.
-- **`web_fetch` stays fx's.** Theirs is already wired with an artifact store and progress reporting.
-- **`vision` stays fx's.** The gateway looks that tool up by name and forces it when a model that cannot see images is handed one.
+### Discovery: two tools, then the rest
 
-Emma's image tool is therefore called `look_at_image`, and `HARNESS_TOOL_NAMES` in [main.ts](../desktop/main/main.ts) maps it back to Emma's internal `vision`.
+The base advertisement is `search_tools`, `select_tool`, and `subagent`
+(`.always`). `vision` is `.never` — reachable only by the gateway forcing it by
+name. Every other registry entry is `.on_select` and costs nothing until asked
+for.
 
-What Emma does **not** delegate: `read_file`, `list_files`, `ripgrep`, `write_file`, `bash` and `background`. The harness already covers those with `read_file`, `list_files`, `grep_files`, `write_file` and `terminal`, which enforce their own workspace root.
+- `search_tools {query, limit}` — names and descriptions only, never a schema.
+  Default limit 8, hard cap 20, `more_available` when there are more. Scoring is
+  per query token, case-insensitive substring: 8 points for a name hit, 1 for a
+  description hit, tokens under 3 characters ignored. Scores rather than
+  filters; requiring every token to match meant real sentences matched nothing.
+- `select_tool {name}` — splices one exact schema into the next model step. No
+  preceding search needed. A denied, `.never`, or unknown name answers
+  `Tool not found: <name>`.
 
-### Availability is an answer, not an absence
-
-A native tool is registered for the whole process, so Emma cannot hide one by leaving it off a per-turn list. `whyUnavailable` in [main.ts](../desktop/main/main.ts) answers in words the model can read instead:
-
-- `cli` with no connected folder — "Ask the user to connect one."
-- `computer` off macOS — "controls this Mac, and this is not a Mac."
-
-`runEmmaTool` also re-applies `toolGate(turn.mode, name, disabledTools)` before running anything. A filtered list is not an enforced one: the harness caches its catalog and the model can guess a name.
+This is a prompt-cost mechanism, **not** a security boundary. A hidden tool is
+still registered and still runs under exactly its usual permission rules.
 
 ## The ACP wire
 
-Newline-delimited JSON-RPC 2.0 over the child's stdio. Emma spawns `emma-cli acp` once per workspace directory with:
+Newline-delimited JSON-RPC 2.0 over the child's stdio. Emma spawns `emma-cli
+acp` once per workspace directory, at most `MAX_HARNESSES = 4` alive at once
+(least-recently-used; `reapHarnesses` never closes one with a call in flight).
 
-- `cwd` set to the workspace. The harness works out its workspace root from its own cwd at startup and ignores the per-session `cwd`, so the process — not the session — is what a run is actually confined to. `prompt()` refuses a turn whose `cwd` does not match.
-- `HOME` set to `<userData>/harness`, a profile of Emma's own, so the harness never reads the user's `~/.fx`.
-- `AI_GATEWAY_API_KEY` and `EMMA_PROVIDER_API_KEY` both set from `OPENROUTER_API_KEY` in Emma's environment. Both names, because the fork still reads upstream's while the Vercel vocabulary is being removed.
+- `cwd` is the workspace. The harness derives its workspace root from its own
+  cwd at startup and ignores the per-session `cwd`, so the **process** is what a
+  run is confined to; `prompt()` refuses a turn whose `cwd` does not match.
+- `HOME` is `<userData>/harness`, a profile of Emma's own, so the harness never
+  reads the user's `~/.fx`.
+- `AI_GATEWAY_API_KEY` and `EMMA_PROVIDER_API_KEY` are both set from Emma's
+  `OPENROUTER_API_KEY`; both names, while the Vercel vocabulary is being removed.
 
-At most `MAX_HARNESSES = 4` processes are alive at once. Map order is least-recently-used; `reapHarnesses` closes the front of the queue and never one with a call in flight.
-
-Line frames are capped at 8 MiB. A call is abandoned after `MAX_IDLE_MS` — 30 minutes — of **silence**, not wall clock. Any inbound message refreshes every pending timer, so a long build that streams the whole time survives and only a genuinely wedged peer trips it.
+A call is abandoned after `MAX_IDLE_MS` — 30 minutes — of **silence**, not wall
+clock; any inbound message refreshes every pending timer.
 
 ### Methods Emma calls
 
-`AcpMethod.parse` in [`acp/server.zig`](../harness/src/acp/server.zig) accepts thirteen:
+`AcpMethod.parse` in [`acp/server.zig`](../harness/src/acp/server.zig) accepts
+fourteen:
 
 | Method | What it does |
 | --- | --- |
-| `initialize` | Once per process. Emma sends `protocolVersion: 1` and `clientCapabilities.fs = {readTextFile: false, writeTextFile: false}`. The harness also reads `terminal` and elicitation capabilities from this. A second call is an error. |
-| `session/new` | Takes `cwd` and `mcpServers`, returns `sessionId`, and makes it active. |
-| `session/load` | Loads a saved session. |
-| `session/resume` | Re-activates a session this process displaced. Emma calls this instead of making a new one, so a thread keeps its history. |
-| `session/close` | Flushes usage and drops the active session. |
-| `session/list`, `session/remove` | Session store queries. |
-| `session/prompt` | Runs one turn. |
-| `session/compact` | Folds the session's history. Refused mid-turn: rewriting history that a running turn is reading is a data race. |
-| `session/set_config_option` | `configId` is one of `model`, `mode`, `context_window`, `context_experiments`. |
-| `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. A mid-turn change applies to the next prompt. |
-| `session/cancel` | Sent as a notification, not a request. Cancellation has no reply and must not hang on a wedged peer. |
-| `session/steer_child` | Queues a message for one running subagent by `childId`. Deliberately not queued behind the active prompt, since the whole point is reaching a child while its parent turn runs. |
+| `initialize` | Once per process. `protocolVersion: 1`, `clientCapabilities.fs = {readTextFile: false, writeTextFile: false}`. A second call is an error |
+| `session/new` | Takes `cwd` and `mcpServers`, returns `sessionId`, makes it active |
+| `session/load`, `session/list`, `session/remove` | Session store |
+| `session/resume` | Re-activates a session this process displaced, so a thread keeps its history |
+| `session/close` | Flushes usage, drops the active session |
+| `session/prompt` | Runs one turn |
+| `session/compact` | Folds history. Refused mid-turn |
+| `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments` |
+| `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
+| `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
+| `session/steer_child` | Queues a message for one running subagent by `childId`, not queued behind the active prompt |
+| `session/cancel_child` | Stops one running subagent by `childId` |
 
-`session/list`, `session/remove`, `session/prompt`, `session/compact` and `session/set_config_option` are refused with "Prompt already in progress" while a turn is in flight. The rest run beside it.
+`session/list`, `session/remove`, `session/prompt`, `session/compact`, and
+`session/set_config_option` are refused with "Prompt already in progress" while
+a turn is in flight; the rest run beside it.
 
-### One session at a time
-
-The harness holds exactly one active session. `session/prompt` runs against `state.active_session` and ignores the `sessionId` the call names, and `session/new` swaps it without waiting for a running prompt.
-
-So [harness.ts](../desktop/main/harness.ts) does the bookkeeping itself: it tracks which session is active, resumes a displaced one before prompting its thread again, and runs turns one at a time per process. Start a turn while another is in flight and it runs *instead of* that one, not beside it.
+**One session at a time.** `session/prompt` runs against `state.active_session`
+and ignores the `sessionId` the call names, and `session/new` swaps it without
+waiting. So `harness.ts` tracks which session is active, resumes a displaced one
+before prompting its thread again, and runs one turn at a time per process.
 
 ### What comes back
 
-Notifications on `session/update`, one JSON object per line, written by [`acp/types.zig`](../harness/src/acp/types.zig):
+Notifications on `session/update`, written by
+[`acp/types.zig`](../harness/src/acp/types.zig):
 
 | `sessionUpdate` | Emma does |
 | --- | --- |
-| `agent_message_chunk` | `onDelta` — the answer, streamed. |
-| `agent_thought_chunk` | `onThought` — reasoning, on its own channel. Folding the two together made the harness look like it thought silently and then blurted a result. |
-| `tool_call` | `onToolCall` — the whole call, arguments included. |
-| `tool_call_update` | `onToolCall` — only what changed. Emma merges it over the last full state per `threadId:toolCallId`. Without that merge every step reverted to an untitled "other" the moment it progressed. |
-| `plan` | `onPlan`. |
-| `available_commands_update` | ignored. |
-| `session_info_update` | Carries `_meta.fx.contextExperiment` (a context lever fired) or `_meta.fx.modelResponseRecovery` (retry and backoff state, written to the thinking channel so a run waiting out a 503 is not mistaken for a hang). |
+| `agent_message_chunk` | `onDelta` — the answer, streamed |
+| `agent_thought_chunk` | `onThought` — reasoning, on its own channel |
+| `tool_call` | `onToolCall` — the whole call, arguments included |
+| `tool_call_update` | `onToolCall` — only what changed, merged over the last full state per `threadId:toolCallId` |
+| `plan` | `onPlan` |
+| `session_info_update` | `_meta.fx.contextExperiment` (a context lever fired) or `_meta.fx.modelResponseRecovery` (retry and backoff, written to the thinking channel so a run waiting out a 503 is not read as a hang) |
+| `available_commands_update` | ignored |
 
-Subagents ride the parent's stream. ACP has no nested sessions, so a child tags its updates with `_meta.fx.child` — `{id, title, state}` — and `childTag` fans them back out onto an Emma thread of the child's own. Untagged, a subagent's words land in the parent's durable answer as if the parent said them.
+Subagents ride the parent's stream — ACP has no nested sessions. A child tags
+its updates with `_meta.fx.child` (`{id, title, state}`) and `childTag` fans
+them onto an Emma thread of the child's own. Untagged, a child's words would
+land in the parent's durable answer.
 
 ### One prompt turn
 
-1. `session/set_mode`, then `session/set_config_option` for `model`, `context_window` and `context_experiments` if set. Experiments go out every turn even when everything is off, because the harness holds them per session and a lever switched off in Settings has to be switched off there too.
+1. `session/set_mode`, then `session/set_config_option` for `model`,
+   `context_window`, and `context_experiments`. Experiments go out every turn
+   even when all off — the harness holds them per session.
 2. `session/compact` if Emma asked for one last turn. Best effort.
-3. `session/prompt` with `prompt` as content blocks. Skills, attached folders, files and knowledge ride as a separate leading text block rather than a prefix glued to the user's words, so the harness's own transcript keeps them apart.
-4. The harness runs the turn on its own thread. Updates stream. Permission requests and Emma-tool calls come back as requests.
-5. The response resolves with `{stopReason, usage: {inputTokens, outputTokens}}`.
+3. `session/prompt` with content blocks. Skills, folders, files, and notes ride
+   as a separate leading text block, not glued to the user's words.
+4. Updates stream; permission requests and Emma-tool calls come back as
+   requests.
+5. Resolves with `{stopReason, usage: {inputTokens, outputTokens}}`. `usage` is
+   an Emma extension — upstream ACP has no such field, and it is the only place
+   a turn's real token counts exist on Emma's side.
 
-`usage` on the prompt result is an Emma extension — upstream ACP has no such field — and it is the only place a harness turn's real token counts exist on Emma's side.
-
-Stop reasons, from `StopReason` in [`acp/types.zig`](../harness/src/acp/types.zig): `end_turn`, `cancelled`, `refused`, `max_output_tokens`, `max_model_turns`. `failedTurn` treats `refused` as a failure, and that check earns its keep: the harness reports a provider or auth failure as ordinary assistant text and still resolves the call, so without it the error string gets written into the thread as though Emma had said it.
+Stop reasons: `end_turn`, `cancelled`, `refused`, `max_output_tokens`,
+`max_model_turns`. `failedTurn` treats `refused` as a failure, because the
+harness reports a provider or auth failure as ordinary assistant text and still
+resolves the call.
 
 ### Permission
 
-`requestAcpPermission` in [`acp/prompt.zig`](../harness/src/acp/prompt.zig) sends a `session/request_permission` request:
+`requestAcpPermission` in [`acp/prompt.zig`](../harness/src/acp/prompt.zig)
+sends `session/request_permission` with the tool call and three options —
+`allow_once`, `allow_always`, `reject_once` — and the prompt thread blocks.
+Emma answers `{"outcome": {"outcome": "selected", "optionId": "..."}}` or
+`{"outcome": {"outcome": "cancelled"}}`. `parsePermissionDecision` maps
+`allow_once` → once, `allow_always` → always, `reject_once` and `cancelled` →
+deny, and **anything unparseable → deny**. At most 32 outbound requests may be
+pending.
 
-```json
-{
-  "sessionId": "...",
-  "toolCall": { "toolCallId": "...", "title": "...", "kind": "...", "status": "pending", "rawInput": { } },
-  "options": [
-    { "optionId": "allow_once",   "name": "Allow once",             "kind": "allow_once" },
-    { "optionId": "allow_always", "name": "Allow for this session", "kind": "allow_always" },
-    { "optionId": "reject_once",  "name": "Reject",                 "kind": "reject_once" }
-  ]
-}
-```
+`onPermission` in [`main.ts`](../desktop/main/main.ts), in order:
 
-The prompt thread blocks on `awaitPermissionDecision`. Emma answers with `{"outcome": {"outcome": "selected", "optionId": "..."}}` or `{"outcome": {"outcome": "cancelled"}}`. `parsePermissionDecision` maps `allow_once` → once, `allow_always` → always, `reject_once` → deny, `cancelled` → deny, and **anything it cannot parse → deny**. At most 32 outbound requests may be pending at once.
-
-Emma's side, in `onPermission` in [main.ts](../desktop/main/main.ts):
-
-1. `context.outsideWorkspace` → deny, with a `blocked: <tool> is outside the connected folder` step in the transcript. Not overridable: a dialog offering to allow it would be a worse promise than the folder picker already makes.
+1. `context.outsideWorkspace` → deny, with a `blocked: <tool> is outside the
+   connected folder` step. Not overridable.
 2. `full` → allow.
 3. `acceptEdits` with `kind === "edit"` → allow. Commands still ask.
 4. Otherwise `AgentRuntime.question`, which is where Auto mode's verifier sits.
 
-Options are picked by preferred `kind` in order, never by list position. A `find` over a list of kinds returns whichever the harness happened to send first, and one reordering upstream would quietly turn "Allow once" into a session-wide grant. A denial picks `reject_once` so the turn carries on with a "no"; cancelling would end the run and lose everything before it. A refused or unanswered question is always a denial.
+Options are picked by preferred `kind`, never by list position — one reordering
+upstream would turn "Allow once" into a session-wide grant. A denial picks
+`reject_once` so the turn carries on with a "no"; cancelling would end the run.
+A permission dialog titled `file_mutation` is retitled with the path
+(`describePath` reads `path`, `new_path`, `destination`, `old_path`, `source`).
 
-A permission dialog titled `file_mutation` is retitled with the path. `describePath` reads `path`, `new_path`, `destination`, `old_path`, `source` in that order.
+### `_emma/callTool`
 
-### Emma's own tools: `_emma/callTool`
+Emma's tools read and write Electron's durable stores, so the harness never
+executes one. It advertises the tool, checks the arguments are a JSON object,
+and writes `_emma/callTool` with `{sessionId, toolCallId, name, arguments}` on
+the same outbound registry permission and elicitation use, then blocks. There is
+no deadline — connecting a folder or running a thread can take minutes — and the
+only way out other than a reply is the user cancelling.
 
-Emma's tools read and write Electron's durable stores, so the harness never executes one. It advertises the tool, checks the arguments are a JSON object, and hands the raw JSON to the client.
+Arguments are embedded rather than re-encoded, so the client sees exactly what
+the model wrote. Emma replies with `{"output": "..."}` and nothing else. A tool
+that refuses or throws answers with `output` **text**, not a JSON-RPC error: the
+model recovers from the first and treats the second as a broken channel. The
+error path is only for a request that never named a live thread
+(`-32602 Unknown session or tool`). Run plain `emma-cli` with no responder and
+an Emma tool answers `This tool is only available inside Emma.`, so the turn
+survives.
 
-**Now:** a native outbound request. [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig) is one shared implementation behind all twenty-three tools; what differs per tool is only its spec. `callEmmaTool` in [`acp/prompt.zig`](../harness/src/acp/prompt.zig) writes `_emma/callTool` with `{sessionId, toolCallId, name, arguments}` on the same outbound registry permission and elicitation use, then blocks. There is no deadline, because connecting a folder or running a thread can legitimately take minutes. The only way out other than a reply is the user cancelling.
+This replaced a localhost MCP server (`desktop/main/bridge.ts`, deleted) that
+cost an HTTP round trip, a bearer token, and a second protocol.
 
-**Before:** a localhost MCP server in `desktop/main/bridge.ts`. One HTTP server, modern MCP, one JSON-RPC object in and one out. The harness's only door for a tool it does not ship is MCP, so Emma used that door and its tools reached the model under the `mcp_emma` server prefix. That file is deleted. The MCP hop cost an HTTP round trip, a bearer token and a second protocol.
+### MCP servers
 
-Arguments are embedded rather than re-encoded, so the client sees exactly what the model wrote. Emma replies with `{"output": "..."}` and nothing else; a reply shaped any other way is the client's bug and the model cannot fix it by retrying.
+The user's configured servers are read fresh and passed on `session/new` and
+`session/resume` in `HarnessMcpServer` shape — stdio only, signalled by the
+*absence* of a `type`, since the harness rejects `"stdio"` as a transport value.
+`harnessMcpServers` in [`capabilities.ts`](../desktop/main/capabilities.ts)
+resolves each command against PATH, because the harness rejects a bare name
+(`CommandNotAbsolute`). A bad entry is dropped rather than failing the whole
+`session/new`.
 
-A tool that refuses or throws answers with `output` **text**, not a JSON-RPC error. The model recovers from the first, and the harness treats the second as the channel being broken. The error path is only for a request that never named a live thread: `-32602 Unknown session or tool`.
-
-Run plain `emma-cli` in a terminal, with no responder on the other end, and an Emma tool fails with `This tool is only available inside Emma.` as text, so the turn survives.
-
-### Emma's MCP servers
-
-The user's configured MCP servers are read fresh and passed on `session/new` and `session/resume`, in `HarnessMcpServer` shape, which is stdio only — the absence of a `type`, since the harness rejects `"stdio"` as a transport value. `harnessMcpServers` in [capabilities.ts](../desktop/main/capabilities.ts) resolves each command against PATH, because the harness rejects a bare name (`CommandNotAbsolute` in [`acp/mcp_servers.zig`](../harness/src/acp/mcp_servers.zig)). A bad entry is dropped rather than losing the whole session, since the harness fails all of `session/new` on one.
-
-The harness only takes MCP servers at session creation, so `forgetSession` / `forgetAllSessions` drop a thread's session and let the next turn build a new one. That is what makes a mid-turn `install_mcp` mean anything. Only the forward map is dropped — clearing the reverse routing would silence the rest of the running turn.
-
-## Tool discovery: two tools, then the rest
-
-Every tool in the registry except two is marked `.on_select`. The base advertisement is exactly `search_tools` and `select_tool`. `vision` is `.never`, reachable only by the gateway forcing it by name. Everything else — every file tool, `terminal`, `subagent`, `skill`, all twenty-three Emma tools — costs nothing until the model asks for it.
-
-[`tool_native_dispatch.zig`](../harness/src/core/tooling/tool_native_dispatch.zig) implements the pair, mirroring `mcp_search_tools` / `mcp_select_tool`:
-
-- **`search_tools {query, limit}`** returns names and descriptions only. Returning an input schema here would defeat the whole mechanism. Default limit 8, hard cap 20, `more_available: true` when there are more. Scoring is per query token, case-insensitive substring: 8 points for a hit in the name, 1 in the description, tokens under 3 characters ignored because they are prepositions and match everything. An empty query returns the whole searchable set. It scores rather than filters because it used to require *every* token to match, and "list the threads in this workspace" matched nothing at all.
-- **`select_tool {name}`** splices one exact schema into the next model step, through the same sink MCP selection uses. No preceding search is needed. A denied tool, a `.never` tool and an unknown name all answer `Tool not found: <name>`; an already-advertised one answers "is already available; call it directly."
-
-This is a prompt-cost mechanism, **not** a security boundary. A hidden tool is still registered and still runs under exactly the permission rules it would have had.
-
-The mechanism only works if the model knows about it, and the base prompt in [`builtins/context.zig`](../harness/src/builtins/context.zig) used to work against it: three lines hedged file, search and command access with *when those capabilities are available*, so a model that read its two-tool advertisement literally concluded they were not, said it could not reach the workspace, and reached for `terminal` instead of the tool it should have selected. The hedges are gone and "Tools and verification" now states the invariant — the list starts nearly empty by design, a missing capability is loadable rather than absent, `search_tools` then `select_tool` before answering that something is out of reach. Naming those two is safe where naming `run_command` would not be: they are the only tools guaranteed to be advertised, which is what `gateway_system_prompt: static guidance is capability-neutral` protects.
-
-## Language servers
-
-`lsp` is a native harness tool ([`tools/lsp/lsp.zig`](../harness/src/tools/lsp/lsp.zig)) that asks a real language server about one file instead of guessing from text. Nine actions: `diagnostics`, `definition`, `type_definition`, `implementation`, `references`, `hover`, `document_symbols`, `workspace_symbols`, and `servers`. It is `.on_select` like everything else, read-only, and runs in parallel with other read-only calls.
-
-Positions are given the way a human reads them: `line` is 1-based, and `symbol` finds the column so the model does not have to count. `character` is accepted as an override and is also 1-based; both are converted to LSP's 0-based line and UTF-16 code unit column before the request goes out.
-
-The registry in [`core/lsp/servers.zig`](../harness/src/core/lsp/servers.zig) is pure data — about fifty servers, each with the extensions and exact filenames it claims, its argv, and the command that installs it. A file picks its server by exact filename first (`Dockerfile`, `CMakeLists.txt`, `go.mod`), then by extension. Installation is a PATH lookup and nothing more, so a server the user has not installed answers with the install command rather than a spawn error, and `action=servers` lists the whole table split into installed and missing.
-
-[`core/lsp/client.zig`](../harness/src/core/lsp/client.zig) is the JSON-RPC client: `Content-Length` framing over the child's stdio, a reader thread that resolves pending requests by id, and answers for the server-to-client requests that block initialization if nobody replies (`workspace/configuration`, `workspace/workspaceFolders`, the `client/registerCapability` family, `window/workDoneProgress/create`). Frames are capped at 16 MiB. [`core/lsp/pool.zig`](../harness/src/core/lsp/pool.zig) keeps one process per (server, workspace root) for the life of the CLI process, so only the first call in a session pays for `initialize`, and `main.zig` shuts the pool down on every exit path.
-
-Two waits make the answers trustworthy rather than empty:
-
-- **Warm-up.** A server that has just started answers `hover` with an empty string and `references` with an empty array while it is still loading the project. After `initialize` the pool waits for `$/progress` to begin and then go quiet — rust-analyzer on this repository runs `Fetching`, `Building CrateGraph`, `Loading proc-macros` and `cachePriming` in the first three seconds, and a request sent before priming ends comes back blank. A server that reports no progress at all costs one second, once.
-- **Diagnostics.** `textDocument/diagnostic` is tried first and `publishDiagnostics` is the fallback. The push route needs a settle window: typescript-language-server publishes an empty array the instant the document opens and the real list a moment later, so the client stamps each publish and takes the latest one after 1.5 s of quiet, bounded by the call's own timeout.
-
-Each call opens the document, asks, and closes it. There is no incremental sync — the file is read fresh from disk every time, which is correct for an agent that edits through `write_file` and never holds an editor buffer.
-
-Known limits:
-
-- A TypeScript project needs `typescript` installed in the workspace. typescript-language-server refuses to start without it, and the tool reports the server's own message. The global fallback only works if the installed `typescript` still ships `tsserver.js`.
-- rust-analyzer's diagnostics come from flycheck, which by default runs on save, so `diagnostics` on a Rust file is usually empty even when `cargo check` would complain. `hover` and `references` are the useful actions there.
-- PATH detection cannot tell a real binary from a rustup proxy for a component that is not installed. The spawn succeeds, the server exits immediately, and the failure surfaces as the server's own error text.
+The harness takes MCP servers only at session creation, so `forgetSession` /
+`forgetAllSessions` drop a thread's session and let the next turn build a new
+one. That is what makes a mid-turn `install_mcp` mean anything. Only the forward
+map is dropped; clearing the reverse routing would silence the running turn.
 
 ## Limits the code enforces
 
 | Limit | Value | Where |
 | --- | --- | --- |
 | Tool description, to the model | 4 KiB, then `... [truncated]` | `description_max_bytes`, [`gateway_schema.zig`](../harness/src/core/tooling/gateway_schema.zig) |
-| Tool result, to the model | 64 KiB default | `default_max_tool_result_bytes`, [`tool_result_limits.zig`](../harness/src/core/tooling/tool_result_limits.zig) |
+| Tool result, to the model | 64 KiB | `default_max_tool_result_bytes`, [`tool_result_limits.zig`](../harness/src/core/tooling/tool_result_limits.zig) |
 | Tool output in a `tool_call_update` | 200 bytes, UTF-8 safe | `toolUpdateContentText`, [`acp/prompt.zig`](../harness/src/acp/prompt.zig) |
-| Emma tool output over `_emma/callTool` | 64 KiB | `MAX_TOOL_OUTPUT_BYTES`, [harness.ts](../desktop/main/harness.ts) |
-| One JSON-RPC line | 8 MiB | `MAX_LINE_BYTES`, [harness.ts](../desktop/main/harness.ts) |
-| Tool arguments kept for the transcript | 4096 chars | `rawInput`, [harness.ts](../desktop/main/harness.ts) |
+| Emma tool output over `_emma/callTool` | 64 KiB | `MAX_TOOL_OUTPUT_BYTES`, [`harness.ts`](../desktop/main/harness.ts) |
+| One JSON-RPC line | 8 MiB | `MAX_LINE_BYTES`, [`harness.ts`](../desktop/main/harness.ts) |
+| Tool arguments kept for the transcript | 4096 chars | `rawInput`, [`harness.ts`](../desktop/main/harness.ts) |
 | Pending outbound requests | 32 | `max_pending_outbound`, [`acp/server.zig`](../harness/src/acp/server.zig) |
+| Live harness processes | 4 | `MAX_HARNESSES`, [`main.ts`](../desktop/main/main.ts) |
+| Idle before a call is abandoned | 30 min of silence | `MAX_IDLE_MS`, [`harness.ts`](../desktop/main/harness.ts) |
 
-The description cap was fx's 1024 and is now 4 KiB, matching `MAX_TOOL_DESCRIPTION_BYTES` in [tools.ts](../desktop/main/tools.ts). `cappedDescriptionAlloc` truncates silently, and at 1024 that meant `plan` lost its `update` and `delete` lines and `threads` lost the sentence telling the model when to reach for a subagent instead. A test in [`emma_tools.zig`](../harness/src/builtins/emma_tools.zig) fails the build if any Emma description grows past the cap.
+The description cap was fx's 1024 and is now 4 KiB, matching
+`MAX_TOOL_DESCRIPTION_BYTES` in [`tools.ts`](../desktop/main/tools.ts).
+`cappedDescriptionAlloc` truncates silently, and at 1024 `plan` lost its
+`update` and `delete` lines. A test in
+[`emma_tools.zig`](../harness/src/builtins/emma_tools.zig) fails the build if
+any Emma description grows past the cap.
 
-The 200-byte preview is why `unwrapMcpResult` and `cutMcpText` exist in [harness.ts](../desktop/main/harness.ts). An MCP result arrives wrapped in `{"server":…,"tool":…,"result":{"content":[…]}}` and the envelope header eats about 110 of the 200 bytes, so the JSON is usually unparseable and the transcript showed a fragment of braces and quotes. Emma's native tools answer as plain text and get all 200.
-
-Binary or non-UTF-8 output is replaced with `binary or non-utf8 tool output omitted`. A permission-denied result is sent whole, not previewed.
+Binary or non-UTF-8 output becomes `binary or non-utf8 tool output omitted`. A
+permission-denied result is sent whole, not previewed.
 
 ## Standing instructions
 
-Emma does not send its system prompt over the wire. `writeHarnessPrompt` in [system-prompt.ts](../desktop/main/system-prompt.ts) writes it to `<userData>/harness/.fx/AGENTS.md`, and [`builtins/context.zig`](../harness/src/builtins/context.zig) loads that as `<global-rules>` beside its own built-in prompt (`$HOME/.fx/AGENTS.md`, joined at line 312). The block is the user's Settings prompt, the connections block, and any kept Agent-page improvement. It is written per turn, but only when it changed.
+Emma does not send her system prompt over the wire.
+`writeHarnessPrompt` in
+[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes it to
+`<userData>/harness/.fx/AGENTS.md`, which
+[`builtins/context.zig`](../harness/src/builtins/context.zig) loads as
+`<global-rules>` beside its own built-in prompt. The block is the user's
+Settings prompt, the connections block, and any kept Agent-page improvement,
+rewritten per turn only when it changed. The one thing that cannot live there is
+a per-turn A/B arm; that rides the turn's skill context.
 
-The one thing that cannot live in that file is the A/B arm a turn landed on, because that is a coin flip per turn. It rides the turn's skill context instead.
-
-Skills work the same way. `mirrorSkillsToHarness` in [capabilities.ts](../desktop/main/capabilities.ts) copies every skill Emma can see into `<harnessHome>/.fx/skills` — copied, not symlinked, because the harness drops symlinked skill directories. Disabled skills are filtered out here, since the harness has no notion of one being off.
+Skills work the same way — see
+[plugins.md](plugins.md#bundled-skills) for `mirrorSkillsToHarness`.
 
 ## `harness/src/` map
 
 | Directory | Owns |
 | --- | --- |
-| `acp/` | The JSON-RPC server. `server.zig` (dispatch, session state, outbound registry), `prompt.zig` (one turn, 4600 lines), `sessions.zig` (new/load/resume/list/remove), `types.zig` (update writers, stop reasons), `jsonrpc.zig` (framing), `mcp_servers.zig` (parsing `mcpServers`). |
-| `builtins/` | The registries. `tools.zig` (the tool table and `advertisement_set`), `emma_tools.zig` + `emma/` (Emma's twenty-three), `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (the system prompt and `AGENTS.md`), `providers.zig`, `gateway.zig`. |
-| `core/` | Everything with state. `agent/` (the loop: `runtime/orchestrator.zig`, `runtime/gateway_step.zig`, `runtime/context_experiments.zig`), `tooling/` (dispatch, admission, advertisement, result limits, MCP and native discovery), `permissions/`, `session/`, `mcp/`, `lsp/` (language server client, pool and registry), `skills/`, `hooks/`, `subagent/`, `config/`, `modes/`, `gateway/`, `cli/` (`acp_runner.zig`, `cli_ask.zig`, `cli_surface.zig`, `doctor_runtime.zig`), `workspace/`, `background/`, `terminal/`, `execution/`, `auth/`, `output/`, `shared/`, plus smaller ones. |
-| `gateway/` | Provider transport only. `emma_openai.zig` is the OpenAI-compatible Chat Completions client and holds `default_chat_url` and `chat_url_env`; also `client.zig`, `web_search.zig`, `generation_usage.zig`, and the JS-host stream and catalog providers for the WASM build. |
-| `tools/` | Tool implementations: `filesystem/`, `shell/`, `web/`, `terminal/`, `lsp/`, `agent/` (`subagent.zig`, `vision.zig`, `ask_user_question.zig`), `skills/`, `session/`, `memory/`, and `emma/bridge.zig`. Specs live in `builtins/tools.zig`, not here. |
-| `ui/` | The terminal front end, and no product state: `render_engine/`, `transcript/`, `footer/`, `input/`, `terminal/`, `assistant/`, `subagent/`. Emma never sees any of it. |
+| `acp/` | The JSON-RPC server: `server.zig` (dispatch, session state, outbound registry), `prompt.zig` (one turn), `sessions.zig`, `types.zig`, `jsonrpc.zig`, `mcp_servers.zig` |
+| `builtins/` | The registries: `tools.zig`, `emma_tools.zig` + `emma/`, `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (system prompt and `AGENTS.md`) |
+| `core/` | Everything with state: `agent/runtime/` (the loop), `tooling/`, `permissions/`, `session/`, `mcp/`, `lsp/`, `skills/`, `hooks/`, `subagent/`, `workspace/`, `terminal/`, `execution/` |
+| `gateway/` | Provider transport only. `emma_openai.zig` holds `default_chat_url` and `chat_url_env` |
+| `tools/` | Implementations. Specs live in `builtins/tools.zig`, not here |
+| `ui/` | The terminal front end. Emma never sees any of it |
 
-Top level: `main.zig` is the composition root and holds no leaf feature logic. `wasm_core_main.zig`, `wasm_term_main.zig` and `napi_core_main.zig` are the SDK entry points.
+`main.zig` is the composition root. The `wasm_*` and `napi_*` entry points serve
+upstream's `libfx` package in [`harness/sdk/`](../harness/sdk), which Emma
+neither builds nor ships.
 
-## Building it
+## Building and testing
 
-Zig 0.16.0 or later.
+Zig 0.16.0, declared as `minimum_zig_version` in `harness/build.zig.zon`. The
+harness declares no Zig package dependencies.
 
-```bash
-npm --prefix desktop run build:harness   # the one script for emma-cli
-(cd harness && zig build)                # the same thing, directly
-(cd harness && zig build test)           # the Zig unit tests
+```sh
+npm --prefix desktop run build:harness   # the one script
+(cd harness && zig build)                # the same thing
+(cd harness && zig build test)           # the only Zig test suite in the repo
 ```
 
-`build:harness` is just `(cd ../harness && zig build)`. Two other scripts reach it: `build:host` chains it after `emma-host`, and `package:mac` runs `zig build -Doptimize=ReleaseSafe` in `harness/` inline. Nothing else builds `emma-cli`. `npm start`, `npm run build` and `npm run check` do not, so a stale binary survives all three.
+`build:host` chains it after `emma-host`, and `package:mac` runs
+`zig build -Doptimize=ReleaseSafe` inline. Nothing else builds `emma-cli` —
+`npm start`, `npm run build`, and `npm run check` do not, so a stale binary
+survives all three. A checkout uses `harness/zig-out/bin/emma-cli`
+(`DEV_BINARIES` in `main.ts`); a packaged app has it at
+`Emma.app/Contents/Resources/emma-cli`.
 
-`(cd harness && zig build test)` is the only Zig test suite in the repo.
+### Against a fake provider
 
-A checkout uses `harness/zig-out/bin/emma-cli`, from `DEV_BINARIES` in [main.ts](../desktop/main/main.ts).
+[`harness/scripts/mock-openai.mjs`](../harness/scripts/mock-openai.mjs) is a
+stand-in Chat Completions endpoint that checks the request shape and drives one
+real round trip, so the transport can be proven with no credential and no
+network:
 
-## Testing against a fake provider
-
-[`harness/scripts/mock-openai.mjs`](../harness/scripts/mock-openai.mjs) is a stand-in Chat Completions endpoint, so the transport can be proven end to end with no credential and no network. It checks the request shape — `messages[]` present, AI-SDK `prompt` and `toolChoice` absent, `model` a non-empty string, `tools[]` non-empty — then drives one real round trip: turn one asks for a `bash` call, turn two answers with text. Any mismatch is a non-zero exit.
-
-```bash
+```sh
 node harness/scripts/mock-openai.mjs 8099 &
 EMMA_PROVIDER_API_KEY=anything \
 EMMA_PROVIDER_CHAT_URL=http://127.0.0.1:8099/v1/chat/completions \
   harness/zig-out/bin/emma-cli acp
 ```
 
-`EMMA_PROVIDER_CHAT_URL` is read by `chatUrl()` in [`gateway/emma_openai.zig`](../harness/src/gateway/emma_openai.zig). Empty or unset falls back to `default_chat_url`, `https://openrouter.ai/api/v1/chat/completions`. The same variable points at a local llama-server.
+| Variable | Effect |
+| --- | --- |
+| `EMMA_PROVIDER_API_KEY` | The only credential source. There is no sign-in surface |
+| `EMMA_PROVIDER_CHAT_URL` | Read by `chatUrl()` in [`gateway/emma_openai.zig`](../harness/src/gateway/emma_openai.zig). Unset falls back to `https://openrouter.ai/api/v1/chat/completions`. Also points at a local llama-server |
+| `EMMA_OPENROUTER_ZDR` | Any non-empty value adds OpenRouter's `data_collection: "deny"` and `zdr: true`. Opt-in, because most free endpoints offer neither |
+| `EMMA_UPGRADE_BASE_URL` | Loopback E2E override only; emma-cli ships inside the app and has nothing to self-update from |
 
-Two other credential-adjacent variables:
-
-- `EMMA_PROVIDER_API_KEY` is the only credential source there is. There is no sign-in surface.
-- `EMMA_OPENROUTER_ZDR`, set to any non-empty value, adds OpenRouter's `data_collection: "deny"` and `zdr: true` routing flags. It stays opt-in because most free endpoints offer neither and would fail the turn. Emma toggles it on `process.env` from Settings, in [main.ts](../desktop/main/main.ts).
-
-### The larger suites
-
-- [`harness/tests/e2e/`](../harness/tests/e2e) — TypeScript, run with `bun test` from that directory (`bun test acp.test.ts`, `test:tui`, `test:cli`). They spawn the built binary with a fake key like `EMMA_PROVIDER_API_KEY: "fake-mcp-stdio-key"` and never reach a provider. Every root `*.test.ts` must be classified in `harness/scripts/pgso/corpus.json` as training, verification-only, or an intentional exclusion; CI rejects a missing or stale entry.
-- [`harness/tests/evals/`](../harness/tests/evals) — model-backed. These need a real `EMMA_PROVIDER_API_KEY` and cost money.
-- [`harness/benchmarks/`](../harness/benchmarks) — `startup.sh`, `file_index_bench.zig`, `activity_progress.zig`, `approval_review.zig`, with `check_budgets.py` and `summarize.py` over `benchmarks/results`.
-
-## `harness/sdk/`
-
-Upstream's `libfx` npm package: the harness embedded in a JavaScript host. Emma does not use it. It ships native Node addons for Linux and macOS on x64 and arm64, `fx-core.wasm` for headless agents, `fx-term.wasm` for the interactive terminal, and a dependency-free JS host layer. Exports are `createFxAgent()`, `createFxTerminal()`, `supportsJspi()`, `xtermAdapter()` and `encodeXtermKeyEvent()`.
-
-It needs Node 20+, and Chrome or Edge 137+ with JSPI for the browser path. The WebAssembly SDK is marked experimental. See [`harness/sdk/README.md`](../harness/sdk/README.md) and [`harness/sdk/NAPI.md`](../harness/sdk/NAPI.md). Nothing in `desktop/` imports it.
-
-## Where it lives in a packaged app
-
-`package:mac` passes `--extra-resource=../harness/zig-out/bin/emma-cli`, so a built app has it at:
-
-```
-Emma.app/Contents/Resources/emma-cli
-```
-
-`binary("emma-cli")` in [main.ts](../desktop/main/main.ts) resolves to `process.resourcesPath` when packaged and `harness/zig-out/bin/emma-cli` in a checkout.
+Larger suites: [`harness/tests/e2e/`](../harness/tests/e2e) (TypeScript, `bun
+test`, spawns the built binary with a fake key and never reaches a provider;
+every root `*.test.ts` must be classified in `harness/scripts/pgso/corpus.json`
+or CI rejects it), [`harness/tests/evals/`](../harness/tests/evals)
+(model-backed, needs a real key), and
+[`harness/benchmarks/`](../harness/benchmarks).
 
 ## See also
 
-- [architecture.md](architecture.md) — how the harness sits beside `emma-host` and the renderer
-- [cli.md](cli.md) — driving the user's other coding CLIs
+- [architecture.md](architecture.md) — how the harness sits beside `emma-host`
 - [permissions.md](permissions.md) — the modes the harness maps onto
 - [tools.md](tools.md) — what each of Emma's tools does
-- [development.md](development.md) — building and testing the rest of the repo
-- [plugins.md](plugins.md) — the other extension surface
-- [autoresearch.md](autoresearch.md) — one of the tools the harness now reaches
-- [troubleshooting.md](troubleshooting.md) — when a run will not start
+- [plugins.md](plugins.md) — skills, MCP, and the plugin format
+- [credits.md](credits.md) — everything Emma is built on

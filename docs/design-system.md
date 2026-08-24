@@ -1,299 +1,174 @@
-# Emma design system
+# Design system
 
-One language for every surface Emma paints: the workspace window, and equally
-the notch surfaces (`.overlay`, `.island*`, `.orb`, `.radial`, `.notch-*`,
-`.screen-annotation`, `.run-banner`). The notch used to be its own product —
-soft glass, 20px radii, a yellow accent, a rainbow aura — and is now drawn from
-the same tokens and the same rules as everything else. This file is the
-contract.
+One visual language for every surface: the workspace window and the notch
+surfaces (`.overlay`, `.island*`, `.orb`, `.radial`, `.notch-*`,
+`.screen-annotation`, `.run-banner`) are drawn from the same tokens.
 
-## Non-goals
-
-- Do not invent hues. The six in "Palette" below are the whole set; adding a
-  seventh is a design decision, not a convenience.
-- Do not add a CSS framework, a component library, or a theming abstraction.
-  Tokens in `src/styles/tokens.css`, plain CSS in region files. That is all.
-
-## What is wrong today
-
-1. **Type is microscopic.** 7px Departure Mono eyebrows on nearly every block,
-   8-10px body copy. It reads as a demo, not an app. The reference layout uses
-   13-15px UI text and reserves small caps for genuine metadata.
-2. **Everything is an eyebrow.** `WORKSPACE`, `THREAD / A1B2C3D4`,
-   `SETTINGS / LOCAL TO THIS MAC`, `ORDERED BLOCKS`. Keep at most one per view.
-3. **Two navigation panes.** A 188px rail plus a 246px list eats 434px before
-   content starts. Merge into one sidebar.
-4. **Hard 1px `#292a26` borders everywhere.** Separation should come from
-   surface elevation, not grid lines.
-5. **Cramped rows next to sprawling pages.** Interactive rows ran 5-9px pad with
-   no min-height while page chrome ran 24-32px gutters. Rows want 4-8px pad and
-   a 28-32px min height; pages want to come *down* the spacing scale, not up.
-   See "Density" — dense is the goal, cramped targets are not.
+Tokens live in [`desktop/src/styles/tokens.css`](../desktop/src/styles/tokens.css).
+Region stylesheets are plain CSS, imported in order from
+[`desktop/src/index.css`](../desktop/src/index.css). No component library, no
+theming abstraction. Do not hard-code a hex value that a token already names.
 
 ## Tokens
 
-Defined in `src/styles/tokens.css`. Use them; do not hard-code new hex values.
+### Surfaces and ink
 
-Surfaces stack: `--bg` (window) → `--surface` (sidebar/panel) →
-`--surface-2` (card/composer) → `--surface-3` (hover) → `--surface-4` (active).
+| Token | Value | Use |
+| --- | --- | --- |
+| `--bg` | `#0e0e10` | The window. Most of the app sits here |
+| `--surface` | `#131316` | Sidebar, panel |
+| `--surface-2` | `#17171a` | Card, composer |
+| `--surface-3` | `#1c1c20` | Hover |
+| `--surface-4` | `#232327` | Active |
+| `--chrome` | `var(--surface)` | Titlebar as-is; the sidebar mixes it to 35% over `vibrancy: "sidebar"` |
+| `--text` | `#e8e6df` | Primary |
+| `--text-2` | `#e8e6dfad` | Secondary, labels. 6.56:1 on `--surface-4` |
+| `--text-3` | `#e8e6df8c` | Timestamps, captions. 4.80:1 on `--surface-4` — the floor |
+| `--border` | `#e8e6df26` | The quiet grid |
+| `--border-strong` | `#e8e6df47` | A region outline, or a band separator |
+| `--solid` / `--solid-hover` / `--fg-invert` | `#e8e6df` / `#f4f2ec` / `#0e0e10` | Light-on-dark primary button pair |
 
-Text: `--text` (primary) → `--text-2` (secondary/label) → `--text-3` (tertiary,
-timestamps and captions only).
+Never put `--border` and `--border-strong` on the same edge.
 
-Borders are alpha whites (`--border`, `--border-strong`) so they work over any
-surface. `--accent` is the green; it is for live status, focus rings, and the
-one primary action per view. `--fg-invert`/`--solid` are the light-on-dark
-primary button pair.
+### Palette
 
-Radii: `--r-sm` 6, `--r-md` 10, `--r-lg` 14, `--r-xl` 20, `--r-full`.
-Space scale: `--s-1` 4 through `--s-8` 40. Nothing between steps.
-Type: `--fs-2xs` 10 … `--fs-3xl` 28, with `--font-mono` reserved for metadata.
+Six categorical hues, and only these six. A hue must mean something — a
+category, a series, a section, a state. If you cannot say what it signifies,
+use `--text-2`.
 
-## Layout
+| Token | Hex | Meaning |
+| --- | --- | --- |
+| `--orange` | `#ff6a3d` | The default accent |
+| `--blue` | `#6faee6` | Links and references |
+| `--rose` | `#ed7a9b` | Danger, destructive confirmation |
+| `--teal` | `#3fd8c0` | Categorical |
+| `--lime` | `#c3d64b` | Categorical |
+| `--violet` | `#ae78f0` | Categorical |
 
-Reference is the Codex desktop layout, rendered in Emma's palette.
+`--accent` aliases `--orange` and `--danger` aliases `--rose`; Settings →
+Appearance repoints `--accent` at another palette hue and everything derived
+follows. `--accent-soft` is the accent at 14%. `--danger-surface` is `#2a1620`.
 
-```
-┌──────────── 40px titlebar (drag region, centered title) ────────────┐
-│ sidebar 260px │            content column             │ context 300 │
-│               │                                       │  (floating) │
-│  brand ⌄  ⌕ ⚙ │   ┌─ scroll ──────────────────────┐   │ ┌─────────┐ │
-│  New thread   │   │  centred 720px transcript     │   │ │ card    │ │
-│  Threads      │   │  user msg  → right pill       │   │ │ sections│ │
-│  Knowledge    │   │  emma msg  → flush left       │   │ └─────────┘ │
-│  Agent        │   └───────────────────────────────┘   │             │
-│  Scheduled    │   ┌─ composer, floating, r-xl ────┐   │             │
-│  ─ PROJECTS ─ │   │  textarea                     │   │             │
-│  ▸ base name  │   │  ＋  model ⌄        🎙  ( ↑ )  │   │             │
-│     thread    │   └───────────────────────────────┘   │             │
-│  ─────────────│                                       │             │
-│  ● agent · ⌥⌥ │                                       │             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+The accent is for **action and state only**: primary action, active state,
+focus ring, checked control, and literal quantities meant to be read as data.
+When something is one of a set — chart series, source kinds, status classes —
+give the set distinct hues in palette order instead of tinting all of them
+with the accent.
 
-Rules:
+Two deliberate exceptions: the vendor brand tints in `settings.css`, and the
+screen-annotation pen, which is ink on the user's own wallpaper.
 
-- **Sidebar** is one pane. Top: brand row with a disclosure chevron and icon
-  buttons. Then primary nav rows (icon, label, count) at 32px min-height,
-  `--r-md`, active state = `--surface-3` fill, no left bar. Then a `PROJECTS`
-  section label, then knowledge bases as collapsible groups with their threads
-  nested one indent level under them. Bottom: a persistent status row.
-- **Content** is a single centred column, `max-width: 760px`, gutters
-  `clamp(16px, 4vw, 40px)`. No header border; the view title sits inline.
-- **Messages**: user turns are right-aligned pills on `--surface-2` with
-  `--r-lg`; assistant turns are plain text flush left at `--fs-md`, no avatar
-  box, no card. Role/time metadata is `--text-3` and only appears on hover for
-  user turns.
-- **Composer** floats above the transcript bottom with `--r-xl`, `--surface-2`,
-  `--shadow-lg`, and a hairline `--border` that brightens on focus-within. The
-  tool row sits inside it. Send is a 32px circle.
-- **Context panel** is a floating rounded card inset from the window edge
-  (`margin: var(--s-4)`), `--surface` on `--r-lg`, not a flush column with a
-  left border. Sections are label + rows, no dividers between every row.
-- **Settings** is a full-content takeover: its own left sub-nav (grouped by
-  `Personal` / `Integrations` / `Coding`) and a right column of setting rows.
-  Each row is title + one-line description on the left, control on the right,
-  grouped into `--surface` cards with `--r-lg`.
-- **Popovers and dialogs** use `--surface-2`, `--r-lg`, `--shadow-lg`, and 12px
-  internal padding. Menu rows are 34px, icon + label + optional description.
+### Geometry, space, type
 
-## The mark
+| Group | Tokens |
+| --- | --- |
+| Radii | `--r-sm` `--r-md` `--r-lg` `--r-xl` are all **`0`**. `--r-full` is `999px` and exists only for genuinely circular things |
+| Space | `--s-1` 4 · `--s-2` 6 · `--s-3` 8 · `--s-4` 12 · `--s-5` 16 · `--s-6` 20 · `--s-7` 24 · `--s-8` 32. Nothing between steps |
+| Type | `--fs-2xs` 10 · `--fs-xs` 11 · `--fs-sm` 12 · `--fs-md` 13 · `--fs-lg` 14 · `--fs-xl` 15 · `--fs-2xl` 17 · `--fs-3xl` 20 |
+| Tracking | `--ls-caps` `.08em`, on uppercase labels only |
+| Shadows | `--shadow-sm` `--shadow-md` `--shadow-lg`. Only surfaces that genuinely float cast one |
+| Motion | `--t` — 120ms ease. Hover and focus only |
+| Column | `--content-gutter` `clamp(12px, 3vw, 28px)` · `--content-column` `720px` (settings-wide overrides to 980px) |
 
-Emma's logo is the drawn window with the bow: `desktop/assets/emma.webp` with
-her eyes open, `desktop/assets/emma-blink.webp` with them shut. Both are trimmed
-to the ink — the drawing arrived on a 2048² canvas that was mostly empty margin,
-and any margin left in the file becomes padding baked into every box she sits
-in. They are 1800×1253, so a caller sets a width and lets the height follow.
+Corners are square. The `--r-*` aliases stay so region files keep compiling;
+new rules should simply omit `border-radius`.
 
-`EmmaMark` in `desktop/src/icons.tsx` stacks the two frames in one box and cuts
-between their opacities on the same keyframe. Both frames are transparent, so
-fading the shut one in over the open one is not enough — the open eyes show
-straight through the shut frame's empty pixels, and she reads as never blinking
-at all. The open frame has to go to zero in the same step. Swapping `src`
-instead of stacking would refetch and leave a gap on the first blink of a
-session, before the second frame has decoded. She is static by default; the
-`blinks` class is what opens the cycle.
+### Fonts
 
-She appears once, in the sidebar brand band at 28px beside the wordmark, and she
-blinks there. One mark in one place: a second copy floating in a corner reads as
-a stray element rather than as a logo.
-
-The `◇` tile (`.mark`) is unrelated — it is the empty-state and waiting glyph,
-not the logo.
-
-## Motion
-
-One transition token, `--t` (120ms ease). Hover and focus only. No entrance
-animations, no transforms on scroll.
-
-The one exception is Emma's blink: roughly 140ms shut once every 7 seconds,
-which is a human blink rate rather than a strobe. It is an opacity crossfade on
-a decorative image, so `prefers-reduced-motion` stops it through the global rule
-in `index.css` and simply leaves her eyes open.
-
-## Accessibility floor
-
-Focus-visible ring stays `2px solid var(--accent)` with `2px` offset on every
-interactive element. Body text never drops below 12px. Metadata never below
-10px. Keep `.sr-only` labels and existing `aria-*` wiring intact — restyling
-must not delete a single one.
-
-## Wave 2 contract (markup ↔ stylesheet split)
-
-Wave 2 runs one markup agent (sole owner of `desktop/src/App.tsx`,
-`desktop/src/AgentView.tsx`, `desktop/src/layout.ts`) alongside three
-stylesheet agents (one each for `conversation.css`, `panels.css`, and
-`sidebar.css` + `settings.css`). Nobody edits a file they do not own.
-
-The markup agent guarantees these class names exist so the stylesheet agents
-can target them without seeing the diff:
-
-- `.composer-row` — the flex row holding `.composer-tools` and the send
-  button. Replaces the `.composer > div:not(.composer-attachment)` selector.
-- `.sidebar-search` — wrapper around a single `<input type="search">` that
-  filters the projects tree, placed between `.new-thread` and
-  `.sidebar-projects`.
-- `.provider-mark-text` — wraps the `<strong>` + `<small>` pair inside each
-  `.provider-marks` entry.
-- `.page-title-row` — wraps the page title textarea and `.page-category`
-  controls in the knowledge page editor.
-
-And guarantees these are gone: `.brand-chevron`, the hard-coded `60D` and `5`
-nav badges, the `.artifact-heading` "ORDERED BLOCKS" eyebrow, the per-row
-eyebrow `<span>`s in the settings rows, and the titlebar's duplicate
-`HOST CONNECTED` pill (sidebar footer keeps the single liveness indicator).
-
-Casing rule: JSX string literals are written in sentence case. Where the
-design calls for visual small-caps, the stylesheet applies
-`text-transform: uppercase` — never bake the caps into the string.
+| Token | Face | Use |
+| --- | --- | --- |
+| `--font-mono` | Departure Mono | The interface face: labels, values, nav, buttons, counts, table headers, IDs, timestamps — anything on the grid |
+| `--font` | Inter | Prose read in sentences: message bodies, page copy, help text |
+| `--font-code` | `ui-monospace` | Text that must survive being copied out |
 
 ## Structure: rules, not boxes
 
-The app is drawn with sharp 1px lines on a grid. Nothing is rounded — there is
-no radius token for a rectangle because there are no rounded rectangles. A
-corner radius breaks the grid and immediately reads as a different product.
+The app is drawn with sharp 1px lines on a grid.
 
-**A region is an outline, not a card.** `1px solid var(--border-strong)`, no
-fill, no shadow, square corners. Inside it, bands are separated by full-bleed
-`1px solid var(--border)` rules. The canonical composition is:
+- **A region is an outline, not a card.** `1px solid var(--border-strong)`, no
+  fill, no shadow, square corners. Inside it, bands are separated by full-bleed
+  `1px solid var(--border)`.
+- **Rules are full-bleed.** A band's rule runs to the region's outline, not
+  inset by the band's padding:
+  `margin-inline: calc(var(--s-4) * -1); padding-inline: var(--s-4);`
+  An inset rule looks like a mistake; a full-bleed rule looks like a terminal.
+- **Fill means state, never grouping.** Background colour is hover, selection,
+  active. To say "these belong together", use a rule or a shared edge.
+- **Never stack outlines.** An outlined region may not contain another. If two
+  things each need an outline, they are siblings.
+- **Align to columns like a terminal.** `LABEL    value` is a two-column grid
+  with the value on a fixed tab stop, not `space-between`.
+- **Links are underlined.** In a chrome this flat, colour alone is not a signal.
+- **Casing.** JSX string literals are sentence case; visual small caps come
+  from `text-transform: uppercase` in the stylesheet.
 
-```
-┌──────────────────────────────────────┐
-│ HEADER LABEL                     1/5 │  <- header band, rule below
-├──────────────────────────────────────┤
-│ body                                 │  <- content band
-├──────────────────────────────────────┤
-│ PRIMARY ACTION                       │  <- action band, rule above
-├──────────────────────────────────────┤
-│ id                       metadata    │  <- footer band
-└──────────────────────────────────────┘
-```
+## No walls of text
 
-**Rules must be full-bleed.** A band's rule runs to the region's outline, not
-inset by the band's padding. In practice: negative inline margins equal to the
-padding, then re-pad inside. An inset rule looks like a mistake; a full-bleed
-rule looks like a terminal.
+Emma's UI does not explain itself in paragraphs. A view shows the thing; it
+does not narrate it. Where prose is genuinely unavoidable it goes behind the
+`(i)` `InfoDot` (`desktop/src/icons.tsx`) — a `<details>` whose summary is a
+single `i` — beside the heading it belongs to, not inline in the view.
 
-```css
-.band { margin-inline: calc(var(--s-4) * -1); padding-inline: var(--s-4); border-bottom: 1px solid var(--border); }
-```
+## Layout
 
-**Fill means state, never grouping.** A background colour is reserved for
-hover, selection, and active. If you are filling something to say "these belong
-together", use a rule or a shared left edge instead.
+The shell is a two-column grid: `--sidebar-width` then content.
 
-**Never stack outlines.** One outlined region may not contain another. Inside a
-region you get rules and space, nothing else. If two things each need an
-outline, they are siblings.
+| Surface | Contract |
+| --- | --- |
+| Sidebar | One pane, 260px by default, user-resizable 200–340, 46px collapsed. `--row` 28px, `--pad` `--s-4`. Right edge is `--border-strong`; ground is `--chrome` at 35% over sidebar vibrancy |
+| Content | Single centred column at `--content-column`, gutters `--content-gutter` |
+| Messages | User turns right-aligned on `--surface-2`; assistant turns plain text flush left at `--fs-md`, no avatar, no card. Metadata is `--text-3` |
+| Composer | Floats above the transcript bottom on `--surface-2` with `--shadow-lg` and a hairline that brightens on focus-within |
+| Context bar | Floating card inset from the window edge, not a flush column |
+| Settings | Full-content takeover with its own sub-nav grouped `Personal` / `Coding` / `Integrations` / `Emma` |
 
-**Align to columns like a terminal.** `LABEL    value` is a two-column grid with
-the value on a fixed tab stop, so every row's values line up vertically. It is
-not `space-between` — that flings the value to the far edge and leaves a
-different gap in every row.
+## The mark
 
-**Mono is the interface face.** Labels, values, nav, buttons, counts, table
-headers, IDs, timestamps — anything sitting on the grid — is `--font-mono`.
-Small-caps labels get `text-transform: uppercase` plus `letter-spacing:
-var(--ls-caps)`. `--font` (Inter) is only for prose the user reads in
-sentences: message bodies, page copy, help text. `--font-code` is for text that
-must survive being copied out.
+`desktop/assets/emma.webp` (eyes open) and `emma-blink.webp` (shut), both
+1800×1253 and trimmed to the ink — set a width and let the height follow.
+`EmmaMark` in `desktop/src/icons.tsx` stacks both frames and crosses their
+opacities on the same keyframe; fading the shut frame in is not enough, because
+the open eyes show through its transparent pixels.
 
-**Links are underlined.** In a chrome this flat, colour alone is not enough of
-a signal.
+She appears once, in the sidebar brand band at 28px. The `blinks` class opens
+the cycle: `emma-open` / `emma-shut`, 7s, which is a human blink rate.
+`prefers-reduced-motion` stops it through the global rule in `index.css` and
+leaves her eyes open.
 
-### Departure Mono glyph coverage
+The `◇` tile (`.mark`) is the empty-state glyph, not the logo.
 
-Measured, not guessed — advance width against the face's own `M` (10.2px at
-16px). Do not "fix" a glyph on this list without re-measuring.
+## Accessibility floor
 
-- **Has a real glyph:** `⌥ ⌘ ↑ ← → ↓ · — – … × │ ─ ▪`
-- **Falls back to the system font:** `⌄ ⌃ ⇧ ＋ ◇ ◆ ▣ ⌁ ⌕ ▸ ▾ ▴ ✓ ● ○ ◦ ◈ ⊞ ⎋ ⏎ ⇥ ⌫`
-
-Fallback is not a bug — the reference site mixes the same way, and the
-geometric shapes are legible. But a fallback glyph has a different advance
-(9.6px vs 10.2px), so it breaks a monospace column. Where a glyph sits in an
-aligned column, prefer one from the first list or a plain ASCII character;
-where it is decorative and standalone, either list is fine.
-
-`⌕` is the one to avoid outright: it renders as a soft blob at chrome sizes.
-Use `/` for search.
-
-## Palette
-
-The ground is warm-neutral near-black (`--bg` → `--surface-4`) and carries no
-hue of its own. Ink is one warm off-white at three opacities so every step
-composites correctly over any surface; all three clear WCAG AA 4.5:1 against
-every surface including `--surface-4`.
-
-Colour comes from six categorical hues, and only from them:
-
-| token | hex | meaning |
-| --- | --- | --- |
-| `--orange` | `#ff6a3d` | the accent: primary action, active state, focus ring, checked control, and literal quantities meant to be read as data |
-| `--blue` | `#6faee6` | links and references — anything that navigates |
-| `--rose` | `#ed7a9b` | danger, destructive confirmation |
-| `--teal` | `#3fd8c0` | categorical |
-| `--lime` | `#c3d64b` | categorical |
-| `--violet` | `#ae78f0` | categorical |
-
-`--accent` and `--danger` are aliases of `--orange` and `--rose`; use the
-semantic name when you mean the role and the hue name when you mean the
-category.
-
-**Use the whole palette, not one hue everywhere.** The previous pass aliased
-`--accent` to a single colour and then reached for `--accent` for every
-coloured thing on screen, so the app came out monochrome-purple. When something
-is one of a set — chart series, knowledge categories, satellite planes, source
-kinds, status classes — give the set distinct hues in palette order rather than
-tinting all of them with the accent. The accent is for *action and state
-only*.
-
-**A hue must still mean something** — a category, a series, a section, a state.
-It never decorates. If you cannot say what a hue signifies, use `--text-2`.
-Adding a seventh is a design decision, not a convenience.
-
-One deliberate exception: the vendor brand tints in `settings.css` (Codex,
-Claude, Cursor and friends own those colours, not us). The screen-annotation pen
-is the other off-palette colour, and it is ink the user draws on their own
-wallpaper rather than chrome — a highlighter has to be yellow.
+- `:focus-visible` is `2px solid var(--accent)` at `2px` offset, on every
+  interactive element.
+- Body text never below `--fs-sm` (12px); metadata never below `--fs-2xs`
+  (10px). These two steps do not move.
+- Interactive targets keep a real hit area. Do not shrink a target below 24px
+  to win space.
+- Keep `.sr-only` labels and `aria-*` wiring intact; restyling must not delete
+  one.
 
 ## Density
 
-Emma is a dense tool that people keep open all day, not a marketing page. When
-choosing a spacing or type step, reach for the next step **down** before the
-next step up, and prefer removing a wrapper to padding it.
+Emma is a dense tool people keep open all day. Reach for the next step **down**
+before the next step up, and prefer removing a wrapper to padding it. If a
+screen feels cramped, the fix is fewer elements — cut a label, drop a wrapper,
+merge two rows — not more padding.
 
-The spacing scale is deliberately tight (`--s-2` is 6px, `--s-8` is 32px).
-Density comes out of the top of the type scale, where the sprawl was — the
-bottom three steps are the accessibility floor and do not move:
+## Departure Mono glyph coverage
 
-- body text never below `--fs-sm` (12px)
-- metadata never below `--fs-2xs` (10px)
+Measured against the face's own `M` (10.2px at 16px). Do not "fix" a glyph on
+this list without re-measuring.
 
-The previous design failed in the other direction — 7px type everywhere — so
-tightening must never resume that. If a screen feels cramped, the fix is fewer
-elements, not more padding: cut an eyebrow, drop a wrapper, merge two rows.
+| | Glyphs |
+| --- | --- |
+| Real glyph | `⌥ ⌘ ↑ ← → ↓ · — – … × │ ─ ▪` |
+| Falls back to the system font | `⌄ ⌃ ⇧ ＋ ◇ ◆ ▣ ⌁ ⌕ ▸ ▾ ▴ ✓ ● ○ ◦ ◈ ⊞ ⎋ ⏎ ⇥ ⌫` |
 
-Interactive targets keep a real hit area regardless of density. Controls sized
-by explicit height (30–32px rows) stay that way; do not shrink a target below
-24px to win space.
+A fallback glyph has a different advance (9.6px vs 10.2px), so it breaks a
+monospace column. In an aligned column prefer the first list or plain ASCII;
+standalone and decorative, either is fine. `⌕` renders as a soft blob at chrome
+sizes — use `/` for search.
+
+Font licensing is in [credits.md](credits.md); vendor marks are in
+[icon-sources.md](icon-sources.md).

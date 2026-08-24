@@ -17,12 +17,12 @@ is the tour; this is the reference.
 |---|---|
 | [Context bar](context-bar.md) | The thread inspector — every component, pages, and rearranging the column |
 | [Permissions](permissions.md) | The four modes, the full gate matrix, the verifier, and what survives every mode |
-| [Tools](tools.md) | Every tool a turn can call: input, output, gate, and the file behind it |
-| [Models](models.md) | The local fallback, OpenAI-compatible endpoints, credentials, the OpenRouter catalog |
+| [Tools](tools.md) | Every tool a turn can call: Emma's own, and the harness's builtins |
+| [Models](models.md) | OpenAI-compatible endpoints, credentials, the OpenRouter catalog, private routing |
 | [Privacy](privacy.md) | What leaves this Mac and what doesn't, subsystem by subsystem |
-| [Knowledge](knowledge.md) | Knowledge bases, save & analyze, auto-categorisation, the Markdown mirror |
+| [Knowledge](knowledge.md) | The vault you pick, `keep`, tagging, and the note format on disk |
 | [Notch surfaces](notch.md) | The Option double-tap, Quick Ask, the island, quick actions, the radial ring |
-| [Terminal](terminal.md) | The shell panel under a thread: the pty helper, selecting output as context, ⌘-click links |
+| [Terminal](terminal.md) | The shell panel under a thread: the pty helper, output as context, ⌘-click links |
 | [Voice](voice.md) | Dictation's two engines, the local-only rule, and drawing |
 | [Computer use](computer-use.md) | Emma driving the Mac, and every safety rail as implemented |
 | [Jobs](jobs.md) | Scheduled workflows: triggers, node graphs, validation, execution |
@@ -33,7 +33,7 @@ is the tour; this is the reference.
 
 | | |
 |---|---|
-| [Plugins](plugins.md) | ChatGPT and Codex plugins, marketplaces, skills, MCP servers, tools Emma writes for herself, CSS UI plugins |
+| [Plugins](plugins.md) | Imported skills and MCP servers, marketplaces, tools Emma writes for herself, CSS UI plugins |
 | [Harness](harness.md) | `emma-cli`, the fx fork, ACP, and what it reaches today |
 | [Design system](design-system.md) | Tokens, density, and one visual language for every surface |
 
@@ -44,6 +44,7 @@ is the tour; this is the reference.
 | [Architecture](architecture.md) | Process boundaries, the trust model, the product contract |
 | [Development](development.md) | Repo map, house rules, toolchains, builds, tests, packaging |
 | [Data](data.md) | Every file Emma reads or writes, every environment variable |
+| [Credits](credits.md) | Every dependency, what it is used for, and its license |
 | [Icon sources](icon-sources.md) | Where each vendor mark came from and under what terms |
 
 [`AGENTS.md`](../AGENTS.md) at the repo root is the source of truth for anyone —
@@ -53,14 +54,14 @@ in this folder.
 
 ## Reading paths
 
-**"I want to make it mine."**
-[Context bar](context-bar.md) → [Design system](design-system.md) → [Plugins](plugins.md)
-
 **"I just want to run it."**
 [Getting started](getting-started.md) → [Models](models.md) → [Troubleshooting](troubleshooting.md)
 
 **"I want to know what it can do to my machine."**
 [Permissions](permissions.md) → [Tools](tools.md) → [Computer use](computer-use.md) → [Privacy](privacy.md)
+
+**"I want to make it mine."**
+[Context bar](context-bar.md) → [Design system](design-system.md) → [Plugins](plugins.md)
 
 **"I'm going to change the code."**
 [Architecture](architecture.md) → [Development](development.md) → [Concepts](concepts.md) → [Data](data.md)

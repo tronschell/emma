@@ -68,6 +68,31 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   the catalogue the user themselves attached, so Emma admits it without a
   prompt. A call naming `paths` is the model choosing a file, and keeps its
   per-path gate.
+- **Native Emma tools.** The twenty-three tools Emma owns are appended to fx's
+  registry as `++ emma_tools.all` — specs in `src/builtins/emma_tools.zig` and
+  `src/builtins/emma/`, one shared implementation in
+  `src/tools/emma/bridge.zig`, and a new `ExecutorKind.emma`. The harness
+  advertises and dispatches them but never runs one: `callEmmaTool` in
+  `src/acp/prompt.zig` writes an outbound `_emma/callTool` request and blocks
+  for the client's reply. They used to reach the model as a localhost MCP
+  server, because MCP is the only door upstream leaves open for a tool it does
+  not ship. `read_only_tool_names` in `src/builtins/tools.zig` had to gain them
+  when they stopped being MCP servers: `Registry.toolAllowed` waves through
+  anything the registry does not know, so bridging had made that list
+  irrelevant to them.
+- **Language servers.** `src/core/lsp/` and `src/tools/lsp/` are new — a
+  JSON-RPC client with `Content-Length` framing, a process pool keyed by
+  (server, workspace root), a data-only registry of about fifty servers in
+  `src/core/lsp/servers.zig`, and the `lsp` tool's nine actions. An agent that
+  can ask a real language server does not have to guess a definition from text.
+- **Tool description cap.** `gateway_schema.description_max_bytes` was
+  upstream's 1024 and is 4 KiB. `cappedDescriptionAlloc` truncates silently, so
+  at 1024 `workflow` and `autoresearch` lost their last commands with nothing to
+  show for it. A test in `src/builtins/emma_tools.zig` fails the build if a
+  description outgrows the cap.
+- **Cancelling one child.** `session/cancel_child` is added beside upstream's
+  `session/steer_child`, so Emma can stop a single subagent without cancelling
+  the parent turn that spawned it.
 
 ### De-Vercel pass (removals)
 
@@ -105,7 +130,10 @@ diagnostic instead of a silent fallback; `"VERCEL_OIDC_TOKEN="` in the
 `secret_prefixes` redaction allowlist in `src/core/shared/text_utils.zig`, since
 dropping an entry only weakens redaction; the `~/.fx` config paths and `FX_*`
 environment variables, which are fx branding rather than Vercel and are
-user-settable; and inert fixture strings naming `vercel-labs/agent-skills`,
+user-settable; `sdk/`, upstream's `libfx` package, unrenamed and still pointing
+at `vercel-labs/fx`, because Emma neither builds nor ships it — `build.zig.zon`
+`.paths` does not list it and the WASM and N-API artifacts are opt-in build
+options; and inert fixture strings naming `vercel-labs/agent-skills`,
 `github.com/vercel-labs/fx` git remotes, and `vercel/v0` PR URLs.
 
 ## Merging upstream
