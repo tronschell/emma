@@ -1,0 +1,400 @@
+/* The agent surfaces: the permission picker beside ＋, the live rail in the
+   sidebar, a subagent's tab, and the changes diff. Same rules-not-boxes grammar
+   as the rest of the app — see docs/design-system.md. */
+
+/* Permission picker ------------------------------------------------------ */
+
+/* Beside ＋ in the composer row: a trigger cut to .source-trigger's 26px band,
+   and the ＋ menu's own popover under it. The picker is the popover's anchor,
+   so the same component works in the composer and in the job form. */
+.mode-picker { position: relative; display: flex; align-items: center; flex: 0 0 auto; }
+.mode-trigger { display: flex; align-items: center; gap: var(--s-2); flex: 0 0 auto; height: 26px; padding: 0 var(--s-2); color: var(--text-2); border: 0; background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); white-space: nowrap; transition: background-color var(--t), color var(--t); }
+.mode-trigger:hover:not(:disabled), .mode-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
+.mode-trigger:disabled { color: var(--text-3); }
+.mode-trigger > b { font-weight: 400; line-height: 1; }
+.mode-trigger > span[aria-hidden] { color: var(--text-3); }
+.mode-picker[data-mode="ask"] .mode-trigger > b, .mode-row[data-mode="ask"] > b { color: var(--blue); }
+.mode-picker[data-mode="acceptEdits"] .mode-trigger > b, .mode-row[data-mode="acceptEdits"] > b { color: var(--lime); }
+.mode-picker[data-mode="auto"] .mode-trigger > b, .mode-row[data-mode="auto"] > b { color: var(--violet); }
+.mode-picker[data-mode="full"] .mode-trigger > b, .mode-row[data-mode="full"] > b { color: var(--accent); }
+
+/* The ＋ menu's panel and rows, anchored to the trigger instead of the composer:
+   narrow, because a rung's name and its one line are the whole row. */
+.mode-menu { width: min(300px, 92vw); max-height: none; padding: 0; }
+.mode-row { min-height: 40px; }
+/* The ring is drawn inside the outline so the popover's own edge never clips it,
+   and :focus carries it too — the arrows move focus programmatically. */
+.mode-row:focus, .mode-row:focus-visible { background: var(--surface-3); outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The chosen rung is marked the way the model menu marks the running model — an
+   accent word on the row, not a system checkmark. */
+.mode-row[aria-selected="true"] { background: var(--surface-3); }
+/* On the name's line, like .add-row's glyph, rather than halfway down a
+   description that wraps. */
+.mode-row > em { flex: 0 0 auto; align-self: flex-start; margin-left: auto; padding: 3px 0 0 var(--s-3); color: var(--accent); font-family: var(--font-mono); font-size: var(--fs-2xs); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* One rung runs unattended. It carries the accent rule the others do not, so the
+   weight is visible before the sentence beside it is read. */
+.mode-row[data-mode="full"] { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* Live agents ------------------------------------------------------------ */
+
+.agent-dot { display: inline-block; flex: 0 0 auto; width: 8px; height: 8px; border-radius: var(--r-full); }
+.agent-dot[data-status="waiting"] { animation: agent-waiting 1.4s ease-in-out infinite; }
+@keyframes agent-waiting { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .agent-dot[data-status="waiting"] { animation: none; } }
+
+.sidebar-agents { display: flex; flex-direction: column; gap: 1px; padding: var(--s-2) var(--s-2) var(--s-3); border-bottom: 1px solid var(--border); }
+.agent-chip { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: var(--s-2); padding: var(--s-1) var(--s-2); color: var(--text-2); background: transparent; border: 0; text-align: left; transition: background-color var(--t), color var(--t); }
+.agent-chip:hover { color: var(--text); background: var(--surface-2); }
+.agent-chip.active { color: var(--text); background: var(--surface-3); }
+.agent-chip .agent-dot { grid-row: span 2; align-self: start; margin-top: 4px; }
+.agent-chip span { overflow: hidden; font-family: var(--font-mono); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+.agent-chip small { overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
+.sidebar.collapsed .agent-chip { grid-template-columns: 8px; justify-content: center; }
+
+/* Background commands: the same rail, with a stop beside each row and the tail
+   of the open one below it. */
+.background-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-1); }
+.background-row .agent-button { min-height: 22px; padding: 0 var(--s-2); font-size: var(--fs-2xs); }
+.sidebar.collapsed .background-row { grid-template-columns: minmax(0, 1fr); }
+.background-output { max-height: 160px; margin: var(--s-1) 0 var(--s-2); padding: var(--s-2); overflow: auto; color: var(--text-3); background: var(--surface-2); font: var(--fs-2xs)/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.sidebar.collapsed .background-output { display: none; }
+
+/* Tabs ------------------------------------------------------------------- */
+
+/* The thread pane gains a row above the conversation only once there is more
+   than one tab, so an ordinary thread looks exactly as it did. */
+/* Pinned for the same reason .conversation is: every pane that can sit here —
+   transcript, agent, CLI, changes, git — is one nowrap child away from widening
+   an auto track and dragging the whole pane out from under the window. */
+.thread-column { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; }
+.chat-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; }
+.chat-pane[hidden] { display: none; }
+.thread-column:has(.agent-tabs) { grid-template-rows: auto minmax(0, 1fr); }
+.agent-tabs { display: flex; align-items: stretch; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.agent-tab { display: flex; align-items: center; border-right: 1px solid var(--border); }
+.agent-tab > button { display: flex; align-items: center; gap: var(--s-2); min-height: 30px; padding: 0 var(--s-3); color: var(--text-3); background: transparent; border: 0; font-family: var(--font-mono); font-size: var(--fs-xs); white-space: nowrap; transition: color var(--t), background-color var(--t); }
+.agent-tab > button:hover { color: var(--text-2); }
+.agent-tab.active > button { color: var(--text); background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--accent); }
+.agent-tab-close { padding: 0 var(--s-2) !important; font-size: var(--fs-sm) !important; }
+
+/* Meta harness ----------------------------------------------------------- */
+
+/* The pinned terminal, above the tabs and above the conversation: a CLI run
+   outlives the turn that started it, so it cannot live in the transcript. */
+.thread-column:has(.cli-dock) { grid-template-rows: auto minmax(0, 1fr); }
+.thread-column:has(.cli-dock):has(.agent-tabs) { grid-template-rows: auto auto minmax(0, 1fr); }
+
+.cli-dock { display: grid; gap: var(--s-1); padding: var(--s-2) var(--s-3); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.cli-dock > header { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.cli-dock-title { display: grid; min-width: 0; }
+.cli-dock-title strong { display: flex; align-items: baseline; gap: var(--s-2); font-size: var(--fs-xs); }
+.cli-dock-title strong em { color: var(--text-3); font-style: normal; font-family: var(--font-mono); font-size: var(--fs-2xs); }
+.cli-dock-title small, .cli-dock-folder { overflow: hidden; color: var(--text-3); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
+.cli-dock-folder, .cli-dock-more { margin-left: auto; font-family: var(--font-mono); }
+.cli-dock-more { color: var(--text-3); font-size: var(--fs-2xs); }
+.cli-dock > header button { min-height: 22px; padding: 0 var(--s-2); font-size: var(--fs-2xs); }
+
+/* The mark carries the CLI's identity, so it gets the same treatment the
+   importer rows give it rather than a second set of colours. Its inset comes
+   from .brand-image, like every other mark's. */
+.cli-mark { display: grid; place-items: center; flex: none; width: 16px; height: 16px; overflow: hidden; object-fit: contain; }
+.cli-mark.brand-fallback { display: grid; place-items: center; font-size: var(--fs-2xs); }
+.cli-mark.claude { color: #d6a47d; }
+.cli-mark.codex { color: #d7d6d0; }
+.cli-mark.pi { color: #b1d78b; }
+.cli-mark.opencode { color: #e9d660; }
+.cli-mark.cursor { color: #d2d2cf; }
+
+.cli-state { flex: none; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); }
+.cli-state.running { color: #57c785; }
+.cli-state.failed { color: #ff6b81; }
+.cli-unattended { flex: none; padding: 0 var(--s-1); color: #f2a13c; border: 1px solid currentcolor; border-radius: 2px; font-size: var(--fs-2xs); }
+/* A run mid-turn gets a live edge, so the dock reads as moving at a glance. */
+.cli-dock[data-status="running"] { box-shadow: inset 2px 0 0 #57c785; }
+.cli-dock[data-status="failed"] { box-shadow: inset 2px 0 0 #ff6b81; }
+
+.cli-stream, .cli-terminal { overflow: auto; color: var(--text-2); background: var(--surface-1); font: var(--fs-2xs)/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.cli-stream { max-height: 108px; padding: var(--s-2); }
+.cli-terminal { min-height: 0; margin: 0 var(--s-3); padding: var(--s-3); }
+.cli-conversation { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.cli-conversation:has(.cli-note) { grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+.cli-conversation .thread-bar h2 { display: flex; align-items: center; gap: var(--s-2); }
+.cli-note { margin: 0 var(--s-3) var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); }
+
+/* Subagent panel --------------------------------------------------------- */
+
+.agent-conversation { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.agent-conversation:has(.capability-error) { grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+.agent-conversation .thread-bar h2 { display: flex; align-items: center; gap: var(--s-2); }
+.agent-status { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; color: var(--text-3); }
+.agent-status.running, .agent-status.waiting { color: var(--accent); }
+.agent-status.failed { color: var(--danger); }
+.agent-status.done { color: var(--teal); }
+
+/* Two columns of label/value, the same dl grammar the agent dialog uses. */
+.agent-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 var(--s-5); padding: var(--s-3) max(var(--content-gutter), calc((100% - var(--content-column)) / 2)); border-bottom: 1px solid var(--border); }
+.agent-stats > div { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); padding: var(--s-1) 0; }
+.agent-stats dt { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.agent-stats dd { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.agent-steer-hint { flex: 1; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); }
+
+/* Spawned threads in the transcript --------------------------------------- */
+
+/* A thread the agent started, inline where it started it: a rule down the left
+   like the artifact card's, everything else the same mono grammar as the agent
+   rail. Wide enough for a title and its status on one line, and no wider —
+   several of these can land in one turn. */
+.thread-card { display: grid; gap: var(--s-1); width: 100%; margin: var(--s-2) 0; padding: var(--s-2) var(--s-3); background: var(--surface-2); box-shadow: inset 2px 0 0 var(--border); }
+.thread-card > header { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.thread-card > header strong { overflow: hidden; font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+/* The status pushes the buttons to the right edge and stays beside the title. */
+.thread-card > header .agent-status { margin-left: auto; }
+.thread-card > header .agent-button { min-height: 22px; padding: 0 var(--s-2); font-size: var(--fs-2xs); }
+.thread-card > small, .thread-card-sent { overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
+.thread-card > form { display: flex; align-items: center; gap: var(--s-2); }
+.thread-card input { flex: 1; min-width: 0; min-height: 24px; padding: 0 var(--s-2); color: var(--text); background: var(--surface); border: 1px solid var(--border); font-family: var(--font-mono); font-size: var(--fs-2xs); }
+.thread-card .capability-error { margin: 0; }
+
+/* Subagents in the inspector --------------------------------------------- */
+
+/* Under the timeline, in the 210–360px column: a square per delegated agent in
+   the colour its tab and its dot already wear. Square, not the rail's dot —
+   these open a tab, they do not blink. */
+.subagent-list { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.subagent-empty { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font-mono); }
+.subagent-empty code { color: var(--text-2); font: inherit; }
+/* Scoped to the list it always sits in: a row is a <button>, and the Settings
+   preview mounts this rail inside a page that resets every button on it — one
+   class of head start is what keeps a row drawn the same in both places. */
+.subagent-list .subagent { display: grid; grid-template-columns: 10px minmax(0, 1fr) 14px; align-items: center; gap: var(--s-2); width: 100%; min-height: 24px; padding: var(--s-1) var(--s-2) var(--s-1) 0; color: var(--text-2); border: 0; background: transparent; font: var(--fs-sm)/1.4 var(--font-mono); text-align: left; transition: background-color var(--t), color var(--t); }
+.subagent:hover, .subagent.active { color: var(--text); background: var(--surface-3); }
+.subagent > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The maker's mark where the model slug used to be, sized like the one under a
+   reply. `.brand-image`'s own padding and fit are index.css's. */
+.subagent-model { display: grid; place-items: center; width: 14px; height: 14px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
+/* Square and sharp: `i` is a 6px round dot everywhere else in the app. */
+.subagent-square { display: block; width: 10px; height: 10px; border-radius: 0; }
+.subagent-square[data-status="waiting"], .subagent-square[data-status="running"] { animation: agent-waiting 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .subagent-square[data-status="waiting"], .subagent-square[data-status="running"] { animation: none; } }
+
+/* The plan in the inspector ---------------------------------------------- */
+
+/* Boxed like the timeline's dialog, not full-bleed: a definite height is what
+   lets the map and the document scroll inside it rather than the whole page. */
+.plan-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(1080px, 100%); height: min(720px, 85vh); overflow: hidden; }
+.plan-split { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); min-height: 0; }
+.plan-map { display: grid; align-content: start; gap: var(--s-4); min-height: 0; overflow-y: auto; padding: var(--s-5); border-right: 1px solid var(--border); }
+.plan-map .plan-head strong { color: var(--text-2); font-size: var(--fs-xs); }
+.plan-map .plan-node { width: 26px; height: 26px; font-size: var(--fs-sm); }
+.plan-map .plan-key { font-size: var(--fs-xs); }
+.plan-doc { min-height: 0; overflow-y: auto; padding: var(--s-5) var(--s-7) var(--s-8); }
+.plan-goal, .plan-entry { max-width: 76ch; }
+.plan-goal { margin-bottom: var(--s-5); color: var(--text-2); }
+.plan-entry { display: grid; gap: var(--s-2); padding: var(--s-4) var(--s-5); border-left: 2px solid transparent; scroll-margin-top: var(--s-5); transition: background-color var(--t), border-color var(--t); }
+.plan-entry + .plan-entry { margin-top: var(--s-3); }
+.plan-entry.lit { background: var(--surface-2); }
+.plan-entry.active { border-left-color: var(--accent); background: var(--surface-3); }
+.plan-entry-title { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; align-items: baseline; gap: var(--s-3); margin: 0; color: var(--text); font: var(--fs-lg)/1.4 var(--font-mono); font-weight: 400; }
+.plan-entry-title b { color: var(--text-3); font-weight: 400; }
+.plan-entry-needs { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); margin: 0; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plan-entry-needs code { color: var(--violet); font-family: var(--font-code); }
+.plan-entry-needs em { font-style: normal; }
+.plan-doc .plan-list li { font-size: var(--fs-md); }
+.plan-doc .plan-result b { color: var(--text-3); font-weight: 400; }
+
+.plan-switch { display: flex; flex-wrap: wrap; gap: var(--s-1); }
+.plan-widget .plan-switch button { display: flex; align-items: center; gap: var(--s-1); max-width: 100%; min-height: 20px; padding: 0 var(--s-2); overflow: hidden; color: var(--text-3); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); white-space: nowrap; transition: color var(--t), border-color var(--t); }
+.plan-widget .plan-switch button span { overflow: hidden; text-overflow: ellipsis; }
+.plan-widget .plan-switch button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.plan-switch [data-status="running"] i { animation: agent-waiting 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .plan-switch [data-status="running"] i { animation: none; } }
+.plan-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: var(--s-2); }
+.plan-head strong { min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.plan-head em { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; }
+
+/* One drawn row per wave, x as a percentage so the same graph fits a 210px column
+   and a 360px one, y in px so a node is the same size in either. The edges are an
+   SVG *behind* real buttons: a node keeps its focus ring, its tooltip and its
+   hit area for free, and a line that passes under one is covered by its fill. */
+.plan-graph { position: relative; margin: var(--s-1) 0 var(--s-2); }
+.plan-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.plan-edges line { stroke: var(--border-strong); stroke-width: 1; transition: stroke var(--t); }
+/* An edge that skips a wave is the one misread as a straight run of steps, so it
+   is dashed the way a cross edge is drawn anywhere else. */
+.plan-edges line.far { stroke-dasharray: 3 3; }
+.plan-edges line.lit { stroke: color-mix(in srgb, var(--accent) 65%, transparent); }
+/* The pressed node's whole wave: what runs at once is the thing the graph is for. */
+.plan-band { position: absolute; left: calc(var(--s-2) * -1); right: calc(var(--s-2) * -1); background: var(--surface-3); }
+
+/* Square, like the subagent rail below it — a node here *is* one of those agents,
+   and this app has no rounded rectangles. */
+.plan-node { position: absolute; display: grid; width: 18px; height: 18px; min-height: 0; padding: 0; place-items: center; color: var(--text-3); border: 1px solid var(--border-strong); background: var(--surface); font: var(--fs-2xs)/1 var(--font-mono); transform: translate(-50%, -50%); transition: color var(--t), border-color var(--t), box-shadow var(--t); }
+.plan-node:hover { color: var(--text); border-color: var(--text-3); }
+.plan-node.active { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+/* Colour says where a step got to; fill and dashes say it again for anyone the
+   colour is lost on. */
+.plan-node[data-status="done"] { color: var(--fg-invert); border-color: var(--lime); background: var(--lime); }
+.plan-node[data-status="running"] { color: var(--fg-invert); border-color: var(--accent); background: var(--accent); animation: agent-waiting 1.4s ease-in-out infinite; }
+.plan-node[data-status="failed"] { color: var(--fg-invert); border-color: var(--danger); background: var(--danger); }
+.plan-node[data-status="ready"] { color: var(--text); border-color: var(--text-3); }
+.plan-node[data-status="waiting"] { color: var(--text-3); border-style: dashed; }
+@media (prefers-reduced-motion: reduce) { .plan-node[data-status="running"] { animation: none; } }
+
+.plan-key { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-3); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
+.plan-key span { display: flex; align-items: center; gap: var(--s-1); }
+/* `background` is stated because a bare `i` is an accent pip app-wide (index.css). */
+.plan-key i, .plan-switch i { flex: none; width: 7px; height: 7px; border: 1px solid var(--border-strong); background: transparent; }
+.plan-key [data-status="done"] i, .plan-switch [data-status="done"] i { border-color: var(--lime); background: var(--lime); }
+.plan-key [data-status="running"] i, .plan-switch [data-status="running"] i { border-color: var(--accent); background: var(--accent); }
+.plan-key [data-status="failed"] i, .plan-switch [data-status="failed"] i { border-color: var(--danger); background: var(--danger); }
+.plan-key [data-status="ready"] i, .plan-switch [data-status="ready"] i { border-color: var(--text-3); }
+.plan-key [data-status="waiting"] i, .plan-switch [data-status="waiting"] i { border-style: dashed; }
+
+/* The pressed step's own boxes. Paged, not scrolled: a step of forty tasks would
+   otherwise push the two rails below it off the panel. */
+.plan-tasks { display: grid; gap: var(--s-1); padding-top: var(--s-2); border-top: 1px solid var(--border); }
+/* The nodes are numbered, not labelled — this line is where the pressed one says its name. */
+.plan-step-title { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s-2); color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
+.plan-step-title b { color: var(--text-3); font-weight: 400; }
+.plan-live { display: flex; align-items: center; gap: var(--s-2); color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.plan-live i { background: var(--accent); animation: agent-waiting 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .plan-live i { animation: none; } }
+.plan-result { color: var(--text-2); font: var(--fs-2xs)/1.5 var(--font-mono); }
+.plan-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.plan-list li { display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: baseline; gap: var(--s-2); padding: 2px 0; color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
+.plan-list li > i { color: var(--text-3); font-size: var(--fs-2xs); font-style: normal; }
+.plan-list li.done { color: var(--text-3); }
+.plan-list li.done > i { color: var(--lime); }
+.plan-list li.done > span { text-decoration: line-through; }
+/* Scoped past `.plan-list li`, whose 10px first track would wrap this a word at a time. */
+.plan-list li.plan-none { grid-template-columns: minmax(0, 1fr); color: var(--text-3); font-size: var(--fs-2xs); }
+.plan-pages { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-2); }
+.plan-pages span { color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
+.plan-widget .plan-pages button { width: 20px; min-height: 20px; padding: 0; color: var(--text-2); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); transition: color var(--t), border-color var(--t); }
+.plan-widget .plan-pages button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.plan-widget .plan-pages button:disabled { color: var(--text-3); opacity: .5; }
+
+/* Sub threads in the inspector ------------------------------------------- */
+
+/* The same column, and deliberately not the same row. A subagent's square is a
+   fill because it is a process running inside this turn; a sub thread's mark is a
+   branch drawn in one line, because it is a place that was opened off this thread
+   and is still there once nothing is running in it. Pressing one leaves for that
+   thread, so the row ends in how long ago it last moved rather than in a model. */
+.subthread-list { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.subthread-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+/* Scoped to its list for the same reason the subagent row is: the Settings
+   preview mounts this inside a page that resets every button on it. */
+.subthread-list .subthread { display: grid; grid-template-columns: 12px minmax(0, 1fr) minmax(0, max-content); align-items: center; gap: var(--s-2); width: 100%; min-height: 24px; padding: var(--s-1) var(--s-2) var(--s-1) 0; color: var(--text-2); border: 0; background: transparent; font: var(--fs-sm)/1.4 var(--font-mono); text-align: left; transition: background-color var(--t), color var(--t); }
+.subthread:hover { color: var(--text); background: var(--surface-3); }
+.subthread > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subthread em { min-width: 0; overflow: hidden; color: var(--text-3); font-style: normal; font-size: var(--fs-2xs); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.subthread-branch { color: var(--text-3); font-style: normal; font-size: var(--fs-sm); line-height: 1; }
+.subthread-branch[data-status="waiting"], .subthread-branch[data-status="running"] { animation: agent-waiting 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .subthread-branch[data-status="waiting"], .subthread-branch[data-status="running"] { animation: none; } }
+/* Only on a working row, and only a glyph: a 24px row has no space for a boxed
+   button, and stopping is the one thing you would otherwise navigate to reach. */
+.subthread-list .subthread-stop { width: 20px; min-height: 20px; padding: 0; color: var(--text-3); border: 0; background: transparent; font-size: var(--fs-2xs); transition: color var(--t); }
+.subthread-list .subthread-stop:hover { color: var(--danger); background: transparent; }
+
+/* Changes ---------------------------------------------------------------- */
+
+.change-count { display: inline-flex; gap: var(--s-2); font-family: var(--font-mono); font-size: var(--fs-xs); font-style: normal; }
+.change-count b { color: var(--lime); font-weight: 400; }
+.change-count i { color: var(--danger); font-style: normal; }
+.changes-open { padding: 0 var(--s-2); background: transparent; border: 1px solid var(--border); transition: border-color var(--t); }
+.changes-open:hover { border-color: var(--border-strong); }
+
+.change-file { max-width: var(--content-column); margin: 0 auto; padding: var(--s-4) var(--s-4) var(--s-5); border-bottom: 1px solid var(--border); }
+.change-file > header { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-2); }
+.change-file > header strong { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.change-file > header button { padding: 0 var(--s-2); min-height: 24px; color: var(--text-2); background: transparent; border: 1px solid var(--border); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.change-file > header button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.change-file > header button:disabled { color: var(--text-3); }
+/* The diff is code, so it uses --font-code: it is the one thing here meant to be copied out. */
+.diff { max-height: 60vh; overflow: auto; padding: var(--s-2) 0; border: 1px solid var(--border); background: var(--surface); font-family: var(--font-code); font-size: var(--fs-xs); line-height: 1.5; white-space: pre; }
+.diff span { display: block; padding: 0 var(--s-3); color: var(--text-3); }
+.diff .added { color: var(--lime); background: color-mix(in srgb, var(--lime) 10%, transparent); }
+.diff .removed { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* Permission dialog ------------------------------------------------------ */
+
+.permission-dialog > header { align-items: flex-start; }
+.permission-detail { max-height: 200px; margin: 0 var(--s-5); overflow: auto; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: var(--font-code); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-word; }
+
+/* Git panel -------------------------------------------------------------- */
+
+/* Two tabs in the band the "Thread context" label had, so switching views costs
+   the header no height. */
+.inspector-tabs { display: flex; gap: 0; padding: 0 26px 0 0 !important; }
+.inspector-tabs button { min-height: 26px; padding: var(--s-2) var(--s-4) !important; border: 0 !important; color: var(--text-3); background: transparent; font-size: var(--fs-2xs); }
+.inspector-tabs button[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -1px 0 var(--accent); }
+
+/* The column is floored at zero, not at what the rows would like to be: a flex
+   row whose path is `flex: 1` reports the whole path as its intrinsic width, so
+   an auto column grew to the longest one and the rail scrolled sideways with the
+   +/- counts off its right edge. Clamped, the path ellipsizes instead — and an
+   open diff scrolls inside its own `overflow: auto` box, which is what it is for. */
+.git-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); }
+.git-head { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s-1) var(--s-2); align-items: baseline; }
+.git-head > span { color: var(--text-3); font-size: var(--fs-2xs); }
+.git-head > strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 400; }
+.git-head > small, .git-head > .change-count { grid-column: 1 / -1; color: var(--text-3); font-size: var(--fs-2xs); }
+/* The total is one row, spelled out rather than inherited: as a grid item the
+   `inline-flex` above is blockified to a full-width `flex`, and a stretched box
+   is one bad `flex-wrap` or stray `display` away from breaking +N over -N. */
+.git-head > .change-count { display: flex; flex-wrap: nowrap; width: max-content; }
+/* Bare, like every other expand in the panel: the glyph is already a shape, and
+   boxing this one made a button of it beside a branch name that is not one. */
+.git-head .git-expand { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; color: var(--text-3); background: transparent; transition: color var(--t); }
+.git-expand:hover { color: var(--text); }
+
+.git-file > summary { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) 0; cursor: pointer; color: var(--text-2); font-size: var(--fs-2xs); }
+/* Only the path is reversed — the ellipsis belongs on the front of a/long/path.
+   Scoped by class, because a bare `> span` also caught the +/- counts and printed
+   them backwards. */
+.git-file > summary > .git-path { flex: 1; min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+/* The type mark: fixed width, so the paths beside it line up down the column
+   however long the label is, and .git-path keeps the rest of the row. */
+/* One fixed width whether the row got a mark or the text fallback, so every path
+   in the list starts on the same left edge. The marks ship filled #fff like the
+   brand ones, so the dimming is opacity here, not colour in the asset. */
+.git-file > summary > .git-type { display: grid; place-items: center; flex: 0 0 26px; height: 14px; overflow: hidden; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 14px; text-align: center; }
+.git-file > summary > .git-type img { width: 14px; height: 14px; opacity: 0.55; transition: opacity var(--t); }
+.git-file[open] > summary > .git-type img, .git-file > summary:hover > .git-type img { opacity: 0.9; }
+.git-file[open] > summary { color: var(--text); }
+.git-file .diff { max-height: 40vh; }
+
+/* Each installed editor's own app icon, beside whatever the row names. The marks carry
+   no outline at rest — an app tile is already a shape, and boxing each one turned the
+   row into a strip of cells. The cost is measured and accepted: the dark tiles (Zed
+   2.13:1, Obsidian 2.18:1, Raycast 2.32:1) sit under the 3:1 floor against every surface
+   here and lose their edges into the panel. Size is what carries them instead, which is
+   why the old 15px and the 0.65 dimming are both gone. */
+.open-in { display: flex; align-items: center; gap: var(--s-1); flex: 0 0 auto; }
+.open-in button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; background: transparent; border: 1px solid transparent; transition: border-color var(--t); }
+.open-in button:hover { border-color: var(--border-strong); }
+.open-in img { width: 18px; height: 18px; }
+.open-in b { color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 400; }
+/* In the 260px rail the marks would take a quarter of the path they belong to, so
+   there they wait for the pointer — or a tab, which is why it is opacity and not
+   display. The full-width tab has the room and keeps them out. */
+.git-panel:not(.git-page) .open-in { opacity: 0; transition: opacity var(--t); }
+.git-panel:not(.git-page) .git-file > summary:hover .open-in, .git-panel:not(.git-page) .open-in:focus-within { opacity: 1; }
+/* Standing on its own on the thread bar rather than trailing a path, it takes the
+   app's button box and says what it is: same 1px outline and mono small caps as
+   the Agent button beside it, holding marks instead of a word. 24px is the height
+   of `.page-info-button`, the `i` it sits next to — the pair reads as one control.
+   The box is the button, not the row around it: the words are as clickable as the
+   mark, and the mark stops drawing a second, smaller box of its own under the
+   pointer. */
+.open-in.boxed button { grid-auto-flow: column; gap: var(--s-2); width: auto; min-height: 24px; padding: 0 var(--s-2); border-color: var(--border); }
+.open-in.boxed small { color: var(--text-3); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* The same panel as its own tab: it scrolls, and no diff inside it is boxed. */
+.git-page { align-content: start; max-width: var(--content-column); margin: 0 auto; padding: var(--s-4) var(--s-4) var(--s-6); overflow: auto; }
+.git-page .git-file { border-bottom: 1px solid var(--border); }
+.git-page .diff { max-height: none; }
+/* Hunk headers are git's own line numbers: quiet, but the only way to tell where
+   in the file a green line landed. */
+.diff .hunk { color: var(--text-3); background: var(--surface-2); }

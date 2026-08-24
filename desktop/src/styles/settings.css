@@ -1,0 +1,681 @@
+/* Settings takeover: grouped sub-nav, setting rows, model catalog, local models,
+   agent imports, provider marks.
+
+   Settings is the densest labelled list in the app, so it is the surface that
+   looks the most like the reference telemetry panel: every group is an unfilled
+   1px outline, its bands separated by rules that run the full width of the
+   outline. There is no padding on a region — the padding lives on the bands, so
+   a band's rule reaches the outline without a negative margin anywhere.
+
+   Nothing here is rounded. --r-full survives on exactly one thing: the orb
+   preview, which is a real circle.
+
+   Fill means state. Hover, selection, and "active" get a fill; grouping never
+   does. Every box that existed only to say "these belong together" is now a
+   rule.
+
+   Mono is the interface face: labels, section heads, buttons, values, model and
+   provider names, key masks, paths. --font (Inter) is used only for the help
+   paragraph under a setting, which is read as a sentence.
+
+   Accessibility floor held from docs/design-system.md: description copy stays at
+   --fs-sm (12px), metadata at --fs-2xs (10px), interactive targets at 24px+.
+
+   Colour: --accent (orange) is action, state, and literal quantities read as
+   data. The three nav sections are a set, so they take blue/teal/violet in
+   palette order. Links are --blue and underlined. Danger is --rose. The vendor
+   brand tints near the bottom are trademarks, not palette. */
+
+/* ---------------------------------------------------------------- shell -- */
+
+.settings-layout { height: 100%; display: grid; grid-template-columns: 184px minmax(0, 1fr); }
+
+/* No fill: the rule down its right edge is what separates the pane. */
+.settings-sidebar { min-height: 0; overflow-y: auto; display: grid; align-content: start; padding: var(--s-5) var(--s-3) var(--s-6); border-right: 1px solid var(--border-strong); }
+.settings-sidebar h1 { padding: 0 var(--s-2) var(--s-3); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* Full-bleed: the pane's inline padding is pulled back so the rule meets both edges. */
+.settings-group { display: grid; margin-inline: calc(var(--s-3) * -1); padding: var(--s-3) var(--s-3) 0; border-top: 1px solid var(--border); }
+.settings-group-label { padding: 0 var(--s-2) var(--s-2); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* Three sections is a set, so it gets three hues rather than three greys.
+   The groups come from a fixed literal in App.tsx, so the ordinal is stable. */
+.settings-group:nth-of-type(1) .settings-group-label { color: var(--blue); }
+.settings-group:nth-of-type(2) .settings-group-label { color: var(--teal); }
+.settings-group:nth-of-type(3) .settings-group-label { color: var(--violet); }
+.settings-sidebar button { display: grid; align-content: center; min-height: 30px; padding: var(--s-1) var(--s-2); text-align: left; color: var(--text-2); background: transparent; font-family: var(--font-mono); transition: color var(--t), background-color var(--t); }
+.settings-sidebar button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.settings-sidebar button.selected { color: var(--text); background: var(--surface-3); }
+.settings-sidebar button:disabled { opacity: 1; color: var(--text-3); }
+.settings-sidebar strong { overflow: hidden; font-size: var(--fs-sm); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; }
+/* The per-item description truncated to "What the chat picker sh…" at this
+   width, and every page's breadcrumb already names its subject. A label that
+   cannot finish its own sentence is not a label; drop it and keep one line. */
+.settings-sidebar button > span { display: none; }
+
+/* One centred column; the grid gap replaces every section's margin-top. */
+.settings-view { height: 100%; overflow-y: auto; scroll-behavior: smooth; display: grid; align-content: start; justify-content: center; grid-template-columns: minmax(0, var(--content-column)); gap: var(--s-5); padding: var(--s-5) var(--content-gutter) var(--s-8); }
+/* The page's header band: breadcrumb, title, and the rule that closes it. */
+.settings-view > header { padding-bottom: var(--s-4); border-bottom: 1px solid var(--border-strong); }
+.settings-view > header > span { display: block; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-view h2 { margin-top: var(--s-2); font: var(--fs-xl)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* Violet, and outlined rather than filled: it is a warning about the page, not a
+   quantity on it. The same hue the transcript's notice takes, because the notice
+   is this page's levers reporting for duty. */
+.tag-experimental { display: inline-block; margin-left: var(--s-2); padding: 0 var(--s-1); color: var(--violet); border: 1px solid color-mix(in srgb, var(--violet) 45%, transparent); font: var(--fs-2xs)/1.7 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; vertical-align: 2px; }
+/* Read as a sentence, so this is the one place Inter appears on the page. */
+.settings-view > header p { max-width: 62ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+
+/* ------------------------------------------------------------- regions -- */
+/* Every settings group is an outline with no fill. Padding lives on the bands
+   below, never here, so every internal rule runs edge to edge. */
+
+.settings-lines, .quick-settings, .notch-settings, .orb-settings,
+.model-catalog, .local-model-settings, .provider-keys,
+.import-sources, .connection-list { border: 1px solid var(--border-strong); }
+
+/* The one shared band shape: padding, and a rule under it unless it closes the region. */
+.settings-lines > section, .quick-action-row,
+.model-catalog > header, .catalog-active, .catalog-search, .catalog-marks, .catalog-row,
+.local-model-settings > header, .local-model-form, .local-model-row,
+.provider-keys > header, .provider-key-row, .provider-key-add,
+.import-list > label, .import-sources footer, .connection-row,
+.local-model-empty, .local-model-error, .local-model-status, .import-status {
+  padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border);
+}
+.settings-lines > section:last-child, .quick-action-row:last-child,
+.local-model-row:last-child, .provider-key-add,
+.import-sources > :last-child, .connection-list > :last-child,
+.local-model-list > :last-child { border-bottom: 0; }
+
+/* ------------------------------------------------------------- controls -- */
+
+/* Square, but still obviously a field: a rule all the way round, a quiet fill,
+   and a focus state that turns the rule accent under the global focus ring. */
+.settings-view input:not([type="checkbox"]),
+.settings-view select,
+.settings-view textarea {
+  width: 100%; min-width: 0; min-height: 28px; padding: 0 var(--s-2);
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  font: var(--fs-sm)/1.4 var(--font-mono);
+  transition: border-color var(--t), background-color var(--t);
+}
+.settings-view select { padding-right: var(--s-1); }
+.settings-view textarea { min-height: 56px; padding: var(--s-2); resize: vertical; }
+.settings-view input:hover:not(:disabled), .settings-view select:hover:not(:disabled), .settings-view textarea:hover:not(:disabled) { border-color: var(--text-3); }
+.settings-view input:focus, .settings-view select:focus, .settings-view textarea:focus { border-color: var(--accent); }
+.settings-view ::placeholder { color: var(--text-3); opacity: 1; }
+/* Disabled is a field with the edge and the fill taken away: dim value, quiet
+   rule, no lift. Against an enabled field's --border-strong + --surface-2 the
+   two are never the same control. */
+.settings-view input:disabled, .settings-view select:disabled, .settings-view textarea:disabled { color: var(--text-2); background: transparent; border-color: var(--border); }
+
+/* One button language for the page: mono small caps, an outline, no fill until
+   a pointer is on it. Primary carries the accent; everything else is quiet. */
+.settings-view button, .import-sources button, .connection-row button {
+  min-height: 26px; padding: 0 var(--s-3);
+  color: var(--text-2); background: transparent; border: 1px solid var(--border-strong);
+  font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase;
+  transition: color var(--t), background-color var(--t), border-color var(--t);
+}
+.settings-view button:hover:not(:disabled), .import-sources button:hover:not(:disabled), .connection-row button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
+.settings-view .save-settings, .local-model-form button, .provider-key-row button:not(:last-child), .import-sources footer button {
+  color: var(--accent); border-color: var(--accent);
+}
+.settings-view .save-settings:hover:not(:disabled), .local-model-form button:hover:not(:disabled),
+.provider-key-row button:not(:last-child):hover:not(:disabled), .import-sources footer button:hover:not(:disabled) {
+  color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
+}
+/* Global button:disabled dims to .45, which drops --text-2 to ~2.5:1 here. Trade
+   the opacity for an explicit colour that holds above 3:1, and step the outline
+   down too — text-2 vs text-3 inside an identical box was not a state. Enabled
+   is --border-strong + --text-2; disabled is --border + --text-3, on both the
+   buttons and the fields, so the whole page has one enabled/disabled contrast. */
+.settings-view button:disabled, .import-sources button:disabled, .connection-row button:disabled { opacity: 1; color: var(--text-3); border-color: var(--border); background: transparent; }
+/* The one button on the page that destroys something: same shape, rose outline,
+   and its natural width so it never reads as the band's primary control. */
+.settings-view .reset-data { justify-self: start; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.settings-view .reset-data:hover:not(:disabled) { color: var(--danger); background: var(--danger-surface); border-color: var(--danger); }
+
+.settings-view label.check, .import-list > label { cursor: pointer; }
+.settings-view label.check { display: flex; align-items: center; gap: var(--s-2); min-height: 24px; color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
+
+.settings-view a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+
+.save-settings { justify-self: start; min-width: 132px; min-height: 30px; }
+
+/* --------------------------------------------------------- setting rows -- */
+
+/* LABEL ... control on a fixed tab stop, so every control in the region starts
+   at the same x. Not space-between, which gives every row a different gap. */
+.settings-lines > section, .notch-settings, .orb-settings {
+  display: grid; grid-template-columns: minmax(0, 1fr) 232px; align-items: start; gap: var(--s-4);
+  transition: background-color var(--t);
+}
+/* These two are single-band regions, so they take the band's padding but not its
+   rule — that rule was repainting their own --border-strong bottom edge in
+   --border, leaving a region with three strong sides and one weak one. */
+.notch-settings, .orb-settings { padding: var(--s-3) var(--s-4); }
+.orb-settings { grid-template-columns: minmax(0, 1fr) 260px; }
+.settings-lines > section:hover { background: var(--surface); }
+.settings-lines > section > div, .notch-settings > div:first-child, .orb-settings > div:first-child { display: grid; gap: var(--s-2); min-width: 0; }
+.settings-lines h3, .notch-settings h3, .orb-settings h3 { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-lines p, .notch-settings p, .orb-settings p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.settings-lines a { justify-self: start; }
+/* About and Privacy are prose, not controls: rules only, no hover affordance,
+   and the copy takes the whole width because there is no control column. */
+.prose-lines > section { grid-template-columns: minmax(0, 1fr); }
+.prose-lines > section:hover { background: transparent; }
+
+/* Live state: the accent dot carries it, so the words need no pill. */
+.settings-lines .status-live { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--text); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* Not running is a state, not a failure: the same row, with the dot dimmed. */
+.settings-lines .status-idle { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-lines .status-idle i { background: var(--text-3); }
+/* A command to paste into a terminal, and what the microphone heard back. */
+.voice-command { padding: var(--s-2); overflow-x: auto; color: var(--text-2); background: var(--surface-2); font: var(--fs-xs)/1.5 var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.voice-heard { color: var(--text); font: var(--fs-sm)/1.55 var(--font); }
+.voice-values, .font-values { display: grid; gap: var(--s-2); min-width: 0; }
+/* The sample is the control: a font name means nothing until you see it set. */
+.font-sample { color: var(--text); font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
+.voice-values small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* Field label over control, the one stacked-field shape used across settings. */
+.notch-values label, .quick-fields label:not(.check), .voice-values label, .font-values label, .orb-fields label, .local-model-form label, .provider-key-add label {
+  display: grid; gap: var(--s-1); min-width: 0;
+  color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase;
+}
+.notch-values { display: grid; gap: var(--s-3); min-width: 0; }
+
+/* ---------------------------------------------------------- system prompt -- */
+
+/* One card per prompt: the global one, then whatever is pinned to a family or a
+   model. Same outline as every other settings region, stacked by the view's gap. */
+.prompt-card { display: grid; border: 1px solid var(--border-strong); }
+/* The card whose condition the selected model already meets wears the accent edge,
+   so "which of these is live right now" is answered by looking rather than reading. */
+.prompt-card.prompt-live { border-color: var(--accent); }
+.prompt-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.prompt-card > header > div:first-child { display: grid; gap: var(--s-2); min-width: 0; }
+.prompt-card h3 { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.prompt-card p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.prompt-card > footer { padding: var(--s-2) var(--s-4); border-top: 1px solid var(--border); }
+.prompt-card > footer small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.prompt-card-actions { display: flex; gap: var(--s-2); flex: 0 0 auto; }
+.prompt-name { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.prompt-name > input { width: auto; min-width: 220px; }
+.prompt-name .status-live { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.prompt-name .status-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+/* The editor is two stacked layers on one grid cell: a mirror that paints the
+   `{variables}` in colour, and the real textarea over it with transparent ink.
+   Both have to agree on every metric that moves a glyph, so the font, the
+   padding and the wrapping are declared once for the pair. */
+.prompt-editor { display: grid; gap: var(--s-2); padding: var(--s-3) var(--s-4); }
+.prompt-canvas { position: relative; background: var(--surface-2); border: 1px solid var(--border-strong); transition: border-color var(--t); }
+.prompt-canvas:focus-within { border-color: var(--accent); }
+.prompt-canvas > .prompt-highlight, .settings-view .prompt-canvas > textarea {
+  padding: var(--s-2); font: var(--fs-sm)/1.6 var(--font-code); white-space: pre-wrap; overflow-wrap: break-word; word-break: normal;
+}
+.prompt-highlight { position: absolute; inset: 0; overflow: hidden; color: var(--text); pointer-events: none; }
+.settings-view .prompt-canvas > textarea {
+  position: relative; display: block; min-height: 0; color: transparent; background: transparent; border: 0; caret-color: var(--accent); resize: vertical;
+}
+.settings-view .prompt-canvas > textarea:focus-visible { outline: 0; }
+
+/* A variable is a token, not prose: the same hue ladder the composer paints
+   slash commands with, so one palette covers both fields. */
+.prompt-token { color: var(--teal); }
+.prompt-token[data-hue="1"] { color: var(--violet); }
+.prompt-token[data-hue="2"] { color: var(--lime); }
+.prompt-token[data-hue="3"] { color: var(--blue); }
+.prompt-token[data-hue="4"] { color: var(--rose); }
+.prompt-token[data-hue="5"] { color: var(--accent); }
+/* Braces Emma will not fill stay literal text, and say so by staying dim. */
+.prompt-token-unknown { color: var(--text-3); }
+
+.prompt-variables { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.settings-view .prompt-variables button { min-height: 24px; padding: 0 var(--s-2); border: 1px solid var(--border); background: var(--surface-2); font: var(--fs-2xs)/1.4 var(--font-code); letter-spacing: normal; text-transform: none; }
+.settings-view .prompt-variables button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-3); }
+
+/* The condition, as marks rather than a dropdown: every family is one glyph, and
+   the last mark opens the composer's own model picker for pinning to a single model. */
+.scope-picker { display: grid; gap: var(--s-2); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.scope-marks { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.settings-view .scope-mark { display: inline-flex; align-items: center; gap: var(--s-2); min-height: 26px; padding: 0 var(--s-2); color: var(--text-3); border: 1px solid var(--border); background: transparent; font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-view .scope-mark:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+.settings-view .scope-mark[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--surface-4); }
+.scope-mark .model-brand { width: 14px; height: 14px; flex: 0 0 auto; }
+/* The composer's own picker, inline instead of in a popover: `.model-menu` is
+   the whole two-column box, so only the frame and the height are set here. */
+.scope-models { max-height: 320px; border: 1px solid var(--border-strong); background: var(--bg); }
+
+.prompt-add { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.prompt-add small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* ------------------------------------------------------------- keybinds -- */
+
+.keybind-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-2); align-items: center; }
+.keybind-capture { justify-content: center; min-height: 30px; }
+.keybind-capture kbd { font: var(--fs-xs)/1.4 var(--font-code); }
+.keybind-capture.recording { border-color: var(--accent, var(--border-strong)); color: var(--text); }
+.keybind-problem { color: var(--warn, var(--text-2)); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.keybind-builtin { color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.keybind-duration { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s-2); align-items: center; }
+
+/* -------------------------------------------------------- quick actions -- */
+
+.quick-settings { display: grid; }
+/* The column was 116px to fit an OVERLAY ACTION caption that repeated the
+   region's own name once per row and left ~200px of empty gutter beside each
+   set of fields. The keycap alone identifies the row, so the caption goes and
+   the column shrinks to it. */
+.quick-action-row { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: var(--s-4); }
+.shortcut { display: grid; align-content: start; justify-items: start; gap: var(--s-2); }
+/* Keycaps use --font-code: Departure Mono has no ⌘/⌥ glyphs to fall back on. */
+.shortcut kbd { display: inline-block; padding: 2px var(--s-2); color: var(--text); background: transparent; border: 1px solid var(--border-strong); font: var(--fs-xs)/1.4 var(--font-code); }
+.shortcut span { display: none; }
+.quick-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); align-items: end; }
+.quick-fields .prompt-field, .quick-fields .check { grid-column: 1 / -1; }
+.quick-fields .check { justify-content: flex-start; }
+
+/* ------------------------------------------------------------ orb ring -- */
+
+.orb-fields { display: grid; grid-template-columns: minmax(80px, .6fr) minmax(0, 1fr) auto; gap: var(--s-2); align-items: end; margin-top: var(--s-2); }
+.orb-order { display: grid; grid-auto-flow: column; gap: var(--s-1); align-items: end; }
+.orb-order span { align-self: center; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-view .orb-order button { width: 28px; min-height: 28px; padding: 0; font-family: var(--font); font-size: var(--fs-md); }
+/* Genuinely circular, so it keeps the one surviving radius token. */
+.orb-preview { position: relative; justify-self: end; width: 260px; height: 260px; border-radius: var(--r-full); background: radial-gradient(closest-side, var(--fg-invert), transparent 78%); }
+
+/* --------------------------------------------------------- brand marks -- */
+/* Bare glyphs on the grid, not chips: a fixed box, no fill, no edge, no radius.
+   One 20px box everywhere — catalog, key list, provider grid, imports — so
+   every name in settings starts on the same tab stop. `border: 0` is
+   load-bearing: conversation.css puts a 1px box on .model-brand for the
+   composer, and without the reset the catalog was the only list in settings
+   whose marks were boxed. Every selector stays settings-scoped. */
+
+.settings-view .model-brand, .provider-mark, .integration-mark, .local-model-brand {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 20px; height: 20px; overflow: hidden;
+  color: var(--text); background: transparent; border: 0;
+  font: var(--fs-2xs)/1 var(--font-mono);
+}
+.settings-view .brand-image { object-fit: contain; }
+
+/* ------------------------------------------------------- model catalog -- */
+
+/* Region header band: title + copy on the left, the count on the right. */
+.model-catalog > header, .local-model-settings > header, .provider-keys > header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-4); }
+/* The view already carries one eyebrow in its own header, and these regions each
+   stack a second one over a heading that says the same thing in sentence case.
+   Keep the heading, uppercase it, and the region reads like every other section
+   on Privacy and About. (The <span>s should come out of App.tsx.) */
+.model-catalog > header > div > span, .local-model-settings > header > div > span,
+.provider-keys > header > div > span { display: none; }
+.model-catalog > header h3, .local-model-settings > header h3, .provider-keys > header h3 { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.model-catalog > header p, .local-model-settings > header p, .provider-keys > header p { max-width: 62ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+/* A quantity read as data, so it takes the accent — not a pill. */
+.model-catalog > header > strong, .provider-keys > header > strong { flex: 0 0 auto; color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* Route class, not a quantity: one of the set of routes, so it takes a hue of its own. */
+.local-model-settings > header > strong { flex: 0 0 auto; color: var(--teal); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* The active model: the band under the catalog header. The accent "ACTIVE"
+   marker is the state signal, so the band needs no fill and no edge. */
+.catalog-active { display: flex; align-items: center; gap: var(--s-3); }
+.catalog-active > div { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.catalog-active strong { overflow: hidden; font: var(--fs-md)/1.35 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-active span { overflow: hidden; color: var(--text-3); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.catalog-active em { flex: 0 0 auto; color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* Search runs the whole catalog, so it sits above the marks that narrow it. */
+.catalog-search input { display: block; width: 100%; min-height: 30px; padding: 0 var(--s-2); color: var(--text); border: 1px solid var(--border); background: var(--surface-2); font: var(--fs-sm)/1.4 var(--font-mono); }
+.catalog-search input:focus { border-color: var(--accent); outline: none; }
+
+/* The maker grid is the index to the list: press a mark, the list is that maker's
+   models. Same plate as the old provider legend it replaces — no card, no edge,
+   no fill per vendor — with hover and a pressed state added, and a mark nothing
+   can match dimmed rather than removed, so the grid never reflows under you. */
+.catalog-marks { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 0 var(--s-4); }
+.settings-view .catalog-mark { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: var(--s-2); min-height: 30px; padding: 0 var(--s-2); margin-inline: calc(var(--s-2) * -1); text-align: left; border: 0; background: transparent; transition: background-color var(--t), color var(--t); }
+.settings-view .catalog-mark:hover:not(:disabled) { background: var(--surface-2); }
+.settings-view .catalog-mark[aria-pressed="true"] { color: var(--accent); background: var(--surface-3); }
+/* .provider-mark pins the mark to its own colour, so the accent has to be restated here. */
+.settings-view .catalog-mark[aria-pressed="true"] .provider-mark { color: var(--accent); }
+.settings-view .catalog-mark:disabled { opacity: 0.4; }
+/* Name on the left, region code on a tab stop at the right of its own cell, so
+   the codes line up down each column instead of butting against the names. */
+.provider-mark-text { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: var(--s-3); min-width: 0; }
+.catalog-mark strong { overflow: hidden; font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-mark small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); }
+.model-catalog .model-list { display: grid; }
+/* Selection is a fill plus the accent USE control, never a boxed row. */
+.catalog-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-3); min-height: 36px; transition: background-color var(--t); }
+.catalog-row:hover { background: var(--surface-2); }
+.catalog-row.selected { background: var(--surface-3); }
+.catalog-row > span { display: grid; gap: 1px; min-width: 0; }
+.catalog-row strong { overflow: hidden; font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-row small { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* The name line: the model, then its price marker. The name ellipses, the marker never does. */
+.model-name { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+/* A price, i.e. a quantity: accent text, no chip. */
+.model-free,
+.model-paid { flex: 0 0 auto; color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* Paid is the catalog's default now, so it recedes; free is the one worth spotting. */
+.model-paid { color: var(--text-3); }
+/* What the model takes besides text. Stroked marks, so they read as glyphs beside the name. */
+/* Inline against Tailwind's preflight, which makes every svg a block — the marks
+   belong on the name's line, not stacked under it. */
+.model-modality { display: inline-block; flex: 0 0 auto; width: 12px; height: 12px; margin-left: var(--s-1); vertical-align: -1px; color: var(--text-3); fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linejoin: round; stroke-linecap: round; }
+
+/* The star drives the composer picker, so its on state has to be obvious.
+   Kept in --font: Departure Mono has no ★/☆. */
+.settings-view .catalog-star { display: grid; place-items: center; width: 26px; height: 26px; min-height: 26px; padding: 0; color: var(--text-3); background: transparent; border: 0; font: var(--fs-lg)/1 var(--font); letter-spacing: 0; transition: color var(--t), background-color var(--t); }
+.settings-view .catalog-star:hover { color: var(--text); background: var(--surface-3); border: 0; }
+.settings-view .catalog-star[aria-pressed="true"] { color: var(--accent); }
+.settings-view .catalog-use { min-height: 26px; }
+.catalog-row.selected .catalog-use { opacity: 1; color: var(--accent); border-color: var(--accent); }
+/* Emma's own row has no star to give: its action takes the last column anyway, so it
+   lines up with every Use button under it rather than sitting a gap short of them. */
+.catalog-row.free-router .catalog-use { grid-column: 4; }
+/* The catalog's action band: full width, flush to the outline, closes the region. */
+.model-catalog .load-models { display: block; width: 100%; min-height: 34px; margin: 0; border: 0; border-top: 1px solid var(--border); }
+/* The one row in the catalog that jumps out of it: to the local-server form below. */
+.catalog-setup { display: grid; place-items: center; text-decoration: none; }
+.local-model-settings { scroll-margin-block: var(--s-5); }
+.model-catalog .load-models:hover:not(:disabled) { border: 0; border-top: 1px solid var(--border); }
+
+/* --------------------------------------------------------- local models -- */
+
+.local-model-form { display: grid; grid-template-columns: repeat(4, minmax(96px, 1fr)) auto; gap: var(--s-3); align-items: end; }
+.settings-view .local-model-form button, .settings-view .local-model-row button { min-height: 28px; white-space: nowrap; }
+.local-model-list { display: grid; }
+.local-model-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); min-height: 40px; transition: background-color var(--t); }
+.local-model-row:hover { background: var(--surface-2); }
+.local-model-row.selected { color: var(--text); background: var(--surface-3); }
+.local-model-row > div:first-child { display: flex; align-items: center; gap: var(--s-3); min-width: 0; }
+.local-model-row > div:first-child > div { display: grid; gap: 1px; min-width: 0; }
+.local-model-row strong { font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; }
+/* Model ID · base URL, and the credential env name. All read literally. */
+.local-model-row span, .local-model-row small { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.local-model-row > div:last-child { display: flex; gap: var(--s-2); flex: 0 0 auto; }
+.local-model-empty, .local-model-status { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font-mono); }
+.local-model-status { color: var(--accent); }
+/* An error is rose text against a rose edge, not a filled box inside an outline. */
+.local-model-error { color: var(--danger); font: var(--fs-sm)/1.5 var(--font-mono); box-shadow: inset 2px 0 0 var(--danger); }
+
+/* -------------------------------------------------------- provider keys -- */
+/* Mark · identity · masked value · paste field · SAVE · REMOVE, all on fixed
+   columns so the masks and the fields run straight down the region. */
+
+.provider-key-list { display: grid; }
+.provider-key-row { display: grid; grid-template-columns: 20px minmax(120px, 1fr) 108px minmax(140px, 1fr) auto auto; align-items: center; gap: var(--s-3); min-height: 44px; transition: background-color var(--t); }
+.provider-key-row:hover { background: var(--surface-2); }
+.provider-key-row > div { display: grid; gap: 1px; min-width: 0; }
+.provider-key-row strong { overflow: hidden; font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+/* On the grid, so mono — 10px Inter was the one non-mono caption in a dense row
+   that stacks a mono name over it and a mono env name under it. */
+.provider-key-row small { overflow: hidden; color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.provider-key-row code { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* Stored vs empty is a two-state set, so the stored state takes a hue of its own. */
+.provider-key-value { overflow: hidden; color: var(--text-3); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.provider-key-row.set .provider-key-value { color: var(--lime); }
+.provider-key-row label { display: block; min-width: 0; }
+.settings-view .provider-key-row button { min-height: 26px; white-space: nowrap; }
+
+.provider-key-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--s-3); }
+.settings-view .provider-key-add button { min-height: 28px; white-space: nowrap; }
+
+/* -------------------------------------------------------------- imports -- */
+
+.import-list { display: grid; }
+/* Rows run 2 or 3 text lines. Align the control cluster to the first line, not
+   the row centre, so the checkbox and mark columns stay straight down the list. */
+.import-list > label { display: grid; grid-template-columns: auto 20px minmax(0, 1fr); align-items: start; gap: var(--s-3); min-height: 40px; transition: background-color var(--t); }
+.import-list > label > input[type="checkbox"] { margin-top: 2px; }
+.import-list > label:hover { background: var(--surface-2); }
+.import-list > label.unavailable { opacity: 1; color: var(--text-3); cursor: default; }
+.import-list > label.unavailable:hover { background: transparent; }
+.import-list label > div { display: grid; gap: 1px; min-width: 0; }
+/* 20px first line so the 20px .integration-mark lands on it exactly. */
+.import-list strong { font: var(--fs-sm)/20px var(--font-mono); font-weight: 400; }
+/* "2 skills · 1 MCP config" is a count, not a sentence, and it sits between a
+   mono name and a mono path — so it is mono too. */
+.import-list small { color: var(--text-2); font: var(--fs-sm)/1.5 var(--font-mono); }
+.import-list > label.unavailable strong, .import-list > label.unavailable small, .import-list > label.unavailable code { color: inherit; }
+.import-list code { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.5 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* Vendor trademarks, not palette: the one deliberate hex exception in this file. */
+.integration-mark.codex { color: #d7d6d0; }
+.integration-mark.claude { color: #d6a47d; }
+.integration-mark.antigravity { color: #8bb7e8; }
+.integration-mark.pi { color: #b1d78b; }
+.integration-mark.opencode { color: #e9d660; }
+.integration-mark.cursor { color: #d2d2cf; }
+.integration-mark.windsurf { color: #70c6c0; }
+.integration-mark.devin { color: #a993dc; }
+/* The action band: the note explains the button beside it rather than being
+   flung to the opposite edge of the region. */
+.import-sources footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-4); }
+.import-sources footer p { flex: 0 1 auto; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.settings-view .import-sources footer button, .import-sources footer button { flex: 0 0 auto; min-height: 30px; margin-left: auto; }
+.import-status { color: var(--accent); font: var(--fs-sm)/1.5 var(--font-mono); }
+
+/* ---------------------------------------------------------- connections -- */
+/* One line per tool: switch, mark, name and what it does, then the binary and
+   the only button the row ever needs — Install when it is missing, Update when
+   Homebrew has a newer build, nothing when it is current. */
+
+.connection-list { display: grid; }
+.connection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-3) var(--s-4); min-height: 44px; }
+.connection-row > label { display: grid; grid-template-columns: auto 20px minmax(0, 1fr); align-items: center; gap: var(--s-3); min-width: 0; cursor: pointer; }
+.connection-row.unavailable > label { color: var(--text-3); cursor: default; }
+.connection-row > label > div { display: grid; gap: 1px; min-width: 0; }
+.connection-row strong { font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; }
+.connection-row small { color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.connection-row.unavailable strong, .connection-row.unavailable small { color: inherit; }
+.connection-row > code { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* "Current" sits where the button would be, so the column does not jump. */
+.connection-row > em { color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.connection-row button { min-height: 26px; }
+/* An available update is the one thing in the list worth looking at. */
+.connection-row:not(.unavailable) button { color: var(--accent); border-color: var(--accent); }
+.connection-row:not(.unavailable) button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.connection-row:hover:not(.unavailable) { background: var(--surface-2); }
+@media (width < 640px) {
+  .connection-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .connection-row > code { grid-column: 1 / -1; }
+}
+
+/* -------------------------------------------------------------- dialogs -- */
+/* The first-launch import dialog floats, so it is the one thing here that casts
+   a shadow. It is already an outline, so the .import-sources inside it drops
+   its own — an outline inside an outline reads as a bug. */
+
+.import-dialog { width: min(640px, 100%); max-height: 85vh; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); }
+.import-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); padding: var(--s-4); border-bottom: 1px solid var(--border); }
+.import-dialog > header span { display: block; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.import-dialog > header h2 { margin-top: var(--s-2); color: var(--text); font: var(--fs-xl)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.import-dialog > header p { max-width: 62ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.import-dialog > header button { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; padding: 0; color: var(--text-2); background: transparent; border: 1px solid var(--border-strong); font: var(--fs-lg)/1 var(--font); transition: color var(--t), background-color var(--t); }
+.import-dialog > header button:hover { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
+.import-dialog .import-sources { border: 0; }
+.import-dialog .import-sources > :last-child { border-bottom: 1px solid var(--border); }
+/* The dialog's own closing band, full width and flush to its outline. */
+.import-later { display: block; width: 100%; min-height: 32px; padding: 0 var(--s-4); text-align: left; color: var(--text-3); background: transparent; border: 0; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), background-color var(--t); }
+.import-later:hover { color: var(--text); background: var(--surface-2); }
+
+.setup-dialog { width: min(700px, 100%); }
+.setup-dialog > header { align-items: center; }
+.setup-crest { width: 30px; }
+.setup-art { margin: 0; color: var(--text-3); font: var(--fs-sm)/1.35 var(--font-mono); white-space: pre; overflow-x: auto; }
+
+.setup-rail { display: flex; flex-wrap: wrap; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.setup-rail span { display: flex; align-items: center; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-rail span + span::before { content: "─"; color: var(--border-strong); }
+.setup-rail b { font-weight: 400; }
+.setup-rail .done { color: var(--text-2); }
+.setup-rail .on { color: var(--accent); }
+
+.setup-intro { display: grid; justify-items: center; gap: var(--s-6); padding: var(--s-7) var(--s-4); }
+.setup-hero { width: 132px; }
+.setup-intro dl, .setup-notch-step dl { display: grid; gap: var(--s-3); width: 100%; }
+.setup-intro dl > div, .setup-notch-step dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: var(--s-4); align-items: baseline; }
+.setup-intro dt, .setup-notch-step dt { color: var(--text); font: var(--fs-2xs)/1.6 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-intro dd, .setup-notch-step dd { margin: 0; max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.setup-notch-step dl > div { grid-template-columns: 48px minmax(0, 1fr); align-items: center; }
+.setup-notch-step dt { color: var(--accent); font-size: var(--fs-2xl); letter-spacing: 0; text-align: center; }
+
+.setup-meter { max-width: none; padding: var(--s-3) var(--s-4); color: var(--text-2); border-bottom: 1px solid var(--border); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-meter span { color: var(--accent); }
+.setup-grants > section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-2) var(--s-4); align-items: center; padding: var(--s-4); border-bottom: 1px solid var(--border); }
+.setup-grants h3 { display: flex; align-items: center; gap: var(--s-3); min-width: 0; color: var(--text); font: var(--fs-sm)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-grants > section > div { grid-column: 1 / -1; display: grid; gap: var(--s-2); }
+.setup-grants p { max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.setup-grants code { color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); word-break: break-all; }
+.setup-grants small, .setup-choices small { color: var(--accent); font: var(--fs-2xs)/1.5 var(--font-mono); }
+.setup-mark { flex: 0 0 auto; color: var(--text-3); font-style: normal; }
+.setup-mark.on { color: var(--accent); }
+.setup-choices { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin-top: var(--s-1); }
+
+.setup-notch-step { display: grid; gap: var(--s-6); padding: var(--s-5) var(--s-4); }
+.setup-notch { position: relative; padding-bottom: 78px; --notch-w: 148px; --notch-x: calc(50% - var(--notch-w) / 2); --notch-h: 26px; --island-h: 84px; --island-inset: 0px; }
+.setup-notch .emma-mark { width: 18px; }
+.setup-notch .island-body { justify-content: center; }
+.setup-notch .island-bar { background: var(--surface-4); }
+.setup-housing { z-index: 1; align-self: start; height: calc(100% + 10px); background: var(--fg-invert); border: 1px solid var(--border); border-top: 0; }
+.setup-caret { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
+.setup-caret::after { content: "|"; margin-left: 1px; color: var(--accent); }
+.setup-orbs { position: absolute; left: calc(var(--notch-x) + var(--notch-w) / 2); bottom: var(--s-3); display: flex; gap: var(--s-7); translate: -50% 0; }
+.setup-orbs > span { display: grid; justify-items: center; gap: var(--s-2); width: 96px; color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.setup-orbs > span:nth-child(1) kbd { color: var(--teal); }
+.setup-orbs > span:nth-child(2) kbd { color: var(--violet); }
+.setup-orbs > span:nth-child(3) kbd { color: var(--lime); }
+
+.setup-foot { display: flex; gap: var(--s-2); justify-content: flex-end; padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
+.setup-foot .setup-skip { margin-right: auto; color: var(--text-3); border-color: transparent; }
+
+/* Shared with panels.css: inside settings the standalone reload control is a band. */
+.load-models { display: block; width: 100%; min-height: 32px; color: var(--text-2); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), background-color var(--t); }
+.load-models:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+
+/* ----------------------------------------------------------- responsive -- */
+
+@media (max-width: 900px) {
+  .settings-layout { grid-template-columns: 152px minmax(0, 1fr); }
+  .settings-lines > section, .notch-settings { grid-template-columns: minmax(0, 1fr) 180px; }
+}
+
+@media (max-width: 760px) {
+  .settings-lines > section, .notch-settings, .orb-settings { grid-template-columns: minmax(0, 1fr); }
+  .orb-preview { justify-self: start; width: 100%; max-width: 260px; }
+  .quick-fields { grid-template-columns: minmax(0, 1fr); }
+  .quick-action-row { grid-template-columns: minmax(0, 1fr); }
+  .local-model-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Mark + identity on the first line, then value, field, and the two buttons. */
+  .provider-key-row { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: var(--s-2); }
+  .provider-key-row label { grid-column: 1 / -1; }
+  .local-model-form button { grid-column: 1 / -1; justify-self: start; }
+}
+
+/* The verifier's rules are a paragraph, not a field: they take the whole row
+   under the three short inputs, and the footer sits with them. */
+.local-model-form .verifier-rules { grid-column: 1 / -1; }
+.local-model-form .verifier-rules textarea { min-height: 160px; }
+.local-model-form .verifier-pick { grid-column: 1 / -1; }
+.settings-view .verifier-custom { min-height: 28px; white-space: nowrap; }
+
+/* The composer's model picker, in a settings row: a trigger that names what is
+   chosen, and the same searchable popover under it. A <select> of 300 rows has
+   no search, no vendor mark, and no price — which is the whole reason. */
+.verifier-pick { position: relative; display: grid; gap: var(--s-1); min-width: 0; }
+.verifier-pick-label { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.settings-view .verifier-pick-trigger { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); width: 100%; min-height: 30px; padding: 0 var(--s-2); text-align: left; color: var(--text); border: 1px solid var(--border); background: var(--surface-2); font: var(--fs-sm)/1.4 var(--font-mono); letter-spacing: normal; text-transform: none; }
+.settings-view .verifier-pick-trigger:hover:not(:disabled) { color: var(--text); background: var(--surface-3); border-color: var(--border-strong); }
+.settings-view .verifier-pick-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.verifier-pick-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.verifier-pick-trigger > b { color: var(--text-3); font-weight: 400; }
+/* Settings scrolls downward, so the menu drops rather than rises. */
+.verifier-pick .model-menu { top: calc(100% + var(--s-1)); bottom: auto; right: auto; left: 0; }
+/* The picker is the composer's, so nothing in it wears the page's boxed field or
+   its outlined small-caps buttons. */
+.settings-view input.model-search { min-height: 30px; border: 0; border-bottom: 1px solid var(--border); background: transparent; }
+.settings-view .model-menu-row, .settings-view .model-row-pick, .settings-view .model-mark {
+  min-height: 0; color: var(--text); border: 0; background: transparent; font: var(--fs-sm)/1.4 var(--font-mono); letter-spacing: normal; text-transform: none;
+}
+.settings-view .model-mark { height: 26px; padding: 0; color: var(--text-3); }
+.settings-view .model-menu-row:hover:not(:disabled), .settings-view .model-mark:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+.settings-view .model-mark[aria-pressed="true"] { background: var(--surface-4); }
+.settings-view .model-row-pick { padding: var(--s-2) var(--s-3); }
+.settings-view .model-menu-row.quiet { color: var(--text-2); }
+.settings-view .model-menu-row:disabled, .settings-view .model-row-pick:disabled { color: var(--text-3); background: transparent; }
+.settings-view .model-mark:disabled { opacity: .45; border: 0; }
+
+/* An (i) that holds the long half of a heading's copy — <details>, so the open
+   state and the keyboard both come from the browser. */
+.settings-head { display: flex; align-items: center; gap: var(--s-2); }
+.info-dot { position: relative; }
+.info-dot > summary { display: grid; place-items: center; width: 16px; height: 16px; color: var(--text-3); border: 1px solid var(--border-strong); border-radius: 50%; cursor: pointer; font: var(--fs-2xs)/1 var(--font-mono); list-style: none; transition: color var(--t), border-color var(--t); }
+.info-dot > summary::-webkit-details-marker { display: none; }
+.info-dot > summary:hover, .info-dot[open] > summary { color: var(--accent); border-color: var(--accent); }
+.info-dot > div { position: absolute; z-index: 12; top: calc(100% + var(--s-2)); left: 0; width: max-content; max-width: 46ch; padding: var(--s-3); color: var(--text-2); border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); font: var(--fs-sm)/1.55 var(--font); }
+
+/* --------------------------------------------------------------- tools -- */
+
+/* The Tools page is a column of the same bordered cards the model page uses;
+   the view's own gap spaces them, so this only has to stop the grid stretching. */
+.tool-settings { display: grid; gap: var(--s-5); align-content: start; }
+
+/* The composer's own mode picker, reused. There it hangs above a bar at the
+   bottom of the window; here it is the first card on the page, so it drops
+   downward and hugs the right edge instead of running off it. */
+.default-mode > header { align-items: center; }
+.default-mode .mode-menu { top: calc(100% + var(--s-2)); right: 0; bottom: auto; left: auto; }
+
+.tool-group { padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.local-model-settings > .tool-group:last-child { border-bottom: 0; }
+.tool-group .settings-group-label { display: block; padding: 0 0 var(--s-2); color: var(--text-3); }
+
+/* Switch, then name over blurb: the checkbox stays on the first line however
+   long the description runs, which `align-items: center` would not do. */
+.settings-view label.check.tool-row { align-items: start; min-height: 0; padding: var(--s-1) 0; }
+.tool-row > div { display: grid; gap: 2px; min-width: 0; }
+.tool-row strong { font-weight: 400; }
+.tool-row span { color: var(--text-3); font-size: var(--fs-xs); }
+.tool-row input { margin-top: 2px; }
+
+.tool-empty { color: var(--text-3); font: var(--fs-sm)/1.4 var(--font-mono); }
+
+/* ---------------------------------------------- context-window hooks -- */
+
+/* Each harness experiment shows what it does instead of describing it: a fixed
+   window onto a stack of context blocks, one 6s CSS loop, no script. Both boxes
+   are the same height so the two rows line up. */
+.ctx-anim { overflow: hidden; height: 80px; margin: var(--s-2) 0 var(--s-3); border: 1px solid var(--border); background: var(--bg); }
+.ctx-track { display: grid; align-content: start; gap: var(--s-1); padding: var(--s-2); }
+.ctx-block { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); overflow: hidden; height: 20px; padding: 0 var(--s-2); color: var(--text-3); border: 1px solid var(--border); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.ctx-block em { flex: 0 0 auto; font-style: normal; }
+.ctx-prompt, .ctx-newest { color: var(--accent); border-color: var(--accent); }
+
+/* Repeat the prompt: the window travels down its own stack, so the accent prompt
+   block leaves the top under a pile of tool results — then a copy of it fades in
+   at the end of the stack. Nothing is taken away. */
+.ctx-reinject .ctx-track { animation: ctx-bury 6s ease-in-out infinite; }
+.ctx-echo { animation: ctx-echo 6s ease-in-out infinite; }
+@keyframes ctx-bury { 0% { opacity: 0; transform: none; } 8%, 26% { opacity: 1; transform: none; } 58%, 92% { opacity: 1; transform: translateY(-48px); } 100% { opacity: 0; transform: translateY(-48px); } }
+@keyframes ctx-echo { 0%, 64% { opacity: 0; } 76%, 100% { opacity: 1; } }
+
+/* Prune tool results: the two older blocks drop to a dashed one-line stub and the
+   newest keeps its full height, so the space the stubs give back stays visible. */
+.ctx-prune .ctx-track { animation: ctx-hold 6s ease-in-out infinite; }
+.ctx-older { animation: ctx-collapse 6s ease-in-out infinite; }
+.ctx-older em { animation: ctx-stub 6s ease-in-out infinite; }
+@keyframes ctx-hold { 0% { opacity: 0; } 8%, 92% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes ctx-collapse { 0%, 28% { height: 20px; border-style: solid; } 50%, 100% { height: 13px; border-style: dashed; } }
+@keyframes ctx-stub { 0%, 32% { opacity: 0; } 52%, 100% { opacity: 1; } }
+
+/* Frozen on the last frame of each loop, which is the frame that carries the point. */
+@media (prefers-reduced-motion: reduce) {
+  .ctx-reinject .ctx-track { animation: none; transform: translateY(-48px); }
+  .ctx-prune .ctx-track, .ctx-echo, .ctx-older em { animation: none; }
+  .ctx-older { height: 13px; border-style: dashed; animation: none; }
+}

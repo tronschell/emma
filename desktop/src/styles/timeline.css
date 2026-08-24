@@ -1,0 +1,163 @@
+/* The turn as a waterfall, in a 210–360px column.
+
+   LangSmith puts the caret, the icon, the name, the bar and the duration on one
+   line and the selected span's payload in a pane beside it. None of that fits
+   here, so each span is two lines instead: an indented label line, and a track
+   that is always full width so every bar shares one axis. The detail opens under
+   the list, not beside it. Rules and one hue per kind, like the ledger above it. */
+
+/* --danger is the palette's rose, which reads pink on a bar this thin. A failed
+   span gets a literal red instead, local to this panel so nothing else moves.
+   ponytail: one hex here, not a token — promote it if a second view wants it. */
+.trace { --trace-hue: var(--teal); --trace-fail: #ff4d4d; }
+/* The band's label and its duration stack — `.inspector-body section > span` is
+   a grid and outranks anything this file says about the same element. So the
+   expand button goes on the label row, at its right end. */
+.trace-title { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); min-height: 16px; }
+.trace > span b { color: var(--text); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.trace-expand { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; color: var(--text-3); background: none; transition: color var(--t); }
+.trace-expand:hover { color: var(--text); }
+
+/* The scroller above is what bounds the height; a turn's own rows never clip.
+   The track is pinned rather than left `auto`: an auto column sizes to its
+   content, and a span's payload is arbitrary tool output — one long line in an
+   opened detail sized the column to that line and took every row sideways with
+   it, since the rows share the column. */
+.trace-rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin: 0; padding: 0; list-style: none; }
+.trace-row { display: grid; gap: 3px; min-width: 0; }
+.trace-row[data-kind="agent"], .trace-legend [data-kind="agent"] { --trace-hue: var(--orange); }
+/* Waiting on the model is most of a turn, and it is not work the tools did. */
+.trace-row[data-kind="model"], .trace-legend [data-kind="model"] { --trace-hue: var(--violet); }
+/* Failure is the one state that reads before the bar does: the hue, the label
+   and the duration all go red together. */
+.trace-row[data-status="failed"], .trace-legend [data-kind="failed"] { --trace-hue: var(--trace-fail); }
+.trace-row[data-status="failed"] .trace-name, .trace-row[data-status="failed"] .trace-head b, .trace-row[data-status="failed"] .trace-head svg { color: var(--trace-fail); }
+
+/* One scroller for the whole thread: every turn hangs off the Overall row, so
+   this is a single list rather than a stack of separately-scrolling ones. Bounded
+   well short of the column so the subagents below it are on screen without a scroll. */
+.trace-scroll { max-height: 26vh; overflow-y: auto; }
+
+/* The wrench beside a tool call. Grey: the bar carries the hue, the mark only says what kind of row this is. */
+.trace-head svg { flex: 0 0 auto; color: var(--text-3); }
+.trace-head { display: flex; align-items: center; gap: var(--s-1); min-width: 0; }
+/* Both are scoped to the row they always sit in. The caret and the name are
+   <button>, and the Settings preview mounts this panel inside a page that resets
+   every button on it; one class of head start is what keeps them drawn the same
+   in both places. */
+.trace-head .trace-caret { display: grid; flex: 0 0 auto; place-items: center; width: 12px; height: 12px; padding: 0; color: var(--text-3); background: none; font: var(--fs-2xs)/1 var(--font-mono); }
+button.trace-caret:hover { color: var(--text); }
+.trace-head .trace-name { flex: 1; min-width: 0; padding: 0; overflow: hidden; color: var(--text-2); background: none; font: var(--fs-sm)/1.4 var(--font-mono); text-align: left; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t); }
+.trace-name:hover { color: var(--text); }
+/* Selection is a rule under the label, not a filled row: nothing else here is a box. */
+.trace-name[aria-pressed="true"] { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.trace-head b { flex: 0 0 auto; color: var(--text-3); font-weight: 400; font-size: var(--fs-2xs); font-family: var(--font-mono); letter-spacing: var(--ls-caps); }
+
+/* The operation, the child count and the bar's own duration are the expanded
+   view's cells. They ship in every row and the column simply does not show
+   them — 210px has no room, and a prop to say so is a prop for nothing. */
+.trace-op, .trace-kids, .trace-bar-label { display: none; }
+
+.trace-track { position: relative; height: 4px; background: var(--surface-2); }
+.trace-track i { position: absolute; top: 0; height: 100%; min-width: 2px; background: var(--trace-hue); }
+/* An open span is drawn to the clock, so it says "so far" rather than "this long". */
+.trace-row[data-status="running"] .trace-track i { background: color-mix(in srgb, var(--trace-hue) 55%, transparent); }
+
+/* The opened detail carries the outcome: what a call returned reads as the
+   result it was, teal for a call that worked and red for one that did not.
+   ponytail: teal is the palette's success hue — the tokens file says a seventh
+   colour is a design decision, and a literal green would be the seventh. */
+.trace-row .trace-detail dd, .trace-row .trace-detail pre { color: var(--teal); }
+.trace-row[data-status="failed"] .trace-detail strong,
+.trace-row[data-status="failed"] .trace-detail dd,
+.trace-row[data-status="failed"] .trace-detail pre { color: var(--trace-fail); }
+
+/* Opened inline, under the bar that was clicked. */
+.trace-row > .trace-detail { margin-top: var(--s-1); }
+.trace-detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); min-width: 0; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface-2); }
+.trace-detail header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); }
+.trace-detail strong { min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.trace-detail header button { flex: 0 0 auto; padding: 0 var(--s-1); color: var(--text-3); background: none; font: var(--fs-md)/1 var(--font-mono); }
+.trace-detail header button:hover { color: var(--text); }
+.trace-detail dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-1) var(--s-3); }
+.trace-detail dl > div { display: flex; justify-content: space-between; gap: var(--s-2); min-width: 0; }
+.trace-detail dt { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.trace-detail dd { min-width: 0; overflow: hidden; color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.trace-detail > span { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; font-family: var(--font-mono); }
+/* Tool output is arbitrary text in a narrow column: wrap it, cap it, scroll it.
+   `anywhere` rather than `word-break: break-word`, because only `anywhere`
+   counts towards the min-content size — a shell line holding one unbroken URL
+   still measured as wide as that URL, and a grid item does not shrink below its
+   min-content, so the panel grew instead of the text wrapping. */
+.trace-detail pre { max-height: 160px; margin: 0; overflow: auto; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* The same waterfall, expanded. Wider than the other modals because the whole
+   point of opening it is that a bar finally has room to be read. */
+.trace-dialog { width: min(1080px, 100%); }
+/* One line of short measurements, not a grid of cells: the class is doubled up
+   because `.agent-dialog dl > div` sets a 92px label column, which wrapped
+   "MODEL REQUESTS" onto two lines and ellipsised every value beside it. */
+.agent-dialog.trace-dialog > dl { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5); margin: 0; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.agent-dialog.trace-dialog > dl > div { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; padding: 0; border: 0; }
+.trace-dialog dd { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); white-space: nowrap; }
+.trace-dialog > p { margin: 0; padding: var(--s-2) var(--s-4) var(--s-3); color: var(--text-3); font-size: var(--fs-2xs); }
+
+/* Tool time wraps as chips rather than stacking a row per tool: eight tools was
+   eight lines above the waterfall the dialog was opened to look at. */
+.trace-tools { display: grid; gap: var(--s-2); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.trace-tools > span { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.trace-tools ol { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-4); margin: 0; padding: 0; list-style: none; }
+.trace-tools li { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; }
+.trace-tools b { flex: 0 1 auto; min-width: 0; max-width: 24ch; overflow: hidden; color: var(--text-2); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.trace-tools i, .trace-tools em { flex: 0 0 auto; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; }
+.trace-tools em { color: var(--teal); }
+
+/* Taller than the column's scroller: this is the view you open to see it all.
+   And a table rather than two lines a row — label, operation, and one ruled
+   axis every bar is measured against, which is the whole reason to expand it. */
+.trace-dialog-rows { --trace-label: 280px; --trace-op: 132px; padding: var(--s-4); }
+.trace-dialog-rows .trace-scroll, .trace-dialog-rows > .trace-rows { max-height: 60vh; overflow-y: auto; }
+.trace-dialog-rows .trace-rows { gap: 0; }
+.trace-dialog-rows .trace-row { grid-template-columns: var(--trace-label) var(--trace-op) minmax(0, 1fr); align-items: center; gap: 0; border-bottom: 1px solid var(--border); }
+.trace-dialog-rows .trace-row:hover { background: var(--surface); }
+.trace-dialog-rows .trace-head { padding-top: var(--s-1); padding-bottom: var(--s-1); padding-right: var(--s-3); }
+/* The duration moves to the end of its bar out here, where there is room. */
+.trace-dialog-rows .trace-head > b { display: none; }
+.trace-dialog-rows .trace-op { display: block; min-width: 0; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.trace-dialog-rows .trace-kids { display: grid; flex: 0 0 auto; place-items: center; width: 14px; height: 14px; border: 1px solid var(--border); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); font-style: normal; }
+
+/* The grid behind the bars, on the same step as the tick labels above them.
+   Drawn by each row's own track because that is the element that already spans
+   exactly the axis — a ruled overlay would have to be positioned to match it. */
+.trace-dialog-rows .trace-track { height: 100%; min-height: 28px; background: repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px var(--trace-step)); }
+.trace-dialog-rows .trace-track i { top: 50%; height: 12px; transform: translateY(-50%); }
+/* Square, like everything else here: the reference rounds its bars, tokens.css
+   says this app has no rounded rectangles, and the tokens win. */
+.trace-dialog-rows .trace-bar-label { display: block; position: absolute; top: 50%; padding-left: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); white-space: nowrap; transform: translateY(-50%); }
+.trace-dialog-rows .trace-bar-label-before { padding: 0 var(--s-2) 0 0; }
+/* A bar spanning the whole axis has neither side free, so its duration goes
+   inside it — on the hue, which is why the ink inverts. */
+.trace-dialog-rows .trace-bar-label-in { color: var(--fg-invert); }
+.trace-dialog-rows .trace-detail { grid-column: 1 / -1; margin: 0 0 var(--s-3); }
+/* The column's 160px cap is what fits beside a waterfall in 210px. Out here the
+   dialog is most of the screen, so a payload gets the room to be read in. */
+.trace-dialog-rows .trace-detail pre { max-height: 40vh; }
+
+.trace-legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin: 0 0 var(--s-3); padding: 0; list-style: none; }
+.trace-legend li { display: flex; align-items: center; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.trace-legend i { flex: 0 0 auto; width: 8px; height: 8px; border-radius: var(--r-full); background: var(--trace-hue); }
+
+.trace-axis { display: grid; grid-template-columns: var(--trace-label) var(--trace-op) minmax(0, 1fr); align-items: end; padding-bottom: var(--s-1); border-bottom: 1px solid var(--border-strong); }
+.trace-axis > span { color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.trace-axis > div { position: relative; height: 12px; }
+.trace-axis i { position: absolute; bottom: 0; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); font-style: normal; }
+
+/* What the bars measure, on the label row beside the expand affordance: two
+   words, not a control — the axis is a reading of the same rows, and a select or
+   a switch would announce a mode the panel does not have. Pushed right so the
+   pair sits together at the end of the row rather than floating in its middle. */
+.trace-axes { display: flex; flex: 0 0 auto; gap: var(--s-2); margin-left: auto; }
+.trace-axes button { padding: 0; color: var(--text-3); background: none; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t); }
+.trace-axes button:hover { color: var(--text-2); }
+/* The chosen one is underlined rather than filled, exactly like a selected span. */
+.trace-axes button[aria-pressed="true"] { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }

@@ -1,0 +1,777 @@
+/* Context panel, knowledge pages and artifacts, agent and scheduled views,
+   the notice toast, and every modal dialog.
+
+   Drawn with rules, not boxes — see "Structure: rules, not boxes" in
+   docs/design-system.md. Three things hold this file together:
+
+   1. A region is a 1px --border-strong outline, no fill, no radius, and its bands
+      are separated by full-bleed 1px --border rules (negative inline margin equal
+      to the padding, then re-pad, so the rule reaches the outline). Outlined
+      regions here: the inspector, both proposals, the notice, every dialog and
+      popover. Everything else is flat on the page and separated by rules alone.
+   2. Fill only ever means state — hover, selection, active. Never grouping. What
+      used to be a --surface-2 card is now a rule, a band, or a shared left edge.
+   3. Mono is the interface face. --font (Inter) survives only where the user reads
+      sentences: artifact prose, summaries, chat messages, help text, descriptions.
+
+   Hue duty, so the palette is a vocabulary instead of one accent everywhere:
+   --orange for quantities read as data and for the single committing action,
+   --blue links, --rose failure, --teal a knowledge category, --lime the third
+   durable count, --violet machine identifiers (block ids, cron, thread ids).
+
+   One exemption from "never nest outlines": controls (button, input, select,
+   summary) keep a 1px --border box inside an outlined region. They are hit targets,
+   not regions, and they sit a step quieter than the region's own --border-strong. */
+
+/* ---------- One control language ---------- */
+
+/* Every button in this file is an outlined mono label on a 28px target, never a
+   pill and never a filled slab. The committing action of a view adds its colour
+   below: orange text, and the outline warms with it only where the control is an
+   inline hit target in a row. Where the action is the last thing in a region it is
+   not a box at all — it is a full-bleed band with a rule above it and its label
+   left-aligned, the .agent-proposal composition. */
+.inspector-body > header button, .inspector .stack-form button, .inline-form button, .stack-form button,
+.category-pop button, .knowledge-toolbar > button, .base-toolbar > button, .category-toolbar summary,
+.page-category button, .page-info-button, .page-versions li button,
+.page-chat > header button, .page-chat-actions button, .artifact-order button,
+.capture-dialog footer button, .computer-dialog-actions button, .setup-dialog button, .dialog-primary {
+  min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent;
+  color: var(--text-2); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps);
+  text-transform: uppercase; white-space: nowrap;
+  transition: color var(--t), border-color var(--t), background-color var(--t);
+}
+.inspector-body > header button:hover:not(:disabled), .inspector .stack-form button:hover:not(:disabled),
+.inline-form button:hover:not(:disabled), .stack-form button:hover:not(:disabled),
+.category-pop button:hover:not(:disabled), .knowledge-toolbar > button:hover:not(:disabled),
+.base-toolbar > button:hover:not(:disabled), .category-toolbar summary:hover,
+.page-category button:hover:not(:disabled), .page-info-button:hover, .page-versions li button:hover:not(:disabled),
+.page-chat > header button:hover:not(:disabled), .page-chat-actions button:hover:not(:disabled),
+.artifact-order button:hover:not(:disabled), .capture-dialog footer button:hover:not(:disabled),
+.computer-dialog-actions button:hover:not(:disabled), .setup-dialog button:hover:not(:disabled),
+.dialog-primary:hover:not(:disabled) {
+  color: var(--text); border-color: var(--border-strong); background: var(--surface-2);
+}
+/* The one action per view that commits something — literally one. The inspector's
+   create-a-base form is not it (Save & analyze is), so it stays a quiet outline. */
+.inspector-body > header button, .inline-form button, .task-actions button:first-child,
+.category-pop form button, .page-category button:not([type="button"]), .page-chat-actions button:first-child,
+.dialog-primary, .setup-dialog .dialog-primary {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.inspector-body > header button:hover:not(:disabled), .inline-form button:hover:not(:disabled),
+.task-actions button:first-child:hover:not(:disabled),
+.category-pop form button:hover:not(:disabled), .page-category button:not([type="button"]):hover:not(:disabled),
+.page-chat-actions button:first-child:hover:not(:disabled), .dialog-primary:hover:not(:disabled),
+.setup-dialog .dialog-primary:hover:not(:disabled) {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+
+/* Fields are outlined, never filled — a fill here would read as a state. Selects
+   keep an opaque ground because Blink paints the option list from it. */
+.inspector select, .inline-form input, .stack-form input, .stack-form textarea, .category-pop input,
+.task-fields input, .task-fields textarea, .task-fields select, .task-nodes textarea,
+.knowledge-toolbar select, .page-editor .page-category input, .capture-dialog input, .capture-dialog select,
+.capture-dialog textarea, .artifact-editor textarea, .page-chat textarea {
+  min-width: 0; min-height: 28px; padding: 0 var(--s-2); border: 1px solid var(--border); background: transparent;
+  color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); letter-spacing: 0; text-transform: none;
+  transition: border-color var(--t);
+}
+.inspector select:hover:not(:disabled), .inline-form input:hover, .stack-form input:hover,
+.stack-form textarea:hover, .category-pop input:hover, .knowledge-toolbar select:hover,
+.task-fields input:hover, .task-fields textarea:hover, .task-nodes textarea:hover,
+.page-editor .page-category input:hover:not(:disabled), .capture-dialog input:hover,
+.capture-dialog select:hover, .capture-dialog textarea:hover, .artifact-editor textarea:hover,
+.page-chat textarea:hover { border-color: var(--border-strong); }
+.inspector select, .knowledge-toolbar select, .capture-dialog select, .task-fields select { background: var(--bg); }
+.stack-form textarea, .capture-dialog textarea, .artifact-editor textarea, .page-chat textarea,
+.task-fields textarea, .task-nodes textarea {
+  padding: var(--s-2); resize: vertical;
+}
+
+/* Small-caps labels and eyebrows: the same three declarations everywhere. */
+.inspector-body > header > span, .inspector-body label, .inspector-body section > span,
+.scheduled-view > header > span, .tasks-view > header > span, .tasks-rail button > small, .task-fields label > span, .task-label, .trigger-field > span, .task-runs dt, .agent-metrics span, .evidence-table > header span,
+.agent-proposal > div > span, .job-list article header span, .job-list dt, .page-eyebrow > span,
+.artifact-heading, .artifact-block > header, .artifact-editor legend, .artifact-editor label,
+.artifact-unknown small, .page-versions summary, .page-chat > header, .page-chat-log p b,
+.page-proposal > header > span, .page-info > header > span, .page-info dt, .page-category label,
+.new-thread-dialog header span, .agent-dialog > header span, .agent-cli > span, .agent-dialog dt,
+.capture-dialog label, .category {
+  font-family: var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase;
+}
+
+/* ---------- Context panel ---------- */
+
+/* Flush chrome, like .sidebar: one edge rule, no margin, sections are bands. */
+.inspector { position: relative; min-width: 0; border-left: 1px solid var(--border-strong); background: var(--chrome); }
+.inspector .resize-handle { position: absolute; z-index: 8; top: 0; left: -10px; right: auto; width: 12px; height: 100%; padding: 0; cursor: col-resize; background: transparent; }
+.inspector .resize-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Expanded: the toggle rides the header band at its right end. Collapsed: it is the
+   only affordance left, so it stays inside the 30px rail — same top edge, so the
+   click that collapses the panel and the click that expands it land on the same row. */
+.inspector-toggle { position: absolute; z-index: 7; top: 0; right: 0; left: auto; display: grid; place-items: center; width: 26px; height: 26px; color: var(--text-3); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: color var(--t), background-color var(--t); }
+.inspector-toggle:hover { color: var(--text); background: var(--surface-2); }
+.inspector.collapsed .inspector-toggle { inset: 0 auto auto 1px; }
+.inspector-body { height: 100%; overflow-y: auto; padding: var(--s-4); }
+
+/* Label band, then the action as its own full-bleed band with a rule above it —
+   the .agent-proposal composition, not an orange rectangle wedged under the header
+   rule. Save & analyze is the panel's one committing action, so it is the only
+   orange in here and it reads as a band, left-aligned, on the quiet grid rule. */
+.inspector-body > header { display: grid; gap: 0; margin: calc(var(--s-4) * -1) calc(var(--s-4) * -1) var(--s-4); padding: 0; border-bottom: 1px solid var(--border); }
+.inspector-body > header > span { display: flex; align-items: center; min-height: 26px; padding: var(--s-2) 26px var(--s-3) var(--s-4); color: var(--text-2); font-size: var(--fs-2xs); }
+.inspector-body > header button { min-height: 30px; padding: var(--s-2) var(--s-4); border: 0; border-top: 1px solid var(--border); text-align: left; }
+.inspector-body > header button:hover:not(:disabled) { border-color: var(--border); }
+
+/* Bands, not stacked blocks: the rule runs the whole width of the outline.
+   `.bar-widget-body` is the Settings arranger holding the same widget one level
+   deeper — same band, so what you arrange there is what the bar draws. */
+.inspector-body > section, .inspector-body > .git-panel, .bar-widget-body > section, .bar-widget-body > .git-panel { display: grid; gap: var(--s-2); margin: 0 calc(var(--s-4) * -1); padding: var(--s-4); border: 0; border-bottom: 1px solid var(--border); }
+.inspector-body > section:last-child, .inspector-body > .git-panel:last-child { border-bottom: 0; padding-bottom: 0; }
+.inspector-body label, .inspector-body section > span { display: grid; gap: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; }
+.inspector-body section > p { color: var(--text-3); font: var(--fs-sm)/1.55 var(--font); text-wrap: pretty; }
+
+/* Thread totals, in the Agent dashboard's metric tiles. At 210px the dashboard's
+   auto-fit columns collapse to one, so the inspector pins two and draws the rules
+   with a 1px gap instead of a border per cell — a wrapped row would otherwise
+   start with a stray left rule. */
+.inspector .agent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--border); }
+.inspector .agent-metrics span { background: var(--chrome); }
+.inspector .agent-metrics span + span { border-left: 0; }
+.inspector .agent-metrics b { font-size: var(--fs-xl); }
+
+/* Speed against context size, folded away until asked for: one row per doubling
+   of input, the bar scaled to the fastest bucket so the slope is the message. */
+/* The toggle rides the corner of the tile it qualifies, the way the ledger's
+   expand rides its label row. Absolute, so it adds no row to the tile's grid. */
+.agent-metrics .metric-rate { position: relative; }
+/* Scoped to the tile it rides: it is a <button>, and the Settings preview mounts
+   these tiles inside a page that resets every button on it — one class of head
+   start is what keeps the toggle drawn the same in both places. */
+.agent-metrics .rate-toggle { position: absolute; top: var(--s-2); right: var(--s-2); display: grid; place-items: center; width: 16px; height: 16px; padding: 0; color: var(--text-3); background: none; border: 0; transition: color var(--t); }
+.rate-toggle:hover, .rate-toggle[aria-expanded="true"] { color: var(--text); }
+.rate-curve ol { display: grid; gap: var(--s-1); margin: var(--s-3) 0 0; padding: 0; list-style: none; }
+.rate-curve li { display: grid; grid-template-columns: 32px 1fr 30px; align-items: center; gap: var(--s-2); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-variant-numeric: tabular-nums; }
+/* width/height override the 6px status dot every bare `i` gets in index.css. */
+.rate-curve i { display: block; min-width: 1px; height: 6px; background: var(--orange); }
+/* A rung this thread never landed a turn in is still drawn, so the ladder reads
+   as a scale rather than as one bar — but it is a tick, not a measurement. */
+.rate-curve i[data-empty] { background: var(--border); }
+.rate-curve b { color: var(--text); font-weight: 400; text-align: right; }
+.rate-curve p { margin: var(--s-3) 0 0; color: var(--text-3); font-size: var(--fs-2xs); }
+
+/* Context ledger. Five hues, one per kind — the only place in the inspector that
+   uses the categorical palette, because here the hue is the data. Grey is the tail
+   of the window nothing has claimed. One bar of 48 cells rather than free-width
+   segments: at 210px the cell floor keeps the smallest kind ~4px wide, not a sliver. */
+.context-usage { --kind: var(--text-3); }
+.context-usage [data-kind="messages"] { --kind: var(--blue); }
+.context-usage [data-kind="system"] { --kind: var(--lime); }
+.context-usage [data-kind="tools"] { --kind: var(--orange); }
+.context-usage [data-kind="mcp"] { --kind: var(--violet); }
+.context-usage [data-kind="skills"] { --kind: var(--rose); }
+.context-usage [data-kind="memory"] { --kind: var(--teal); }
+.context-usage [data-kind="free"] { --kind: var(--border-strong); }
+/* The used total sits at the end of the label band, as its right-hand readout. */
+/* The label and the readout stack — `.inspector-body section > span` is a grid and
+   outranks anything this file says about that element — so the expand affordance
+   goes on the label row itself. */
+.context-title { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); min-height: 16px; }
+.context-expand { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; color: var(--text-3); background: none; transition: color var(--t); }
+.context-expand:hover { color: var(--text); }
+.context-usage > span b { color: var(--text); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.context-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; height: 8px; }
+/* width/height override the 6px status dot every bare `i` gets in index.css. */
+.context-grid i { display: block; width: auto; height: 100%; background: var(--kind); }
+.context-legend { display: grid; gap: var(--s-1); margin: 0; padding: 0; list-style: none; }
+.context-legend li { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; color: var(--text-2); font: var(--fs-sm)/1.4 var(--font-mono); }
+.context-legend i { flex: 0 0 auto; width: 8px; height: 8px; background: var(--kind); }
+/* The label is the only elastic cell, so at the column's narrow end it lost the
+   width to two fixed ones and ellipsised mid-word — "Experiments/ · file …".
+   It takes a second line instead, breaking at the separator these labels already
+   carry, and clamps there so one long segment cannot run the panel away. */
+.context-legend span { flex: 1; min-width: 0; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.context-legend b { flex: 0 0 auto; color: var(--text-3); font-weight: 400; font-size: var(--fs-2xs); }
+/* The share column is right-aligned on a 5ch floor, so the percentages read as a
+   column while "100.0%" still gets the sixth character rather than spilling it. */
+.context-legend em { flex: 0 0 auto; min-width: 5ch; color: var(--text-2); font-style: normal; font-size: var(--fs-2xs); text-align: right; }
+/* What the Harness levers did to the rows above, under a rule that separates it
+   from them: it is not a segment the turn carried. */
+.context-experiments { margin: 0; padding-top: var(--s-1); border-top: 1px solid var(--border); color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+
+/* ---------- Shared small forms and empty states ---------- */
+
+.stack-form { display: grid; gap: var(--s-2); }
+.inline-form { display: flex; gap: var(--s-2); }
+.inline-form input, .stack-form input, .stack-form textarea { flex: 1; }
+.stack-form textarea { min-height: 68px; line-height: 1.55; }
+.inline-form button, .stack-form button { justify-self: start; }
+.empty { display: grid; place-items: center; gap: var(--s-3); padding: var(--s-6) var(--s-4); text-align: center; color: var(--text-2); font: var(--fs-sm)/1.5 var(--font); }
+/* Sole owner of .content-empty: threads, the Agent loading state, and Knowledge all use it. */
+.content-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: var(--s-3); padding: var(--s-7) var(--s-6); text-align: center; color: var(--text-2); }
+.content-empty .mark { width: 28px; height: 28px; margin: 0; border-color: var(--border-strong); color: var(--text-3); font-size: var(--fs-lg); }
+.content-empty h2 { margin: 0; color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.content-empty p { max-width: 46ch; margin: 0; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); text-wrap: pretty; }
+/* The way out of an empty pane, in the middle of it. */
+.content-empty button { min-height: 28px; margin-top: var(--s-2); padding: 0 var(--s-4); color: var(--accent); background: transparent; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.content-empty button:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* Sits under the picker rather than in a whole window, so it is a size quieter. */
+.knowledge-layout .content-empty { padding: var(--s-6); }
+
+/* ---------- Knowledge board ---------- */
+
+.knowledge-layout { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
+/* A wall of things worth keeping. Full width, unlike the document it opens. */
+.knowledge-board { display: grid; align-content: start; gap: var(--s-3); min-height: 0; overflow-y: auto; padding: var(--s-4) var(--content-gutter) var(--s-6); }
+.knowledge-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--s-4); }
+.knowledge-head h1 { color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+/* One filter row of intrinsically sized controls, left aligned. Not a form. */
+.knowledge-toolbar, .base-toolbar, .category-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); height: auto; padding: 0; border: 0; }
+.category-toolbar { position: relative; }
+.base-toolbar label { display: flex; min-width: 0; }
+.knowledge-toolbar select { width: auto; max-width: 240px; flex: 0 1 auto; }
+.knowledge-toolbar { flex-direction: column; align-items: start; gap: var(--s-2); }
+.knowledge-toolbar > button:not(.shelf-chip), .base-toolbar > button:not(.shelf-chip) { display: grid; place-items: center; width: 28px; padding: 0; font-size: var(--fs-sm); }
+.category-toolbar summary { display: flex; align-items: center; cursor: pointer; list-style: none; }
+.category-toolbar summary::-webkit-details-marker { display: none; }
+.category-toolbar summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.category-pop { position: absolute; z-index: 5; right: 0; top: calc(100% + var(--s-2)); width: min(280px, 60vw); padding: 0; border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); }
+.category-pop form { display: flex; gap: var(--s-2); padding: var(--s-3); border-bottom: 1px solid var(--border); }
+.category-pop input { flex: 1; }
+.category-pop button { margin: 0 var(--s-1) var(--s-1) 0; color: var(--teal); }
+.category-pop > button:first-of-type { margin-top: var(--s-3); }
+.category-pop form button { margin: 0; color: var(--accent); }
+.category-pop:has(> button) { padding-bottom: 0; }
+.category-pop > button { margin-left: var(--s-3); }
+
+/* A marker, not a chip: the category is what the colour means. */
+.category { width: fit-content; max-width: 100%; overflow: hidden; padding: 0; color: var(--teal); background: none; font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
+
+/* A shelf label you can also drop a tile onto. */
+.shelf-chip { flex: 0 0 auto; height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); color: var(--text-2); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: background-color var(--t), border-color var(--t), color var(--t); }
+.shelf-chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.shelf-chip.on { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
+.shelf-chip.category { color: var(--teal); }
+.shelf-chip.over { border-color: var(--accent); border-style: dashed; background: var(--surface-3); }
+
+/* ponytail: CSS columns are the whole masonry. No layout library, no JS measuring. */
+.page-board { columns: 240px 4; column-gap: var(--s-3); padding-top: var(--s-2); }
+.page-board .empty { column-span: all; }
+.page-tile { display: grid; gap: var(--s-2); width: 100%; margin: 0 0 var(--s-3); padding: var(--s-3); border: 1px solid var(--border); text-align: left; color: inherit; background: var(--surface); break-inside: avoid; transition: border-color var(--t), background-color var(--t), transform var(--t); }
+.page-tile:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-2); transform: translateY(-1px); }
+.page-tile:focus-visible { outline-offset: -2px; }
+.page-tile img { display: block; width: calc(100% + var(--s-3) * 2); margin: calc(var(--s-3) * -1) calc(var(--s-3) * -1) 0; object-fit: cover; }
+.page-tile strong { min-width: 0; color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; }
+.page-tile > span { display: -webkit-box; overflow: hidden; color: var(--text-2); font: var(--fs-sm)/1.5 var(--font); -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.page-tile footer { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); }
+.page-tile small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: 0; white-space: nowrap; }
+/* A tile whose document was never built says so, so the board never passes a scrape off as a page. */
+.page-tile[data-clip] { border-style: dashed; }
+.page-clip-chip { color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; }
+
+/* Back to the wall: quiet, first thing in the document header. */
+.page-back { padding: 0; border: 0; color: var(--text-3); background: none; font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.page-back:hover { color: var(--text); }
+
+/* ---------- Agent and scheduled views ---------- */
+
+.agent-view, .scheduled-view, .tasks-view { height: 100%; overflow-y: auto; padding: var(--s-5) var(--content-gutter) var(--s-8); }
+/* One right edge. The charts and the evidence table carried no cap, so their rules
+   overshot the metrics and the proposal by ~750px — three right edges in one view. */
+.agent-view > *, .scheduled-view > * { max-width: var(--content-column); }
+.agent-view > header > span, .scheduled-view > header > span, .tasks-view > header > span { display: block; color: var(--text-3); font-size: var(--fs-2xs); }
+.agent-view > header h2, .scheduled-view > header h2, .tasks-view > header h2 { margin-top: var(--s-2); color: var(--text); font: var(--fs-lg)/1.2 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.agent-view > header p, .scheduled-view > header p, .tasks-view > header p { max-width: 68ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.evidence-table > header span, .agent-proposal > div > span, .job-list article header span { color: var(--text-3); font-size: var(--fs-2xs); }
+
+/* Three numbers in a ruled strip. Three unrelated counts are not a series, so they
+   take one hue, not one each: quantities read as data, which is orange. */
+.agent-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; margin-top: var(--s-5); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.agent-metrics span { display: grid; gap: var(--s-1); padding: var(--s-3); border: 0; background: transparent; color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.3; }
+.agent-metrics span + span { border-left: 1px solid var(--border); }
+.agent-metrics b { display: block; margin: 0; color: var(--orange); font: var(--fs-2xl)/1.15 var(--font-mono); font-weight: 400; letter-spacing: 0; }
+
+/* Label, rule, list. The rule under the header is what bounds the section. */
+.evidence-table { min-width: 0; padding: 0; border: 0; background: transparent; }
+/* With a rule under it, the caption can sit at the far end and still read as one
+   line — the header band of the reference panel, `LABEL … 1/5`. */
+.evidence-table > header { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: var(--s-1) var(--s-3); margin-bottom: var(--s-4); padding-bottom: var(--s-2); border-bottom: 1px solid var(--border); }
+.evidence-table h3, .agent-proposal h3 { margin-top: var(--s-1); color: var(--text); font: var(--fs-md)/1.25 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.evidence-table header small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: 0; white-space: nowrap; }
+
+.evidence-table { margin-top: var(--s-6); }
+/* A ruled list: rows, a hover fill, and nothing else. */
+.evidence-table details { border-bottom: 1px solid var(--border); }
+/* Tab stops, not space-between: the marker, the category, the base and the count
+   each start at one column, so "1 page" and "12 pages" line up down the list
+   instead of being flung 700px right to a different gap on every row. */
+.evidence-table summary { display: grid; grid-template-columns: 14px minmax(0, 280px) auto; align-items: baseline; justify-content: start; gap: var(--s-3); padding: var(--s-2) var(--s-2) var(--s-2) 0; cursor: pointer; transition: background-color var(--t); }
+.evidence-table summary::before { content: "▸"; color: var(--text-3); }
+.evidence-table details[open] summary::before { content: "▾"; }
+.evidence-table summary:hover { background: var(--surface-2); }
+.evidence-table summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.evidence-table summary span { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: baseline; gap: var(--s-3); min-width: 0; }
+.evidence-table summary strong { color: var(--teal); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.evidence-table summary small { min-width: 0; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.evidence-table summary b { color: var(--orange); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; white-space: nowrap; }
+.evidence-table details p { max-width: 90ch; padding: 0 0 var(--s-3); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+
+/* The heading and its (i) on one baseline — the dot is a footnote mark, not a row. */
+.agent-head { display: flex; align-items: baseline; gap: var(--s-2); }
+.agent-head h2 { margin-top: var(--s-2); }
+
+/* A piece of evidence opens the thread it came from: the date and title are the
+   link, the error stays plain text beside it. A button, not an anchor — there is
+   no URL, only a thread id. */
+.agent-receipt { display: block; margin-bottom: var(--s-1); padding: 0; border: 0; background: transparent; color: var(--teal); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-align: left; text-transform: uppercase; }
+.agent-receipt:hover { color: var(--accent); text-decoration: underline; }
+/* Two actions per row, at the tab stop the evidence uses, not stretched. */
+.agent-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding-bottom: var(--s-3); }
+.agent-actions small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.evidence-table .agent-actions button { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: background-color var(--t); }
+.evidence-table .agent-actions button:hover:not(:disabled) { background: var(--accent-soft); }
+.evidence-table .agent-actions button:disabled { color: var(--text-3); }
+
+/* The trial reads as one figure: two arms, same scale, the wider bar is the worse
+   one. Two bars beat a chart library here — there are exactly two numbers. */
+.agent-trial-arms { display: grid; gap: var(--s-3); margin-top: var(--s-4); }
+.agent-arm { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: baseline; gap: var(--s-3); }
+.agent-arm dt { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.agent-arm dd { display: flex; align-items: center; gap: var(--s-2); min-width: 0; margin: 0; }
+/* The bar itself: a rule that grew. Zero still shows as a hairline, so an arm at
+   zero reads as measured rather than as missing. */
+.agent-arm i { min-width: 2px; height: 6px; background: var(--orange); }
+.agent-arm b { color: var(--text); font: var(--fs-sm)/1.2 var(--font-mono); font-weight: 400; }
+.agent-arm small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); white-space: nowrap; }
+.agent-reading { margin-top: var(--s-3); }
+.agent-trial .agent-actions { padding: 0; }
+.agent-trial .agent-actions button { flex: 1; text-align: center; }
+.agent-proposal textarea { width: 100%; margin-top: var(--s-3); padding: var(--s-3); border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: var(--fs-sm)/1.55 var(--font); resize: vertical; }
+
+/* The canonical composition: header band, body, action band, all inside one outline. */
+.agent-proposal { display: grid; margin-top: var(--s-5); padding: 0; border: 1px solid var(--border-strong); background: transparent; }
+.agent-proposal > div { padding: var(--s-3) var(--s-4) var(--s-4); }
+.agent-proposal > div > span { display: block; margin: calc(var(--s-3) * -1) calc(var(--s-4) * -1) var(--s-3); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); color: var(--accent); }
+.agent-proposal p { max-width: 68ch; margin-top: var(--s-2); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.agent-proposal button { min-height: 30px; padding: var(--s-2) var(--s-4); border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--accent); font: var(--fs-xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-align: left; text-transform: uppercase; transition: background-color var(--t); }
+.agent-proposal button:hover:not(:disabled) { background: var(--accent-soft); }
+
+/* Empty scheduled state: a quiet note under the button, not a centred hero. */
+.scheduled-view > p { max-width: 68ch; margin-top: var(--s-3); color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+/* Also a ruled list. No card per job. */
+.job-list { display: grid; gap: 0; margin-top: var(--s-5); border-top: 1px solid var(--border); }
+.job-list:empty { display: none; }
+.job-list article { padding: var(--s-4) 0; border: 0; border-bottom: 1px solid var(--border); background: transparent; }
+.job-list article > header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
+.job-list article header span { color: var(--text-3); font-size: var(--fs-2xs); }
+/* Enabled vs paused is a real binary state, so it earns a hue; paused stays
+   tertiary because "nothing is happening" is the quiet case. */
+.job-list article header span.job-state.on { color: var(--lime); }
+.job-list h3 { margin-top: var(--s-1); color: var(--text); font: var(--fs-md)/1.25 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* LABEL   value on a fixed tab stop, so every value in the job starts at one column. */
+.job-list dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: var(--s-1) var(--s-3); margin-top: var(--s-3); padding: 0; border: 0; }
+.job-list dl div { display: contents; }
+.job-list dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+.job-list dd { min-width: 0; overflow: hidden; margin-top: 0; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* The cron field is a machine identifier, not prose. */
+.job-list dl div:first-child dd { color: var(--violet); }
+.job-list article > p { margin-top: var(--s-3); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+
+/* ---------- Scheduled tasks ---------- */
+
+/* A rail of tasks and one editor, inside a single outline. Both columns are ruled
+   lists — a task is not a card, and neither is a step. */
+.tasks-view > header { max-width: var(--content-column); }
+.tasks-body { display: grid; grid-template-columns: minmax(170px, 230px) minmax(0, 1fr); margin-top: var(--s-5); border: 1px solid var(--border); }
+.tasks-rail { display: grid; align-content: start; min-width: 0; border-right: 1px solid var(--border); }
+.tasks-rail button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 0 var(--s-2); min-height: 44px; padding: var(--s-2) var(--s-3); border: 0; border-bottom: 1px solid var(--border); background: transparent; text-align: left; transition: background-color var(--t); }
+.tasks-rail button:hover:not(:disabled) { background: var(--surface-2); }
+/* The selected task is marked at its leading edge, so the fill alone never has to
+   carry which one is open. */
+.tasks-rail button.active { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent); }
+.tasks-rail button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tasks-rail button > span { min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* A trigger is a machine identifier, like the cron field above. */
+.tasks-rail button > small { grid-column: 1; min-width: 0; overflow: hidden; color: var(--violet); font-size: var(--fs-2xs); line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }
+.tasks-rail button > b { grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.tasks-rail button > b.on { color: var(--lime); }
+.tasks-rail .tasks-new { display: block; color: var(--accent); font: var(--fs-xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+
+.task-detail { min-width: 0; padding: var(--s-3) var(--s-4) var(--s-4); }
+.task-detail > header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); margin: calc(var(--s-3) * -1) calc(var(--s-4) * -1) var(--s-4); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); }
+.task-detail > header h3 { color: var(--text); font: var(--fs-md)/1.25 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.task-detail > header span { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); white-space: nowrap; }
+
+.task-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3) var(--s-4); }
+.task-fields label { display: grid; align-content: start; gap: var(--s-1); min-width: 0; }
+.task-fields label > span { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+.task-wide { grid-column: 1 / -1; }
+.task-problem { margin-top: var(--s-2); color: var(--rose); font: var(--fs-xs)/1.5 var(--font-mono); }
+
+/* Editor or graph: the same rail, two ways of reading the task beside it. */
+.tasks-modes { display: flex; gap: var(--s-2); margin-top: var(--s-3); }
+.tasks-modes button { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.tasks-modes button:hover:not(:disabled) { color: var(--text-2); border-color: var(--border-strong); }
+.tasks-modes button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+
+/* The trigger picker. One preset chooses which fields exist, and the line it
+   writes is shown underneath — the cron is never hidden, only stopped being the
+   only way in. Cron is UTC in core, so the field says so and prints the local
+   equivalent rather than quietly converting. */
+.task-label { display: block; margin-bottom: var(--s-1); color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+.trigger-picker { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s-3) var(--s-4); }
+.trigger-field { display: grid; align-content: start; gap: var(--s-1); min-width: 0; }
+.trigger-field > span { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+.trigger-field > small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.trigger-field input[type="number"] { width: 90px; }
+.trigger-field input[type="time"] { width: 140px; }
+.trigger-wide { flex: 1 1 100%; }
+/* The dropdowns are the app's own popover, not Blink's light system menu: the
+   trigger wears the field's outline, the panel wears .source-popover's. Both
+   widths are fixed so the row does not shift when the chosen label changes. */
+.picker { position: relative; }
+.picker-trigger { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); width: 100%; min-height: 28px; padding: 0 var(--s-2); border: 1px solid var(--border); background: var(--bg); color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); text-align: left; transition: border-color var(--t); }
+.picker-trigger:hover:not(:disabled), .picker-trigger[aria-expanded="true"] { border-color: var(--border-strong); }
+.picker-trigger:disabled { color: var(--text-3); }
+.picker-trigger > span[aria-hidden] { color: var(--text-3); }
+/* Opens downward — a task form has room below the field, not above it. */
+.picker-menu { top: calc(100% + var(--s-1)); bottom: auto; width: max-content; min-width: 100%; max-width: min(300px, 92vw); padding: 0; }
+.picker-row { align-items: center; min-height: 32px; }
+.picker-row:focus, .picker-row:focus-visible { background: var(--surface-3); outline: 2px solid var(--accent); outline-offset: -2px; }
+.picker-row[aria-selected="true"] { background: var(--surface-3); }
+.picker-row > em { margin-left: auto; padding-left: var(--s-3); color: var(--accent); font: var(--fs-2xs)/1 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.trigger-repeats .picker { width: 220px; }
+.trigger-month .picker { width: 150px; }
+.trigger-days > div { display: flex; flex-wrap: wrap; gap: var(--s-1); }
+.trigger-days button { min-height: 28px; padding: 0 var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.trigger-days button:hover:not(:disabled) { color: var(--text-2); border-color: var(--border-strong); }
+.trigger-days button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+.trigger-summary { display: flex; flex: 1 1 100%; align-items: baseline; gap: var(--s-3); }
+.trigger-summary b { color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; }
+.trigger-summary code { color: var(--violet); font: var(--fs-2xs)/1.4 var(--font-code); }
+
+/* The prompt box carries the composer's own "/" and "@" menus, so it borrows the
+   popover whole and only flips it below the field — there is room here. */
+.task-prompt { position: relative; display: grid; }
+.task-prompt textarea { min-width: 0; min-height: 28px; padding: var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); resize: vertical; transition: border-color var(--t); }
+.task-prompt textarea:hover { border-color: var(--border-strong); }
+.task-prompt .source-popover { top: calc(100% + var(--s-1)); bottom: auto; }
+
+/* The graph view: boxes on a grid with the edges the runner would actually take. */
+.task-graph-view { display: grid; align-content: start; }
+.task-canvas { max-height: min(60vh, 620px); overflow: auto; margin-top: var(--s-3); padding: var(--s-4); border: 1px solid var(--border); background: var(--surface-2); }
+.task-canvas-inner { position: relative; margin-inline: auto; }
+.task-canvas-inner svg { position: absolute; inset: 0; overflow: visible; }
+.graph-edge path { fill: none; stroke: var(--border-strong); stroke-width: 1; }
+.graph-edge text { fill: var(--text-3); font: 10px var(--font-mono); }
+.graph-edge.live path { stroke: var(--accent); }
+.graph-edge.live text { fill: var(--accent); }
+.graph-node { position: absolute; display: grid; align-content: start; gap: 2px; padding: var(--s-2); border: 1px solid var(--border); border-left: 2px solid var(--node-hue, var(--border-strong)); background: var(--bg); text-align: left; transition: border-color var(--t), background-color var(--t); }
+.graph-node:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-3); }
+.graph-node.active { border-color: var(--accent); background: var(--accent-soft); }
+.graph-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.graph-kind { color: var(--node-hue, var(--text-3)); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.graph-node b { overflow: hidden; color: var(--text); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.graph-text { display: -webkit-box; overflow: hidden; color: var(--text-2); font: var(--fs-2xs)/1.35 var(--font-mono); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.graph-node em { color: var(--teal); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; }
+.graph-end { display: grid; align-content: center; justify-items: center; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; border-style: dashed; border-left-width: 1px; }
+.graph-empty { margin-top: var(--s-3); color: var(--text-3); font: var(--fs-xs)/1.6 var(--font); }
+.graph-detail { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: var(--s-1) var(--s-3); margin-top: var(--s-4); }
+.graph-detail div { display: contents; }
+.graph-detail dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+.graph-detail dd { min-width: 0; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); }
+
+.task-graph { margin-top: var(--s-5); }
+.task-graph > header, .task-runs > header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); padding-bottom: var(--s-2); border-bottom: 1px solid var(--border); }
+.task-graph h4, .task-runs h4 { color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.task-graph header small, .task-runs header small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+/* One step per row on four tab stops: what it is, what it is called, what it says,
+   where its result goes. The wiring column is what makes a graph readable as a list. */
+.task-graph ol { display: grid; }
+.task-graph li { display: grid; grid-template-columns: 76px 110px minmax(0, 1fr) auto; align-items: baseline; gap: var(--s-3); padding: var(--s-2) 0; border-bottom: 1px solid var(--border); }
+.task-graph .task-node { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.task-graph .task-node.agent { color: var(--blue); }
+.task-graph .task-node.if { color: var(--orange); }
+.task-graph b { min-width: 0; overflow: hidden; color: var(--text); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.task-graph .task-node-text { min-width: 0; overflow: hidden; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.task-graph li > small { color: var(--teal); font: var(--fs-2xs)/1.4 var(--font-mono); white-space: pre; }
+.task-nodes { margin-top: var(--s-3); }
+.task-nodes summary { display: inline-flex; align-items: center; color: var(--text-3); font: var(--fs-2xs)/1.6 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; list-style: none; }
+.task-nodes summary::-webkit-details-marker { display: none; }
+.task-nodes summary::before { content: "▸ "; }
+.task-nodes[open] summary::before { content: "▾ "; }
+.task-nodes summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.task-nodes textarea { display: block; width: 100%; margin-top: var(--s-2); font-family: var(--font-code); font-size: var(--fs-xs); }
+.task-nodes > p { max-width: 78ch; margin-top: var(--s-2); color: var(--text-3); font: var(--fs-xs)/1.6 var(--font); }
+.task-nodes > p b { color: var(--text-2); font-family: var(--font-code); font-weight: 400; }
+
+/* The action band: a rule above, labels left, nothing boxed. */
+.task-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-5); }
+.task-actions button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; transition: color var(--t), border-color var(--t), background-color var(--t); }
+.task-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.task-actions .task-danger { color: var(--rose); border-color: color-mix(in srgb, var(--rose) 45%, transparent); }
+.task-actions .task-danger:hover:not(:disabled) { color: var(--rose); border-color: var(--rose); background: color-mix(in srgb, var(--rose) 12%, transparent); }
+.task-dry-run { max-height: 220px; margin-top: var(--s-3); overflow: auto; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-code); white-space: pre-wrap; }
+
+.task-runs { margin-top: var(--s-5); }
+.task-runs button { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); width: 100%; padding: var(--s-2) 0; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); text-align: left; transition: color var(--t); }
+.task-runs button:hover:not(:disabled) { color: var(--accent); }
+.task-runs button small { color: var(--text-3); font-size: var(--fs-2xs); }
+.task-runs > p { margin-top: var(--s-2); color: var(--text-3); font: var(--fs-xs)/1.5 var(--font); }
+/* What the last run left behind, on the same tab stop the job list uses. */
+.task-runs dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: var(--s-1) var(--s-3); margin-top: var(--s-3); }
+.task-runs dl div { display: contents; }
+.task-runs dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+.task-runs dd { min-width: 0; overflow: hidden; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 860px) {
+  .tasks-body { grid-template-columns: minmax(0, 1fr); }
+  .tasks-rail { border-right: 0; border-bottom: 1px solid var(--border); }
+  .task-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- Knowledge page ---------- */
+
+.page { height: 100%; min-height: 0; overflow-y: auto; padding: var(--s-5) var(--content-gutter) var(--s-8); }
+/* Under the picker the two read as one column, so the head starts close to the list. */
+.knowledge-layout .page { padding-top: var(--s-4); }
+.page-head, .page-body { width: min(var(--content-column), 100%); max-width: none; }
+.page-head { padding-bottom: var(--s-4); }
+/* The rule is where the document starts; the block count below it is its meta line. */
+.page-body { padding-top: var(--s-3); border-top: 1px solid var(--border); }
+/* A breadcrumb, not an eyebrow, with its info button kept beside it instead of
+   stranded at the far edge of the column. */
+.page-eyebrow { position: relative; display: flex; align-items: center; justify-content: flex-start; gap: var(--s-2); }
+.page-eyebrow > span { min-width: 0; overflow: hidden; color: var(--text-3); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
+/* Title, then its lede, then the controls. The controls used to render between
+   the title and the summary, which read as an interruption mid-sentence. */
+.page-title-row { display: grid; gap: var(--s-3); }
+.page-title-row > label { min-width: 0; }
+.page-editor textarea.page-title { width: 100%; min-height: 1.3em; margin-top: var(--s-2); overflow: hidden; padding: 0; border: 0; background: transparent; field-sizing: content; resize: none; color: var(--text); font: var(--fs-xl)/1.3 var(--font-mono); letter-spacing: 0; }
+.page-summary { margin-top: var(--s-3); color: var(--text-2); font: var(--fs-md)/1.6 var(--font); }
+/* Where the page came from, under its lede rather than buried in the info popover. */
+.page-source { margin-top: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); }
+.page-category { display: flex; align-items: end; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-4); }
+.page-category label { display: grid; gap: var(--s-1); color: var(--text-3); font-size: var(--fs-2xs); }
+.page-editor .page-category input { width: 150px; margin-top: 0; }
+.page-body a, .artifact-block a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Italic i, the conventional info mark — in --font, not a seventh face. Georgia is
+   as much an invention here as a raw hex would be, and the uppercase from the
+   control language turned it into a capital I. */
+.page-info-button { display: grid; place-items: center; flex: 0 0 auto; width: 24px; height: 24px; min-height: 24px; padding: 0; font: italic var(--fs-md)/1 var(--font); letter-spacing: 0; text-transform: none; }
+.page-info { position: absolute; z-index: 12; top: calc(100% + var(--s-2)); left: 0; right: auto; width: min(320px, calc(100vw - 80px)); padding: 0; border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); }
+.page-info > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--border); }
+.page-info > header > span { color: var(--text-2); font-size: var(--fs-2xs); }
+.page-info > header button { display: grid; place-items: center; flex: 0 0 auto; width: 22px; height: 22px; color: var(--text-3); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: color var(--t), background-color var(--t); }
+.page-info > header button:hover { color: var(--text); background: var(--surface-2); }
+.page-info dl { display: grid; gap: 0; padding: 0; }
+.page-info dl > div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: var(--s-3); padding: var(--s-1) var(--s-3); border: 0; }
+.page-info dl > div:first-child { padding-top: var(--s-2); }
+.page-info dl > div:last-child { padding-bottom: var(--s-2); }
+.page-info dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.5; }
+.page-info dd { min-width: 0; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); }
+.page-info dd small { display: block; margin-top: 2px; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.page-info code { display: block; overflow: hidden; color: var(--violet); font-family: var(--font-code); font-size: var(--fs-2xs); text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Artifact blocks ---------- */
+
+/* Sits directly under the document rule, left aligned with the blocks it counts. */
+.artifact-heading { display: flex; align-items: baseline; justify-content: flex-start; gap: var(--s-3); margin-bottom: var(--s-4); color: var(--text-3); font-size: var(--fs-2xs); }
+.artifact-heading small { color: inherit; font: inherit; }
+/* Reading mode is a document, so the blocks are sections of one piece: no rules
+   between them and no `type · v1` chrome, which belongs to the editor. */
+.artifact-document { display: grid; gap: var(--s-5); }
+.artifact-block { padding: 0; border: 0; background: transparent; }
+.artifact-rich { padding: 0; color: var(--text); font: var(--fs-md)/1.65 var(--font); }
+.artifact-rich p { margin: 0 0 var(--s-3); }
+.artifact-rich > :last-child { margin-bottom: 0; }
+.artifact-rich h3, .artifact-rich h4, .artifact-rich h5, .artifact-rich h6 { margin: 0 0 var(--s-2); color: var(--text); font: var(--fs-lg)/1.4 var(--font-mono); letter-spacing: 0; }
+.artifact-rich h4, .artifact-rich h5, .artifact-rich h6 { font-size: var(--fs-md); }
+.artifact-rich ul, .artifact-rich ol { margin: 0 0 var(--s-3) var(--s-5); padding: 0; }
+.artifact-rich li + li { margin-top: var(--s-1); }
+.artifact-rich blockquote { margin: 0 0 var(--s-3); padding-left: var(--s-3); border-left: 1px solid var(--border-strong); color: var(--text-2); }
+.artifact-rich code, .artifact-code { color: var(--violet); font: var(--fs-sm)/1.5 var(--font-code); }
+.artifact-code { margin: 0 0 var(--s-3); overflow-x: auto; padding-left: var(--s-3); border-left: 1px solid var(--border); color: var(--text-2); white-space: pre-wrap; }
+
+/* Key figures read across, not down: one line of evidence before the prose. */
+.artifact-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--s-4); margin: 0; padding: 0; }
+.artifact-stats > div { display: grid; gap: 2px; padding-left: var(--s-3); border-left: 1px solid var(--border-strong); }
+.artifact-stats dt { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.artifact-stats dd { margin: 0; color: var(--text); font: var(--fs-2xl)/1.2 var(--font-mono); }
+.artifact-stats small { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.4; }
+
+/* Pictures scroll sideways in one strip: a favicon and a lead photo do not each
+   deserve 460px of column. */
+.artifact-gallery { display: grid; gap: var(--s-2); margin: 0; }
+.gallery-track { display: flex; gap: var(--s-3); overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: thin; }
+.gallery-track > * { flex: 0 0 auto; width: min(320px, 78%); scroll-snap-align: start; }
+.gallery-track .artifact-image { height: 200px; }
+.gallery-nav { display: flex; align-items: center; gap: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); }
+.gallery-nav button { width: 22px; height: 22px; min-height: 22px; padding: 0; font: var(--fs-md)/1 var(--font-mono); }
+.artifact-block > ul, .artifact-block > ol { margin: 0 0 0 var(--s-5); padding: 0; color: var(--text); font: var(--fs-md)/1.65 var(--font); }
+.artifact-block li + li { margin-top: var(--s-1); }
+.artifact-citations { display: grid; gap: var(--s-2); }
+/* A shared left edge instead of a fill: this is quoted, not selected. */
+.artifact-fallback, .artifact-unknown pre { margin: 0; overflow-x: auto; padding: 0 0 0 var(--s-3); border-left: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font-code); white-space: pre-wrap; }
+.artifact-unknown { display: grid; gap: var(--s-2); padding: 0; }
+.artifact-unknown small { color: var(--text-3); font-size: var(--fs-2xs); }
+/* A table needs rules, not a frame — an outline here would nest inside a proposal. */
+.artifact-table { overflow-x: auto; border: 0; }
+.artifact-table table { width: 100%; border-collapse: collapse; color: var(--text); font: var(--fs-xs)/1.5 var(--font-mono); }
+.artifact-table th, .artifact-table td { padding: var(--s-2) var(--s-3) var(--s-2) 0; border: 0; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.artifact-table tr:last-child td { border-bottom: 0; }
+.artifact-table th { color: var(--text-3); background: none; font-size: var(--fs-2xs); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; border-bottom-color: var(--border-strong); }
+.artifact-image { display: block; width: 100%; max-height: 460px; margin: 0; border: 1px solid var(--border); object-fit: contain; background: none; }
+/* Recharts draws the chart itself; colours come from tokens, read in chart-artifact.tsx. */
+.artifact-chart { display: grid; gap: var(--s-2); margin: 0; }
+.artifact-chart figcaption { color: var(--text-3); font-size: var(--fs-2xs); }
+
+.artifact-editor { display: grid; gap: var(--s-4); }
+.artifact-editor fieldset { position: relative; display: grid; gap: var(--s-2); min-width: 0; padding: 0; border: 0; }
+.artifact-editor fieldset + fieldset { padding-top: var(--s-4); border-top: 1px solid var(--border); }
+.artifact-editor legend { padding: 0; color: var(--violet); font-size: var(--fs-2xs); letter-spacing: 0; text-transform: none; }
+.artifact-editor label { display: grid; gap: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; }
+.artifact-editor label small, .artifact-edit-help { display: block; color: var(--text-3); font: 400 var(--fs-sm)/1.55 var(--font); letter-spacing: 0; text-transform: none; }
+.artifact-editor textarea { min-height: 88px; font: var(--fs-sm)/1.55 var(--font-code); }
+/* Reorder controls ride the legend line rather than trailing 700px away from the block. */
+.artifact-order { position: absolute; top: 0; right: 0; display: flex; gap: var(--s-2); }
+.artifact-order button { display: grid; place-items: center; width: 26px; height: 26px; min-width: 0; min-height: 0; padding: 0; }
+
+/* ---------- Versions, proposal, page conversation ---------- */
+
+.page-versions { margin-top: var(--s-5); padding-top: var(--s-3); border-top: 1px solid var(--border); }
+/* display:grid/flex on a summary deletes the UA disclosure triangle, so collapsed
+   sections had no affordance at all. The marker sits in a fixed 14px box, which is
+   what keeps the label column steady despite the glyph's system-font advance. */
+.page-versions summary { display: inline-flex; align-items: center; gap: var(--s-2); min-height: 24px; color: var(--text-3); font-size: var(--fs-2xs); cursor: pointer; transition: color var(--t); }
+.page-versions summary::before { content: "▸"; width: 14px; }
+.page-versions[open] summary::before { content: "▾"; }
+.page-versions summary:hover { color: var(--text); }
+.page-versions summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.page-versions > small { display: block; margin-top: var(--s-3); color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
+.page-versions ul { display: grid; margin: var(--s-3) 0 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+.page-versions li { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-2) 0; border-bottom: 1px solid var(--border); color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); }
+.page-versions li > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-versions li > small { margin: 0; color: var(--text-3); font-size: var(--fs-2xs); white-space: nowrap; }
+
+/* Not a document: a header band that admits it, the pictures, and the scrape folded away. */
+.page-clip { display: grid; gap: var(--s-4); margin-top: var(--s-4); padding: 0; border: 1px dashed var(--border-strong); background: transparent; }
+.page-clip > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); background: var(--accent-soft); }
+.page-clip > header span { display: flex; align-items: center; gap: var(--s-2); color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.page-clip > header i { width: 7px; height: 7px; background: var(--accent); }
+/* The one moving thing on the page while the model writes it. */
+.page-clip[data-building] > header i { animation: clip-building 1.1s ease-in-out infinite; }
+@keyframes clip-building { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .page-clip[data-building] > header i { animation: none; } }
+.page-clip > .artifact-gallery { margin: 0 var(--s-4); }
+.page-clip > details { margin: 0 var(--s-4) var(--s-4); }
+.page-clip summary { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; }
+.page-clip summary:hover { color: var(--text); }
+.page-clip summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.page-clip pre { max-height: 340px; margin: var(--s-3) 0 0; overflow: auto; padding: var(--s-3); border: 1px solid var(--border); color: var(--text-2); font: var(--fs-xs)/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Same composition as the agent proposal: header band, body, action band. */
+.page-proposal { display: grid; margin-top: var(--s-5); padding: 0; border: 1px solid var(--border-strong); background: transparent; }
+.page-proposal > header { display: grid; gap: var(--s-1); margin: 0; padding: var(--s-2) var(--s-4) var(--s-3); border-bottom: 1px solid var(--border); color: var(--accent); font-size: var(--fs-2xs); }
+.page-proposal > header small { color: var(--text-3); font: 400 var(--fs-sm)/1.5 var(--font); letter-spacing: 0; text-transform: none; }
+.page-proposal > .artifact-document { padding: var(--s-4); }
+.page-proposal .page-chat-actions { gap: 0; margin-top: 0; border-top: 1px solid var(--border); }
+.page-proposal .page-chat-actions button { flex: 0 0 auto; border: 0; }
+.page-proposal .page-chat-actions button + button { border-left: 1px solid var(--border); }
+
+.page-chat { display: grid; gap: var(--s-3); margin-top: var(--s-5); padding-top: var(--s-3); border-top: 1px solid var(--border); }
+.page-chat > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); color: var(--text-3); font-size: var(--fs-2xs); }
+.page-chat-log { display: grid; gap: var(--s-4); max-height: 300px; overflow-y: auto; }
+.page-chat-log p { display: grid; gap: var(--s-1); margin: 0; color: var(--text); font: var(--fs-md)/1.6 var(--font); white-space: pre-wrap; }
+.page-chat-log p b { color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; }
+.page-chat-log p.chat-user { padding-left: var(--s-3); border-left: 1px solid var(--border-strong); }
+.page-chat-log small { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
+.page-chat textarea { width: 100%; font: var(--fs-sm)/1.55 var(--font); }
+.page-chat-actions { display: flex; gap: var(--s-2); margin: 0; }
+.page-chat-actions button { min-height: 30px; padding: 0 var(--s-4); }
+
+/* ---------- Notice and dialogs ---------- */
+
+.notice { position: fixed; z-index: 20; right: var(--s-4); bottom: var(--s-4); max-width: 440px; padding: var(--s-3) var(--s-7) var(--s-3) var(--s-4); color: var(--danger); background: var(--bg); border: 1px solid var(--danger); box-shadow: var(--shadow-md); font: var(--fs-sm)/1.5 var(--font); }
+.notice button { position: absolute; right: 0; top: 0; display: grid; place-items: center; width: 22px; height: 22px; color: inherit; background: transparent; font: var(--fs-md)/1 var(--font-mono); }
+
+.modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: var(--s-7); border: 0; color: inherit; background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(8px); }
+.modal-backdrop::backdrop { background: transparent; }
+/* Outline, bands, no padding of its own: every child owns its band's padding. */
+.new-thread-dialog, .agent-dialog { width: min(460px, 100%); max-height: 85vh; overflow-y: auto; padding: 0; border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); }
+.new-thread-dialog > header, .agent-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); }
+.new-thread-dialog > header > div, .agent-dialog > header > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s-2) var(--s-3); min-width: 0; }
+.new-thread-dialog header span, .agent-dialog > header span, .agent-cli > span { color: var(--text-3); font-size: var(--fs-2xs); }
+.new-thread-dialog h2, .agent-dialog h2 { margin-top: 0; color: var(--text); font: var(--fs-md)/1.3 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.new-thread-dialog > header button, .agent-dialog > header button { display: grid; place-items: center; flex: 0 0 auto; align-self: center; width: 24px; height: 24px; color: var(--text-3); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: color var(--t), background-color var(--t); }
+.new-thread-dialog > header button:hover:not(:disabled), .agent-dialog > header button:hover { color: var(--text); background: var(--surface-2); }
+.new-thread-dialog > p { margin: 0; padding: var(--s-3) var(--s-4); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.new-thread-dialog > .dialog-error { color: var(--danger); }
+.dialog-checks { display: grid; gap: 0; margin: 0; padding: var(--s-2) var(--s-4); border: 0; border-top: 1px solid var(--border); }
+.dialog-checks label { display: flex; align-items: center; gap: var(--s-2); min-height: 26px; margin-inline: calc(var(--s-4) * -1); padding: 0 var(--s-4); border: 0; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); transition: background-color var(--t), color var(--t); }
+.dialog-checks label:hover { color: var(--text); background: var(--surface-2); }
+/* The commit is a band across the foot of the dialog, not a button floating in it. */
+.new-thread-dialog > .dialog-primary { display: block; width: 100%; min-height: 32px; margin: 0; padding: var(--s-2) var(--s-4); border: 0; border-top: 1px solid var(--border); text-align: left; }
+.new-thread-dialog > .dialog-primary:hover:not(:disabled) { border-color: var(--border); }
+.dialog-error { margin: 0; padding: var(--s-2) var(--s-4); color: var(--danger); font: var(--fs-sm)/1.5 var(--font); }
+
+.capture-dialog { display: grid; gap: 0; width: min(520px, 100%); }
+/* LABEL   control on a fixed tab stop: every field starts at the same column. */
+.capture-dialog label { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: var(--s-3); padding: var(--s-2) var(--s-4); border-top: 1px solid var(--border); color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; }
+.capture-dialog label:has(textarea) { align-items: start; }
+.capture-dialog input, .capture-dialog select, .capture-dialog textarea { width: 100%; }
+.capture-dialog textarea { line-height: 1.55; }
+.capture-file input { padding: var(--s-1); border: 0; font-size: var(--fs-2xs); }
+.capture-url span { display: flex; gap: var(--s-2); min-width: 0; }
+.capture-url button { flex: 0 0 auto; height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); color: var(--text-2); background: transparent; font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; white-space: nowrap; }
+.capture-url button:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.capture-dialog > small { padding: 0 var(--s-4) var(--s-2); color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
+.capture-error { color: var(--danger); }
+.capture-dialog footer { display: flex; align-items: center; gap: var(--s-2); margin: 0; padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
+.capture-dialog footer small { flex: 1; color: var(--text-3); font: var(--fs-sm)/1.4 var(--font); }
+
+/* LABEL   value rows, each rule running the full width of the dialog outline. */
+.agent-dialog dl { display: grid; margin: 0; padding: 0; }
+.agent-dialog dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: var(--s-3); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); }
+.agent-dialog dl > div:last-child { border-bottom: 0; }
+.agent-dialog dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.5; }
+.agent-dialog dd { overflow: hidden; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* A value you are meant to take away: the message tick, next to it instead of the
+   turn it normally sits under, so it needs the hover reveal turned back off. */
+.agent-dialog dd.copyable { display: flex; align-items: center; gap: var(--s-2); }
+.agent-dialog dd.copyable > span { overflow: hidden; text-overflow: ellipsis; }
+.agent-dialog .message-copy { flex: 0 0 auto; opacity: 1; }
+
+/* The same ledger, expanded: tiled numbers over a table, because the counts the
+   210px column hides in a tooltip are columns once there is room for them. Below
+   the `.agent-dialog dl` rules above, which would otherwise outrank these. */
+.context-dialog { width: min(760px, 100%); }
+.context-dialog > dl { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--s-2) var(--s-4); padding: var(--s-4); border-bottom: 1px solid var(--border); }
+.context-dialog > dl > div { grid-template-columns: none; gap: 2px; padding: 0; border-bottom: 0; }
+/* The narrow column truncates its values; this view exists to not do that. */
+.context-dialog > dl dd { overflow: visible; text-overflow: clip; white-space: normal; }
+.context-dialog > p { margin: 0; padding: var(--s-3) var(--s-4) var(--s-4); color: var(--text-3); font-size: var(--fs-2xs); }
+.context-dialog-rows { display: grid; gap: var(--s-3); padding: var(--s-4); }
+.context-table { width: 100%; border-collapse: collapse; }
+/* Numbers read as columns, so only the segment name stays left-aligned. */
+.context-table th, .context-table td { padding: var(--s-1) var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-2); font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; text-align: right; white-space: nowrap; }
+.context-table thead th { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.context-table th:first-child { width: 100%; text-align: left; white-space: normal; }
+/* inline-block, not a flex cell: display on a <th> drops it out of the table row. */
+.context-table th i { display: inline-block; width: 8px; height: 8px; margin-right: var(--s-2); background: var(--kind); }
+.agent-cli { display: grid; gap: var(--s-2); margin: 0; padding: var(--s-3) var(--s-4); border-top: 1px solid var(--border); }
+.agent-cli code { width: fit-content; max-width: 100%; overflow-x: auto; padding: 0 0 0 var(--s-3); border-left: 1px solid var(--border); color: var(--violet); font: var(--fs-xs)/1.6 var(--font-code); }
+.agent-cli p { color: var(--text-3); font: var(--fs-sm)/1.5 var(--font); }
+
+.computer-dialog p { padding: 0; color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+/* The thing being approved, marked by the edge rather than by a fill. */
+.computer-dialog p.computer-task { margin: 0; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); font-size: var(--fs-md); }
+.computer-dialog dd { white-space: normal; }
+.computer-dialog-actions { display: flex; justify-content: flex-start; gap: 0; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.computer-dialog-actions button { width: auto; height: auto; min-height: 32px; padding: 0 var(--s-4); border: 0; }
+.computer-dialog-actions button + button { border-left: 1px solid var(--border); }
+.computer-dialog-actions .capability-action { min-width: 0; height: auto; min-height: 32px; margin-top: 0; color: var(--accent); }
+.computer-dialog-actions .capability-action:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }

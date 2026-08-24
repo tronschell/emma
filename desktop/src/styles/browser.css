@@ -1,0 +1,25 @@
+.browser-pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border-strong); background: var(--chrome); }
+
+.browser-bar { display: flex; align-items: center; gap: var(--s-1); flex: 0 0 auto; min-height: 32px; padding: var(--s-1) var(--s-2); border-bottom: 1px solid var(--border); }
+.browser-bar > button { display: grid; place-items: center; flex: 0 0 auto; width: 24px; height: 24px; color: var(--text-2); background: transparent; font: var(--fs-md)/1 var(--font-mono); transition: color var(--t), background-color var(--t); }
+.browser-bar > button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+
+.browser-url { min-width: 0; min-height: 24px; flex: 1 1 auto; padding: 0 var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text); font: var(--fs-sm)/1.5 var(--font-mono); transition: border-color var(--t); }
+.browser-url:hover { border-color: var(--border-strong); }
+.browser-url::placeholder { color: var(--text-3); }
+
+.browser-live { width: 6px; height: 6px; flex: 0 0 auto; margin: 0 var(--s-1); border-radius: var(--r-full); background: var(--text-3); transition: background-color var(--t); }
+.browser-live[data-live="true"] { background: var(--accent); }
+
+.browser-stage { display: grid; place-items: safe center; flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--bg); }
+.browser-stage[data-idle="true"] { overflow: hidden; }
+.browser-stage[data-idle="true"]::after { color: var(--text-3); font: var(--fs-3xl)/1 var(--font-mono); content: "◇"; }
+.browser-stage[data-idle="true"] canvas { display: none; }
+.browser-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }
+.browser-stage canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.browser-install { display: grid; justify-items: start; gap: var(--s-3); padding: var(--s-4); }
+.browser-install > span { color: var(--text-2); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.browser-install code { width: 100%; padding: var(--s-2); border: 1px solid var(--border); color: var(--text); font: var(--fs-sm)/1.5 var(--font-code); overflow-wrap: anywhere; }
+.browser-install button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: transparent; color: var(--accent); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: border-color var(--t), background-color var(--t); }
+.browser-install button:hover { border-color: var(--accent); background: var(--accent-soft); }

@@ -1,39 +1,126 @@
+import { DEFAULT_TERMINAL_HEIGHT, MAX_TERMINAL_HEIGHT, MIN_TERMINAL_HEIGHT } from "../shared/terminal";
+
+/** What one graph's boxes measure, and the room left around and between them. */
+export type GraphBox = { width: number; height: number; gapX: number; gapY: number; lane: number };
+
+/**
+ * Boxes on a grid: one row per level, every row centred on the widest one, plus the
+ * canvas that holds them. Pure geometry — which row an id is in is decided by
+ * whoever owns the graph, which is `workflowRows` for a scheduled task and
+ * `planRows` for a plan.
+ */
+export function placeRows(rows: string[][], box: GraphBox): { placed: { id: string; x: number; y: number }[]; width: number; height: number } {
+  const widest = Math.max(1, ...rows.map((row) => row.length));
+  const span = widest * box.width + (widest - 1) * box.gapX;
+  const placed = rows.flatMap((row, level) => row.map((id, column) => {
+    const rowSpan = row.length * box.width + (row.length - 1) * box.gapX;
+    return { id, x: box.lane + (span - rowSpan) / 2 + column * (box.width + box.gapX), y: level * (box.height + box.gapY) };
+  }));
+  return { placed, width: span + box.lane * 2, height: Math.max(box.height, rows.length * (box.height + box.gapY) - box.gapY) };
+}
+
+/**
+ * The line from one box to another, and where its label sits.
+ *
+ * Into the row below is a straight drop. Anything else — an edge that skips a row,
+ * one that points back up — runs out to a side lane instead of cutting through the
+ * boxes in between: past the row below it, a straight line would end up pointing at
+ * the wrong box.
+ */
+export function edgePath(from: { x: number; y: number }, to: { x: number; y: number }, box: GraphBox, canvasWidth: number) {
+  const x1 = from.x + box.width / 2;
+  const y1 = from.y + box.height;
+  const x2 = to.x + box.width / 2;
+  const y2 = to.y - 2;
+  const straight = to.y - from.y === box.height + box.gapY;
+  const lane = to.y <= from.y ? box.lane / 2 : canvasWidth - box.lane / 2;
+  return {
+    d: straight
+      ? `M${x1} ${y1} C${x1} ${y1 + box.gapY / 2}, ${x2} ${to.y - box.gapY / 2}, ${x2} ${y2}`
+      : `M${x1} ${y1} C${x1} ${y1 + 24}, ${lane} ${y1}, ${lane} ${y1 + 28} L${lane} ${y2 - 28} C${lane} ${y2}, ${x2} ${y2 - 28}, ${x2} ${y2}`,
+    labelX: straight ? x1 + 8 : (x1 + lane) / 2,
+    labelY: y1 + 18,
+  };
+}
+
+export const NAV_VIEWS = ["threads", "knowledge", "artifacts", "agent", "scheduled", "plugins", "research"] as const;
+
 export interface PaneLayout {
-  navWidth: number;
-  listWidth: number;
+  sidebarWidth: number;
   inspectorWidth: number;
-  navCollapsed: boolean;
-  listCollapsed: boolean;
+  browserWidth: number;
+  sidebarCollapsed: boolean;
   inspectorCollapsed: boolean;
+  browserOpen: boolean;
+  terminalOpen: boolean;
+  terminalHeight: number;
+  /* Section nav as one horizontal row of glyph tiles, Arc's pinned strip. */
+  navIcons: boolean;
+  navOrder: string[];
+  projectOrder: string[];
 }
 
 export const defaultPaneLayout: PaneLayout = {
-  navWidth: 188,
-  listWidth: 246,
-  inspectorWidth: 232,
-  navCollapsed: false,
-  listCollapsed: false,
+  sidebarWidth: 260,
+  inspectorWidth: 288,
+  browserWidth: 420,
+  sidebarCollapsed: false,
   inspectorCollapsed: false,
+  browserOpen: false,
+  terminalOpen: false,
+  terminalHeight: DEFAULT_TERMINAL_HEIGHT,
+  navIcons: false,
+  navOrder: [],
+  projectOrder: [],
 };
+
+/**
+ * The rows the user dragged, then everything else in its natural order. A stored
+ * order is a preference, not the list: an id that has gone away is dropped and a
+ * row that appeared since — a new section, a folder granted this morning — lands
+ * at the end rather than vanishing because nobody has dragged it yet.
+ */
+export function ordered<T extends { id: string }>(items: T[], order: string[]): T[] {
+  const dragged = order.map((id) => items.find((item) => item.id === id)).filter((item) => item !== undefined);
+  return [...dragged, ...items.filter((item) => !order.includes(item.id))];
+}
 
 const number = (value: unknown, fallback: number, min: number, max: number) =>
   typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback;
 
+const idList = (value: unknown, allowed?: readonly string[]) => {
+  const list = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 64) : [];
+  return [...new Set(list)].filter((id) => !allowed || allowed.includes(id)).slice(0, 64);
+};
+
+export const MIN_BROWSER_WIDTH = 260;
+
 export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITIVE_INFINITY): PaneLayout {
   const input = value && typeof value === "object" ? value as Partial<PaneLayout> : {};
   const layout = {
-    navWidth: number(input.navWidth, defaultPaneLayout.navWidth, 156, 260),
-    listWidth: number(input.listWidth, defaultPaneLayout.listWidth, 190, 380),
-    inspectorWidth: number(input.inspectorWidth, defaultPaneLayout.inspectorWidth, 210, 360),
-    navCollapsed: typeof input.navCollapsed === "boolean" ? input.navCollapsed : false,
-    listCollapsed: typeof input.listCollapsed === "boolean" ? input.listCollapsed : false,
+    sidebarWidth: number(input.sidebarWidth, defaultPaneLayout.sidebarWidth, 200, 340),
+    inspectorWidth: number(input.inspectorWidth, defaultPaneLayout.inspectorWidth, 260, 360),
+    browserWidth: number(input.browserWidth, defaultPaneLayout.browserWidth, MIN_BROWSER_WIDTH, 720),
+    sidebarCollapsed: typeof input.sidebarCollapsed === "boolean" ? input.sidebarCollapsed : false,
     inspectorCollapsed: typeof input.inspectorCollapsed === "boolean" ? input.inspectorCollapsed : false,
+    browserOpen: typeof input.browserOpen === "boolean" ? input.browserOpen : false,
+    terminalOpen: typeof input.terminalOpen === "boolean" ? input.terminalOpen : false,
+    terminalHeight: number(input.terminalHeight, DEFAULT_TERMINAL_HEIGHT, MIN_TERMINAL_HEIGHT, MAX_TERMINAL_HEIGHT),
+    navIcons: typeof input.navIcons === "boolean" ? input.navIcons : false,
+    navOrder: idList(input.navOrder, NAV_VIEWS),
+    projectOrder: idList(input.projectOrder),
   };
-  const fixedWidth = 320 + (layout.navCollapsed ? 46 : 156) + (layout.listCollapsed ? 30 : 190) + (layout.inspectorCollapsed ? 30 : 210);
-  const requestedSlack = (layout.navCollapsed ? 0 : layout.navWidth - 156) + (layout.listCollapsed ? 0 : layout.listWidth - 190) + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 210);
-  const ratio = requestedSlack ? Math.min(1, Math.max(0, (Math.floor(viewportWidth) - fixedWidth) / requestedSlack)) : 1;
-  if (!layout.navCollapsed) layout.navWidth = 156 + Math.floor((layout.navWidth - 156) * ratio);
-  if (!layout.listCollapsed) layout.listWidth = 190 + Math.floor((layout.listWidth - 190) * ratio);
-  if (!layout.inspectorCollapsed) layout.inspectorWidth = 210 + Math.floor((layout.inspectorWidth - 210) * ratio);
+  const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 30 : 260) + (layout.browserOpen ? MIN_BROWSER_WIDTH : 0);
+  const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200)
+    + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260)
+    + (layout.browserOpen ? layout.browserWidth - MIN_BROWSER_WIDTH : 0);
+  // A window that has not been laid out yet reports innerWidth 0. Treating that as
+  // a real viewport shrinks both panes to their minimums and the caller persists it,
+  // so an unmeasured window is no constraint at all.
+  const width = viewportWidth > 0 ? viewportWidth : Number.POSITIVE_INFINITY;
+  const ratio = requestedSlack ? Math.min(1, Math.max(0, (Math.floor(width) - fixedWidth) / requestedSlack)) : 1;
+  if (!layout.sidebarCollapsed) layout.sidebarWidth = 200 + Math.floor((layout.sidebarWidth - 200) * ratio);
+  if (!layout.inspectorCollapsed) layout.inspectorWidth = 260 + Math.floor((layout.inspectorWidth - 260) * ratio);
+  if (layout.browserOpen) layout.browserWidth = MIN_BROWSER_WIDTH + Math.floor((layout.browserWidth - MIN_BROWSER_WIDTH) * ratio);
   return layout;
 }

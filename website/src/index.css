@@ -451,6 +451,20 @@ dd i {
   border: 1px solid transparent;
   font-size: 11px;
 }
+.thread span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.thread.sub {
+  padding-left: 18px;
+}
+.thread i {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--gold);
+}
 .thread small {
   color: #5e5e5e;
   font:
@@ -573,6 +587,23 @@ dd i {
     SFMono-Regular,
     Menlo,
     monospace;
+}
+.composer-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mode-chip {
+  padding: 4px 6px;
+  border: 1px solid #303030;
+  border-radius: 4px;
+  color: #9a9a9a;
+  font:
+    400 7px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  letter-spacing: 0.08em;
 }
 .kb-search {
   margin: 18px 0 24px;
@@ -754,6 +785,33 @@ dd i {
   color: #5f5f5f;
   font-style: normal;
   font-size: 7px;
+}
+
+.mode-list {
+  margin-top: 46px;
+  border-top: 1px solid var(--graphite);
+}
+.mode-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  align-items: baseline;
+  gap: 20px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--graphite);
+}
+.mode-row span {
+  color: #aaa;
+  font:
+    9px/1.7 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  letter-spacing: 0.1em;
+}
+.mode-row p {
+  color: var(--smoke);
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .section-intro.compact {
@@ -1098,6 +1156,10 @@ footer {
   .endpoint {
     grid-template-columns: 85px 1fr;
     gap: 10px;
+  }
+  .mode-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
   .endpoint b {
     overflow: hidden;

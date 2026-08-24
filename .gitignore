@@ -4,7 +4,11 @@
 /.emma-data
 .DS_Store
 /desktop/node_modules
+/desktop/main.js
 /desktop/dist-main
 /desktop/dist-native
 /desktop/dist-renderer
 /desktop/release
+/desktop/vendor
+/harness/.zig-cache
+/harness/zig-out
