@@ -1010,7 +1010,7 @@ pub fn runSubagentChild(
                 .permission_reviewer_provider = state.cfg.permission_reviewer_provider,
             },
         },
-        .system_prompt = state.cfg.prompt_policy.system_prompt,
+        .system_prompt = state.cfg.prompt_policy.systemPrompt(),
         .model_prompt_overlay = state.cfg.prompt_policy.modelPromptOverlay(admission.model),
         .skills_prompt_section = bounded_skills.text,
         .explicit_skills_prompt_section = explicit_skills.text,
@@ -1055,7 +1055,7 @@ const AgentConfigSections = struct {
 
 fn buildAgentConfig(state: *server.ServerState, session: *server.ActiveSessionState, sections: AgentConfigSections) agent_runtime.Config {
     return .{
-        .system_prompt = state.cfg.prompt_policy.system_prompt,
+        .system_prompt = state.cfg.prompt_policy.systemPrompt(),
         .model_prompt_overlay = state.cfg.prompt_policy.modelPromptOverlay(session.model),
         .skills_prompt_section = sections.skills_prompt_section,
         .explicit_skills_prompt_section = sections.explicit_skills_prompt_section,
@@ -1524,11 +1524,15 @@ fn appendRuntimeContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.Ar
     }, arena, messages);
 }
 
-fn prepareParentTurnContext(
-    raw_ctx: *anyopaque,
+/// Steering rides the same per-step channel the children's deliveries do, and
+/// under the same rule: it is acknowledged, and so dropped, only once a request
+/// carrying it may have reached the model.
+const steer_ack_delivery_id = "acp-steer";
+
+fn childDeliveries(
+    ctx: *AcpContext,
     arena: Allocator,
 ) !?agent_runtime.PreparedParentTurnContext {
-    const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     const subagent_host = ctx.state.subagent_host orelse return null;
     const session = if (ctx.state.active_session) |*active| active else return null;
     return parent_delivery_projector.prepare(
@@ -1539,19 +1543,57 @@ fn prepareParentTurnContext(
     );
 }
 
+fn prepareParentTurnContext(
+    raw_ctx: *anyopaque,
+    arena: Allocator,
+) !?agent_runtime.PreparedParentTurnContext {
+    const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
+    const deliveries = try childDeliveries(ctx, arena);
+    if (ctx.child != null) return deliveries;
+    const steering = try server.takePendingSteering(ctx.state, arena) orelse return deliveries;
+
+    const acknowledgements = try arena.alloc(
+        agent_runtime.ParentTurnDeliveryAck,
+        (if (deliveries) |prepared| prepared.acknowledgements.len else 0) + 1,
+    );
+    if (deliveries) |prepared| @memcpy(acknowledgements[0 .. acknowledgements.len - 1], prepared.acknowledgements);
+    acknowledgements[acknowledgements.len - 1] = .{
+        .child_id = steer_ack_delivery_id,
+        .target_session_id = steer_ack_delivery_id,
+        .through_sequence = 0,
+        .delivery_id = steer_ack_delivery_id,
+        .start_offset = 0,
+        .end_offset = steering.len,
+        .total_bytes = steering.len,
+    };
+    return .{
+        .content = if (deliveries) |prepared|
+            try std.mem.concat(arena, u8, &.{ prepared.content, steering })
+        else
+            steering,
+        .acknowledgements = acknowledgements,
+    };
+}
+
 fn acknowledgeParentTurnContext(
     raw_ctx: *anyopaque,
     arena: Allocator,
     acknowledgements: []const agent_runtime.ParentTurnDeliveryAck,
 ) void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
+    var child_acks = acknowledgements;
+    if (child_acks.len > 0 and std.mem.eql(u8, child_acks[child_acks.len - 1].delivery_id, steer_ack_delivery_id)) {
+        child_acks = child_acks[0 .. child_acks.len - 1];
+        server.clearDeliveredSteering(ctx.state);
+    }
+    if (child_acks.len == 0) return;
     const subagent_host = ctx.state.subagent_host orelse return;
     const retirement_ready = parent_delivery_projector
         .acknowledgeWithRetirementSignal(
         arena,
         subagent_host.sessions,
         subagent_host.manager.options.child_store,
-        acknowledgements,
+        child_acks,
     );
     if (retirement_ready) {
         subagent_host.requestRetirementSweep(io_mod.milliTimestamp());

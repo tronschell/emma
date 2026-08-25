@@ -1058,7 +1058,7 @@ pub fn Runtime(comptime App: type) type {
                     return error.ProviderFailed,
                 .tool_context = tool_context,
                 .provider_routes = provider_routes,
-                .system_prompt = prompt_policy.system_prompt,
+                .system_prompt = prompt_policy.systemPrompt(),
                 .model_prompt_overlay = prompt_policy.modelPromptOverlay(admission.model),
                 .skills_prompt_section = bounded_skills.text,
                 .explicit_skills_prompt_section = explicit_skills.text,
@@ -1097,7 +1097,7 @@ pub fn Runtime(comptime App: type) type {
         ) agent_runtime.Config {
             const prompt_policy = app.promptPolicy();
             return .{
-                .system_prompt = prompt_policy.system_prompt,
+                .system_prompt = prompt_policy.systemPrompt(),
                 .model_prompt_overlay = prompt_policy.modelPromptOverlay(job.model),
                 .skills_prompt_section = skills_section,
                 .explicit_skills_prompt_section = explicit_skills_section,

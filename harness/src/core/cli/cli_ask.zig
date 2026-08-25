@@ -270,7 +270,7 @@ fn runAskChild(
                 .permission_reviewer_provider = ctx.cfg.permission_reviewer_provider,
             },
         },
-        .system_prompt = ctx.cfg.prompt_policy.system_prompt,
+        .system_prompt = ctx.cfg.prompt_policy.systemPrompt(),
         .model_prompt_overlay = ctx.cfg.prompt_policy.modelPromptOverlay(admission.model),
         .skills_prompt_section = ctx.subagent_skills_prompt,
         .explicit_skills_prompt_section = ctx.subagent_explicit_skills_prompt,
@@ -1234,7 +1234,9 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
 
     var effective_cfg = cfg;
     if (options.system_prompt_override) |sp| {
+        // `--system` outranks the prompt file the resolver would otherwise read.
         effective_cfg.prompt_policy.system_prompt = sp;
+        effective_cfg.prompt_policy.system_prompt_fn = null;
     }
 
     const output_mode = selectOutputMode(
@@ -1659,7 +1661,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     const semantic_presentation = if (ctx.presenter) |value| value.semanticSink() else null;
     try ctx.checkCancellation();
     options.deps.process_queued_prompt(&deps, semantic_presentation, ctx.lifecycleContext(), .{
-        .system_prompt = cfg.prompt_policy.system_prompt,
+        .system_prompt = cfg.prompt_policy.systemPrompt(),
         .model_prompt_overlay = cfg.prompt_policy.modelPromptOverlay(ctx.model),
         .skills_prompt_section = skills_section,
         .explicit_skills_prompt_section = explicit_skills.text,
