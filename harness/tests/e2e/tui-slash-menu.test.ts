@@ -426,6 +426,50 @@ function createLinkedSkillsMenuFixture() {
   return { home, workspace, stderrPath };
 }
 
+function createLinkedMetadataSkillsMenuFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-linked-skill-metadata-menu-")));
+  workDirs.push(root);
+  const home = join(root, "home");
+  const workspace = join(root, "workspace");
+  const source = join(workspace, "skill-source", "linked-leaf");
+  const candidate = join(workspace, ".codex", "skills", "linked-leaf");
+  const stderrPath = join(root, "stderr.log");
+  mkdirSync(join(home, ".fx"), { recursive: true });
+  mkdirSync(source, { recursive: true });
+  mkdirSync(candidate, { recursive: true });
+  writeFileSync(join(home, ".fx", "settings.json"), "{}\n");
+  writeFileSync(
+    join(source, "SKILL.md"),
+    "---\nname: linked-leaf\ndescription: linked metadata skill\n---\n\nLINKED_METADATA_BODY\n",
+  );
+  symlinkSync(
+    "../../../skill-source/linked-leaf/SKILL.md",
+    join(candidate, "SKILL.md"),
+    "file",
+  );
+  writeFileSync(stderrPath, "");
+  return { home, workspace, stderrPath };
+}
+
+function createUnavailableLinkedSkillFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-unavailable-linked-skill-")));
+  workDirs.push(root);
+  const home = join(root, "home");
+  const workspace = join(root, "workspace");
+  const skillsRoot = join(workspace, ".codex", "skills");
+  const stderrPath = join(root, "stderr.log");
+  mkdirSync(join(home, ".fx"), { recursive: true });
+  mkdirSync(skillsRoot, { recursive: true });
+  writeFileSync(join(home, ".fx", "settings.json"), "{}\n");
+  symlinkSync(
+    "../../skill-source/missing-skill",
+    join(skillsRoot, "missing-skill"),
+    "dir",
+  );
+  writeFileSync(stderrPath, "");
+  return { home, workspace, stderrPath };
+}
+
 function createModelsMenuFixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-models-menu-")));
   workDirs.push(root);
@@ -632,6 +676,100 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       );
       expect(readFileSync(fixture.stderrPath, "utf8")).toBe("");
 
+      await session.sendText("/quit");
+      expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
+      session = null;
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "linked skill metadata is visible and usable from the skills menu",
+    async () => {
+      const fixture = createLinkedMetadataSkillsMenuFixture();
+      gateway = startFakeGateway([
+        fakeGatewayFinalText("LINKED_METADATA_COMPLETE"),
+      ]);
+      session = await TmuxSession.create({
+        cwd: fixture.workspace,
+        env: {
+          HOME: fixture.home,
+          AI_GATEWAY_API_KEY: "fake-linked-metadata-key",
+          VERCEL_OIDC_TOKEN: undefined,
+          FX_GATEWAY_BASE_URL: gateway.baseUrl,
+          FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+          FX_MODEL: FAKE_GATEWAY_MODEL,
+          FX_AUTO_UPGRADE: "0",
+        },
+        width: 120,
+        height: 32,
+        stderrPath: fixture.stderrPath,
+      });
+      await session.waitForComposer(10_000);
+      expect(await session.capturePane()).not.toContain("discovery issue");
+
+      await session.sendText("/skills");
+      const menu = await waitForSkillsMenu(session, 1);
+      expect(menu.join("\n")).toContain("linked-leaf");
+      expect(menu.join("\n")).toContain("Codex · Workspace");
+      await session.sendKeys("Enter");
+      await session.waitForPane(
+        (pane) => composerContains(pane, "linked-leaf"),
+        5_000,
+      );
+      await session.sendLiteralText(" apply it");
+      await session.sendKeys("Enter");
+      await session.waitForText("LINKED_METADATA_COMPLETE", 10_000);
+
+      expect(gateway.requests).toHaveLength(1);
+      expect(gatewayPromptText(gateway.requests[0]!.body)).toContain(
+        "LINKED_METADATA_BODY",
+      );
+      expect(readFileSync(fixture.stderrPath, "utf8")).toBe("");
+
+      await session.sendText("/quit");
+      expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
+      session = null;
+    },
+    TEST_TIMEOUT,
+  );
+
+  test(
+    "unavailable linked skill reports the failing directory boundary",
+    async () => {
+      const fixture = createUnavailableLinkedSkillFixture();
+      session = await TmuxSession.create({
+        cwd: fixture.workspace,
+        env: {
+          HOME: fixture.home,
+          AI_GATEWAY_API_KEY: undefined,
+          VERCEL_OIDC_TOKEN: undefined,
+          FX_AUTO_UPGRADE: "0",
+        },
+        width: 120,
+        height: 32,
+        stderrPath: fixture.stderrPath,
+      });
+
+      await session.waitForText(
+        "Skills: 1 discovery issue; some skills may be missing (ctrl o to view)",
+        10_000,
+      );
+      await session.waitForComposer(10_000);
+      await session.sendKeys("C-o");
+      await session.waitForPane(
+        (pane) => pane.replace(/\s+/g, " ").includes(
+          "linked skill directory could not be resolved to an authorized readable directory",
+        ),
+        5_000,
+      );
+      const detail = (await session.capturePane()).replace(/\s+/g, " ");
+      expect(detail).toContain("repair or remove the link");
+      expect(detail).not.toContain("SKILL.md is unreadable or not a regular file");
+      expect(readFileSync(fixture.stderrPath, "utf8")).toBe("");
+
+      await session.sendKeys("C-o");
+      await session.waitForComposer(5_000);
       await session.sendText("/quit");
       expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
       session = null;
@@ -1081,10 +1219,14 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
 
       await session.sendKeys("Down");
       await session.sendKeys("Down");
-      await session.waitForText("manage MCP servers, resources, and prompts", 5_000);
+      await session.waitForText(
+        "manage local and remote MCP servers, resources, and prompts",
+        5_000,
+      );
       const scrolledGrid = await session.capturePaneGrid();
       const mcpRow = scrolledGrid.find((line) =>
-        line.includes("/mcp") && line.includes("manage MCP servers, resources, and prompts")
+        line.includes("/mcp") &&
+        line.includes("manage local and remote MCP servers, resources, and prompts")
       );
       expect(mcpRow).toBeDefined();
       expect(mcpRow!.indexOf("Extensions")).toBe(metadataColumn);
@@ -1148,7 +1290,9 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       const mcpRow = grid.find((line) => line.includes("/mcp"));
       expect(modelRow).toContain("choose what model and reasoning effort to use");
       expect(modelRow).not.toContain("Model");
-      expect(mcpRow).toContain("manage MCP servers, resources, and prompts");
+      expect(mcpRow).toContain(
+        "manage local and remote MCP servers, resources, and prompts",
+      );
       expect(mcpRow).not.toContain("Extensions");
 
       await session.sendKeys("C-u");

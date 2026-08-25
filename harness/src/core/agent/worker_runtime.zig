@@ -4116,7 +4116,7 @@ test "effective permission snapshot keeps a held turn pair until cleared" {
     try std.testing.expectEqual(sandbox.BackendKind.none, next.sandbox_backend);
 }
 
-test "queued permission pair updates from ask to auto without rewriting held turn" {
+test "queued permission mode updates without mutating dequeued fallback" {
     const alloc = std.testing.allocator;
     var runtime = WorkerRuntime{};
     defer runtime.deinit(alloc);

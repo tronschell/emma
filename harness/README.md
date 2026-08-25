@@ -121,13 +121,13 @@ The WebAssembly SDK is experimental. See the [WebAssembly SDK](sdk/README.md).
 Add reusable instructions with skills, connect external tools through MCP, or
 delegate independent work to subagents. Project instruction files may link
 within their scope, and read-only workspace or compatibility skill directories
-may link within their owning workspace or home; managed skills, `SKILL.md`
-files, resources, and escaping links remain no-follow. Skills installed via
-symlinks that resolve outside home or workspace (e.g. Nix store paths) are
-loaded when their resolved target is inside a directory listed in the
-`FX_SKILL_SYMLINK_AUTHORITIES` environment variable (colon-separated absolute
-paths). `emma-cli status` and `emma-cli doctor` report an invalid trusted MCP
-profile without starting its servers.
+and their primary `SKILL.md` files may link within their owning workspace or
+home; managed skills, secondary resources, and escaping links remain no-follow.
+Skills installed via symlinks that resolve outside home or workspace (e.g. Nix
+store paths) are loaded when their resolved target is inside a directory listed
+in the `FX_SKILL_SYMLINK_AUTHORITIES` environment variable (colon-separated
+absolute paths). `emma-cli status` and `emma-cli doctor` report an invalid
+trusted MCP profile without starting its servers.
 
 ## Build from source
 

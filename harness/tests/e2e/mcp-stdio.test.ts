@@ -47,6 +47,7 @@ type FixtureRoot = {
   launchLogPath: string;
   traceLogPath: string;
   invalidationReleasePath: string;
+  environmentCapturePath: string;
 };
 
 type WireEntry = {
@@ -125,6 +126,7 @@ type RootOptions = {
   required?: boolean;
   resourcesSubscribe?: boolean;
   resourceTtlMs?: number;
+  captureEnvironment?: boolean;
 };
 
 function createRoot(
@@ -139,6 +141,7 @@ function createRoot(
   const wireLogPath = join(root, "mcp-wire.jsonl");
   const launchLogPath = join(root, "mcp-launches.txt");
   const invalidationReleasePath = join(root, "mcp-invalidation-release");
+  const environmentCapturePath = join(root, "mcp-environment.json");
   const command = options.recordLaunchAttempts
     ? [
       "/bin/sh",
@@ -195,6 +198,12 @@ function createRoot(
               options.legacyRejectNewerInitialize ? "1" : undefined,
             FX_MCP_DRAFT7_PATTERN: options.draft7Pattern,
             FX_MCP_URL_REQUIRED_OPERATION: options.urlRequiredOperation,
+            FX_MCP_ENV_CAPTURE: options.captureEnvironment
+              ? environmentCapturePath
+              : undefined,
+            FX_MCP_ENV_SENTINEL: options.captureEnvironment
+              ? "configured"
+              : undefined,
           },
           startup_timeout_ms: options.startupTimeoutMs,
           operation_timeout_ms: options.operationTimeoutMs,
@@ -211,6 +220,7 @@ function createRoot(
     launchLogPath,
     traceLogPath: join(root, "fx-trace.log"),
     invalidationReleasePath,
+    environmentCapturePath,
   };
 }
 
@@ -330,6 +340,70 @@ async function expectProcessesExited(pids: Iterable<number>, timeoutMs = 5_000) 
 }
 
 describe("modern MCP stdio compatibility", () => {
+  test.skipIf(!tmuxAvailable())(
+    "the TUI shows exact dynamic MCP arguments before human approval",
+    async () => {
+      const root = createRoot("tui-human-approval-arguments", MODERN_FIXTURE);
+      const stderrPath = join(root.root, "stderr.log");
+      const expectedArguments = '{"text":"mcp-live-human-active"}';
+      const activeGateway = startFakeGateway([
+        fakeGatewayToolCall("select_mcp", "mcp_select_tool", { name: TOOL_NAME }),
+        fakeGatewayToolCall("call_mcp", TOOL_NAME, {
+          text: "mcp-live-human-active",
+        }),
+        fakeGatewayFinalText("MCP approval denied without transport."),
+      ], {
+        models: [{ id: MODEL, type: "language", tags: ["tool-use"] }],
+      });
+      gateway = activeGateway;
+      tui = await TmuxSession.create({
+        isolated: true,
+        cwd: root.workspace,
+        width: 140,
+        height: 40,
+        stderrPath,
+        env: {
+          ...fixtureEnv(root, activeGateway),
+          FX_PERMISSION_MODE: "ask",
+        },
+      });
+
+      await tui.waitForComposer(15_000);
+      await tui.sendText(
+        "Call the MCP fixture only after I approve its exact arguments.",
+      );
+      const approval = await tui.waitForText(
+        `Arguments for this request: ${expectedArguments}`,
+        20_000,
+      );
+      expect(approval).toContain("Allow this MCP tool call?");
+      expect(approval).toContain(TOOL_NAME);
+      expect(approval).toContain(
+        "This MCP tool needs approval before fx can send the request.",
+      );
+      expect(approval).toContain("3. Deny");
+      expect(
+        readWire(root.wireLogPath).some(
+          (entry) => entry.message.method === "tools/call",
+        ),
+      ).toBe(false);
+
+      await tui.sendKeys("3");
+      await tui.waitForText("MCP approval denied without transport.", 10_000);
+      expect(
+        readWire(root.wireLogPath).some(
+          (entry) => entry.message.method === "tools/call",
+        ),
+      ).toBe(false);
+      expect(readFileSync(stderrPath, "utf8")).toBe("");
+
+      await tui.kill();
+      tui = null;
+      await expectFixtureProcessesExited(readWire(root.wireLogPath));
+    },
+    40_000,
+  );
+
   test("repository-local MCP configuration never launches a process or network request", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-mcp-project-trust-")));
     cleanupRoot = root;
@@ -1828,6 +1902,49 @@ describe("modern MCP stdio compatibility", () => {
       await expectFixtureProcessesExited(wire);
     });
   }
+
+  test("configured MCP stdio environment overlays inherited process values", async () => {
+    const root = createRoot("ask-environment-overlay", MODERN_FIXTURE, {
+      captureEnvironment: true,
+    });
+    const activeGateway = startToolGateway("Environment overlay complete.");
+    gateway = activeGateway;
+    const inheritedSentinel = "inherited-parent-value";
+    const proxySentinel = "http://proxy.example.test:8080";
+    const parentPath = process.env.PATH ?? "/usr/bin:/bin";
+
+    const result = await runFx(
+      ["ask", "--json", "--auto", "--no-save", "Call the environment MCP fixture."],
+      {
+        cwd: root.workspace,
+        env: {
+          ...fixtureEnv(root, activeGateway),
+          PATH: parentPath,
+          FX_MCP_INHERITED_SENTINEL: inheritedSentinel,
+          HTTPS_PROXY: proxySentinel,
+        },
+        timeoutMs: 20_000,
+      },
+    );
+
+    expect(result.code, result.stderr || result.stdout).toBe(0);
+    expect(JSON.parse(result.stdout).output).toContain("Environment overlay complete.");
+    const captured = JSON.parse(readFileSync(root.environmentCapturePath, "utf8")) as {
+      configured?: string;
+      inherited?: string;
+      path?: string;
+      home?: string;
+      httpsProxy?: string;
+    };
+    expect(captured).toEqual({
+      configured: "configured",
+      inherited: inheritedSentinel,
+      path: parentPath,
+      home: root.home,
+      httpsProxy: proxySentinel,
+    });
+    await expectFixtureProcessesExited(readWire(root.wireLogPath));
+  }, 30_000);
 
   test("fx ask does not start an unused optional MCP server", async () => {
     const root = createRoot("ask-unused-optional", MODERN_FIXTURE, {
@@ -3555,7 +3672,7 @@ describe("modern MCP stdio compatibility", () => {
   );
 
   test.skipIf(!tmuxAvailable())(
-    "the TUI cancels a stalled stdio request with its original id",
+    "the TUI cancels a stalled stdio request and accepts a follow-up prompt",
     async () => {
       const root = createRoot("tui-cancel", MODERN_FIXTURE, {
         mode: "stall_operation",
@@ -3564,11 +3681,14 @@ describe("modern MCP stdio compatibility", () => {
       });
       const activeGateway = startToolGateway("Cancelled MCP TUI complete.");
       gateway = activeGateway;
+      const stderrPath = join(root.root, "stderr.log");
+      writeFileSync(stderrPath, "");
       tui = await TmuxSession.create({
         isolated: true,
         cwd: root.workspace,
         width: 100,
         height: 30,
+        stderrPath,
         env: fixtureEnv(root, activeGateway),
       });
 
@@ -3593,6 +3713,7 @@ describe("modern MCP stdio compatibility", () => {
 
       await tui.sendKeys("Escape");
       await tui.waitForText("Cancelled mcp_fixture_echo", 10_000);
+      await tui.waitForText("■ Cancelled", 5_000);
       const cancel_deadline = Date.now() + 5_000;
       while (Date.now() < cancel_deadline) {
         if (
@@ -3609,6 +3730,13 @@ describe("modern MCP stdio compatibility", () => {
         (entry) => entry.message.method === "notifications/cancelled",
       );
       expect(cancelled?.message.params?.requestId).toBe(2);
+
+      await tui.waitForStableComposer(5_000);
+      await tui.sendText("Confirm the next prompt works.");
+      await tui.waitForText("Cancelled MCP TUI complete.", 10_000);
+      expect(activeGateway.requests).toHaveLength(3);
+      expect(activeGateway.requests[2]?.body).toContain("Confirm the next prompt works.");
+      expect(readFileSync(stderrPath, "utf8")).toBe("");
 
       await tui.kill();
       tui = null;

@@ -7,7 +7,8 @@ a coding agent harness written in Zig.
 | --- | --- |
 | Upstream | https://github.com/vercel-labs/fx |
 | Forked at | [`580a0c5da9386317251968c09c1cee69e763487a`](https://github.com/vercel-labs/fx/tree/580a0c5da9386317251968c09c1cee69e763487a) |
-| Upstream version | 0.0.4 |
+| Upstream version at fork | 0.0.4 |
+| Upstream commits taken since | 22, individually, surveyed to `c864c67` (past v0.0.6) |
 | Upstream license | Apache License 2.0 |
 
 Copyright Vercel, Inc. and fx contributors. Licensed under the Apache License,
@@ -143,3 +144,77 @@ that was a deliberate, accepted trade. Keep changes minimal and localized so a
 future `git diff` against a newer upstream tag stays readable. Anything Emma
 adds that is not a de-Vercel change belongs in Emma's own code where possible,
 not scattered through vendored files.
+
+Upstream is not merged wholesale. Between `580a0c5` and `c864c677` it landed 201
+commits over 295 files, and a trial three-way merge conflicted in 82 of them —
+almost all in the auth, provider, setup, and TUI surfaces this fork deleted.
+Upstream also grew a Grok and Codex OAuth surface, which contradicts the rule
+that there is no vendor login anywhere in Emma. So commits are taken one at a
+time, each one built and tested before the next.
+
+### Taken from upstream since the fork point
+
+Upstream SHAs, in the order they were applied. Each landed as its own commit
+here, so `git log` in this directory maps one to one.
+
+| Upstream | Subject |
+| --- | --- |
+| `d8a88b1` | Load authorized linked skill metadata |
+| `d0c26a1` | Close skill candidate on metadata OOM |
+| `b4626ce` | Route clean reads through direct admission |
+| `b3c0b82` | Bind clean command results by call ID |
+| `3d104bb` | Stop repeated malformed tool argument loops |
+| `8043b65` | Reject non-regular read_file targets |
+| `715ced4` | Preserve corrupt memory stores |
+| `5fdadd6` | Strip Caps Lock and Num Lock from kitty key modifiers |
+| `f832493` | Test MCP approval argument preview |
+| `950219e` | Cover stalled MCP cancellation recovery |
+| `a585697` | Clarify terminal tool call guidance |
+| `b646635` | Repair read_file regular file handling |
+| `2c92ab0` | Normalize oversized image attachments |
+| `e3de4b4` | Isolate MCP discovery and authentication failures |
+| `48da8cd` | Preserve tool actions in transcript summaries |
+| `c6d210b` | Clarify unavailable linked skill diagnostics |
+| `ec240ff` | Apply permission mode changes to active turns |
+| `cbb7f19` | Preserve sampled permission mode through execution |
+| `65a3814` | Fix MCP credential, environment, and issuer handling |
+| `b8ba84c` | Add remote HTTP servers through MCP add |
+| `b199b8e` | Reduce MCP catalog memory |
+| `16aa069` | Use bounded MCP search match storage |
+
+Two carry Emma-side changes rather than a straight apply. `a585697` says a
+terminal call must never pass an array; that sentence is kept, but the
+surrounding paragraph is still Emma's, because this fork also lets a call omit
+the fields its action does not use. `ec240ff` and `cbb7f19` are described
+below.
+
+### Deliberately not taken
+
+- **`98be58b`, remove OS command sandboxing.** Emma keeps `sandbox-exec`. The
+  permission-mode commits were written on top of that removal, so their
+  `PermissionSnapshot` carries no `sandbox_backend` and drops the held turn
+  pair entirely. Emma keeps `active_permission_snapshot` and both call sites
+  in `app_agent_runtime.zig`, and takes only the live-mode sampling the
+  orchestrator does at each action boundary. `setSandboxBackend` had to
+  release `authority_mutex` before `syncQueuedPermissionSnapshot`, because
+  `ec240ff` made `livePermissionSnapshot` take that same lock and Emma is the
+  only side that still calls one from inside the other.
+- **`3ad06b9`, bound terminal exec and retain command output**, and the two
+  replay-hardening commits that build on it (`b129b6e`, `4c46572`). It makes a
+  finite deadline mandatory on every `terminal exec` call, which is a tool
+  contract change, and it introduces a paged agent replay store Emma does not
+  have. The secret-boundary fixes protect only that store.
+- **`7e4bed4` and `956301e`, the automatic review rewrite.** It removes 593
+  lines from the orchestrator and rewrites `auto_classifier` and
+  `tool_admission` against `src/acp/prompt.zig`, which is where `callEmmaTool`
+  lives.
+- **`b0b855f` and `70511ff`, compact tool schema records.** Restructuring the
+  property record ripples into all twenty-three native tool specs, and the
+  byte-exact schema oracles it adds are pinned to upstream's tool set.
+- **`cd7da07`, terminal argument decoding.** Allocation count only, against the
+  decoder this fork rewrote.
+- Every Grok, Codex, Vercel OAuth, setup-hub, release-infrastructure, and
+  TUI-presentation commit.
+
+Upstream's byte-exact tool schema oracles are never taken: Emma advertises a
+different tool set, so those hashes cannot match by construction.

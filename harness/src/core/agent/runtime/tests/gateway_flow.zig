@@ -5029,7 +5029,7 @@ test "processQueuedPrompt regenerates and executes a local tool once after ReadF
     try expectFailedLifecycleContains(
         hooks.lifecycle_events.items,
         "call_read_interrupted",
-        "before read_file ran",
+        "before tool call ran",
     );
     try std.testing.expectEqualStrings("Finished", hooks.history_turns.items[0].assistant.assistant);
 }
@@ -5062,7 +5062,7 @@ test "processQueuedPrompt settles an interrupted local tool after a different st
     try expectFailedLifecycleContains(
         hooks.lifecycle_events.items,
         "call_read_interrupted",
-        "before read_file ran",
+        "before tool call ran",
     );
 }
 
@@ -5094,7 +5094,7 @@ test "processQueuedPrompt settles an interrupted local tool after an HTTP failur
     try expectFailedLifecycleContains(
         hooks.lifecycle_events.items,
         "call_read_interrupted",
-        "before read_file ran",
+        "before tool call ran",
     );
 }
 

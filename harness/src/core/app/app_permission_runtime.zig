@@ -75,7 +75,13 @@ pub fn Runtime(comptime App: type) type {
         /// prompts without touching the persisted preference. The configured
         /// sandbox backend remains independent of the permission mode.
         pub fn setMode(app: *App, mode: types.PermissionMode) void {
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
+            }
             app.permission_engine.mode = mode;
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.unlock(io_mod.getIo());
+            }
             updateYoloWarningForMode(app);
             syncQueuedPermissionSnapshot(app);
         }
@@ -108,8 +114,14 @@ pub fn Runtime(comptime App: type) type {
             persistYoloAcknowledgment(app);
         }
 
-        /// The live (unsnapshotted) permission state owned by this runtime.
+        /// Snapshots the live permission state owned by this runtime.
         pub fn livePermissionSnapshot(app: *App) worker_runtime.PermissionSnapshot {
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
+            }
+            defer if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.unlock(io_mod.getIo());
+            };
             return .{
                 .mode = app.permission_engine.mode,
                 .sandbox_backend = sandbox.effectiveBackend(
@@ -126,11 +138,11 @@ pub fn Runtime(comptime App: type) type {
             if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
                 app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
             }
-            defer if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
-                app.permission_state.authority_mutex.unlock(io_mod.getIo());
-            };
             const changed = backend != app.permission_state.sandbox_backend;
             app.permission_state.sandbox_backend = backend;
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.unlock(io_mod.getIo());
+            }
             syncQueuedPermissionSnapshot(app);
             return changed;
         }

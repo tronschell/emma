@@ -154,13 +154,20 @@ pub const Credentials = struct {
     }
 };
 
+pub const IssuerMismatchSource = enum {
+    authorization_metadata,
+    authorization_response,
+};
+
 pub const IssuerMismatch = struct {
     owner_alloc: Allocator,
+    source: IssuerMismatchSource,
     expected: []u8,
     returned: []u8,
 
     pub fn init(
         alloc: Allocator,
+        source: IssuerMismatchSource,
         expected: []const u8,
         returned: []const u8,
     ) !IssuerMismatch {
@@ -168,6 +175,7 @@ pub const IssuerMismatch = struct {
         errdefer alloc.free(owned_expected);
         return .{
             .owner_alloc = alloc,
+            .source = source,
             .expected = owned_expected,
             .returned = try alloc.dupe(u8, returned),
         };
@@ -186,7 +194,9 @@ pub const AuthorizationResult = union(enum) {
 };
 
 pub const AuthenticationResult = union(enum) {
-    authenticated,
+    authenticated: struct {
+        repaired_entries: usize = 0,
+    },
     issuer_mismatch: IssuerMismatch,
 
     pub fn deinit(self: *AuthenticationResult) void {
@@ -203,7 +213,15 @@ pub const AutomatedAuthorizationOptions = struct {
     challenge: Challenge,
     config: ClientConfig = .{},
     previous_scope: ?[]const u8 = null,
+    cancel_flag: ?*const std.atomic.Value(bool) = null,
     lifecycle_cancel_flag: ?*const std.atomic.Value(bool) = null,
+
+    fn cancellation(self: AutomatedAuthorizationOptions) operation_control.CancellationSources {
+        return .{
+            .caller = self.cancel_flag,
+            .runtime = self.lifecycle_cancel_flag,
+        };
+    }
 };
 
 pub const OpenUrlFn = *const fn (
@@ -219,6 +237,7 @@ pub const InteractiveAuthorizationOptions = struct {
     previous_scope: ?[]const u8 = null,
     open_ctx: ?*anyopaque = null,
     open_url: OpenUrlFn,
+    cancel_flag: ?*const std.atomic.Value(bool) = null,
     lifecycle_cancel_flag: ?*const std.atomic.Value(bool) = null,
 };
 
@@ -575,6 +594,7 @@ fn parseAuthorizationMetadataOutcome(
     if (!std.mem.eql(u8, issuer, expected_issuer)) {
         return .{ .issuer_mismatch = try IssuerMismatch.init(
             alloc,
+            .authorization_metadata,
             expected_issuer,
             issuer,
         ) };
@@ -959,7 +979,10 @@ pub fn authorizeInteractive(
         .listener = &listener,
         .open_ctx = options.open_ctx,
         .open_url = options.open_url,
-        .lifecycle_cancel_flag = options.lifecycle_cancel_flag,
+        .cancellation = .{
+            .caller = options.cancel_flag,
+            .runtime = options.lifecycle_cancel_flag,
+        },
     };
     return authorizeWithRedirect(
         alloc,
@@ -968,6 +991,7 @@ pub fn authorizeInteractive(
             .challenge = options.challenge,
             .config = options.config,
             .previous_scope = options.previous_scope,
+            .cancel_flag = options.cancel_flag,
             .lifecycle_cancel_flag = options.lifecycle_cancel_flag,
         },
         redirect_uri,
@@ -990,7 +1014,7 @@ fn authorizeWithRedirect(
     authorization_ctx: ?*anyopaque,
     request_authorization: AuthorizationRequestFn,
 ) !AuthorizationResult {
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
     const endpoint = try canonicalResource(alloc, options.endpoint);
     errdefer alloc.free(endpoint);
     var resource = if (options.config.resource) |configured|
@@ -1005,7 +1029,7 @@ fn authorizeWithRedirect(
         options.challenge.resource_metadata,
     );
     defer prm.deinit(alloc);
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
     if (!std.mem.eql(u8, resource, prm.resource)) {
         alloc.free(resource);
         resource = try alloc.dupe(u8, prm.resource);
@@ -1017,7 +1041,7 @@ fn authorizeWithRedirect(
         .issuer_mismatch => |mismatch| return .{ .issuer_mismatch = mismatch },
     };
     defer metadata.deinit(alloc);
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
     try validateAuthorizationMetadataUrls(metadata, resource);
     if (!metadata.supports(.s256)) return error.PkceS256NotSupported;
 
@@ -1029,7 +1053,7 @@ fn authorizeWithRedirect(
         redirect_uri,
     );
     defer registration.deinit(alloc);
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
 
     const scope = try requestedScope(
         alloc,
@@ -1074,7 +1098,7 @@ fn authorizeWithRedirect(
         scope,
     );
     defer secret.zeroAndFree(alloc, authorization_url);
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
     var callback = try request_authorization(
         authorization_ctx,
         alloc,
@@ -1082,7 +1106,7 @@ fn authorizeWithRedirect(
         redirect_uri,
     );
     defer callback.deinit(alloc);
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
     validateAuthorizationResponse(
         state,
         metadata.issuer,
@@ -1092,6 +1116,7 @@ fn authorizeWithRedirect(
         error.AuthorizationResponseIssuerMismatch => return .{
             .issuer_mismatch = try IssuerMismatch.init(
                 alloc,
+                .authorization_response,
                 metadata.issuer,
                 callback.issuer.?,
             ),
@@ -1110,7 +1135,7 @@ fn authorizeWithRedirect(
         scope,
     );
     errdefer grant.deinit(alloc);
-    try checkAuthorizationCancellation(options.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(options.cancellation());
     const owned_issuer = try alloc.dupe(u8, metadata.issuer);
     errdefer alloc.free(owned_issuer);
     const authorization_endpoint = try alloc.dupe(u8, metadata.authorization_endpoint);
@@ -1169,23 +1194,21 @@ const InteractiveAuthorizationContext = struct {
     listener: *std.Io.net.Server,
     open_ctx: ?*anyopaque,
     open_url: OpenUrlFn,
-    lifecycle_cancel_flag: ?*const std.atomic.Value(bool),
+    cancellation: operation_control.CancellationSources,
 };
 
 const interactive_callback_timeout_ms: i32 = 5 * 60 * 1000;
 const interactive_callback_poll_ms: i32 = 50;
 
 fn checkAuthorizationCancellation(
-    lifecycle_cancel_flag: ?*const std.atomic.Value(bool),
+    cancellation: operation_control.CancellationSources,
 ) !void {
-    if (lifecycle_cancel_flag) |flag| {
-        if (flag.load(.acquire)) return error.Cancelled;
-    }
+    if (cancellation.cancelled()) return error.Cancelled;
 }
 
 fn waitForInteractiveCallback(
     listener: *std.Io.net.Server,
-    lifecycle_cancel_flag: ?*const std.atomic.Value(bool),
+    cancellation: operation_control.CancellationSources,
 ) !void {
     var fds = [_]std.posix.pollfd{.{
         .fd = listener.socket.handle,
@@ -1194,7 +1217,7 @@ fn waitForInteractiveCallback(
     }};
     var remaining_ms = interactive_callback_timeout_ms;
     while (remaining_ms > 0) {
-        try checkAuthorizationCancellation(lifecycle_cancel_flag);
+        try checkAuthorizationCancellation(cancellation);
         fds[0].revents = 0;
         const wait_ms = @min(remaining_ms, interactive_callback_poll_ms);
         const ready = try std.posix.poll(&fds, wait_ms);
@@ -1202,7 +1225,7 @@ fn waitForInteractiveCallback(
             if ((fds[0].revents & std.posix.POLL.IN) == 0) {
                 return error.McpAuthorizationCallbackTimedOut;
             }
-            try checkAuthorizationCancellation(lifecycle_cancel_flag);
+            try checkAuthorizationCancellation(cancellation);
             return;
         }
         remaining_ms -= wait_ms;
@@ -1217,11 +1240,11 @@ fn requestInteractiveAuthorization(
     _: []const u8,
 ) !AuthorizationResponse {
     const ctx: *InteractiveAuthorizationContext = @ptrCast(@alignCast(raw_ctx.?));
-    try checkAuthorizationCancellation(ctx.lifecycle_cancel_flag);
+    try checkAuthorizationCancellation(ctx.cancellation);
     if (!try ctx.open_url(ctx.open_ctx, alloc, authorization_url)) {
         return error.McpAuthorizationBrowserOpenFailed;
     }
-    try waitForInteractiveCallback(ctx.listener, ctx.lifecycle_cancel_flag);
+    try waitForInteractiveCallback(ctx.listener, ctx.cancellation);
 
     var stream = try ctx.listener.accept(io_mod.getIo());
     defer stream.close(io_mod.getIo());
@@ -2273,6 +2296,10 @@ test "authorization metadata mismatch retains exact issuer values and fails clos
     switch (outcome) {
         .metadata => return error.TestUnexpectedResult,
         .issuer_mismatch => |mismatch| {
+            try std.testing.expectEqual(
+                IssuerMismatchSource.authorization_metadata,
+                mismatch.source,
+            );
             try std.testing.expectEqualStrings(
                 "https://login.example.com/",
                 mismatch.expected,
@@ -2387,7 +2414,7 @@ test "authorization redirect target must match the registered callback" {
     );
 }
 
-test "interactive callback wait observes lifecycle cancellation" {
+test "interactive callback wait observes caller and lifecycle cancellation" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
         return error.SkipZigTest;
     }
@@ -2395,20 +2422,27 @@ test "interactive callback wait observes lifecycle cancellation" {
     var listener = try address.listen(std.testing.io, .{ .reuse_address = true });
     defer listener.deinit(std.testing.io);
 
-    var cancelled = std.atomic.Value(bool).init(false);
     const Flip = struct {
         fn run(flag: *std.atomic.Value(bool)) void {
             io_mod.sleep(20 * std.time.ns_per_ms);
             flag.store(true, .release);
         }
     };
-    const thread = try std.Thread.spawn(.{}, Flip.run, .{&cancelled});
-    defer thread.join();
+    inline for (.{ "caller", "runtime" }) |source| {
+        var caller = std.atomic.Value(bool).init(false);
+        var runtime = std.atomic.Value(bool).init(false);
+        const flag = if (std.mem.eql(u8, source, "caller")) &caller else &runtime;
+        const thread = try std.Thread.spawn(.{}, Flip.run, .{flag});
+        defer thread.join();
 
-    const started_ms = io_mod.milliTimestamp();
-    try std.testing.expectError(
-        error.Cancelled,
-        waitForInteractiveCallback(&listener, &cancelled),
-    );
-    try std.testing.expect(io_mod.milliTimestamp() - started_ms < 1_000);
+        const started_ms = io_mod.milliTimestamp();
+        try std.testing.expectError(
+            error.Cancelled,
+            waitForInteractiveCallback(&listener, .{
+                .caller = &caller,
+                .runtime = &runtime,
+            }),
+        );
+        try std.testing.expect(io_mod.milliTimestamp() - started_ms < 1_000);
+    }
 }
