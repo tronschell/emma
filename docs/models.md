@@ -5,6 +5,12 @@ that endpoint is [OpenRouter](https://openrouter.ai). Paste an OpenRouter key
 into **Settings → Models**, pick a model from the catalog, and the composer's
 picker switches models per thread. No account inside Emma, no config file.
 
+Anything else that speaks the same shape — Z.AI, DeepSeek, a GPU host, LM Studio
+on this Mac, llama.cpp on a box down the hall — is a **provider profile** you add
+in the same place. A provider is `{ id, name, modelId, baseUrl, credentialEnv,
+contextWindow, insecure }`, and the profile is the whole mechanism: there are no
+per-vendor adapters, because there is nothing to adapt.
+
 ## What runs a turn
 
 One process runs the agent loop: `emma-cli`, the Zig harness in
@@ -31,6 +37,22 @@ broken install, not a reason to fall back.
 The request body ends `,"stream":false}` — nothing is streamed at the HTTP layer;
 tokens still arrive incrementally in the UI, over ACP.
 
+## When a model goes quiet
+
+A turn shows its life as it streams: deltas and tool calls. When neither has
+arrived for a minute — three, if a tool call is still running — the transcript
+draws a stall notice under whatever the turn had reached, counting the silence
+up, with **Try another model** beside it. The button opens the composer's model
+picker.
+
+Picking a different model there swaps the turn rather than the next one:
+[App.tsx](../desktop/src/App.tsx) pushes the new key to the thread's context,
+stops the stalled run, and queues the same prompt behind it, so the turn carries
+on with no `continue` typed. The re-sent turn opens with a `Model changed to …`
+notice in the transcript, drawn like the context notices and kept with the turn's
+blocks. The skill attachment is left off the retry: main claimed it on the first
+send.
+
 ## Model keys
 
 The picker deals in keys, not raw model ids ([settings.ts](../desktop/shared/settings.ts)):
@@ -38,25 +60,63 @@ The picker deals in keys, not raw model ids ([settings.ts](../desktop/shared/set
 | Key | Means | On the wire |
 | --- | --- | --- |
 | `openrouter:<id>` | A model from the OpenRouter catalog | that id |
-| `free-router` | Emma's free chain (`FREE_ROUTER_KEY`) | the whole chain, comma-separated |
-| `local:<profileId>` | A local endpoint profile | nothing — see below |
+| `router:<id>` | One of the router profiles | that router's whole chain, comma-separated |
+| `provider:<profileId>` | A provider profile | that profile's `modelId`, to that profile's endpoint |
 | `fallback` | The shipped default | nothing — see below |
 
 `defaultSettings.selectedModel` is `"fallback"` and `favoriteModels` starts as
-`["fallback"]`. `harnessModel()` sends a `model` config option only for
-`openrouter:` and `free-router`; for `fallback` and `local:` it sends
-**nothing**, and the harness stays on its own `default_model`.
+`["fallback"]`. `harnessModel()` sends a `model` config option for `openrouter:`,
+`router:` and `provider:`; only `fallback` sends **nothing**, leaving the
+harness on its own `default_model`.
 
-**So a `local:` profile is not the main thread model.** Picking one does not send
-your turn to your local server — it sends it to the harness's default OpenRouter
-route. Local profiles do work for the second models below. To move the whole loop
-to a local server, use the environment variables.
+A key saved as `local:<profileId>` is rewritten to `provider:<profileId>` by
+`legacyModelKey` on the way through `validateSettings`, and a stored `localModels`
+array becomes `providers` the same way, so a profile saved before this existed
+keeps working and keeps its star. `free-router` is rewritten to `router:free` the
+same way.
 
-### The free router
+### How a provider profile routes the whole loop
 
-`freeRouterChain()` expands `free-router` into one comma-separated list, best
-first, which the transport turns into OpenRouter's `models` fallback array.
-`FREE_ROUTER_MODELS` holds ten ids:
+`EMMA_PROVIDER_CHAT_URL` is read by `emma-cli` once, at spawn — so the route is a
+property of the *process*, not of the turn. `harnessKey(cwd, nestedThreadId,
+providerId)` therefore puts the provider id in the harness map key, and
+`harnessClient` hands that harness `chatUrl` and the provider's own `apiKey` in
+its spawn environment. One process per workspace per provider; a thread on
+DeepSeek and a thread on OpenRouter run side by side, each against its own
+endpoint. `MAX_HARNESSES` (4) still reaps the idle ones.
+
+A profile with an empty `credentialEnv` is a server that wants no key, but
+`emma-cli` refuses to start without `EMMA_PROVIDER_API_KEY`, so Emma sends the
+literal `no-key` and the server ignores it.
+
+`contextWindow` on the profile is sent as the harness's `context_window` config
+option. Leave it 0 and Emma falls back to the OpenRouter catalog's number for
+that id — which a local model is not in, so the harness silently caps its history
+and turns off token-pressure compaction. Fill it in for anything off-catalog.
+
+Main learns the table over `emma:set-providers`, which validates and then calls
+`recycleHarnesses()`. Like the verifier and the free chain, it is renderer state
+pushed into main: until the window has loaded once, `providers` is empty and a
+`provider:` key resolves to nothing.
+
+### Routers
+
+A **router** is a named chain of models, best first. `routerChain()` expands
+`router:<id>` into one comma-separated list, which the transport turns into
+OpenRouter's `models` fallback array: the next link answers when the one above it
+is rate-limited, down, or has retired.
+
+`routers` on `UserSettings` holds 0 to `MAX_ROUTERS` (5) of them, each
+`{ id, name, models }` with a name the user writes and 1 to `MAX_ROUTER_MODELS`
+(24) unique model ids — a rank of the smartest models, or the same model at four
+vendors, whatever the chain is for. `validateRouters` checks them on the way in
+and again in the main process, which learns the table over the `setRouters`
+request and holds none until the renderer sends one. A settings file written
+before routers existed carries a `freeRouterModels` array, which becomes the
+first router.
+
+The shipped default is one router, `free`, named **Emma Free Router**, holding
+`FREE_ROUTER_MODELS` — ten free ids:
 
 ```
 nvidia/nemotron-3-ultra-550b-a55b:free      thinkingmachines/inkling-small:free
@@ -66,10 +126,25 @@ poolside/laguna-s-2.1:free                  cohere/north-mini-code:free
 nvidia/nemotron-3-super-120b-a12b:free      nvidia/nemotron-3.5-lightning:free
 ```
 
-The chain is filtered against the catalog Emma actually has, so a retired id is
+Every chain is filtered against the catalog Emma actually has, so a retired id is
 dropped rather than sent; an empty catalog means the list goes unfiltered, so a
-first launch still routes. The UI calls it **Emma Free Router**. Known gap:
-`recordTurn` stores the chain, not the link that answered.
+first launch still routes. A router whose ids are all `:free` is badged **Free**.
+
+**Settings → Models** lists the routers above the catalog: rename one in place,
+the gear opens the chain (drag to reorder, ✕ to drop a link, the field below adds
+any catalogued model), ✕ deletes the router, and **Add a router** makes the next
+one, seeded with the free chain.
+
+### Which link answered
+
+The reply's own `model` field says which one did. `parseCompletion` keeps it as
+`routed_model`, and the orchestrator pushes it up the ACP info channel as
+`_meta.fx.routedModel` — `{ model, fellBack }`, where `fellBack` compares base
+slugs, so `a/one:free` answering for `a/one` is the same model rather than a
+fallback. Electron records that model on the turn instead of the router key, so
+the transcript's footer names what actually ran, and the renderer draws a
+`Fell back to …` notice in the turn, where the compaction notices go, each time
+the answering model changes mid-turn.
 
 ## The OpenRouter catalog
 
@@ -115,6 +190,11 @@ user last saw. `refresh()` snapshots the current ids, runs the fetch, and return
 fetch throws it returns the cached models with `stale: true` and the error. That
 is why the models page paints offline. A cache that cannot be written is a slower
 next launch, not a failed reload.
+
+`listOpenRouterModels` passes `refresh()` a 24-hour `maxAgeMs`, so a cache fetched
+today is served without touching the network, and one fetch is shared by every
+caller in flight — the panes that list models all ask on mount. The **Reload
+OpenRouter catalog** button sends `force`, which drops the age gate.
 
 [catalog-seed.ts](../desktop/main/catalog-seed.ts) compiles **334** rows into the
 app for a first launch with neither cache nor network. Regenerate with
@@ -184,20 +264,40 @@ child, holds no credential and makes no network request.
 [App.tsx](../desktop/src/App.tsx) renders, in order: **ModelCatalog** (the full
 list, a "Free only" filter persisted under `emma.freeModelsOnly.v1`, a `Free`/`Paid`
 badge, a reload that names what was added and removed, `CATALOG_PAGE` 15 rows at
-a time) · **LocalModelSettings** · **VerifierPanel** · **AdvisorPanel** ·
-**VisionPanel** · **ProviderKeys** · **Private routing** · **Automatic fallback**
+a time) · **ProviderSettings** · **VerifierPanel** · **AdvisorPanel** ·
+**VisionPanel** · **SecretPanel** · **ProviderKeys** · **Private routing** · **Automatic fallback**
 · **Local deterministic profile** · **Speech to text**.
 
-**Local endpoint profiles.** A profile is `{ id, name, modelId, baseUrl,
-credentialEnv }`; the form suggests `http://127.0.0.1:1234/v1`.
-`localModelEndpoint()` is picky: `http:` only (not `https:`), hostname
-`localhost`, `127.0.0.1`, `[::1]` or `::1`, and no username, password, query or
-fragment. An id must match `/^[A-Za-z0-9_-]{1,64}$/`, a name ≤ 64 chars, a model
-id ≤ 128, and `credentialEnv` (optional) a valid variable name.
-`canRemoveLocalModel` refuses to delete the profile you have selected, and
-`forgetLocalModel` drops a deleted profile from favorites too.
-`verifierFromKey` turns `local:<id>` into a route by appending
-`/chat/completions` to the base URL.
+**Provider profiles.** `PROVIDER_PRESETS` fills the form's chips — OpenRouter,
+Z.AI, DeepSeek, LM Studio, Ollama, llama.cpp, Custom — with a base URL and a key
+variable name; a chip is prefill and nothing more. **Test** hits
+`GET <baseUrl>/models` and then posts one throwaway completion with a single tool
+advertised, and reports two things: how many models the endpoint lists, and
+whether the model you named actually came back with a `tool_calls` array. Emma
+advertises tools on every turn, so a model that fails the second dot will fail on
+its first real use; the listed ids also fill the Model ID field's datalist.
+
+`providerEndpoint(value, insecure)` is what a base URL has to pass:
+
+| URL | Allowed |
+| --- | --- |
+| `https://` anywhere | yes |
+| `http://` on `localhost`, `127.0.0.1`, `[::1]`, `::1` | yes |
+| `http://` on `10/8`, `172.16/12`, `192.168/16`, `100.64/10` or `*.local` | only with `insecure` |
+| `http://` anywhere else | no |
+| any URL carrying a username, password, query or fragment | no |
+
+`insecure` is the checkbox that appears only when what you typed is plain http
+off this Mac, and it says what it does: the prompts and the key cross your network
+unencrypted. `providerReach()` sorts a saved URL into **On this Mac**, **Your
+network** or **Over the internet** for the row's second line.
+
+An id must match `/^[A-Za-z0-9_-]{1,64}$/`, a name ≤ 64 chars, a model id ≤ 128,
+`credentialEnv` (optional) a valid variable name, `contextWindow` 0 to
+100,000,000, and there are at most `MAX_PROVIDERS` (24) profiles.
+`canRemoveProvider` refuses to delete the profile you have selected, and
+`forgetProvider` drops a deleted profile from favorites too. `verifierFromKey`
+turns `provider:<id>` into a route with `providerChatUrl()`.
 
 **Favorites and the composer.** `MAX_FAVORITE_MODELS` is 6; favorites sort first
 in the composer's picker, which is capped at `MODEL_MENU_LIMIT` 30 entries. Each
@@ -225,7 +325,7 @@ is what unlocks parts of the free catalog. Check it yourself at
 
 ## The second models
 
-Four subsystems run a separate small model on a separate route. All share the
+Five subsystems run a separate small model on a separate route. All share the
 `VerifierSettings` shape — `{ model, endpoint, credentialEnv, system }` — and all
 go through one `chatCompletion` helper in
 [verifier.ts](../desktop/main/verifier.ts), which posts
@@ -240,12 +340,14 @@ means a local server that needs no key.
 | Note tagger | [vault-tags.ts](../desktop/main/vault-tags.ts) | `liquid/lfm-2.5-2.6b:free` | 20 s | 256 |
 | Vision | [vision.ts](../desktop/main/vision.ts) | `nvidia/nemotron-nano-12b-v2-vl:free` | 60 s | 1024 |
 | Advisor | [advisor.ts](../desktop/main/advisor.ts) | `""` (off) | 120 s | 1024 |
+| Secrets | [secret.ts](../desktop/main/secret.ts) | `""` (off) | 60 s | 1024 |
 
-All four default to `OPENROUTER_CHAT_ENDPOINT` with
-`credentialEnv: "OPENROUTER_API_KEY"`, so all four are remote out of the box and
-all four can be pointed at a local profile instead. **The defaults that are set
-are all free models** — the free router chain, the verifier and the note tagger,
-and the vision model. The advisor ships with no model at all.
+All five default to `OPENROUTER_CHAT_ENDPOINT` with
+`credentialEnv: "OPENROUTER_API_KEY"`, so all five are remote out of the box and
+all five can be pointed at a local profile instead. **The defaults that are set
+are all free models** — the free router’s chain, the verifier and the note tagger,
+and the vision model. The advisor and the secrets model ship with no model at
+all.
 
 **Verifier** — the second model in `auto` mode. `toolGate()` maps `auto` onto the
 same column as `ask`; the question goes to the verifier instead of to you, and
@@ -261,6 +363,12 @@ mid-turn with the transcript so far, clamped at `MAX_ADVISOR_TRANSCRIPT_CHARS`
 **Vision** — the `vision` tool, for a selected model that cannot see. It posts an
 `image_url` data URL; it is the deliberate exception to screenshots staying in
 Emma's process. See [privacy.md](privacy.md).
+
+**Secrets** — the `secret` tool. The command runs in Electron, its output goes
+to this model and nowhere else, and the thread's own model gets the answer only.
+Clamped at `MAX_SECRET_OUTPUT` (32,000). Off until you pick a model, because the
+whole point is that you choose which one your keys reach — a local profile keeps
+them on this Mac. See [privacy.md](privacy.md).
 
 **Note tagger** — titles and tags a note kept into your vault
 (`MAX_TAG_TEXT_CHARS` 6000, at most `MAX_TAGS` tags). See
@@ -299,16 +407,22 @@ bar reads the rest of `usage.ts`: `MAX_USES` 32, `RATE_FLOOR` 4096. See
 ## Pointing Emma at a local server
 
 LM Studio serves an OpenAI-compatible API on `http://127.0.0.1:1234/v1`; Ollama
-does the same on `http://127.0.0.1:11434/v1`.
+does the same on `http://127.0.0.1:11434/v1`; llama.cpp's `llama-server` on
+`http://127.0.0.1:8080/v1`. A machine on your own network is the same profile with
+its address in place of the loopback one — bind the server to `0.0.0.0` rather
+than localhost, and expect to tick the insecure box unless you put https in front
+of it. Over Tailscale a `100.x` address counts as your network too.
 
 **As a second model**, through the GUI: start the server, add a profile under
-**Settings → Models → Local endpoints**, leave Credential env empty, and pick
+**Settings → Models → Providers**, leave Key env empty, and pick
 that profile in the Verifier, Advisor or Vision panel. `verifierFromKey` builds
 `http://127.0.0.1:1234/v1/chat/completions` and posts with no `authorization`
 header. That traffic never leaves the Mac.
 
-**As the main thread model**, the picker cannot do it — launch with the
-environment set:
+**As the main thread model**, add it as a provider and pick it — that is what the
+provider profile is for. The environment variables below still work and still
+override, which is what to reach for when you want the route decided before Emma
+starts:
 
 ```sh
 export EMMA_PROVIDER_CHAT_URL=http://127.0.0.1:1234/v1/chat/completions

@@ -7,3 +7,7 @@ export function zoned(options: Intl.DateTimeFormatOptions) {
     return format.format(at);
   };
 }
+
+const dayFormat = zoned({ month: "short", day: "numeric" });
+
+export const day = (at: number) => at ? dayFormat(new Date(at)) : "—";

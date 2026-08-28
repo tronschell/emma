@@ -88,7 +88,7 @@ pub const Options = struct {
     commit_lock_deadline_ms: u64 = lock_deadline_ms,
     checkpoint_interval: u64 = 32,
     compaction_frame_threshold: u64 = 4096,
-    compaction_byte_threshold: u64 = 128 * 1024 * 1024,
+    compaction_byte_threshold: u64 = 8 * 1024 * 1024,
     resolve_authority_intent: bool = true,
 };
 

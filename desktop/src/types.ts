@@ -1,20 +1,32 @@
 import type { BackgroundTask, FileChange, LiveAgent, PermissionAsk, ThreadStep } from "../shared/agents";
 import type { Artifact, ArtifactMeta } from "../shared/artifacts";
-import type { CliRun } from "../shared/cli";
+import type { BuiltComponent, ComponentMeta } from "../shared/components";
+import type { CliModels, CliRun } from "../shared/cli";
 import type { EditorApp, FolderFile, FolderGrant } from "../shared/folders";
-import type { GitSnapshot } from "../shared/git";
+import type { GitCommandResult, GitHistory, GitReady, GitSnapshot } from "../shared/git";
+import type { MachineSample } from "../shared/machine";
+import type { HarnessLogLine, HarnessReport } from "../shared/harness-log";
+import type { Goal, GoalStatus } from "../shared/goal";
 import type { Visual } from "../shared/visualize";
-import type { Improvements } from "../shared/improvement";
+import type { Arm, Improvements } from "../shared/improvement";
 import type { PermissionMode } from "../shared/permissions";
 import type { Plan } from "../shared/plan";
 import type { PluginCatalog, PluginDetail } from "../shared/plugins";
+import type { UsageRow } from "../shared/invocations";
 import type { FrontApplication } from "../shared/screen-context";
 import type { LinkedPermission, SetupStatus } from "../shared/setup";
 import type { TerminalTab } from "../shared/terminal";
 import type { TraceSpan } from "../shared/trace";
 import type { VoiceStatus } from "../shared/voice";
-import type { HarnessExperiments, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
+import type { HarnessExperiments, KeyBalance, ProviderProfile, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
 import type { KeepRequest, KeptNote, VaultChoice } from "../shared/vault";
+
+export interface MemoryNote {
+  path: string;
+  bytes: number;
+  updatedAt: number;
+  text: string;
+}
 
 export type HeldAttachment = { id: string; name: string; path: string; thumbnail?: string };
 
@@ -39,6 +51,7 @@ export interface Thread {
   updatedAt: string;
   archivedAt?: string | null;
   messages: Message[];
+  goal?: Goal | null;
 }
 
 export interface ScheduledJob {
@@ -55,6 +68,8 @@ export interface ScheduledJob {
   lastRunAt?: string;
   lastThreadId?: string;
   permissionMode: PermissionMode;
+  /** The model key each run is pinned to, or empty for whichever model the app is set to. */
+  model: string;
 }
 
 export interface ResearchIteration {
@@ -211,9 +226,13 @@ declare global {
       onQuickCommand(listener: (value: string) => void): () => void;
       onNewQuickSession(listener: () => void): () => void;
       onNotchHover(listener: (value: boolean) => void): () => void;
+      updateReady(): Promise<string>;
+      installUpdate(): Promise<void>;
+      onUpdateReady(listener: (value: string) => void): () => void;
       onDelta(listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void): () => void;
       onStep(listener: (value: ThreadStep) => void): () => void;
       onContextExperiment(listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void): () => void;
+      onRoutedModel(listener: (value: { threadId: string; model: string; fellBack: boolean }) => void): () => void;
       onContextBreakdown(listener: (value: { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }) => void): () => void;
       startScreenAnnotation(): Promise<void>;
       captureScreenContext(): Promise<{ id: string; image: string; source?: FrontApplication }>;
@@ -231,11 +250,23 @@ declare global {
       deleteArtifact(id: string): Promise<void>;
       revealArtifact(id: string): Promise<boolean>;
       artifactSql(id: string, sql: string, params: unknown[]): Promise<Record<string, unknown>[]>;
+      listComponents(): Promise<ComponentMeta[]>;
+      readComponent(id: string): Promise<BuiltComponent>;
+      deleteComponent(id: string): Promise<ComponentMeta>;
+      enableComponent(id: string, enabled: boolean): Promise<ComponentMeta>;
+      moveComponent(value: { id: string; selector: string; label: string }): Promise<ComponentMeta>;
+      shootComponent(value: { id: string; x: number; y: number; width: number; height: number }): Promise<boolean>;
+      answerPlace(value: { id: string; selector?: string; label?: string }): void;
+      onComponentsChanged(listener: () => void): () => void;
+      onComponentPlace(listener: (value: { id: string; title: string }) => void): () => void;
       readVisual(id: string): Promise<Visual>;
       exportVisual(id: string, width: number): Promise<string>;
       onArtifactsChanged(listener: () => void): () => void;
       listPlans(): Promise<Plan[]>;
       onPlansChanged(listener: () => void): () => void;
+      setGoal(value: { threadId: string; objective: string; tokenBudget?: number }): Promise<Thread>;
+      updateGoal(value: { threadId: string; status?: GoalStatus; evidence?: string; reason?: string; extraTokens?: number }): Promise<Thread>;
+      clearGoal(threadId: string): Promise<Thread>;
       setupStatus(): Promise<SetupStatus>;
       openPrivacySettings(permission: LinkedPermission): Promise<void>;
       demoQuickAsk(): Promise<void>;
@@ -250,6 +281,7 @@ declare global {
       openInObsidian(path: string): Promise<void>;
       onNotesChanged(listener: () => void): () => void;
       resetData(): Promise<void>;
+      exportThreadStats(value: { folder: string; files: { name: string; text: string }[] }): Promise<string>;
       listFolders(): Promise<FolderGrant[]>;
       pluginCatalog(): Promise<PluginCatalog>;
       addMarketplace(value: { source: string; ref: string; sparse: string }): Promise<PluginCatalog>;
@@ -264,10 +296,18 @@ declare global {
       forgetFolder(id: string): Promise<FolderGrant[]>;
       listFolderFiles(id: string): Promise<FolderFile[]>;
       gitStatus(id: string): Promise<GitSnapshot | null>;
+      gitReady(id: string): Promise<GitReady>;
+      gitInit(id: string): Promise<void>;
+      gitHistory(value: { folderId: string; skip?: number; limit?: number }): Promise<GitHistory>;
+      gitCommit(value: { folderId: string; message: string; paths: string[]; amend?: boolean }): Promise<string>;
+      gitDiscard(value: { folderId: string; paths: string[] }): Promise<void>;
+      gitRun(value: { folderId: string; args: string[] }): Promise<GitCommandResult>;
+      gitMessage(value: { folderId: string }): Promise<string>;
+      machineSample(): Promise<MachineSample>;
       listEditors(): Promise<EditorApp[]>;
       openInEditor(value: { folderId?: string; path: string; editorId: string }): Promise<void>;
       setWorktree(value: { folderId: string; name: string; on: boolean }): Promise<{ folders: FolderGrant[]; folderId: string }>;
-      setBranch(value: { folderId: string; branch: string; create: boolean }): Promise<void>;
+      setBranch(value: { folderId: string; branch: string; create: boolean; from?: string }): Promise<void>;
       readFolderFile(value: { folderId: string; path: string }): Promise<{ path: string; text: string }>;
       attachFiles(): Promise<HeldAttachment[]>;
       attachData(value: { name: string; data: ArrayBuffer }): Promise<HeldAttachment>;
@@ -285,12 +325,16 @@ declare global {
       listImportedMcpServers(): Promise<ImportedMcpServer[]>;
       stopComputerRun(): void;
       onComputerRunProgress(listener: (value: { step: number; action: string; actions: number }) => void): () => void;
+      setProviders(value: ProviderProfile[]): Promise<ProviderProfile[]>;
+      testProvider(value: { baseUrl: string; credentialEnv: string; modelId: string; insecure: boolean }): Promise<{ models: string[]; tools: boolean; error: string }>;
       setVerifier(value: VerifierSettings): Promise<VerifierSettings>;
       setToolSettings(value: ToolSettings): Promise<ToolSettings>;
       setZoom(value: number): Promise<number>;
       setHarnessExperiments(value: HarnessExperiments): Promise<HarnessExperiments>;
       setImprovements(value: Improvements): Promise<Improvements>;
+      forceArm(value: { threadId: string; arm: Arm }): Promise<Arm>;
       listToolTargets(): Promise<{ written: ToolTarget[]; skills: ImportedSkill[]; servers: ImportedMcpServer[] }>;
+      capabilityUsage(): Promise<{ skills: UsageRow[]; servers: UsageRow[] }>;
       onToolsChanged(listener: () => void): () => void;
       setThreadContext(value: { threadId: string; folderIds: string[]; mode: PermissionMode; model: string; subagentModel?: string; subagentEffort?: string }): Promise<PermissionMode>;
       runCommand(value: { command: string; folderId?: string }): Promise<BackgroundTask>;
@@ -302,17 +346,22 @@ declare global {
       readCliRun(id: string): Promise<{ run: CliRun; output: string } | null>;
       stopCliRun(id: string): Promise<boolean>;
       installedClis(): Promise<{ id: string; label: string; bin: string; path: string }[]>;
+      cliModels(value: { cli: string; refresh?: boolean }): Promise<CliModels>;
+      setCliRunModel(value: { id: string; model: string }): Promise<CliRun>;
       sendCliRun(value: { id: string; prompt: string }): Promise<CliRun | null>;
       onCliRuns(listener: () => void): () => void;
       browserStatus(threadId: string): Promise<BrowserStatus>;
       browserOpen(value: { threadId: string; url: string }): Promise<BrowserStatus>;
       browserNav(value: { threadId: string; action: "back" | "forward" | "reload" | "close" }): Promise<BrowserStatus>;
       browserPlace(value: { threadId: string; bounds: { x: number; y: number; width: number; height: number } | null }): Promise<void>;
+      browserClips(): Promise<string[]>;
+      browserClipUse(value: { threadId: string; index: number }): Promise<void>;
       browserNewTab(value: { threadId: string; url?: string }): Promise<BrowserStatus>;
       browserSelectTab(value: { threadId: string; tabId: string }): Promise<BrowserStatus>;
       browserCloseTab(value: { threadId: string; tabId: string }): Promise<BrowserStatus>;
       onBrowser(listener: () => void): () => void;
-      openTerminal(value: { threadId: string; columns: number; rows: number }): Promise<TerminalTab>;
+      onBrowserShow(listener: (value: { threadId: string }) => void): () => void;
+      openTerminal(value: { threadId: string; columns: number; rows: number; cli?: string }): Promise<TerminalTab>;
       writeTerminal(value: { id: string; data: string }): Promise<void>;
       resizeTerminal(value: { id: string; columns: number; rows: number }): Promise<void>;
       closeTerminal(id: string): Promise<void>;
@@ -320,7 +369,12 @@ declare global {
       readTerminal(id: string): Promise<{ data: Uint8Array; at: number }>;
       onTerminalData(listener: (value: { id: string; data: Uint8Array; at: number }) => void): () => void;
       onTerminals(listener: () => void): () => void;
+      harnessReport(): Promise<HarnessReport>;
+      restartHarness(): Promise<HarnessReport>;
+      onHarnessLog(listener: (line: HarnessLogLine) => void): () => void;
       openLink(url: string): Promise<void>;
+      listMemories(): Promise<MemoryNote[]>;
+      deleteMemory(path: string): Promise<MemoryNote[]>;
       listAgents(): Promise<LiveAgent[]>;
       listSpans(): Promise<Record<string, TraceSpan[]>>;
       threadTraces(threadId: string): Promise<{ timestamp: string; text: string }[]>;
@@ -334,6 +388,7 @@ declare global {
       onPermissionAsk(listener: (value: PermissionAsk) => void): () => void;
       setZeroRetention(value: boolean): Promise<void>;
       listCredentials(): Promise<CredentialSummary[]>;
+      openRouterBalance(): Promise<KeyBalance>;
       saveCredential(value: { env: string; secret?: string }): Promise<CredentialSummary[]>;
       fetchUrl(url: string): Promise<{ title: string; text: string }>;
       loadUiPlugins(): Promise<UiPlugin[]>;

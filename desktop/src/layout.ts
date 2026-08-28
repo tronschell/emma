@@ -43,7 +43,7 @@ export function edgePath(from: { x: number; y: number }, to: { x: number; y: num
   };
 }
 
-export const NAV_VIEWS = ["threads", "knowledge", "artifacts", "agent", "scheduled", "plugins", "research"] as const;
+export const NAV_VIEWS = ["knowledge", "artifacts", "scheduled", "agent", "plugins", "research"] as const;
 
 export interface PaneLayout {
   sidebarWidth: number;
@@ -111,7 +111,7 @@ export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITI
     navOrder: idList(input.navOrder, NAV_VIEWS),
     projectOrder: idList(input.projectOrder),
   };
-  const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 30 : 260) + (layout.browserOpen ? MIN_BROWSER_WIDTH : 0);
+  const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 0 : 260) + (layout.browserOpen ? MIN_BROWSER_WIDTH : 0);
   const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200)
     + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260)
     + (layout.browserOpen ? layout.browserWidth - MIN_BROWSER_WIDTH : 0);

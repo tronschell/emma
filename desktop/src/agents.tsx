@@ -3,11 +3,15 @@
    records are read-only — main owns the loops — so nothing here does more than
    ask a question and render an answer. */
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { diffLines, diffStat, tokensPerSecond, type BackgroundTask, type FileChange, type LiveAgent, type PermissionAsk } from "../shared/agents";
 import { PERMISSION_MODES, permissionModeGlyphs, permissionModeHints, permissionModeNames, type PermissionMode } from "../shared/permissions";
+import { isThinkingLevel, THINKING_LABELS } from "../shared/settings";
+import { CaretIcon } from "./icons";
 import { plural } from "./plural";
 import { OpenIn } from "./editors";
+import { ReadMarkdown } from "./preview";
+import type { Spawned } from "./threads";
 import { reasonText } from "./errors";
 
 /** The live tree, refreshed by main whenever an agent starts, steps, or ends. */
@@ -136,13 +140,26 @@ export function PermissionPrompt({ agents }: { agents: LiveAgent[] }) {
 export function AgentRail({ agents, active, onPick }: { agents: LiveAgent[]; active?: string; onPick: (agent: LiveAgent) => void }) {
   const live = agents.filter(alive);
   if (!live.length) return null;
+  const chip = (agent: LiveAgent) => <button type="button" key={agent.threadId} className={`agent-chip ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}`} onClick={() => onPick(agent)}>
+    <i className="agent-dot" style={{ background: agent.color }} data-status={agent.status} aria-hidden="true" />
+    <span className="nav-label">{agent.title}</span>
+    <small className="nav-label">{agent.activity}</small>
+  </button>;
+  // A subagent sits under the thread that spawned it, and its own spawns under it;
+  // one whose parent has already finished is drawn at the top level rather than
+  // vanishing with it.
+  const branch = (agent: LiveAgent) => {
+    const kids = live.filter((other) => other.parentThreadId === agent.threadId);
+    return <div key={agent.threadId}>
+      {chip(agent)}
+      {/* Squarest grid that holds them: 4 → 2×2, 6 → 3×2. */}
+      {!!kids.length && <div className="agent-kids" style={{ "--cols": Math.ceil(Math.sqrt(kids.length)) } as CSSProperties}>{kids.map(branch)}</div>}
+    </div>;
+  };
+  const roots = live.filter((agent) => !live.some((other) => other.threadId === agent.parentThreadId));
   return <div className="sidebar-agents">
     <span className="sidebar-label">Agents · {live.length}</span>
-    {live.map((agent) => <button type="button" key={agent.threadId} className={`agent-chip ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}`} onClick={() => onPick(agent)}>
-      <i className="agent-dot" style={{ background: agent.color }} data-status={agent.status} aria-hidden="true" />
-      <span className="nav-label">{agent.title}</span>
-      <small className="nav-label">{agent.activity}</small>
-    </button>)}
+    {roots.map(branch)}
   </div>;
 }
 
@@ -188,7 +205,7 @@ export function BackgroundRail() {
 export type AgentTab = { id: string; label: string; color?: string; icon?: ReactNode; closable: boolean };
 
 export function TabStrip({ tabs, active, onPick, onClose }: { tabs: AgentTab[]; active: string; onPick: (id: string) => void; onClose: (id: string) => void }) {
-  if (tabs.length < 2) return null;
+  if (tabs.length < 2 && tabs.some((tab) => tab.id === active)) return null;
   return <div className="agent-tabs" role="tablist" aria-label="Thread tabs">
     {tabs.map((tab) => <span className={`agent-tab ${tab.id === active ? "active" : ""}`} key={tab.id}>
       <button type="button" role="tab" aria-selected={tab.id === active} onClick={() => onPick(tab.id)}>
@@ -201,19 +218,19 @@ export function TabStrip({ tabs, active, onPick, onClose }: { tabs: AgentTab[]; 
   </div>;
 }
 
+const modelShortName = (model: string) => model.split(":").at(-1)?.split("/").at(-1) || "—";
+
+const thinkingLabel = (effort: string | undefined) => effort === undefined ? "—" : isThinkingLevel(effort) ? THINKING_LABELS[effort] : effort;
+
+function Stat({ label, value, title, wide }: { label: string; value: string; title?: string; wide?: boolean }) {
+  return <div className={wide ? "agent-stat wide" : "agent-stat"} title={title ?? value}><dt>{label}</dt><dd>{value}</dd></div>;
+}
+
 const elapsed = (agent: LiveAgent) => Math.max(0, Math.round(((agent.endedAt ?? Date.now()) - agent.startedAt) / 1000));
 
-/**
- * A subagent's tab. Same transcript a thread gets — it *is* a thread — with the
- * numbers the parent agent's own header cannot show, and a composer that steers.
- */
-/// No `busy` here on purpose: the thread is sending for as long as the agent is
-/// alive, so gating the composer on it disabled steering exactly when there was
-/// something to steer. Being alive is the whole condition.
 export function AgentPanel({ agent, transcript }: { agent: LiveAgent; transcript: ReactNode }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  // Only to keep the elapsed clock honest while nothing else about the agent changes.
   const [, tick] = useState(0);
   useEffect(() => {
     if (!alive(agent)) return;
@@ -229,6 +246,7 @@ export function AgentPanel({ agent, transcript }: { agent: LiveAgent; transcript
     void window.emma.steerAgent({ threadId: agent.threadId, text }).catch((reason: unknown) => setError(reasonText(reason)));
   };
   const rate = tokensPerSecond(agent);
+  const seconds = elapsed(agent);
   return <section className="conversation agent-conversation" aria-label={`Subagent: ${agent.title}`}>
     <header className="thread-bar">
       <h2><i className="agent-dot" style={{ background: agent.color }} aria-hidden="true" /> {agent.title}</h2>
@@ -238,14 +256,15 @@ export function AgentPanel({ agent, transcript }: { agent: LiveAgent; transcript
       </div>
     </header>
     <dl className="agent-stats">
-      <div><dt>Model</dt><dd>{agent.model || "—"}</dd></div>
-      <div><dt>Mode</dt><dd>{permissionModeNames[agent.mode]}</dd></div>
-      <div><dt>Speed</dt><dd>{rate ? `${rate.toFixed(1)} tok/s` : "—"}</dd></div>
-      <div><dt>Tokens</dt><dd>{agent.inputTokens.toLocaleString()} in · {agent.outputTokens.toLocaleString()} out</dd></div>
-      <div><dt>Tool calls</dt><dd>{agent.toolCalls.toLocaleString()}</dd></div>
-      <div><dt>Steps</dt><dd>{agent.steps} of the turn</dd></div>
-      <div><dt>Elapsed</dt><dd>{elapsed(agent)} {plural(elapsed(agent), "second")}</dd></div>
-      <div><dt>Doing</dt><dd>{agent.activity}</dd></div>
+      <Stat label="Model" value={modelShortName(agent.model)} title={agent.model} />
+      <Stat label="Thinking" value={thinkingLabel(agent.effort)} />
+      <Stat label="Mode" value={permissionModeNames[agent.mode]} title={permissionModeHints[agent.mode]} />
+      <Stat label="Speed" value={rate ? `${rate.toFixed(1)} tok/s` : "—"} />
+      <Stat label="Tokens" value={`${agent.inputTokens.toLocaleString()} in · ${agent.outputTokens.toLocaleString()} out`} />
+      <Stat label="Tool calls" value={agent.toolCalls.toLocaleString()} />
+      <Stat label="Steps" value={`${agent.steps} of the turn`} />
+      <Stat label="Elapsed" value={`${seconds} ${plural(seconds, "second")}`} />
+      <Stat label="Doing" value={agent.activity} wide />
     </dl>
     {agent.error && <p className="capability-error" role="alert">{agent.error}</p>}
     <div className="transcript">{transcript}</div>
@@ -310,6 +329,32 @@ export function ThreadCard({ id, title, onOpen }: { id: string; title: string; o
   </article>;
 }
 
+export function SubagentChips({ spawned, onOpen }: { spawned: Spawned[]; onOpen: (id: string) => void }) {
+  const agents = useAgents();
+  const working = (item: Spawned) => {
+    const agent = agents.find((live) => live.threadId === item.id);
+    return !!agent && alive(agent);
+  };
+  const live = spawned.filter(working);
+  const done = spawned.filter((item) => !working(item));
+  const chip = (item: Spawned) => {
+    const agent = agents.find((live) => live.threadId === item.id);
+    const doing = agent && alive(agent) ? agent.activity : item.brief;
+    return <button type="button" key={item.id} className="turn-agent" style={{ "--agent": item.color } as CSSProperties} title={item.brief ? `${item.name} — ${item.brief}` : item.name} onClick={() => onOpen(item.id)}>
+      <i className="subagent-square" data-status={agent?.status ?? "done"} style={{ background: item.color }} aria-hidden="true" />
+      <span>{item.name}</span>
+      {doing && <small>{doing}</small>}
+    </button>;
+  };
+  return <div className="turn-agents" aria-label={`${spawned.length} ${plural(spawned.length, "subagent")}`}>
+    {live.map(chip)}
+    {!!done.length && <details className="turn-agents-done">
+      <summary><CaretIcon />{done.length} finished</summary>
+      <div className="turn-agents">{done.map(chip)}</div>
+    </details>}
+  </div>;
+}
+
 /** Everything this turn's agents rewrote, most recent first, with a way to put it back. */
 export function ChangesPanel({ changes, busy, onReverted }: { changes: FileChange[]; busy: boolean; onReverted: () => void }) {
   const [error, setError] = useState("");
@@ -333,6 +378,7 @@ export function ChangesPanel({ changes, busy, onReverted }: { changes: FileChang
           <strong>{change.path}</strong>
           <ChangeCount stat={diffStat([change])} />
           <OpenIn folderId={change.folderId} path={change.path} />
+          <ReadMarkdown folderId={change.folderId} path={change.path} />
           {/* A created file has nothing to put back, and deleting is the user's call, not a button's. */}
           <button type="button" disabled={busy || change.before === null} title={change.before === null ? "Emma created this file — delete it yourself if you don't want it" : "Restore the text from before this turn"} onClick={() => revert(change)}>Revert</button>
         </header>

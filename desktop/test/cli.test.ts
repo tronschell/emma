@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CLI_HARNESSES, cliHarness, describeRuns, tailLines, terminalText, type CliRun } from "../shared/cli";
+import { CLI_HARNESSES, cliHarness, describeRuns, terminalText, type CliRun } from "../shared/cli";
 import { parseToolArgs, toolDefinitions } from "../main/tools";
 import { toolGate } from "../shared/permissions";
 
@@ -12,7 +12,6 @@ test("terminal text drops escapes and lets a rewritten line win", () => {
   // A short rewrite does not erase what it did not cover — real terminal behaviour.
   assert.equal(terminalText("abcdef\rXY"), "XYcdef");
   assert.equal(terminalText("one\ntwo"), "one\ntwo");
-  assert.equal(tailLines("a\nb\nc\nd\n\n", 2), "c\nd");
 });
 
 test("every harness builds a start and a resume argv carrying the prompt", () => {

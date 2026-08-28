@@ -4,7 +4,7 @@
    is streaming, what is queued behind it, and what failed. */
 
 import { useSyncExternalStore } from "react";
-import type { ThreadStep } from "../shared/agents";
+import type { LiveAgent, ThreadStep } from "../shared/agents";
 import { visualDrawn } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
@@ -20,6 +20,8 @@ export type QueuedTurn = {
   params: Record<string, string>;
   /** Called only if the host took it, so the context ledger records deliveries, not attempts. */
   delivered?: () => void;
+  /** Opens the turn it starts, in place of the blocks a fresh turn has none of. */
+  notice?: string;
 };
 
 /**
@@ -36,7 +38,7 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "step"; step: ThreadStep }
   /** Something the harness did to the window mid-turn, in the place it happened. */
-  | { kind: "notice"; text: string };
+  | { kind: "notice"; text: string; plain?: boolean };
 
 /**
  * The blocks of each landed turn, against the message it produced — the stored
@@ -111,7 +113,8 @@ export function withoutThinking(blocks: Block[]): Block[] {
 
 /** A turn's blocks as the transcript draws them: prose in place, tool calls in lists. */
 export type Grouped =
-  | { kind: "text" | "thinking" | "notice"; text: string }
+  | { kind: "text" | "thinking"; text: string }
+  | { kind: "notice"; text: string; plain?: boolean }
   /** `keep` is how many of these rows the list may show before the rest fold away. */
   | { kind: "steps"; steps: ThreadStep[]; keep: number }
   /** A picture the turn drew, in the flow where it drew it. */
@@ -167,14 +170,22 @@ export type Run = {
   landed: Block[][];
   /** In flight first, then everything typed while it worked. */
   queue: QueuedTurn[];
-  error: string;
+  held: QueuedTurn[];
   /** The last turn on this thread ended because the user stopped it, not because it finished. */
   stopped: boolean;
   /** A turn that never landed, put back in the composer whenever one is mounted. */
   draft: string;
+  /**
+   * When this turn last showed a sign of life — the prompt going out, a delta, a
+   * tool call moving. A model that answers nothing at all reports nothing at all,
+   * so silence is the only thing left to measure it by.
+   */
+  activeAt: number;
+  /** The model that last answered a step, which a router chain need not have started on. */
+  routed: string;
 };
 
-const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], error: "", stopped: false, draft: "" };
+const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", activeAt: 0, routed: "" };
 const runs = new Map<string, Run>();
 const listeners = new Set<() => void>();
 let wired = false;
@@ -214,7 +225,31 @@ export function mergeStep(blocks: Block[], step: ThreadStep): Block[] {
 /// and tool calls arrive here all the same, so the run is opened on the first one
 /// and closed again when main stops reporting the agent as alive.
 function adoptForeign(threadId: string) {
-  write(threadId, { sending: true, foreign: true, blocks: [], pending: null, error: "", stopped: false });
+  write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now() });
+}
+
+function reconcile(live: LiveAgent[]) {
+  // A stopped turn ends with no closing message — asking the model for one is
+  // more generation, which is what the button ended — so this is the only thing
+  // in the transcript that says why it went quiet.
+  for (const agent of live) {
+    if (agent.status === "stopped" && runs.has(agent.threadId) && !read(agent.threadId).stopped) write(agent.threadId, { stopped: true });
+    if (agent.status !== "running" && agent.status !== "waiting") continue;
+    if (!read(agent.threadId).sending) adoptForeign(agent.threadId);
+    if (!read(agent.threadId).pending && typeof agent.prompt === "string" && agent.prompt.trim()) {
+      write(agent.threadId, { pending: { content: agent.prompt, after: 0, params: {} } });
+    }
+  }
+  for (const [threadId, run] of runs) {
+    if (!run.foreign) continue;
+    if (live.some((agent) => agent.threadId === threadId && (agent.status === "running" || agent.status === "waiting"))) continue;
+    // Its blocks stand in for the message it just wrote, exactly as a turn
+    // this window sent does — `drain` is not the only way a turn ends here.
+    write(threadId, (current) => ({ sending: false, foreign: false, landed: current.blocks.length ? [...current.landed, current.blocks] : current.landed }));
+    // Anything typed here while the other window's turn ran was queued rather
+    // than sent, so this is where it finally goes.
+    if (read(threadId).queue.length) void drain(threadId, refresh);
+  }
 }
 
 /// One pair of listeners for every thread rather than one per pane: a delta for a
@@ -222,37 +257,21 @@ function adoptForeign(threadId: string) {
 export function wire() {
   if (wired) return;
   wired = true;
-  window.emma.onAgents((live) => {
-    // A stopped turn ends with no closing message — asking the model for one is
-    // more generation, which is what the button ended — so this is the only thing
-    // in the transcript that says why it went quiet.
-    for (const agent of live) {
-      if (agent.status === "stopped" && runs.has(agent.threadId) && !read(agent.threadId).stopped) write(agent.threadId, { stopped: true });
-    }
-    for (const [threadId, run] of runs) {
-      if (!run.foreign) continue;
-      if (live.some((agent) => agent.threadId === threadId && (agent.status === "running" || agent.status === "waiting"))) continue;
-      // Its blocks stand in for the message it just wrote, exactly as a turn
-      // this window sent does — `drain` is not the only way a turn ends here.
-      write(threadId, (current) => ({ sending: false, foreign: false, landed: current.blocks.length ? [...current.landed, current.blocks] : current.landed }));
-      // Anything typed here while the other window's turn ran was queued rather
-      // than sent, so this is where it finally goes.
-      if (read(threadId).queue.length) void drain(threadId, refresh);
-    }
-  });
+  window.emma.onAgents(reconcile);
+  void window.emma.listAgents().then(reconcile).catch(() => undefined);
   window.emma.onDelta(({ threadId, delta, thinking }) => {
     if (!read(threadId).sending) adoptForeign(threadId);
     // An empty delta is the loop restarting the answer on a fallback provider, so
     // it drops the answer it is about to rewrite and keeps the reasoning behind it.
     if (!delta) {
-      write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks }));
+      write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks, activeAt: Date.now() }));
       return;
     }
-    write(threadId, (run) => ({ blocks: appendText(run.blocks, thinking ? "thinking" : "text", delta) }));
+    write(threadId, (run) => ({ blocks: appendText(run.blocks, thinking ? "thinking" : "text", delta), activeAt: Date.now() }));
   });
   window.emma.onStep((step) => {
     if (!read(step.threadId).sending) adoptForeign(step.threadId);
-    write(step.threadId, (run) => ({ blocks: mergeStep(run.blocks, step) }));
+    write(step.threadId, (run) => ({ blocks: mergeStep(run.blocks, step), activeAt: Date.now() }));
   });
   window.emma.onContextExperiment((fired) => {
     const { threadId, prunedResults, reinjected, savedTokens, addedTokens } = fired;
@@ -261,6 +280,13 @@ export function wire() {
     // whenever you are looking at another project, and the step still happened.
     recordExperiment(threadId, fired);
     write(threadId, (run) => ({ blocks: [...run.blocks, { kind: "notice", text: experimentNotice(prunedResults, reinjected, savedTokens, addedTokens) }] }));
+  });
+  window.emma.onRoutedModel(({ threadId, model, fellBack }) => {
+    if (!read(threadId).sending) adoptForeign(threadId);
+    write(threadId, (run) => run.routed === model ? { routed: model } : {
+      routed: model,
+      blocks: fellBack ? [...run.blocks, { kind: "notice" as const, text: `Fell back to ${model} — the model above it stopped answering`, plain: true }] : run.blocks,
+    });
   });
   window.emma.onContextBreakdown(({ threadId, ...parts }) => recordBreakdown(threadId, parts));
 }
@@ -275,6 +301,11 @@ export function experimentNotice(prunedResults: number, reinjected: boolean, sav
   const repeated = reinjected ? `your prompt repeated to the model${addedTokens ? ` (+${charLabel(addedTokens)} tokens)` : ""}` : "";
   return [pruned, repeated].filter(Boolean).join(", ");
 }
+
+export type RunFailure = { threadId: string; text: string };
+export const RUN_ERROR_EVENT = "emma:run-error";
+
+export const runOf = (threadId: string): Run => read(threadId);
 
 export function useRun(threadId: string) {
   return useSyncExternalStore((listener) => {
@@ -294,9 +325,35 @@ export function sendTurn(threadId: string, turn: QueuedTurn, reload: () => unkno
   if (!read(threadId).sending) void drain(threadId, reload);
 }
 
-/** Drops something still waiting. Index counts from the first queued turn, not the running one. */
+const inFlight = (run: Run) => (run.sending && !run.foreign ? 1 : 0);
+
+export function queuedTurns(run: Run) {
+  return run.queue.slice(inFlight(run));
+}
+
 export function dropQueued(threadId: string, index: number) {
-  write(threadId, (run) => ({ queue: run.queue.filter((_, at) => at !== index + (run.sending ? 1 : 0)) }));
+  write(threadId, (run) => ({ queue: run.queue.filter((_, at) => at !== index + inFlight(run)) }));
+}
+
+export function stopTurn(threadId: string, turn?: QueuedTurn, reload: () => unknown = refresh) {
+  const run = read(threadId);
+  write(threadId, {
+    queue: [...run.queue.slice(0, inFlight(run)), ...(turn ? [turn] : [])],
+    held: [...run.held, ...run.queue.slice(inFlight(run))],
+  });
+  window.emma.stopAgent(threadId);
+  if (turn && !run.sending) void drain(threadId, reload);
+}
+
+export function releaseHeld(threadId: string, index: number, reload: () => unknown) {
+  const turn = read(threadId).held[index];
+  if (!turn) return;
+  write(threadId, (run) => ({ held: run.held.filter((_, at) => at !== index) }));
+  sendTurn(threadId, turn, reload);
+}
+
+export function dropHeld(threadId: string, index: number) {
+  write(threadId, (run) => ({ held: run.held.filter((_, at) => at !== index) }));
 }
 
 /** Hands back the text of a failed turn once, for whichever composer asks first. */
@@ -310,7 +367,10 @@ async function drain(threadId: string, reload: () => unknown) {
   for (;;) {
     const next = read(threadId).queue[0];
     if (!next) return;
-    write(threadId, { sending: true, foreign: false, pending: next, blocks: [], error: "", stopped: false });
+    write(threadId, {
+      sending: true, foreign: false, pending: next, stopped: false, activeAt: Date.now(),
+      blocks: next.notice ? [{ kind: "notice", text: next.notice, plain: true }] : [],
+    });
     let failed = false;
     try {
       await window.emma.request("sendMessage", { threadId, content: next.content, ...next.params });
@@ -319,7 +379,8 @@ async function drain(threadId: string, reload: () => unknown) {
       // Blocks go with the failed turn: they belong to a message that never
       // landed, and left behind they would attach to the turn before it.
       failed = true;
-      write(threadId, { pending: null, blocks: [], error: reasonText(reason), draft: next.content });
+      write(threadId, { pending: null, blocks: [], draft: next.content });
+      dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text: reasonText(reason) } }));
       await reload();
     }
     // The blocks outlive the stream and stand in for the landed message: the host

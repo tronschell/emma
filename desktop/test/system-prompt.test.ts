@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setImprovements, setPrompts, setSystemPrompt, withTrialArm, writeHarnessPrompt } from "../main/system-prompt";
+import { forceArm, setImprovements, setPrompts, setSystemPrompt, takeArm, turnArm, withTrialArm, writeHarnessPrompt } from "../main/system-prompt";
 import { DEFAULT_SYSTEM_PROMPT, familiesOf, forkPreset, promptSegments, resolvePrompt, validatePrompts, type PromptPreset } from "../shared/prompts";
 import { assertCatalog, CONNECTIONS, describeConnections, detectConnections, outdatedConnections, setUpConnection } from "../main/connections";
 import { defaultSettings, MAX_CONNECTIONS, MAX_SYSTEM_PROMPT_CHARS, validateConnections, validateOverlayPreferences, validateSettings } from "../shared/settings";
@@ -26,19 +26,73 @@ test("only the change on trial rides the turn, and only on the half that drew it
   setImprovements({ kept: { instructions: "", verifier: "" } });
 });
 
-test("the harness gets the same block as its global instructions file", () => {
+test("a pinned arm decides the turn it was pinned for, and no turn after it", () => {
+  setImprovements({ kept: { instructions: "", verifier: "" } });
+  assert.equal(turnArm("bench-1"), "");
+  forceArm("bench-1", "b");
+  assert.equal(turnArm("bench-1"), "b");
+  assert.equal(turnArm("bench-1"), "");
+
+  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  forceArm("bench-2", "a");
+  assert.equal(withTrialArm({ ...turn, threadId: "bench-2" }).params, undefined);
+  forceArm("bench-3", "b");
+  assert.match(withTrialArm({ ...turn, threadId: "bench-3" }).params!.skillContext, /Cite the file you read it in\./);
+
+  forceArm("bench-4", "b");
+  assert.equal(turnArm("bench-4"), "b");
+  const after = Array.from({ length: 40 }, () => turnArm("bench-4"));
+  assert.ok(after.includes("a") && after.includes("b"), `the pin outlived its turn (${after.join("")})`);
+  setImprovements({ kept: { instructions: "", verifier: "" } });
+});
+
+const later = <T>(read: () => T): T => {
+  const clock = Date.now;
+  Date.now = () => clock() + 10 * 60_000;
+  try { return read(); } finally { Date.now = clock; }
+};
+
+test("a pin whose turn never came goes stale, and the turn that finds it runs as if it had never been made", () => {
+  setImprovements({ kept: { instructions: "", verifier: "" } });
+  forceArm("stale-1", "b");
+  assert.equal(later(() => turnArm("stale-1")), "");
+
+  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  for (let index = 0; index < 40; index += 1) forceArm(`stale-b-${index}`, "b");
+  const drawn = later(() => Array.from({ length: 40 }, (_value, index) => turnArm(`stale-b-${index}`)));
+  assert.ok(drawn.includes("a") && drawn.includes("b"), `a stale pin still decided the turn (${drawn.join("")})`);
+
+  forceArm("fresh-1", "b");
+  assert.equal(turnArm("fresh-1"), "b");
+  const after = Array.from({ length: 40 }, () => turnArm("fresh-1"));
+  assert.ok(after.includes("a") && after.includes("b"), `the pin outlived its turn (${after.join("")})`);
+  setImprovements({ kept: { instructions: "", verifier: "" } });
+});
+
+test("the arm map fills with subagents without ever evicting the turn still running", () => {
+  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  forceArm("root-1", "b");
+  assert.equal(turnArm("root-1"), "b");
+  const spawned = Array.from({ length: 200 }, (_value, index) => turnArm(`sub-${index}`, "root-1"));
+  assert.ok(spawned.every((arm) => arm === "b"), `${spawned.filter((arm) => arm !== "b").length} of ${spawned.length} subagents flipped their own coin`);
+  assert.equal(takeArm("root-1"), "b");
+  setImprovements({ kept: { instructions: "", verifier: "" } });
+});
+
+test("the Settings prompt is the harness's own prompt, not a note under it", () => {
   const home = mkdtempSync(path.join(tmpdir(), "emma-harness-"));
   setSystemPrompt("Answer in French.");
   writeHarnessPrompt(home);
-  assert.match(readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8"), /Answer in French\./);
+  assert.match(readFileSync(path.join(home, ".fx", "system-prompt.md"), "utf8"), /Answer in French\./);
+  assert.equal(readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8"), "");
   setSystemPrompt("");
   writeHarnessPrompt(home);
-  assert.equal(readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8"), "");
+  assert.equal(readFileSync(path.join(home, ".fx", "system-prompt.md"), "utf8"), "");
 });
 
 test("a conditional prompt reaches the harness only on the models it names", () => {
   const home = mkdtempSync(path.join(tmpdir(), "emma-harness-scope-"));
-  const read = () => readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8");
+  const read = () => readFileSync(path.join(home, ".fx", "system-prompt.md"), "utf8");
   setSystemPrompt("Answer in French.");
   setPrompts([
     { id: "opus", name: "Opus", body: "Plan before you edit.", scope: "family:opus", enabled: true },
@@ -62,12 +116,12 @@ test("the variables a prompt writes are filled from the turn, and unknown braces
   const home = mkdtempSync(path.join(tmpdir(), "emma-harness-vars-"));
   setSystemPrompt("Model {model}, family {model_family}, in {workspace} on {mode}. Tools: {available_tools}. Left {alone}.");
   writeHarnessPrompt(home, { model: "anthropic/claude-sonnet-4.5", workspace: "/tmp/work", mode: "ask" });
-  const written = readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8");
+  const written = readFileSync(path.join(home, ".fx", "system-prompt.md"), "utf8");
   assert.match(written, /Model anthropic\/claude-sonnet-4\.5, family Sonnet, in \/tmp\/work on ask\./);
   assert.match(written, /Tools: [a-z_]+(, [a-z_]+)+\./);
   assert.match(written, /Left \{alone\}\./);
   writeHarnessPrompt(home, { model: "openrouter:deepseek/deepseek-chat", workspace: "/tmp/work", mode: "ask" });
-  assert.match(readFileSync(path.join(home, ".fx", "AGENTS.md"), "utf8"), /Model deepseek\/deepseek-chat,/);
+  assert.match(readFileSync(path.join(home, ".fx", "system-prompt.md"), "utf8"), /Model deepseek\/deepseek-chat,/);
   setSystemPrompt("");
 });
 

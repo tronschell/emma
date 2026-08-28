@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: pr title is a conventional commit
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$TITLE" | grep -qE '^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\([a-z0-9 ._/-]+\))?!?: .+' && exit 0
+          echo "PR title drives the changelog. Use: fix(notch): stop the island stealing focus"
+          echo "Types: feat fix perf refactor docs test build ci chore revert"
+          exit 1
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - run: npm ci
+        working-directory: desktop
+
+      - run: npm run check
+        working-directory: desktop
+
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --locked --all-targets
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --locked --all-targets -- -D warnings
+
+      - run: zig build test
+        working-directory: harness

@@ -52,6 +52,16 @@ test("only real web links become links", () => {
   assert.equal(script[0].text, "x");
 });
 
+test("a bare URL links itself, without the punctuation after it", () => {
+  const spans = inlineSpans("try https://github.com/dietrichgebert/ponytail, then stop.");
+  assert.equal(spans[1].href, "https://github.com/dietrichgebert/ponytail");
+  assert.equal(spans[1].text, "https://github.com/dietrichgebert/ponytail");
+  assert.equal(text(spans), "try https://github.com/dietrichgebert/ponytail, then stop.");
+  // A markdown link still wins its own address, and a URL in backticks stays code.
+  assert.equal(inlineSpans("[docs](https://example.com/a)").length, 1);
+  assert.equal(inlineSpans("`https://example.com/a`")[0].code, true);
+});
+
 test("a path the model writes is clickable, and prose in backticks is not", () => {
   const spans = inlineSpans("see `src/markdown.tsx:42` and `/etc/hosts` and `~/notes.md` but not `npm test` or `and/or`");
   assert.deepEqual(spans.filter((span) => span.path).map((span) => span.path), ["src/markdown.tsx", "/etc/hosts", "~/notes.md"]);
@@ -60,6 +70,15 @@ test("a path the model writes is clickable, and prose in backticks is not", () =
   // A link with a file target is a reveal, not a dead span.
   assert.equal(inlineSpans("[the view](desktop/src/markdown.tsx)")[0].path, "desktop/src/markdown.tsx");
   assert.equal(inlineSpans("[docs](https://example.com/a)")[0].path, undefined);
+});
+
+test("a picture the model points at is drawn, and a remote one is not", () => {
+  const [shot] = inlineSpans("![the settings pane](/tmp/emma-shot-1.png)");
+  assert.deepEqual({ path: shot.path, image: shot.image, text: shot.text }, { path: "/tmp/emma-shot-1.png", image: true, text: "the settings pane" });
+  assert.equal(inlineSpans("![](/tmp/shot.png)")[0].image, true);
+  const remote = inlineSpans("![x](https://example.com/a.png)")[0];
+  assert.deepEqual({ href: remote.href, image: remote.image }, { href: "https://example.com/a.png", image: undefined });
+  assert.equal(inlineSpans("[the shot](/tmp/emma-shot-1.png)")[0].image, undefined);
 });
 
 test("markup a model forgot to fence is shown as code, not as prose", () => {

@@ -24,6 +24,18 @@ pub fn allowsStep(limit: usize, completed_steps: usize) bool {
     return limit == 0 or completed_steps < limit;
 }
 
+pub fn deadlineReached(deadline_ms: ?i64, now_ms: i64) bool {
+    const deadline = deadline_ms orelse return false;
+    return now_ms >= deadline;
+}
+
+pub fn resolveRuntimeMs(default_ms: i64, process_override: ?[]const u8) i64 {
+    const trimmed = std.mem.trim(u8, process_override orelse return default_ms, " \t\r\n");
+    if (trimmed.len == 0) return default_ms;
+    const seconds = std.fmt.parseUnsigned(u32, trimmed, 10) catch return default_ms;
+    return @as(i64, seconds) * std.time.ms_per_s;
+}
+
 test "resolve max agent steps preserves explicit unbounded zero" {
     try std.testing.expectEqual(@as(usize, 25), resolveMaxAgentSteps(null, 25));
     try std.testing.expectEqual(@as(usize, 0), resolveMaxAgentSteps(0, 25));
@@ -53,4 +65,20 @@ test "agent step policy treats zero as unbounded and positives as exact caps" {
     try std.testing.expect(allowsStep(2, 0));
     try std.testing.expect(allowsStep(2, 1));
     try std.testing.expect(!allowsStep(2, 2));
+}
+
+test "agent runtime deadline is inert when unset and fires once reached" {
+    try std.testing.expect(!deadlineReached(null, 1_000));
+    try std.testing.expect(!deadlineReached(1_000, 999));
+    try std.testing.expect(deadlineReached(1_000, 1_000));
+    try std.testing.expect(deadlineReached(1_000, 1_001));
+}
+
+test "agent runtime override parses seconds and falls back on anything else" {
+    const default_ms: i64 = 900_000;
+    try std.testing.expectEqual(default_ms, resolveRuntimeMs(default_ms, null));
+    try std.testing.expectEqual(default_ms, resolveRuntimeMs(default_ms, ""));
+    try std.testing.expectEqual(default_ms, resolveRuntimeMs(default_ms, "abc"));
+    try std.testing.expectEqual(@as(i64, 20_000), resolveRuntimeMs(default_ms, "20"));
+    try std.testing.expectEqual(@as(i64, 0), resolveRuntimeMs(default_ms, "0"));
 }

@@ -266,10 +266,10 @@ function TimelineDialog({ turns, agentMs, axis, total, format, now, close, child
   const wall = stats.to - stats.from;
   return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="timeline-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
     <section className="agent-dialog trace-dialog">
-      {/* The two timestamps ride the eyebrow: they are the longest strings here
+      {/* The two timestamps trail the title: they are the longest strings here
           and the only ones that are context rather than a measurement, so a
           whole stat cell each was two lines of dialog spent on a date. */}
-      <header><div><span>{new Date(stats.from).toLocaleString()} → {new Date(stats.to).toLocaleTimeString()}</span><h2 id="timeline-title">Timeline</h2></div><button type="button" onClick={dismiss} aria-label="Close timeline">×</button></header>
+      <header><div><h2 id="timeline-title">Timeline</h2><span>{new Date(stats.from).toLocaleString()} → {new Date(stats.to).toLocaleTimeString()}</span></div><button type="button" onClick={dismiss} aria-label="Close timeline">×</button></header>
       {/* Six short values on one line. Between-turns is lifetime minus agent
           time, which the percentage already says, and the slowest call is the
           head of the tool list right below it. */}

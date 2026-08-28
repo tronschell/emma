@@ -5,6 +5,7 @@ const debug_trace = @import("../core/shared/debug_trace.zig");
 const jsonrpc = @import("jsonrpc.zig");
 const acp_types = @import("types.zig");
 const mcp_servers = @import("mcp_servers.zig");
+const prompt_kinds = @import("prompt.zig");
 const server = @import("server.zig");
 const session_test_controls = @import("session_test_controls.zig");
 const session_codec = @import("../core/session/session_codec.zig");
@@ -962,15 +963,74 @@ fn sendUserHistoryChunk(state: *server.ServerState, alloc: Allocator, session_id
     try state.writer.writeNotification(alloc, "session/update", out.writer.buffered());
 }
 
+/// Replayed as `tool_call` updates, not as the model-facing replay text: that text
+/// is context for the next request, and sent as an agent message it reached the
+/// client as a wall of raw JSON tool output claiming to be something the model said.
+/// The TUI has always hidden it; ACP clients were the ones leaking it.
 fn sendExecutionHistory(
     state: *server.ServerState,
     alloc: Allocator,
     session_id: []const u8,
     execution: types.ExecutionMemory,
 ) !void {
-    const text = try session_runtime.formatExecutionReplayContext(alloc, execution) orelse return;
-    defer alloc.free(text);
-    try sendAgentHistoryChunk(state, alloc, session_id, text);
+    for (execution.tool_steps) |step| {
+        if (step.assistant) |assistant| {
+            if (assistant.len > 0) try sendAgentHistoryChunk(state, alloc, session_id, assistant);
+        }
+        for (step.tool_results) |result| {
+            const arguments = for (step.tool_calls) |call| {
+                if (std.mem.eql(u8, call.id, result.tool_call_id)) break call.arguments_json;
+            } else null;
+            try sendToolCallHistory(state, alloc, session_id, result, arguments);
+        }
+    }
+}
+
+fn sendToolCallHistory(
+    state: *server.ServerState,
+    alloc: Allocator,
+    session_id: []const u8,
+    result: types.PersistedToolResult,
+    arguments_json: ?[]const u8,
+) !void {
+    const status: acp_types.ToolCallStatus = switch (result.status) {
+        .success => .completed,
+        .failure => .failed,
+    };
+
+    var open: std.Io.Writer.Allocating = .init(alloc);
+    defer open.deinit();
+    try open.writer.writeAll("{\"sessionId\":");
+    try writeJsonStr(session_id, &open.writer);
+    try open.writer.writeAll(",\"update\":");
+    try acp_types.writeToolCall(
+        &open.writer,
+        result.tool_call_id,
+        result.tool_name,
+        prompt_kinds.mapToolKind(result.tool_name),
+        status,
+        arguments_json,
+    );
+    try open.writer.writeAll("}");
+    try state.writer.writeNotification(alloc, "session/update", open.writer.buffered());
+
+    // The output rides on the update, not the opening call: `tool_call` has no
+    // content field, and a client merges the two into one entry.
+    var body: std.Io.Writer.Allocating = .init(alloc);
+    defer body.deinit();
+    try body.writer.writeAll(result.output);
+    for (result.permission_feedback) |feedback| {
+        try body.writer.print("\n\nUser permission feedback:\n{s}", .{feedback});
+    }
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try out.writer.writeAll("{\"sessionId\":");
+    try writeJsonStr(session_id, &out.writer);
+    try out.writer.writeAll(",\"update\":");
+    try acp_types.writeToolCallUpdate(&out.writer, result.tool_call_id, status, body.writer.buffered());
+    try out.writer.writeAll("}");
+    try state.writer.writeNotification(alloc, "session/update", out.writer.buffered());
 }
 
 fn sendAgentHistoryChunk(state: *server.ServerState, alloc: Allocator, session_id: []const u8, text: []const u8) !void {

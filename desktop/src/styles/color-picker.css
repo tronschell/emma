@@ -1,0 +1,18 @@
+/* Emma's own colour well, in place of Chromium's grey OS panel: a square
+   saturation field over the picked hue, a spectrum rule under it, and the hex
+   in mono. Drawn with the same 1px rules as the rest of the app. */
+.color-well { position: relative; display: inline-flex; }
+.source-popover.color-menu { top: calc(100% + var(--s-2)); bottom: auto; left: auto; right: 0; display: grid; gap: var(--s-2); width: 212px; max-height: none; overflow: visible; padding: var(--s-2); touch-action: none; }
+
+.color-field { position: relative; height: 132px; border: 1px solid var(--border); cursor: crosshair;
+  background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent), var(--hue); }
+.color-hue { position: relative; height: 12px; border: 1px solid var(--border); cursor: ew-resize;
+  background: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00); }
+.color-field i, .color-hue i { position: absolute; width: 12px; height: 12px; border: 2px solid #fff; border-radius: var(--r-full); box-shadow: 0 0 0 1px #0006; transform: translate(-50%, -50%); pointer-events: none; }
+.color-field i { top: 0; }
+.color-hue i { top: 50%; }
+
+.color-row { display: flex; align-items: center; gap: var(--s-2); }
+.color-chip { flex: 0 0 auto; width: 22px; height: 22px; border: 1px solid var(--border); }
+.color-menu input { flex: 1; min-width: 0; min-height: 22px; padding: 0 var(--s-2); color: var(--text); background: var(--surface-2); border: 1px solid var(--border); font: var(--fs-sm)/1 var(--font-mono); outline: none; }
+.color-menu input:focus-visible { border-color: var(--accent); }

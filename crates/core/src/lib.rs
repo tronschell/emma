@@ -150,7 +150,7 @@ mod tests {
         let older = Thread::new("older", Timestamp::from_unix_seconds(5)).unwrap();
         let legacy = older
             .to_markdown()
-            .replacen("emma-thread-format: 12", "emma-thread-format: 7", 1)
+            .replacen("emma-thread-format: 13", "emma-thread-format: 7", 1)
             .lines()
             .filter(|line| {
                 !line.starts_with("trace-count:")
@@ -177,7 +177,7 @@ mod tests {
 
         let legacy = child
             .to_markdown()
-            .replacen("emma-thread-format: 12", "emma-thread-format: 8", 1)
+            .replacen("emma-thread-format: 13", "emma-thread-format: 8", 1)
             .replace("kind: \"subagent\"\n", "")
             .replace("scheduled-job-id: \"\"\n", "");
         assert_eq!(Thread::from_markdown(&legacy).unwrap(), child);
@@ -202,7 +202,7 @@ mod tests {
         );
         let older = root
             .to_markdown()
-            .replacen("emma-thread-format: 12", "emma-thread-format: 5", 1)
+            .replacen("emma-thread-format: 13", "emma-thread-format: 5", 1)
             .lines()
             .filter(|line| {
                 !line.starts_with("parent-thread-id:")
@@ -333,7 +333,7 @@ mod tests {
         old.push(assistant).unwrap();
         let version_three = old
             .to_markdown()
-            .replacen("emma-thread-format: 12", "emma-thread-format: 3", 1)
+            .replacen("emma-thread-format: 13", "emma-thread-format: 3", 1)
             .replace("archived-at: \"\"\n", "")
             .replace("parent-thread-id: \"\"\n", "")
             .replace("trace-count: 0\n", "")
@@ -364,5 +364,273 @@ mod tests {
         assert_eq!(listing.malformed.len(), 1);
         assert_eq!(fs::read_to_string(&malformed).unwrap(), "broken");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_goal_survives_the_round_trip_and_an_older_thread_has_none() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        assert!(thread.goal.is_none());
+        thread
+            .set_goal(
+                "  Make the flaky suite green  ",
+                50_000,
+                Timestamp::from_unix_seconds(11),
+            )
+            .unwrap();
+        thread.note_goal_turn(1_200, 8_400, Timestamp::from_unix_seconds(12));
+        let goal = thread.goal.clone().unwrap();
+        assert_eq!(goal.objective, "Make the flaky suite green");
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert_eq!(goal.tokens_used, 1_200);
+        assert_eq!(goal.time_used_seconds, 8);
+        assert_eq!(goal.turns, 1);
+        assert_eq!(goal.tokens_left(), 48_800);
+
+        let markdown = thread.to_markdown();
+        assert_eq!(Thread::from_markdown(&markdown).unwrap(), thread);
+        assert!(Thread::from_markdown(&markdown).unwrap().goal.is_some());
+
+        let older = markdown
+            .replacen("emma-thread-format: 13", "emma-thread-format: 12", 1)
+            .lines()
+            .filter(|line| !line.starts_with("goal-"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            Thread::from_markdown(&format!("{older}\n"))
+                .unwrap()
+                .goal
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_goal_is_complete_only_with_evidence() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        assert!(
+            thread
+                .update_goal(
+                    GoalStatus::Complete,
+                    "all green",
+                    "",
+                    Timestamp::from_unix_seconds(11)
+                )
+                .is_err()
+        );
+        thread
+            .set_goal("Make the suite green", 0, Timestamp::from_unix_seconds(11))
+            .unwrap();
+        assert_eq!(
+            thread.goal.as_ref().unwrap().token_budget,
+            DEFAULT_GOAL_TOKEN_BUDGET
+        );
+        assert!(
+            thread
+                .update_goal(
+                    GoalStatus::Complete,
+                    "   ",
+                    "",
+                    Timestamp::from_unix_seconds(12)
+                )
+                .is_err()
+        );
+        assert_eq!(thread.goal.as_ref().unwrap().status, GoalStatus::Active);
+        thread
+            .update_goal(
+                GoalStatus::Complete,
+                "cargo test --workspace: 214 passed, 0 failed",
+                "",
+                Timestamp::from_unix_seconds(13),
+            )
+            .unwrap();
+        assert_eq!(thread.goal.as_ref().unwrap().status, GoalStatus::Complete);
+        assert!(
+            thread
+                .update_goal(GoalStatus::Paused, "", "", Timestamp::from_unix_seconds(14))
+                .is_err()
+        );
+        assert!(thread.clear_goal());
+        assert!(!thread.clear_goal());
+    }
+
+    #[test]
+    fn blocked_needs_the_same_blocker_three_turns_running() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        thread
+            .set_goal("Deploy the service", 0, Timestamp::from_unix_seconds(11))
+            .unwrap();
+        let at = Timestamp::from_unix_seconds(12);
+        for turn in 0..2 {
+            thread
+                .update_goal(GoalStatus::Blocked, "", "no deploy credentials", at)
+                .unwrap();
+            thread
+                .update_goal(GoalStatus::Blocked, "", "no deploy credentials", at)
+                .unwrap();
+            let goal = thread.goal.as_ref().unwrap();
+            assert_eq!(goal.status, GoalStatus::Active);
+            assert_eq!(goal.blocked_streak, turn + 1);
+            thread.note_goal_turn(10, 1_000, at);
+        }
+        thread
+            .update_goal(GoalStatus::Blocked, "", "No Deploy Credentials", at)
+            .unwrap();
+        assert_eq!(thread.goal.as_ref().unwrap().status, GoalStatus::Blocked);
+        assert_eq!(thread.goal.as_ref().unwrap().blocked_streak, 3);
+
+        let mut other = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        other
+            .set_goal("Deploy", 0, Timestamp::from_unix_seconds(11))
+            .unwrap();
+        other
+            .update_goal(GoalStatus::Blocked, "", "no credentials", at)
+            .unwrap();
+        other.note_goal_turn(10, 1_000, at);
+        other
+            .update_goal(GoalStatus::Blocked, "", "the API is down", at)
+            .unwrap();
+        assert_eq!(other.goal.as_ref().unwrap().blocked_streak, 1);
+        assert_eq!(other.goal.as_ref().unwrap().status, GoalStatus::Active);
+    }
+
+    #[test]
+    fn a_goal_stops_at_its_budget_until_it_is_extended() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        thread
+            .set_goal("Port the callers", 1_000, Timestamp::from_unix_seconds(11))
+            .unwrap();
+        thread.note_goal_turn(600, 1_000, Timestamp::from_unix_seconds(12));
+        assert_eq!(thread.goal.as_ref().unwrap().status, GoalStatus::Active);
+        thread.note_goal_turn(600, 1_000, Timestamp::from_unix_seconds(13));
+        let goal = thread.goal.as_ref().unwrap();
+        assert_eq!(goal.status, GoalStatus::BudgetLimited);
+        assert_eq!(goal.tokens_used, 1_200);
+        assert_eq!(goal.tokens_left(), 0);
+
+        thread.note_goal_turn(600, 1_000, Timestamp::from_unix_seconds(14));
+        let goal = thread.goal.as_ref().unwrap();
+        assert_eq!(goal.turns, 3);
+        assert_eq!(goal.tokens_used, 1_800);
+
+        thread
+            .extend_goal(1_000, Timestamp::from_unix_seconds(15))
+            .unwrap();
+        let goal = thread.goal.as_ref().unwrap();
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert_eq!(goal.token_budget, 2_000);
+
+        assert_eq!(goal.turns, 0);
+
+        thread
+            .update_goal(GoalStatus::Paused, "", "", Timestamp::from_unix_seconds(16))
+            .unwrap();
+        thread.note_goal_turn(600, 1_000, Timestamp::from_unix_seconds(17));
+        let goal = thread.goal.as_ref().unwrap();
+        assert_eq!(goal.tokens_used, 1_800);
+        assert_eq!(goal.turns, 0);
+    }
+
+    #[test]
+    fn a_second_set_cannot_buy_a_goal_a_fresh_allowance() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        thread
+            .set_goal("Port the callers", 1_000, Timestamp::from_unix_seconds(11))
+            .unwrap();
+        thread.note_goal_turn(1_200, 1_000, Timestamp::from_unix_seconds(12));
+        assert_eq!(
+            thread.goal.as_ref().unwrap().status,
+            GoalStatus::BudgetLimited
+        );
+
+        let goal = thread
+            .set_goal(
+                "Port the callers",
+                200_000,
+                Timestamp::from_unix_seconds(13),
+            )
+            .unwrap();
+        assert_eq!(goal.tokens_used, 1_200);
+        assert_eq!(goal.turns, 1);
+        assert_eq!(goal.created_at, Timestamp::from_unix_seconds(11));
+
+        thread
+            .update_goal(
+                GoalStatus::Complete,
+                "cargo test passed",
+                "",
+                Timestamp::from_unix_seconds(14),
+            )
+            .unwrap();
+        let goal = thread
+            .set_goal(
+                "Something else entirely",
+                5_000,
+                Timestamp::from_unix_seconds(15),
+            )
+            .unwrap();
+        assert_eq!(goal.tokens_used, 0);
+        assert_eq!(goal.token_budget, 5_000);
+    }
+
+    #[test]
+    fn a_settled_goal_keeps_its_verdict_and_a_stopped_one_keeps_its_reason() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        thread
+            .set_goal("Port the callers", 1_000, Timestamp::from_unix_seconds(11))
+            .unwrap();
+        thread
+            .update_goal(
+                GoalStatus::UsageLimited,
+                "",
+                "429 from the provider",
+                Timestamp::from_unix_seconds(12),
+            )
+            .unwrap();
+        assert_eq!(
+            thread.goal.as_ref().unwrap().blocked_reason,
+            "429 from the provider"
+        );
+
+        thread
+            .update_goal(
+                GoalStatus::Complete,
+                "cargo test passed",
+                "",
+                Timestamp::from_unix_seconds(13),
+            )
+            .unwrap();
+        assert!(
+            thread
+                .update_goal(GoalStatus::Active, "", "", Timestamp::from_unix_seconds(14))
+                .is_err()
+        );
+        assert_eq!(thread.goal.as_ref().unwrap().status, GoalStatus::Complete);
+    }
+
+    #[test]
+    fn a_goal_stops_at_the_turn_ceiling_and_a_grant_hands_it_new_turns() {
+        let mut thread = Thread::new("Ship it", Timestamp::from_unix_seconds(10)).unwrap();
+        thread
+            .set_goal(
+                "Port the callers",
+                10_000_000,
+                Timestamp::from_unix_seconds(11),
+            )
+            .unwrap();
+        for turn in 0..MAX_GOAL_TURNS {
+            thread.note_goal_turn(1, 1_000, Timestamp::from_unix_seconds(12 + turn as i64));
+        }
+        let goal = thread.goal.as_ref().unwrap();
+        assert_eq!(goal.turns, MAX_GOAL_TURNS);
+        assert_eq!(goal.status, GoalStatus::BudgetLimited);
+        assert!(goal.tokens_left() > 0);
+
+        thread
+            .extend_goal(0, Timestamp::from_unix_seconds(200))
+            .unwrap();
+        let goal = thread.goal.as_ref().unwrap();
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert_eq!(goal.turns, 0);
+        assert_eq!(goal.tokens_used, MAX_GOAL_TURNS);
     }
 }

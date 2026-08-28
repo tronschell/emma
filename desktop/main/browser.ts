@@ -2,6 +2,7 @@ import { app, WebContentsView, type BrowserWindow } from "electron";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { recentClips, rememberClip, restoreClip } from "./clip";
 import { externalUrl } from "./ipc";
 import { MAX_TOOL_OUTPUT_BYTES } from "./tools";
 
@@ -31,6 +32,8 @@ const MAX_STDERR = 4 * 1024;
 const MAX_SESSION_CHARS = 48;
 const MAX_TABS = 12;
 const HOME = "about:blank";
+const CLIP_SETTLE_MS = 150;
+const CLIP_KEYS = ["c", "x", "v"];
 const TRUNCATION_NOTICE = "\n[truncated — read less at a time: snapshot with interactive true, or narrow it with a selector]";
 
 type Tab = { id: string; view: WebContentsView; targetId?: string; favicon?: string };
@@ -157,6 +160,20 @@ export class Browsers {
     }
   }
 
+  clips(): string[] {
+    return recentClips();
+  }
+
+  reuseClip(threadId: string, index: number) {
+    const text = restoreClip(index);
+    if (text === undefined) throw new Error("That clipboard item is gone.");
+    const session = this.sessions.get(sessionName(threadId));
+    const contents = session && this.active(session)?.view.webContents;
+    if (!contents || contents.isDestroyed()) return;
+    contents.focus();
+    contents.paste();
+  }
+
   async run(threadId: string, argv: readonly string[]): Promise<string> {
     const session = this.session(threadId);
     const tab = this.active(session) ?? this.spawnTab(session);
@@ -193,6 +210,11 @@ export class Browsers {
     contents.setWindowOpenHandler(({ url }) => {
       if (externalUrl(url) && session.tabs.length < MAX_TABS) void this.newTab(session.threadId, url);
       return { action: "deny" };
+    });
+    contents.on("before-input-event", (_event, input) => {
+      if (input.type !== "keyUp" || !input.meta || input.control || input.alt) return;
+      if (!CLIP_KEYS.includes(input.key.toLowerCase())) return;
+      setTimeout(rememberClip, CLIP_SETTLE_MS).unref();
     });
     contents.on("page-favicon-updated", (_event, icons) => {
       tab.favicon = icons.find((icon) => icon.startsWith("https://") || icon.startsWith("http://"));

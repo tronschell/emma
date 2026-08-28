@@ -17,6 +17,7 @@
 const std = @import("std");
 
 const debug_trace = @import("../core/shared/debug_trace.zig");
+const gateway_client = @import("client.zig");
 const gateway_failure_diagnostics = @import("../core/gateway/gateway_failure_diagnostics.zig");
 const gateway_json = @import("../core/gateway/gateway_json.zig");
 const image_attachments = @import("../core/images/image_attachments.zig");
@@ -34,6 +35,7 @@ pub const max_request_bytes = 1024 * 1024;
 pub const max_response_bytes = 4 * 1024 * 1024;
 pub const max_content_bytes = 256 * 1024;
 pub const max_tool_calls_per_step = 16;
+pub const max_routed_model_bytes = 256;
 
 /// Emma's default route. Any OpenAI-compatible endpoint works; this one is the
 /// catalog Emma already restricts to free, tool-capable, zero-retention models.
@@ -406,32 +408,27 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
 
     const url = if (request.chat_url.len > 0) request.chat_url else chatUrl();
 
-    // Past this point the request may have been billed, so recovery must not
-    // silently re-send it.
     request.delivery.markPossiblySent();
     request.attempt_evidence.provider_admitted = true;
 
-    const result = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
+    const status = try post(.{
+        .client = &client,
+        .url = url,
         .headers = headers,
         .payload = request.payload,
-        .response_writer = &out.writer,
-        .redirect_behavior = .unhandled,
-    });
+        .out = &out,
+    }, request.cancel_flag);
 
     const body = try out.toOwnedSlice();
     defer alloc.free(body);
     if (body.len > max_response_bytes) return error.ResponseTooLarge;
 
-    if (result.status != .ok) {
+    if (status != .ok) {
         const err_body = try alloc.dupe(u8, body);
         errdefer alloc.free(err_body);
-        // The runtime renders these into the network diagnostics ring, which is
-        // the only place a rejected request's shape is ever visible.
         const failure = gateway_failure_diagnostics.collect(alloc, request.payload, err_body);
         return .{
-            .status = result.status,
+            .status = status,
             .err_body = err_body,
             .failure_schema = failure.schema,
             .failure_request_shape = failure.request_shape,
@@ -442,8 +439,6 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
     var completion = try parseCompletion(alloc, body);
     errdefer freeCompletion(alloc, &completion);
 
-    // Reasoning first: it is what the model did before the answer, and the
-    // transcript folds it into the dropdown above the reply.
     if (completion.reasoning) |reasoning| {
         if (request.on_reasoning_chunk) |on_reasoning| on_reasoning(request.callback_ctx, reasoning);
     }
@@ -455,14 +450,61 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
     }
 
     return .{
-        .status = result.status,
+        .status = status,
         .completion = completion,
         .generation_origin = url,
         .ownership = .owned,
     };
 }
 
+const PostCall = struct {
+    client: *std.http.Client,
+    url: []const u8,
+    headers: std.http.Client.Request.Headers,
+    payload: []const u8,
+    out: *std.Io.Writer.Allocating,
+
+    fn run(self: PostCall) anyerror!std.http.Status {
+        const result = try self.client.fetch(.{
+            .location = .{ .url = self.url },
+            .method = .POST,
+            .headers = self.headers,
+            .payload = self.payload,
+            .response_writer = &self.out.writer,
+            .redirect_behavior = .unhandled,
+        });
+        return result.status;
+    }
+};
+
+fn post(call: PostCall, cancel_flag: *std.atomic.Value(bool)) anyerror!std.http.Status {
+    const Event = union(enum) {
+        posted: anyerror!std.http.Status,
+        cancelled: anyerror!void,
+    };
+    var buffer: [2]Event = undefined;
+    var select: std.Io.Select(Event) = .init(io_mod.getIo(), &buffer);
+    try select.concurrent(.cancelled, gateway_client.waitForBoundedCancellation, .{cancel_flag});
+    select.concurrent(.posted, PostCall.run, .{call}) catch |err| {
+        select.cancelDiscard();
+        return err;
+    };
+    const event = select.await() catch |err| {
+        select.cancelDiscard();
+        return err;
+    };
+    select.cancelDiscard();
+    switch (event) {
+        .posted => |result| return result,
+        .cancelled => |result| {
+            try result;
+            return error.Cancelled;
+        },
+    }
+}
+
 fn freeCompletion(alloc: Allocator, completion: *types.GatewayCompletion) void {
+    if (completion.routed_model) |routed| alloc.free(@constCast(routed));
     if (completion.content) |content| alloc.free(@constCast(content));
     if (completion.reasoning) |reasoning| alloc.free(@constCast(reasoning));
     types.freeToolCallSlice(alloc, @constCast(completion.tool_calls));
@@ -512,6 +554,12 @@ fn parseCompletion(alloc: Allocator, body: []const u8) !types.GatewayCompletion 
     } else "";
 
     var completion: types.GatewayCompletion = .{};
+    if (parsed.value.object.get("model")) |routed| {
+        if (routed == .string and routed.string.len > 0 and routed.string.len <= max_routed_model_bytes) {
+            completion.routed_model = try alloc.dupe(u8, routed.string);
+        }
+    }
+    errdefer if (completion.routed_model) |routed| alloc.free(@constCast(routed));
     completion.tool_calls = try parseToolCalls(alloc, message.object.get("tool_calls"));
     errdefer types.freeToolCallSlice(alloc, @constCast(completion.tool_calls));
 

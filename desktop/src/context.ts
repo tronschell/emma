@@ -4,7 +4,7 @@ import { pathName, type SlashCommand } from "../shared/slash";
 import { ARTIFACT_LABELS, type ArtifactMeta } from "../shared/artifacts";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
 import { allocateCells, CHARS_PER_TOKEN, mergeUses, rateByContext, systemChars, usageKey, type ContextUse } from "../shared/usage";
-import { tagName } from "../shared/settings";
+import { SETTINGS_KEY, tagName, validateSettings } from "../shared/settings";
 import { keepKindLabel, type KeptNote } from "../shared/vault";
 import type { LiveAgent } from "../shared/agents";
 import type { Message, Thread } from "./types";
@@ -78,11 +78,13 @@ export function rememberBlocks(threadId: string, turns: Record<string, Block[]>)
   storeEvicting(BLOCKS_KEY, threadId, text);
 }
 
+const PICK_KINDS = new Set(["file", "note", "artifact", "attachment", "terminal", "diff", "visual", "component"]);
+
 const ATTACHED_KEY = "emma.threadAttachments.v1.";
 const KEPT_ATTACHED_TURNS = 60;
 const KEPT_ATTACHED_BYTES = 1024 * 1024;
 
-export type TurnAttachment = { name: string; path: string; thumbnail?: string };
+export type TurnAttachment = { kind?: ContextPick["kind"]; name: string; path?: string; thumbnail?: string };
 
 type AttachedTurn = { after: number; content: string; items: TurnAttachment[] };
 
@@ -90,7 +92,9 @@ function isAttachedTurn(value: unknown): value is AttachedTurn {
   const turn = value as AttachedTurn;
   if (!turn || typeof turn !== "object" || typeof turn.after !== "number" || typeof turn.content !== "string") return false;
   return Array.isArray(turn.items) && turn.items.length > 0
-    && turn.items.every((item) => !!item && typeof item.name === "string" && typeof item.path === "string");
+    && turn.items.every((item) => !!item && typeof item.name === "string"
+      && (item.path === undefined || typeof item.path === "string")
+      && (item.kind === undefined || PICK_KINDS.has(item.kind)));
 }
 
 function storedAttachments(threadId: string): AttachedTurn[] {
@@ -115,6 +119,10 @@ export function rememberTurnAttachments(threadId: string, after: number, content
   storeEvicting(ATTACHED_KEY, threadId, text);
 }
 
+export function pendingAttachments(threadId: string, after: number, content: string): TurnAttachment[] {
+  return storedAttachments(threadId).find((turn) => turn.after === after && turn.content === content)?.items ?? [];
+}
+
 export function turnAttachments(threadId: string, messages: Message[]): Record<number, TurnAttachment[]> {
   const byIndex: Record<number, TurnAttachment[]> = {};
   const claimed = new Set<number>();
@@ -126,6 +134,27 @@ export function turnAttachments(threadId: string, messages: Message[]): Record<n
     byIndex[at] = turn.items;
   }
   return byIndex;
+}
+
+const DRAFT_KEY = "emma.threadDraft.v1.";
+
+/** What the composer is holding but has not sent: the typed prompt and its picks.
+    A thread's view is torn down every time you switch thread or leave for another
+    page, so without this an unsent prompt dies with the unmount. */
+export type ComposerDraft = { text: string; picks: ContextPick[] };
+
+export function threadDraft(threadId: string): ComposerDraft {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DRAFT_KEY + threadId) ?? "{}") as Partial<ComposerDraft>;
+    const picks = Array.isArray(stored.picks) ? stored.picks.filter((pick) => !!pick && PICK_KINDS.has((pick as ContextPick).kind)) : [];
+    return { text: typeof stored.text === "string" ? stored.text : "", picks };
+  } catch { return { text: "", picks: [] }; }
+}
+
+export function setThreadDraft(threadId: string, draft: ComposerDraft): void {
+  if (!threadId) return;
+  if (!draft.text && !draft.picks.length) { localStorage.removeItem(DRAFT_KEY + threadId); return; }
+  storeEvicting(DRAFT_KEY, threadId, JSON.stringify(draft));
 }
 
 function allModes(): Record<string, string> {
@@ -243,12 +272,12 @@ export interface ContextBreakdown {
 
 export const NO_BREAKDOWN: ContextBreakdown = { systemPromptBytes: 0, systemToolsBytes: 0, mcpToolsBytes: 0, skillsBytes: 0, memoryBytes: 0 };
 
-const PREFIX_ROWS:{ kind: ContextUse["kind"]; label: string; of: keyof ContextBreakdown }[] = [
-  { kind: "system", label: "System prompt", of: "systemPromptBytes" },
-  { kind: "tools", label: "System tools", of: "systemToolsBytes" },
-  { kind: "mcp", label: "MCP tools", of: "mcpToolsBytes" },
-  { kind: "skills", label: "Skills", of: "skillsBytes" },
-  { kind: "memory", label: "Memory files", of: "memoryBytes" },
+const PREFIX_ROWS:{ kind: ContextUse["kind"]; label: string; of: keyof ContextBreakdown; source: SegmentSource }[] = [
+  { kind: "system", label: "System prompt", of: "systemPromptBytes", source: "prompt" },
+  { kind: "tools", label: "System tools", of: "systemToolsBytes", source: "tools" },
+  { kind: "mcp", label: "MCP tools", of: "mcpToolsBytes", source: "mcp" },
+  { kind: "skills", label: "Skills", of: "skillsBytes", source: "skills" },
+  { kind: "memory", label: "Memory files", of: "memoryBytes", source: "memory" },
 ];
 
 function allBreakdowns(): Record<string, ContextBreakdown> {
@@ -272,8 +301,8 @@ export function recordBreakdown(threadId: string, parts: ContextBreakdown): void
   localStorage.setItem(BREAKDOWN_KEY, JSON.stringify({ ...allBreakdowns(), [threadId]: parts }));
 }
 
-export function prefixUses(breakdown: ContextBreakdown, turns: number): ContextUse[] {
-  return PREFIX_ROWS.filter((row) => breakdown[row.of] > 0).map((row) => ({ kind: row.kind, label: row.label, chars: breakdown[row.of], turns }));
+export function prefixUses(breakdown: ContextBreakdown, turns: number): LedgerRow[] {
+  return PREFIX_ROWS.filter((row) => breakdown[row.of] > 0).map((row) => ({ kind: row.kind, label: row.label, chars: breakdown[row.of], turns, source: row.source }));
 }
 
 function inputTokens(message: Thread["messages"][number]): number {
@@ -295,8 +324,74 @@ export function systemUse(thread: Thread, measuredChars: number): Omit<ContextUs
 
 const USAGE_CELLS = 48;
 
+export type SegmentSource = "messages" | "turn" | "attachment" | "residual" | "prompt" | "tools" | "mcp" | "skills" | "memory";
+
+export interface LedgerRow extends ContextUse {
+  source: SegmentSource;
+}
+
+export interface SegmentItem {
+  name: string;
+  detail?: string;
+  chars?: number;
+}
+
+export const SEGMENT_NOTES: Record<SegmentSource, string> = {
+  messages: "Every message this thread still carries, oldest first.",
+  turn: "The turn in flight, span by span: each model request and tool call, sized by what it left in the window.",
+  attachment: "One attached item. This row is the whole of it.",
+  residual: "What the provider billed for this turn minus everything measured above — tool results, retries and whatever the harness added mid-turn. Not itemised.",
+  prompt: "The harness instructions and Emma's tool guidance, sent as one blob rather than a list.",
+  tools: "Emma's tools, as switched on in Settings → Tools. The harness adds its own file and terminal tools to this row without naming them.",
+  mcp: "MCP servers whose tool catalogue rides every request.",
+  skills: "Skills mirrored to the harness. A skill is loaded in full only when it fires; the row is what its description costs every turn.",
+  memory: "Memory files read into every request.",
+};
+
+const MAX_SEGMENT_ITEMS = 200;
+const PREVIEW_CHARS = 120;
+
+function toolItems(): SegmentItem[] {
+  let disabled: readonly string[] = [];
+  try { disabled = validateSettings(JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "null")).tools.disabledTools; } catch { disabled = []; }
+  return TOOL_CATALOG.filter((tool) => !disabled.includes(tool.name)).map((tool) => ({ name: tool.label, detail: tool.blurb }));
+}
+
+export async function segmentItems(source: SegmentSource, messages: Message[], threadId: string): Promise<SegmentItem[]> {
+  if (source === "messages") {
+    return messages.slice(-MAX_SEGMENT_ITEMS).map((message, index) => ({
+      name: `${index + 1}. ${message.role === "user" ? "You" : "Emma"}`,
+      detail: message.content.replace(/\s+/g, " ").slice(0, PREVIEW_CHARS).trim(),
+      chars: message.content.length,
+    }));
+  }
+  if (source === "turn") {
+    const spans = (await window.emma.listSpans())[threadId] ?? [];
+    return spans
+      .filter((span) => span.kind !== "agent")
+      .map((span) => ({ name: span.name, detail: span.kind, chars: span.tokens === undefined ? undefined : Math.round(span.tokens * CHARS_PER_TOKEN) }));
+  }
+  if (source === "skills") {
+    const skills = await window.emma.searchImportedSkills({ query: "", limit: 64 });
+    return skills.map((skill) => ({ name: skill.name, detail: `from ${skill.source}` }));
+  }
+  if (source === "mcp") {
+    const servers = await window.emma.listImportedMcpServers();
+    return servers.map((server) => ({ name: server.name, detail: `${server.command}${server.argCount ? ` · ${server.argCount} ${plural(server.argCount, "argument")}` : ""}` }));
+  }
+  if (source === "tools") {
+    const written = await window.emma.listToolTargets().then((targets) => targets.written).catch(() => []);
+    return [...toolItems(), ...written.map((tool) => ({ name: tool.name, detail: tool.source }))];
+  }
+  if (source === "memory") {
+    const notes = await window.emma.listMemories();
+    return notes.map((note) => ({ name: note.path, chars: note.bytes }));
+  }
+  return [];
+}
+
 export interface Ledger {
-  rows: ContextUse[];
+  rows: LedgerRow[];
   total: number;
   capacity: number;
   free: number;
@@ -310,7 +405,7 @@ export interface Ledger {
   tokens: number;
   elapsed: number;
   curve: { context: number; rate: number; turns: number }[];
-  largest?: ContextUse;
+  largest?: LedgerRow;
   carriedTokens: number;
   experiments: ExperimentTally;
 }
@@ -318,18 +413,20 @@ export interface Ledger {
 export function buildLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally, landedCalls = 0, breakdown: ContextBreakdown = NO_BREAKDOWN): Ledger {
   const messages: Message[] = thread?.messages ?? [];
   const replies = messages.filter((message) => message.role === "assistant").length;
-  const running = inFlight.reduce((sum, agent) => sum + agent.inputTokens, 0) * CHARS_PER_TOKEN;
-  const liveCalls = inFlight.reduce((sum, agent) => sum + agent.toolCalls, 0);
+  /* Only this thread's own agent. A subagent is delegated work that never lands
+     in the manager's window — its tokens and calls belong to its own ledger. */
   const liveTurns = inFlight.filter((agent) => agent.threadId === thread?.id);
-  const measured: ContextUse[] = thread ? [
-    { ...historyUse(thread), turns: messages.filter((message) => message.role === "user").length },
-    ...(running > 0 ? [{ kind: "messages" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1 }] : []),
-    ...uses,
+  const running = liveTurns.reduce((sum, agent) => sum + agent.inputTokens, 0) * CHARS_PER_TOKEN;
+  const liveCalls = liveTurns.reduce((sum, agent) => sum + agent.toolCalls, 0);
+  const measured: LedgerRow[] = thread ? [
+    { ...historyUse(thread), turns: messages.filter((message) => message.role === "user").length, source: "messages" },
+    ...(running > 0 ? [{ kind: "messages" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1, source: "turn" as const }] : []),
+    ...uses.map((use) => ({ ...use, source: "attachment" as const })),
   ] : [];
   const prefix = thread ? prefixUses(breakdown, replies) : [];
   const named = measured.reduce((sum, row) => sum + row.chars, 0) - running + prefix.reduce((sum, row) => sum + row.chars, 0);
   const system = thread ? systemUse(thread, named) : undefined;
-  const rows: ContextUse[] = [...measured, ...(system ? [{ ...system, turns: replies }] : []), ...prefix].sort((a, b) => b.chars - a.chars);
+  const rows: LedgerRow[] = [...measured, ...(system ? [{ ...system, turns: replies, source: "residual" as const }] : []), ...prefix].sort((a, b) => b.chars - a.chars);
   const total = rows.reduce((sum, row) => sum + row.chars, 0);
   const capacity = contextTokens * CHARS_PER_TOKEN;
   const free = Math.max(0, capacity - total);
@@ -351,7 +448,7 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
     tokens,
     elapsed: messages.reduce((sum, message) => sum + (message.generation?.durationMilliseconds ?? 0), 0) + liveTurns.reduce((sum, agent) => sum + agent.generationMs, 0),
     curve: rateByContext(messages.flatMap((message) => message.generation ? [message.generation] : [])),
-    largest: rows.reduce<ContextUse | undefined>((top, row) => !top || row.chars > top.chars ? row : top, undefined),
+    largest: rows.reduce<LedgerRow | undefined>((top, row) => !top || row.chars > top.chars ? row : top, undefined),
     carriedTokens: Math.round(total / CHARS_PER_TOKEN),
     experiments,
   };
@@ -379,6 +476,21 @@ export function setThreadTag(threadId: string, tag: string, auto = false): void 
   else delete tags[threadId];
   localStorage.setItem(TAGS_KEY, JSON.stringify(tags));
   dispatchEvent(new Event("emma-thread-tags-changed"));
+}
+
+const PINS_KEY = "emma.threadPins.v1";
+
+export function pinnedThreads(): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PINS_KEY) ?? "[]") as unknown;
+    return Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string") : [];
+  } catch { return []; }
+}
+
+export function setThreadPinned(threadId: string, pinned: boolean): void {
+  const kept = pinnedThreads().filter((id) => id !== threadId);
+  localStorage.setItem(PINS_KEY, JSON.stringify(pinned ? [threadId, ...kept] : kept));
+  dispatchEvent(new Event("emma-thread-pins-changed"));
 }
 
 export function handTags(): string[] {
@@ -432,8 +544,10 @@ export function pickLabel(pick: ContextPick, folders: FolderGrant[]): string {
   if (pick.kind === "file") return `${folders.find((item) => item.id === pick.folderId)?.name ?? "folder"}/${pick.path}`;
   if (pick.kind === "attachment") return pick.name;
   if (pick.kind === "artifact") return pick.title;
+  if (pick.kind === "component") return pick.title;
   if (pick.kind === "note") return pick.title;
   if (pick.kind === "terminal") return `${pick.lines} ${plural(pick.lines, "line")} of output`;
+  if (pick.kind === "diff") return `${pick.path} · ${pick.lines} ${plural(pick.lines, "line")}`;
   return `${pick.title} · ${pick.label}`;
 }
 
@@ -484,6 +598,19 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
       sections.push({ heading: `Terminal selection (${label})`, body: pick.text, label });
       continue;
     }
+    if (pick.kind === "diff") {
+      sections.push({ heading: `Uncommitted diff of ${pick.path}, the part the user highlighted`, body: pick.text, label: pickLabel(pick, folders) });
+      continue;
+    }
+    if (pick.kind === "component") {
+      try {
+        const built = await window.emma.readComponent(pick.id);
+        sections.push({ heading: `The component "${built.title}" (${built.id}), which you built into ${built.anchor.label}`, body: built.code, label: pick.title });
+      } catch (reason) {
+        sections.push({ heading: `Component ${pick.title}`, body: `Could not be read: ${reasonText(reason)}`, label: pick.title });
+      }
+      continue;
+    }
     if (pick.kind === "visual") {
       const label = pickLabel(pick, folders);
       sections.push({ heading: `Part of the picture "${pick.title}", the element ${pick.label}`, body: pick.html, label });
@@ -501,4 +628,40 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
     uses: sections.map((section) => ({ kind: "messages" as const, label: section.label, chars: section.heading.length + section.body.length })),
     images,
   };
+}
+
+/* Anything that can be picked outside the composer — a diff excerpt, a bit of a
+   picture — reaches it on this event rather than through a prop threaded down
+   every panel that draws one. */
+export const PICK_CONTEXT_EVENT = "emma:pick-context";
+export const pickIntoComposer = (pick: ContextPick) => dispatchEvent(new CustomEvent(PICK_CONTEXT_EVENT, { detail: pick }));
+
+const MODEL_SWITCH_KEY = "emma.threadModelSwitches.v1";
+
+/** A model the user picked mid-thread, marked at the turn it takes effect from. */
+export interface ModelSwitch {
+  at: number;
+  label: string;
+  brand: string;
+}
+
+function allModelSwitches(): Record<string, ModelSwitch[]> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(MODEL_SWITCH_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(stored)
+      .map(([id, value]) => [id, Array.isArray(value)
+        ? (value as ModelSwitch[]).filter((mark) => Number.isInteger(mark?.at) && mark.at >= 0 && typeof mark.label === "string")
+        : []])
+      .filter(([, marks]) => (marks as ModelSwitch[]).length)) as Record<string, ModelSwitch[]>;
+  } catch { return {}; }
+}
+
+export function modelSwitches(threadId: string): ModelSwitch[] {
+  return allModelSwitches()[threadId] ?? [];
+}
+
+/** Switching twice before sending leaves one mark: the model that actually answers. */
+export function recordModelSwitch(threadId: string, mark: ModelSwitch): void {
+  const kept = modelSwitches(threadId).filter((item) => item.at !== mark.at);
+  localStorage.setItem(MODEL_SWITCH_KEY, JSON.stringify({ ...allModelSwitches(), [threadId]: [...kept, mark] }));
 }

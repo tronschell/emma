@@ -106,6 +106,11 @@ chip reads `Terminal · N lines of output · next turn only`.
 One chip per shell: `addPick` replaces on a repeated `pickKey`, and a terminal's
 key is its shell id.
 
+The Git panel highlights the same way, through the same trimmer: release the
+mouse inside one file's diff and the excerpt attaches as `Diff · path · N lines`,
+keyed on the path. A selection spanning two files has no one path to claim, so
+it attaches nothing.
+
 ## Links
 
 xterm's web-links addon finds URLs in the output. A plain click does nothing: the

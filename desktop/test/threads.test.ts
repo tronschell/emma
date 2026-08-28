@@ -8,9 +8,10 @@ const stored = new Map<string, string>();
 };
 (globalThis as unknown as { dispatchEvent: unknown }).dispatchEvent = () => true;
 
-import { nested, since, threadDepth, threadLabel } from "../src/threads";
-import { handTags, setThreadTag, threadTags } from "../src/context";
+import { nested, newest, since, spawnedAgents, spawnedByTurn, threadAt, threadDepth, threadLabel } from "../src/threads";
+import { handTags, pinnedThreads, setThreadPinned, setThreadTag, threadTags } from "../src/context";
 import type { Thread } from "../src/types";
+import { AGENT_COLORS, type LiveAgent } from "../shared/agents";
 
 function thread(id: string, updatedAt: string, parentThreadId?: string): Thread {
   return {
@@ -85,4 +86,76 @@ test("an unnamed thread is called after what was asked in it", () => {
   assert.equal(threadLabel(asked), "what is in this folder");
   assert.equal(threadLabel(thread("b", "2026-01-01T10:00:00Z")), "New thread");
   assert.equal(threadLabel({ ...asked, title: "Rome in June" }), "Rome in June");
+});
+
+test("⌘1 – ⌘9 index the project the open thread is filed under", () => {
+  const projects = [
+    { threads: [thread("a", "2026-01-01T10:00:00Z"), thread("b", "2026-01-01T09:00:00Z")] },
+    { threads: [thread("c", "2026-01-01T08:00:00Z"), thread("d", "2026-01-01T07:00:00Z")] },
+  ];
+  assert.equal(threadAt(projects, "d", 0), "c");
+  assert.equal(threadAt(projects, "d", 1), "d");
+  assert.equal(threadAt(projects, "d", 2), "");
+  assert.equal(threadAt(projects, "", 1), "b");
+  assert.equal(threadAt([], "a", 0), "");
+});
+
+test("pinning a thread keeps the newest pin first and unpinning forgets it", () => {
+  setThreadPinned("a", true);
+  setThreadPinned("b", true);
+  assert.deepEqual(pinnedThreads(), ["b", "a"]);
+
+  setThreadPinned("b", true);
+  assert.deepEqual(pinnedThreads(), ["b", "a"]);
+
+  setThreadPinned("a", false);
+  assert.deepEqual(pinnedThreads(), ["b"]);
+});
+
+test("a subagent chip lands on the turn that spawned it, live ones on the turn still running", () => {
+  const child = (id: string, name: string, createdAt: string, brief: string): Thread => ({
+    id, title: name, kind: "subagent", parentThreadId: "main", createdAt, updatedAt: createdAt,
+    messages: [{ role: "user", content: brief, timestamp: createdAt }, { role: "assistant", content: "done", timestamp: createdAt }],
+  });
+  const messages = [
+    { role: "user" as const, content: "go", timestamp: "2026-01-01T10:00:00Z" },
+    { role: "assistant" as const, content: "did", timestamp: "2026-01-01T10:05:00Z" },
+    { role: "user" as const, content: "again", timestamp: "2026-01-01T10:06:00Z" },
+    { role: "assistant" as const, content: "did again", timestamp: "2026-01-01T10:09:00Z" },
+  ];
+  const threads = [
+    child("t1", "Ada", "2026-01-01T10:01:00Z", "read  the\ndocs"),
+    child("t2", "Milo", "2026-01-01T10:07:00Z", "port the callers"),
+    { id: "other", title: "Zed", kind: "subagent" as const, parentThreadId: "elsewhere", createdAt: "2026-01-01T10:02:00Z", updatedAt: "2026-01-01T10:02:00Z", messages: [] },
+  ];
+  const live: LiveAgent[] = [{
+    threadId: "t3", parentThreadId: "main", title: "Iris", color: "#4f9dff", status: "running", mode: "ask", model: "m", prompt: "",
+    activity: "reading src/main.ts", tool: true, startedAt: Date.parse("2026-01-01T10:10:00Z"), steps: 1, toolCalls: 1,
+    inputTokens: 0, outputTokens: 0, generationMs: 0,
+  }];
+
+  const spawned = spawnedAgents(threads, live, "main");
+  assert.deepEqual(spawned.map((item) => item.id), ["t1", "t2", "t3"]);
+  assert.equal(spawned[0].brief, "read the docs");
+  assert.equal(spawned[2].brief, "reading src/main.ts");
+  assert.equal(spawned[2].color, "#4f9dff", "a live subagent keeps the colour the rail gave it");
+  assert.equal(spawned[0].color, AGENT_COLORS[0], "a forgotten one still reads a stable colour");
+
+  const { turns, loose } = spawnedByTurn(messages, spawned);
+  assert.deepEqual(turns.get(1)?.map((item) => item.name), ["Ada"]);
+  assert.deepEqual(turns.get(3)?.map((item) => item.name), ["Milo"]);
+  assert.deepEqual(loose.map((item) => item.name), ["Iris"]);
+});
+
+test("a project is ranked by the last thing said anywhere in it", () => {
+  const stale = [thread("old-a", "2026-01-01T09:00:00Z"), thread("old-b", "2026-01-02T09:00:00Z")];
+  const hot = [thread("new-a", "2026-01-05T09:00:00Z")];
+  assert.equal(newest([]), 0);
+  assert.ok(newest(hot) > newest(stale));
+
+  // Reopening a long-dormant thread carries its whole project to the top.
+  stale[0] = thread("old-a", "2026-01-06T09:00:00Z");
+  const groups = [{ id: "hot", threads: hot }, { id: "stale", threads: stale }]
+    .sort((left, right) => newest(right.threads) - newest(left.threads));
+  assert.deepEqual(groups.map((group) => group.id), ["stale", "hot"]);
 });

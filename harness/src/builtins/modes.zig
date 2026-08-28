@@ -63,10 +63,9 @@ test "built-in modes register exact ACP order and permission policy" {
     try std.testing.expect(lookup("code") == null);
 }
 
-test "every mode opens with the search door and nothing else" {
-    // The whole catalog now waits behind `search_tools`, so what a turn starts
-    // with is two tools whatever rung it is on. Plan included: it used to be the
-    // one mode with a shorter list, and an empty one would strand it.
+test "every mode opens with the workhorse tools and the search door" {
+    const always = [_][]const u8{ "read_file", "glob_files", "grep_files", "list_files", "search_tools", "select_tool" };
+    const writable = [_][]const u8{ "edit_file", "write_file", "terminal" };
     inline for (&.{ "plan", "ask", "acceptEdits", "full" }) |mode_id| {
         var projection = try registry.buildGatewayToolProjection(
             std.testing.allocator,
@@ -79,12 +78,20 @@ test "every mode opens with the search door and nothing else" {
         var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, projection.tools_json, .{});
         defer parsed.deinit();
         const advertised = parsed.value.array.items;
-        try std.testing.expectEqual(@as(usize, 2), advertised.len);
-        try std.testing.expectEqualStrings("search_tools", advertised[0].object.get("name").?.string);
-        try std.testing.expectEqualStrings("select_tool", advertised[1].object.get("name").?.string);
-        // Nothing custom is left to advertise, so no tool contributes guidance.
+        const read_only = comptime std.mem.eql(u8, mode_id, "plan");
+        try std.testing.expectEqual(always.len + if (read_only) 0 else writable.len, advertised.len);
+        for (always) |name| try std.testing.expect(advertisesTool(advertised, name));
+        for (writable) |name| try std.testing.expectEqual(!read_only, advertisesTool(advertised, name));
         try std.testing.expectEqualStrings("", projection.custom_guidance);
     }
+}
+
+fn advertisesTool(advertised: []const std.json.Value, name: []const u8) bool {
+    for (advertised) |tool| {
+        const advertised_name = tool.object.get("name") orelse continue;
+        if (std.mem.eql(u8, advertised_name.string, name)) return true;
+    }
+    return false;
 }
 
 test "built-in mode projections use the supplied tool set" {

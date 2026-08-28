@@ -30,22 +30,30 @@ Take the cheapest thing that actually works. Most requests do not need a rebuild
 1. **A skill** — `write_skill`. A durable lesson or procedure, in Markdown.
    Lands in `<userData>/skills/<slug>/SKILL.md`, is live immediately, and needs
    no build. Reach for this first when the ask is "remember how to do X".
-2. **A region of Emma's own interface** — a `code` artifact with `surface` set
-   to `navbar`, `chat`, `notch` or `context`. The module replaces that region of
-   the running app — real components in the app's own tree, with its props, its
-   CSS and its bridge — and every rewrite hot-reloads that region alone: no
-   build, no relaunch, nothing to restart. This is the whole of "build yourself
-   an interface"; the `artifact` skill has the module contract. A source change
-   is for what a region cannot reach: main-process behaviour, IPC or windows.
-3. **A UI plugin** — a directory under
+2. **A component of your own** — the `component` tool. This is what "build
+   yourself an X" means, and it is not an artifact: `place` first, and the window
+   lights up so the user clicks the zone it belongs in — the sidebar, the context
+   bar or the composer; then ask them whatever the request left open; then
+   `create` with the module. It mounts there in the app's own tree, with its CSS
+   and its bridge, and every `rewrite` reloads it in place while they watch —
+   that is the loop to iterate in. They drag it to another zone by its ⠿ grip,
+   and delete it from the ⋯ in its corner or from **Settings → Built by Emma**,
+   which also shows each one, switches it off, and sends it back to a thread.
+3. **A whole region replaced** — a `code` artifact with `surface` set to
+   `navbar`, `chat`, `notch` or `context`, when the user wants the sidebar or the
+   conversation pane itself to be yours rather than something added to it. Same
+   hot reload, whole-region stakes; the `artifact` skill has the contract. A
+   source change is for what neither can reach: main-process behaviour, IPC or
+   windows.
+4. **A UI plugin** — a directory under
    `~/Library/Application Support/Emma/plugins/<id>` holding `plugin.json`
    (`id`, `name`, `version`, `uiStylesheet`) and one CSS file. The directory name
    must equal `id`; `@import` and `url(...)` are rejected; 128 KiB ceiling. CSS
    can restyle and rearrange the whole workspace with no code change. See
    `docs/plugins.md`. Needs a relaunch, not a rebuild.
-4. **A scheduled job or a knowledge page** — existing product surfaces, driven
+5. **A scheduled job or a knowledge page** — existing product surfaces, driven
    through the UI or the IPC bridge. No build at all.
-5. **A real source change** — new UI, a new tool, new main-process behaviour,
+6. **A real source change** — new UI, a new tool, new main-process behaviour,
    host or harness work. This is the expensive one: it needs a build, a second
    dev instance, and a verified interaction. The rest of this skill is about it.
 

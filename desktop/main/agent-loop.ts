@@ -11,6 +11,7 @@
    `read_trace`, `agents` and `advisor`. A harness turn is *adopted* here (see
    `adopt`), which is what keeps the rail live for a run this file no longer drives. */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { agentColor, collapseChanges, fromThread, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
@@ -33,6 +34,64 @@ const LIVE_REFRESH_MS = 250;
  */
 export const OWN_TOOLS = new Set(["read_trace", "threads", "agents", "advisor"]);
 const ownedHere = (args: AnyToolArgs): args is LoopArgs => OWN_TOOLS.has(args.name);
+
+export const towardGoal = (turn: { objective?: string }, text: string): string =>
+  turn.objective ? `The thread that sent this is pursuing an objective of its own, and this is part of it: ${turn.objective}\n\n${text}` : text;
+
+const benchOwned = new Set<string>();
+const benchParents = new Map<string, string>();
+const benchHalted = new Set<string>();
+
+export const benchReplay = new AsyncLocalStorage<true>();
+
+export const benchThread = (threadId: string) => benchOwned.has(threadId);
+
+export function ownBench(threadId: string) {
+  benchOwned.add(threadId);
+}
+
+export function inheritBench(threadId: string, parentThreadId: string): boolean {
+  if (!benchOwned.has(parentThreadId)) return false;
+  benchOwned.add(threadId);
+  benchParents.set(threadId, parentThreadId);
+  if (!benchHalted.has(parentThreadId)) return false;
+  benchHalted.add(threadId);
+  return true;
+}
+
+export function haltBench(threadId: string): string[] {
+  if (!benchOwned.has(threadId) || benchHalted.has(threadId)) return [];
+  const under = (id: string) => {
+    const seen = new Set<string>();
+    for (let at = benchParents.get(id); at && !seen.has(at); at = benchParents.get(at)) {
+      if (at === threadId) return true;
+      seen.add(at);
+    }
+    return false;
+  };
+  const tree = [threadId, ...[...benchOwned].filter((id) => !benchHalted.has(id) && under(id))];
+  for (const id of tree) benchHalted.add(id);
+  return tree;
+}
+
+export function refuseBenchTurn(threadId: string) {
+  if (benchHalted.has(threadId)) {
+    throw new Error(`${threadId} belongs to a bench replay that has been stopped, so nothing starts a turn in it. Say that in your answer instead.`);
+  }
+  if (benchReplay.getStore() && !benchOwned.has(threadId)) {
+    throw new Error(`${threadId} is the user's own thread, and this turn is a measured bench replay. A replay starts turns only in its own thread and in the threads it started itself, so it cannot start one there. Use threads spawn to start a thread of your own and send the work there.`);
+  }
+}
+
+function startedBy(threads: readonly SnapshotThread[], sender: string, thread: string): boolean {
+  const parents = new Map(threads.map((item) => [item.id, item.parentThreadId ?? ""]));
+  const seen = new Set<string>();
+  for (let at = parents.get(thread) ?? ""; at && !seen.has(at); at = parents.get(at) ?? "") {
+    if (at === sender) return true;
+    seen.add(at);
+  }
+  return false;
+}
 
 export type TurnRequest = {
   threadId: string;
@@ -59,6 +118,10 @@ export type TurnRequest = {
   params?: Record<string, string>;
   /** The `subagent` call that spawned this run, so its spans nest under that call. */
   parentSpanId?: string;
+  objective?: string;
+  goalTurn?: boolean;
+  continueRecovery?: boolean;
+  bench?: boolean;
 };
 
 export type LoopDeps = {
@@ -66,6 +129,8 @@ export type LoopDeps = {
   request(method: string, params: Record<string, string>): Promise<unknown>;
   /** Puts the question in front of the user. The reply comes back through `answer`. */
   ask(request: PermissionAsk): void;
+  /** Every path an ask settles on: the user's answer, a stop, and the timeout alike. */
+  answered(id: string, allowed: boolean): void;
   /** Auto mode's second model. Never rejects: a review it could not get back is a review without a verdict. */
   /** `threadId` is the run this call is on: a trial on the verifier's rules only reaches half the turns. */
   verify(request: VerifierRequest, threadId: string): Promise<VerifierReview>;
@@ -89,7 +154,8 @@ export type LoopDeps = {
   step(step: ThreadStep): void;
 };
 
-type Run = LiveAgent & {
+// `tool` is read off the spans in `list()`, so a Run never carries its own copy.
+type Run = Omit<LiveAgent, "tool"> & {
   /** What was asked of this run, which is the goal Auto mode's verifier judges a call against. */
   goal: string;
   /** The verdict on the call being gated right now, so a refusal can be quoted back to the model. */
@@ -128,9 +194,13 @@ export class AgentRuntime {
     return [...this.runs.values()]
       .map((run): LiveAgent => ({
         threadId: run.threadId, parentThreadId: run.parentThreadId, title: run.title, color: run.color,
-        status: run.status, mode: run.mode, model: run.model, activity: run.activity,
+        status: run.status, mode: run.mode, model: run.model, activity: run.activity, prompt: run.prompt,
+        // Derived, not stored: a call's span is already opened and closed around
+        // the tool, so "a tool is in flight" is a read of the spans rather than a
+        // second copy of the same fact that can drift out of step with them.
+        tool: run.spans.some((span) => span.id.startsWith("call:") && span.status === "running"),
         startedAt: run.startedAt, endedAt: run.endedAt, steps: run.steps, toolCalls: run.toolCalls,
-        inputTokens: run.inputTokens, outputTokens: run.outputTokens, generationMs: run.generationMs, error: run.error,
+        inputTokens: run.inputTokens, outputTokens: run.outputTokens, generationMs: run.generationMs, effort: run.effort, error: run.error,
       }))
       .sort((left, right) => left.startedAt - right.startedAt);
   }
@@ -152,7 +222,7 @@ export class AgentRuntime {
       // there. Reporting it as live too drew the turn that just ended twice —
       // once as itself and once as "This turn" — and counted its minutes twice
       // in the timeline's total.
-      if (run.depth !== 0 || run.traced) continue;
+      if (run.traced) continue;
       trees[run.threadId] = this.subtree(run.threadId).flatMap((member) => member.spans);
     }
     return trees;
@@ -226,7 +296,7 @@ export class AgentRuntime {
     switch (args.name) {
       case "read_trace": return await this.readTrace(turn, args.thread, args.limit);
       case "threads": return await this.runThreadsTool(args, turn);
-      case "agents": return this.runAgentsTool(args);
+      case "agents": return await this.runAgentsTool(args, turn);
       case "advisor": {
         if (!run) throw new Error("The advisor reads this run's own transcript, which is not available here.");
         return await this.consultAdvisor(run, turn, args.question);
@@ -234,10 +304,16 @@ export class AgentRuntime {
     }
   }
 
-  /** The live agent rail as the model reads it: what is running, and the two levers on it. */
-  private runAgentsTool(args: Extract<LoopArgs, { name: "agents" }>): string {
+  private async runAgentsTool(args: Extract<LoopArgs, { name: "agents" }>, turn: TurnRequest): Promise<string> {
     if (args.message !== undefined) this.steer(args.agent!, args.message);
-    if (args.stop) { this.stop(args.agent!); return `Stopped ${args.agent} and anything running under it.`; }
+    if (args.stop) {
+      const sender = turn.parentThreadId ?? turn.threadId;
+      if (turn.bench && args.agent !== sender && !startedBy(await this.library(), sender, args.agent!)) {
+        throw new Error(`${args.agent} is the user's own thread, and this turn is a measured bench replay. A replay stops only itself and the threads it started, so it cannot stop that one. Leave it alone and say so in your answer.`);
+      }
+      this.stop(args.agent!);
+      return `Stopped ${args.agent} and anything running under it.`;
+    }
     const live = this.list();
     if (!live.length) return "Nothing is running. Emma clears finished agents when a new turn starts, so an empty list is normal between turns.";
     return live
@@ -254,17 +330,14 @@ export class AgentRuntime {
   /**
    * Refuses a message aimed at a turn already in flight.
    *
-   * Every run is the harness's now, and its top-level session takes nothing
-   * mid-turn: a second `session/prompt` is held until the first one ends rather
-   * than folded into it. Only a subagent can be steered, over
-   * `session/steer_child`, and main routes that before it reaches here.
-   *
-   * Refused rather than queued because a queue this loop no longer drains would
-   * take the message and never deliver it, which is the worse of the two.
+   * Steering belongs to the harness — `session/steer` for a thread's own turn,
+   * `session/steer_child` for a subagent's — and main routes both before they
+   * reach here. What is left is a run this loop no longer holds a live harness
+   * for, and a queue it would never drain is worse than a refusal.
    */
   steer(threadId: string, _text: string) {
     if (!this.runs.has(threadId)) throw new Error("That agent is no longer running.");
-    throw new Error("That thread is running on the coding harness, which takes nothing mid-turn. Wait for it to finish, then send it again.");
+    throw new Error("Emma could not reach the turn that is running on this thread. Wait for it to finish, then send it again.");
   }
 
   /**
@@ -348,13 +421,15 @@ export class AgentRuntime {
       mode: turn.mode,
       model: turn.model ?? "",
       activity: "thinking",
+      prompt: turn.content,
       startedAt: Date.now(),
       steps: 0,
       toolCalls: 0,
       inputTokens: 0,
       outputTokens: 0,
       generationMs: 0,
-      goal: turn.content,
+      effort: turn.effort ?? "",
+      goal: towardGoal(turn, turn.content),
       stopped: false,
       depth,
       changes: [],
@@ -588,7 +663,7 @@ export class AgentRuntime {
         })
         .join("\n");
     }
-    const found = await this.findThread(thread);
+    const found = this.findThread(await this.library(), thread);
     const messages = found.messages ?? [];
     const recent = messages.slice(-limit);
     const older = messages.length - recent.length;
@@ -623,7 +698,7 @@ export class AgentRuntime {
   }
 
   /**
-   * Emma's durable timelines, as the model works with them.
+   * Emma's timelines, as the model works with them.
    *
    * The split this tool draws is the one the app is built on: a thread is a
    * conversation that keeps its history and outlives every run in it, an agent
@@ -642,23 +717,8 @@ export class AgentRuntime {
     }
   }
 
-  /**
-   * Starts a thread of its own, owned by the thread this turn is in, and with a
-   * prompt puts a main agent to work in it beside this turn.
-   *
-   * That agent is not a subagent: nothing comes back here, it runs at the top
-   * level of the agent list, and the thread it works in stays in the sidebar
-   * once it stops. What it inherits is the mode — so its own writes and commands
-   * hit the gate table exactly as they would here, rather than escaping through
-   * the spawn.
-   */
   private async spawnThread(turn: TurnRequest, title: string, prompt?: string): Promise<string> {
-    // Owned by the thread the user can actually see. A subagent's transcript is
-    // not in the sidebar, so hanging a sub thread off one would hide it.
     const owner = turn.parentThreadId ?? turn.threadId;
-    // Counted before the thread is created, so a refused spawn does not leave an
-    // empty row behind. Only threads working on their own are counted: subagents
-    // are the harness's to cap.
     const working = [...this.runs.values()].filter((run) => !run.parentThreadId && (run.status === "running" || run.status === "waiting")).length;
     if (prompt && working >= MAX_LIVE_THREADS) {
       return `Emma already has ${MAX_LIVE_THREADS} threads working. Wait for one to finish, or spawn this one without a prompt so the user can start it.`;
@@ -666,30 +726,26 @@ export class AgentRuntime {
     const created = await this.deps.request("createThread", { parentThreadId: owner, title });
     const threadId = (created as { id?: unknown }).id;
     if (typeof threadId !== "string") throw new Error("Emma returned an invalid thread");
-    // The transcript draws a card for the thread off this marker, so it has to
-    // end the first line — see `THREADS_MARKER`.
     const mark = `[threads:${threadId}:${title}]`;
     if (!prompt) {
       return `Started the thread "${title}" (${threadId}), in this project and owned by this thread. ${mark}\n\nIt is empty and nothing is running in it, so tell the user it is there and what it is for.`;
     }
-    this.start({ threadId, content: fromThread(owner, prompt), mode: turn.mode, model: turn.model, title, subagent: turn.subagent }, owner);
+    this.start({ threadId, content: fromThread(owner, towardGoal(turn, prompt)), mode: turn.mode, model: turn.model, title, subagent: turn.subagent }, owner);
     return `Started the thread "${title}" (${threadId}) and put its own agent to work in it. ${mark}\n\n`
       + `It runs beside this turn and nothing comes back here. Use threads list to see how it is doing, threads read ${threadId} for what it has said, and threads message to send it something.`;
   }
 
-  /**
-   * Sends text into another thread, starting a turn of its own there. A thread
-   * with a turn already in flight is refused rather than queued — see `steer`.
-   */
   private async messageThread(turn: TurnRequest, thread: string, text: string): Promise<string> {
     const sender = turn.parentThreadId ?? turn.threadId;
     if (thread === sender) throw new Error("That is the thread you are in. Say it in your answer instead.");
-    // Checked against the library first: a bad ID would otherwise fail later, in
-    // a turn nobody is reading, after this call had already said it was sent.
-    const found = await this.findThread(thread);
+    const library = await this.library();
+    const found = this.findThread(library, thread);
     const run = this.runs.get(thread);
-    if (run && (run.status === "running" || run.status === "waiting")) this.steer(thread, text);
-    this.start({ threadId: thread, content: fromThread(sender, text), mode: turn.mode, model: turn.model, title: found.title });
+    if (run && (run.status === "running" || run.status === "waiting")) {
+      this.steer(thread, text);
+      return `Sent to "${found.title}" (${thread}). A turn was already running there, so this went into that turn rather than starting one; read it back with threads read ${thread}.`;
+    }
+    this.start({ threadId: thread, content: fromThread(sender, towardGoal(turn, text)), mode: turn.mode, model: turn.model, title: found.title }, sender);
     return `Sent to "${found.title}" (${thread}). Nothing was running there, so this starts a turn of its own; read it back with threads read ${thread}.`;
   }
 
@@ -704,18 +760,17 @@ export class AgentRuntime {
     void Promise.resolve(this.deps.spawnTurn({ ...turn, nested: true }, owner)).catch((error: unknown) => console.error("Emma: a thread's own turn failed", error));
   }
 
-  /** Every thread Emma has stored, which is what the model reads its library as. */
+  private findThread(library: readonly SnapshotThread[], thread: string): SnapshotThread {
+    const found = library.find((item) => item.id === thread);
+    if (!found) throw new Error(`Emma has no thread with the ID ${thread}. Call threads with action list to see the ones it does have.`);
+    return found;
+  }
+
   private async library(): Promise<SnapshotThread[]> {
     const result = await this.deps.request("snapshot", {});
     const threads = (result as { threads?: unknown })?.threads;
     if (!Array.isArray(threads)) throw new Error("Emma returned an invalid library");
     return threads as SnapshotThread[];
-  }
-
-  private async findThread(thread: string): Promise<SnapshotThread> {
-    const found = (await this.library()).find((item) => item.id === thread);
-    if (!found) throw new Error(`Emma has no thread with the ID ${thread}. Call threads with action list to see the ones it does have.`);
-    return found;
   }
 
   /**
@@ -751,8 +806,27 @@ export class AgentRuntime {
       ask = { ...ask, detail: `${ask.detail}\n\n[auto agent] ${said}` };
     }
     const id = randomUUID();
+    // The rail and the agent's own panel read `status` and `activity`, so a run
+    // parked on a question said "running · thinking" while it waited — the whole
+    // reason a subagent's dialog looked like a hang rather than a question.
+    const held = run ? { status: run.status, activity: run.activity } : undefined;
+    if (run) {
+      run.status = "waiting";
+      run.activity = `waiting for your approval · ${ask.summary}`;
+      this.deps.changed();
+    }
     return new Promise<boolean>((resolve) => {
-      const settle = (allowed: boolean) => { if (this.asks.delete(id)) { clearTimeout(timer); resolve(allowed); } };
+      const settle = (allowed: boolean) => {
+        if (!this.asks.delete(id)) return;
+        clearTimeout(timer);
+        this.deps.answered(id, allowed);
+        if (run && held && run.status === "waiting") {
+          run.status = held.status;
+          run.activity = held.activity;
+          this.deps.changed();
+        }
+        resolve(allowed);
+      };
       const timer = setTimeout(() => settle(false), MAX_ASK_MS);
       this.asks.set(id, settle);
       this.deps.ask({ id, ...ask });
@@ -815,7 +889,6 @@ export class AgentRuntime {
 
 }
 
-/** One thread as the snapshot carries it. Only the parts `threads` reads. */
 type SnapshotThread = {
   id: string;
   title: string;

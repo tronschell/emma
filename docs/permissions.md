@@ -47,21 +47,23 @@ to you, so the two can never drift.
 | `context` | auto | auto | auto | auto |
 | `keep` | auto | auto | auto | auto |
 | `agents` | auto | auto | auto | auto |
+| `secret` | ask | ask | verifier | auto |
 | `install_mcp` | ask | ask | verifier | auto |
 | `workflow` | ask | ask | verifier | auto |
 | `autoresearch` | ask | ask | verifier | auto |
 | `artifact` | auto | auto | auto | auto |
 | `visualize` | auto | auto | auto | auto |
 
-Seven tools gate: `browser`, `cli`, `computer`, `run_tool`, `install_mcp`,
-`workflow`, `autoresearch`. Each runs a program, drives a signed-in browser, or
-hands out agent turns that execute later with nobody watching.
+Eight tools gate: `browser`, `cli`, `computer`, `run_tool`, `secret`,
+`install_mcp`, `workflow`, `autoresearch`. Each runs a program, drives a
+signed-in browser, or hands out agent turns that execute later with nobody
+watching.
 
 `hidden` is not in the table: no mode hides a tool. It comes from a Settings →
 Tools switch or an unknown name, checked first, and applies in every mode. A
 hidden tool is never advertised and is refused if the model guesses the name.
 
-`acceptEdits` is identical to `ask` for all 23 of Emma's own tools. The whole
+`acceptEdits` is identical to `ask` for all 26 of Emma's own tools. The whole
 difference between those two modes is on the harness's side: `onPermission` in
 [main.ts](../desktop/main/main.ts) allows a harness `kind === "edit"` call
 silently under `acceptEdits`, and asks for everything else.

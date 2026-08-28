@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
-import { defaultVerifier, defaultVerifierSystem, OPENROUTER_CHAT_ENDPOINT, validateVerifier, verifierFromKey, verifierKey } from "../shared/settings";
+import { defaultVerifier, defaultVerifierSystem, OPENROUTER_CHAT_ENDPOINT, routerKey, validateVerifier, verifierFromKey, verifierKey } from "../shared/settings";
 import { toolGate } from "../shared/permissions";
 import { decodeSpans, type TraceSpan } from "../shared/trace";
 import { AgentRuntime } from "../main/agent-loop";
-import { parseVerdict, PROHIBITED, review, verifierPrompt, type VerifierRequest, type VerifierReview } from "../main/verifier";
+import { chatCompletion, parseVerdict, PROHIBITED, review, verifierPrompt, type VerifierRequest, type VerifierReview } from "../main/verifier";
 
 const settings = { model: "small/model", endpoint: "https://example.test/v1/chat/completions", credentialEnv: "", system: defaultVerifierSystem };
 
@@ -108,19 +108,41 @@ test("an endpoint the review would travel to in the clear is refused", () => {
 });
 
 test("picking a catalogued model is picking a route, and only a stranger needs the fields", () => {
-  const profiles = [{ id: "p1", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "http://127.0.0.1:1234/v1/", credentialEnv: "LOCAL_KEY" }];
+  const profiles = [{ id: "p1", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "http://127.0.0.1:1234/v1/", credentialEnv: "LOCAL_KEY", contextWindow: 0, insecure: false }];
   const openrouter = verifierFromKey("openrouter:liquid/lfm-2.5-2.6b:free", profiles, "rules");
   assert.deepEqual(openrouter, { model: "liquid/lfm-2.5-2.6b:free", endpoint: OPENROUTER_CHAT_ENDPOINT, credentialEnv: "OPENROUTER_API_KEY", system: "rules" });
   assert.equal(verifierKey(openrouter, profiles), "openrouter:liquid/lfm-2.5-2.6b:free");
-  // A local profile carries its own key and its `/v1` base becomes a completions URL.
-  const local = verifierFromKey("local:p1", profiles, "rules");
+  const local = verifierFromKey("provider:p1", profiles, "rules");
   assert.equal(local.endpoint, "http://127.0.0.1:1234/v1/chat/completions");
   assert.equal(local.credentialEnv, "LOCAL_KEY");
-  assert.equal(verifierKey(local, profiles), "local:p1");
-  // Off is off, and anything hand-typed is what the endpoint fields are for.
+  assert.equal(verifierKey(local, profiles), "provider:p1");
   assert.equal(verifierFromKey("", profiles, "rules").model, "");
   assert.equal(verifierKey(verifierFromKey("", profiles, "rules"), profiles), "");
   assert.equal(verifierKey({ model: "x", endpoint: "https://elsewhere.test/v1/chat/completions", credentialEnv: "", system: "" }, profiles), "custom");
+  // A router is a list of models, best first: picking one gives the second model
+  // the same fallbacks the main model gets, and reads back as the router again.
+  const routers = [{ id: "free", name: "Free", models: ["a/one:free", "b/two:free"] }];
+  const chained = verifierFromKey(routerKey("free"), profiles, "rules", routers);
+  assert.equal(chained.model, "a/one:free,b/two:free");
+  assert.equal(verifierKey(chained, profiles, routers), routerKey("free"));
+  assert.equal(validateVerifier(chained).model, "a/one:free,b/two:free");
+});
+
+test("a chained second model asks OpenRouter to fall through for it", async () => {
+  const sent: unknown[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chain = { ...settings, model: " a/one:free , b/two:free " };
+    assert.equal(await chatCompletion(chain, [{ role: "user", content: "hi" }], "", { maxTokens: 10, timeoutMs: 5_000, label: "verifier" }), "ok");
+    assert.deepEqual(sent[0], { model: "a/one:free", models: ["a/one:free", "b/two:free"], messages: [{ role: "user", content: "hi" }], temperature: 0, max_tokens: 10, stream: false });
+    // One model is one model: nothing extra travels for the common case.
+    await chatCompletion(settings, [{ role: "user", content: "hi" }], "", { maxTokens: 10, timeoutMs: 5_000, label: "verifier" });
+    assert.equal((sent[1] as { models?: unknown }).models, undefined);
+  } finally { globalThis.fetch = original; }
 });
 
 test("auto gates exactly what ask gates, so the verifier is asked the same questions", () => {
@@ -202,6 +224,7 @@ function harness({ verify, answer }: { verify: (request: VerifierRequest) => Pro
       return {};
     },
     ask: (request) => { asked.push(request); runtime.answer(request.id, answer === true); },
+    answered: () => undefined,
     advise: async () => ({ model: "", text: "no advisor" }),
     verify,
     spawnTurn: () => {},

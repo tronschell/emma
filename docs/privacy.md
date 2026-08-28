@@ -11,6 +11,7 @@ to a file in this repo.
 | Verifier (`auto` mode) | Thread title, what you asked, the pending call and its arguments | The verifier route in Settings → Models. OpenRouter by default |
 | Advisor tool | The transcript so far, up to 60 000 characters | The advisor route. Off unless you set a model |
 | Vision tool | One image as a data URL, plus the question | The vision route. OpenRouter by default |
+| `secret` tool | The output of the command it was given, up to 32 000 characters | The secrets route in Settings → Models. Off until you pick one |
 | Note tagger | A saved note's text, up to 6 000 characters | The tagger route. OpenRouter by default |
 | Autoresearch judge | The eval command's output | The job's own proposer model |
 | Model catalog | Nothing but the HTTP request — no credential, no query | `openrouter.ai` |
@@ -71,7 +72,7 @@ exactly this to the request body:
 else and the keys are not sent, because they are OpenRouter's own vocabulary.
 
 **What it does not cover.** The flag rides the harness request body only. Electron
-main's own provider calls — verifier, vision, advisor, note tagger — post a plain
+main's own provider calls — verifier, vision, advisor, secrets, note tagger — post a plain
 OpenAI-compatible body from [verifier.ts](../desktop/main/verifier.ts) with no
 `provider` object on it. Nor does it touch your account settings. And no free
 endpoint qualifies, so every free model fails while it is on — which is why it

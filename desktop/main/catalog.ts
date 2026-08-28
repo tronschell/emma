@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { catalogSeed } from "./catalog-seed";
+import { MODEL_ID, providerChatUrl, providerModelsUrl, type KeyBalance } from "../shared/settings";
 
 export interface CatalogModel {
   id: string;
@@ -66,7 +67,7 @@ const supportsParameter = (value: unknown, name: string) => Array.isArray(value)
  * rather than allowed to poison the picker.
  */
 const readable = (id: string, name: string, contextLength: number, modalities: string[]) =>
-  id.length <= 128 && /^[A-Za-z0-9\-_.:]+\/[A-Za-z0-9\-_.:]+$/.test(id)
+  id.length <= 128 && MODEL_ID.test(id)
   && name.trim().length > 0 && name.length <= 256
   // eslint-disable-next-line no-control-regex
   && !/[\u0000-\u001f\u007f]/.test(name)
@@ -135,6 +136,7 @@ export class CatalogCache {
   private readonly file: string;
   private models: CatalogModel[];
   private fetchedAt = "";
+  private inFlight?: Promise<CatalogResult>;
 
   constructor(userData: string) {
     this.file = path.join(userData, "openrouter-catalog.json");
@@ -178,8 +180,25 @@ export class CatalogCache {
     return this.models.map((model) => model.id);
   }
 
-  /** Runs `fetch`, diffs it against the cache, and falls back to the cache when it fails. */
-  async refresh(fetch: () => Promise<Catalog>): Promise<CatalogResult> {
+  /**
+   * Runs `fetch`, diffs it against the cache, and falls back to the cache when it fails.
+   *
+   * A cache younger than `maxAgeMs` is served as-is: every page that lists models asks for
+   * one, so without this a single window paints and fires a fetch per caller. One fetch is
+   * shared while it is in flight, for the same reason.
+   */
+  async refresh(fetch: () => Promise<Catalog>, maxAgeMs = 0): Promise<CatalogResult> {
+    if (maxAgeMs && Date.now() - Date.parse(this.fetchedAt) < maxAgeMs) {
+      return { models: this.models, added: [], removed: [], fetchedAt: this.fetchedAt, stale: false };
+    }
+    if (!this.inFlight) {
+      this.inFlight = this.fetchNow(fetch);
+      void this.inFlight.finally(() => { this.inFlight = undefined; });
+    }
+    return this.inFlight;
+  }
+
+  private async fetchNow(fetch: () => Promise<Catalog>): Promise<CatalogResult> {
     const previous = new Set(this.models.map((model) => model.id));
     let catalog: Catalog;
     try {
@@ -209,4 +228,88 @@ export class CatalogCache {
       stale: false,
     };
   }
+}
+
+export type ProviderProbe = { models: string[]; tools: boolean; error: string };
+
+const MAX_PROBE_MODELS = 512;
+const PROBE_TIMEOUT_MS = 20_000;
+
+const PROBE_TOOL = {
+  type: "function",
+  function: {
+    name: "emma_probe",
+    description: "Report the weather. Call this tool to answer.",
+    parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+  },
+};
+
+export async function listProviderModels(baseUrl: string, key: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<string[]> {
+  const response = await fetch(providerModelsUrl(baseUrl), {
+    headers: key ? { authorization: `Bearer ${key}` } : {},
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`The endpoint answered ${response.status} when asked for its models.`);
+  const body = await response.json() as { data?: unknown };
+  if (!Array.isArray(body.data)) throw new Error("The endpoint returned no model list.");
+  return body.data
+    .map((row) => (row as { id?: unknown })?.id)
+    .filter((id): id is string => typeof id === "string" && !!id.trim() && id.length <= 128)
+    .slice(0, MAX_PROBE_MODELS);
+}
+
+export async function probeProviderTools(baseUrl: string, key: string, model: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+  const response = await fetch(providerChatUrl({ baseUrl }), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: "What is the weather in Paris? Use the tool." }],
+      tools: [PROBE_TOOL],
+      max_tokens: 64,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`The endpoint answered ${response.status} when asked for a tool call.`);
+  const body = await response.json() as { choices?: { message?: { tool_calls?: unknown } }[] };
+  return Array.isArray(body.choices?.[0]?.message?.tool_calls) && body.choices[0].message.tool_calls.length > 0;
+}
+
+const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key";
+
+const finiteNumber = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
+
+export function readKeyBalance(body: unknown): KeyBalance {
+  const data = (body as { data?: Record<string, unknown> } | null)?.data;
+  return {
+    keyed: true,
+    freeTier: data?.is_free_tier === true,
+    remaining: finiteNumber(data?.limit_remaining) ?? finiteNumber(data?.limit),
+    usage: finiteNumber(data?.usage) ?? 0,
+    error: "",
+  };
+}
+
+export async function fetchOpenRouterBalance(key: string, timeoutMs = 15_000): Promise<KeyBalance> {
+  const blank: KeyBalance = { keyed: !!key, freeTier: false, remaining: null, usage: 0, error: "" };
+  if (!key) return blank;
+  try {
+    const response = await fetch(OPENROUTER_KEY_URL, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(timeoutMs) });
+    if (response.status === 401 || response.status === 403) return { ...blank, error: "OpenRouter rejected that key." };
+    if (!response.ok) return { ...blank, error: `OpenRouter answered ${response.status} when asked about the key.` };
+    return readKeyBalance(await response.json());
+  } catch (reason) {
+    return { ...blank, error: reason instanceof Error ? reason.message : String(reason) };
+  }
+}
+
+export async function probeProvider(baseUrl: string, key: string, model: string): Promise<ProviderProbe> {
+  const probe: ProviderProbe = { models: [], tools: false, error: "" };
+  try { probe.models = await listProviderModels(baseUrl, key); }
+  catch (reason) { probe.error = reason instanceof Error ? reason.message : String(reason); }
+  if (!model) return probe;
+  try { probe.tools = await probeProviderTools(baseUrl, key, model); }
+  catch (reason) { if (!probe.error) probe.error = reason instanceof Error ? reason.message : String(reason); }
+  return probe;
 }

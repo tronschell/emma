@@ -1191,6 +1191,24 @@ fn semanticAttemptLimit(max_provider_attempts: usize) usize {
     return if (max_provider_attempts == 0) 1 else max_provider_attempts;
 }
 
+fn modelBaseSlug(model: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, model, ':') orelse return model;
+    return model[0..cut];
+}
+
+fn routedElsewhere(requested: []const u8, routed: []const u8) bool {
+    var chain = std.mem.tokenizeScalar(u8, requested, ',');
+    const primary = chain.next() orelse return false;
+    return !std.ascii.eqlIgnoreCase(modelBaseSlug(primary), modelBaseSlug(routed));
+}
+
+test "a routed model is a fallback only when it is a different model" {
+    try std.testing.expect(!routedElsewhere("a/one:free,b/two:free", "a/one:free"));
+    try std.testing.expect(!routedElsewhere("a/one:free,b/two:free", "a/one"));
+    try std.testing.expect(routedElsewhere("a/one:free,b/two:free", "b/two:free"));
+    try std.testing.expect(!routedElsewhere("a/one", "a/one"));
+}
+
 fn completionContentBytes(completion: types.GatewayCompletion) usize {
     return if (completion.content) |content| content.len else 0;
 }
@@ -2857,7 +2875,12 @@ fn processQueuedPromptLoop(
         .none;
     var restore_recovery_source = job.recovery_checkpoint != null;
     var step: usize = 0;
+    var deadline_reached = false;
     while (agent_steps.allowsStep(config.agent_step_limit, step)) : (step += 1) {
+        if (agent_steps.deadlineReached(config.deadline_ms, io_mod.milliTimestamp())) {
+            deadline_reached = true;
+            break;
+        }
         current_step_index = step + 1;
         const step_ctx: TraceContext = .{ .turn_id = turn_id, .step_id = debug_trace.nextStepId(), .subagent_id = config.subagent_id };
         const presentation_group_id = runtime_tool_presentation.presentationGroupForStep(
@@ -3559,6 +3582,11 @@ fn processQueuedPromptLoop(
                 gateway_delivery.load(),
             );
             stream_result_set = true;
+            if (deps.push_routed_model) |push| {
+                if (stream_result.completion.routed_model) |routed| {
+                    try push(deps.ctx, routed, routedElsewhere(gateway_model, routed));
+                }
+            }
             stream_result.completion.tool_calls = try normalize_terminal_request_tool_calls(
                 arena,
                 deps.tool_registry,
@@ -4541,7 +4569,8 @@ fn processQueuedPromptLoop(
                     .step_index = current_step_index,
                     .assistant_text = rendered,
                     .provider_disposition = disposition,
-                    .can_continue = agent_steps.allowsStep(config.agent_step_limit, step + 1),
+                    .can_continue = agent_steps.allowsStep(config.agent_step_limit, step + 1) and
+                        !agent_steps.deadlineReached(config.deadline_ms, io_mod.milliTimestamp()),
                 },
             ) catch |err| switch (err) {
                 error.Cancelled => {
@@ -7608,7 +7637,8 @@ fn processQueuedPromptLoop(
                     .step_index = current_step_index,
                     .assistant_text = rendered,
                     .provider_disposition = disposition,
-                    .can_continue = agent_steps.allowsStep(config.agent_step_limit, step + 1),
+                    .can_continue = agent_steps.allowsStep(config.agent_step_limit, step + 1) and
+                        !agent_steps.deadlineReached(config.deadline_ms, io_mod.milliTimestamp()),
                 },
             ) catch |err| switch (err) {
                 error.Cancelled => {
@@ -7703,15 +7733,30 @@ fn processQueuedPromptLoop(
         return;
     }
 
-    runtime_telemetry.traceStepLimitReached(.{
-        .ctx = last_step_ctx,
-        .step_index = current_step_index,
-        .step_limit = config.agent_step_limit,
-        .gateway_message_count = last_gateway_message_count,
-        .completed_tool_names = completed_tool_names.items,
-        .last_tool_call_name = last_tool_call_name,
-        .last_tool_call_id = last_tool_call_id,
-    });
+    if (deadline_reached) {
+        debug_trace.eventf(
+            "agent",
+            "runtime_limit_reached",
+            last_step_ctx,
+            "step_index={d} deadline_ms={d} completed_tool_count={d} last_tool_call_name={s}",
+            .{
+                current_step_index,
+                config.deadline_ms orelse 0,
+                completed_tool_names.items.len,
+                last_tool_call_name,
+            },
+        );
+    } else {
+        runtime_telemetry.traceStepLimitReached(.{
+            .ctx = last_step_ctx,
+            .step_index = current_step_index,
+            .step_limit = config.agent_step_limit,
+            .gateway_message_count = last_gateway_message_count,
+            .completed_tool_names = completed_tool_names.items,
+            .last_tool_call_name = last_tool_call_name,
+            .last_tool_call_id = last_tool_call_id,
+        });
+    }
     try finishFailedTurnWithNotice(
         deps,
         finalization,
@@ -7721,8 +7766,8 @@ fn processQueuedPromptLoop(
         &summary_accumulator,
         stop_state,
         &finish_trace,
-        config.step_limit_notice,
-        "step_limit",
+        if (deadline_reached) config.runtime_limit_notice else config.step_limit_notice,
+        if (deadline_reached) "runtime_limit" else "step_limit",
     );
 }
 
@@ -7789,10 +7834,11 @@ fn finishFailedTurnWithNotice(
 ) !void {
     try deps.push_text(deps.ctx, .{ .operational = notice });
     try deps.push_text(deps.ctx, .{ .operational = "\n" });
-    if (stop_state.retained_candidate != null) {
+    const retained = stop_state.retained_candidate orelse lastAssistantContent(current_turn_messages);
+    if (retained != null) {
         const assistant_text = try hooks.prompt.joinVisibleSegments(
             arena,
-            stop_state.retained_candidate,
+            retained,
             notice,
         );
         stop_state.terminal_materializing = true;
@@ -7826,6 +7872,19 @@ fn finishFailedTurnWithNotice(
         .summary = summary_accumulator.finish(),
     });
     finish_trace.finish(trace_outcome);
+}
+
+fn lastAssistantContent(messages: []const ChatMessage) ?[]const u8 {
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        const message = messages[index];
+        if (message.role != .assistant) continue;
+        const content = message.content orelse continue;
+        if (content.len == 0) continue;
+        return content;
+    }
+    return null;
 }
 
 pub fn finishCommonAssistantTerminal(

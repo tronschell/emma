@@ -3,8 +3,8 @@
    filing into projects is `threadFolders` in context.ts, and everything visual is
    in App. */
 
-import { sentByThread } from "../shared/agents";
-import type { Thread } from "./types";
+import { agentColor, sentByThread, type LiveAgent } from "../shared/agents";
+import type { Message, Thread } from "./types";
 
 /// The host names every thread "New thread" until it is renamed, so fall back to what was asked.
 export function threadLabel(thread: Thread): string {
@@ -42,6 +42,13 @@ function stamp(thread: Thread): number {
   return Date.parse(thread.updatedAt) || 0;
 }
 
+/// When anything in a project last moved, so the sidebar can float the group the
+/// user just typed in above the ones they have not opened in weeks. An empty
+/// group sorts last rather than to the top.
+export function newest(threads: Thread[]): number {
+  return threads.reduce((latest, item) => Math.max(latest, stamp(item)), 0);
+}
+
 /// How long since a thread last had anything said in it, in the width a 288px
 /// column can spare: "<1m", "12m", "3h", "5d". A duration rather than "now",
 /// because it is read both on its own and inside "last moved … ago". `now` is a
@@ -71,4 +78,46 @@ export function threadDepth(threads: Thread[], thread: Thread): number {
 export function ownerIn(threads: Thread[], thread: Thread): string {
   const parent = thread.parentThreadId ?? "";
   return threads.some((item) => item.id === parent) ? parent : "";
+}
+
+export function threadAt(projects: { threads: Thread[] }[], current: string, index: number): string {
+  const group = projects.find((item) => item.threads.some((entry) => entry.id === current)) ?? projects[0];
+  return group?.threads[index]?.id ?? "";
+}
+
+export type Spawned = { id: string; name: string; brief: string; color: string; at: number };
+
+export function spawnedAgents(threads: Thread[], agents: LiveAgent[], parentThreadId: string): Spawned[] {
+  const found = new Map<string, Spawned>();
+  for (const item of threads) {
+    if (item.kind !== "subagent" || item.parentThreadId !== parentThreadId) continue;
+    const asked = item.messages.find((message) => message.role === "user")?.content ?? "";
+    found.set(item.id, { id: item.id, name: item.title, brief: asked.trim().replace(/\s+/g, " "), color: "", at: Date.parse(item.createdAt) || 0 });
+  }
+  for (const agent of agents) {
+    if (agent.parentThreadId !== parentThreadId) continue;
+    const known = found.get(agent.threadId);
+    found.set(agent.threadId, {
+      id: agent.threadId,
+      name: agent.title,
+      brief: known?.brief || agent.activity,
+      color: agent.color,
+      at: known?.at || agent.startedAt,
+    });
+  }
+  return [...found.values()]
+    .sort((left, right) => left.at - right.at)
+    .map((item, index) => item.color ? item : { ...item, color: agentColor(index) });
+}
+
+export function spawnedByTurn(messages: Message[], spawned: Spawned[]): { turns: Map<number, Spawned[]>; loose: Spawned[] } {
+  const ends = messages.map((item) => item.role === "assistant" ? Date.parse(item.timestamp) : NaN);
+  const turns = new Map<number, Spawned[]>();
+  const loose: Spawned[] = [];
+  for (const agent of spawned) {
+    const index = ends.findIndex((end) => end >= agent.at);
+    if (index < 0) loose.push(agent);
+    else turns.set(index, [...(turns.get(index) ?? []), agent]);
+  }
+  return { turns, loose };
 }

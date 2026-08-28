@@ -6,7 +6,7 @@
          wrote is imported into this realm as a module; only /module.js on a mounted
          artifact is served as JavaScript. connect-src carries it too: a dynamic
          import is a fetch. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' emma-artifact:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' emma-artifact: ws://127.0.0.1:* ws://localhost:*; frame-src 'self' emma-artifact: emma-visual:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' emma-artifact: emma-component:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: emma-component:; connect-src 'self' emma-artifact: emma-component: ws://127.0.0.1:* ws://localhost:*; frame-src 'self' emma-artifact: emma-visual:; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Emma</title>

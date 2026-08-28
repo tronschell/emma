@@ -152,6 +152,7 @@ pub const Result = struct {
             if (self.err_body) |body| alloc.free(body);
             if (self.completion.content) |content| alloc.free(@constCast(content));
             if (self.completion.generation_id) |id| alloc.free(@constCast(id));
+            if (self.completion.routed_model) |routed| alloc.free(@constCast(routed));
             if (self.completion.billing) |billing| alloc.free(@constCast(billing.model));
             types.freeToolCallSlice(alloc, @constCast(self.completion.tool_calls));
             if (self.completion.provider_failure_detail) |detail| alloc.free(@constCast(detail));

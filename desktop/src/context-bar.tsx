@@ -1,25 +1,27 @@
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { CONTEXT_WIDGETS, MAX_CONTEXT_PAGES, MAX_PAGE_NAME, nextPageId, widgetDefinition, type ContextPage, type ContextWidget, type ContextWidgetType, type WidgetOrientation } from "../shared/context-bar";
+import { CONTEXT_METRICS, CONTEXT_WIDGETS, DEFAULT_METRICS, MAX_CONTEXT_PAGES, MAX_PAGE_NAME, nextPageId, widgetDefinition, type ContextMetric, type ContextPage, type ContextWidget, type ContextWidgetType, type WidgetOrientation } from "../shared/context-bar";
 import { charLabel, CHARS_PER_TOKEN, shareLabel, usageKey, type ContextUse } from "../shared/usage";
 import { agentColor, type LiveAgent } from "../shared/agents";
 import type { Plan } from "../shared/plan";
 import type { GitSnapshot } from "../shared/git";
 import { countCalls, decodeSpans, type TraceSpan } from "../shared/trace";
-import type { Thread } from "./types";
-import { buildLedger, NO_BREAKDOWN, NO_EXPERIMENTS, type ContextBreakdown, type ExperimentTally, type Ledger } from "./context";
+import type { Message, Thread } from "./types";
+import { buildLedger, NO_BREAKDOWN, NO_EXPERIMENTS, segmentItems, SEGMENT_NOTES, type ContextBreakdown, type ExperimentTally, type Ledger, type SegmentItem, type SegmentSource } from "./context";
 import { plural } from "./plural";
 import { since, threadLabel } from "./threads";
 import { brandForModel } from "./brands";
-import { BrandIcon, ExpandIcon } from "./icons";
+import { BrandIcon, CaretIcon, ExpandIcon } from "./icons";
 import { GitPanel } from "./git";
+import { MachineGraph, MachineMeters, MachineStats } from "./machine";
 import { PlanRail } from "./plan";
 import { Timeline } from "./timeline";
 
 const tokenLabel = (chars: number): string => charLabel(Math.round(chars / CHARS_PER_TOKEN));
+const LEGEND_COLLAPSED = 3;
 const KIND_NAMES: Record<ContextUse["kind"], string> = { messages: "Messages", system: "System prompt", tools: "System tools", mcp: "MCP tools", skills: "Skills", memory: "Memory files" };
 
 export function useContextLedger(thread: Thread | undefined, uses: ContextUse[], contextTokens: number, inFlight: LiveAgent[], experiments: ExperimentTally = NO_EXPERIMENTS, landedCalls = 0, breakdown: ContextBreakdown = NO_BREAKDOWN): Ledger {
@@ -52,18 +54,44 @@ function CurveIcon() {
   return <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 13.5V10M6 13.5V7.5M10 13.5V9M14 13.5V4.5" /></svg>;
 }
 
-function ContextStats({ ledger, orientation }: { ledger: Ledger; orientation: WidgetOrientation }) {
+function metricCell(id: ContextMetric, ledger: Ledger, context: WidgetContext): { value: string; label: string } {
+  const { messages, replies, attachments, calls, tokens, elapsed, total, capacity, free, whole, largest, experiments } = ledger;
+  switch (id) {
+    case "messages": return { value: `${messages}`, label: plural(messages, "message") };
+    case "replies": return { value: `${replies}`, label: `Emma ${plural(replies, "reply", "replies")}` };
+    case "attachments": return { value: `${attachments}`, label: plural(attachments, "attachment") };
+    case "calls": return { value: `${calls}`, label: `tool ${plural(calls, "call")}` };
+    case "rate": return { value: elapsed ? `${Math.round(tokens / elapsed * 1000)}` : "—", label: "avg tok/s" };
+    case "output": return { value: tokens ? charLabel(tokens) : "—", label: `output ${plural(tokens, "token")}` };
+    case "elapsed": return { value: elapsed ? `${Math.round(elapsed / 1000)}s` : "—", label: "generating" };
+    case "context": return { value: total ? tokenLabel(total) : "—", label: "context carried" };
+    case "window": return { value: capacity ? tokenLabel(capacity) : "—", label: "context window" };
+    case "free": return { value: capacity ? tokenLabel(free) : "—", label: "free tokens" };
+    case "share": return { value: capacity ? shareLabel(total, whole) : "—", label: "context used" };
+    case "largest": return { value: largest ? tokenLabel(largest.chars) : "—", label: largest ? largest.label : "largest segment" };
+    case "subagents": return { value: `${context.subagents.length}`, label: plural(context.subagents.length, "subagent") };
+    case "subthreads": return { value: `${context.subthreads.length}`, label: `sub ${plural(context.subthreads.length, "thread")}` };
+    case "saved": return { value: experiments.savedTokens ? charLabel(experiments.savedTokens) : "—", label: "tokens pruned" };
+    case "added": return { value: experiments.addedTokens ? charLabel(experiments.addedTokens) : "—", label: "tokens reinjected" };
+    case "pruned": return { value: `${experiments.prunedResults}`, label: `pruned ${plural(experiments.prunedResults, "result")}` };
+    default: return { value: `${experiments.reinjections}`, label: plural(experiments.reinjections, "reinjection") };
+  }
+}
+
+function ContextStats({ widget, context }: { widget: ContextWidget; context: WidgetContext }) {
   const [curveOpen, setCurveOpen] = useState(false);
-  const { messages, replies, attachments, calls, tokens, elapsed, curve } = ledger;
+  const { ledger } = context;
+  const { curve } = ledger;
   const peak = Math.max(...curve.map((point) => point.rate), 1);
-  return <section className="context-stats" data-orientation={orientation}>
+  return <section className="context-stats" data-orientation={widget.orientation}>
     <div className="agent-metrics">
-      <span><b>{messages}</b> {plural(messages, "message")}</span>
-      <span><b>{replies}</b> Emma {plural(replies, "reply", "replies")}</span>
-      <span><b>{attachments}</b> {plural(attachments, "attachment")}</span>
-      <span><b>{calls}</b> tool {plural(calls, "call")}</span>
-      <span className="metric-rate"><b>{elapsed ? Math.round(tokens / elapsed * 1000) : "—"}</b> avg tok/s<button type="button" className="rate-toggle" aria-expanded={curveOpen} aria-controls="rate-curve" aria-label="Tokens a second by context size" title="Tokens a second by context size" onClick={() => setCurveOpen((open) => !open)}><CurveIcon /></button></span>
-      <span><b>{tokens ? charLabel(tokens) : "—"}</b> output {plural(tokens, "token")}</span>
+      {(widget.metrics ?? DEFAULT_METRICS).map((id) => {
+        const { value, label } = metricCell(id, ledger, context);
+        return <span key={id} className={id === "rate" ? "metric-rate" : undefined}>
+          <b>{value}</b> {label}
+          {id === "rate" && <button type="button" className="rate-toggle" aria-expanded={curveOpen} aria-controls="rate-curve" aria-label="Tokens a second by context size" title="Tokens a second by context size" onClick={() => setCurveOpen((open) => !open)}><CurveIcon /></button>}
+        </span>;
+      })}
     </div>
     {curveOpen && <div className="rate-curve" id="rate-curve">
       {curve.length ? <ol>
@@ -75,10 +103,13 @@ function ContextStats({ ledger, orientation }: { ledger: Ledger; orientation: Wi
   </section>;
 }
 
-function ContextLedger({ ledger, orientation }: { ledger: Ledger; orientation: WidgetOrientation }) {
+function ContextLedger({ ledger, messages: history, threadId, orientation }: { ledger: Ledger; messages: Message[]; threadId: string; orientation: WidgetOrientation }) {
   const { rows, cells, kinds, total, capacity, free, whole, largest, messages, replies, attachments, calls, tokens, elapsed, experiments } = ledger;
   const rewritten = experiments.prunedResults > 0 || experiments.reinjections > 0;
   const [expanded, setExpanded] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [drilled, setDrilled] = useState<string>();
+  const shown = showAll ? rows : rows.slice(0, LEGEND_COLLAPSED);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (expanded && !dialog.current?.open) dialog.current?.showModal(); }, [expanded]);
   const dismiss = () => dialog.current?.close();
@@ -87,10 +118,13 @@ function ContextLedger({ ledger, orientation }: { ledger: Ledger; orientation: W
     <span title={capacity ? "" : "This model states no context window, so the rows are shares of what this thread sent, not of a window"}><span className="context-title">{capacity ? "Context window" : "Context used"}<button type="button" className="context-expand" aria-haspopup="dialog" aria-label="Expand the context ledger" title="Expand the context ledger" onClick={() => setExpanded(true)}><ExpandIcon /></button></span><b>{tokenLabel(total)}{capacity ? ` / ${tokenLabel(capacity)}` : ""} {plural(Math.round(total / CHARS_PER_TOKEN), "token")}{capacity ? ` (${shareLabel(total, whole)})` : " sent · no stated window"}</b></span>
     {grid}
     <ul className="context-legend">
-      {rows.map((row) => <li key={usageKey(row)} data-kind={row.kind} title={`${KIND_NAMES[row.kind]} · ${row.label} · ${row.chars.toLocaleString()} chars · ${row.turns} ${plural(row.turns, "turn")}`}>
+      {shown.map((row) => <li key={usageKey(row)} data-kind={row.kind} title={`${KIND_NAMES[row.kind]} · ${row.label} · ${row.chars.toLocaleString()} chars · ${row.turns} ${plural(row.turns, "turn")}`}>
         <i /><span>{row.label}</span><b>{tokenLabel(row.chars)}</b><em>{shareLabel(row.chars, whole)}</em>
       </li>)}
-      {capacity > 0 && <li data-kind="free" title={`${free.toLocaleString()} of ${capacity.toLocaleString()} characters left before this model's window is full`}>
+      {rows.length > LEGEND_COLLAPSED && <li className="context-more">
+        <button type="button" aria-expanded={showAll} onClick={() => setShowAll(!showAll)}>{showAll ? "Less" : `${rows.length - LEGEND_COLLAPSED} more`}</button>
+      </li>}
+      {showAll && capacity > 0 && <li data-kind="free" title={`${free.toLocaleString()} of ${capacity.toLocaleString()} characters left before this model's window is full`}>
         <i /><span>Free space</span><b>{tokenLabel(free)}</b><em>{shareLabel(free, whole)}</em>
       </li>}
     </ul>
@@ -98,32 +132,45 @@ function ContextLedger({ ledger, orientation }: { ledger: Ledger; orientation: W
     {expanded && <dialog ref={dialog} className="modal-backdrop" aria-labelledby="ledger-title" onClose={() => setExpanded(false)} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
       <section className="agent-dialog context-dialog">
         <header><div><span>{capacity ? `${tokenLabel(capacity)}-token window` : "No stated window"}</span><h2 id="ledger-title">Context ledger</h2></div><button type="button" onClick={dismiss} aria-label="Close context ledger">×</button></header>
-        <dl>
-          <div><dt>Carried</dt><dd>{tokenLabel(total)} tokens · {total.toLocaleString()} chars</dd></div>
-          {capacity > 0 && <div><dt>Window</dt><dd>{tokenLabel(capacity)} tokens · {shareLabel(total, whole)} used</dd></div>}
-          {capacity > 0 && <div><dt>Free space</dt><dd>{tokenLabel(free)} tokens · {shareLabel(free, whole)}</dd></div>}
-          {largest && <div><dt>Largest</dt><dd title={largest.label}>{largest.label} · {shareLabel(largest.chars, whole)}</dd></div>}
-          {rewritten && <div><dt>Experiments</dt><dd title={experimentTitle(experiments)}>{experimentLabel(experiments)}</dd></div>}
-          <div><dt>Messages</dt><dd>{messages} · {replies} {plural(replies, "reply", "replies")}</dd></div>
-          <div><dt>Attachments</dt><dd>{attachments}</dd></div>
-          <div><dt>Tool calls</dt><dd>{calls}</dd></div>
-          <div><dt>Output</dt><dd>{tokens ? charLabel(tokens) : "—"} tokens · {elapsed ? Math.round(tokens / elapsed * 1000) : "—"} tok/s</dd></div>
-        </dl>
-        <div className="context-usage context-dialog-rows">
+        <div className="context-summary">
+          <p className="context-hero">
+            <b>{tokenLabel(total)}</b>
+            <span>{capacity ? `of ${tokenLabel(capacity)} tokens carried` : `tokens carried · no stated window`}</span>
+            {capacity > 0 && <em>{shareLabel(total, whole)} used</em>}
+            <small>{total.toLocaleString()} characters measured on this Mac</small>
+          </p>
           {grid}
+          <dl>
+            {capacity > 0 && <div><dt>Free space</dt><dd>{tokenLabel(free)}<small>tokens · {shareLabel(free, whole)}</small></dd></div>}
+            {largest && <div><dt>Largest</dt><dd>{shareLabel(largest.chars, whole)}<small title={largest.label}>{largest.label}</small></dd></div>}
+            <div><dt>Messages</dt><dd>{messages}<small>{replies} {plural(replies, "reply", "replies")}</small></dd></div>
+            <div><dt>Tool calls</dt><dd>{calls}<small>this thread</small></dd></div>
+            <div><dt>Attachments</dt><dd>{attachments}<small>{attachments === 1 ? "item" : "items"} pinned in</small></dd></div>
+            <div><dt>Output</dt><dd>{tokens ? charLabel(tokens) : "—"}<small>tokens · {elapsed ? Math.round(tokens / elapsed * 1000) : "—"} tok/s</small></dd></div>
+            {rewritten && <div><dt>Experiments</dt><dd title={experimentTitle(experiments)}>{experimentLabel(experiments)}<small>harness levers</small></dd></div>}
+          </dl>
+        </div>
+        <div className="context-usage context-dialog-rows">
           <table className="context-table">
             <thead><tr><th>Segment</th><th>Kind</th><th>Chars</th><th>Tokens</th><th>Share</th><th>Turns</th></tr></thead>
             <tbody>
-              {rows.map((row) => <tr key={usageKey(row)} data-kind={row.kind}>
-                <th scope="row"><i />{row.label}</th>
-                <td>{KIND_NAMES[row.kind]}</td>
-                <td>{row.chars.toLocaleString()}</td>
-                <td>{tokenLabel(row.chars)}</td>
-                <td>{shareLabel(row.chars, whole)}</td>
-                <td>{row.turns}</td>
-              </tr>)}
+              {rows.map((row) => {
+                const key = usageKey(row);
+                const open = drilled === key;
+                return <Fragment key={key}>
+                  <tr data-kind={row.kind} data-open={open || undefined}>
+                    <th scope="row"><button type="button" className="context-drill" aria-expanded={open} onClick={() => setDrilled(open ? undefined : key)}><i />{row.label}<CaretIcon /></button></th>
+                    <td>{KIND_NAMES[row.kind]}</td>
+                    <td>{row.chars.toLocaleString()}</td>
+                    <td>{tokenLabel(row.chars)}</td>
+                    <td>{shareLabel(row.chars, whole)}</td>
+                    <td>{row.turns}</td>
+                  </tr>
+                  {open && <tr className="context-detail"><td colSpan={6}><SegmentPanel key={key} source={row.source} messages={history} threadId={threadId} /></td></tr>}
+                </Fragment>;
+              })}
               {capacity > 0 && <tr data-kind="free">
-                <th scope="row"><i />Free space</th><td>Unclaimed</td><td>{free.toLocaleString()}</td><td>{tokenLabel(free)}</td><td>{shareLabel(free, whole)}</td><td>—</td>
+                <th scope="row"><span className="context-drill" aria-disabled="true"><i />Free space</span></th><td>Unclaimed</td><td>{free.toLocaleString()}</td><td>{tokenLabel(free)}</td><td>{shareLabel(free, whole)}</td><td>—</td>
               </tr>}
             </tbody>
           </table>
@@ -134,24 +181,62 @@ function ContextLedger({ ledger, orientation }: { ledger: Ledger; orientation: W
   </section>;
 }
 
-function SubagentRail({ agents, active, onPick, orientation }: {
+function SegmentPanel({ source, messages, threadId }: { source: SegmentSource; messages: Message[]; threadId: string }) {
+  const [items, setItems] = useState<SegmentItem[]>();
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void segmentItems(source, messages, threadId)
+      .then((found) => { if (alive) setItems(found); })
+      .catch(() => { if (alive) { setItems([]); setFailed(true); } });
+    return () => { alive = false; };
+  }, [source, messages, threadId]);
+  const sized = items?.some((item) => item.chars !== undefined);
+  const ordered = sized ? [...(items ?? [])].sort((left, right) => (right.chars ?? 0) - (left.chars ?? 0)) : items ?? [];
+  return <div className="context-items">
+    <p>{failed ? "Emma could not read what is in this segment." : SEGMENT_NOTES[source]}</p>
+    {items === undefined && <span className="context-items-wait">Reading…</span>}
+    {!!ordered.length && <ul>
+      {ordered.map((item, index) => <li key={`${item.name}-${index}`}>
+        <span title={item.name}>{item.name}</span>
+        {item.detail && <small title={item.detail}>{item.detail}</small>}
+        {item.chars !== undefined && <b>{tokenLabel(item.chars)}</b>}
+      </li>)}
+    </ul>}
+  </div>;
+}
+
+const railColumns = (count: number) => ({ "--cols": Math.max(1, Math.ceil(Math.sqrt(count))) }) as CSSProperties;
+
+function SubagentRail({ agents, all, active, onPick, orientation }: {
   agents: LiveAgent[];
+  all: LiveAgent[];
   active: string;
   onPick: (threadId: string) => void;
   orientation: WidgetOrientation;
 }) {
+  const live = agents.filter(alive);
+  const done = agents.filter((agent) => !alive(agent));
+  const roots = (list: LiveAgent[]) => list.filter((agent) => !list.some((other) => other.threadId === agent.parentThreadId));
+  const branch = (agent: LiveAgent) => {
+    const kids = all.filter((other) => other.parentThreadId === agent.threadId && alive(other) === alive(agent));
+    return <li key={agent.threadId}>
+      <button type="button" className={`subagent ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}${agent.model ? ` · ${agent.model}` : ""}`} onClick={() => onPick(agent.threadId)}>
+        <i className="subagent-square" style={{ background: agent.color }} data-status={agent.status} aria-hidden="true" />
+        <span>{agent.title}</span>
+        <BrandIcon brand={brandForModel(agent.model)} className="subagent-model" />
+      </button>
+      {!!kids.length && <ul className="subagent-list subagent-kids" style={railColumns(kids.length)}>{kids.map(branch)}</ul>}
+    </li>;
+  };
   return <section className="subagents" data-orientation={orientation}>
-    <span>Subagents{agents.length ? ` · ${agents.length}` : ""}</span>
-    <ul className="subagent-list">
-      {agents.map((agent) => <li key={agent.threadId}>
-        <button type="button" className={`subagent ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}${agent.model ? ` · ${agent.model}` : ""}`} onClick={() => onPick(agent.threadId)}>
-          <i className="subagent-square" style={{ background: agent.color }} data-status={agent.status} aria-hidden="true" />
-          <span>{agent.title}</span>
-          <BrandIcon brand={brandForModel(agent.model)} className="subagent-model" />
-        </button>
-      </li>)}
-    </ul>
-    {!agents.length && <p className="subagent-empty">Nothing delegated yet — a subagent gets a row here the moment it starts.</p>}
+    <span>Subagents{live.length ? ` · ${live.length} working` : ""}</span>
+    {!!live.length && <ul className="subagent-list" style={railColumns(live.length)}>{roots(live).map(branch)}</ul>}
+    {!live.length && !done.length && <p className="subagent-empty">Nothing delegated yet — a subagent gets a row here the moment it starts.</p>}
+    {!!done.length && <details className="subagent-done">
+      <summary><CaretIcon />{done.length} finished</summary>
+      <ul className="subagent-list">{roots(done).map(branch)}</ul>
+    </details>}
   </section>;
 }
 
@@ -186,6 +271,7 @@ function SubthreadRail({ threads, agents, onOpen, orientation }: {
 
 export interface WidgetContext {
   ledger: Ledger;
+  messages: Message[];
   threadId: string;
   sending: boolean;
   subagents: LiveAgent[];
@@ -202,11 +288,14 @@ export interface WidgetContext {
 
 function Widget({ widget, context }: { widget: ContextWidget; context: WidgetContext }): ReactNode {
   const { orientation } = widget;
-  if (widget.type === "stats") return <ContextStats ledger={context.ledger} orientation={orientation} />;
-  if (widget.type === "context") return <ContextLedger ledger={context.ledger} orientation={orientation} />;
+  if (widget.type === "stats") return <ContextStats widget={widget} context={context} />;
+  if (widget.type === "context") return <ContextLedger ledger={context.ledger} messages={context.messages} threadId={context.threadId} orientation={orientation} />;
   if (widget.type === "timeline") return <Timeline threadId={context.threadId} sending={context.sending} carriedTokens={context.ledger.carriedTokens} sample={context.sampleTrace} />;
   if (widget.type === "plan") return <PlanRail threadId={context.threadId} agents={context.subagents} sample={context.samplePlans} onOpen={context.onPick} />;
-  if (widget.type === "subagents") return <SubagentRail agents={context.subagents} active={context.tab} onPick={context.onPick} orientation={orientation} />;
+  if (widget.type === "subagents") return <SubagentRail agents={context.subagents} all={context.agents} active={context.tab} onPick={context.onPick} orientation={orientation} />;
+  if (widget.type === "machine") return <MachineStats orientation={orientation} />;
+  if (widget.type === "machinegraph") return <MachineGraph orientation={orientation} />;
+  if (widget.type === "machinemeters") return <MachineMeters orientation={orientation} />;
   if (widget.type === "subthreads") return <SubthreadRail threads={context.subthreads} agents={context.agents} onOpen={context.onOpenThread} orientation={orientation} />;
   return context.git ? <GitPanel snapshot={context.git} onOpen={context.onOpenGit} /> : null;
 }
@@ -232,7 +321,7 @@ export function ContextWidgets({ page, context, onChange }: { page: ContextPage;
             widget={widget}
             context={context}
             onRemove={() => onChange(page.widgets.filter((item) => item.type !== widget.type))}
-            onFlip={() => onChange(page.widgets.map((item) => item.type === widget.type ? { ...item, orientation: item.orientation === "horizontal" ? "vertical" : "horizontal" } : item))}
+            onEdit={(changes) => onChange(page.widgets.map((item) => item.type === widget.type ? { ...item, ...changes } : item))}
           />)}
         </SortableContext>
       </DndContext>
@@ -288,9 +377,9 @@ const SAMPLE_BREAKDOWN: ContextBreakdown = {
 const SAMPLE_EXPERIMENTS: ExperimentTally = { savedTokens: 18_400, addedTokens: 900, prunedResults: 12, reinjections: 3 };
 
 const SAMPLE_AGENTS: LiveAgent[] = [
-  { threadId: "sample-a", parentThreadId: "sample", title: "Audit the ledger", color: agentColor(0), status: "running", mode: "acceptEdits", model: "sonnet", activity: "reading src/context-bar.tsx", startedAt: 0, steps: 14, toolCalls: 9, inputTokens: 24_100, outputTokens: 3_200, generationMs: 21_000 },
-  { threadId: "sample-b", parentThreadId: "sample", title: "Sweep the CSS", color: agentColor(1), status: "done", mode: "auto", model: "haiku", activity: "done", startedAt: 0, endedAt: 1, steps: 6, toolCalls: 4, inputTokens: 8_900, outputTokens: 1_100, generationMs: 7_400 },
-  { threadId: "sample-t1", title: "Port the old ledger", color: agentColor(2), status: "running", mode: "acceptEdits", model: "sonnet", activity: "running tests", startedAt: 0, steps: 3, toolCalls: 2, inputTokens: 6_100, outputTokens: 800, generationMs: 5_200 },
+  { threadId: "sample-a", prompt: "Port the old ledger", parentThreadId: "sample", title: "Ramona", color: agentColor(0), status: "running", mode: "acceptEdits", model: "sonnet", activity: "reading src/context-bar.tsx", tool: true, startedAt: 0, steps: 14, toolCalls: 9, inputTokens: 24_100, outputTokens: 3_200, generationMs: 21_000 },
+  { threadId: "sample-b", prompt: "Port the old ledger", parentThreadId: "sample", title: "Otis", color: agentColor(1), status: "done", mode: "auto", model: "haiku", activity: "done", tool: false, startedAt: 0, endedAt: 1, steps: 6, toolCalls: 4, inputTokens: 8_900, outputTokens: 1_100, generationMs: 7_400 },
+  { threadId: "sample-t1", prompt: "Port the old ledger", title: "Port the old ledger", color: agentColor(2), status: "running", mode: "acceptEdits", model: "sonnet", activity: "running tests", tool: true, startedAt: 0, steps: 3, toolCalls: 2, inputTokens: 6_100, outputTokens: 800, generationMs: 5_200 },
 ];
 
 const sampleStamp = (agoMs: number) => new Date(Date.now() - agoMs).toISOString();
@@ -326,8 +415,14 @@ const SAMPLE_PLANS: Plan[] = [{
 
 const SAMPLE_GIT: GitSnapshot = {
   branch: "main",
+  head: "0000000",
+  upstream: "origin/main",
+  ahead: 0,
+  behind: 0,
   worktree: false,
   branches: ["main", "context-bar"],
+  remotes: ["origin"],
+  files: [{ path: "desktop/src/context-bar.tsx", index: " ", work: "M" }],
   diff: "diff --git a/desktop/src/context-bar.tsx b/desktop/src/context-bar.tsx\n@@ -1,4 +1,6 @@\n+const sample = true;\n-const sample = false;\n",
   truncated: false,
 };
@@ -337,6 +432,7 @@ function usePreviewContext(): WidgetContext {
   const sampleTrace = useMemo(() => ({ label: "3:41:42 PM", spans: SAMPLE_SPANS }), []);
   return {
     ledger,
+    messages: SAMPLE_THREAD.messages,
     threadId: "sample",
     sending: false,
     subagents: SAMPLE_AGENTS.filter((agent) => agent.parentThreadId),
@@ -377,16 +473,37 @@ function PaletteCard({ type, disabled, onAdd }: { type: ContextWidgetType; disab
   </div>;
 }
 
-function PlacedWidget({ widget, context, onRemove, onFlip }: { widget: ContextWidget; context: WidgetContext; onRemove: () => void; onFlip: () => void }) {
+function MetricPicker({ metrics, onChange }: { metrics: ContextMetric[]; onChange: (metrics: ContextMetric[]) => void }) {
+  return <div className="bar-metrics">
+    {CONTEXT_METRICS.map((metric) => {
+      const on = metrics.includes(metric.id);
+      return <label key={metric.id}>
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={on && metrics.length < 2}
+          onChange={() => onChange(on ? metrics.filter((id) => id !== metric.id) : [...metrics, metric.id])}
+        />
+        {metric.label}
+      </label>;
+    })}
+  </div>;
+}
+
+function PlacedWidget({ widget, context, onRemove, onEdit }: { widget: ContextWidget; context: WidgetContext; onRemove: () => void; onEdit: (changes: Partial<ContextWidget>) => void }) {
   const definition = widgetDefinition(widget.type);
+  const [picking, setPicking] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: widget.type });
+  const metrics = widget.metrics ?? DEFAULT_METRICS;
   return <div ref={setNodeRef} className="bar-widget" data-dragging={isDragging || undefined} style={{ transform: CSS.Transform.toString(transform), transition }}>
     <header>
       <button type="button" className="bar-grip" aria-label={`Reorder ${definition.label}`} {...attributes} {...listeners}><GripIcon /></button>
       <span>{definition.label}</span>
-      {definition.orientable && <button type="button" className="bar-flip" aria-pressed={widget.orientation === "horizontal"} title={widget.orientation === "horizontal" ? "Laid across — press for one item a line" : "One item a line — press to lay it across"} onClick={onFlip}>{widget.orientation === "horizontal" ? "⇄" : "⇅"}</button>}
+      {widget.type === "stats" && <button type="button" className="bar-flip" aria-expanded={picking} aria-label="Choose which metrics this component shows" title={`Choose the metrics — ${metrics.length} of ${CONTEXT_METRICS.length}`} onClick={() => setPicking((open) => !open)}>▦</button>}
+      {definition.orientable && <button type="button" className="bar-flip" aria-pressed={widget.orientation === "horizontal"} title={widget.orientation === "horizontal" ? "Laid across — press for one item a line" : "One item a line — press to lay it across"} onClick={() => onEdit({ orientation: widget.orientation === "horizontal" ? "vertical" : "horizontal" })}>{widget.orientation === "horizontal" ? "⇄" : "⇅"}</button>}
       <button type="button" className="bar-drop" aria-label={`Remove ${definition.label} from this page`} onClick={onRemove}>×</button>
     </header>
+    {picking && <MetricPicker metrics={metrics} onChange={(next) => onEdit({ metrics: next })} />}
     <div className="bar-widget-body" inert>
       <Widget widget={widget} context={context} />
     </div>
@@ -472,7 +589,7 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
                   widget={widget}
                   context={context}
                   onRemove={() => writePage(page.widgets.filter((item) => item.type !== widget.type))}
-                  onFlip={() => writePage(page.widgets.map((item) => item.type === widget.type ? { ...item, orientation: item.orientation === "horizontal" ? "vertical" : "horizontal" } : item))}
+                  onEdit={(changes) => writePage(page.widgets.map((item) => item.type === widget.type ? { ...item, ...changes } : item))}
                 />)}
               </SortableContext>
               {!page.widgets.length && <p className="bar-empty">Drag a component in, or press its ＋. An empty page shows the thread's name and nothing else.</p>}

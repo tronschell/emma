@@ -24,6 +24,7 @@ export type BrandDefinition = {
 
 const simpleIconUrls = {
   anthropic: new URL("../assets/brands/anthropic.svg", import.meta.url).href,
+  claude: new URL("../assets/brands/claude.svg", import.meta.url).href,
   meta: new URL("../assets/brands/meta.svg", import.meta.url).href,
   cursor: new URL("../assets/brands/cursor.svg", import.meta.url).href,
   windsurf: new URL("../assets/brands/windsurf.svg", import.meta.url).href,
@@ -75,6 +76,7 @@ const assets = {
     license: "Official OpenAI 2025 brand asset; blossom mark extracted from the supplied construction sheet and recoloured #fff; OpenAI trademarks remain with OpenAI",
   },
   anthropic: simpleIcons("anthropic", "ec4aa60b3920e75e7467b611023d2568a292beb4"),
+  claude: simpleIcons("claude", "7a6199a2ac7d20b529f863b6aceb20d2c6529207"),
   meta: simpleIcons("meta", "a25b1592b80578fbb024b2e5562459c8075019d1"),
   cursor: simpleIcons("cursor", "be23679deda9e227ded614e94a1dc262ff930cf1"),
   windsurf: simpleIcons("windsurf", "513d314f959cf952d8dde4509b3abed1c2ee5f6b"),
@@ -130,7 +132,7 @@ const definition = (id: string, label: string, fallback: string, asset?: BrandAs
 
 export const importerBrands = {
   codex: definition("codex", "Codex", "◎", assets.openai),
-  claude: definition("claude", "Claude", "A", assets.anthropic),
+  claude: definition("claude", "Claude", "✳", assets.claude),
   antigravity: definition("antigravity", "Antigravity", "G", assets.antigravity),
   pi: definition("pi", "Pi", "π", assets.pi),
   opencode: definition("opencode", "OpenCode", "O", assets.opencode),

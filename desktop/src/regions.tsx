@@ -23,7 +23,7 @@ import { reasonText } from "./errors";
 /** What a region's module is handed. React, because it cannot import it — there is
     no bundler on the other side of that URL — and Emma's bridge, because a region
     that cannot ask for a thread is a picture of a sidebar rather than a sidebar. */
-const runtime = { h: createElement, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma: window.emma };
+export const runtime = { h: createElement, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma: window.emma };
 
 type Loaded = { key: string; title: string; Component: FunctionComponent<Record<string, unknown>> };
 
@@ -90,7 +90,7 @@ export function Region({ name, props, children }: { name: ArtifactSurface; props
   </>;
 }
 
-class RegionBoundary extends Component<{ fallback: ReactNode; onError: (why: string) => void; children: ReactNode }, { failed: boolean }> {
+export class RegionBoundary extends Component<{ fallback: ReactNode; onError: (why: string) => void; children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() { return { failed: true }; }
   componentDidCatch(error: unknown) { this.props.onError(reasonText(error)); }

@@ -19,6 +19,7 @@ export interface Span {
   href?: string;
   /** A file on disk, cleaned of any `:line` suffix — clicking it reveals it in Finder. */
   path?: string;
+  image?: true;
 }
 
 export interface Item { spans: Span[]; sub?: List }
@@ -36,7 +37,10 @@ export type Block =
 
 /* Code first, so a `**` inside backticks stays literal. Emphasis is flat: a
    span carries one mark, never a mark inside a mark. */
-const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_|\[([^\]]+)\]\(([^)\s]+)\)/g;
+/* Bare URLs autolink last, so a `[text](url)` above still wins the address.
+   The tail excludes closing punctuation: a link at the end of a sentence
+   must not swallow the period. */
+const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_|(!?)\[([^\]]*)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()\[\]]*[^\s<>()\[\].,;:!?'"])/g;
 const FENCE = /^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
@@ -75,16 +79,19 @@ export function inlineSpans(text: string): Span[] {
     last = at + match[0].length;
     const strong = match[2] ?? match[3];
     const emphasis = match[5] ?? match[6];
-    if (match[1]) spans.push({ text: match[1], code: true, path: filePath(match[1]) });
+    const bare = match[10] ? safeHref(match[10]) : undefined;
+    if (match[10]) spans.push(bare ? { text: match[10], href: bare } : { text: match[10] });
+    else if (match[1]) spans.push({ text: match[1], code: true, path: filePath(match[1]) });
     else if (strong) spans.push({ text: strong, bold: true });
     else if (match[4]) spans.push({ text: match[4], strike: true });
     else if (emphasis) spans.push({ text: emphasis, italic: true });
     else {
       // A link that is not a web link is usually a file reference, which the
       // renderer opens in Finder instead of dropping on the floor.
-      const href = safeHref(match[8]);
-      const file = href ? undefined : filePath(match[8]);
-      spans.push(href ? { text: match[7], href } : file ? { text: match[7], path: file } : { text: match[7] });
+      const href = safeHref(match[9]);
+      const file = href ? undefined : filePath(match[9]);
+      if (match[7] && file) spans.push({ text: match[8], path: file, image: true });
+      else spans.push(href ? { text: match[8], href } : file ? { text: match[8], path: file } : { text: match[8] });
     }
   }
   if (last < text.length) spans.push({ text: text.slice(last) });

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
+import { agentName, AGENT_NAMES, collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
 import { asPermissionMode, toolGate } from "../shared/permissions";
 import { browserArgv, describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
 import { AgentRuntime, bounded, type LoopDeps } from "../main/agent-loop";
@@ -17,6 +17,7 @@ const noReview: VerifierReview = { model: "", prompt: "", reply: "", attempts: 0
 const runtime = (deps: Partial<LoopDeps> = {}) => new AgentRuntime({
   request: async () => ({}),
   ask: () => {},
+  answered: () => undefined,
   verify: async () => noReview,
   advise: async () => ({ model: "", text: "no advisor" }),
   spawnTurn: () => {},
@@ -41,7 +42,7 @@ test("every tool that gates to ask has a door that asks", () => {
   // Emma's tools are registered with the harness as needing no approval on the
   // grounds that `runEmmaTool` asks instead — which it only does for what is
   // listed here. A new tool at `ask` fails this until someone says so.
-  assert.deepEqual(asked.sort(), ["autoresearch", "browser", "cli", "computer", "install_mcp", "run_tool", "workflow"]);
+  assert.deepEqual(asked.sort(), ["autoresearch", "browser", "cli", "computer", "install_mcp", "run_tool", "secret", "workflow"]);
 });
 
 test("a tool is only offered once the thing it drives is actually connected", () => {
@@ -185,7 +186,7 @@ test("a mid-turn message is refused rather than queued where nothing would deliv
   // The harness's top-level session holds a second prompt until the first ends
   // rather than folding it in, and this loop no longer drains a queue of its own
   // — so a message taken here would never be delivered at all.
-  assert.throws(() => agents.steer("t1", "hurry up"), /takes nothing mid-turn/);
+  assert.throws(() => agents.steer("t1", "hurry up"), /could not reach the turn/);
 });
 
 test("an agent reads every kind of thread, starts one of its own, and talks to it", async () => {
@@ -246,7 +247,7 @@ test("an agent reads every kind of thread, starts one of its own, and talks to i
   // used to sign another agent's words "You".
   assert.deepEqual(spawned, [
     { threadId: "thread-made-000000000", content: "[thread root-1 messaged]\nfind somewhere near the centre", mode: "full", owner: "root-1" },
-    { threadId: "thread-made-000000000", content: "[thread root-1 messaged]\nwalkable, please", mode: "full", owner: undefined },
+    { threadId: "thread-made-000000000", content: "[thread root-1 messaged]\nwalkable, please", mode: "full", owner: "root-1" },
   ]);
   // What the loop wrote and what the transcript reads back, checked against each
   // other the same way the spawn card above is.
@@ -332,11 +333,11 @@ test("the harness reaches the thread and agent tools without a loop of its own",
   // mid-turn: a message accepted here would never be delivered, so it is refused
   // rather than swallowed. The harness steers its own subagents, over its own
   // protocol.
-  await assert.rejects(() => call("agents", JSON.stringify({ agent: "root-1", message: "use the cheaper flight" })), /takes nothing mid-turn/);
+  await assert.rejects(() => call("agents", JSON.stringify({ agent: "root-1", message: "use the cheaper flight" })), /could not reach the turn/);
   // `threads message` goes the same way, and refuses this turn's own thread
   // before either: an agent talking to itself is an answer, not a message.
   agents.adopt({ threadId: "sub-1", content: "check the flights", mode: "full", title: "Check the flights" });
-  await assert.rejects(() => call("threads", JSON.stringify({ action: "message", thread: "sub-1", prompt: "hurry" })), /takes nothing mid-turn/);
+  await assert.rejects(() => call("threads", JSON.stringify({ action: "message", thread: "sub-1", prompt: "hurry" })), /could not reach the turn/);
   await assert.rejects(() => call("threads", JSON.stringify({ action: "message", thread: "root-1", prompt: "hurry" })), /the thread you are in/);
   assert.match(await call("agents", JSON.stringify({ agent: "root-1", stop: true })), /Stopped root-1/);
 
@@ -360,3 +361,13 @@ test("switching the picker mid-run re-points the run and everything under it", (
   assert.deepEqual(agents.list().map((agent) => agent.mode), ["full", "full"]);
 });
 
+
+test("a subagent is named off its id, the same way every time, and never twice at once", () => {
+  const first = agentName("child-1");
+  assert.equal(agentName("child-1"), first);
+  assert.ok(AGENT_NAMES.includes(first as (typeof AGENT_NAMES)[number]));
+  assert.notEqual(agentName("child-1", new Set([first])), first);
+  const live = new Set<string>();
+  for (let i = 0; i < 8; i += 1) live.add(agentName(`child-${i}`, live));
+  assert.equal(live.size, 8);
+});

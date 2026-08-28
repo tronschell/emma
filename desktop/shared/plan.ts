@@ -39,6 +39,16 @@ export type PlanStep = {
   result?: string;
 };
 
+export const MAX_PLAN_REVISIONS = 32;
+
+export type PlanRevision = {
+  at: string;
+  steps: number;
+  added: string[];
+  removed: string[];
+  rewritten: string[];
+};
+
 export type Plan = {
   /** The file's own name, minted by the store from the title. */
   id: string;
@@ -49,6 +59,7 @@ export type Plan = {
   updatedAt: string;
   /** The thread that wrote it, so its inspector is where the plan is watched. */
   threadId?: string;
+  revisions?: PlanRevision[];
 };
 
 const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -58,6 +69,8 @@ const NEEDS = /^needs:\s*(.*)$/i;
 const THREAD = /^thread:\s*(\S+)$/i;
 const TASK = /^-\s*\[([ xX])]\s*(.*)$/;
 const RESULT = /^\*\*result:\*\*\s*(.*)$/i;
+const REVISIONS = /^##\s+revisions\s*$/i;
+const REVISION = /^-\s*(\S+)\s+·\s+(\d+)\s+steps?\b(.*)$/i;
 /** What "waits on nothing" is written as, so an empty `needs:` line round-trips. */
 const NOTHING = ["—", "-", "none", "nothing", ""];
 
@@ -85,13 +98,21 @@ export function parsePlan(id: string, markdown: string, updatedAt = ""): Plan {
   let threadId = "";
   const goal: string[] = [];
   const steps: PlanStep[] = [];
+  const revisions: PlanRevision[] = [];
   let brief: string[] = [];
+  let inRevisions = false;
   const flush = () => {
     const step = steps[steps.length - 1];
     if (step) step.brief = brief.join("\n").trim().slice(0, MAX_PLAN_BYTES);
     brief = [];
   };
   for (const line of lines) {
+    if (REVISIONS.test(line.trim())) { flush(); inRevisions = true; continue; }
+    if (inRevisions) {
+      const revision = REVISION.exec(line.trim());
+      if (revision && revisions.length < MAX_PLAN_REVISIONS) revisions.push(readRevision(revision));
+      continue;
+    }
     const heading = HEADING.exec(line);
     if (heading && ID.test(heading[1]) && !steps.some((step) => step.id === heading[1])) {
       flush();
@@ -129,12 +150,52 @@ export function parsePlan(id: string, markdown: string, updatedAt = ""): Plan {
     if (result) { step.result = clean(result[1], 2000) || undefined; continue; }
     brief.push(line);
   }
-  flush();
+  if (!inRevisions) flush();
   // A `needs` pointing at a step that is not in the file is not a dependency, and
   // leaving it in would park that step in a wave that can never come.
   const known = new Set(steps.map((step) => step.id));
   for (const step of steps) step.needs = [...new Set(step.needs.filter((need) => known.has(need) && need !== step.id))];
-  return { id, title: title || id, goal: goal.join("\n").trim(), steps: steps.slice(0, MAX_PLAN_STEPS), updatedAt, ...(threadId ? { threadId } : {}) };
+  return { id, title: title || id, goal: goal.join("\n").trim(), steps: steps.slice(0, MAX_PLAN_STEPS), updatedAt, ...(threadId ? { threadId } : {}), ...(revisions.length ? { revisions } : {}) };
+}
+
+const ids = (list: string) => [...new Set(list.split(/[,\s]+/).map((item) => item.trim()).filter((item) => ID.test(item)))].slice(0, MAX_PLAN_STEPS);
+
+const named = (tail: string, key: string) => {
+  const found = new RegExp(`${key}:\\s*([^·]*)`, "i").exec(tail);
+  return found ? ids(found[1]) : [];
+};
+
+function readRevision(found: RegExpExecArray): PlanRevision {
+  return {
+    at: clean(found[1], 64),
+    steps: Math.min(Number(found[2]), MAX_PLAN_STEPS),
+    added: named(found[3], "added"),
+    removed: named(found[3], "removed"),
+    rewritten: named(found[3], "rewritten"),
+  };
+}
+
+function revisionLine(revision: PlanRevision): string {
+  return [
+    `- ${revision.at} · ${revision.steps} ${revision.steps === 1 ? "step" : "steps"}`,
+    revision.added.length ? `added: ${revision.added.join(", ")}` : "",
+    revision.removed.length ? `removed: ${revision.removed.join(", ")}` : "",
+    revision.rewritten.length ? `rewritten: ${revision.rewritten.join(", ")}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+export function planRevision(previous: Plan, next: Plan, at = new Date().toISOString()): PlanRevision {
+  const before = new Map(previous.steps.map((step) => [step.id, step]));
+  const after = new Map(next.steps.map((step) => [step.id, step]));
+  return {
+    at,
+    steps: next.steps.length,
+    added: next.steps.filter((step) => !before.has(step.id)).map((step) => step.id),
+    removed: previous.steps.filter((step) => !after.has(step.id)).map((step) => step.id),
+    rewritten: next.steps
+      .filter((step) => { const was = before.get(step.id); return was && (was.title !== step.title || was.brief !== step.brief); })
+      .map((step) => step.id),
+  };
 }
 
 /** The plan as it is written back. `parsePlan(renderPlan(plan))` is the plan again. */
@@ -149,6 +210,9 @@ export function renderPlan(plan: Plan): string {
     for (const task of step.tasks) out.push(`- [${task.done ? "x" : " "}] ${task.text}`);
     if (step.tasks.length) out.push("");
     if (step.result) out.push(`**Result:** ${step.result}`, "");
+  }
+  if (plan.revisions?.length) {
+    out.push("## Revisions", "", ...plan.revisions.map(revisionLine), "");
   }
   return `${out.join("\n").trimEnd()}\n`;
 }
@@ -281,10 +345,11 @@ export const planState = (plan: Plan): PlanStatus =>
  * the agent rewrite the graph — would silently untick every box and re-run every
  * finished step.
  */
-export function mergePlan(previous: Plan | undefined, next: Plan): Plan {
+export function mergePlan(previous: Plan | undefined, next: Plan, at = new Date().toISOString()): Plan {
   if (!previous) return next;
   return {
     ...next,
+    revisions: [...(previous.revisions ?? []), planRevision(previous, next, at)].slice(-MAX_PLAN_REVISIONS),
     // The thread that wrote it keeps it: a subagent rewriting its own plan would
     // otherwise move it into a sub thread the user is not looking at.
     threadId: previous.threadId ?? next.threadId,

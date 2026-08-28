@@ -50,6 +50,15 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   the session supports children. Delegation is a first-class Emma feature — the
   app draws every child as a thread of its own — and a tool the model has to go
   looking for is one it does not use. The `subagent_available` gate is untouched.
+- **Workhorse advertisement.** The same reasoning, applied to the seven tools a
+  coding turn needs whatever it was asked to do: `read_file`, `list_files`,
+  `glob_files`, `grep_files`, `edit_file`, `write_file` and `terminal` are
+  advertised rather than searched for. Upstream defers all of them, and
+  `search_tools` ranks by keyword over a default of eight results, so a model
+  whose query missed `grep_files` concludes there is no way to search a
+  workspace and reads files one at a time instead — hundreds of calls to answer
+  what one grep answers. The other eighteen searchable tools are unchanged, and
+  they are where the deferral was ever worth its round trip.
 - **Attached pictures.** Upstream's ACP server rejects every `image` prompt
   block, because fx only ever attaches a picture through its own TUI. Emma is an
   ACP client with a composer of its own, so a block naming a local `file://`

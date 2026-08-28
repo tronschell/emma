@@ -11,19 +11,20 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { MAX_FILE_BYTES } from "../shared/folders";
+import { nativeImage } from "electron";
+import { isImageAttachment, MAX_FILE_BYTES } from "../shared/folders";
+
+export { isImageAttachment };
 
 /** What the composer shows for one attached file. The path stays main-side. */
 export type Attachment = { id: string; name: string; path: string };
 
-/** Pictures are sent as a path for the vision tool, so this is what `nativeImage` can open. */
-const IMAGE_FILE = /\.(png|jpe?g|gif|bmp)$/i;
 /** A screenshot at retina scale is a couple of megabytes; a photo from a phone is more. */
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+export const MAX_MODEL_IMAGE_BYTES = 1024 * 1024;
+export const MAX_MODEL_IMAGE_EDGE = 1568;
 /** Copies of dropped files, swept after a week — a message that old has been sent. */
 const KEEP_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
-
-export const isImageAttachment = (name: string) => IMAGE_FILE.test(name);
 
 /** One path segment, so a name off a drop cannot walk anywhere. */
 function safeName(value: unknown): string {
@@ -95,6 +96,28 @@ export class AttachmentStore {
     // decides is whether the bytes read as text at all.
     if (bytes.includes(0)) throw new Error(`${attachment.name} is not a text file, so there is nothing to attach.`);
     return { ...attachment, text: bytes.toString("utf8") };
+  }
+
+  forModel(attachment: Attachment): string {
+    if (!isImageAttachment(attachment.name)) return attachment.path;
+    try {
+      const source = statSync(attachment.path);
+      if (source.size <= MAX_MODEL_IMAGE_BYTES) return attachment.path;
+      const smaller = path.join(this.directory, `${attachment.id}-model.jpg`);
+      if (existsSync(smaller) && statSync(smaller).mtimeMs >= source.mtimeMs) return smaller;
+      const image = nativeImage.createFromPath(attachment.path);
+      if (image.isEmpty()) return attachment.path;
+      const { width, height } = image.getSize();
+      const longest = Math.max(width, height);
+      const fitted = longest > MAX_MODEL_IMAGE_EDGE
+        ? image.resize({ width: Math.round(width * MAX_MODEL_IMAGE_EDGE / longest), height: Math.round(height * MAX_MODEL_IMAGE_EDGE / longest), quality: "good" })
+        : image;
+      let bytes = fitted.toJPEG(80);
+      if (bytes.byteLength > MAX_MODEL_IMAGE_BYTES) bytes = fitted.toJPEG(45);
+      mkdirSync(this.directory, { recursive: true });
+      writeFileSync(smaller, bytes);
+      return smaller;
+    } catch { return attachment.path; }
   }
 
   /** Whether the model may look at this path: it may, if the user attached it.

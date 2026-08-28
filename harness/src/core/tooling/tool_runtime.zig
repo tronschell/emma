@@ -1321,6 +1321,7 @@ fn toolRunCommand(
         .on_accepted_output_chunk = if (ctx.interactive) CommandReplayCaptureCallback.onChunk else null,
         .callback_projection = if (ctx.interactive) .raw else .model_safe,
         .permissive = use_permissive,
+        .allow_localhost_listen = true,
         .timeout_ms = ctx.command_timeout_ms,
         .timeout_started_ms = timeout_started_ms,
         .command_artifact_capability = ctx.session_child_capability,

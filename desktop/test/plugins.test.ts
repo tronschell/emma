@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { hookRuns, matchesPluginQuery, parseHooksFile, parseHostedApps, parseMarketplace, parseMarketplaceSource, parsePluginInterface, parsePluginManifest, pluginCategories, type HookEvent } from "../shared/plugins";
 import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
-import { mirrorSkillsToHarness, parseMcpConfig } from "../main/capabilities";
+import { loadImportedSkill, mirrorSkillsToHarness, parseMcpConfig, searchImportedSkills } from "../main/capabilities";
 
 test("a marketplace source is a GitHub repo, a Git URL, or a folder — and nothing else", () => {
   assert.deepEqual(parseMarketplaceSource("openai/plugins"), { kind: "git", url: "https://github.com/openai/plugins.git", ref: "", sparse: [] });
@@ -303,6 +303,26 @@ test("adding a local marketplace, installing from it, and removing it moves the 
     assert.deepEqual(removed, { marketplaces: [], installed: [] });
     assert.deepEqual(await installedCapabilitySources(userData), []);
     assert.equal(await readFile(path.join(shared, ".agents", "plugins", "marketplace.json"), "utf8") !== "", true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a skill installed by the harness appears immediately and survives imported-skill mirroring", async () => {
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-harness-skill-")));
+  try {
+    const userData = path.join(home, "user-data");
+    const harnessHome = path.join(userData, "harness");
+    const directory = path.join(harnessHome, ".fx", "skills", "ponytail");
+    const content = "---\nname: ponytail\ndescription: Keep it simple.\n---\n\nUse the smallest working change.\n";
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "SKILL.md"), content);
+
+    const skills = await searchImportedSkills(userData, "pony", 64);
+    assert.deepEqual(skills, [{ id: "skill:installed:0:ponytail", source: "installed", name: "ponytail" }]);
+    assert.equal((await loadImportedSkill(userData, skills[0].id)).instructions, content);
+    assert.deepEqual(await mirrorSkillsToHarness(userData, harnessHome), ["ponytail"]);
+    assert.equal(await readFile(path.join(directory, "SKILL.md"), "utf8"), content);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

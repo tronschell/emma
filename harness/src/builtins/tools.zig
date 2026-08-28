@@ -513,7 +513,6 @@ const read_tool_result_description =
     "Read a prior large tool result by stable handle from the active session, using a bounded byte range or literal query. When to use: inspect more of a tool result after a preview said the full redacted result was stored. When NOT to use: read arbitrary files, search the workspace, recover secrets, or inspect results from another session.";
 
 pub const list_files = ToolSpec{
-    .advertisement = .on_select,
     .name = "list_files",
     .description = list_files_description,
     .gateway_schema = .{
@@ -539,7 +538,6 @@ pub const list_files = ToolSpec{
 };
 
 pub const glob_files = ToolSpec{
-    .advertisement = .on_select,
     .name = "glob_files",
     .description = glob_files_description,
     .gateway_schema = .{
@@ -570,7 +568,6 @@ pub const glob_files = ToolSpec{
 };
 
 pub const grep_files = ToolSpec{
-    .advertisement = .on_select,
     .name = "grep_files",
     .description = grep_files_description,
     .gateway_schema = .{
@@ -606,7 +603,6 @@ pub const grep_files = ToolSpec{
 };
 
 pub const read_file = ToolSpec{
-    .advertisement = .on_select,
     .name = "read_file",
     .description = read_file_description,
     .gateway_schema = .{
@@ -637,7 +633,6 @@ pub const read_file = ToolSpec{
 };
 
 pub const write_file = ToolSpec{
-    .advertisement = .on_select,
     .name = "write_file",
     .description = write_file_description,
     .gateway_schema = .{
@@ -668,7 +663,6 @@ pub const write_file = ToolSpec{
 };
 
 pub const edit_file = ToolSpec{
-    .advertisement = .on_select,
     .name = "edit_file",
     .description = edit_file_description,
     .gateway_schema = .{
@@ -1057,7 +1051,6 @@ pub const web_search = ToolSpec{
 };
 
 pub const terminal = ToolSpec{
-    .advertisement = .on_select,
     .name = "terminal",
     .description = terminal_description,
     .gateway_schema = .{
@@ -1713,8 +1706,6 @@ test "terminal exec-only schema reuses exec structure with focused descriptions"
 
 test "terminal gateway advertisement projects a provider-compatible object schema" {
     const alloc = std.testing.allocator;
-    // The projection no longer carries it: `terminal` waits behind `search_tools`
-    // like every other tool, so this is the schema `select_tool` hands over.
     const schema_json = try gateway_schema.builtinFunctionSchemaJsonAlloc(alloc, terminal.gateway_schema);
     defer alloc.free(schema_json);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, schema_json, .{});

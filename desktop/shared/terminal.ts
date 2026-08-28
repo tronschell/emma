@@ -5,6 +5,7 @@ export type TerminalTab = {
   cwd: string;
   running: boolean;
   exitCode: number | null;
+  cli?: string;
 };
 
 export const MAX_TERMINAL_TABS = 8;

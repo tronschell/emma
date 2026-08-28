@@ -1,6 +1,6 @@
 ---
 name: artifact
-description: How to decide whether a piece of work deserves an artifact, and how to make and edit one with the `artifact` tool — a document, code file, web page, SVG, diagram or React component the user keeps, edits and reuses outside the conversation, or a live module that replaces one region of Emma's own interface — her sidebar, conversation pane, notch or context bar. Use whenever the user asks you to write, save, edit or keep something of that shape, whenever they ask you to build or change part of Emma's interface, when they point at the Artifacts page, and before you paste anything long enough that they would want it as a file.
+description: How to decide whether a piece of work deserves an artifact, and how to make and edit one with the `artifact` tool — a document, code file, web page, SVG, diagram or React component the user keeps, edits and reuses outside the conversation, or a live module that replaces one whole region of Emma's own interface — her sidebar, conversation pane, notch or context bar. Something *new* in the interface is the `component` tool instead, not an artifact. Use whenever the user asks you to write, save, edit or keep something of that shape, whenever they ask you to build or change part of Emma's interface, when they point at the Artifacts page, and before you paste anything long enough that they would want it as a file.
 ---
 
 # Artifacts
@@ -180,8 +180,17 @@ hero margin means every card looks identical.
 
 ## Writing Emma's own interface
 
-This is how you rebuild yourself. A `code` artifact with `surface` set **becomes
-that region of the app** — not a panel inside it, the region itself. The built-in
+**First, the fork in the road.** If the user wants something *new* in the
+interface — a panel, a counter, a button, a small tool, anything they would point
+at a spot for — that is the `component` tool, not this. It asks them where it
+goes, builds it there, hot-reloads while they watch, and carries its own ⋯ to
+delete it. It is not an artifact and it never lands on the Artifacts page.
+
+What follows is the other thing: *replacing a whole built-in region*. Reach for it
+only when the user says the sidebar, the conversation pane, the notch or the
+context bar itself should be yours.
+
+A `code` artifact with `surface` set **becomes that region of the app** — not a panel inside it, the region itself. The built-in
 one stops rendering and yours runs in its place, in the app's own React tree, with
 the app's own stylesheet and the same props the built-in was handed.
 

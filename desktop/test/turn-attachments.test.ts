@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { rememberTurnAttachments, turnAttachments } from "../src/context";
+import { pendingAttachments, rememberTurnAttachments, turnAttachments } from "../src/context";
 import type { Message } from "../src/types";
 
 /// The store is written when a turn is sent and read once its message exists, so
@@ -51,4 +51,11 @@ test("a half-written or hand-edited entry is a miss, not a crash", () => {
   assert.deepEqual(turnAttachments("t4", [said("hi")]), {});
   store.set("emma.threadAttachments.v1.t4", "not json at all");
   assert.deepEqual(turnAttachments("t4", [said("hi")]), {});
+});
+
+test("the in-flight turn finds its files before its message exists", () => {
+  store.clear();
+  rememberTurnAttachments("t4", 0, "look at this", shot("shot.png"));
+  assert.deepEqual(pendingAttachments("t4", 0, "look at this"), shot("shot.png"));
+  assert.deepEqual(pendingAttachments("t4", 2, "look at this"), []);
 });

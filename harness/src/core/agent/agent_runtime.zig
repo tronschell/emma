@@ -34,6 +34,7 @@ pub const prepareToolCallForLifecycle = runtime_lifecycle.prepareToolCallForLife
 pub const dispatchAttentionRequiredCheckpoint = runtime_lifecycle.dispatchAttentionRequiredCheckpoint;
 pub const TurnFinalizationGuard = runtime_finalization.TurnFinalizationGuard;
 pub const Config = runtime_config.Config;
+pub const default_subagent_runtime_ms = runtime_config.default_subagent_runtime_ms;
 pub const processQueuedPrompt = runtime_orchestrator.processQueuedPrompt;
 pub const persistedStatusForCurrentFxLocalResult = runtime_execution_memory.persistedStatusForCurrentFxLocalResult;
 pub const classifyProviderExecutedResultStatus = runtime_execution_memory.classifyProviderExecutedResultStatus;

@@ -32,7 +32,7 @@ Never put `--border` and `--border-strong` on the same edge.
 
 ### Palette
 
-Six categorical hues, and only these six. A hue must mean something — a
+Seven hues, and only these seven. A hue must mean something — a
 category, a series, a section, a state. If you cannot say what it signifies,
 use `--text-2`.
 
@@ -44,6 +44,7 @@ use `--text-2`.
 | `--teal` | `#3fd8c0` | Categorical |
 | `--lime` | `#c3d64b` | Categorical |
 | `--violet` | `#ae78f0` | Categorical |
+| `--yellow` | `#e8c34a` | A state that is neither good nor bad yet |
 
 `--accent` aliases `--orange` and `--danger` aliases `--rose`; Settings →
 Appearance repoints `--accent` at another palette hue and everything derived
@@ -130,12 +131,32 @@ The shell is a two-column grid: `--sidebar-width` then content.
 opacities on the same keyframe; fading the shut frame in is not enough, because
 the open eyes show through its transparent pixels.
 
-She appears once, in the sidebar brand band at 28px. The `blinks` class opens
-the cycle: `emma-open` / `emma-shut`, 7s, which is a human blink rate.
+She appears in the setup flow, the quick-ask island and the settings header at
+28px — the sidebar shows no wordmark, its first row is the search field. The
+`blinks` class opens the cycle: `emma-open` / `emma-shut`, 7s, which is a human blink rate.
 `prefers-reduced-motion` stops it through the global rule in `index.css` and
 leaves her eyes open.
 
-The `◇` tile (`.mark`) is the empty-state glyph, not the logo.
+The app icon is Emma on a macOS squircle: `desktop/assets/emma-icon-dark.png`
+(near-black tile, white ink) and `emma-icon-light.png` (bone tile, ink recoloured to
+`#0e0e10`, the bow left pink). `emma.icns` is built from the dark one and passed to
+electron-packager with `--icon`; a bundle icon cannot follow the system appearance,
+so `dockIcon()` in `desktop/main/main.ts` repaints the Dock tile on
+`nativeTheme` "updated" and Finder keeps the dark tile. She reads down to 32px; at
+16px the bow is what identifies her. Rebuild after editing either master:
+
+```
+sips -z <size> <size> emma-icon-dark.png --out emma.iconset/icon_<slot>.png   # all ten slots
+iconutil -c icns emma.iconset -o assets/emma.icns
+```
+
+`Mark` in `desktop/src/icons.tsx` is the other one: a bow on a 16x16 pixel grid,
+`#` for ribbon and `o` for the knot, which is the same colour at half opacity. It
+is the empty-state glyph and the quick-ask pill, not the logo — Emma is the logo.
+It draws in `currentColor`, so a context tints it rather than swapping the art:
+`--lime` for a good state, `--orange` for a bad one, `--yellow` for one still in
+the air. `mark-wiggle` tilts it 4 degrees off the knot and is opt-in per context;
+a mark at rest holds still.
 
 ## Accessibility floor
 

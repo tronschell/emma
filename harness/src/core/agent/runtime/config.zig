@@ -9,6 +9,8 @@ const context_experiments = @import("context_experiments.zig");
 
 const ReasoningEffort = types.ReasoningEffort;
 
+pub const default_subagent_runtime_ms: i64 = 15 * std.time.ms_per_min;
+
 pub const default_history_context_budget_tokens: usize = 24_000;
 pub const history_context_budget_window_divisor: usize = 4;
 
@@ -19,6 +21,7 @@ pub const TurnOrigin = enum { root, subagent };
 
 pub const Config = struct {
     pub const default_step_limit_notice = "Agent step limit reached; continue with a follow-up prompt if needed.";
+    pub const default_runtime_limit_notice = "Subagent runtime limit reached; it was stopped with the work it had done so far.";
 
     system_prompt: []const u8,
     model_prompt_overlay: ?[]const u8 = null,
@@ -35,6 +38,8 @@ pub const Config = struct {
     agent_step_limit: usize,
     max_tool_result_bytes: usize = tool_result_limits.default_max_tool_result_bytes,
     step_limit_notice: []const u8 = default_step_limit_notice,
+    deadline_ms: ?i64 = null,
+    runtime_limit_notice: []const u8 = default_runtime_limit_notice,
     cancel_flag: *std.atomic.Value(bool),
     review_enabled: bool = false,
     fast_mode: bool = false,

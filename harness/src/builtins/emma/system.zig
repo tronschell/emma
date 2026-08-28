@@ -309,4 +309,46 @@ pub const computer = ToolSpec{
     .irreversible_fn = bridge.isIrreversible,
 };
 
-pub const all = [_]ToolSpec{ cli, cli_runs, computer, advisor, install_mcp };
+const secret_description =
+    "Read something secret through the model the user picked for their secrets, without any of it entering this conversation. Keys, tokens, passwords, .env files, vault entries, whatever the user keeps private.\n" ++
+    "command runs on this Mac in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github.\n" ++
+    "Use it whenever the work touches a secret — which keys are set, why a request comes back unauthorised, whether two tokens differ, what is in a credentials file. Do it here rather than reading the file yourself: whatever you read has been sent to the model running you and stays in this thread, and that model is not the one the user chose for this.\n" ++
+    "Ask one specific question: \"which of these are empty\" beats \"what is in here\". Never ask for a value in full — ask only what you need to know to carry on.";
+
+pub const secret = ToolSpec{
+    .name = "secret",
+    .description = secret_description,
+    .gateway_schema = .{
+        .name = "secret",
+        .description = secret_description,
+        .input_schema = .{
+            .properties = &.{
+                .{
+                    .name = "question",
+                    .json_type = .string,
+                    .description = "What you need to know about the output. One specific question, never a request to repeat a secret in full.",
+                },
+                .{
+                    .name = "command",
+                    .json_type = .string,
+                    .description = "The command whose output holds the secret. It runs in this thread's folder, and its output reaches nothing but the secrets model.",
+                },
+            },
+            .required = &.{ "question", "command" },
+        },
+    },
+    .advertisement = .on_select,
+    .executor_kind = .emma,
+    .activity_kind = .command,
+    .requires_approval = false,
+    .action_label = "Reading a secret",
+    .completed_action_label = "Read a secret",
+    .permission_target_kind = .none,
+    .decode = bridge.decode,
+    .validate = bridge.validate,
+    .call = bridge.call,
+    .reads_only_fn = bridge.readsAndWrites,
+    .irreversible_fn = bridge.isIrreversible,
+};
+
+pub const all = [_]ToolSpec{ cli, cli_runs, computer, advisor, install_mcp, secret };

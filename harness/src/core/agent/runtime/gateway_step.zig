@@ -121,6 +121,8 @@ pub fn streamGatewayCompletion(
     errdefer if (content) |owned| alloc.free(owned);
     const generation_id = if (result.completion.generation_id) |id| try alloc.dupe(u8, id) else null;
     errdefer if (generation_id) |owned| alloc.free(owned);
+    const routed_model = if (result.completion.routed_model) |routed| try alloc.dupe(u8, routed) else null;
+    errdefer if (routed_model) |owned| alloc.free(owned);
     const provider_failure_detail = if (result.completion.provider_failure_detail) |detail| try alloc.dupe(u8, detail) else null;
     errdefer if (provider_failure_detail) |owned| alloc.free(owned);
     const provider_state_json = if (result.completion.provider_state_json) |state| try alloc.dupe(u8, state) else null;
@@ -145,6 +147,7 @@ pub fn streamGatewayCompletion(
         .completion = .{
             .content = content,
             .tool_calls = tool_calls,
+            .routed_model = routed_model,
             .generation_id = generation_id,
             .billing = billing,
             .generation_metadata_invalid = generation_metadata_invalid,

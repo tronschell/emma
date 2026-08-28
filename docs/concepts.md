@@ -5,17 +5,24 @@ paragraph, that detail lives in the feature's own doc, linked.
 
 ## Thread
 
-**A durable timeline that outlives every run inside it.** The unit the sidebar
+**A timeline that outlives every run inside it.** The unit the sidebar
 lists, the unit a permission mode is set on, and the unit that gets a file on
 disk: one Markdown file at `<data root>/threads/{id}.md`, written to `.{id}.tmp`
 and renamed over the destination so a half-written thread never exists
 ([`crates/core/src/thread.rs`](../crates/core/src/thread.rs)). The record is
 `{ id, title, parent_thread_id, kind, scheduled_job_id, created_at, updated_at,
-archived_at, messages, traces }`; `kind` is `main` or `subagent`. Front matter is
-versioned as `emma-thread-format` — 12 today, and every older version still
-parses. Ceilings: `MAX_THREAD_MESSAGES` 1024, `MAX_THREAD_TRACES` 64,
+archived_at, goal, messages, traces }`; `kind` is `main` or `subagent` and `goal`
+is present only on a thread pursuing one. Front matter is versioned as
+`emma-thread-format` — 13 today, and every older version still parses.
+Ceilings: `MAX_THREAD_MESSAGES` 1024, `MAX_THREAD_TRACES` 64,
 `MAX_TRACE_BYTES` 16 KiB. `traces` is `#[serde(skip)]`, so it never rides a
 snapshot.
+
+A thread can be **pinned**: right-click the row, or use the pin that appears on
+hover. Pinned threads leave their project group and stand in a `Pinned` section
+above every project, each row prefixed with the name of the folder it is filed
+under. The list is local to the machine (`emma.threadPins.v1` in the renderer's
+storage), most recently pinned first.
 
 ## Run · turn
 
@@ -32,14 +39,41 @@ once. When a turn finishes, `recordTurn` appends the prompt and the answer, and
 the assistant message carries `output_tokens`, `duration_milliseconds`,
 `input_tokens` and `model`.
 
+## Queue · steer · stop
+
+**Three doors into a turn already running, and they are not the same door.**
+The composer never blocks: Enter always queues, and
+[`runs.ts`](../desktop/src/runs.ts) drains the queue one turn at a time, so a
+second message waits for the first turn to end.
+
+⤳ **steers.** The text goes over `session/steer` and the running turn reads it
+at its next model step — after the tool call in flight finishes, not instead of
+it. It arrives as a `<user_steering>` system message on that step alone, and is
+dropped only once a request carrying it may have reached the model, so a step
+that never got there projects it again rather than swallowing it. At most 8
+messages, 4096 characters each, and there has to be a turn running.
+
+Esc, and ■ **stop.** The turn is cancelled — the partial answer, the tool call
+it was in, and what it had already finished are all written to history, so
+nothing is lost — and everything still queued behind it is *held* rather than
+fired at a thread whose direction just changed. Held messages sit above the
+composer with ↑ to send and × to drop. With text typed, Esc stops and sends what
+you typed as the next turn.
+
+A subagent has its own composer, and its own door: `session/steer_child`, which
+lands with the child's next tool result.
+
 ## Subagent
 
 **A worker that dissolves once it answers.** It is the harness's own tool, not
 Emma's — a child runs inside the `emma-cli` process, so it does not queue behind
 its parent's turn. Emma sees it because its updates ride the parent's ACP stream
 tagged `_meta.fx.child`, and gives it a thread with `kind: subagent` so it gets a
-real transcript, telemetry and a tab. It is not in the sidebar, because nobody
-opened it. It inherits the parent's permission mode and cannot exceed it.
+real transcript and telemetry, opened from the Subagents component of the context
+bar or from the sidebar's agent rail. It is not in the sidebar's thread list, and
+it takes no tab: the thread tab strip carries threads — this one, its parent, and
+the sub-threads under it. It inherits the parent's permission mode and cannot
+exceed it.
 
 ## Sub-thread
 
@@ -66,6 +100,32 @@ deleting is the user's, on the Artifacts page. `visualize` is *not* an artifact 
 it draws an inline page in the transcript and saves nothing until the user keeps
 it.
 
+## Component
+
+**A piece of Emma's own interface that Emma built, mounted where the user
+pointed.** Not an artifact: it does not outlive the interface, it *is* the
+interface, and it never appears on the Artifacts page. Stored at
+`<userData>/components/<id>/` as `meta.json`, `module.js` and `shot.png`, served
+over the `emma-component://` scheme, and mounted into the running React tree by
+`createPortal` at the CSS selector recorded in its anchor.
+
+The flow is fixed in main, not in the prompt. `component {"action":"place"}`
+lights the window up so the user clicks the zone the new thing belongs in;
+`create` is refused until they have, so the location is always theirs. There are
+three zones — the sidebar, the context bar and the composer — and the transcript
+is deliberately not one of them: it is rebuilt per thread, so an anchor into it
+would point at nothing the moment another conversation opens. The user moves a
+component between zones afterwards by dragging its ⠿ grip, or from **Move…** in
+its ⋯ menu. Each `rewrite` bumps the version, the module URL carries it, and the
+mounted copy reloads in place — that is the iteration loop. A new version wipes in behind a
+left-to-right ASCII reveal.
+
+Deleting is the user's, from the ⋯ in the component's own corner or from
+**Settings → Built by Emma**, which shows each one's picture, switches it off, and
+sends it back to a thread as an attachment to keep working on. Limits in
+[`shared/components.ts`](../desktop/shared/components.ts): `MAX_COMPONENTS` 64,
+`MAX_COMPONENT_CHARS` 64 KiB.
+
 ## Context
 
 **Everything a turn carries besides the user's sentence.** One attached folder
@@ -75,15 +135,17 @@ filesystem at all. In the composer `/` names a capability and `@` names a file
 ([`shared/slash.ts`](../desktop/shared/slash.ts)); `buildAttachedContext` in
 [`src/context.ts`](../desktop/src/context.ts) assembles folder listings, `@`
 files, attachments and artifacts into one bounded block. Emma's own standing
-text — the resolved system prompt, the connections block — is written to
-`<userData>/harness/.fx/AGENTS.md`, which the harness reads from the `HOME` Emma
-hands it. A notch capture travels as an image plus a note naming the app and
+text goes to two files under the `HOME` she hands the harness: the resolved
+Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
+the agent's own built-in prompt, and the connections block to
+`<userData>/harness/.fx/AGENTS.md` under it. A notch capture travels as an image plus a note naming the app and
 window that were in front.
 
 ## Inspector
 
-**The right-hand column, as components you arrange.** Seven widgets — Thread
-stats, Context window, Timeline, Plan, Subagents, Sub threads, Git — over up to
+**The right-hand column, as components you arrange.** Ten widgets — Thread
+stats, Context window, Timeline, Plan, Subagents, Sub threads, Git, and three
+machine components (numbers, sparklines, meters) — over up to
 `MAX_CONTEXT_PAGES` (4) named pages, each widget at most once per page
 ([`shared/context-bar.ts`](../desktop/shared/context-bar.ts)). Settings → Context
 bar arranges them by dragging the real components around a column of the real
@@ -123,6 +185,21 @@ of one, so [`shared/plan.ts`](../desktop/shared/plan.ts) never throws on a
 hand-edited file. `MAX_PLAN_STEPS` 24, `MAX_STEP_TASKS` 100, `MAX_PLANS` 64,
 `MAX_PLAN_BYTES` 128 KiB. There is no `plan` permission mode — the modes are
 `ask`, `acceptEdits`, `auto`, `full` (see [Mode](#mode)).
+
+## Goal
+
+**One objective a thread keeps working at on its own.** Set one and Emma re-drives
+the thread turn after turn without being asked again, stopping when the objective
+is met *with evidence*, when the same blocker has stood three consecutive goal
+turns, or when the allowance — 200,000 tokens and 40 turns by default — runs out.
+The record lives on the thread itself
+([`crates/core/src/thread.rs`](../crates/core/src/thread.rs)), and so do the
+invariants: completion is rejected without evidence, a blocker only sticks at
+three, and every turn's tokens are folded in by `record_turn`. Status is one of
+`active`, `paused`, `complete`, `blocked`, `budgetLimited`, `usageLimited`. The
+loop hangs off `driveTurn`; the transcript draws a card from the `[goal:<id>]`
+marker a goal tool call leaves, and pressing it opens the thread's Goal tab. Full
+detail in [goals.md](goals.md).
 
 ## Mode
 
@@ -181,7 +258,7 @@ ship in [`desktop/skills/`](../desktop/skills). An **MCP server** is an external
 process the harness starts and calls tools on — Emma speaks no
 [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) herself, she parses the configured
 servers and hands them to the harness at `session/new`. A **tool** is one
-callable the agent may reach for: Emma's own 23 are in `AGENT_TOOLS` and
+callable the agent may reach for: Emma's own 26 are in `AGENT_TOOLS` and
 `TOOL_CATALOG` ([`shared/permissions.ts`](../desktop/shared/permissions.ts)), the
 harness has its own builtins (file read/write/edit, ripgrep search, shell,
 subagent, skills, MCP), and Emma can write more with `write_tool`. See
@@ -193,6 +270,7 @@ subagent, skills, MCP), and Emma can write more with `write_tool`. See
 - [permissions.md](permissions.md) — the four modes and the full gate matrix
 - [tools.md](tools.md) — every tool a turn can call
 - [context-bar.md](context-bar.md) — the inspector's widgets in detail
+- [goals.md](goals.md) — the ledger, the continuation loop, evidence and the blocked audit
 - [knowledge.md](knowledge.md) — the vault, keeping, and tags
 - [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md) · [computer-use.md](computer-use.md)
 - [development.md](development.md) — repo map, checks, builds, packaging

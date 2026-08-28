@@ -1,11 +1,11 @@
 ---
 name: threads
-description: How to run work across several of Emma's threads with the `threads` tool — starting one per job so each gets its own agent and its own durable timeline, checking on them, reading what they found, and steering or messaging one mid-flight. Use whenever the user asks to spin up, split, fan out, check on, steer or message threads, and whenever a request holds two or more jobs that each deserve a conversation of their own.
+description: How to run work across several of Emma's threads with the `threads` tool — starting one per job so each gets its own agent and its own timeline, checking on them, reading what they found, and steering or messaging one mid-flight. Use whenever the user asks to spin up, split, fan out, check on, steer or message threads, and whenever a request holds two or more jobs that each deserve a conversation of their own.
 ---
 
 # Threads
 
-A **thread** is a durable conversation timeline: it stores the whole event
+A **thread** is a conversation timeline: it stores the whole event
 stream — messages, tool calls, file edits — it outlives every agent that ever
 ran in it, and it stays in the user's sidebar to be picked up, resumed or
 forked days later. A **thread is a place.**

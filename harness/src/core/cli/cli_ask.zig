@@ -441,12 +441,6 @@ const RunOptions = struct {
     deps: RunDeps,
 };
 
-/// ponytail: the exec-only swap below only reaches a tool that is advertised,
-/// and `terminal` waits behind `search_tools` now — so on this surface the model
-/// is handed the full schema by `select_tool` and the runtime refuses the
-/// session actions instead of never offering them. Emma's ACP path never had
-/// this swap at all. Move the substitution into `deps.tool_set` if `emma-cli
-/// ask` ever needs the narrow schema back.
 fn buildAskGatewayToolProjection(
     alloc: Allocator,
     registry: mode_registry.Registry,
@@ -3914,11 +3908,9 @@ fn testProcessQueuedPromptChecksExecOnlyTerminal(deps: *const agent_runtime.Agen
     try std.testing.expect(cfg.session_child_capability == null);
     const ctx: *AskContext = @ptrCast(@alignCast(deps.ctx));
     try std.testing.expectEqualStrings("inspect", ctx.mode_id);
-    // The projection is the search door and nothing else now, so no tool name is
-    // in it to check. See `buildAskGatewayToolProjection` for what that costs the
-    // exec-only swap on this surface.
     try std.testing.expect(std.mem.find(u8, cfg.gateway_tools_json, "\"name\":\"search_tools\"") != null);
-    try std.testing.expect(std.mem.find(u8, cfg.gateway_tools_json, "\"name\":\"terminal\"") == null);
+    try std.testing.expect(std.mem.find(u8, cfg.gateway_tools_json, "\"name\":\"terminal\"") != null);
+    try std.testing.expect(std.mem.find(u8, cfg.gateway_tools_json, "Run one captured command and return its result.") != null);
     try std.testing.expect(std.mem.find(u8, cfg.gateway_tools_json, "\"name\":\"run_command\"") == null);
     try std.testing.expectEqualStrings("", cfg.custom_tool_guidance);
     try std.testing.expectEqualStrings("test model overlay", cfg.model_prompt_overlay.?);
@@ -3943,8 +3935,7 @@ fn testProcessQueuedPromptChecksInjectedToolSet(deps: *const agent_runtime.Agent
     try std.testing.expectEqualStrings("", cfg.custom_tool_guidance);
 
     const ctx: *AskContext = @ptrCast(@alignCast(deps.ctx));
-    // The injected set reaches advertisement and runtime alike; `read_file` is
-    // no longer in the projection to look for, so the registry is the check.
+    try std.testing.expect(std.mem.find(u8, cfg.gateway_tools_json, "\"name\":\"read_file\"") != null);
     try std.testing.expect(ctx.toolRegistry().lookup("read_file") != null);
     try std.testing.expect(ctx.toolRegistry().lookup("run_command") == null);
     try testPushAssistantText(deps, "assistant text");
