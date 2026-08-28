@@ -5,6 +5,7 @@
 .DS_Store
 /desktop/node_modules
 /desktop/main.js
+/desktop/harness.js
 /desktop/dist-main
 /desktop/dist-native
 /desktop/dist-renderer

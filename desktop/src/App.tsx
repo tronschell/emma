@@ -1539,7 +1539,7 @@ function DropVeil({ onFiles }: { onFiles: (files: FileList) => void }) {
   const [over, setOver] = useState(false);
   const depth = useRef(0);
   const latest = useRef(onFiles);
-  latest.current = onFiles;
+  useEffect(() => { latest.current = onFiles; });
   useEffect(() => {
     const carriesFiles = (event: DragEvent) => event.dataTransfer?.types.includes("Files") ?? false;
     const enter = (event: DragEvent) => { if (carriesFiles(event)) { depth.current += 1; setOver(true); } };
