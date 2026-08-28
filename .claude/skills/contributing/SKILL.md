@@ -36,7 +36,10 @@ The rest of the standards:
   Apache-2.0. Read [`harness/FORK.md`](../../../harness/FORK.md) before touching
   it and keep it honest; `LICENSE` and `THIRD_PARTY_NOTICES.md` stay.
 
-Work on a branch. Leave `git status` clean apart from your change.
+Start feature branches from `dev` and open PRs against `dev`. Squash-merge
+features with a conventional PR title. Only a prepared release on `dev` is
+promoted to `main`, using a merge commit. See [releasing](../releasing/SKILL.md).
+Preserve unrelated work already in the checkout.
 
 ## Running it
 

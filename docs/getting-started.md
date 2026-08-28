@@ -1,13 +1,16 @@
 # Getting started
 
-Clone to first turn. Emma is macOS-first and `package:mac` builds Apple Silicon
-only (`--platform=darwin --arch=arm64`).
+Emma requires macOS 12 or later on Apple silicon. For a published version,
+download its zip from [GitHub Releases](https://github.com/tronschell/emma/releases),
+extract it, and move `Emma.app` to Applications. No build toolchains are needed.
+The rest of this page covers building from source; see [releases.md](releases.md)
+for how a prepared version reaches the download page.
 
 ## Prerequisites
 
 | Tool | Version | Pinned in | Needed by |
 | --- | --- | --- | --- |
-| Xcode Command Line Tools | any current | — | `clang`, for the three native helpers |
+| Xcode Command Line Tools | any current | — | `clang`, for the four native helpers; full Xcode is required for packaging |
 | Rust | 1.97.1 | [rust-toolchain.toml](../rust-toolchain.toml) | `crates/core`, `crates/host` |
 | Zig | 0.16.0+ | [harness/build.zig.zon](../harness/build.zig.zon) `minimum_zig_version` | `harness/` |
 | Node | 24.x | [desktop/package.json](../desktop/package.json) (`@types/node` 24.10.1) | everything in `desktop/` |
@@ -20,7 +23,7 @@ brew install zig
 
 `rustup` reads `rust-toolchain.toml` and installs 1.97.1 the first time you run
 `cargo` here. The first build also downloads
-[ripgrep](https://github.com/BurntSushi/ripgrep) 14.1.1 from GitHub and checks it
+[ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 from GitHub and checks it
 against a pinned SHA-256 ([vendor-ripgrep.mjs](../desktop/scripts/vendor-ripgrep.mjs)),
 so it needs network once.
 

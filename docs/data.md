@@ -264,20 +264,23 @@ them and copies nothing here.
 
 ## Inside the app bundle
 
-`Emma.app/Contents/Resources/` — seven `--extra-resource` entries plus the asar:
+`Emma.app/Contents/Resources/` — bundled helpers, skills, notices, and the asar:
 
 | Resource | What it is |
 | --- | --- |
 | `emma-host` | The Rust NDJSON host |
 | `emma-cli` | The Zig harness, the agent behind every turn |
-| `rg` | [ripgrep](https://github.com/BurntSushi/ripgrep) 14.1.1, SHA-256 pinned at download |
+| `rg` | [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0, SHA-256 pinned at download, no Homebrew dependency |
 | `emma-option-tap` | The ⌥⌥ listener and pointer driver |
+| `emma-computer` | App-scoped accessibility controls |
 | `emma-transcribe` | The Speech.framework dictation helper |
 | `emma-pty` | The terminal helper |
 | `skills/` | The seven bundled skills |
+| `notices/` | Emma, harness, renderer, Rust, ripgrep, font, and brand license notices |
 | `app.asar` | `dist-main/main`, `dist-main/shared`, `dist-renderer` |
 
-`Contents/Info.plist` carries `NSSpeechRecognitionUsageDescription`, merged at
+`Contents/Info.plist` carries the macOS 12 minimum, microphone usage, and
+`NSSpeechRecognitionUsageDescription`, merged at
 package time from [native/Info.extra.plist](../desktop/native/Info.extra.plist).
 It has to be on `Emma.app` rather than the helper, because TCC reads the
 *responsible* process's plist.
