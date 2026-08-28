@@ -61,7 +61,7 @@ const optionalFields: Partial<Record<Method, readonly string[]>> = {
   selectOpenRouterModel: ["effort"],
   selectProviderModel: ["effort"],
   setThreadModel: ["effort"],
-  saveScheduledJob: ["jobId", "nodes"],
+  saveScheduledJob: ["jobId", "nodes", "model"],
   runScheduledJob: ["variables"],
   saveResearchJob: ["jobId", "metricPrompt", "prompt"],
   setResearchJobStatus: ["note"],
@@ -87,7 +87,7 @@ export function validateRequest(value: unknown): Request {
   }
   for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
-    const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId");
+    const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId") || (method === "saveScheduledJob" && key === "model");
     const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
     if (text.length > maxLength || (key !== "content" && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }

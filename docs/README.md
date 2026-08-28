@@ -16,6 +16,7 @@ is the tour; this is the reference.
 | | |
 |---|---|
 | [Context bar](context-bar.md) | The thread inspector — every component, pages, and rearranging the column |
+| [Components](components.md) | The widgets Emma builds into the context bar: the module contract, variables, full screen |
 | [Permissions](permissions.md) | The four modes, the full gate matrix, the verifier, and what survives every mode |
 | [Tools](tools.md) | Every tool a turn can call: Emma's own, and the harness's builtins |
 | [Models](models.md) | OpenAI-compatible endpoints, credentials, the OpenRouter catalog, private routing |

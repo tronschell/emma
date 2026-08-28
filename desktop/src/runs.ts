@@ -1,11 +1,6 @@
-/* A turn's live state, kept outside React. The thread pane is keyed by thread id,
-   so moving to another project unmounts it — and the turn it started has to
-   outlive that. Everything a running turn owns lives here instead: what the agent
-   is streaming, what is queued behind it, and what failed. */
-
 import { useSyncExternalStore } from "react";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
-import type { TraceSpan } from "../shared/trace";
+import { decodeSpans, type TraceSpan } from "../shared/trace";
 import { visualDrawn } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
@@ -13,43 +8,23 @@ import type { Message } from "./types";
 import { recordBreakdown, recordExperiment } from "./context";
 import { reasonText } from "./errors";
 
-/** One prompt, ready to hand over: the composer resolves its context at Enter, not at send. */
 export type QueuedTurn = {
   content: string;
-  /** Messages already in the thread when this was typed — where its echo stops standing in. */
   after: number;
   params: Record<string, string>;
-  /** Called only if the host took it, so the context ledger records deliveries, not attempts. */
+  prepare?: () => Promise<Pick<QueuedTurn, "params" | "delivered">>;
+  cancelled?: boolean;
   delivered?: () => void;
-  /** Opens the turn it starts, in place of the blocks a fresh turn has none of. */
   notice?: string;
 };
 
-/**
- * One piece of a turn, in the order it arrived: what the agent said, what it
- * thought, or one thing it did.
- *
- * A turn is not one answer with a list of tool calls under it — it is an
- * alternation, and holding the text in a single buffer glued every stretch of
- * narration to the next one with no boundary between them. The boundary is the
- * point, so the arrival order is what is kept.
- */
 export type Block =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "step"; step: ThreadStep }
-  /** Something the harness did to the window mid-turn, in the place it happened. */
+
   | { kind: "notice"; text: string; plain?: boolean };
 
-/**
- * The blocks of each landed turn, against the message it produced — the stored
- * copy of a turn is one string and has lost the boundaries.
- *
- * This session's turns match from the end, since `landed` holds the last ones the
- * thread ran; everything before them comes from the cache, by the timestamp of the
- * message itself. A turn older than the cache keeps has only its string and reads
- * as one, the way every turn did before any of this was kept.
- */
 export function pairBlocks(messages: Message[], landed: Block[][], cached: Record<string, Block[]>): (Block[] | undefined)[] {
   const assistants = messages.reduce((count, item) => item.role === "assistant" ? count + 1 : count, 0);
   let seen = -1;
@@ -60,15 +35,6 @@ export function pairBlocks(messages: Message[], landed: Block[][], cached: Recor
   });
 }
 
-/**
- * Whether a message really is the turn it was paired with: the stored string
- * contains the words this session streamed, so a few of them are enough to tell.
- *
- * Matching from the end is only provisional — the reply of a turn that just landed
- * reaches the transcript a moment after the run does, and until it arrives every
- * pair is off by one. Those are worth drawing, since the next render corrects them,
- * but not worth keeping: this is what stops one being cached against the wrong reply.
- */
 export function wrote(content: string, blocks: Block[]): boolean {
   const said = blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > 8);
   return !said || content.includes((said as { text: string }).text.trim().slice(0, 40));
@@ -81,11 +47,6 @@ export function arrived(messages: Message[], blocks: Block[]): boolean {
   return false;
 }
 
-/**
- * A turn's whole scratchpad, in order: the reasoning channel's own blocks and any
- * `<think>` a provider inlined in the text, joined as the one train of thought they
- * are. The transcript draws it once, so where each piece arrived stops mattering.
- */
 export function thinkingOf(blocks: Block[]): string {
   return blocks
     .flatMap((block) => block.kind === "thinking" ? [block.text] : block.kind === "text" ? [splitThinking(block.text).thinking] : [])
@@ -94,15 +55,6 @@ export function thinkingOf(blocks: Block[]): string {
     .join("\n\n");
 }
 
-/**
- * The same blocks with the reasoning taken out, since it is drawn as one row for
- * the turn rather than wherever each burst of it landed.
- *
- * Dropping it here rather than skipping it at render is what lets the tool calls
- * either side of a scratchpad fold into one list: `groupBlocks` ends a burst at
- * anything that is not a call, so a block nobody draws would still split the list
- * in two and leave a seam with nothing in it.
- */
 export function withoutThinking(blocks: Block[]): Block[] {
   return blocks.flatMap<Block>((block) => {
     if (block.kind === "thinking") return [];
@@ -112,31 +64,14 @@ export function withoutThinking(blocks: Block[]): Block[] {
   });
 }
 
-/** A turn's blocks as the transcript draws them: prose in place, tool calls in lists. */
 export type Grouped =
   | { kind: "text" | "thinking"; text: string }
   | { kind: "notice"; text: string; plain?: boolean }
-  /** `keep` is how many of these rows the list may show before the rest fold away. */
+
   | { kind: "steps"; steps: ThreadStep[]; keep: number }
-  /** A picture the turn drew, in the flow where it drew it. */
+
   | { kind: "visual"; id: string };
 
-/**
- * Consecutive calls fold into one list, so a burst of them reads as a block of work
- * and not as a stack of one-row lists — `keep` of its rows plainly, the rest behind
- * the caret.
- *
- * A burst ends where prose does. The budget used to be spent across the whole turn
- * into a single shared list, which was pushed where the *first* call happened and
- * then went on collecting every call after it — so a turn read as one lump of tool
- * calls at the top followed by all of its words, whatever order it really went in,
- * and a call made after a line of narration was drawn above the line it followed.
- *
- * A `visualize` call is the exception, and it leaves the list entirely: the fold
- * exists because a call is machinery beside the answer, and a picture drawn to
- * explain the answer *is* the answer. Behind the caret it would be a chart nobody
- * ever sees, so it becomes its own block, in the place it happened.
- */
 export function groupBlocks(blocks: Block[], keep: number): Grouped[] {
   const grouped: Grouped[] = [];
   for (const block of blocks) {
@@ -154,35 +89,15 @@ export function groupBlocks(blocks: Block[], keep: number): Grouped[] {
 
 export type Run = {
   sending: boolean;
-  /** Driven by another window — Quick Ask, a quick action — so `drain` is not what ends it. */
   foreign: boolean;
-  /** The turn handed over, echoed until the host's own copy of it lands. */
   pending: QueuedTurn | null;
   blocks: Block[];
-  /**
-   * The blocks of every turn this session has landed, oldest first — one entry
-   * per assistant message it wrote, newest last.
-   *
-   * A turn used to hand its blocks straight back to `blocks`, which the next
-   * turn then cleared, so sending a second prompt erased the first turn's tool
-   * calls and its narration boundaries and left the flat stored string in their
-   * place. It read as Emma deleting its own work.
-   */
   landed: Block[][];
-  /** In flight first, then everything typed while it worked. */
   queue: QueuedTurn[];
   held: QueuedTurn[];
-  /** The last turn on this thread ended because the user stopped it, not because it finished. */
   stopped: boolean;
-  /** A turn that never landed, put back in the composer whenever one is mounted. */
   draft: string;
-  /**
-   * When this turn last showed a sign of life — the prompt going out, a delta, a
-   * tool call moving. A model that answers nothing at all reports nothing at all,
-   * so silence is the only thing left to measure it by.
-   */
   activeAt: number;
-  /** The model that last answered a step, which a router chain need not have started on. */
   routed: string;
 };
 
@@ -190,8 +105,7 @@ const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], l
 const runs = new Map<string, Run>();
 const listeners = new Set<() => void>();
 let wired = false;
-/// The last reload a composer handed over, so a queue that was waiting on someone
-/// else's turn can still drain when that turn ends.
+
 let refresh: () => unknown = () => undefined;
 const read = (threadId: string) => runs.get(threadId) ?? IDLE;
 
@@ -201,8 +115,6 @@ function write(threadId: string, change: Partial<Run> | ((run: Run) => Partial<R
   for (const listener of listeners) listener();
 }
 
-/// Text joins the block it is still writing, and opens a new one otherwise —
-/// which is what puts a break either side of every tool call.
 export function appendText(blocks: Block[], kind: "text" | "thinking", delta: string): Block[] {
   const tail = blocks.at(-1);
   return tail?.kind === kind
@@ -210,9 +122,6 @@ export function appendText(blocks: Block[], kind: "text" | "thinking", delta: st
     : [...blocks, { kind, text: delta }];
 }
 
-/// Latest status per tool call wins, updated where the call started rather than
-/// appended: a call that finishes belongs next to the text that opened it, not at
-/// the end of a turn that has moved on without it.
 export function mergeStep(blocks: Block[], step: ThreadStep): Block[] {
   const at = blocks.findIndex((block) => block.kind === "step" && block.step.toolCallId === step.toolCallId);
   if (at < 0) return [...blocks, { kind: "step", step }];
@@ -221,10 +130,6 @@ export function mergeStep(blocks: Block[], step: ThreadStep): Block[] {
   return next;
 }
 
-/// A turn this window never sent: the notch asks in a thread of its own, and the
-/// workspace was showing that thread empty until the whole turn landed. Its deltas
-/// and tool calls arrive here all the same, so the run is opened on the first one
-/// and closed again when main stops reporting the agent as alive.
 function adoptForeign(threadId: string) {
   write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now() });
   void rehydrate(threadId, began(threadId));
@@ -246,12 +151,6 @@ export function joinPartial(restored: string, held: string): string {
   return restored + held;
 }
 
-/**
- * What main still holds of a turn already in flight: every tool call it has made,
- * and the answer and reasoning streamed so far. The order between them is gone —
- * only the calls carry a clock — so it reads as thinking, then the calls, then
- * what has been said, which is the shape of a turn anyway.
- */
 export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { text: string; thinking: string }): Block[] {
   const byId = new Map(spans.map((span) => [span.id, span]));
   const ownedHere = (span: TraceSpan) => {
@@ -265,30 +164,59 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
   const calls = spans
     .filter((span) => span.id.startsWith("call:") && ownedHere(span))
     .sort((left, right) => left.startedAt - right.startedAt)
-    .map((span): Block => ({
-      kind: "step",
-      step: {
-        threadId,
-        toolCallId: span.id.slice("call:".length),
-        title: span.name,
-        kind: span.kind,
-        status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : "in_progress",
-        input: span.input,
-        output: span.output,
-        at: span.startedAt,
-      },
+    .map((span) => ({
+      said: span.said,
+      block: {
+        kind: "step",
+        step: {
+          threadId,
+          toolCallId: span.id.slice("call:".length),
+          title: span.name,
+          kind: span.kind,
+          status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : "in_progress",
+          input: span.input,
+          output: span.output,
+          at: span.startedAt,
+        },
+      } as Block,
     }));
+  const answer = partial?.text ?? "";
   const said = (text: string | undefined, kind: "text" | "thinking"): Block[] => text?.trim() ? [{ kind, text }] : [];
-  return [...said(partial?.thinking, "thinking"), ...calls, ...said(partial?.text, "text")];
+  const blocks = said(partial?.thinking, "thinking");
+  let cut = 0;
+  for (const call of calls) {
+    const at = call.said === undefined ? cut : Math.min(call.said, answer.length);
+    if (at > cut) blocks.push(...said(answer.slice(cut, at), "text"));
+    cut = Math.max(cut, at);
+    blocks.push(call.block);
+  }
+  return [...blocks, ...said(answer.slice(cut), "text")];
 }
 
-/**
- * A reload leaves the window with a running turn it never saw start. Main has
- * kept the whole turn — a phone joining mid-turn is handed the same thing — so
- * the transcript is put back rather than left reading as an empty thread with a
- * spinner over it. Anything that arrived while this was in flight stands: only
- * what the run is missing is put in front of it.
- */
+const TRACE_OF_TURN_MS = 60_000;
+
+export function tracedBlocks(threadId: string, messages: Message[], traces: readonly { timestamp: string; text: string }[]): Record<string, Block[]> {
+  const recorded = traces
+    .map((trace) => ({ at: Date.parse(trace.timestamp), spans: decodeSpans(trace.text) }))
+    .filter((trace) => Number.isFinite(trace.at) && trace.spans.some((span) => span.id.startsWith("call:")))
+    .sort((left, right) => left.at - right.at);
+  const turns: Record<string, Block[]> = {};
+  let at = 0;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const when = Date.parse(message.timestamp);
+    if (!Number.isFinite(when)) continue;
+    while (at + 1 < recorded.length && Math.abs(recorded[at + 1].at - when) <= Math.abs(recorded[at].at - when)) at += 1;
+    const trace = recorded[at];
+    if (!trace || Math.abs(trace.at - when) > TRACE_OF_TURN_MS) continue;
+    at += 1;
+    const { answer, thinking } = splitThinking(message.content);
+    const blocks = restoreBlocks(threadId, trace.spans, { text: answer, thinking });
+    if (blocks.some((block) => block.kind === "step")) turns[message.timestamp] = blocks;
+  }
+  return turns;
+}
+
 function rehydrate(threadId: string, token: number) {
   void Promise.all([window.emma.listSpans(), window.emma.livePartial()])
     .then(([spans, partial]) => {
@@ -312,9 +240,6 @@ function rehydrate(threadId: string, token: number) {
 }
 
 function reconcile(live: LiveAgent[]) {
-  // A stopped turn ends with no closing message — asking the model for one is
-  // more generation, which is what the button ended — so this is the only thing
-  // in the transcript that says why it went quiet.
   for (const agent of live) {
     if (agent.status === "stopped" && runs.has(agent.threadId) && !read(agent.threadId).stopped) write(agent.threadId, { stopped: true });
     if (agent.status !== "running" && agent.status !== "waiting") continue;
@@ -326,18 +251,14 @@ function reconcile(live: LiveAgent[]) {
   for (const [threadId, run] of runs) {
     if (!run.foreign) continue;
     if (live.some((agent) => agent.threadId === threadId && (agent.status === "running" || agent.status === "waiting"))) continue;
-    // Its blocks stand in for the message it just wrote, exactly as a turn
-    // this window sent does — `drain` is not the only way a turn ends here.
+
     began(threadId);
     write(threadId, (current) => ({ sending: false, foreign: false, landed: current.blocks.length ? [...current.landed, current.blocks] : current.landed }));
-    // Anything typed here while the other window's turn ran was queued rather
-    // than sent, so this is where it finally goes.
+
     if (read(threadId).queue.length) void drain(threadId, refresh);
   }
 }
 
-/// One pair of listeners for every thread rather than one per pane: a delta for a
-/// thread nobody is looking at still belongs to its run.
 export function wire() {
   if (wired) return;
   wired = true;
@@ -345,8 +266,7 @@ export function wire() {
   void window.emma.listAgents().then(reconcile).catch(() => undefined);
   window.emma.onDelta(({ threadId, delta, thinking }) => {
     if (!read(threadId).sending) adoptForeign(threadId);
-    // An empty delta is the loop restarting the answer on a fallback provider, so
-    // it drops the answer it is about to rewrite and keeps the reasoning behind it.
+
     if (!delta) {
       write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks, activeAt: Date.now() }));
       return;
@@ -360,8 +280,7 @@ export function wire() {
   window.emma.onContextExperiment((fired) => {
     const { threadId, prunedResults, reinjected, savedTokens, addedTokens } = fired;
     if (!read(threadId).sending) adoptForeign(threadId);
-    // Totalled per thread here rather than in the pane: the pane is unmounted
-    // whenever you are looking at another project, and the step still happened.
+
     recordExperiment(threadId, fired);
     write(threadId, (run) => ({ blocks: [...run.blocks, { kind: "notice", text: experimentNotice(prunedResults, reinjected, savedTokens, addedTokens) }] }));
   });
@@ -375,11 +294,6 @@ export function wire() {
   window.emma.onContextBreakdown(({ threadId, ...parts }) => recordBreakdown(threadId, parts));
 }
 
-/// What the two levers did, in the user's words. Both can fire on the same step,
-/// and the count is the point of the pruning one: "tools pruned" without a number
-/// reads as an error rather than as the setting the user switched on doing its job.
-/// The token figures are what each lever did to that one request — the whole
-/// reason for switching either on — so they ride the same line, signed.
 export function experimentNotice(prunedResults: number, reinjected: boolean, savedTokens = 0, addedTokens = 0): string {
   const pruned = prunedResults ? `${prunedResults} older tool ${prunedResults === 1 ? "result" : "results"} pruned${savedTokens ? ` (−${charLabel(savedTokens)} tokens)` : ""}` : "";
   const repeated = reinjected ? `your prompt repeated to the model${addedTokens ? ` (+${charLabel(addedTokens)} tokens)` : ""}` : "";
@@ -399,10 +313,6 @@ export function useRun(threadId: string) {
   }, () => read(threadId));
 }
 
-/**
- * Sends a turn, or queues it behind the one already running. Enter never blocks
- * and never interrupts: steering is the other door into a running turn.
- */
 export function sendTurn(threadId: string, turn: QueuedTurn, reload: () => unknown) {
   refresh = reload;
   write(threadId, (run) => ({ queue: [...run.queue, turn] }));
@@ -410,6 +320,8 @@ export function sendTurn(threadId: string, turn: QueuedTurn, reload: () => unkno
 }
 
 const inFlight = (run: Run) => (run.sending && !run.foreign ? 1 : 0);
+
+export const canSteer = (turn: QueuedTurn) => !turn.prepare && Object.keys(turn.params).length === 0;
 
 export function queuedTurns(run: Run) {
   return run.queue.slice(inFlight(run));
@@ -421,6 +333,7 @@ export function dropQueued(threadId: string, index: number) {
 
 export function stopTurn(threadId: string, turn?: QueuedTurn, reload: () => unknown = refresh) {
   const run = read(threadId);
+  if (run.pending?.prepare) run.pending.cancelled = true;
   write(threadId, {
     queue: [...run.queue.slice(0, inFlight(run)), ...(turn ? [turn] : [])],
     held: [...run.held, ...run.queue.slice(inFlight(run))],
@@ -440,7 +353,6 @@ export function dropHeld(threadId: string, index: number) {
   write(threadId, (run) => ({ held: run.held.filter((_, at) => at !== index) }));
 }
 
-/** Hands back the text of a failed turn once, for whichever composer asks first. */
 export function takeDraft(threadId: string) {
   const { draft } = read(threadId);
   if (draft) write(threadId, { draft: "" });
@@ -458,22 +370,22 @@ async function drain(threadId: string, reload: () => unknown) {
     });
     let failed = false;
     try {
-      await window.emma.request("sendMessage", { threadId, content: next.content, ...next.params });
-      next.delivered?.();
+      if (next.prepare) {
+        Object.assign(next, await next.prepare());
+        delete next.prepare;
+      }
+      if (next.cancelled) write(threadId, { pending: null, draft: next.content, stopped: true });
+      else {
+        await window.emma.request("sendMessage", { threadId, content: next.content, ...next.params });
+        next.delivered?.();
+      }
     } catch (reason) {
-      // Blocks go with the failed turn: they belong to a message that never
-      // landed, and left behind they would attach to the turn before it.
       failed = true;
       write(threadId, { pending: null, blocks: [], draft: next.content });
       dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text: reasonText(reason) } }));
       await reload();
     }
-    // The blocks outlive the stream and stand in for the landed message: the host
-    // stores a turn as one string, so re-reading it from there is what collapsed
-    // the turn back into a wall of text the moment it finished. Kept per turn
-    // rather than in one buffer, so the next prompt does not take the last turn's
-    // transcript down with it. The transcript caches them against the message they
-    // wrote, which is what carries them past a restart.
+
     write(threadId, (run) => ({
       sending: false,
       queue: run.queue.slice(1),

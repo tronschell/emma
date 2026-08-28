@@ -46,6 +46,7 @@
      and everything derived from it follows. */
   --accent: var(--orange);
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-2: oklch(from var(--accent) l c calc(h + 150));
 
   --danger: var(--rose);
   --danger-surface: #2a1620;

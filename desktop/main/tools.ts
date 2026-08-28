@@ -1,6 +1,6 @@
 import { computerAction, computerTools } from "./computer";
 import { MEMORY_COMMANDS, type MemoryCommand } from "./memory";
-import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS } from "../shared/components";
+import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS, parseVariables } from "../shared/components";
 import { ARTIFACT_KINDS, ARTIFACT_SURFACES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TITLE_CHARS } from "../shared/artifacts";
 import { parseVisual, type Visual } from "../shared/visualize";
 import { CLI_IDS } from "../shared/cli";
@@ -27,7 +27,7 @@ export type ToolAvailability = {
 
 export type ToolDefinition = { name: string; description: string; inputSchema: Record<string, unknown> };
 
-export const COMPONENT_ACTIONS = ["list", "get", "place", "create", "rewrite"] as const;
+export const COMPONENT_ACTIONS = ["list", "get", "create", "rewrite"] as const;
 export type ComponentAction = (typeof COMPONENT_ACTIONS)[number];
 
 export const THREAD_ACTIONS = ["spawn", "list", "read", "message", "rename"] as const;
@@ -444,19 +444,23 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "component",
     needs: "always",
     description:
-      "Build something into Emma's own interface — a panel, a counter, a button, a small tool — mounted where the user points, and reloading in place every time you rewrite it. This is what \"build yourself an X\" means. It is not an artifact: an artifact is a thing the user keeps outside the conversation, a component is a piece of Emma.\n" +
-      "The order is fixed and there is no way around it. place first — the window lights up and the user clicks the spot it belongs in: the sidebar, the context bar, or the composer, never the transcript, which is rebuilt for every thread. The result names what they picked, and they can drag it elsewhere afterwards. Then ask them whatever the request left open: what it shows, where its numbers come from, how it should behave. Only then create.\n" +
-      "code is one ES module: export default (api) => Component. api is { h, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma }; h is React.createElement, so there is no JSX and nothing to import — h(\"div\", { className: \"…\" }, …). emma is the same bridge the app uses. Reuse the app's own class names wherever one fits, so it looks like it belongs there.\n" +
+      "Build a widget into Emma's own interface — a panel, a counter, a tracker, a small tool — and reload it in place every time you rewrite it. This is what \"build yourself an X\" means. It is not an artifact: an artifact is a thing the user keeps outside the conversation, a component is a piece of Emma.\n" +
+      "There is one place a component goes: the context bar down the right of a thread, under the built-in widgets, in their chrome. Nothing else in the window can be built into — that is what keeps a component from breaking the layout around it. Ask the user whatever the request left open first — what it shows, where its numbers come from, how it behaves — then create.\n" +
+      "The column is about 288px wide. Build for that. If what they asked for genuinely needs more room — a table, a board, a chart with axes — set expand true and it gets a ⤢ that opens it over the whole window; the component is handed `expanded` as a prop, so draw the dense reading when it is false and the full one when it is true.\n" +
+      "It can read everything the app knows through `emma`, and reach the outside through `fetch`. Anything secret — an API key, a workspace id, a base url — goes in variables as environment variable names; the user fills them in Settings → Built by Emma and writes them into a request as {{LINEAR_API_KEY}}. The values never reach the module: main substitutes them, and only the names the component declared.\n" +
+      "code is one ES module: export default (api) => Component. api is { h, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma, fetch, variables }; h is React.createElement, so there is no JSX and nothing to import — h(\"div\", { className: \"…\" }, …). emma is the same bridge the app uses. fetch(url, { method, headers, body }) goes out through main and answers { status, ok, body }; it reaches public https addresses only. Reuse the app's own class names wherever one fits, so it looks like it belongs there.\n" +
       "Style it in Emma's design system, from her own tokens — never a colour, radius or face of your own. Ground: var(--bg) for the window, var(--surface-2) for a card, --surface-3 hover, --surface-4 active. Ink: var(--text), var(--text-2) for labels, var(--text-3) for captions. Rules are 1px var(--border), or var(--border-strong) for a region outline, and never both on one edge. var(--accent) is action, state and data only, never emphasis; var(--accent-soft) is the only accent fill over a large area; var(--danger) is destructive. Space on var(--s-1) 4px through var(--s-8) 32px, sizes from var(--fs-2xs) up. A control is 28px tall, 1px bordered, transparent. Every corner is square — no border-radius anywhere. var(--font-mono) is the interface face for anything on the grid: labels, values, buttons, counts, with uppercase labels tracked by var(--ls-caps). var(--font) is for sentences. Density is the point: if it looks cramped, take something out rather than adding padding.\n" +
       "rewrite replaces the whole module of an id that exists and hot-reloads it, which is how you iterate: the user says what is wrong, you rewrite, they watch it change. Keep going until they are happy.\n" +
-      "No delete. A component is the user's to remove, from the \u22ef in its corner.",
+      "No delete. A component is the user's to switch off or remove, from the \u22ef in its header or from Settings \u2192 Built by Emma.",
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: [...COMPONENT_ACTIONS], description: "What to do. place asks the user where it goes; create builds it there; rewrite replaces one whole; list and get read what is already built. Defaults to list." },
+        action: { type: "string", enum: [...COMPONENT_ACTIONS], description: "What to do. create builds one into the context bar; rewrite replaces one whole and reloads it; list and get read what is already built. Defaults to list." },
         id: { type: "string", description: "The component to act on, as create or list reported it. Required for get and rewrite." },
         title: { type: "string", description: "What the user would call it. Required on create, and shown in its \u22ef menu." },
         code: { type: "string", description: "The whole module. Required on create and rewrite." },
+        expand: { type: "boolean", description: "Give it a ⤢ that opens it over the whole window, for something that cannot be read in a 288px column. The component is handed `expanded` so it can draw both. Leave it off on a rewrite to keep what it has." },
+        variables: { type: "array", items: { type: "string" }, description: "Environment variable names this component needs \u2014 keys, tokens, workspace ids. The user fills them in Settings \u2192 Built by Emma; the module writes {{NAME}} into a fetch url, header or body and never sees the value. Leave it off on a rewrite to keep what it has." },
       },
       required: ["action"],
     },
@@ -602,7 +606,7 @@ export type ToolArgs =
   | { name: "web_search"; query: string; limit: number }
   | { name: "install_mcp"; server: string; command: string; argv: string[]; env: Record<string, string> }
   | { name: "artifact"; action: ArtifactAction; id?: string; file?: string; title?: string; kind?: string; language?: string; surface?: string; content?: string; oldStr?: string; newStr?: string }
-  | { name: "component"; action: ComponentAction; id?: string; title?: string; code?: string }
+  | { name: "component"; action: ComponentAction; id?: string; title?: string; code?: string; expand?: boolean; variables?: string[] }
   | ({ name: "visualize" } & Visual)
   | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; model?: string; variables?: string }
   | { name: "autoresearch"; action: ResearchAction; jobId?: string; title?: string; projectDir?: string; metricName?: string; metricKind?: string; metricPrompt?: string; direction?: string; evalCommand?: string; prompt?: string; proposerModel?: string; permissionMode?: string; maxSeconds?: number; maxTokens?: number; maxMicroDollars?: number };
@@ -849,6 +853,8 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         id: optionalText(args.id, "id", 64),
         title: optionalText(args.title, "title", MAX_COMPONENT_TITLE_CHARS),
         code: args.code === undefined || args.code === null ? undefined : bounded(args.code, "code", MAX_COMPONENT_CHARS),
+        expand: args.expand === undefined || args.expand === null ? undefined : args.expand === true,
+        variables: args.variables === undefined || args.variables === null ? undefined : parseVariables(args.variables),
       } as const;
       if ((action === "get" || action === "rewrite") && !parsed.id) throw new Error('The "id" argument is required. List them with component {"action":"list"}.');
       if (action === "create" && !parsed.title) throw new Error('The "title" argument is required: what the user would call this.');
@@ -1062,7 +1068,6 @@ export function describeToolCall(args: AnyToolArgs): string {
       if (args.action === "list") return "listing artifacts";
       return args.action === "create" ? `creating the artifact "${args.title ?? ""}"` : `${ARTIFACT_VERBS[args.action]} the artifact ${args.id ?? ""}`.trim();
     case "component":
-      if (args.action === "place") return "asking where this goes";
       if (args.action === "list") return "listing what it built";
       return args.action === "create" ? `building "${args.title ?? ""}" into the interface` : `reworking the component ${args.id ?? ""}`.trim();
     case "visualize": return `drawing ${args.title}`;

@@ -1,30 +1,37 @@
+import { isEnvName } from "./settings";
+
 export const COMPONENT_SCHEME = "emma-component";
 export const MAX_COMPONENT_CHARS = 64 * 1024;
 export const MAX_COMPONENT_TITLE_CHARS = 80;
-export const MAX_COMPONENT_LABEL_CHARS = 80;
-export const MAX_COMPONENT_SELECTOR_CHARS = 512;
 export const MAX_COMPONENTS = 64;
 export const MAX_COMPONENT_SHOT_BYTES = 4 * 1024 * 1024;
-export const PLACE_TIMEOUT_MS = 180_000;
-
-export interface ComponentAnchor {
-  selector: string;
-  label: string;
-}
+export const MAX_COMPONENT_VARIABLES = 8;
+export const MAX_COMPONENT_FETCH_BYTES = 1024 * 1024;
+export const COMPONENT_FETCH_TIMEOUT_MS = 20_000;
+export const COMPONENT_ZONE = "aside.inspector .inspector-body";
+export const COMPONENT_ZONE_LABEL = "the context bar";
 
 export interface ComponentMeta {
   id: string;
   title: string;
-  anchor: ComponentAnchor;
   createdAt: string;
   updatedAt: string;
   version: number;
+  expands?: boolean;
+  variables?: string[];
   disabled?: boolean;
   sourceThreadId?: string;
 }
 
 export interface BuiltComponent extends ComponentMeta {
   code: string;
+}
+
+export interface ComponentRequest {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
 }
 
 export const componentModuleUrl = (id: string, version: number) => `${COMPONENT_SCHEME}://${id}/module.js?v=${version}`;
@@ -46,13 +53,14 @@ export function componentSlug(title: string): string {
   return slug || "component";
 }
 
-export function parseAnchor(value: unknown): ComponentAnchor {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A component's anchor is where the user pointed: { selector, label }.");
-  const raw = value as Record<string, unknown>;
-  const selector = typeof raw.selector === "string" ? raw.selector.trim() : "";
-  if (!selector || selector.length > MAX_COMPONENT_SELECTOR_CHARS || /[<{}\n]/.test(selector)) {
-    throw new Error('That is not a place in Emma\'s interface. Ask the user to point at one with component {"action":"place"}.');
+export function parseVariables(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[\s,]+/) : undefined;
+  if (!list) throw new Error('"variables" is a list of environment variable names the user fills in Settings → Built by Emma, like ["LINEAR_API_KEY"].');
+  const names = [...new Set(list.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean))];
+  if (names.length > MAX_COMPONENT_VARIABLES) throw new Error(`A component asks for at most ${MAX_COMPONENT_VARIABLES} variables.`);
+  for (const name of names) {
+    if (!isEnvName(name)) throw new Error(`"${name.slice(0, 40)}" is not an environment variable name: letters, digits and underscores, never starting with a digit.`);
   }
-  const label = typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : selector;
-  return { selector, label: label.slice(0, MAX_COMPONENT_LABEL_CHARS) };
+  return names;
 }

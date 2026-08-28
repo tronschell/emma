@@ -94,14 +94,22 @@ export type TurnRequest = {
 };
 
 export type LoopDeps = {
+
   request(method: string, params: Record<string, string>): Promise<unknown>;
+
   ask(request: PermissionAsk): void;
+
   answered(id: string, allowed: boolean): void;
+
   stopped?(threadId: string): void;
   verify(request: VerifierRequest, threadId: string): Promise<VerifierReview>;
+
   advise(transcript: string): Promise<Advice>;
+
   spawnTurn(turn: TurnRequest, owner?: string): Promise<unknown> | void;
+
   changed(): void;
+
   step(step: ThreadStep): void;
 };
 
@@ -111,9 +119,14 @@ type Run = Omit<LiveAgent, "tool"> & {
   stopped: boolean;
   depth: number;
   changes: FileChange[];
+
   tools: Set<string>;
+
   spans: TraceSpan[];
+  said: number;
+
   adopted: boolean;
+
   traced: boolean;
 };
 
@@ -150,16 +163,18 @@ export class AgentRuntime {
   spans(): Record<string, TraceSpan[]> {
     const trees: Record<string, TraceSpan[]> = {};
     for (const run of this.runs.values()) {
+
       if (run.traced) continue;
       trees[run.threadId] = this.subtree(run.threadId).flatMap((member) => member.spans);
     }
     return trees;
   }
 
-  noteDelta(threadId: string, text: string): boolean {
+  noteDelta(threadId: string, text: string, thinking = false): boolean {
     const run = this.runs.get(threadId);
     if (run?.stopped) return false;
     if (!run || run.status === "done") return true;
+    if (!thinking) run.said += text.length;
     run.outputTokens += Math.ceil(text.length / CHARS_PER_TOKEN);
     run.generationMs = Date.now() - run.startedAt;
     if (run.adopted && !run.spans.some((span) => span.kind === "model" && span.endedAt === undefined)) {
@@ -229,10 +244,12 @@ export class AgentRuntime {
   }
 
   setMode(threadId: string, mode: PermissionMode) {
-    for (const run of this.runs.values()) {
-      if (run.threadId === threadId || run.parentThreadId === threadId) run.mode = mode;
-    }
+    for (const run of this.subtree(threadId)) run.mode = mode;
     this.deps.changed();
+  }
+
+  mode(threadId: string): PermissionMode {
+    return this.runs.get(threadId)?.mode ?? "ask";
   }
 
   stop(threadId: string) {
@@ -248,7 +265,7 @@ export class AgentRuntime {
   private stopRun(run: Run) {
     if (run.stopped) return;
     run.stopped = true;
-    this.cancelAsks(run.threadId);
+    this.dismissAsks(run);
     this.deps.stopped?.(run.threadId);
   }
 
@@ -256,8 +273,13 @@ export class AgentRuntime {
     this.asks.get(id)?.settle(allowed);
   }
 
-  private cancelAsks(threadId: string) {
-    for (const ask of this.asks.values()) if (ask.run.threadId === threadId) ask.settle(false);
+  private dismissAsks(run: Run) {
+    for (const ask of this.asks.values()) if (ask.run === run) ask.settle(false);
+  }
+
+  authorization(threadId: string): () => boolean {
+    const run = this.runs.get(threadId);
+    return () => !!run && this.runs.get(threadId) === run && this.isLive(threadId);
   }
 
   changes(threadId: string): FileChange[] {
@@ -275,7 +297,7 @@ export class AgentRuntime {
   forget(threadId: string) {
     for (const [id, run] of this.runs) {
       if (id !== threadId && run.parentThreadId !== threadId) continue;
-      this.cancelAsks(id);
+      this.dismissAsks(run);
       if (run.status !== "running" && run.status !== "waiting") this.runs.delete(id);
     }
     this.deps.changed();
@@ -284,7 +306,6 @@ export class AgentRuntime {
   private open(turn: TurnRequest): Run {
     const depth = turn.depth ?? 0;
     if (this.runs.get(turn.threadId)?.status === "running") throw new Error("That thread already has a turn in flight.");
-    this.cancelAsks(turn.threadId);
     if (depth > 0) this.spawned += 1;
     const run: Run = {
       threadId: turn.threadId,
@@ -292,7 +313,7 @@ export class AgentRuntime {
       title: turn.title,
       color: agentColor(depth === 0 ? 0 : this.spawned),
       status: "running",
-      mode: turn.mode,
+      mode: this.runs.get(turn.parentThreadId ?? "")?.mode ?? turn.mode,
       model: turn.model ?? "",
       activity: "thinking",
       prompt: turn.content,
@@ -304,11 +325,12 @@ export class AgentRuntime {
       generationMs: 0,
       effort: turn.effort ?? "",
       goal: towardGoal(turn, turn.content),
-      stopped: false,
+      stopped: this.runs.get(turn.parentThreadId ?? "")?.stopped ?? false,
       depth,
       changes: [],
       tools: new Set(),
       spans: [],
+      said: 0,
       adopted: false,
       traced: false,
     };
@@ -320,7 +342,9 @@ export class AgentRuntime {
       startedAt: run.startedAt,
       status: "running",
     });
+    const previous = this.runs.get(turn.threadId);
     this.runs.set(turn.threadId, run);
+    if (previous) this.dismissAsks(previous);
     this.deps.changed();
     return run;
   }
@@ -390,6 +414,7 @@ export class AgentRuntime {
         kind: step?.kind ?? "other",
         startedAt: step?.at ?? Date.now(),
         status: "running",
+        said: run.said,
       });
     }
     const span = run.spans.find((candidate) => candidate.id === `call:${toolCallId}`);
@@ -418,7 +443,7 @@ export class AgentRuntime {
     run.activity = error ?? "finished";
     run.error = error;
     run.endedAt = Date.now();
-    this.cancelAsks(threadId);
+    this.dismissAsks(run);
     run.generationMs = Math.max(run.generationMs, run.endedAt - run.startedAt, 1);
     this.closeRun(run, error ? "failed" : "ok", error);
     for (const span of run.spans) if (span.endedAt === undefined && span.status === "running") span.endedAt = run.endedAt;
@@ -500,7 +525,7 @@ export class AgentRuntime {
     if (!prompt) {
       return `Started the thread "${title}" (${threadId}), in this project and owned by this thread. ${mark}\n\nIt is empty and nothing is running in it, so tell the user it is there and what it is for.`;
     }
-    this.start({ threadId, content: fromThread(owner, towardGoal(turn, prompt)), mode: turn.mode, model: turn.model, title, subagent: turn.subagent }, owner);
+    this.start({ threadId, content: fromThread(owner, towardGoal(turn, prompt)), mode: this.mode(turn.threadId), model: turn.model, title, subagent: turn.subagent }, owner);
     return `Started the thread "${title}" (${threadId}) and put its own agent to work in it. ${mark}\n\n`
       + `It runs beside this turn and nothing comes back here. Use threads list to see how it is doing, threads read ${threadId} for what it has said, and threads message to send it something.`;
   }
@@ -515,7 +540,7 @@ export class AgentRuntime {
       this.steer(thread, text);
       return `Sent to "${found.title}" (${thread}). A turn was already running there, so this went into that turn rather than starting one; read it back with threads read ${thread}.`;
     }
-    this.start({ threadId: thread, content: fromThread(sender, towardGoal(turn, text)), mode: turn.mode, model: turn.model, title: found.title }, sender);
+    this.start({ threadId: thread, content: fromThread(sender, towardGoal(turn, text)), mode: this.mode(turn.threadId), model: turn.model, title: found.title }, sender);
     return `Sent to "${found.title}" (${thread}). Nothing was running there, so this starts a turn of its own; read it back with threads read ${thread}.`;
   }
 
@@ -544,7 +569,7 @@ export class AgentRuntime {
   async question(ask: Omit<PermissionAsk, "id">, options: { humanOnly?: boolean; signal?: AbortSignal } = {}): Promise<boolean> {
     const run = this.runs.get(ask.threadId);
     if (!run) return false;
-    const current = () => this.runs.get(ask.threadId) === run && !run.stopped && run.endedAt === undefined;
+    const current = this.authorization(ask.threadId);
     const live = () => current() && !options.signal?.aborted;
     if (!live()) return false;
     const id = randomUUID();
@@ -584,9 +609,11 @@ export class AgentRuntime {
         void this.reviewed(run, ask).then((review) => {
           if (!this.asks.has(id)) return;
           if (!live()) { settle(false); return; }
-          if (review.verdict?.allow) { settle(true); return; }
-          const said = review.verdict ? `blocked this: ${review.verdict.reason || "no reason given"}` : `could not answer: ${review.error ?? "no verdict"}`;
-          ask = { ...ask, detail: `${ask.detail}\n\n[auto agent] ${said}` };
+          if (run.mode === "auto") {
+            if (review.verdict?.allow) { settle(true); return; }
+            const said = review.verdict ? `blocked this: ${review.verdict.reason || "no reason given"}` : `could not answer: ${review.error ?? "no verdict"}`;
+            ask = { ...ask, detail: `${ask.detail}\n\n[auto agent] ${said}` };
+          }
           show();
         }).catch(() => settle(false));
       } else show();
@@ -612,11 +639,14 @@ export class AgentRuntime {
       kind: "verifier",
       startedAt: Date.now(),
       status: "running",
+      said: run.said,
       input: "",
     };
     run.spans.push(span);
     this.deps.changed();
+    const authorized = this.authorization(run.threadId);
     const review = await this.deps.verify(request, run.threadId);
+    if (!authorized()) return review;
     const title = review.verdict?.allow ? "auto agent approved" : review.verdict ? "auto agent blocked" : "auto agent could not answer";
     span.name = `${title} · ${ask.summary}`;
     span.input = review.prompt;

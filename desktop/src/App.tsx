@@ -16,7 +16,7 @@ import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor,
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { arrived, dropHeld, dropQueued, groupBlocks, pairBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
+import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { showsUpdate } from "../shared/update";
 import { brandForConnection, brandForImporter, brandForModel, brandForProvider, providerBrands, type BrandDefinition } from "./brands";
@@ -1599,6 +1599,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   const [slashPick, setSlashPick] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [history, setHistory] = useState(-1);
+  const historyDraft = useRef("");
   const addPick = (pick: ContextPick) => setPicks((current) => current.some((item) => pickKey(item) === pickKey(pick)) ? current.map((item) => pickKey(item) === pickKey(pick) ? pick : item) : [...current, pick]);
   useEffect(() => {
     const take = (event: Event) => {
@@ -1786,6 +1787,19 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     return () => removeEventListener(OPEN_GOAL_EVENT, open);
   }, [threadId, setTab]);
   const cached = useMemo(() => cachedBlocks(thread?.id ?? ""), [thread?.id]);
+  const [traced, setTraced] = useState<{ threadId: string; traces: { timestamp: string; text: string }[] }>({ threadId: "", traces: [] });
+  useEffect(() => {
+    if (!threadId) return;
+    let alive = true;
+    void window.emma.threadTraces(threadId)
+      .then((traces) => { if (alive) setTraced({ threadId, traces }); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [threadId, thread?.messages.length]);
+  const recorded = useMemo(
+    () => tracedBlocks(traced.threadId, traced.threadId === threadId ? thread?.messages ?? [] : [], traced.traces),
+    [threadId, thread?.messages, traced],
+  );
   useEffect(() => {
     if (!thread) return;
     const paired = pairBlocks(thread.messages, run.landed, {});
@@ -1799,7 +1813,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   const echoTray = echo !== null && run.pending ? pendingAttachments(thread.id, run.pending.after, echo) : [];
   const unlanded = !sending && run.blocks.length > 0 && !arrived(thread.messages, run.blocks);
   const streaming = (sending || unlanded) && run.blocks.length ? run.blocks : null;
-  const landedBlocks = pairBlocks(thread.messages, unlanded ? run.landed.slice(0, -1) : run.landed, cached);
+  const landedBlocks = pairBlocks(thread.messages, unlanded ? run.landed.slice(0, -1) : run.landed, { ...recorded, ...cached });
   const setCapabilityRunning = (value: boolean) => { setCapabilityBusy(value); onSendingChange(value); };
   const localContext = contextCommands(folders, folderIds, folderFiles);
   const allCommands = commands;
@@ -1853,6 +1867,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     else openCapabilities();
   };
   const composerKeys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (slashOpen && slashMatches.length) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setSlashPick((current) => (Math.min(current, slashMatches.length - 1) + (event.key === "ArrowDown" ? 1 : slashMatches.length - 1)) % slashMatches.length); return; }
       if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); pickCommand(slashMatches[slashActive]); return; }
@@ -1865,10 +1880,11 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
       const edge = event.key === "ArrowUp" ? 0 : element.value.length;
       if (element.selectionStart === edge && element.selectionEnd === edge) {
         const next = event.key === "ArrowUp" ? Math.min(history + 1, past.length - 1) : history - 1;
-        if (next < -1) return;
+        if (!past.length || next < -1 || next === history) return;
         event.preventDefault();
+        if (history < 0) historyDraft.current = message;
         setHistory(next);
-        const text = next < 0 ? "" : past[next];
+        const text = next < 0 ? historyDraft.current : past[next];
         setMessage(text);
         queueMicrotask(() => { input.current?.setSelectionRange(text.length, text.length); setCaret(text.length); });
         return;
@@ -1876,15 +1892,16 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     }
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
   };
-  const send = async (event?: FormEvent, text?: string) => {
+  const send = (event?: FormEvent, text?: string) => {
     event?.preventDefault();
     if (locked) return;
     const content = (text ?? message).trim();
     if (!content) return;
     setRunError("");
     if (text === undefined) { setMessage(""); setHistory(-1); }
-    const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles) : { text: "", uses: [], images: [] };
     const attachedSkill = skill;
+    setSkill(null);
+    setPicks([]);
     const after = thread.messages.length;
     rememberTurnAttachments(thread.id, after, content, picks.map((pick) => ({
       kind: pick.kind,
@@ -1894,11 +1911,15 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     sendTurn(thread.id, {
       content,
       after,
-      params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
-      delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skills" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
+      params: {},
+      prepare: folderIds.length || picks.length || attachedSkill ? async () => {
+        const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles) : { text: "", uses: [], images: [] };
+        return {
+          params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
+          delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skills" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
+        };
+      } : undefined,
     }, reload);
-    setSkill(null);
-    setPicks([]);
   };
   const swapStalledModel = async (next: UserSettings) => {
     const label = modelKeyLabel(next, next.selectedModel);
@@ -1922,7 +1943,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   };
   const steerQueued = (index: number) => {
     const turn = queued[index];
-    if (!turn) return;
+    if (!turn || !canSteer(turn)) return;
     const text = turn.content.trim();
     if (!text) return;
     if (text.length > 4096) { setRunError("Steering takes at most 4096 characters. Leave anything longer queued."); return; }
@@ -2080,7 +2101,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
       </div>
       <ProjectBar folders={folders} ids={folderIds} setFolders={setFolders} setIds={setFolderIds} git={git} name={worktreeName(thread.id)} busy={locked} />
       {sending && confirmStop && <div className="queued-stack" role="status"><div className="queued-row"><span>Press Esc again to stop Emma</span><button type="button" onClick={() => setConfirmStop(false)} aria-label="Keep going">×</button></div></div>}
-      {queued.length > 0 && <div className="queued-stack" aria-label="Queued messages">{queued.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Queued · {turn.content}</span><button type="button" className="steering" disabled={Object.keys(turn.params).length > 0} onClick={() => steerQueued(index)} aria-label="Steer this turn with this message now" title={Object.keys(turn.params).length ? "Attachments cannot be steered — this one waits for the turn to end" : "Steer — hand this to Emma at her next step instead of waiting for the turn to end"}>⤳</button><button type="button" onClick={() => dropQueued(thread.id, index)} aria-label="Drop this queued message">×</button></div>)}</div>}
+      {queued.length > 0 && <div className="queued-stack" aria-label="Queued messages">{queued.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Queued · {turn.content}</span><button type="button" className="steering" disabled={!canSteer(turn)} onClick={() => steerQueued(index)} aria-label="Steer this turn with this message now" title={!canSteer(turn) ? "Attachments cannot be steered — this one waits for the turn to end" : "Steer — hand this to Emma at her next step instead of waiting for the turn to end"}>⤳</button><button type="button" onClick={() => dropQueued(thread.id, index)} aria-label="Drop this queued message">×</button></div>)}</div>}
       {run.held.length > 0 && <div className="queued-stack held-stack" aria-label="Held messages">{run.held.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Held · {turn.content}</span><button type="button" onClick={() => releaseHeld(thread.id, index, reload)} aria-label="Send this held message">↑</button><button type="button" onClick={() => dropHeld(thread.id, index)} aria-label="Drop this held message">×</button></div>)}</div>}
       <DropVeil onFiles={attachDropped} />
       <form className="composer" onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label>{run.draft && <div className="composer-attachment queued-turn"><span>Not sent · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}
@@ -2614,7 +2635,19 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   };
   const updateAction = (index: number, field: string, value: string | boolean) => setSettings((current) => ({ ...current, quickActions: current.quickActions.map((action, actionIndex) => actionIndex === index ? { ...action, [field]: value } : action) as UserSettings["quickActions"] }));
   const save = (event: FormEvent) => { event.preventDefault(); try { const valid = persistSettings(settings); setSettings(valid); syncMainPreferences(valid); onModelChanged(valid); setSaved(true); } catch { setSaved(false); } };
-  const saveModelSettings = (next: UserSettings) => { const valid = persistSettings(next); setSettings(valid); onModelChanged(valid); };
+  const saveModelSettings = (next: UserSettings) => {
+    const valid = validateSettings(next);
+    const save = () => { const saved = persistSettings(valid); setSettings(saved); onModelChanged(saved); };
+    if (JSON.stringify(valid.providers) !== JSON.stringify(settings.providers)) return window.emma.setProviders(valid.providers).then(async () => {
+      try { save(); }
+      catch (reason) {
+        try { await window.emma.setProviders(settings.providers); }
+        catch (rollbackReason) { throw new Error(`${reasonText(reason)} Could not restore providers: ${reasonText(rollbackReason)}`, { cause: rollbackReason }); }
+        throw reason;
+      }
+    });
+    save();
+  };
   const saveNotch = (next: UserSettings) => { const valid = persistSettings(next); setSettings(valid); syncMainPreferences(valid); };
   const saveZeroRetention = async (requireZeroRetention: boolean) => {
     const valid = persistSettings({ ...settings, requireZeroRetention });
@@ -3033,9 +3066,10 @@ const emptyDraft = { name: "", modelId: "", baseUrl: "", credentialEnv: "", cont
 
 const reachLabel: Record<string, string> = { "this-mac": "On this Mac", network: "Your network", internet: "Over the internet" };
 
-function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
+function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void | Promise<void>; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [probe, setProbe] = useState<{ models: string[]; tools: boolean; error: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -3054,32 +3088,44 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
     catch (reason) { setError(reasonText(reason)); }
     finally { setTesting(false); }
   };
-  const add = (event: FormEvent) => {
+  const add = async (event: FormEvent) => {
     event.preventDefault();
+    setSaving(true);
     setError("");
     setStatus("");
     try {
       const profile: ProviderProfile = { id: `p-${Date.now().toString(36)}`, name: draft.name, modelId: draft.modelId, baseUrl: draft.baseUrl, credentialEnv: draft.credentialEnv, contextWindow: Number(draft.contextWindow) || 0, insecure: draft.insecure };
       const next = validateSettings({ ...settings, providers: [...settings.providers, profile] });
-      onChange(next);
+      await onChange(next);
       setDraft(emptyDraft);
       setProbe(null);
       setStatus(`${profile.name} added. Choose Use to route the next turn.`);
     } catch (reason) { setError(reasonText(reason)); }
+    finally { setSaving(false); }
   };
   const select = async (profile: ProviderProfile) => {
     setError("");
     if (await act("selectProviderModel", { providerId: profile.id, effort: settings.thinkingLevel }) === undefined) return;
-    onChange({ ...settings, selectedModel: `provider:${profile.id}` });
-    setStatus(`${profile.name} answers the next turn.`);
+    try {
+      await onChange({ ...settings, selectedModel: `provider:${profile.id}` });
+      setStatus(`${profile.name} answers the next turn.`);
+    } catch (reason) { setError(reasonText(reason)); }
   };
-  const remove = (profile: ProviderProfile) => { if (canRemoveProvider(settings, profile.id)) onChange(forgetProvider(settings, profile.id)); };
+  const remove = async (profile: ProviderProfile) => {
+    if (!canRemoveProvider(settings, profile.id)) return;
+    setError("");
+    setStatus("");
+    setSaving(true);
+    try { await onChange(forgetProvider(settings, profile.id)); }
+    catch (reason) { setError(reasonText(reason)); }
+    finally { setSaving(false); }
+  };
   return <section className="local-model-settings" id="local-models">
     <header>
       <div><span>Providers</span><h3>Any OpenAI-compatible endpoint</h3></div>
       <strong>{settings.providers.length} saved</strong>
     </header>
-    <div className="provider-presets">{PROVIDER_PRESETS.map((item) => <button type="button" key={item.id} disabled={busy} title={item.detail} onClick={() => preset(item)}>{item.name || "Custom"}</button>)}</div>
+    <div className="provider-presets">{PROVIDER_PRESETS.map((item) => <button type="button" key={item.id} disabled={busy || saving} title={item.detail} onClick={() => preset(item)}>{item.name || "Custom"}</button>)}</div>
     <form className="local-model-form" onSubmit={add}>
       <label>Name<input required maxLength={64} value={draft.name} onChange={(event) => update("name", event.target.value)} placeholder="Mac Studio" /></label>
       <label>Base URL<input required maxLength={2048} value={draft.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} placeholder="http://127.0.0.1:1234/v1" /></label>
@@ -3088,8 +3134,8 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
       <label>Key env<input maxLength={64} value={draft.credentialEnv} onChange={(event) => update("credentialEnv", event.target.value)} placeholder="Optional · DEEPSEEK_API_KEY" /></label>
       <label>Context window<input inputMode="numeric" maxLength={9} value={draft.contextWindow} onChange={(event) => update("contextWindow", event.target.value.replace(/\D/g, ""))} placeholder="Optional · 131072" /></label>
       {reach === "network" && <label className="check"><input type="checkbox" checked={draft.insecure} onChange={(event) => update("insecure", event.target.checked)} /> Send prompts and the key unencrypted over my network</label>}
-      <button type="button" disabled={busy || testing || !draft.baseUrl} onClick={() => void test()}>{testing ? "Testing…" : "Test"}</button>
-      <button disabled={busy}>Add provider</button>
+      <button type="button" disabled={busy || saving || testing || !draft.baseUrl} onClick={() => void test()}>{testing ? "Testing…" : "Test"}</button>
+      <button disabled={busy || saving}>Add provider</button>
     </form>
     {probe && <p className="local-model-status" role="status">
       <span className={probe.models.length ? "provider-dot on" : "provider-dot"} /> {probe.models.length ? `${probe.models.length} models` : "No model list"}
@@ -3109,8 +3155,8 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
           </div>
         </div>
         <div>
-          <button type="button" disabled={busy} onClick={() => void select(profile)}>{settings.selectedModel === `provider:${profile.id}` ? "Active" : "Use"}</button>
-          <button type="button" disabled={busy || !canRemoveProvider(settings, profile.id)} title={settings.selectedModel === `provider:${profile.id}` ? "Select another model before removing the active provider" : "Remove provider"} onClick={() => remove(profile)}>Remove</button>
+          <button type="button" disabled={busy || saving} onClick={() => void select(profile)}>{settings.selectedModel === `provider:${profile.id}` ? "Active" : "Use"}</button>
+          <button type="button" disabled={busy || saving || !canRemoveProvider(settings, profile.id)} title={settings.selectedModel === `provider:${profile.id}` ? "Select another model before removing the active provider" : "Remove provider"} onClick={() => void remove(profile)}>Remove</button>
         </div>
       </div>)}
       {!settings.providers.length && <p className="local-model-empty">No providers yet.</p>}
@@ -4236,6 +4282,7 @@ function Overlay() {
     queueMicrotask(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
   };
   const composerKeys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (slashOpen) {
       if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
       if (slashMatches.length) {

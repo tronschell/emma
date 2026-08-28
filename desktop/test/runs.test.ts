@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import type { TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
@@ -374,4 +374,60 @@ test("a turn the host refuses hands its text back once", async () => {
   assert.equal(reloaded, 1);
   assert.equal(takeDraft("failed"), "lost prompt");
   assert.equal(takeDraft("failed"), "");
+});
+
+const traceOf = (thread: string, startedAt: number, calls: [string, string, number?][]) => [
+  JSON.stringify({ v: 1, thread, model: "z-ai/glm-5.3-flash" }),
+  JSON.stringify({ id: `agent:${thread}`, name: "This thread", kind: "agent", startedAt, endedAt: startedAt + 500, status: "ok" }),
+  ...calls.map(([id, name, said], index) => JSON.stringify({
+    id: `call:${id}`, parentId: `agent:${thread}`, name, kind: "read", startedAt: startedAt + index + 1, endedAt: startedAt + index + 2, status: "ok", input: "{}", output: "done", said,
+  })),
+].join("\n");
+
+test("a turn nothing cached is rebuilt from the trace the host kept", () => {
+  const messages: Message[] = [
+    { role: "user", content: "restyle the app", timestamp: "2026-08-27T21:11:28Z" },
+    { role: "assistant", content: "<think>reading the styles</think>Done — it wears the new palette.", timestamp: "2026-08-27T21:11:28Z" },
+    { role: "user", content: "and the tests?", timestamp: "2026-08-27T21:12:37Z" },
+    { role: "assistant", content: "They pass.", timestamp: "2026-08-27T21:12:37Z" },
+  ];
+  const traces = [
+    { timestamp: "2026-08-27T19:50:59Z", text: traceOf("dither", 1787860252951, [["orphan", "a turn that never landed"]]) },
+    { timestamp: "2026-08-27T21:11:29Z", text: traceOf("dither", 1787865075384, [["one", "read index.css"], ["two", "write index.css"]]) },
+    { timestamp: "2026-08-27T21:12:37Z", text: traceOf("dither", 1787865143697, [["three", "npm test"]]) },
+  ];
+  const turns = tracedBlocks("dither", messages, traces);
+  assert.deepEqual(turns["2026-08-27T21:11:28Z"].map((block) => block.kind === "step" ? block.step.title : block.kind), ["thinking", "read index.css", "write index.css", "text"]);
+  assert.deepEqual(turns["2026-08-27T21:12:37Z"].map((block) => block.kind === "step" ? block.step.title : block.kind), ["npm test", "text"]);
+  assert.equal(Object.keys(turns).length, 2);
+});
+
+test("a message with no trace of its own keeps reading as the stored string", () => {
+  const messages: Message[] = [{ role: "assistant", content: "no tools were used", timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{ timestamp: "2026-08-27T19:50:59Z", text: traceOf("dither", 1787860252951, [["far", "an hour earlier"]]) }];
+  assert.deepEqual(tracedBlocks("dither", messages, traces), {});
+});
+
+test("a rebuilt turn puts each call back where the answer had reached", () => {
+  const content = "Reading the styles now.\nThen writing them.\nDone.";
+  const messages: Message[] = [{ role: "assistant", content, timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{
+    timestamp: "2026-08-27T21:11:28Z",
+    text: traceOf("dither", 1787865075384, [["one", "read index.css", 23], ["two", "write index.css", 42]]),
+  }];
+  const blocks = tracedBlocks("dither", messages, traces)[messages[0].timestamp];
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text), [
+    "Reading the styles now.",
+    "read index.css",
+    "\nThen writing them.",
+    "write index.css",
+    "\nDone.",
+  ]);
+});
+
+test("a call recorded before the answer was measured still reads in clock order", () => {
+  const messages: Message[] = [{ role: "assistant", content: "One answer, no offsets.", timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{ timestamp: "2026-08-27T21:11:28Z", text: traceOf("dither", 1787865075384, [["one", "read"], ["two", "write"]]) }];
+  const blocks = tracedBlocks("dither", messages, traces)[messages[0].timestamp];
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text), ["read", "write", "One answer, no offsets."]);
 });

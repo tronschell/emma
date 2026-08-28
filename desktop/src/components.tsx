@@ -1,26 +1,14 @@
-import { useEffect, useRef, useState, type FunctionComponent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FunctionComponent } from "react";
 import { createPortal } from "react-dom";
-import { componentModuleUrl, componentShotUrl, MAX_COMPONENT_SELECTOR_CHARS, type ComponentMeta } from "../shared/components";
+import { componentModuleUrl, componentShotUrl, COMPONENT_ZONE, COMPONENT_ZONE_LABEL, type ComponentMeta, type ComponentRequest } from "../shared/components";
+import type { CredentialSummary } from "./types";
 import { RegionBoundary, runtime } from "./regions";
-import { MoreIcon } from "./icons";
+import { ExpandIcon, MoreIcon } from "./icons";
 import { reasonText } from "./errors";
 
 const REVEAL_MS = 720;
 const GLYPHS = "░▒▓█▚▞╱╲┃┇┊+*=~-_/\\<>[]{}();:.,0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const REVEAL_CHARS = 900;
-/**
- * The three places a component may live. The transcript is deliberately not one
- * of them: it is rebuilt per thread, so a selector into it points at nothing the
- * moment the user opens another conversation. Whole zones, not arbitrary divs,
- * so the anchor survives every redraw inside them.
- */
-const ZONES = [
-  { selector: "aside.sidebar", label: "the sidebar" },
-  { selector: "aside.inspector", label: "the context bar" },
-  { selector: "form.composer", label: "the composer" },
-] as const;
-type Zone = (typeof ZONES)[number];
-const ZONE_SELECTORS = ZONES.map((zone) => zone.selector).join(", ");
 
 export function useComponents(): ComponentMeta[] {
   const [built, setBuilt] = useState<ComponentMeta[]>([]);
@@ -38,19 +26,10 @@ export function useComponents(): ComponentMeta[] {
 
 export function Built() {
   const built = useComponents();
-  const [ask, setAsk] = useState<{ id: string; title: string } | null>(null);
-  useEffect(() => window.emma.onComponentPlace(setAsk), []);
-  return <>
-    {built.filter((one) => !one.disabled).map((one) => <Mounted key={one.id} meta={one} />)}
-    {ask && <Placer title={ask.title} onDone={(anchor) => { window.emma.answerPlace({ id: ask.id, ...anchor }); setAsk(null); }} />}
-  </>;
+  return <>{built.filter((one) => !one.disabled).map((one) => <Mounted key={one.id} meta={one} />)}</>;
 }
 
 function Mounted({ meta }: { meta: ComponentMeta }) {
-  // One host node for the life of the component. Handing React a container it
-  // never has to swap is what keeps a rewrite from leaving its old body behind:
-  // re-creating it made every version mount into a fresh portal and the old DOM
-  // was never collected.
   const [host] = useState(() => {
     const node = document.createElement("div");
     node.className = "built-host";
@@ -59,7 +38,7 @@ function Mounted({ meta }: { meta: ComponentMeta }) {
   useEffect(() => {
     let frame = 0;
     const settle = () => {
-      const zone = resolve(meta.anchor.selector);
+      const zone = document.querySelector(COMPONENT_ZONE);
       if (zone && host.parentElement !== zone) zone.append(host);
     };
     settle();
@@ -73,49 +52,53 @@ function Mounted({ meta }: { meta: ComponentMeta }) {
       if (frame) cancelAnimationFrame(frame);
       host.remove();
     };
-  }, [host, meta.anchor.selector]);
+  }, [host]);
   return createPortal(<Frame meta={meta} />, host);
 }
 
-function resolve(selector: string): Element | null {
-  if (selector.length > MAX_COMPONENT_SELECTOR_CHARS) return null;
-  try {
-    const found = document.querySelector(selector);
-    return found && !found.closest(".built") ? found : null;
-  } catch {
-    return null;
-  }
-}
-
-function Frame({ meta }: { meta: ComponentMeta }) {
-  const [made, setMade] = useState<{ version: number; Component: FunctionComponent } | null>(null);
-  const [error, setError] = useState("");
-  const [moving, setMoving] = useState(false);
-  const box = useRef<HTMLDivElement>(null);
-  const shot = useRef("");
-
+function useModule(meta: ComponentMeta, onError: (why: string) => void) {
+  const [made, setMade] = useState<{ version: number; Component: FunctionComponent<{ expanded: boolean }> } | null>(null);
+  const api = useMemo(() => ({
+    ...runtime,
+    variables: meta.variables ?? [],
+    fetch: (url: string, init?: Omit<ComponentRequest, "url">) => window.emma.componentFetch({ id: meta.id, request: { ...init, url } }),
+  }), [meta.id, meta.variables]);
   useEffect(() => {
     let alive = true;
     void import(/* @vite-ignore */ componentModuleUrl(meta.id, meta.version))
       .then((module: { default?: unknown }) => {
         if (!alive) return;
-        if (typeof module.default !== "function") throw new Error("A component module has to `export default` a function: it is handed { h, useState, emma } and returns the component.");
-        const Component = (module.default as (api: typeof runtime) => unknown)(runtime);
+        if (typeof module.default !== "function") throw new Error("A component module has to `export default` a function: it is handed { h, useState, emma, fetch } and returns the component.");
+        const Component = (module.default as (given: typeof api) => unknown)(api);
         if (typeof Component !== "function") throw new Error(`The default export returned ${typeof Component}. It has to return a component — a function that returns h(...).`);
-        setMade({ version: meta.version, Component: Component as FunctionComponent });
-        setError("");
+        setMade({ version: meta.version, Component: Component as FunctionComponent<{ expanded: boolean }> });
+        onError("");
       })
       .catch((reason: unknown) => {
         if (!alive) return;
         setMade(null);
-        setError(reasonText(reason));
+        onError(reasonText(reason));
       });
     return () => { alive = false; };
-  }, [meta.id, meta.version]);
+  }, [api, meta.id, meta.version, onError]);
+  return made?.version === meta.version ? made.Component : undefined;
+}
+
+function Frame({ meta }: { meta: ComponentMeta }) {
+  const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const report = useCallback((why: string) => setError(why), []);
+  const Component = useModule(meta, report);
+  const box = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const shot = useRef("");
+
+  const open = expanded && !!meta.expands;
+  useEffect(() => { if (open && !dialog.current?.open) dialog.current?.showModal(); }, [open]);
 
   useEffect(() => {
     const key = `${meta.id}:${meta.version}`;
-    if (!made || made.version !== meta.version || shot.current === key) return;
+    if (!Component || open || shot.current === key) return;
     const timer = setTimeout(() => {
       const rect = box.current?.getBoundingClientRect();
       if (!rect || rect.width < 8 || rect.height < 8) return;
@@ -124,22 +107,29 @@ function Frame({ meta }: { meta: ComponentMeta }) {
         .catch(() => { shot.current = ""; });
     }, REVEAL_MS + 160);
     return () => clearTimeout(timer);
-  }, [made, meta.id, meta.version]);
+  }, [Component, open, meta.id, meta.version]);
 
-  const Component = made?.version === meta.version ? made.Component : undefined;
-  return <div className="built" ref={box} data-built={meta.id}>
-    {moving && <Placer title={meta.title} onDone={(anchor) => {
-      setMoving(false);
-      if (anchor.selector) void window.emma.moveComponent({ id: meta.id, selector: anchor.selector, label: anchor.label ?? anchor.selector });
-    }} />}
-    {error
-      ? <p className="built-error" role="status">{meta.title} could not run · {error}</p>
-      : Component && <RegionBoundary key={`body-${meta.version}`} fallback={<p className="built-error" role="status">{meta.title} stopped while it was drawing.</p>} onError={setError}>
-        <div className="built-body"><Component /></div>
-      </RegionBoundary>}
-    {Component && <Reveal key={`reveal-${meta.version}`} />}
-    <BuiltMenu meta={meta} onMove={() => setMoving(true)} />
-  </div>;
+  const body = (full: boolean) => Component && <RegionBoundary key={`body-${meta.version}-${full}`} fallback={<p className="built-error" role="status">{meta.title} stopped while it was drawing.</p>} onError={report}>
+    <div className="built-body"><Component expanded={full} /></div>
+  </RegionBoundary>;
+
+  return <section className="bar-widget built" ref={box} data-built={meta.id}>
+    <header>
+      <span>{meta.title}</span>
+      {meta.expands && <button type="button" className="bar-flip" aria-haspopup="dialog" aria-label={`Open ${meta.title} full screen`} title="Open it full screen" onClick={() => setExpanded(true)}><ExpandIcon /></button>}
+      <BuiltMenu meta={meta} />
+    </header>
+    <div className="bar-widget-body">
+      {error ? <p className="built-error" role="status">{meta.title} could not run · {error}</p> : body(false)}
+      {Component && !error && <Reveal key={`reveal-${meta.version}`} />}
+    </div>
+    {open && <dialog ref={dialog} className="modal-backdrop" aria-label={meta.title} onClose={() => setExpanded(false)} onCancel={(event) => { event.preventDefault(); dialog.current?.close(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
+      <div className="built-full">
+        <header><strong>{meta.title}</strong><button type="button" aria-label="Close" onClick={() => dialog.current?.close()}>×</button></header>
+        {error ? <p className="built-error" role="status">{meta.title} could not run · {error}</p> : body(true)}
+      </div>
+    </dialog>}
+  </section>;
 }
 
 function Reveal() {
@@ -149,113 +139,23 @@ function Reveal() {
   return <pre className="built-reveal" aria-hidden="true" onAnimationEnd={() => setDone(true)}>{glyphs}</pre>;
 }
 
-function BuiltMenu({ meta, onMove }: { meta: ComponentMeta; onMove: () => void }) {
+function BuiltMenu({ meta }: { meta: ComponentMeta }) {
   const [open, setOpen] = useState(false);
   const remove = () => {
     setOpen(false);
-    if (!confirm(`Delete “${meta.title}”?\n\nEmma built this into ${meta.anchor.label}. It goes for good — only she can build it again.`)) return;
+    if (!confirm(`Delete “${meta.title}”?\n\nEmma built this into ${COMPONENT_ZONE_LABEL}. It goes for good — only she can build it again.`)) return;
     void window.emma.deleteComponent(meta.id);
   };
   return <span className="built-menu"
     onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}
     onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
-    <Grip meta={meta} />
-    <button type="button" aria-label={`More for ${meta.title}`} aria-expanded={open} title={`${meta.title} — built by Emma`} onClick={() => setOpen((was) => !was)}><MoreIcon /></button>
+    <button type="button" className="bar-flip" aria-label={`More for ${meta.title}`} aria-expanded={open} title={`${meta.title} — built by Emma`} onClick={() => setOpen((was) => !was)}><MoreIcon /></button>
     {open && <span className="built-menu-list" role="menu">
-      <button type="button" role="menuitem" onClick={() => { setOpen(false); onMove(); }}>Move…</button>
+      <button type="button" role="menuitem" onClick={() => { setOpen(false); void window.emma.expandComponent({ id: meta.id, expands: !meta.expands }); }}>{meta.expands ? "No full screen" : "Allow full screen"}</button>
       <button type="button" role="menuitem" onClick={() => { setOpen(false); void window.emma.enableComponent(meta.id, false); }}>Switch off</button>
       <button type="button" role="menuitem" className="built-danger" onClick={remove}>Delete…</button>
     </span>}
   </span>;
-}
-
-/**
- * Drag the whole component to another zone. The pointer picks the drop target by
- * what is under it, so the same outline the click picker draws is the one the
- * drag lands in.
- */
-function Grip({ meta }: { meta: ComponentMeta }) {
-  const [dragging, setDragging] = useState(false);
-  const start = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const glow = lamp();
-    const root = document.documentElement;
-    root.setAttribute("data-emma-drag", "");
-    setDragging(true);
-    let over: Zone | null = null;
-    const move = (moved: PointerEvent) => { over = zoneAt(document.elementFromPoint(moved.clientX, moved.clientY)); glow.show(over); };
-    const stop = (dropped: Zone | null) => {
-      glow.show(null);
-      root.removeAttribute("data-emma-drag");
-      removeEventListener("pointermove", move, true);
-      removeEventListener("pointerup", up, true);
-      removeEventListener("keydown", key, true);
-      setDragging(false);
-      if (dropped && dropped.selector !== meta.anchor.selector) void window.emma.moveComponent({ id: meta.id, ...dropped });
-    };
-    const up = () => stop(over);
-    const key = (pressed: KeyboardEvent) => { if (pressed.key === "Escape") { pressed.preventDefault(); stop(null); } };
-    addEventListener("pointermove", move, true);
-    addEventListener("pointerup", up, true);
-    addEventListener("keydown", key, true);
-  };
-  return <button type="button" className="built-grip" aria-label={`Drag ${meta.title} somewhere else`}
-    title="Drag me to the sidebar, the context bar or the composer" data-dragging={dragging || undefined} onPointerDown={start}>⠿</button>;
-}
-
-function zoneAt(target: EventTarget | null): Zone | null {
-  if (!(target instanceof Element)) return null;
-  const found = target.closest(ZONE_SELECTORS);
-  return (found && ZONES.find((zone) => found.matches(zone.selector))) ?? null;
-}
-
-/** One lit outline at a time, shared by the click picker and the drag. */
-function lamp() {
-  let lit: Element | null = null;
-  return {
-    show(zone: Zone | null) {
-      const element = zone ? document.querySelector(zone.selector) : null;
-      if (lit === element) return;
-      lit?.removeAttribute("data-emma-lit");
-      lit = element;
-      lit?.setAttribute("data-emma-lit", "");
-    },
-  };
-}
-
-function Placer({ title, onDone }: { title: string; onDone: (anchor: { selector?: string; label?: string }) => void }) {
-  useEffect(() => {
-    const glow = lamp();
-    const over = (event: PointerEvent) => glow.show(zoneAt(event.target));
-    const down = (event: MouseEvent) => { if (zoneAt(event.target)) { event.preventDefault(); event.stopPropagation(); } };
-    const click = (event: MouseEvent) => {
-      const zone = zoneAt(event.target);
-      if (!zone) return;
-      event.preventDefault();
-      event.stopPropagation();
-      glow.show(null);
-      onDone({ ...zone });
-    };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onDone({}); } };
-    document.documentElement.setAttribute("data-emma-place", "");
-    addEventListener("pointerover", over, true);
-    addEventListener("pointerdown", down, true);
-    addEventListener("click", click, true);
-    addEventListener("keydown", key, true);
-    return () => {
-      glow.show(null);
-      document.documentElement.removeAttribute("data-emma-place");
-      removeEventListener("pointerover", over, true);
-      removeEventListener("pointerdown", down, true);
-      removeEventListener("click", click, true);
-      removeEventListener("keydown", key, true);
-    };
-  }, [onDone]);
-  return <div className="placing" role="status">
-    <strong>Point at where “{title}” goes</strong>
-    <span>The sidebar, the context bar or the composer · Esc to leave it</span>
-  </div>;
 }
 
 export function BuiltSettings({ busy, onAttach }: { busy: boolean; onAttach: (meta: ComponentMeta) => void }) {
@@ -266,22 +166,50 @@ export function BuiltSettings({ busy, onAttach }: { busy: boolean; onAttach: (me
     if (!confirm(`Delete all ${built.length} of them?\n\nEverything Emma has built into her interface goes for good.`)) return;
     act(Promise.all(built.map((one) => window.emma.deleteComponent(one.id))));
   };
-  if (!built.length) return <p className="built-empty">Emma has built nothing into her interface yet. Ask her for one in a thread — she asks you where it goes, then builds it there.</p>;
+  if (!built.length) return <p className="built-empty">Emma has built nothing into her interface yet. Ask her for one in a thread — it appears in {COMPONENT_ZONE_LABEL}, under the built-in widgets.</p>;
   return <div className="built-list">
     {note && <p className="built-error" role="status">{note}</p>}
     {built.map((one) => <article key={one.id} className="built-card" data-off={one.disabled || undefined}>
       <Shot key={one.version} meta={one} />
       <div className="built-card-body">
         <strong>{one.title}</strong>
-        <small>in {one.anchor.label} · v{one.version}{one.disabled ? " · switched off" : ""}</small>
+        <small>v{one.version}{one.expands ? " · opens full screen" : ""}{one.disabled ? " · switched off" : ""}</small>
       </div>
       <div className="built-card-acts">
         <button type="button" disabled={busy} onClick={() => onAttach(one)}>Send to a thread</button>
+        <button type="button" disabled={busy} onClick={() => act(window.emma.expandComponent({ id: one.id, expands: !one.expands }))}>{one.expands ? "No full screen" : "Allow full screen"}</button>
         <button type="button" disabled={busy} onClick={() => act(window.emma.enableComponent(one.id, !!one.disabled))}>{one.disabled ? "Switch on" : "Switch off"}</button>
         <button type="button" className="built-danger" disabled={busy} onClick={() => { if (confirm(`Delete “${one.title}”?\n\nIt goes for good — only Emma can build it again.`)) act(window.emma.deleteComponent(one.id)); }}>Delete…</button>
       </div>
+      {one.variables?.length ? <Variables meta={one} busy={busy} onError={setNote} /> : null}
     </article>)}
     <footer><button type="button" className="built-danger" disabled={busy} onClick={removeAll}>Delete all {built.length}</button></footer>
+  </div>;
+}
+
+function Variables({ meta, busy, onError }: { meta: ComponentMeta; busy: boolean; onError: (why: string) => void }) {
+  const [stored, setStored] = useState<CredentialSummary[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  useEffect(() => { void window.emma.listCredentials().then(setStored).catch(() => setStored([])); }, []);
+  const save = (env: string, secret: string | undefined) => {
+    void window.emma.saveCredential({ env, secret })
+      .then((next) => { setStored(next); setDrafts((was) => ({ ...was, [env]: "" })); onError(""); })
+      .catch((reason: unknown) => onError(reasonText(reason)));
+  };
+  return <div className="built-vars">
+    {(meta.variables ?? []).map((env) => {
+      const held = stored.find((one) => one.env === env);
+      const draft = drafts[env] ?? "";
+      return <label key={env}>
+        <span>{env}</span>
+        <input type="password" value={draft} disabled={busy} spellCheck={false} autoComplete="off"
+          placeholder={held ? held.masked : "not set"}
+          onChange={(event) => setDrafts((was) => ({ ...was, [env]: event.target.value }))}
+          onKeyDown={(event) => { if (event.key === "Enter" && draft.trim()) save(env, draft.trim()); }} />
+        <button type="button" disabled={busy || !draft.trim()} onClick={() => save(env, draft.trim())}>Save</button>
+        {held && <button type="button" className="built-danger" disabled={busy} onClick={() => save(env, undefined)}>Clear</button>}
+      </label>;
+    })}
   </div>;
 }
 

@@ -1,6 +1,6 @@
 import type { BackgroundTask, FileChange, LiveAgent, PermissionAsk, ThreadStep } from "../shared/agents";
 import type { Artifact, ArtifactMeta } from "../shared/artifacts";
-import type { BuiltComponent, ComponentMeta } from "../shared/components";
+import type { BuiltComponent, ComponentMeta, ComponentRequest } from "../shared/components";
 import type { CliModels, CliRun } from "../shared/cli";
 import type { EditorApp, FolderFile, FolderGrant } from "../shared/folders";
 import type { GitCommandResult, GitHistory, GitReady, GitSnapshot } from "../shared/git";
@@ -253,11 +253,10 @@ declare global {
       readComponent(id: string): Promise<BuiltComponent>;
       deleteComponent(id: string): Promise<ComponentMeta>;
       enableComponent(id: string, enabled: boolean): Promise<ComponentMeta>;
-      moveComponent(value: { id: string; selector: string; label: string }): Promise<ComponentMeta>;
+      expandComponent(value: { id: string; expands: boolean }): Promise<ComponentMeta>;
+      componentFetch(value: { id: string; request: ComponentRequest }): Promise<{ status: number; ok: boolean; body: string }>;
       shootComponent(value: { id: string; x: number; y: number; width: number; height: number }): Promise<boolean>;
-      answerPlace(value: { id: string; selector?: string; label?: string }): void;
       onComponentsChanged(listener: () => void): () => void;
-      onComponentPlace(listener: (value: { id: string; title: string }) => void): () => void;
       readVisual(id: string): Promise<Visual>;
       exportVisual(id: string, width: number): Promise<string>;
       onArtifactsChanged(listener: () => void): () => void;

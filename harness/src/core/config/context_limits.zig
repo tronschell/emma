@@ -18,7 +18,7 @@ pub const Name = enum {
     pub fn defaultBytes(self: Name) usize {
         return switch (self) {
             .skill_description_bytes => 1024,
-            .skill_catalog_bytes => 16 * 1024,
+            .skill_catalog_bytes => 64 * 1024,
             .skill_chunk_bytes => 20 * 1024,
             .skill_file_bytes => 1024 * 1024,
             .mcp_description_bytes => 1024,

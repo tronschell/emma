@@ -123,18 +123,13 @@ contextBridge.exposeInMainWorld("emma", {
   readComponent: (id: string) => ipcRenderer.invoke("emma:read-component", id),
   deleteComponent: (id: string) => ipcRenderer.invoke("emma:delete-component", id),
   enableComponent: (id: string, enabled: boolean) => ipcRenderer.invoke("emma:enable-component", { id, enabled }),
-  moveComponent: (value: { id: string; selector: string; label: string }) => ipcRenderer.invoke("emma:move-component", value),
+  expandComponent: (value: { id: string; expands: boolean }) => ipcRenderer.invoke("emma:expand-component", value),
+  componentFetch: (value: { id: string; request: unknown }) => ipcRenderer.invoke("emma:component-fetch", value),
   shootComponent: (value: { id: string; x: number; y: number; width: number; height: number }) => ipcRenderer.invoke("emma:shoot-component", value),
-  answerPlace: (value: { id: string; selector?: string; label?: string }) => ipcRenderer.send("emma:answer-place", value),
   onComponentsChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:components-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:components-changed", wrapped);
-  },
-  onComponentPlace: (listener: (value: { id: string; title: string }) => void) => {
-    const wrapped = (_event: unknown, value: { id: string; title: string }) => listener(value);
-    ipcRenderer.on("emma:component-place", wrapped);
-    return () => ipcRenderer.removeListener("emma:component-place", wrapped);
   },
   readVisual: (id: string) => ipcRenderer.invoke("emma:read-visual", id),
   exportVisual: (id: string, width: number) => ipcRenderer.invoke("emma:export-visual", { id, width }),

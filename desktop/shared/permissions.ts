@@ -119,7 +119,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "workflow", label: "Scheduled tasks", blurb: "Builds and runs the workflows in the Scheduled section.", group: "Automation" },
   { name: "autoresearch", label: "Autoresearch", blurb: "Builds and runs the long experiment loops in the Autoresearch section.", group: "Automation" },
   { name: "artifact", label: "Artifacts", blurb: "Writes and edits the documents, pages and drawings kept on the Artifacts page.", group: "Thinking" },
-  { name: "component", label: "Build into Emma", blurb: "Builds a piece of Emma\u2019s own interface where you point, and reworks it while you watch. Delete one from the \u22ef in its corner.", group: "Thinking" },
+  { name: "component", label: "Build into Emma", blurb: "Builds a widget into the context bar, and reworks it while you watch. Switch one off or delete it from the \u22ef in its header.", group: "Thinking" },
   { name: "visualize", label: "Visualize", blurb: "Draws a picture inline in the conversation — charts, panels, anything it can draw. Nothing is saved until you keep it.", group: "Thinking" },
 ];
 

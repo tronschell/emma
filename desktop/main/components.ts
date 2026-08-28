@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { COMPONENT_SHOT_PATH, componentSlug, MAX_COMPONENT_CHARS, MAX_COMPONENT_SHOT_BYTES, MAX_COMPONENT_TITLE_CHARS, MAX_COMPONENTS, parseAnchor, validComponentId, type BuiltComponent, type ComponentAnchor, type ComponentMeta } from "../shared/components";
+import { COMPONENT_SHOT_PATH, componentSlug, MAX_COMPONENT_CHARS, MAX_COMPONENT_SHOT_BYTES, MAX_COMPONENT_TITLE_CHARS, MAX_COMPONENTS, parseVariables, validComponentId, type BuiltComponent, type ComponentMeta, type ComponentRequest } from "../shared/components";
 
 export const componentRoot = (userData: string) => path.join(userData, "components");
 
@@ -9,7 +9,8 @@ export type ComponentInput = {
   id?: string;
   title: string;
   code: string;
-  anchor?: ComponentAnchor;
+  expands?: boolean;
+  variables?: string[];
   sourceThreadId?: string;
 };
 
@@ -29,13 +30,15 @@ function parseMeta(id: string, value: unknown): ComponentMeta {
   const raw = value as Record<string, unknown>;
   if (typeof raw.title !== "string" || !raw.title.trim()) throw new Error("Component metadata is invalid");
   const stamp = (candidate: unknown) => typeof candidate === "string" && candidate.length <= 40 ? candidate : new Date(0).toISOString();
+  const variables = (() => { try { return parseVariables(raw.variables); } catch { return []; } })();
   return {
     id,
     title: raw.title.slice(0, MAX_COMPONENT_TITLE_CHARS),
-    anchor: parseAnchor(raw.anchor),
     createdAt: stamp(raw.createdAt),
     updatedAt: stamp(raw.updatedAt),
     version: typeof raw.version === "number" && Number.isSafeInteger(raw.version) && raw.version > 0 ? raw.version : 1,
+    expands: raw.expands === true ? true : undefined,
+    variables: variables.length ? variables : undefined,
     disabled: raw.disabled === true ? true : undefined,
     sourceThreadId: typeof raw.sourceThreadId === "string" ? raw.sourceThreadId.slice(0, 96) : undefined,
   };
@@ -77,15 +80,15 @@ export async function writeComponent(userData: string, input: ComponentInput): P
   const directory = componentDirectory(userData, id);
   if (!taken.includes(id) && taken.length >= MAX_COMPONENTS) throw new Error(`Emma already holds the maximum of ${MAX_COMPONENTS} components. The user deletes one from its ⋯ menu.`);
   const previous = await readMeta(directory, id).catch(() => undefined);
-  const anchor = input.anchor ?? previous?.anchor;
-  if (!anchor) throw new Error('A component needs a place. Ask for one with component {"action":"place"}.');
+  const variables = input.variables === undefined ? previous?.variables : parseVariables(input.variables);
   const meta: ComponentMeta = {
     id,
     title,
-    anchor: parseAnchor(anchor),
     createdAt: previous?.createdAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     version: (previous?.version ?? 0) + 1,
+    expands: (input.expands ?? previous?.expands) === true ? true : undefined,
+    variables: variables?.length ? variables : undefined,
     disabled: previous?.disabled,
     sourceThreadId: input.sourceThreadId ?? previous?.sourceThreadId,
   };
@@ -104,11 +107,11 @@ export async function setComponentEnabled(userData: string, id: string, enabled:
   return next;
 }
 
-export async function setComponentAnchor(userData: string, id: string, anchor: unknown): Promise<ComponentMeta> {
+export async function setComponentExpands(userData: string, id: string, expands: boolean): Promise<ComponentMeta> {
   const directory = componentDirectory(userData, id);
   const meta = await readMeta(directory, id).catch(() => undefined);
   if (!meta) throw new Error(`There is no component called "${id}".`);
-  const next: ComponentMeta = { ...meta, anchor: parseAnchor(anchor), updatedAt: new Date().toISOString() };
+  const next: ComponentMeta = { ...meta, expands: expands ? true : undefined, updatedAt: new Date().toISOString() };
   await writeAtomic(path.join(directory, "meta.json"), `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }
@@ -140,6 +143,30 @@ export async function deleteComponent(userData: string, id: string): Promise<Com
   if (!meta) throw new Error(`There is no component called "${id}".`);
   await rm(directory, { recursive: true, force: true });
   return meta;
+}
+
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+export function componentCall(meta: ComponentMeta, request: unknown, secrets: NodeJS.ProcessEnv): { url: string; method: string; headers: Record<string, string>; body?: string } {
+  if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("A component request is { url, method, headers, body }.");
+  const raw = request as ComponentRequest;
+  const declared = meta.variables ?? [];
+  const fill = (value: string, where: string) => value.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_]{0,63})\s*}}/g, (_, name: string) => {
+    if (!declared.includes(name)) throw new Error(`${meta.title} did not ask for ${name}. A component may only use the variables it declared: ${declared.join(", ") || "none"}.`);
+    const secret = secrets[name];
+    if (!secret) throw new Error(`${name} is not set. Open Settings → Built by Emma, find ${meta.title}, and fill it in — until then ${where} cannot be sent.`);
+    return secret;
+  });
+  const method = typeof raw.method === "string" ? raw.method.toUpperCase() : "GET";
+  if (!METHODS.includes(method)) throw new Error(`A component may send ${METHODS.join(", ")}, not ${method.slice(0, 12)}.`);
+  if (typeof raw.url !== "string" || !raw.url.trim()) throw new Error("A component request needs a url.");
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw.headers ?? {})) {
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(name) || typeof value !== "string") throw new Error(`"${name.slice(0, 24)}" is not a header name.`);
+    headers[name] = fill(value, "that header");
+  }
+  const body = typeof raw.body === "string" ? fill(raw.body, "that body") : undefined;
+  return { url: fill(raw.url.trim(), "that url"), method, headers, ...(body === undefined ? {} : { body }) };
 }
 
 function unique(slug: string, taken: readonly string[]) {
