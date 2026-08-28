@@ -83,10 +83,15 @@ pub struct ScheduledJob {
     /// What the run may do when it fires. An unattended job is still a full agent
     /// turn, so the mode chosen when it was saved is the one it runs under.
     pub permission_mode: String,
+    /// The model key the run is pinned to, as the desktop writes it
+    /// (`openrouter:<id>`, or empty for whichever model the app is set to).
+    /// Core stores it and never interprets it.
+    pub model: String,
 }
 
 pub const MAX_SCHEDULED_SOURCE_DOMAINS: usize = 32;
 pub const PERMISSION_MODES: [&str; 3] = ["ask", "acceptEdits", "full"];
+pub const MAX_SCHEDULED_MODEL_LEN: usize = 128;
 pub const MAX_WORKFLOW_NODE_BYTES: usize = 32 * 1024;
 pub const MAX_WORKFLOW_OUTPUT_BYTES: usize = 16 * 1024;
 /// How far a chain of `after` triggers may run before core stops firing. Two jobs
@@ -167,6 +172,7 @@ impl ScheduledJob {
             last_run_at: None,
             last_thread_id: None,
             permission_mode,
+            model: String::new(),
         })
     }
 
@@ -194,6 +200,15 @@ impl ScheduledJob {
         self.last_run_at = Some(now);
     }
 
+    pub fn set_model(&mut self, model: String) -> Result<(), ValidationError> {
+        validate_text("scheduled job model", &model, false)?;
+        if model.len() > MAX_SCHEDULED_MODEL_LEN {
+            return Err(ValidationError::new("scheduled job model is too long"));
+        }
+        self.model = model;
+        Ok(())
+    }
+
     pub fn set_outputs(&mut self, outputs: String) -> Result<(), ValidationError> {
         validate_text("scheduled job outputs", &outputs, false)?;
         if outputs.len() > MAX_WORKFLOW_OUTPUT_BYTES {
@@ -204,7 +219,7 @@ impl ScheduledJob {
     }
 
     pub fn to_markdown(&self) -> String {
-        let mut output = String::from("---\nemma-scheduled-job-format: 3\n");
+        let mut output = String::from("---\nemma-scheduled-job-format: 4\n");
         field(&mut output, "id", self.id.as_str());
         field(&mut output, "title", &self.title);
         field(&mut output, "schedule", &self.schedule);
@@ -232,6 +247,7 @@ impl ScheduledJob {
             self.last_thread_id.as_deref().unwrap_or(""),
         );
         field(&mut output, "permission-mode", &self.permission_mode);
+        field(&mut output, "model", &self.model);
         output.push_str(&format!("enabled: {}\n", self.enabled));
         output.push_str(&format!(
             "source-domain-count: {}\n",
@@ -253,6 +269,7 @@ impl ScheduledJob {
             "1" => 1,
             "2" => 2,
             "3" => 3,
+            "4" => 4,
             _ => {
                 return Err(ValidationError::new(
                     "scheduled job format is not supported",
@@ -290,6 +307,13 @@ impl ScheduledJob {
             stored_permission_mode(field_value(&mut lines, "permission-mode")?)
         } else {
             "ask".to_string()
+        };
+        // A job saved before models could be pinned runs on whatever model the app
+        // is set to, which is what an empty key means.
+        let model = if format >= 4 {
+            field_value(&mut lines, "model")?
+        } else {
+            String::new()
         };
         let enabled = match prefixed(&mut lines, "enabled: ")? {
             "true" => true,
@@ -336,6 +360,7 @@ impl ScheduledJob {
             ));
         }
         job.set_outputs(outputs)?;
+        job.set_model(model)?;
         job.id = id;
         job.enabled = enabled;
         job.next_run_at = next_run_at;
@@ -666,14 +691,34 @@ mod tests {
                 .permission_mode,
             "ask"
         );
+        // A job saved before models could be pinned keeps running on the app's model.
+        let unpinned = job
+            .to_markdown()
+            .replacen(
+                "emma-scheduled-job-format: 4",
+                "emma-scheduled-job-format: 3",
+                1,
+            )
+            .replace("model: \"\"\n", "");
+        assert_eq!(ScheduledJob::from_markdown(&unpinned).unwrap().model, "");
+        let mut pinned = job.clone();
+        pinned
+            .set_model("openrouter:deepseek/deepseek-chat".into())
+            .unwrap();
+        assert_eq!(
+            ScheduledJob::from_markdown(&pinned.to_markdown()).unwrap(),
+            pinned
+        );
+        assert!(pinned.set_model("x".repeat(129)).is_err());
         let older = job
             .to_markdown()
             .replacen(
-                "emma-scheduled-job-format: 3",
+                "emma-scheduled-job-format: 4",
                 "emma-scheduled-job-format: 1",
                 1,
             )
             .replace("permission-mode: \"full\"\n", "")
+            .replace("model: \"\"\n", "")
             .replace("nodes: \"\"\n", "")
             .replace("outputs: \"\"\n", "");
         let migrated = ScheduledJob::from_markdown(&older).unwrap();

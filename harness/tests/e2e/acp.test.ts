@@ -1276,8 +1276,9 @@ describe("acp: model-independent", () => {
         expect(loadUpdates).toContain(
           "Preserve this ACP prompt across a process restart.",
         );
-        expect(loadUpdates).toContain("Previous tool execution:");
-        expect(loadUpdates).toContain("Tool read_file (success):");
+        expect(loadUpdates).toContain('"sessionUpdate":"tool_call"');
+        expect(loadUpdates).toContain('"title":"read_file"');
+        expect(loadUpdates).not.toContain("Previous tool execution:");
         expect(occurrenceCount(loadUpdates, toolEvidence)).toBe(1);
         expect(occurrenceCount(loadUpdates, partialText)).toBe(1);
 
@@ -5224,12 +5225,23 @@ describe("acp: model-independent", () => {
             message.params?.update?.sessionUpdate === "agent_message_chunk"
           )
           .map((message) => message.params.update.content.text);
-        expect(replayedText).toEqual([
-          expect.stringContaining("Previous tool execution:"),
-          "ACP load replay complete.",
+        expect(replayedText).toEqual(["ACP load replay complete."]);
+        const replayedCalls = loadMessages
+          .filter((message) =>
+            message.method === "session/update" &&
+            (message.params?.update?.sessionUpdate === "tool_call" ||
+              message.params?.update?.sessionUpdate === "tool_call_update")
+          )
+          .map((message) => message.params.update);
+        expect(replayedCalls.map((update: any) => update.sessionUpdate)).toEqual([
+          "tool_call",
+          "tool_call_update",
         ]);
-        expect(replayedText[0]).toContain("Tool read_file (success):");
-        expect(replayedText[0]).toContain("ACP_HISTORY_EVIDENCE");
+        expect(replayedCalls[0].title).toBe("read_file");
+        expect(replayedCalls[0].status).toBe("completed");
+        expect(JSON.stringify(replayedCalls[1].content)).toContain(
+          "ACP_HISTORY_EVIDENCE",
+        );
         expect(client.stderr).toBe("");
       } finally {
         await client?.close();
@@ -5450,7 +5462,55 @@ describe("acp: model-independent", () => {
   );
 
   test(
-    "ACP rejects an explicitly invoked skill deleted after session startup",
+    "ACP loads an explicitly invoked skill installed after the previous turn",
+    async () => {
+      const root = createIsolatedRoot("fx-acp-next-turn-skill-");
+      const skillDirectory = join(root.home, ".fx", "skills", "acp-next-turn");
+      const skillBody = "ACP_NEXT_TURN_SKILL_BODY";
+      const gateway = startFakeGateway([
+        finalText("ACP pre-install turn complete"),
+        finalText("ACP next-turn skill complete"),
+      ]);
+      try {
+        client = await AcpClient.create({
+          cwd: root.workspace,
+          env: fakeGatewayEnv(root, gateway),
+        });
+        await startCodeSession(client);
+        await runPrompt(client, "Run before the skill is installed.", TIMEOUT);
+        mkdirSync(skillDirectory, { recursive: true });
+        writeFileSync(
+          join(skillDirectory, "SKILL.md"),
+          `---\nname: acp-next-turn\ndescription: next-turn ACP fixture\n---\n\n${skillBody}\n`,
+        );
+
+        const result = await runPrompt(
+          client,
+          "/acp-next-turn apply the selected skill.",
+          TIMEOUT,
+        );
+
+        expect(result.promptResult.error).toBeUndefined();
+        expect(result.promptResult.result.stopReason).toBe("end_turn");
+        expect(gateway.requests).toHaveLength(2);
+        expect(acpPromptText(gateway.requests[0]!.body)).not.toContain(skillBody);
+        const promptText = acpPromptText(gateway.requests[1]!.body);
+        expect(promptText).toContain(
+          '<skill_content name="acp-next-turn" resource="SKILL.md"',
+        );
+        expect(promptText).toContain(skillBody);
+        expect(client.stderr).toBe("");
+      } finally {
+        await client?.close();
+        gateway.stop();
+        rmSync(root.root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "ACP stops advertising a skill deleted after session startup",
     async () => {
       const root = createIsolatedRoot("fx-acp-stale-explicit-skill-");
       const skillDirectory = join(root.workspace, "skills", "acp-stale");
@@ -5481,10 +5541,8 @@ describe("acp: model-independent", () => {
         expect(result.promptResult.result.stopReason).toBe("end_turn");
         expect(gateway.requests).toHaveLength(1);
         const promptText = acpPromptText(gateway.requests[0]!.body);
-        expect(promptText).toContain(
-          'Skill "acp-stale" was not found at advertised location',
-        );
         expect(promptText).not.toContain("<skill_content");
+        expect(promptText).not.toContain("<name>acp-stale</name>");
         expect(promptText).not.toContain(skillBody);
         expect(client.stderr).toBe("");
       } finally {
@@ -5600,8 +5658,7 @@ describe("acp: model-independent", () => {
       const root = createIsolatedRoot("fx-acp-context-refresh-");
       const firstMarker = "ACP_CONTEXT_FIRST_SENTINEL";
       const secondMarker = "ACP_CONTEXT_SECOND_SENTINEL";
-      const transientMarker =
-        "Runtime context: this is a noninteractive run without live question UI;";
+      const transientMarker = "Runtime context: permission mode is ";
       const rulesPath = join(root.workspace, "AGENTS.md");
       writeFileSync(rulesPath, `${firstMarker}\n`);
       const gateway = startFakeGateway([

@@ -7,6 +7,7 @@ export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import type { RunnableHookEvent } from "../shared/plugins";
+import { MAX_LOG_BODY, type HarnessFlow, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import type { HarnessExperiments } from "../shared/settings";
 
 /**
@@ -36,6 +37,7 @@ const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
  * message resets the clock, so this now only fires on a genuinely wedged peer.
  */
 export const MAX_IDLE_MS = 30 * 60 * 1000;
+const MAX_STDERR_TAIL = 4 * 1024;
 
 /** The wire values, from `harness/src/acp/types.zig`. Three of these were wrong
  *  here — `refusal`/`max_tokens`/`max_turn_requests` are not what the harness
@@ -65,7 +67,7 @@ const mediaType =(file: string) => `image/${path.extname(file).slice(1).toLowerC
  * composer chip cleared and the attachment was marked delivered while the
  * instructions never left this process.
  */
-export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; compact?: boolean; images?: string[] };
+export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; compact?: boolean; images?: string[]; continueRecovery?: boolean };
 
 /** The stop the picker is on, with the stops the turn's model publishes. Blank asks for the model's default. */
 export type ThinkingRoute = { level: string; published: string[] };
@@ -99,6 +101,18 @@ export const experimentOption = (experiments: HarnessExperiments) =>
     bridge that used to carry Emma's own tools, now that they are native. */
 export type HarnessMcpServer = { name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> };
 
+const wireLabel = (message: Record<string, unknown>) => {
+  const id = typeof message.id === "number" ? `#${message.id}` : "";
+  if (typeof message.method === "string") return [message.method, id].filter(Boolean).join(" ");
+  return [message.error ? "error" : "result", id].filter(Boolean).join(" ") || "message";
+};
+
+const streamedChunk = (message: Record<string, unknown>) => {
+  if (message.method !== "session/update") return false;
+  const update = (message.params as { update?: { sessionUpdate?: unknown } } | undefined)?.update;
+  return typeof update?.sessionUpdate === "string" && update.sessionUpdate.endsWith("_chunk");
+};
+
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 
 /** The renderer shows these, so the shape lives where both sides can name it. */
@@ -124,6 +138,15 @@ export function contextExperimentFired(update: Record<string, unknown>): Context
   return pruned || reinjected
     ? { prunedResults: pruned, reinjected, savedTokens: count(fired.savedTokens), addedTokens: count(fired.addedTokens) }
     : undefined;
+}
+
+export type RoutedModel = { model: string; fellBack: boolean };
+
+export function routedModelReported(update: Record<string, unknown>): RoutedModel | undefined {
+  const routed = (update._meta as { fx?: { routedModel?: unknown } } | undefined)?.fx?.routedModel as
+    { model?: unknown; fellBack?: unknown } | undefined;
+  if (!routed || typeof routed !== "object" || typeof routed.model !== "string" || !routed.model) return undefined;
+  return { model: routed.model.slice(0, 256), fellBack: routed.fellBack === true };
 }
 
 export type ContextBreakdown ={ systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number };
@@ -164,8 +187,8 @@ export type HarnessDeps = {
    * from. One process per workspace is what actually contains a run.
    */
   cwd: string;
-  /** The provider key, from Emma's credential store rather than the harness's. */
   apiKey?: string;
+  chatUrl?: string;
   /** Overrides `MAX_IDLE_MS`, so a test can watch a long turn survive on its
       streamed updates without waiting half an hour to find out. */
   idleMs?: number;
@@ -182,6 +205,7 @@ export type HarnessDeps = {
    */
   onContextExperiment: (threadId: string, fired: ContextExperimentFired) => void;
   onContextBreakdown: (threadId: string, parts: ContextBreakdown) => void;
+  onRoutedModel: (threadId: string, routed: RoutedModel) => void;
   onUsage: (threadId: string, usage: TurnUsage) => void;
   /**
    * A subagent seen for the first time. Resolves with the Emma thread its
@@ -189,8 +213,9 @@ export type HarnessDeps = {
    * that thread through the callbacks above, exactly as the parent's turn is.
    */
   onChildStart: (child: { parentThreadId: string; childId: string; title: string }) => Promise<string>;
-  /** That child's run ended — it will send nothing more. */
-  onChildEnd: (threadId: string) => void;
+  /** That child's run ended — it will send nothing more. `reason` is set only when
+   *  the process died under it, rather than the child reporting its own end. */
+  onChildEnd: (threadId: string, reason?: string) => void;
   onPlan: (threadId: string, entries: unknown) => void;
   /** Resolves with the chosen ACP option id, or null to cancel the request. */
   onPermission: (ask: PermissionAsk, options: PermissionOption[], context: PermissionContext) => Promise<string | null>;
@@ -203,6 +228,7 @@ export type HarnessDeps = {
    */
   onToolRequest: (threadId: string, name: string, args: Record<string, unknown>) => Promise<string>;
   onLifecycle?: (event: RunnableHookEvent, threadId: string, input: Record<string, unknown>) => Promise<void>;
+  onLog?: (line: HarnessLogLine) => void;
 };
 
 /**
@@ -225,8 +251,8 @@ export const HARNESS_MODE_ID = "ask";
  * its parent's process waits for the parent to finish — which is why a
  * `threads spawn` carrying a prompt looked like it had hung.
  */
-export const harnessKey = (cwd: string, nestedThreadId?: string) =>
-  nestedThreadId ? `${cwd}\u0000${nestedThreadId}` : cwd;
+export const harnessKey = (cwd: string, nestedThreadId?: string, providerId?: string) =>
+  [cwd, ...(nestedThreadId ? [nestedThreadId] : []), ...(providerId ? [`@${providerId}`] : [])].join("\u0000");
 
 const SESSION_INDEX = "emma-sessions.json";
 
@@ -265,6 +291,9 @@ type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => vo
 
 export class Harness {
   private child: ChildProcessWithoutNullStreams | undefined;
+  /** The tail of what the process said on stderr, so a death that takes eight
+   *  subagents with it names the panic that caused it rather than "code unknown". */
+  private stderrTail = "";
   private readonly lines = new BoundedLines(MAX_LINE_BYTES);
   private readonly pending = new Map<number, Pending>();
   private readonly threadsBySession = new Map<string, string>();
@@ -288,14 +317,21 @@ export class Harness {
   /** Last full state per tool call, so an update that omits a field keeps it.
       ponytail: never pruned — one turn's worth of small records per process. */
   private readonly calls = new Map<string, HarnessToolCall>();
-  /** `parentThreadId/childId` → the Emma thread that subagent's transcript is on. */
-  private readonly children = new Map<string, Promise<string>>();
+  /** `parentThreadId/childId` → the Emma thread that subagent's transcript is on,
+      and whether that child has reported its end. A subagent runs on a thread of
+      its own inside this process and outlives the parent turn that started it, so
+      the live ones are what say this process still has work in it. */
+  private readonly children = new Map<string, { thread: Promise<string>; ended: boolean }>();
   /** The mode each thread's current turn is running under, so a permission
       question can be answered the way that mode promises. */
   private readonly modes = new Map<string, PermissionMode>();
   private nextId = 1;
   private rebind = false;
+
+  private cancelled = new Set<string>();
   private failure: Error | undefined;
+  /** When the harness last said anything, so a wedged process can be told from a working one. */
+  private heardAt = 0;
 
   constructor(private readonly deps: HarnessDeps) {}
 
@@ -303,9 +339,38 @@ export class Harness {
     return this.child !== undefined && this.failure === undefined;
   }
 
-  /** Whether a call is in flight, so a reaper does not close a process mid-turn. */
+  /** Whether a call is in flight, so a reaper does not close a process mid-turn.
+   *  A subagent counts: its slot keeps running after the parent's `session/prompt`
+   *  has resolved, and with nothing pending the reaper read that as idle and killed
+   *  a process with four agents still working in it. */
   get busy() {
-    return this.pending.size > 0;
+    return this.pending.size > 0 || [...this.children.values()].some((child) => !child.ended);
+  }
+
+  /**
+   * How long the harness has been silent, in milliseconds, or `Infinity` before
+   * it has said anything at all.
+   *
+   * Wall clock rather than the idle reaper's timers, which count only the time
+   * this process was awake: a Mac that slept for an hour comes back with its
+   * model socket gone and its timers barely advanced.
+   */
+  get silentFor() {
+    return this.heardAt ? Date.now() - this.heardAt : Infinity;
+  }
+
+  get state(): HarnessState {
+    return {
+      cwd: this.deps.cwd,
+      running: this.running,
+      busy: this.busy,
+      silentMs: this.heardAt ? Date.now() - this.heardAt : 0,
+      failure: this.failure?.message ?? "",
+    };
+  }
+
+  private log(flow: HarnessFlow, label: string, body: string) {
+    this.deps.onLog?.({ at: Date.now(), flow, label, body: body.slice(0, MAX_LOG_BODY) });
   }
 
   async start() {
@@ -314,10 +379,11 @@ export class Harness {
     // find its own. Both names are set: the fork still reads upstream's while the
     // Vercel vocabulary is being removed from it.
     const key = this.deps.apiKey ? { AI_GATEWAY_API_KEY: this.deps.apiKey, EMMA_PROVIDER_API_KEY: this.deps.apiKey } : {};
+    const route = this.deps.chatUrl ? { EMMA_PROVIDER_CHAT_URL: this.deps.chatUrl } : {};
     const child = spawn(this.deps.binaryPath, this.deps.args ?? ["acp"], {
       cwd: this.deps.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, HOME: this.deps.home, ...key },
+      env: { ...process.env, HOME: this.deps.home, ...key, ...route },
     });
     this.child = child;
     child.stdout.on("data", (data: Uint8Array) => {
@@ -327,14 +393,25 @@ export class Harness {
         this.fail(error as Error);
       }
     });
-    child.stderr.on("data", (data) => console.error(`emma-cli: ${String(data).trim()}`));
-    child.once("error", (error) => this.fail(error));
-    child.once("exit", (code) => this.fail(new Error(`emma-cli exited with code ${code ?? "unknown"}`)));
-
-    await this.request("initialize", {
-      protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+    child.stderr.on("data", (data) => {
+      const text = String(data).trim();
+      this.stderrTail = `${this.stderrTail}\n${text}`.slice(-MAX_STDERR_TAIL);
+      console.error(`emma-cli: ${text}`);
+      this.log("err", "stderr", text);
     });
+    child.once("error", (error) => this.fail(error));
+    child.once("exit", (code, signal) => this.fail(new Error(this.exitReason(code, signal))));
+
+    try {
+      await this.request("initialize", {
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+      });
+    } catch (error) {
+      this.fail(error as Error);
+      this.close();
+      throw error;
+    }
   }
 
   /**
@@ -350,6 +427,7 @@ export class Harness {
     // takes its workspace from this process's cwd, so a turn asking for a
     // different directory cannot be honoured by this client.
     if (cwd !== this.deps.cwd) throw new Error(`Harness is bound to ${this.deps.cwd}, not ${cwd}`);
+    this.cancelled.delete(threadId);
     // A failed turn must not poison the queue behind it, hence the catch on the
     // link rather than on the turn this caller is waiting for.
     const turn = this.turns.catch(() => undefined).then(() => this.runPrompt(threadId, cwd, text, mode, model, extra));
@@ -394,15 +472,17 @@ export class Harness {
     if (extra.compact) {
       await this.request("session/compact", { sessionId }).catch((error: unknown) => console.error("Emma: the harness would not compact", error));
     }
-    const prompt = [
+    const prompt = extra.continueRecovery ? [] : [
       ...(extra.skillContext ? [{ type: "text", text: extra.skillContext }] : []),
       { type: "text", text },
       ...(extra.images ?? []).map((file) => ({ type: "image", mimeType: mediaType(file), uri: pathToFileURL(file).href })),
     ];
+    if (this.cancelled.delete(threadId)) throw new Error("This turn was stopped before it reached the model.");
     await this.lifecycle("UserPromptSubmit", threadId, sessionId, mode, model, { prompt: text });
     const result = (await this.request("session/prompt", {
       sessionId,
       prompt,
+      ...(extra.continueRecovery ? { _meta: { fx: { continueRecovery: true } } } : {}),
     })) as { stopReason?: string; usage?: { inputTokens?: unknown; outputTokens?: unknown } } | null;
     const stopReason = (result?.stopReason ?? "end_turn") as StopReason;
     await this.lifecycle("Stop", threadId, sessionId, mode, model, { stop_hook_active: false, stop_reason: stopReason });
@@ -426,6 +506,7 @@ export class Harness {
   }
 
   async cancel(threadId: string) {
+    this.cancelled.add(threadId);
     const sessionId = this.sessions.get(threadId);
     // Only when this thread is the one running: `session/cancel` names a session
     // the harness does not read, so cancelling a thread whose turn is still
@@ -436,12 +517,35 @@ export class Harness {
     this.send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
   }
 
+  /**
+   * Text for the turn already running, taken at its next model step rather than
+   * at the end of the turn. Same session rule as `cancel`: `session/steer` names
+   * a session the harness reads only to refuse a mismatch, so a thread whose turn
+   * is still queued is not the one this would reach.
+   */
+  async steer(threadId: string, content: string) {
+    const sessionId = this.sessions.get(threadId);
+    if (!sessionId || sessionId !== this.active || !this.running) return false;
+    await this.request("session/steer", { sessionId, content });
+    return true;
+  }
+
   async steerChild(childId: string, content: string) {
     await this.request("session/steer_child", { childId, content });
   }
 
   async cancelChild(childId: string) {
     await this.request("session/cancel_child", { childId });
+  }
+
+  /** A signal means something outside killed it — `child.kill` from Emma, a
+   *  panic in one of the harness's own worker threads, the kernel under memory
+   *  pressure. The last thing it said on stderr is what tells those apart. */
+  private exitReason(code: number | null, signal: string | null): string {
+    const said = this.stderrTail.split("\n").map((line) => line.trim()).filter(Boolean);
+    const detail = said.find((line) => /panic|unreachable|error:/i.test(line)) ?? said.at(-1);
+    const how = signal ? `was killed by ${signal}` : `exited with code ${code ?? "unknown"}`;
+    return `emma-cli ${how}${detail ? `: ${detail}` : ""}`;
   }
 
   close() {
@@ -520,6 +624,7 @@ export class Harness {
   private send(message: Record<string, unknown>) {
     const child = this.child;
     if (!child) throw this.failure ?? new Error("Harness is not running");
+    this.log("out", wireLabel(message), JSON.stringify(message));
     child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
       if (error) this.fail(error);
     });
@@ -529,6 +634,8 @@ export class Harness {
     const trimmed = line.trim();
     if (trimmed.length === 0) return;
     const message = JSON.parse(trimmed) as Record<string, unknown>;
+    if (!streamedChunk(message)) this.log("in", wireLabel(message), trimmed);
+    this.heardAt = Date.now();
     // Anything at all from the harness — a token, a tool call, a permission
     // question — means it is alive, so every call in flight gets its idle clock
     // back. A `session/prompt` outlives its own updates only if nothing arrives.
@@ -586,6 +693,7 @@ export class Harness {
     const child = childTag(update);
     if (child) {
       const owner = this.childThread(threadId, child);
+      if (child.ended) this.noteChildEnded(`${threadId}/${child.id}`);
       // Chained rather than awaited: every update for one child registers on the
       // same promise, and those run in the order they were registered, so the
       // transcript cannot arrive out of order behind the thread that holds it.
@@ -610,10 +718,17 @@ export class Harness {
   private childThread(parentThreadId: string, child: ChildTag): Promise<string> {
     const key = `${parentThreadId}/${child.id}`;
     const known = this.children.get(key);
-    if (known) return known;
+    if (known) return known.thread;
     const created = this.deps.onChildStart({ parentThreadId, childId: child.id, title: child.title });
-    this.children.set(key, created);
+    this.children.set(key, { thread: created, ended: false });
     return created;
+  }
+
+  /** Kept rather than deleted: an update arriving after the end would otherwise
+   *  look like a child nobody has seen before and open a second thread for it. */
+  private noteChildEnded(key: string) {
+    const known = this.children.get(key);
+    if (known) known.ended = true;
   }
 
   private applyUpdate(threadId: string, update: Record<string, unknown>) {
@@ -643,8 +758,8 @@ export class Harness {
         const call: HarnessToolCall = {
           threadId,
           toolCallId,
-          title: typeof update.title === "string" ? update.title : known?.title ?? "",
-          kind: typeof update.kind === "string" ? update.kind : known?.kind ?? "other",
+          title: toolCallText(update.title) ?? known?.title ?? "",
+          kind: toolCallText(update.kind) ?? known?.kind ?? "other",
           status: (update.status as HarnessToolCall["status"]) ?? known?.status ?? "pending",
           // Only the opening `tool_call` carries the arguments, so the merge is
           // what keeps them for the rest of the call's life.
@@ -681,6 +796,11 @@ export class Harness {
           this.deps.onContextBreakdown(threadId, breakdown);
           return;
         }
+        const routed = routedModelReported(update);
+        if (routed) {
+          this.deps.onRoutedModel(threadId, routed);
+          return;
+        }
         const recovery =((update._meta as { fx?: { modelResponseRecovery?: unknown } } | undefined)?.fx?.modelResponseRecovery ?? null) as
           { state?: unknown; message?: unknown; attempt?: unknown; attemptLimit?: unknown; delaySeconds?: unknown } | null;
         if (!recovery || typeof recovery.message !== "string") return;
@@ -705,6 +825,12 @@ export class Harness {
       this.send({ jsonrpc: "2.0", id, result: { outcome: { outcome: "cancelled" } } });
       return;
     }
+    // A subagent asks on its parent's session, tagged with which child it is —
+    // the same tag its updates carry. Answered against the parent's thread, the
+    // question named the wrong agent and, worse, was gated by a mode the child
+    // was never running under.
+    const child = childTag(params);
+    const asking = child ? await this.childThread(threadId, child).catch(() => threadId) : threadId;
     const call = (params.toolCall ?? {}) as { toolCallId?: unknown; title?: unknown; kind?: unknown; rawInput?: unknown };
     // A file mutation arrives titled `file_mutation`, which is the kind rather
     // than anything a person would recognise. The path is the useful part.
@@ -712,7 +838,7 @@ export class Harness {
     const named = title === "file_mutation" ? describePath(call.rawInput) ?? title : title;
     const ask: PermissionAsk = {
       id: String(call.toolCallId ?? id),
-      threadId,
+      threadId: asking,
       tool: named,
       summary: named === title ? String(call.title ?? "This run wants to use a tool.") : `writing ${named}`,
       detail: typeof call.rawInput === "string" ? call.rawInput : JSON.stringify(call.rawInput ?? {}, null, 2).slice(0, 4096),
@@ -765,13 +891,23 @@ export class Harness {
   }
 
   private fail(error: Error) {
+    if (!this.failure) this.log("err", "stopped", error.message);
     this.failure ??= error;
     for (const pending of this.pending.values()) pending.reject(this.failure);
     this.pending.clear();
     this.threadsBySession.clear();
     this.active = undefined;
     this.calls.clear();
-    this.children.clear();
+    // A subagent lives in this process, so when it dies they are over — whatever
+    // they were part-way through. Said out loud here because nothing else will:
+    // the `ended` tag they would have sent goes down with the pipe, and without
+    // it Emma showed them running forever, kept the thread's dot spinning and
+    // left their tab frozen on the tool call they never finished.
+    for (const [key, child] of this.children) {
+      if (child.ended) continue;
+      this.noteChildEnded(key);
+      void child.thread.then((threadId) => this.deps.onChildEnd(threadId, error.message)).catch(() => undefined);
+    }
   }
 }
 
@@ -880,6 +1016,16 @@ export function describePath(rawInput: unknown): string | undefined {
 }
 
 /** ACP tool output is a list of content blocks; Emma shows the text ones. */
+/**
+ * A label field off an update, or null when it says nothing. Blank and
+ * whitespace-only are "nothing": a `tool_call_update` carrying `title: ""`
+ * used to overwrite the real title, leaving an unreadable empty row in the
+ * transcript where the step's name belongs.
+ */
+export function toolCallText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export function toolOutput(content: unknown): string | undefined {
   if (!Array.isArray(content)) return undefined;
   const parts: string[] = [];

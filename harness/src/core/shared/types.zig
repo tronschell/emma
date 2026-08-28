@@ -957,6 +957,7 @@ pub const GatewayCompletion = struct {
     /// transcript so the answer is never buried in the working-out.
     reasoning: ?[]const u8 = null,
     tool_calls: []const ToolCall = &.{},
+    routed_model: ?[]const u8 = null,
     generation_id: ?[]const u8 = null,
     billing: ?GatewayBilling = null,
     /// Gateway generation or resolved-model metadata was malformed or conflicting.

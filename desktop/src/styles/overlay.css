@@ -28,7 +28,7 @@
 /* Header band: brand left of the housing, status right of it, one rule below. */
 .island-bar { display: grid; grid-template-columns: calc(var(--notch-x) - var(--island-inset)) var(--notch-w) 1fr; align-items: center; height: var(--notch-h); border-bottom: 1px solid var(--border); }
 .island-bar .brand { justify-content: flex-start; padding-left: var(--s-4); }
-.island-bar .mark { width: 20px; height: 20px; font-size: var(--fs-md); }
+.island-bar .mark { width: 20px; height: 20px; }
 .island-bar .emma-mark { width: 22px; }
 /* Only the state fits here: the column beside the housing is ~190px wide, and at
    the 10px metadata floor that is 26 characters. The rest of the line moved to
@@ -76,13 +76,13 @@
    in main/overlay.ts. */
 .status-pill { position: fixed; top: 0; left: 0; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; color: var(--pill); background: var(--bg); border: 1px solid var(--pill); box-shadow: var(--shadow-lg); cursor: grab; transition: opacity 320ms ease; }
 .status-pill:active { cursor: grabbing; }
-.status-pill .mark { border: 0; color: inherit; font-size: var(--fs-xl); }
-.status-pill.working { --pill: var(--accent); }
-.status-pill.error { --pill: var(--danger); }
+.status-pill .mark { color: inherit; }
+.status-pill.working { --pill: var(--yellow); }
+.status-pill.error { --pill: var(--orange); }
 .status-pill.done { --pill: var(--lime); }
-.status-pill.working .mark { animation: run-pulse 1.4s ease-in-out infinite; }
+.status-pill.working .mark svg { animation: mark-wiggle 2.6s ease-in-out infinite; }
 .status-pill.leaving { opacity: 0; }
-@media (prefers-reduced-motion: reduce) { .status-pill.working .mark { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .status-pill.working .mark svg { animation: none; } }
 
 /* Quick commands drop out from under the island once the pointer swipes clear (useNotchSwipe). */
 .command-orbs { position: absolute; z-index: 4; top: calc(var(--notch-h) + var(--island-h, 97px) + var(--s-5)); left: calc(var(--notch-x) + var(--notch-w) / 2); display: flex; gap: var(--s-7); opacity: 0; translate: -50% -8px; pointer-events: none; transition: opacity var(--t), translate var(--t); }

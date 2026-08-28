@@ -1608,7 +1608,7 @@ pub fn runBoundedHttpOperation(
     }
 }
 
-fn waitForBoundedCancellation(cancel_flag: *std.atomic.Value(bool)) anyerror!void {
+pub fn waitForBoundedCancellation(cancel_flag: *std.atomic.Value(bool)) anyerror!void {
     while (!cancel_flag.load(.seq_cst)) {
         try io_mod.getIo().sleep(.fromMilliseconds(5), .awake);
     }
@@ -6873,6 +6873,68 @@ test "delivery certainty stays definitely unsent when request setup fails" {
         DeliveryCertainty.State.definitely_unsent,
         delivery.load(),
     );
+}
+
+test "chat transport returns once a stalled model call is cancelled" {
+    const emma_openai = @import("emma_openai.zig");
+    const zio = io_mod.getIo();
+    var fixture = try LoopbackGatewayFixture.init(.response_head_stall, 5000);
+    defer fixture.deinit();
+    try fixture.start();
+    try std.testing.expect(fixture.waitForAcceptStart(5000));
+    const url = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "http://127.0.0.1:{d}/chat",
+        .{fixture.port()},
+    );
+    defer std.testing.allocator.free(url);
+
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    var request_done = std.atomic.Value(bool).init(false);
+    const Cancel = struct {
+        fn run(
+            server_fixture: *LoopbackGatewayFixture,
+            flag: *std.atomic.Value(bool),
+            done: *std.atomic.Value(bool),
+        ) void {
+            if (!server_fixture.waitForStageOrDone(done)) return;
+            LoopbackGatewayFixture.sleepBlocking(20);
+            if (!done.load(.seq_cst)) flag.store(true, .seq_cst);
+        }
+    };
+    const cancel_thread = try std.Thread.spawn(.{}, Cancel.run, .{ &fixture, &cancel_flag, &request_done });
+    defer {
+        request_done.store(true, .seq_cst);
+        cancel_thread.join();
+    }
+
+    var delivery = DeliveryCertainty.init();
+    var attempt_evidence: agent_stream_provider.AttemptEvidence = .{};
+    const started = std.Io.Clock.Timestamp.now(zio, .awake);
+    const result = emma_openai.provider.stream(std.testing.allocator, .{
+        .api_key = "test-key",
+        .model = "test/model",
+        .retry_count = 1,
+        .chat_url = url,
+        .payload = "{}",
+        .trace_ctx = .{},
+        .content_capture_limit = null,
+        .delivery = &delivery,
+        .attempt_evidence = &attempt_evidence,
+        .callback_ctx = @ptrCast(&bounded_stream_discard_ctx),
+        .on_content_chunk = discardBoundedContent,
+        .on_tool_start = null,
+        .on_reasoning_chunk = null,
+        .cancel_flag = &cancel_flag,
+    });
+    const elapsed_ms = started.durationTo(std.Io.Clock.Timestamp.now(zio, .awake)).raw.toMilliseconds();
+
+    if (result) |value| {
+        var owned = value;
+        owned.deinit(std.testing.allocator);
+        return error.TestExpectedGatewayCancellation;
+    } else |err| try std.testing.expectEqual(error.Cancelled, err);
+    try std.testing.expect(elapsed_ms < 2000);
 }
 
 test "delivery certainty becomes possibly sent before response head" {

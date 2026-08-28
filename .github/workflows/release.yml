@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: node
+
+  package:
+    needs: changelog
+    if: needs.changelog.outputs.created == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - run: npm ci
+        working-directory: desktop
+
+      - run: npm version ${{ needs.changelog.outputs.version }} --no-git-tag-version --allow-same-version
+        working-directory: desktop
+
+      - run: npm run package:mac
+        working-directory: desktop
+
+      - name: zip the app
+        run: ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "Emma-${{ needs.changelog.outputs.tag }}-darwin-arm64.zip"
+
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.changelog.outputs.tag }}" "Emma-${{ needs.changelog.outputs.tag }}-darwin-arm64.zip"

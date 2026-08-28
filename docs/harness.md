@@ -45,7 +45,7 @@ file.
 
 The harness owns the agent loop, tool execution, permission gating, hooks,
 skills, subagents, and the MCP client for one turn. Emma owns the window, the
-durable Markdown thread, and the answer to every permission question.
+Markdown thread, and the answer to every permission question.
 
 Four things Emma keeps away from the harness:
 
@@ -85,7 +85,7 @@ way out.
 
 ### Emma's, appended natively
 
-Emma's 23 tools are appended to the same registry as `++ emma_tools.all`, so the
+Emma's 26 tools are appended to the same registry as `++ emma_tools.all`, so the
 harness advertises and dispatches them and Electron runs them. One shared
 implementation, [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig);
 only the spec differs per tool.
@@ -151,6 +151,18 @@ acp` once per workspace directory, at most `MAX_HARNESSES = 4` alive at once
 A call is abandoned after `MAX_IDLE_MS` — 30 minutes — of **silence**, not wall
 clock; any inbound message refreshes every pending timer.
 
+Those timers count only the time Emma was awake, which is why a closed lid needs
+its own path. macOS freezes the process and takes the model's socket with it, and
+neither end ever reads the end of that stream, so the turn would sit at
+"searching" for as long as the machine slept. On Electron's `resume`,
+`resumeAfterSleep` in [`main.ts`](../desktop/main/main.ts) waits `WAKE_GRACE_MS`
+— 45 seconds — for a connection that survived to say something, reading
+`Harness.silentFor` (wall clock, unlike the reaper). Whatever is still silent is
+closed, which rejects the turn in flight; `runOnHarness` then starts a fresh
+process, `session/resume` brings the same session back off disk, and the turn is
+prompted to carry on from its last finished step. A run the user stopped is left
+stopped.
+
 ### Methods Emma calls
 
 `AcpMethod.parse` in [`acp/server.zig`](../harness/src/acp/server.zig) accepts
@@ -168,6 +180,7 @@ fourteen:
 | `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments` |
 | `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
 | `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
+| `session/steer` | Hands the running turn `content` for its next model step. Refused when no turn is running, over 16 KiB, or more than 8 deep |
 | `session/steer_child` | Queues a message for one running subagent by `childId`, not queued behind the active prompt |
 | `session/cancel_child` | Stops one running subagent by `childId` |
 
@@ -199,6 +212,13 @@ Subagents ride the parent's stream — ACP has no nested sessions. A child tags
 its updates with `_meta.fx.child` (`{id, title, state}`) and `childTag` fans
 them onto an Emma thread of the child's own. Untagged, a child's words would
 land in the parent's durable answer.
+
+A child's `session/request_permission` carries the same tag, so its question is
+asked against the child's thread — the dialog names the subagent, and the child's
+own run goes to `waiting` while the question is out. Before that tag existed the
+child had no route to a front end at all: its request parked in the harness
+waiting for the TUI's approval pane, which over ACP is nobody, so a subagent that
+hit a gated call sat in `awaiting_approval` forever with nothing on screen.
 
 ### One prompt turn
 
@@ -280,6 +300,38 @@ The harness takes MCP servers only at session creation, so `forgetSession` /
 one. That is what makes a mid-turn `install_mcp` mean anything. Only the forward
 map is dropped; clearing the reverse routing would silence the running turn.
 
+## Watching the wire
+
+The status line in the sidebar foot is the door onto the harness. It is a
+button: it opens a dialog holding every process Emma is keeping, the JSON-RPC
+traffic in both directions, and the two things to do when something is wrong.
+
+`Harness` reports each message it writes or reads through the `onLog` dep,
+along with stderr and the reason a process stopped. `main.ts` keeps the last
+500 lines in a ring buffer and broadcasts each one, so what Emma hands the
+agent is readable while a turn runs rather than only after it fails.
+
+Streamed answer chunks (`agent_message_chunk`, `agent_thought_chunk`) are the
+one thing left out. They are already the transcript, and logging them would
+evict the outbound prompt from the buffer inside a single turn.
+
+The dot reads four states, from `harnessHealth` in
+[`harness-log.ts`](../desktop/shared/harness-log.ts):
+
+| State | What it means |
+| --- | --- |
+| Ready | No process yet. The next turn starts one |
+| Online | A process is up and answering |
+| Stalled | A turn is in flight and the process has said nothing for two minutes |
+| Offline | Every process is dead of something Emma did not ask for. A close Emma performed itself — the reaper, quitting — is `ready`, not a fault |
+
+Two actions sit under the log. **Restart agent** closes every process and clears
+the pool, so the next turn spawns a fresh one; a turn in flight is dropped, and
+the subagents inside it are told they ended rather than left spinning. **Copy
+fix prompt** builds a self-contained brief — the process states, the last forty
+wire messages, and where to start reading — for handing to another agent when
+the harness is what broke.
+
 ## Limits the code enforces
 
 | Limit | Value | Where |
@@ -293,6 +345,7 @@ map is dropped; clearing the reverse routing would silence the running turn.
 | Pending outbound requests | 32 | `max_pending_outbound`, [`acp/server.zig`](../harness/src/acp/server.zig) |
 | Live harness processes | 4 | `MAX_HARNESSES`, [`main.ts`](../desktop/main/main.ts) |
 | Idle before a call is abandoned | 30 min of silence | `MAX_IDLE_MS`, [`harness.ts`](../desktop/main/harness.ts) |
+| Grace for a woken connection to prove it lives | 45 s | `WAKE_GRACE_MS`, [`main.ts`](../desktop/main/main.ts) |
 
 The description cap was fx's 1024 and is now 4 KiB, matching
 `MAX_TOOL_DESCRIPTION_BYTES` in [`tools.ts`](../desktop/main/tools.ts).
@@ -306,15 +359,18 @@ permission-denied result is sent whole, not previewed.
 
 ## Standing instructions
 
-Emma does not send her system prompt over the wire.
-`writeHarnessPrompt` in
-[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes it to
-`<userData>/harness/.fx/AGENTS.md`, which
-[`builtins/context.zig`](../harness/src/builtins/context.zig) loads as
-`<global-rules>` beside its own built-in prompt. The block is the user's
-Settings prompt, the connections block, and any kept Agent-page improvement,
-rewritten per turn only when it changed. The one thing that cannot live there is
-a per-turn A/B arm; that rides the turn's skill context.
+Emma does not send her system prompt over the wire. `writeHarnessPrompt` in
+[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes two files instead,
+both read by [`builtins/context.zig`](../harness/src/builtins/context.zig) out of
+the `HOME` Emma gives the child:
+
+| File | Is |
+| --- | --- |
+| `.fx/system-prompt.md` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. |
+| `.fx/AGENTS.md` | The connections block and any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
+
+Both are rewritten per turn, and only when they changed. The one thing that can
+live in neither is a per-turn A/B arm; that rides the turn's skill context.
 
 Skills work the same way — see
 [plugins.md](plugins.md#bundled-skills) for `mirrorSkillsToHarness`.
@@ -324,7 +380,7 @@ Skills work the same way — see
 | Directory | Owns |
 | --- | --- |
 | `acp/` | The JSON-RPC server: `server.zig` (dispatch, session state, outbound registry), `prompt.zig` (one turn), `sessions.zig`, `types.zig`, `jsonrpc.zig`, `mcp_servers.zig` |
-| `builtins/` | The registries: `tools.zig`, `emma_tools.zig` + `emma/`, `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (system prompt and `AGENTS.md`) |
+| `builtins/` | The registries: `tools.zig`, `emma_tools.zig` + `emma/`, `modes.zig`, `skills.zig`, `hooks.zig`, `mcp.zig`, `commands.zig`, `context.zig` (the built-in prompt, `system-prompt.md` and `AGENTS.md`) |
 | `core/` | Everything with state: `agent/runtime/` (the loop), `tooling/`, `permissions/`, `session/`, `mcp/`, `lsp/`, `skills/`, `hooks/`, `subagent/`, `workspace/`, `terminal/`, `execution/` |
 | `gateway/` | Provider transport only. `emma_openai.zig` holds `default_chat_url` and `chat_url_env` |
 | `tools/` | Implementations. Specs live in `builtins/tools.zig`, not here |

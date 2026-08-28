@@ -10,7 +10,7 @@ const TASKS_PER_PAGE = 6;
 type NodeState = "done" | "running" | "failed" | "ready" | "waiting";
 const STATE_ORDER: NodeState[] = ["running", "ready", "waiting", "done", "failed"];
 
-type PlanShape = {
+export type PlanShape = {
   waves: string[][];
   spots: Map<string, PlanSpot>;
   height: number;
@@ -20,7 +20,7 @@ type PlanShape = {
 
 const MAP_ROW = 56;
 
-function usePlans(threadId: string, sample?: Plan[]): Plan[] {
+export function usePlans(threadId: string, sample?: Plan[]): Plan[] {
   const [plans, setPlans] = useState<Plan[]>([]);
   useEffect(() => {
     if (sample) return;
@@ -31,7 +31,7 @@ function usePlans(threadId: string, sample?: Plan[]): Plan[] {
   return useMemo(() => sample ?? plans.filter((plan) => plan.threadId === threadId), [sample, plans, threadId]);
 }
 
-function usePlanShape(plan: Plan | undefined, row = PLAN_ROW): PlanShape {
+export function usePlanShape(plan: Plan | undefined, row = PLAN_ROW): PlanShape {
   const waves = useMemo(() => plan ? planRows(plan.steps) : [], [plan]);
   const { spots, height } = useMemo(() => planLayout(waves, plan?.steps ?? [], row), [waves, plan, row]);
   const ready = useMemo(() => new Set(plan ? readySteps(plan).map((item) => item.id) : []), [plan]);
@@ -44,7 +44,7 @@ const workingOn = (agents: LiveAgent[], step: PlanStep) =>
 const ranBy = (agents: LiveAgent[], step: PlanStep) =>
   workingOn(agents, step) ?? agents.find((agent) => agent.title === step.title);
 
-function PlanGraph({ steps, shape, at, describe, onPick }: {
+export function PlanGraph({ steps, shape, at, describe, onPick }: {
   steps: PlanStep[];
   shape: PlanShape;
   at?: string;

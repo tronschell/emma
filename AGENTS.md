@@ -35,7 +35,6 @@ owns the agent harness. Keep those boundaries visible.
   Markdown persistence.
 - `harness`: `emma-cli`, the fork of vercel-labs/fx driven over ACP from
   `desktop/main/harness.ts`. Apache-2.0; keep `harness/FORK.md` honest.
-- `website`: separate React and Tailwind public site.
 
 Do not add a crate, trait, service locator, or plugin framework until a second
 real implementation needs the boundary. Keep filesystem, process, network,
@@ -56,3 +55,16 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 Visible or platform work is not complete until the real app has been launched
 and the changed interaction exercised. Report unverified shortcuts, privacy
 permissions, VoiceOver behavior, display geometry, signing, and non-macOS paths.
+
+## Releasing
+
+The changelog is generated, never written. A PR title is its changelog entry and
+must be a conventional commit — `fix(notch): stop the island stealing focus` —
+which CI enforces. Merging to `main` updates a standing release PR; merging that
+PR writes `CHANGELOG.md`, tags, and packages the app. Never hand-edit
+`CHANGELOG.md`, bump a version in a feature PR, or tag by hand.
+
+The workflows in `.github/workflows/` run the checks above and nothing else that
+cannot be run locally. They are config, so the no-comments rule applies to them.
+
+Full contract: [`.claude/skills/releasing/SKILL.md`](.claude/skills/releasing/SKILL.md).

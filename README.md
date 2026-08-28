@@ -15,7 +15,7 @@ Double-tap left Option. Ask. Keep the answer in your own vault.
 [![Node](https://img.shields.io/badge/Node-24%2B-1f2a1f?style=flat-square&logo=nodedotjs&logoColor=5fa04e)](desktop/package.json)
 [![Docs](https://img.shields.io/badge/docs-docs%2F-1c1c1c?style=flat-square)](docs/README.md)
 
-<img src="desktop/screenshots/workspace-thread.png" alt="Emma's workspace: threads and projects down the left, a running conversation in the middle, and the context bar on the right showing thread stats, a six-step plan graph, and the context window ledger" width="900">
+<img src="desktop/screenshots/workspace-thread.png" alt="Emma running the Splitleaf release plan: threads and projects down the left, the answer in the middle with four finished subagents under it, and the context bar on the right showing thread stats, the context-window ledger, and the 24-step plan graph" width="900">
 
 </div>
 
@@ -25,6 +25,8 @@ Double-tap left Option. Ask. Keep the answer in your own vault.
 
 - **One loop, every surface.** The composer, Quick Ask, a quick action, a scheduled job, and an autoresearch iteration all enter the same interception in Electron main — so exactly one place decides how many steps a turn gets and what has to ask first.
 - **A real agent.** It reads and writes files in folders you attach, searches, runs shell commands, drives the screen, calls MCP tools, installs its own skills mid-turn, and spawns subagents.
+- **A metaharness.** Her own agent harness runs every turn — and she directs Claude Code, Codex, Pi, OpenCode, and Cursor as workers in your folders, watching their terminals live and feeding them the next prompt.
+- **She improves herself.** The Agent page reads her own traces, drafts a change about what keeps going wrong, runs it live against a control, and proves it on a replay bench before it rides every turn.
 - **Notes you can walk away with.** Every save is one Markdown note in a vault or folder *you* picked. No second copy, no database, readable without Emma.
 - **You hold the permission dial.** Four modes, one table, enforced in the trusted process. Escape stops a run in every one of them.
 
@@ -57,6 +59,20 @@ New to the repo? Start at **[docs/getting-started.md](docs/getting-started.md)**
 
 `npm run dev` builds the Rust host, the Zig harness, and the native helpers, then starts Vite and Electron against it. `npm --prefix desktop start` does the same without the dev server.
 
+## A job, end to end
+
+The thread at the top of this page is one piece of work: **Splitleaf**, a shared-expenses iOS app with an offline-first store and a small Rust sync server. Emma is running its release plan on **GLM 5.3 Flash** — 24 steps, nine waves, 35 edges — and the whole run is one Markdown file she wrote and keeps editing, `plans/ship-splitleaf-1-0.md`.
+
+<img src="desktop/screenshots/plan-subagents.png" alt="The plan open fullscreen: the dependency graph on the left with 24 numbered nodes coloured by state, and the step list on the right showing each step's dependencies, brief, and checklist" width="900">
+
+Five independent starts — the schema, the iOS shell, the sync model, the rate source, signing — and then it narrows twice: the schema and the sync model meet at the merge engine, the store and the endpoint meet at the sync wiring. Emma runs each wave's independent steps as **parallel subagents**, one brief each, and folds their results back into the same file.
+
+Thirteen steps are done. Three are running. One is **failed**, and that is the point:
+
+> **signing** — Stopped. The team has no distribution certificate and creating one needs your Apple ID at developer.apple.com. Building with `CODE_SIGNING_ALLOWED=NO` would produce an `.ipa` TestFlight rejects, so I did not.
+
+A step Emma cannot finish stays red and keeps the two steps downstream of it waiting. Ask *what is actually blocking 1.0* and the answer comes off the graph: one certificate she is not allowed to create, and one test — two phones in a tunnel — that the last three waves all hang from.
+
 ## What a turn can do
 
 The picker beside ＋ chooses how much Emma may do without asking:
@@ -68,7 +84,7 @@ The picker beside ＋ chooses how much Emma may do without asking:
 | `auto` | ⬗ | A separate verifier model reads each gated call; anything it won't clear still asks you. |
 | `full` | ⬥ | Nothing asks. Escape still stops a run. |
 
-One table in [`desktop/shared/permissions.ts`](desktop/shared/permissions.ts) decides what each mode advertises and what it gates, so the label you picked and the check that enforces it can't drift apart. A subagent inherits the mode. Of Emma's 23 tools, seven ever stop to ask: `browser`, `cli`, `computer`, `run_tool`, `install_mcp`, `workflow`, and `autoresearch`.
+One table in [`desktop/shared/permissions.ts`](desktop/shared/permissions.ts) decides what each mode advertises and what it gates, so the label you picked and the check that enforces it can't drift apart. A subagent inherits the mode. Of Emma's 26 tools, the gate table asks first on eight: `browser`, `cli`, `computer`, `install_mcp`, `run_tool`, `secret`, `workflow`, and `autoresearch`.
 
 Emma's own tools are separate from the harness's builtins — file reads and writes, search, shell, and subagents belong to the harness.
 
@@ -76,9 +92,7 @@ Full catalog and the complete gate matrix: **[docs/tools.md](docs/tools.md)** ·
 
 ### Subagents and sub-threads
 
-<img src="desktop/screenshots/plan-subagents.png" alt="A plan running mid-turn: the spawned subagent has its own tab across the top and its own row in the sidebar, while the context bar shows the eight-step dependency graph and the checklist for wave 1" width="900">
-
-`plan` breaks a job into steps and runs the independent ones as parallel subagents. Live subagents show in the sidebar under their own color and open in their own tab, where you can steer or stop them. A `threads` call instead starts a full sub-thread nested under its parent, with an agent of its own.
+`plan` breaks a job into steps and runs the independent ones as parallel subagents. A running subagent opens in its own tab, where you can steer or stop it; when it finishes it collapses into a chip in the transcript that opens the same way. A `threads` call instead starts a full sub-thread nested under its parent, with an agent of its own.
 
 ## Controlling the Mac
 
@@ -101,18 +115,44 @@ Details: **[docs/computer-use.md](docs/computer-use.md)**
 
 <img src="desktop/screenshots/settings-context-bar.png" alt="Settings → Context bar: page tabs, a list of components to drag in and out of the column, and a live preview of the bar at its default 288px width" width="900">
 
-The panel down the right of a thread is components you arrange. Seven ship: thread stats, the context-window ledger, the turn timeline, the plan graph, subagents, sub-threads, and Git.
+The panel down the right of a thread is components you arrange. Ten ship: thread stats, the context-window ledger, the turn timeline, the plan graph, subagents, sub-threads, Git, and three readings of one machine sampler — numbers, sparklines, and 16-cell meters.
 
 | | |
 |---|---|
-| **Which, and in what order** | Drag any of the seven in or out; reorder by dragging. |
+| **Which, and in what order** | Drag any of the ten in or out; reorder by dragging. |
 | **Layout** | Stats, context, subagents, and sub-threads read down the column or across it. |
 | **Pages** | Up to four, each named, switched from the bar's own tabs. |
 | **Width** | 260–360 px, 288 by default, or a 30 px collapsed rail. |
 
-The arrangement is validated on the way in, so a hand-edited settings file can't produce a bar that won't paint. If none of the seven is what you want, a `code` artifact claiming the `context` surface *becomes* the bar, with the built-in as fallback.
+The arrangement is validated on the way in, so a hand-edited settings file can't produce a bar that won't paint. If none of the ten is what you want, a `code` artifact claiming the `context` surface *becomes* the bar, with the built-in as fallback.
+
+The context-window ledger is the centerpiece: one `Ledger` object feeds every component on the page, so the stats tiles, the window table, and the timeline's context axis are three readings of one number and cannot disagree. Characters are counted on this Mac at ~4 per token, the system-prompt side is computed as the *residual* of the provider's own input count, and the `(i)` in the thread bar exports all of it as a folder of CSVs.
 
 Details: **[docs/context-bar.md](docs/context-bar.md)**
+
+## The timeline: every turn, on the record
+
+Each finished turn leaves a **trace** — a span tree in the shape MLflow and LangSmith draw ([`desktop/shared/trace.ts`](desktop/shared/trace.ts)). One span for the run, one per model request, one per tool call, each with its wall clock, status, the arguments as the model sent them, and a token estimate of what it added to the window. The context-bar **Timeline** component lays them out as a waterfall on one shared axis; a second reading re-measures the same spans in **tokens instead of milliseconds**, so a bar's width becomes its share of the turn's context growth. The same tree is rendered as indented text by `read_trace`, which is how Emma reads what a past turn of hers actually did.
+
+Traces are durable: appended to the thread's Markdown record, capped at 64 per thread and 16 KiB each. From them the thread stats compute tok/s, generation time, a rate-by-context curve, and the failure counts the Agent page reads.
+
+## The Agent page: Emma improves herself
+
+[`docs/agents.md`](docs/agents.md) — implemented in [`desktop/src/AgentView.tsx`](desktop/src/AgentView.tsx), [`desktop/shared/improvement.ts`](desktop/shared/improvement.ts), [`desktop/shared/bench.ts`](desktop/shared/bench.ts).
+
+<img src="desktop/screenshots/agent-dashboard.png" alt="The Agent page: live threads, turns asked, subagents spawned and a day streak across the top, then a per-day activity strip, threads started over a month, projects over time, and the thread tree with each subagent under its parent" width="900">
+
+Emma reads the span traces her own finished turns left behind, names the friction that keeps repeating, drafts one change about it, and then — this is the part that matters — tries to prove the change helped before keeping it.
+
+- **Friction.** The page groups every failed tool call and verifier block from the last 30 days by tool, with the evidence lines on screen. Two turns makes a pattern.
+- **A draft, two levers.** A proposed change edits one of two standing texts: `instructions` (what every turn carries) or the `verifier` rules (what Auto mode reviews a call against). You can also hand the drafting to Emma herself — *Ask Emma to write it* runs one turn and drops its answer into the draft.
+- **A live trial.** Once you approve, subsequent turns are dealt arm A (without the change) or arm B (with it) at random, and the page shows a hint — `NO SIGNAL`, `WORTH BENCHING`, `TOO EARLY` — that is explicitly not a measurement.
+- **The replay bench.** The proof is your own saved cases replayed under both arms back to back, at a case count declared before the run starts. A finished run needs both a paired t-test *and* an exact sign test to clear at six or more pairs; anything short is `stopped`, and a stopped run stays pending forever — there is no reading to peek at and no salvage rule.
+- **Only a bench run can keep a change.** **Keep it** is the only button in the app that writes `Kept`. **Revert it** needs no evidence, at any time. Kept lessons ride every future turn; a kept change is retestable, and every attempt of a change is numbered on the record.
+
+## Memory that travels
+
+The `memory` tool is Anthropic's memory-tool contract against a real directory on this Mac: the model addresses `/memories/...` and [`desktop/main/memory.ts`](desktop/main/memory.ts) maps it onto `<userData>/memories`, with view/create/str_replace/insert/delete/rename over plain files (256 KiB each, 256 files). Every path is resolved and prefix-checked twice, so `/memories/../../secrets.env` is refused before any I/O. The tool's description rides every turn, but memory's *contents* never do — they enter a conversation only when the model calls the tool to read them, which is what makes them Emma's to curate.
 
 ## The notch surfaces
 
@@ -130,7 +170,7 @@ Details: **[docs/notch.md](docs/notch.md)** · **[docs/voice.md](docs/voice.md)*
 
 ## Knowledge base
 
-<img src="desktop/screenshots/knowledge-base.png" alt="The knowledge view: saved notes as cards, each with its kind, source thumbnail, tags, and date" width="900">
+<img src="desktop/screenshots/knowledge-base.png" alt="The knowledge view: one row per saved note — its kind, title, when it was saved, its tags, the source it came from, and the Markdown file it was written to" width="900">
 
 Point Emma at an **Obsidian vault or any plain folder** you already own. The `keep` tool writes one Markdown note per save into `<vault>/knowledge-base`, with attachments alongside and YAML front matter on top. A small model titles and tags it.
 
@@ -140,7 +180,7 @@ Details: **[docs/knowledge.md](docs/knowledge.md)**
 
 ## Jobs
 
-<img src="desktop/screenshots/scheduled-jobs.png" alt="The Scheduled view: a daily job with its cron trigger, the prompt it runs, the permission mode it runs as, its step list, and its past runs" width="900">
+<img src="desktop/screenshots/scheduled-jobs.png" alt="The Scheduled view: an overnight TestFlight report — its cron trigger, the prompt it runs, the mode it runs as, six steps including an if-branch on whether anything is on fire, and its past runs" width="900">
 
 A **scheduled job** is one validated trigger plus a graph of three node kinds: `agent` runs a prompt, `set` stores a value, `if` branches. Triggers are five-field UTC cron, `manual`, `after <job-id>`, or an app event. Jobs run only while Emma is open, create normal threads under the mode they were saved with, and never keep a note or write a skill silently.
 
@@ -150,7 +190,7 @@ Details: **[docs/jobs.md](docs/jobs.md)** · **[docs/autoresearch.md](docs/autor
 
 ## Models and credentials
 
-<img src="desktop/screenshots/model-picker.png" alt="The model picker open over a new thread: a searchable list of the live OpenRouter catalog with free models marked, provider filters down the side, a thinking slider, and the selected model pinned at the top" width="900">
+<img src="desktop/screenshots/model-picker.png" alt="The model picker open over the Splitleaf thread, filtered to glm: the live OpenRouter catalog with context lengths and starred favourites, provider marks down the side, and a thinking slider along the foot" width="900">
 
 Point Emma at any OpenAI-compatible local or hosted endpoint from Settings → Models. The credential setting names an environment variable and never contains the key: a pasted key is encrypted with the OS keychain and reaches the harness only through its spawn environment — the renderer gets back a mask.
 
@@ -163,6 +203,16 @@ Details: **[docs/models.md](docs/models.md)** · **[docs/privacy.md](docs/privac
 ## Extending Emma
 
 First launch and Settings can register existing Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf, and Devin skill/MCP locations by reference, without copying their config. Emma ships her own skills in [`desktop/skills/`](desktop/skills) and owns two capability files under her user data, so a skill or MCP server she installs mid-turn is usable in that turn. CSS plugins can restyle the UI.
+
+### Emma builds her own interface
+
+[`docs/plugins.md`](docs/plugins.md) · concepts in [`docs/concepts.md`](docs/concepts.md) — the `component` and `artifact` tools in [`desktop/main/components.ts`](desktop/main/components.ts) and [`desktop/main/artifacts.ts`](desktop/main/artifacts.ts).
+
+Emma can write parts of the app she is running in, and the location is always yours to choose:
+
+- **Components.** `component {"action":"place"}` lights the window up so you click the zone the new thing belongs in — the sidebar, the context bar, or the composer — and `create` is refused until you have. The component is React, served over `emma-component://` and mounted by portal at your anchor; every `rewrite` bumps its version and reloads it in place, which is the iteration loop. Delete from the ⋯ in its corner or Settings → Built by Emma.
+- **Artifact surfaces.** A `code` artifact claiming one of four surfaces — `navbar`, `chat`, `notch`, `context` — is loaded as a real module and *becomes* that region, handed the same props the built-in got. The built-in is the fallback the moment the module throws. The source sits on the Artifacts page like any other file, so you can read what is running and delete it.
+- **Drawings, not artifacts.** `visualize` renders an inline page in the transcript — charts, panels, anything it can draw — and saves nothing until you press Keep.
 
 Settings → Connections lists third-party CLIs Emma can lean on — `gh`, `glab`, `jira`, `todoist`, `obsidian-cli`. A connection is a line of system context and nothing more; the binary was already reachable through the shell.
 
@@ -178,9 +228,19 @@ The same agent runs headless — the harness below, without the window:
 
 Bare `emma-cli` is a REPL in the current directory; `sessions`, `tasks`, and `permissions` are its other subcommands. Everything it does it gates on the tty under the same permission modes.
 
+### Emma drives other coding agents
+
+[`docs/cli.md`](docs/cli.md) — the `cli` and `cli_runs` tools in [`desktop/main/cli.ts`](desktop/main/cli.ts), catalog in [`desktop/shared/cli.ts`](desktop/shared/cli.ts).
+
+Emma does not reimplement Claude Code or Codex. She runs the one you already have, in the thread's folder, shows the terminal live, and feeds it the next prompt. Five are catalogued — **Claude Code, Codex, Pi, OpenCode, and Cursor CLI** — each as three strings: how to start a session, how to resume one, and its unattended flag. Discovery, spawn, output, and the kill switch are all Emma's; the coding is the other agent's.
+
+A **run is a conversation**, not a command: the child exits at the end of a turn, the run goes idle holding its transcript and session id, and the next `cli send` resumes it. The `cli` call blocks until the turn finishes and returns the outcome plus that turn's output; `cli_runs` lists runs, tails a terminal, or stops one. Each run lands in the UI as a tab wearing its harness's logo, floats as a PIP, or watches from the sidebar. One caveat is stated in the tool result itself: CLIs that only resume "the newest session in this folder" (Codex, OpenCode, Cursor) can't run two at once in the same folder.
+
+Connections in Settings are the lighter half of the same idea: a line of system context per third-party tool you already have (`gh`, `glab`, `jira`, `todoist`, `obsidian-cli`) — no tool at all, because the binary was already reachable through the shell.
+
 ### The harness
 
-[`harness/`](harness) is Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx), built as `emma-cli` and driven over the [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) from [`desktop/main/harness.ts`](desktop/main/harness.ts). It owns the agent loop, tool execution, hooks, skills, subagents, and the MCP client; Emma owns the window, the durable Markdown thread, and the answer to every permission question. Every turn runs on it — there is no second loop.
+[`harness/`](harness) is Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx), built as `emma-cli` and driven over the [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) from [`desktop/main/harness.ts`](desktop/main/harness.ts). It owns the agent loop, tool execution, hooks, skills, subagents, and the MCP client; Emma owns the window, the Markdown thread, and the answer to every permission question. Every turn runs on it — there is no second loop.
 
 Provenance and the Apache-2.0 obligations are in [`harness/FORK.md`](harness/FORK.md).
 
@@ -222,6 +282,10 @@ Everything lives in **[`docs/`](docs/README.md)**.
 | [Jobs](docs/jobs.md) | Scheduled workflows, triggers, node graphs |
 | [Autoresearch](docs/autoresearch.md) | The experiment loop and its immutable metric |
 | [Computer use](docs/computer-use.md) | Driving the Mac, and every safety rail |
+| [Goals](docs/goals.md) | One objective a thread keeps working at, with a token budget |
+| [Agents](docs/agents.md) | Self-improvement: friction, trials, the replay bench |
+| [Browser](docs/browser.md) | The per-thread Chromium view, the PIP, and clipboard history |
+| [Mobile](docs/mobile.md) | Pairing a phone, and the relay you deploy for it |
 | [CLI](docs/cli.md) | Driving other coding CLIs, and Connections |
 | [Harness](docs/harness.md) | The fx fork, ACP, and what it reaches today |
 | [Plugins](docs/plugins.md) | Skills, MCP servers, tools Emma writes, CSS |
@@ -241,10 +305,9 @@ desktop/        Electron main/preload and React 19 workspace
   src/            sandboxed React views and presentation state — no Node access
   shared/         types and tables both sides agree on
   native/         emma-option-tap, emma-transcribe and emma-pty, built with clang
-crates/core/    Durable Markdown thread, scheduled and research records
+crates/core/    Markdown thread, scheduled and research records
 crates/host/    NDJSON host bridge
 harness/        emma-cli, Emma's fork of vercel-labs/fx, Apache-2.0
-website/        Separate React 19 + Tailwind 4 public site
 docs/           Product and architecture contracts
 ```
 
@@ -274,7 +337,9 @@ Build a macOS app with `npm run package:mac`.
 
 > **Not release-ready.** `dev.local.emma` is the provisional development identity. A publisher-owned bundle ID, a minimum supported macOS version, a signing identity, distribution, and an update owner all remain release blockers.
 
-More: **[docs/development.md](docs/development.md)**
+Every PR runs the full check list on GitHub Actions, and its **title is the changelog entry** — conventional commits, `fix(notch): …`. `CHANGELOG.md` is generated by release-please and never hand-edited; merging the release PR tags the version and attaches the packaged app.
+
+More: **[docs/development.md](docs/development.md)** · **[releasing](.claude/skills/releasing/SKILL.md)**
 
 ## License
 

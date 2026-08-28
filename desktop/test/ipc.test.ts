@@ -3,14 +3,15 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { externalUrl, keepRequest, runCommandRequest, MAX_FETCHED_TEXT_CHARS, metaContent, readablePage, trustedSender, validJpegDataUrl, validateRequest, vaultRequest } from "../main/ipc";
+import { externalUrl, keepRequest, runCommandRequest, statsExportRequest, MAX_FETCHED_TEXT_CHARS, metaContent, readablePage, trustedSender, validJpegDataUrl, validateRequest, vaultRequest } from "../main/ipc";
+import { toCsv } from "../shared/csv";
 import { MAX_NOTE_BYTES, MAX_TITLE_BYTES } from "../shared/vault";
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
-import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveLocalModel, defaultSettings, fontStack, forgetLocalModel, isEnvName, localEndpoint, localModelEndpoint, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, normalizeLocalModelEndpoint, printableSecret, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
+import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveProvider, defaultSettings, fontStack, forgetProvider, isEnvName, localEndpoint, providerEndpoint, providerReach, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, normalizeProviderEndpoint, printableSecret, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
-import { hotspotLayout, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
+import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
 import type { Snapshot } from "../src/types";
 import { BoundedLines, MAX_RECORDED_TURN_BYTES, parseHostLine, recordedTurn } from "../main/ndjson";
@@ -51,7 +52,8 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.throws(() => validateRequest({ method: "submitToolResult", params: { threadId: "thread-123456789", results: "[]" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
-  assert.deepEqual(validateRequest({ method: "selectLocalModel", params: { baseUrl: "http://127.0.0.1:1234/v1", modelId: "qwen3:8b", credentialEnv: "" } }).params, { baseUrl: "http://127.0.0.1:1234/v1", modelId: "qwen3:8b", credentialEnv: "" });
+  assert.deepEqual(validateRequest({ method: "selectProviderModel", params: { providerId: "p-1", effort: "" } }).params, { providerId: "p-1", effort: "" });
+  assert.throws(() => validateRequest({ method: "selectProviderModel", params: { providerId: "" } }), /Invalid parameters/);
   assert.deepEqual(validateRequest({ method: "selectOpenRouterModel", params: { modelId: "google/gemma-4-26b-a4b-it:free", effort: "" } }).params, { modelId: "google/gemma-4-26b-a4b-it:free", effort: "" });
   assert.equal(validateRequest({ method: "selectOpenRouterModel", params: { modelId: "x/y" } }).params.modelId, "x/y");
   assert.equal(validateRequest({ method: "setThreadModel", params: { threadId: "thread-123456789", modelId: "" } }).params.modelId, "");
@@ -107,7 +109,7 @@ test("host response lines are framed and bounded before JSON parsing", () => {
   assert.throws(() => parseHostLine('{"id":"1","ok":true}'), /envelope/);
   assert.throws(() => parseHostLine('{"id":"1","ok":false,"error":null}'), /envelope/);
   assert.throws(() => parseHostLine('{"threadId":"t","delta":"hi"}'), /Invalid host response/);
-  assert.deepEqual(parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full","depth":0}}'), { dueJob: { jobId: "j", threadId: "t", title: "T", prompt: "p", nodes: "", variables: "{}", permissionMode: "full", depth: 0 } });
+  assert.deepEqual(parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full","model":"openrouter:deepseek/deepseek-chat","depth":0}}'), { dueJob: { jobId: "j", threadId: "t", title: "T", prompt: "p", nodes: "", variables: "{}", permissionMode: "full", model: "openrouter:deepseek/deepseek-chat", depth: 0 } });
   assert.throws(() => parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p"}}'), /due job envelope/);
   assert.throws(() => parseHostLine('{"dueJob":{"jobId":"j","threadId":"t","title":"T","prompt":"p","nodes":"","variables":"{}","permissionMode":"full"}}'), /due job envelope/);
 });
@@ -271,16 +273,31 @@ test("a quick action keeps only what it is, so a dead knowledge destination cann
   assert.deepEqual(Object.keys(first).sort(), ["category", "label", "prompt"]);
 });
 
-test("local model profiles stay loopback-only and support keyless servers", () => {
-  assert.equal(localModelEndpoint("HTTP://LOCALHOST:1234/v1")?.hostname, "localhost");
-  assert.equal(normalizeLocalModelEndpoint("HTTP://LOCALHOST:1234/v1/"), "http://localhost:1234/v1");
-  const settings = validateSettings({ ...defaultSettings, localModels: [{ id: "local-qwen", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "HTTP://LOCALHOST:1234/v1/", credentialEnv: "" }], selectedModel: "local:local-qwen" });
-  assert.equal(settings.localModels[0].baseUrl, "http://localhost:1234/v1");
-  assert.equal(settings.localModels[0].credentialEnv, "");
-  assert.equal(canRemoveLocalModel(settings, "local-qwen"), false);
-  assert.equal(canRemoveLocalModel(settings, "other"), true);
-  assert.equal(localModelEndpoint("http://localhost.evil/v1"), null);
-  assert.throws(() => validateSettings({ ...defaultSettings, localModels: [{ id: "local-bad", name: "Bad", modelId: "bad", baseUrl: "https://api.example.test/v1", credentialEnv: "" }] }), /profile/);
+test("a provider reaches this Mac, a private network only by consent, and the internet over https", () => {
+  assert.equal(providerEndpoint("HTTP://LOCALHOST:1234/v1")?.hostname, "localhost");
+  assert.equal(normalizeProviderEndpoint("HTTP://LOCALHOST:1234/v1/"), "http://localhost:1234/v1");
+  assert.equal(providerEndpoint("https://api.deepseek.com/v1")?.hostname, "api.deepseek.com");
+  assert.equal(providerEndpoint("http://192.168.1.40:1234/v1"), null);
+  assert.equal(providerEndpoint("http://192.168.1.40:1234/v1", true)?.port, "1234");
+  assert.equal(providerEndpoint("http://api.example.test/v1", true), null);
+  assert.equal(providerEndpoint("http://localhost.evil/v1"), null);
+  assert.equal(providerEndpoint("https://user:pass@api.example.test/v1"), null);
+  assert.equal(providerReach("http://127.0.0.1:1234/v1"), "this-mac");
+  assert.equal(providerReach("http://100.101.1.2:1234/v1"), "network");
+  assert.equal(providerReach("https://api.z.ai/api/paas/v4"), "internet");
+  const settings = validateSettings({ ...defaultSettings, providers: [{ id: "local-qwen", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "HTTP://LOCALHOST:1234/v1/", credentialEnv: "", contextWindow: 0, insecure: false }], selectedModel: "provider:local-qwen" });
+  assert.equal(settings.providers[0].baseUrl, "http://localhost:1234/v1");
+  assert.equal(canRemoveProvider(settings, "local-qwen"), false);
+  assert.equal(canRemoveProvider(settings, "other"), true);
+  assert.throws(() => validateSettings({ ...defaultSettings, providers: [{ id: "bad", name: "Bad", modelId: "bad", baseUrl: "http://10.0.0.5:1234/v1", credentialEnv: "", contextWindow: 0, insecure: false }] }), /unencrypted/);
+});
+
+test("a saved local profile becomes a provider and its key follows", () => {
+  const migrated = validateSettings({ ...defaultSettings, providers: undefined, localModels: [{ id: "local-qwen", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "" }], selectedModel: "local:local-qwen", favoriteModels: ["local:local-qwen"] } as never);
+  assert.equal(migrated.providers.length, 1);
+  assert.equal(migrated.providers[0].insecure, false);
+  assert.equal(migrated.selectedModel, "provider:local-qwen");
+  assert.deepEqual(migrated.favoriteModels, ["provider:local-qwen"]);
 });
 
 test("provider keys mask their middle and never leak their length", () => {
@@ -295,14 +312,14 @@ test("provider keys mask their middle and never leak their length", () => {
 });
 
 test("starred models cap at six and drop with their local profile", () => {
-  const base = validateSettings({ ...defaultSettings, favoriteModels: [], localModels: [{ id: "local-qwen", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "" }] });
+  const base = validateSettings({ ...defaultSettings, favoriteModels: [], providers: [{ id: "local-qwen", name: "Qwen local", modelId: "qwen3:8b", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "", contextWindow: 0, insecure: false }] });
   const full = ["a", "b", "c", "d", "e", "f"].reduce((settings, id) => toggleFavoriteModel(settings, `openrouter:vendor/${id}:free`), base);
   assert.equal(validateSettings(full).favoriteModels.length, MAX_FAVORITE_MODELS);
-  assert.throws(() => toggleFavoriteModel(full, "local:local-qwen"), /unstar one/);
+  assert.throws(() => toggleFavoriteModel(full, "provider:local-qwen"), /unstar one/);
   assert.equal(toggleFavoriteModel(full, "openrouter:vendor/a:free").favoriteModels.length, 5);
   assert.equal(toggleFavoriteModel(full, "openrouter:vendor/a:free").favoriteModels[0], "openrouter:vendor/f:free");
-  const starred = toggleFavoriteModel(base, "local:local-qwen");
-  assert.deepEqual(forgetLocalModel(starred, "local-qwen"), { ...base, localModels: [] });
+  const starred = toggleFavoriteModel(base, "provider:local-qwen");
+  assert.deepEqual(forgetProvider(starred, "local-qwen"), { ...base, providers: [] });
   assert.throws(() => validateSettings({ ...base, favoriteModels: ["fallback", "fallback"] }), /invalid/);
 });
 
@@ -310,7 +327,7 @@ test("overlay settings migrate old values and keep calibration bounded", () => {
   const legacy = { quickActions: defaultSettings.quickActions, transcriptionEnabled: defaultSettings.transcriptionEnabled, transcriptionEndpoint: defaultSettings.transcriptionEndpoint, transcriptionModel: defaultSettings.transcriptionModel };
   assert.deepEqual(validateSettings(legacy).notchGap, defaultSettings.notchGap);
   assert.deepEqual(validateSettings(legacy).cursorOrbs, defaultSettings.cursorOrbs);
-  assert.equal(validateSettings(legacy).cursorOrbsEnabled, true);
+  assert.equal(validateSettings(legacy).cursorOrbsEnabled, false);
   assert.deepEqual(validateOverlayPreferences({ notchGap: 196, cursorOrbsEnabled: false }), { notchGap: 196, cursorOrbsEnabled: false, notchConcurrency: "separate" });
   assert.equal(validateOverlayPreferences({ notchGap: 196, cursorOrbsEnabled: false, notchConcurrency: "continue" }).notchConcurrency, "continue");
   assert.equal(validateOverlayPreferences({ notchGap: 196, cursorOrbsEnabled: false, notchConcurrency: "both" }).notchConcurrency, "separate");
@@ -323,7 +340,7 @@ test("overlay settings migrate old values and keep calibration bounded", () => {
   assert.equal(validateSettings(legacy).notchModel, "");
   assert.equal(validateSettings(legacy).notchConcurrency, "separate");
   assert.equal(validateSettings({ ...defaultSettings, notchModel: "openrouter:vendor/model" }).notchModel, "openrouter:vendor/model");
-  assert.throws(() => validateSettings({ ...defaultSettings, notchModel: "local:profile-1" }), /Quick Ask model/);
+  assert.equal(validateSettings({ ...defaultSettings, notchModel: "provider:profile-1" }).notchModel, "provider:profile-1");
   assert.throws(() => validateSettings({ ...defaultSettings, notchModel: "fallback" }), /Quick Ask model/);
   assert.throws(() => validateSettings({ ...defaultSettings, notchConcurrency: "queue" as never }), /Quick Ask behaviour/);
 });
@@ -358,6 +375,11 @@ test("overlay geometry hangs off the reported camera housing and falls back to t
   assert.deepEqual(parseNotchGeometry("[]"), []);
   assert.throws(() => parseNotchGeometry('[{"id":1,"x":663,"width":8,"height":38}]'), /invalid/);
   assert.throws(() => parseNotchGeometry('[{"id":1,"x":663,"width":185}]'), /invalid/);
+});
+
+test("hotspot polling stays responsive only near the notch", () => {
+  assert.equal(hotspotPollDelay(true), 120);
+  assert.equal(hotspotPollDelay(false), 250);
 });
 
 test("the status chip parks inside the work area and the island opens beside it", () => {
@@ -477,4 +499,22 @@ test("readablePage does not spill a data-props JSON blob into the text", () => {
   const props = '{&quot;template&quot;:&quot;<role>SYSTEM</role>&quot;,&quot;cls_token&quot;:&quot;[CLS]&quot;}';
   const page = readablePage(`<html><body><main><div data-props="${props}"><p>Model card body.</p></div></main></body></html>`);
   assert.equal(page.text, "Model card body.");
+});
+
+test("a stats export is refused unless every name is a plain csv file in one flat folder", () => {
+  const files = [{ name: "summary.csv", text: "a,b\r\n" }];
+  assert.deepEqual(statsExportRequest({ folder: "thread-202608", files }), { folder: "thread-202608", files });
+  assert.throws(() => statsExportRequest({ folder: "../escape", files }), /folder name is invalid/);
+  assert.throws(() => statsExportRequest({ folder: "/tmp/absolute", files }), /folder name is invalid/);
+  assert.throws(() => statsExportRequest({ folder: "ok", files: [{ name: "../summary.csv", text: "" }] }), /sheet name is invalid/);
+  assert.throws(() => statsExportRequest({ folder: "ok", files: [{ name: "notes/summary.csv", text: "" }] }), /sheet name is invalid/);
+  assert.throws(() => statsExportRequest({ folder: "ok", files: [{ name: "summary.sh", text: "" }] }), /sheet name is invalid/);
+  assert.throws(() => statsExportRequest({ folder: "ok", files: [files[0], files[0]] }), /repeated/);
+  assert.throws(() => statsExportRequest({ folder: "ok", files: [] }), /invalid/);
+  assert.throws(() => statsExportRequest({ folder: "ok", files: [{ name: "summary.csv", text: 7 }] }), /invalid/);
+});
+
+test("csv cells keep commas, quotes and newlines inside one field", () => {
+  assert.equal(toCsv([["plain", 12], ['say "hi", now', "line\nbreak"]]), 'plain,12\r\n"say ""hi"", now","line\nbreak"\r\n');
+  assert.equal(toCsv([[Number.NaN, Number.POSITIVE_INFINITY]]), ",\r\n");
 });

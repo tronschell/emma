@@ -10,5 +10,10 @@ rust-version = "1.97"
 license = "Apache-2.0"
 publish = false
 
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+
 [workspace.dependencies]
 emma-core = { path = "crates/core" }

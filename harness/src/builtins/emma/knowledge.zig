@@ -152,6 +152,61 @@ pub const artifact = ToolSpec{
     .irreversible_fn = bridge.isReversible,
 };
 
+const component_description =
+    "Build something into Emma's own interface — a panel, a counter, a button, a small tool — mounted where the user points, and reloading in place every time you rewrite it. This is what \"build yourself an X\" means. It is not an artifact: an artifact is a thing the user keeps outside the conversation, a component is a piece of Emma.\n" ++
+    "The order is fixed and there is no way around it. place first — the window lights up and the user clicks the spot it belongs in: the sidebar, the context bar, or the composer, never the transcript, which is rebuilt for every thread. The result names what they picked, and they can drag it elsewhere afterwards. Then ask them whatever the request left open: what it shows, where its numbers come from, how it should behave. Only then create.\n" ++
+    "code is one ES module: export default (api) => Component. api is { h, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma }; h is React.createElement, so there is no JSX and nothing to import — h(\"div\", { className: \"…\" }, …). emma is the same bridge the app uses. Reuse the app's own class names wherever one fits, so it looks like it belongs there.\n" ++
+    "Style it in Emma's design system, from her own tokens — never a colour, radius or face of your own. Ground: var(--bg) for the window, var(--surface-2) for a card, --surface-3 hover, --surface-4 active. Ink: var(--text), var(--text-2) for labels, var(--text-3) for captions. Rules are 1px var(--border), or var(--border-strong) for a region outline, and never both on one edge. var(--accent) is action, state and data only, never emphasis; var(--accent-soft) is the only accent fill over a large area; var(--danger) is destructive. Space on var(--s-1) 4px through var(--s-8) 32px, sizes from var(--fs-2xs) up. A control is 28px tall, 1px bordered, transparent. Every corner is square — no border-radius anywhere. var(--font-mono) is the interface face for anything on the grid: labels, values, buttons, counts, with uppercase labels tracked by var(--ls-caps). var(--font) is for sentences. Density is the point: if it looks cramped, take something out rather than adding padding.\n" ++
+    "rewrite replaces the whole module of an id that exists and hot-reloads it, which is how you iterate: the user says what is wrong, you rewrite, they watch it change. Keep going until they are happy.\n" ++
+    "No delete. A component is the user's to remove, from the ⋯ in its corner.";
+
+pub const component = ToolSpec{
+    .name = "component",
+    .description = component_description,
+    .gateway_schema = .{
+        .name = "component",
+        .description = component_description,
+        .input_schema = .{
+            .properties = &.{
+                .{
+                    .name = "action",
+                    .json_type = .string,
+                    .description = "What to do. place asks the user where it goes; create builds it there; rewrite replaces one whole; list and get read what is already built. Defaults to list.",
+                    // COMPONENT_ACTIONS, from desktop/main/tools.ts.
+                    .shape = &.{ .enum_values = &.{ "list", "get", "place", "create", "rewrite" } },
+                },
+                .{
+                    .name = "id",
+                    .json_type = .string,
+                    .description = "The component to act on, as create or list reported it. Required for get and rewrite.",
+                },
+                .{
+                    .name = "title",
+                    .json_type = .string,
+                    .description = "What the user would call it. Required on create, and shown in its ⋯ menu.",
+                },
+                .{
+                    .name = "code",
+                    .json_type = .string,
+                    .description = "The whole module. Required on create and rewrite.",
+                },
+            },
+        },
+    },
+    .advertisement = .on_select,
+    .executor_kind = .emma,
+    .activity_kind = .write,
+    .requires_approval = false,
+    .action_label = "Building into Emma",
+    .completed_action_label = "Built into Emma",
+    .permission_target_kind = .none,
+    .decode = bridge.decode,
+    .validate = bridge.validate,
+    .call = bridge.call,
+    .reads_only_fn = bridge.readsAndWrites,
+    .irreversible_fn = bridge.isReversible,
+};
+
 const workflow_description =
     "Build and look after the user's scheduled tasks — the workflows in the Scheduled tasks section. Call it with no arguments to list them, or set action to get, save, delete, run or test.\n" ++
     "A task is a trigger plus a graph of nodes. trigger is a five-field UTC cron expression (\"0 9 * * 1\"), \"manual\", \"after <job-id>\" to run when another task finishes, or \"on <event>\" for an app event (\"on launch\", \"on page-saved\").\n" ++
@@ -386,4 +441,4 @@ pub const autoresearch = ToolSpec{
     .irreversible_fn = bridge.isIrreversible,
 };
 
-pub const all = [_]ToolSpec{ keep, artifact, workflow, visualize, autoresearch };
+pub const all = [_]ToolSpec{ keep, artifact, component, workflow, visualize, autoresearch };

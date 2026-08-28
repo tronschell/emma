@@ -211,3 +211,30 @@ export const MEMORY_PROTOCOL = [
   "   - As you make progress, record status / progress / thoughts etc in your memory.",
   "ASSUME INTERRUPTION: Your context window might be reset at any moment, so you risk losing any progress that is not recorded in your memory directory.",
 ].join("\n");
+
+export interface MemoryNote {
+  path: string;
+  bytes: number;
+  updatedAt: number;
+  text: string;
+}
+
+export async function listMemories(root: string): Promise<MemoryNote[]> {
+  const base = path.resolve(root);
+  const notes: MemoryNote[] = [];
+  const walk = async (directory: string, depth: number): Promise<void> => {
+    if (depth > 4 || notes.length >= MAX_MEMORY_FILES) return;
+    const entries = await readdir(directory).catch(() => [] as string[]);
+    for (const entry of entries.sort()) {
+      if (entry.startsWith(".") || notes.length >= MAX_MEMORY_FILES) continue;
+      const absolute = path.join(directory, entry);
+      const info = await stat(absolute).catch(() => undefined);
+      if (!info) continue;
+      if (info.isDirectory()) { await walk(absolute, depth + 1); continue; }
+      const text = info.size > MAX_MEMORY_FILE_BYTES ? "" : await readFile(absolute, "utf8").catch(() => "");
+      notes.push({ path: `${MEMORY_ROOT}${absolute.slice(base.length)}`, bytes: info.size, updatedAt: info.mtimeMs, text });
+    }
+  };
+  await walk(base, 0);
+  return notes.sort((left, right) => right.updatedAt - left.updatedAt);
+}

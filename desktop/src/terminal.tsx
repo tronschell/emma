@@ -46,7 +46,7 @@ function paletteOf(node: HTMLElement) {
   };
 }
 
-function TerminalSurface({ tab, active, onSelect, onLink }: {
+export function TerminalSurface({ tab, active, onSelect, onLink }: {
   tab: TerminalTab;
   active: boolean;
   onSelect: (value: TerminalSelection) => void;
@@ -156,13 +156,15 @@ export function TerminalIcon() {
   return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="1.6" y="2.6" width="12.8" height="10.8" /><path d="M4.2 6.1l2.3 2.3-2.3 2.3M8.6 10.7h3.2" /></svg>;
 }
 
-export function TerminalPanel({ threadId, onSelect, onHide, onOpenInEmma }: {
+export function TerminalPanel({ threadId, popped, onPop, onSelect, onHide, onOpenInEmma }: {
   threadId: string;
+  popped: string[];
+  onPop: (id: string) => void;
   onSelect: (value: TerminalSelection) => void;
   onHide: () => void;
   onOpenInEmma: (url: string) => void;
 }) {
-  const tabs = useTerminals(threadId);
+  const tabs = useTerminals(threadId).filter((tab) => !popped.includes(tab.id));
   const [picked, setPicked] = useState("");
   const [error, setError] = useState("");
   const [link, setLink] = useState<{ url: string; x: number; y: number }>();
@@ -202,6 +204,7 @@ export function TerminalPanel({ threadId, onSelect, onHide, onOpenInEmma }: {
     <header className="terminal-tabs">
       {tabs.map((tab) => <div className="terminal-tab" key={tab.id} data-active={tab.id === activeId} data-ended={!tab.running}>
         <button type="button" onClick={() => setPicked(tab.id)} title={tab.cwd}><TerminalGlyph /><span>{tab.title}</span></button>
+        <button type="button" className="terminal-tab-pop" aria-label={`Pop ${tab.title} out`} title="Pop this shell out into a floating window" onClick={() => onPop(tab.id)}>⇱</button>
         <button type="button" className="terminal-tab-close" aria-label={`Close ${tab.title}`} title="Close this shell" onClick={() => void window.emma.closeTerminal(tab.id).catch(() => undefined)}>×</button>
       </div>)}
       <button type="button" className="terminal-add" aria-label="New terminal" title="New terminal" onClick={() => void start()}>+</button>

@@ -41,3 +41,17 @@
 .browser-empty p { color: var(--text-3); font: var(--fs-sm)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .browser-empty button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); border-radius: var(--r-2); color: var(--text-2); background: transparent; font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t); }
 .browser-empty button:hover { color: var(--text); border-color: var(--border-strong); }
+
+.browser-clips { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 38%; margin: 0 var(--s-2) var(--s-2); padding: 0; overflow-y: auto; list-style: none; border: 1px solid var(--border); border-radius: var(--r-2); background: var(--surface-2); }
+.browser-clips li + li { border-top: 1px solid var(--border); }
+.browser-clips button { display: block; width: 100%; min-height: 26px; padding: 0 var(--s-2); overflow: hidden; color: var(--text-2); background: transparent; font: var(--fs-xs)/26px var(--font-mono); text-align: left; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t), background-color var(--t); }
+.browser-clips button:hover { color: var(--text); background: var(--surface-3); }
+.browser-clips-empty { padding: 0 var(--s-2); color: var(--text-3); font: var(--fs-xs)/26px var(--font-mono); }
+
+.pip .browser-pane { border-left: 0; background: transparent; }
+.pip .browser-tabs { min-height: 30px; padding: 2px var(--s-1); }
+.pip .browser-tab { max-width: 132px; }
+.pip .browser-bar { min-height: 30px; padding: 0 var(--s-1) var(--s-1); }
+.pip .browser-icon { width: 22px; height: 22px; }
+.pip .browser-address { height: 26px; }
+.pip .browser-clips { margin: 0 var(--s-1) var(--s-1); }

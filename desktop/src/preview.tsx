@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { tokenize } from "./highlight";
 import { Markdown } from "./markdown";
 import { OpenIn } from "./editors";
+import { TextIcon } from "./icons";
 
 const PREVIEW_EVENT = "emma:preview-file";
 
@@ -22,8 +23,23 @@ export function openPreview(path: string, name?: string) {
 }
 
 const extension = (path: string) => path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-const isMarkdown = (path: string) => /^(md|markdown|mdx)$/.test(extension(path));
+export const isMarkdown = (path: string) => /^(md|markdown|mdx)$/.test(extension(path));
 const isHtml = (path: string) => /^(html?|xhtml)$/.test(extension(path));
+
+export function ReadMarkdown({ folderId, path, name }: { folderId?: string; path: string; name?: string }) {
+  if (!isMarkdown(path)) return null;
+  const open = () => {
+    if (path.startsWith("/") || !folderId) { openPreview(path, name); return; }
+    void window.emma.listFolders()
+      .then((grants) => {
+        const root = grants.find((grant) => grant.id === folderId)?.path;
+        if (root) openPreview(`${root}/${path}`, name ?? path.slice(path.lastIndexOf("/") + 1));
+      })
+      .catch(() => undefined);
+  };
+  return <button type="button" className="md-read" title={`Read ${path} as Markdown`} aria-label={`Read ${path} as Markdown`}
+    onClick={(event) => { event.preventDefault(); open(); }}><TextIcon /></button>;
+}
 
 function Body({ path, name, text, image, source }: { path: string; name: string; text: string; image?: string; source: boolean }) {
   // A picture is the one file that is already its own preview.

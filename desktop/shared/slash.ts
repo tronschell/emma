@@ -6,7 +6,7 @@
 
 import type { ContextPick } from "./folders";
 
-export type SlashKind = "tool" | "skill" | "mcp" | "builtin" | "file" | "category" | "artifact" | "page" | "terminal" | "visual";
+export type SlashKind = "tool" | "skill" | "mcp" | "builtin" | "file" | "category" | "artifact" | "page" | "terminal" | "diff" | "visual" | "component";
 export interface SlashCommand {
   id: string;
   name: string;
@@ -28,7 +28,9 @@ export const KIND_LABELS: Record<SlashKind, string> = {
   artifact: "Artifact",
   page: "Knowledge",
   terminal: "Terminal",
+  diff: "Diff",
   visual: "Picture",
+  component: "Built by Emma",
 };
 
 /** Hues a "/" token cycles through. Orange is the accent and stays out of it. */
@@ -38,6 +40,14 @@ export const FILE_HUE = SLASH_HUES;
 /** Rows a menu draws: a connected folder can list hundreds of files.
     ponytail: a flat cap, not virtualisation — narrow the query instead. */
 export const MENU_MAX = 20;
+
+/** The four names the composer answers itself, before any import is consulted. */
+export const BUILTIN_COMMANDS: SlashCommand[] = [
+  { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig coding harness" },
+  { id: "import", name: "import", kind: "builtin", detail: "built-in · import skills & MCP" },
+  { id: "new", name: "new", kind: "builtin", detail: "built-in · new thread in this project" },
+  { id: "clear", name: "clear", kind: "builtin", detail: "built-in · empty the context window" },
+];
 
 export type Sigil = "/" | "@";
 

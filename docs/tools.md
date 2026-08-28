@@ -7,7 +7,7 @@ They are different lists with different names; do not conflate them.
 
 ## Emma's tools
 
-The 23 names in `AGENT_TOOLS`. Schemas are in
+The 26 names in `AGENT_TOOLS`. Schemas are in
 [tools.ts](../desktop/main/tools.ts); `runEmmaTool` in
 [main.ts](../desktop/main/main.ts) checks the gate and dispatches. Gate column:
 `ask` means a dialog in `ask`/`acceptEdits`, the verifier in `auto`, and through
@@ -27,9 +27,11 @@ in `full`; `auto` means it never stops. Full matrix in
 | `memory` | Emma's own `/memories` directory, carried between conversations. Commands: `view`, `create`, `str_replace`, `insert`, `delete`, `rename`. | auto | [memory.ts](../desktop/main/memory.ts) |
 | `advisor` | Forwards the whole transcript to a stronger model and returns its answer. Takes no arguments — the agent chooses when, never what it sees. | auto | [advisor.ts](../desktop/main/advisor.ts) |
 | `vision` | Asks a vision model one question about one image, by `path` or `url`. **Advertised to the model as `look_at_image`.** | auto | [vision.ts](../desktop/main/vision.ts) |
+| `secret` | Runs `command` on this Mac and sends its output to the model set in Settings → Models under Secrets, with one question. Only that model's answer comes back; the output never enters the thread. | ask | [secret.ts](../desktop/main/secret.ts) |
 | `web_search` | Query out to the configured provider; returns ranked titles, links and snippets. | auto | [web-search.ts](../desktop/main/web-search.ts) |
 | `plan` | Breaks a job into steps in a durable markdown file and hands each to its own subagent; independent steps run at once. Actions: `read`, `write`, `run`, `update`, `delete`. | auto | [plans.ts](../desktop/main/plans.ts) |
-| `threads` | Emma's durable conversations: `spawn`, `list`, `read`, `message`, `rename`. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
+| `goal` | The one objective this thread keeps working at, and the ledger under it. Actions: `set`, `get`, `update`, `extend`, `clear`. A subagent's call acts on its parent's goal. See [goals.md](goals.md). | auto | [main.ts](../desktop/main/main.ts) |
+| `threads` | Emma's threads: `spawn`, `list`, `read`, `message`, `rename`. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
 | `read_trace` | Reads past turns' execution traces in this thread, nested, with arguments and outcomes. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
 | `context` | Reads how full this thread's context window is; `compact: true` folds earlier turns into one summary from the next turn on. | auto | [main.ts](../desktop/main/main.ts) |
 | `keep` | Saves one Markdown note into the user's vault. Replaced the old knowledge-save tool. | auto | [vault.ts](../desktop/main/vault.ts) |
@@ -38,6 +40,7 @@ in `full`; `auto` means it never stops. Full matrix in
 | `workflow` | Builds and runs the Scheduled tasks: a trigger plus a node graph. | ask | [workflow.ts](../desktop/shared/workflow.ts) |
 | `autoresearch` | Builds and runs the long experiment loops. | ask | [research.ts](../desktop/main/research.ts) |
 | `artifact` | Documents, code, pages, drawings and apps on the Artifacts page. Actions: `list`, `get`, `create`, `update`, `rewrite`. No delete. | auto | [artifacts.ts](../desktop/main/artifacts.ts) |
+| `component` | Pieces of Emma's own interface, built where the user points. Actions: `list`, `get`, `place`, `create`, `rewrite`. No delete — the user removes one from the ⋯ in its corner. | auto | [components.ts](../desktop/main/components.ts) |
 | `visualize` | Draws one self-contained HTML document inline in the conversation. Nothing is saved. | auto | [visuals.ts](../desktop/main/visuals.ts) |
 
 ### Availability, beyond the gate
@@ -69,8 +72,14 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
   Budgets `maxSeconds`, `maxTokens`, `maxMicroDollars` ($1 = 1000000); 0 is no
   limit.
 - `artifact` `surface` (`navbar`, `chat`, `notch`, `context`, `none`) replaces one
-  region of Emma's own interface live, from a `code`/`js` artifact exporting
-  `(api) => Component`.
+  whole region of Emma's own interface live, from a `code`/`js` artifact exporting
+  `(api) => Component`. Adding something *new* to the interface is `component`
+  instead, and is not an artifact.
+- `component` is ordered, and the order is enforced in main rather than asked for:
+  `place` lights the window up and blocks until the user clicks the element it
+  belongs in, and `create` is refused until they have. Same module contract as a
+  region — `export default (api) => Component`, no imports, no JSX — and each
+  `rewrite` bumps the version so the mounted copy reloads in place.
 - `visualize` and `artifact` writes lead with a `[visual:id]` / `[artifact:id]`
   token that Emma uses to render them. Leave it in place.
 

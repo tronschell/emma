@@ -41,7 +41,8 @@ prompt. All five are other people's work:
 | `cursor` | [Cursor CLI](https://docs.cursor.com/en/cli/overview) | `cursor-agent` | `--print <prompt>` | `--print --resume <prompt>` | `--force` | no |
 
 The catalog is [shared/cli.ts](../desktop/shared/cli.ts); what differs between
-entries is three strings, so that is all it holds. Session ids are UUIDs because
+entries is three strings, so that is all it holds. Every row takes an optional
+model, appended as `--model <id>` when a run has one. Session ids are UUIDs because
 `claude --session-id` and `codex exec resume` want one.
 
 **Owns its session** is the column that bites. `no` means the CLI only offers
@@ -109,13 +110,84 @@ finished before sending it more.
 
 ### In the window
 
-[src/cli.tsx](../desktop/src/cli.tsx), two views onto the same runs.
+[src/cli.tsx](../desktop/src/cli.tsx), four views onto the same runs.
 
-**`CliDock`** — the strip pinned above the thread: the run that is working, or
-the most recent one. Logo, run id, first line of the opening prompt, live state
-(`turn 3 · 47s`, `idle · exit 0`, `failed to start`), an `unattended` badge, the
-folder, `+N` for the others, Open tab and Stop, and the last 6 lines of terminal.
-It is pinned rather than inlined because a run outlives the turn that started it.
+**A tab** — where a run lands by default. It takes a tab of its own in the
+thread's strip, beside the sub threads, wearing its harness's logo, and opens
+`CliPanel`: the run's id, folder, turn count, approvals, its terminal tail and a
+composer for the next turn. `⤢` in the header floats it instead.
+
+**A PIP** — [src/pip.tsx](../desktop/src/pip.tsx) floats one small window per
+floated run over the conversation, never inside it, because a run outlives the
+turn that started it. Its logo, label, folder, live state (`working · 47s`, `finished`,
+`stopped · code 2`, `failed`), an `unattended` badge, a `⋯` menu, a fold button,
+the output, and a composer
+that gives it the next turn. The composer is Emma's own — same classes, same
+shape — and takes attachments through `＋` or a drop onto the window, sending
+their paths with the prompt.
+
+Runs share one window until you pull them apart. A second run stacks behind the
+first, offset by `STACK` and dimmed, up to `DEEPEST` cards deep; clicking a card
+brings it to the front, and dragging one more than `TEAR` pixels tears it out
+into a window of its own. From then on both are placed independently.
+
+Drag a window by its header, resize it from the corner grip (arrow keys work
+too) down to `MIN_WIDTH` × `MIN_HEIGHT`, which is the size that still fits the
+header, a readable stretch of transcript and the whole composer row, or fold it
+into the icon rail. The rail sits on the conversation's right
+edge until you drag it somewhere else — press an icon to restore that run, drag
+the rail to move it. Brand marks are `draggable={false}`, or the browser's own
+image drag would eat the gesture on the first move.
+
+On drop, `restfulSpot` scores a 4×4 grid of anchors and swoops to the best one:
+how much text the window would cover (`document.elementsFromPoint` over a sample
+grid), how much it would overlap the other windows, and how far it would travel
+from where it was let go. Overlap disqualifies rather than merely costs: any
+anchor that lands clear of the other windows beats every anchor that does not,
+and the gradient only breaks ties among the crowded ones, for when two windows
+are too big to sit side by side. `floorOf` keeps it above the composer at the bottom of
+the conversation — its own composer does not count, or every window would push
+its own floor up.
+
+Every action lives behind the header's `⋯` menu, as a named row with its icon —
+show raw output, back to its tab, run in terminal, stop run —
+because an icon row of five unlabelled glyphs said nothing about what any of them
+did. Only the fold button stays outside it, where it always was. The menu closes
+on Escape, on picking a row, and when focus leaves it.
+
+The output renders as markdown by default, through the same `Markdown` the
+conversation uses, so a CLI that answers in tables and lists reads like one.
+**Show raw output** flips it to the untouched terminal text, per run.
+
+**The model picker** — one per run, holding only that harness's own models. It
+is Emma's own picker, not a native control: the `.model-button` trigger from the
+main composer opens a `.source-popover.model-menu` of `.model-menu-row` buttons,
+sized to the card so it scrolls rather than escapes it. Picking one stores
+`model` on the run, and the next turn passes `--model <id>` to the child.
+
+Emma does not keep a list of models. `discoverCliModels` in
+[main/cli-models.ts](../desktop/main/cli-models.ts) asks each CLI what it has:
+
+| id | Where the models come from |
+| --- | --- |
+| `claude` | scans the newest build under `~/.local/share/claude/versions` for `claude-*` ids, plus the `fable`/`opus`/`sonnet`/`haiku` aliases |
+| `codex` | `models[].slug` out of `~/.codex/models_cache.json` |
+| `pi` | `~/.pi/agent/models-store.json`, as `provider/id` |
+| `opencode` | `opencode models` |
+| `cursor` | `cursor-agent --list-models` |
+
+So a model released tomorrow shows up as soon as that CLI knows about it, with
+no change here. The answer is cached in `<userData>/cli-models.json` for
+`CLI_MODELS_STALE_MS` — a week — and the menu's foot row reads it again now.
+Scanning a binary is bounded by `MAX_LIST_BYTES` and `LIST_MS`, and the ids are
+validated before they are offered, because a loose `claude-*` match pulls in
+strings that are not models.
+
+**The terminal** — the Terminal button starts that harness's own interactive CLI
+in Emma's pty ([main/terminal.ts](../desktop/main/terminal.ts) takes a `cli` id
+and runs `$SHELL -ilc <bin>` in place of a login shell, so the CLI resolves on the
+login PATH and gets a real TTY). Any terminal tab pops back out into a PIP with
+`⇱`, and docks again from the PIP.
 
 **`CliPanel`** — that run's own tab: stats, the whole terminal, and a composer
 that gives it the next turn. The composer talks to main directly: typing into a

@@ -230,6 +230,7 @@ pub const AgentRuntimeDeps = struct {
     /// the model, it tells the front end that the window it is watching was
     /// rewritten under it, and by how many tokens.
     push_context_experiment: ?*const fn (ctx: *anyopaque, outcome: context_experiments.Outcome) anyerror!void = null,
+    push_routed_model: ?*const fn (ctx: *anyopaque, model: []const u8, fell_back: bool) anyerror!void = null,
     push_route_recovery_status: *const fn (ctx: *anyopaque, status: types.RouteRecoveryStatus) anyerror!void = discardRouteRecoveryStatus,
     push_command_output_complete: *const fn (ctx: *anyopaque, lifecycle_id: ?types.ToolLifecycleId) anyerror!void,
     push_http_error: *const fn (ctx: *anyopaque, status: std.http.Status, detail: []const u8, credential_source: ?types.CredentialSource) anyerror!void,

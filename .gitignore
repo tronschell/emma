@@ -12,3 +12,5 @@
 /desktop/vendor
 /harness/.zig-cache
 /harness/zig-out
+/node_modules
+/.claude/worktrees

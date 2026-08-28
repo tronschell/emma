@@ -210,12 +210,18 @@ An edit keeps created-at, `enabled`, `lastRunAt`, `lastThreadId` and `outputs`.
 Change the trigger and `nextRunAt` is recomputed; edit only the prompt and
 tomorrow's booking stands.
 
+Each job carries the model its runs use, picked in the editor next to the title
+from the same picker the composer uses. It is stored as the desktop's model key
+(`openrouter:<id>`, or empty for whichever model the app is set to when the job
+fires) and core never interprets it. Local model profiles are not offered: one
+is chosen for the app as a whole, not for a single unattended run.
+
 `sourceDomains` is still validated in core and written to disk, but the editor
 only ever saves back what the job already had.
 
 On disk each job is one Markdown file with front matter
-(`emma-scheduled-job-format: 3`) under `scheduled/` in Emma's data dir, carrying
-`next-run-at`, `last-run-at`, `last-thread-id` and `outputs`. See
+(`emma-scheduled-job-format: 4`) under `scheduled/` in Emma's data dir, carrying
+`next-run-at`, `last-run-at`, `last-thread-id`, `model` and `outputs`. See
 [data.md](data.md).
 
 ## See also

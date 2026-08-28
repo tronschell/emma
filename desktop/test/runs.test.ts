@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, dropQueued, groupBlocks, mergeStep, pairBlocks, sendTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, dropQueued, groupBlocks, mergeStep, pairBlocks, releaseHeld, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
 import type { Message } from "../src/types";
@@ -24,6 +24,7 @@ let request: (method: string, params: { content: string }) => Promise<unknown> =
   sent.push(params.content);
   return new Promise<void>((resolve) => { release = resolve; });
 };
+const stopped: string[] = [];
 /* Main broadcasts to every window, so the store is driven from outside here too. */
 let pushDelta: (value: { threadId: string; delta: string }) => void = () => undefined;
 let pushAgents: (value: LiveAgent[]) => void = () => undefined;
@@ -33,8 +34,11 @@ let pushAgents: (value: LiveAgent[]) => void = () => undefined;
     onDelta: (listener: typeof pushDelta) => { pushDelta = listener; return () => undefined; },
     onStep: () => () => undefined,
     onContextExperiment: () => () => undefined,
+    onRoutedModel: () => () => undefined,
     onContextBreakdown: () => () => undefined,
     onAgents: (listener: typeof pushAgents) => { pushAgents = listener; return () => undefined; },
+    listAgents: () => Promise.resolve([]),
+    stopAgent: (threadId?: string) => { stopped.push(threadId ?? ""); },
   },
 };
 
@@ -53,6 +57,43 @@ test("a turn typed while one is running waits for it, in order", async () => {
   release!();
   await settle();
   assert.deepEqual(sent, ["first", "second", "third"]);
+  release!();
+  await settle();
+});
+
+test("a stop sends what you typed next and holds the rest", async () => {
+  sent.length = 0;
+  stopped.length = 0;
+  sendTurn("interrupt", turn("running"), () => undefined);
+  sendTurn("interrupt", turn("queued behind it"), () => undefined);
+  stopTurn("interrupt", undefined, () => undefined);
+  sendTurn("interrupt", turn("no, do this instead"), () => undefined);
+  assert.deepEqual(stopped, ["interrupt"]);
+  release!();
+  await settle();
+  assert.deepEqual(sent, ["running", "no, do this instead"]);
+  release!();
+  await settle();
+  assert.deepEqual(sent, ["running", "no, do this instead"]);
+  releaseHeld("interrupt", 0, () => undefined);
+  await settle();
+  assert.deepEqual(sent, ["running", "no, do this instead", "queued behind it"]);
+  release!();
+  await settle();
+});
+
+test("swapping the model mid-turn stops it and sends the same prompt again", async () => {
+  sent.length = 0;
+  stopped.length = 0;
+  sendTurn("stalled", turn("render the map"), () => undefined);
+  assert.deepEqual(sent, ["render the map"]);
+  stopTurn("stalled", { ...turn("render the map"), notice: "Model changed to Opus — Stealth answered nothing for 4m" }, () => undefined);
+  assert.deepEqual(stopped, ["stalled"]);
+  // Not before the stopped turn has ended: one thread runs one turn.
+  assert.deepEqual(sent, ["render the map"]);
+  release!();
+  await settle();
+  assert.deepEqual(sent, ["render the map", "render the map"]);
   release!();
   await settle();
 });
@@ -113,8 +154,8 @@ test("a turn's reasoning is one train of thought, and the calls either side of i
   assert.deepEqual(withoutThinking([{ kind: "text", text: "<think>all of it</think>" }]), []);
 });
 
-const liveAgent = (threadId: string): LiveAgent =>
-  ({ threadId, title: "t", color: "#000", status: "running", mode: "auto", model: "", activity: "", startedAt: 0, steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, generationMs: 0 });
+const liveAgent = (threadId: string, prompt = ""): LiveAgent =>
+  ({ threadId, prompt, title: "t", color: "#000", status: "running", mode: "auto", model: "", activity: "", tool: false, startedAt: 0, steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, generationMs: 0 });
 
 test("a turn the notch started owns its thread here too, and hands it back when it ends", async () => {
   sent.length = 0;
@@ -130,6 +171,30 @@ test("a turn the notch started owns its thread here too, and hands it back when 
   assert.deepEqual(sent, ["typed in the workspace"]);
   release!();
   await settle();
+});
+
+test("a run main is still driving is picked back up after this window loses its state", async () => {
+  sent.length = 0;
+  request = (_method, params) => { sent.push(params.content); return new Promise<void>((resolve) => { release = resolve; }); };
+  wire();
+  pushAgents([liveAgent("reloaded")]);
+  sendTurn("reloaded", turn("typed after the reload"), () => undefined);
+  assert.deepEqual(sent, []);
+  pushAgents([]);
+  await settle();
+  assert.deepEqual(sent, ["typed after the reload"]);
+  release!();
+  await settle();
+});
+
+test("a recovered run draws the prompt main is still working on", async () => {
+  wire();
+  pushAgents([liveAgent("recovered-echo", "port the old ledger")]);
+  assert.equal(runOf("recovered-echo").sending, true);
+  assert.equal(runOf("recovered-echo").pending?.content, "port the old ledger");
+  pushAgents([]);
+  await settle();
+  assert.equal(runOf("recovered-echo").sending, false);
 });
 
 test("a turn's tool calls are drawn where they happened, and a burst of them is one list", () => {

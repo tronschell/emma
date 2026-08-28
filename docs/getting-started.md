@@ -68,7 +68,7 @@ Emma takes a single-instance lock, so a second launch focuses the first window
 instead of opening one. A packaged `Emma.app` and a dev run share that lock —
 see [troubleshooting.md](troubleshooting.md).
 
-A five-step walkthrough opens once (**Emma · Permissions · Quick Ask ·
+A five-step walkthrough opens once (**Emma · Quick Ask · Permissions ·
 Knowledge · Agents**), gated on `emma.setupSeen.v1` in `localStorage`. Skip any
 step; Emma asks again when it needs to.
 
@@ -164,7 +164,7 @@ Departure Mono (SIL OFL). Vendor brand marks:
 - [concepts.md](concepts.md) — threads, runs, the vocabulary
 - [permissions.md](permissions.md) — the four modes and the gate table
 - [computer-use.md](computer-use.md) — pointer and keyboard control
-- [models.md](models.md) — providers, the catalog, the free router
+- [models.md](models.md) — providers, the catalog, routers
 - [harness.md](harness.md) — `emma-cli`, the fx fork
 - [notch.md](notch.md) — Quick Ask and the island
 - [voice.md](voice.md) — dictation

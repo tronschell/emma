@@ -294,8 +294,6 @@ pub const Runtime = struct {
         alloc.destroy(self);
     }
 
-    /// Refreshes borrowed host pointers after an embedding runtime moves.
-    /// Callers must do this before any child work starts.
     pub fn rebind(
         self: *Runtime,
         sessions: *session_store.Store,
@@ -717,9 +715,6 @@ pub const Runtime = struct {
         return .{ .result = result };
     }
 
-    /// Applies the model-tool-only child permission boundary. Root callers use
-    /// the current turn's effective mode; child callers are resolved from live
-    /// control state on every check.
     pub fn admitModelCommand(
         self: *Runtime,
         alloc: Allocator,
@@ -779,9 +774,6 @@ pub const Runtime = struct {
         return record.mode != .one_off;
     }
 
-    /// Typed human adapter for the same canonical command/effect path used by
-    /// the model tool. Human relationship submission is itself the explicit
-    /// authorization; all validation and state mutation remain manager-owned.
     pub fn executeHumanCommand(
         self: *Runtime,
         alloc: Allocator,
@@ -1221,9 +1213,6 @@ pub const Runtime = struct {
         };
     }
 
-    /// Completes restart reconciliation for an explicit subagent operation.
-    /// An admitted background attempt finishes first; a deferred attempt may
-    /// then be retried once by this caller. Recovery never starts child work.
     pub fn reconcileAfterRestart(
         self: *Runtime,
         timestamp_ms: i64,
@@ -1284,8 +1273,6 @@ pub const Runtime = struct {
         self.recovery_condition.broadcast(io_mod.getIo());
     }
 
-    /// Admits at most one automatic restart reconciliation for this host.
-    /// Partial or failed work remains deferred until an explicit operation.
     pub fn requestBackgroundRecovery(
         self: *Runtime,
         timestamp_ms: i64,
@@ -1373,8 +1360,6 @@ pub const Runtime = struct {
         );
     }
 
-    /// Typed human/model shared `message.send` path. The invocation identity is
-    /// stable across retries; the returned manager result is allocator-owned.
     pub fn sendMessage(
         self: *Runtime,
         alloc: Allocator,
@@ -2206,10 +2191,34 @@ fn applyCreateDefaults(
     create: *domain.CreateCommand,
     defaults: Defaults,
 ) !void {
-    if (create.configuration.model == null) {
-        create.configuration.model = try alloc.dupe(u8, defaults.model);
+    if (create.configuration.model == null or
+        std.mem.eql(u8, create.configuration.model.?, "default"))
+    {
+        const model = try alloc.dupe(u8, defaults.model);
+        if (create.configuration.model) |old| alloc.free(old);
+        create.configuration.model = model;
     }
     if (create.configuration.effort == null) create.configuration.effort = defaults.effort;
+}
+
+test "default subagent model inherits the active model" {
+    const alloc = std.testing.allocator;
+    var command = try domain.validateCommand(alloc, .{ .create = .{
+        .name = "worker",
+        .mode = .one_off,
+        .prompt = "work",
+        .model = "default",
+    } });
+    defer command.deinit(alloc);
+
+    try applyCreateDefaults(alloc, &command.create, .{
+        .provider = .gateway,
+        .model = "openai/gpt-5",
+        .effort = types.ReasoningEffort.literal("high"),
+        .conversation_language = session.ConversationLanguage.literal("en"),
+    });
+
+    try std.testing.expectEqualStrings("openai/gpt-5", command.create.configuration.model.?);
 }
 
 fn freshChildState(

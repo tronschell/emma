@@ -25,7 +25,6 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`desktop/skills/`](../desktop/skills) | Seven bundled skills: `artifact`, `autoresearch`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
 | `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here |
 | [`harness/`](../harness) | `emma-cli`. `src/acp/` (the ACP server), `src/builtins/` (registry; `builtins/emma/` holds Emma's tool *schemas*), `src/core/` (the engine), `src/gateway/` (model transport), `src/tools/`, `src/ui/` |
-| [`website/`](../website) | Separate public site. Shares nothing with the app |
 
 `harness/` is Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx),
 Apache-2.0, © Vercel, Inc. and fx contributors. Read
@@ -145,6 +144,14 @@ and from the build outputs when not. `--extend-info=native/Info.extra.plist`
 merges `NSSpeechRecognitionUsageDescription` in — TCC reads the *responsible*
 process's plist, which for the spawned `emma-transcribe` is Emma.app.
 
+### Continuous integration
+
+Every PR runs the six checks on a `macos-15` runner and nothing else; packaging
+is exercised only when a release is cut. The changelog is generated from PR
+titles. The whole contract — the two workflows, versioning, and what free
+runners do and do not cover — is in
+[`.claude/skills/releasing/SKILL.md`](../.claude/skills/releasing/SKILL.md).
+
 ### Release blockers
 
 Still open, all verified against the build as it stands:
@@ -157,10 +164,16 @@ Still open, all verified against the build as it stands:
 - **No minimum macOS version of Emma's own.** `Info.extra.plist` declares only
   the speech usage string; the bundle carries Electron's default floor. The
   three native helpers are built `-mmacosx-version-min=12.0`.
-- **No update owner.** There is no channel and no updater. `emma-cli` ships
-  inside the app and its inherited self-update path resolves to `null` unless
-  `EMMA_UPGRADE_BASE_URL` names a loopback host, which only the fork's own
-  end-to-end test does.
+- **Auto-update cannot install.** A packaged build checks
+  `https://update.electronjs.org/tronschell/emma/darwin-arm64/<version>` every
+  six hours through Electron's built-in `autoUpdater`
+  ([desktop/main/update.ts](../desktop/main/update.ts)), but Squirrel.Mac refuses
+  an unsigned bundle: the check ends in an `error` event, which is logged and
+  otherwise ignored. The workspace popup and `quitAndInstall` are written and
+  exercised, and neither can run for real until the signing identity above
+  lands. `emma-cli` has its own separate self-update path, which resolves to
+  `null` unless `EMMA_UPGRADE_BASE_URL` names a loopback host — only the fork's
+  own end-to-end test does that.
 
 ## Licensing
 
@@ -172,7 +185,7 @@ Still open, all verified against the build as it stands:
 | Brand assets | [`BRANDS-NOTICES.md`](../desktop/assets/BRANDS-NOTICES.md), [icon-sources.md](icon-sources.md). Trademarks stay with their owners |
 | ripgrep | MIT/Unlicense, [BurntSushi](https://github.com/BurntSushi/ripgrep). Downloaded at build time, not vendored in git |
 
-**There is no root `LICENSE` file.** `desktop/`, `website/` and `docs/` have no
+**There is no root `LICENSE` file.** `desktop/` and `docs/` have no
 stated terms. That is an open item.
 
 ## See also

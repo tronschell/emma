@@ -3,7 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use emma_core::{DueJob, LiveClient, ResearchJobId, ScheduledJobId, ThreadId, ThreadKind};
+use emma_core::{
+    DueJob, GoalStatus, LiveClient, ResearchJobId, ScheduledJobId, ThreadId, ThreadKind,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -49,6 +51,24 @@ struct RecordTurnParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetGoalParams {
+    thread_id: String,
+    objective: String,
+    token_budget: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdateGoalParams {
+    thread_id: String,
+    status: Option<String>,
+    evidence: Option<String>,
+    reason: Option<String>,
+    extra_tokens: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RecordTraceParams {
     thread_id: String,
     trace: String,
@@ -66,6 +86,8 @@ struct SaveScheduledJobParams {
     nodes: String,
     source_domains: String,
     permission_mode: String,
+    #[serde(default)]
+    model: String,
 }
 
 #[derive(Deserialize)]
@@ -429,6 +451,48 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     ),
                 )?)
             }
+            "setGoal" => {
+                let params: SetGoalParams = params(request)?;
+                encode(call(
+                    live.set_goal(
+                        ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                        params.objective,
+                        params
+                            .token_budget
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or_default(),
+                    ),
+                )?)
+            }
+            "updateGoal" => {
+                let params: UpdateGoalParams = params(request)?;
+                let status = match params.status.as_deref() {
+                    None | Some("") => None,
+                    Some(value) => Some(
+                        value
+                            .parse::<GoalStatus>()
+                            .map_err(|error| error.to_string())?,
+                    ),
+                };
+                encode(call(
+                    live.update_goal(
+                        ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                        status,
+                        params.evidence.unwrap_or_default(),
+                        params.reason.unwrap_or_default(),
+                        params
+                            .extra_tokens
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or_default(),
+                    ),
+                )?)
+            }
+            "clearGoal" => {
+                let params: ThreadParams = params(request)?;
+                encode(call(live.clear_goal(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
             "recordTrace" => {
                 let params: RecordTraceParams = params(request)?;
                 call(live.record_trace(
@@ -459,6 +523,7 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     params.nodes,
                     source_domains,
                     params.permission_mode,
+                    params.model,
                 ))?)
             }
             "deleteScheduledJob" => {

@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hookRuns, matchesPluginQuery, pluginCategories, type InstalledPlugin, type Marketplace, type MarketplacePlugin, type PluginCatalog, type PluginDetail, type PluginHookState } from "../shared/plugins";
+import { byUse, lastUsed, recentDays, rowSeries, rowTotal, usageSeries, type UsageRow } from "../shared/invocations";
+import type { ToolSettings } from "../shared/settings";
 import { reasonText } from "./errors";
-import { InfoDot, TrashIcon } from "./icons";
+import { InfoDot, Mark, TrashIcon } from "./icons";
 
 const untrustedHooks = (hooks: PluginHookState[]) => hooks.filter((hook) => hookRuns(hook.event) && !hook.trusted).length;
 
 const empty: PluginCatalog = { marketplaces: [], installed: [] };
 
-export function PluginsView({ busy }: { busy: boolean }) {
+const USAGE_WINDOW_DAYS = 30;
+const SPARK_DAYS = 14;
+
+export function PluginsView({ busy, tools, onTools }: { busy: boolean; tools: ToolSettings; onTools: (tools: ToolSettings) => Promise<void> }) {
+  const [tab, setTab] = useState<"plugins" | "skills" | "servers">("plugins");
   const [catalog, setCatalog] = useState<PluginCatalog>(empty);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
@@ -49,12 +55,18 @@ export function PluginsView({ busy }: { busy: boolean }) {
 
   return <section className="plugins-view">
     <header>
-      <span>Plugins · skills and MCP servers, packaged</span>
-      <h2>Plugins</h2>
-      <p>The ChatGPT and Codex format: a manifest, a folder of skills, sometimes an MCP server. Install one and Emma has its skills on the next turn.</p>
+      <h2>{tab === "skills" ? "Skills" : tab === "servers" ? "MCP servers" : "Plugins"}</h2>
     </header>
 
-    {error && <p className="dialog-error">{error}</p>}
+    <div className="plugins-tabs" role="tablist" aria-label="Plugins, skills and MCP servers">
+      <button type="button" role="tab" aria-selected={tab === "plugins"} className={tab === "plugins" ? "on" : ""} onClick={() => setTab("plugins")}>Plugins</button>
+      <button type="button" role="tab" aria-selected={tab === "skills"} className={tab === "skills" ? "on" : ""} onClick={() => setTab("skills")}>Skills</button>
+      <button type="button" role="tab" aria-selected={tab === "servers"} className={tab === "servers" ? "on" : ""} onClick={() => setTab("servers")}>MCP servers</button>
+    </div>
+
+    {tab !== "plugins" && <UsagePanel key={tab} kind={tab} busy={busy} tools={tools} onTools={onTools} />}
+
+    {tab === "plugins" && <>{error && <p className="dialog-error">{error}</p>}
 
     <div className="plugins-toolbar">
       <input value={query} disabled={working} onChange={(event) => setQuery(event.target.value)} placeholder="Search plugins" aria-label="Search plugins" />
@@ -72,12 +84,12 @@ export function PluginsView({ busy }: { busy: boolean }) {
     </div>}
 
     {loading && !catalog.marketplaces.length && <div className="content-empty" role="status" aria-live="polite">
-      <span className="mark" aria-hidden="true">◈</span>
+      <Mark />
       <p>Fetching the official Codex marketplace…</p>
     </div>}
 
     {!loading && !catalog.marketplaces.length && <div className="content-empty">
-      <span className="mark" aria-hidden="true">◈</span>
+      <Mark />
       <h2>No marketplaces yet</h2>
       <p>A marketplace is a catalog of plugins: a GitHub repo, a Git URL, or a folder on this Mac. Emma files the ones she writes here too.</p>
       <button type="button" className="plugin-add" disabled={working} onClick={() => setAdding(true)}>Add plugin marketplace</button>
@@ -146,8 +158,105 @@ export function PluginsView({ busy }: { busy: boolean }) {
     {adding && <AddMarketplaceDialog busy={working} close={() => setAdding(false)} add={async (value) => {
       setCatalog(await window.emma.addMarketplace(value));
       setAdding(false);
-    }} />}
+    }} />}</>}
   </section>;
+}
+
+export function Bars({ values, labels, className }: { values: number[]; labels: string[]; className: string }) {
+  const peak = Math.max(1, ...values);
+  return <div className={className} aria-hidden="true">
+    {values.map((count, index) => <span key={labels[index]} title={`${labels[index]} · ${count}`}><i style={{ height: `${Math.round((count / peak) * 100)}%` }} /></span>)}
+  </div>;
+}
+
+const PANELS = {
+  skills: {
+    field: "disabledSkills" as const,
+    noun: "Skills",
+    empty: "No skills yet",
+    hint: <>Install a plugin, or run <b>/import</b> to find the ones already on this Mac.</>,
+    counts: <>One bar a day. A skill counts the moment its instructions are handed to a turn — attached in the composer, typed as <code>/name</code>, or picked for you. Days older than 90 are dropped.</>,
+    switches: <>A skill that is off never reaches the model, and cannot be attached to a thread. Same switch as <b>Settings → Tools</b>.</>,
+  },
+  servers: {
+    field: "disabledServers" as const,
+    noun: "Servers",
+    empty: "No MCP servers yet",
+    hint: <>Install a plugin that carries one, or run <b>/import</b> to find the servers other agents already keep here.</>,
+    counts: <>One bar a day, counting every tool call the model made against that server. Days older than 90 are dropped.</>,
+    switches: <>A server that is off is not handed to the harness, so it never starts and its tools are never offered. Same switch as <b>Settings → Tools</b>.</>,
+  },
+};
+
+function UsagePanel({ kind, busy, tools, onTools }: { kind: "skills" | "servers"; busy: boolean; tools: ToolSettings; onTools: (tools: ToolSettings) => Promise<void> }) {
+  const panel = PANELS[kind];
+  const [rows, setRows] = useState<UsageRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => window.emma.capabilityUsage()
+    .then((usage) => setRows(kind === "skills" ? usage.skills : usage.servers))
+    .catch((reason: unknown) => setError(reasonText(reason)))
+    .finally(() => setLoading(false)), [kind]);
+
+  useEffect(() => {
+    void load();
+    return window.emma.onToolsChanged(() => void load());
+  }, [load]);
+
+  const days = recentDays(USAGE_WINDOW_DAYS);
+  const spark = days.slice(-SPARK_DAYS);
+  const series = usageSeries(rows, days);
+  const ranked = byUse(rows);
+  const total = ranked.reduce((sum, row) => sum + rowTotal(row), 0);
+  const busiest = Math.max(1, ...ranked.map(rowTotal));
+  const off = rows.filter((row) => tools[panel.field].includes(row.id)).length;
+
+  const toggle = (id: string, on: boolean) => {
+    setError("");
+    void onTools({ ...tools, [panel.field]: on ? tools[panel.field].filter((item) => item !== id) : [...new Set([...tools[panel.field], id])] })
+      .catch((reason: unknown) => setError(reasonText(reason)));
+  };
+
+  if (loading && !rows.length) return <div className="content-empty" role="status" aria-live="polite"><Mark /><p>Counting invocations…</p></div>;
+
+  if (!rows.length) return <div className="content-empty"><Mark /><h2>{panel.empty}</h2><p>{panel.hint}</p></div>;
+
+  return <div className="skills-panel">
+    {error && <p className="dialog-error">{error}</p>}
+
+    <dl className="skill-stats">
+      <div><dt>Invocations</dt><dd>{total}</dd></div>
+      <div><dt>Last {USAGE_WINDOW_DAYS} days</dt><dd>{series.reduce((sum, count) => sum + count, 0)}</dd></div>
+      <div><dt>{panel.noun}</dt><dd>{rows.length}</dd></div>
+      <div><dt>Off</dt><dd>{off || "None"}</dd></div>
+    </dl>
+
+    <section className="skill-graph">
+      <header><h3>Over time<InfoDot>{panel.counts}</InfoDot></h3><small>Peak {Math.max(0, ...series)}/day</small></header>
+      <Bars values={series} labels={days} className="skill-chart" />
+      <footer><small>{days[0]}</small><small>{days.at(-1)}</small></footer>
+    </section>
+
+    <section className="skill-graph">
+      <header><h3>Most used</h3><small>{ranked.filter((row) => rowTotal(row)).length || "None"} used</small></header>
+      <ul className="skill-ranking">{ranked.slice(0, 8).map((row) => <li key={row.id}>
+        <span>{row.name}</span>
+        <i style={{ width: `${Math.round((rowTotal(row) / busiest) * 100)}%` }} aria-hidden="true" />
+        <b>{rowTotal(row)}</b>
+      </li>)}</ul>
+    </section>
+
+    <section className="skill-list">
+      <header><h3>Every {kind === "skills" ? "skill" : "server"}<InfoDot>{panel.switches}</InfoDot></h3><small>{rows.length}</small></header>
+      {ranked.map((row) => <label className="skill-row" key={row.id}>
+        <input type="checkbox" checked={!tools[panel.field].includes(row.id)} disabled={busy} onChange={(event) => toggle(row.id, event.target.checked)} />
+        <div><strong>{row.name}</strong><span>{row.source}{lastUsed(row) ? ` · ${lastUsed(row)}` : " · never run"}</span></div>
+        <Bars values={rowSeries(row, spark)} labels={spark} className="skill-spark" />
+        <b>{rowTotal(row)}</b>
+      </label>)}
+    </section>
+  </div>;
 }
 
 function blockedReason(plugin: MarketplacePlugin): string {

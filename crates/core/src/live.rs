@@ -11,9 +11,10 @@ use std::{
 };
 
 use crate::{
-    GenerationTelemetry, MAX_TRIGGER_DEPTH, ResearchJob, ResearchJobId, ResearchJobStore,
-    ScheduledJob, ScheduledJobId, ScheduledJobStore, Thread, ThreadId, ThreadKind, ThreadMessage,
-    ThreadRole, ThreadStore, ThreadTrace, Timestamp, elide_middle, validate_text,
+    GenerationTelemetry, GoalStatus, MAX_TRIGGER_DEPTH, ResearchJob, ResearchJobId,
+    ResearchJobStore, ScheduledJob, ScheduledJobId, ScheduledJobStore, Thread, ThreadId,
+    ThreadKind, ThreadMessage, ThreadRole, ThreadStore, ThreadTrace, Timestamp, elide_middle,
+    validate_text,
 };
 use serde::Serialize;
 
@@ -77,6 +78,24 @@ enum Command {
         model: String,
         reply: Reply<Thread>,
     },
+    SetGoal {
+        thread_id: ThreadId,
+        objective: String,
+        token_budget: u64,
+        reply: Reply<Thread>,
+    },
+    UpdateGoal {
+        thread_id: ThreadId,
+        status: Option<GoalStatus>,
+        evidence: String,
+        reason: String,
+        extra_tokens: u64,
+        reply: Reply<Thread>,
+    },
+    ClearGoal {
+        thread_id: ThreadId,
+        reply: Reply<Thread>,
+    },
     RecordTrace {
         thread_id: ThreadId,
         trace: String,
@@ -94,6 +113,7 @@ enum Command {
         nodes: String,
         source_domains: Vec<String>,
         permission_mode: String,
+        model: String,
         reply: Reply<ScheduledJob>,
     },
     SetScheduledJobEnabled {
@@ -264,6 +284,60 @@ impl LiveClient {
             .map_err(|_| LiveError::new("Emma runtime stopped while recording the turn"))?
     }
 
+    pub fn set_goal(
+        &self,
+        thread_id: ThreadId,
+        objective: String,
+        token_budget: u64,
+    ) -> Result<Thread, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::SetGoal {
+                thread_id,
+                objective,
+                token_budget,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before setting the goal"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while setting the goal"))?
+    }
+
+    pub fn update_goal(
+        &self,
+        thread_id: ThreadId,
+        status: Option<GoalStatus>,
+        evidence: String,
+        reason: String,
+        extra_tokens: u64,
+    ) -> Result<Thread, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::UpdateGoal {
+                thread_id,
+                status,
+                evidence,
+                reason,
+                extra_tokens,
+                reply,
+            })
+            .map_err(|_| LiveError::new("Emma runtime stopped before updating the goal"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while updating the goal"))?
+    }
+
+    pub fn clear_goal(&self, thread_id: ThreadId) -> Result<Thread, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::ClearGoal { thread_id, reply })
+            .map_err(|_| LiveError::new("Emma runtime stopped before clearing the goal"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while clearing the goal"))?
+    }
+
     pub fn record_trace(&self, thread_id: ThreadId, trace: String) -> Result<(), LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
@@ -298,6 +372,7 @@ impl LiveClient {
         nodes: String,
         source_domains: Vec<String>,
         permission_mode: String,
+        model: String,
     ) -> Result<ScheduledJob, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
@@ -309,6 +384,7 @@ impl LiveClient {
                 nodes,
                 source_domains,
                 permission_mode,
+                model,
                 reply,
             })
             .map_err(|_| LiveError::new("Emma runtime stopped before saving the scheduled job"))?;
@@ -552,6 +628,7 @@ pub struct DueJob {
     pub nodes: String,
     pub variables: String,
     pub permission_mode: String,
+    pub model: String,
     pub depth: u32,
 }
 
@@ -649,6 +726,28 @@ impl Runtime {
                     model,
                 ));
             }
+            Command::SetGoal {
+                thread_id,
+                objective,
+                token_budget,
+                reply,
+            } => {
+                let _ = reply.send(self.set_goal(thread_id, objective, token_budget));
+            }
+            Command::UpdateGoal {
+                thread_id,
+                status,
+                evidence,
+                reason,
+                extra_tokens,
+                reply,
+            } => {
+                let _ =
+                    reply.send(self.update_goal(thread_id, status, evidence, reason, extra_tokens));
+            }
+            Command::ClearGoal { thread_id, reply } => {
+                let _ = reply.send(self.clear_goal(thread_id));
+            }
             Command::RecordTrace {
                 thread_id,
                 trace,
@@ -667,6 +766,7 @@ impl Runtime {
                 nodes,
                 source_domains,
                 permission_mode,
+                model,
                 reply,
             } => {
                 let _ = reply.send(self.save_scheduled_job(
@@ -677,6 +777,7 @@ impl Runtime {
                     nodes,
                     source_domains,
                     permission_mode,
+                    model,
                 ));
             }
             Command::SetScheduledJobEnabled {
@@ -827,6 +928,7 @@ impl Runtime {
             nodes: job.nodes.clone(),
             variables,
             permission_mode: job.permission_mode.clone(),
+            model: job.model.clone(),
             depth,
         });
         Ok(())
@@ -931,6 +1033,7 @@ impl Runtime {
         nodes: String,
         source_domains: Vec<String>,
         permission_mode: String,
+        model: String,
     ) -> Result<ScheduledJob, LiveError> {
         let existing = match &job_id {
             Some(id) => Some(
@@ -952,6 +1055,8 @@ impl Runtime {
                 .map_or_else(Timestamp::now, |job| job.created_at),
         )
         .map_err(|error| LiveError::new(format!("scheduled job is invalid: {error}")))?;
+        job.set_model(model)
+            .map_err(|error| LiveError::new(format!("scheduled job is invalid: {error}")))?;
         if let Some(existing) = existing {
             job.id = existing.id;
             job.enabled = existing.enabled;
@@ -1267,9 +1372,72 @@ impl Runtime {
         thread
             .push(answer)
             .map_err(|error| LiveError::new(format!("could not append response: {error}")))?;
+        thread.note_goal_turn(
+            output_tokens.saturating_add(input_tokens),
+            duration_milliseconds,
+            Timestamp::now(),
+        );
         self.threads
             .save(&thread)
             .map_err(|error| LiveError::new(format!("could not save the turn: {error}")))?;
+        Ok(thread)
+    }
+
+    fn set_goal(
+        &mut self,
+        thread_id: ThreadId,
+        objective: String,
+        token_budget: u64,
+    ) -> Result<Thread, LiveError> {
+        let mut thread = self.threads.load(&thread_id).map_err(|error| {
+            LiveError::new(format!("could not load thread {thread_id}: {error}"))
+        })?;
+        thread
+            .set_goal(objective, token_budget, Timestamp::now())
+            .map_err(|error| LiveError::new(format!("goal is invalid: {error}")))?;
+        self.threads
+            .save(&thread)
+            .map_err(|error| LiveError::new(format!("could not save the goal: {error}")))?;
+        Ok(thread)
+    }
+
+    fn update_goal(
+        &mut self,
+        thread_id: ThreadId,
+        status: Option<GoalStatus>,
+        evidence: String,
+        reason: String,
+        extra_tokens: u64,
+    ) -> Result<Thread, LiveError> {
+        let mut thread = self.threads.load(&thread_id).map_err(|error| {
+            LiveError::new(format!("could not load thread {thread_id}: {error}"))
+        })?;
+        let at = Timestamp::now();
+        if extra_tokens > 0 {
+            thread
+                .extend_goal(extra_tokens, at)
+                .map_err(|error| LiveError::new(format!("goal cannot be extended: {error}")))?;
+        }
+        if let Some(status) = status {
+            thread
+                .update_goal(status, &evidence, &reason, at)
+                .map_err(|error| LiveError::new(format!("goal cannot be updated: {error}")))?;
+        }
+        self.threads
+            .save(&thread)
+            .map_err(|error| LiveError::new(format!("could not save the goal: {error}")))?;
+        Ok(thread)
+    }
+
+    fn clear_goal(&mut self, thread_id: ThreadId) -> Result<Thread, LiveError> {
+        let mut thread = self.threads.load(&thread_id).map_err(|error| {
+            LiveError::new(format!("could not load thread {thread_id}: {error}"))
+        })?;
+        if thread.clear_goal() {
+            self.threads
+                .save(&thread)
+                .map_err(|error| LiveError::new(format!("could not clear the goal: {error}")))?;
+        }
         Ok(thread)
     }
 
@@ -1549,6 +1717,7 @@ mod tests {
                 String::new(),
                 vec!["example.com".into()],
                 "acceptEdits".into(),
+                "openrouter:deepseek/deepseek-chat".into(),
             )
             .unwrap();
         job.created_at = Timestamp::from_unix_seconds(0);
@@ -1595,6 +1764,7 @@ mod tests {
                 String::new(),
                 vec![],
                 "ask".into(),
+                String::new(),
             )
             .unwrap();
         let second = runtime
@@ -1606,6 +1776,7 @@ mod tests {
                 String::new(),
                 vec![],
                 "ask".into(),
+                String::new(),
             )
             .unwrap();
         runtime
@@ -1617,6 +1788,7 @@ mod tests {
                 String::new(),
                 vec![],
                 "ask".into(),
+                String::new(),
             )
             .unwrap();
         assert_eq!(first.next_run_at, None);

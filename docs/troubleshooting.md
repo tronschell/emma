@@ -42,7 +42,8 @@ message you hit is not here, grep for it — Emma's errors are literals.
 | Console: `Emma: stored provider keys could not be read; re-enter them in Settings` | `credentials.json` will not decrypt — usually a different login keychain ([credentials.ts:63](../desktop/main/credentials.ts#L63)). | Re-enter the key |
 | `That model is no longer in OpenRouter's catalog. Reload the models page and pick again.` | The saved id is absent from the cached catalog ([main.ts:1563](../desktop/main/main.ts#L1563)). | Reload Settings → Models and pick again |
 | `OpenRouter listed no models Emma can use — check your connection and try again` | The catalog fetch returned nothing usable ([catalog.ts:124](../desktop/main/catalog.ts#L124)). | Check the network; the compiled seed catalog covers first launch |
-| `A local model server has to be on this Mac.` | Local-model base URLs must be loopback ([main.ts:1581](../desktop/main/main.ts#L1581)). | Point it at `127.0.0.1` |
+| `That endpoint is plain http off this Mac.` | A provider base URL is `http:` on your network rather than loopback ([settings.ts](../desktop/shared/settings.ts)). | Tick the network box to accept unencrypted prompts and keys, or serve it over https |
+| Turns still answer from OpenRouter after picking a provider | The main window has not pushed the provider table to main yet, so `provider:<id>` resolves to nothing. | Open Settings once, then send the turn |
 | Every free model 404s | `requireZeroRetention` is on, and OpenRouter has no free endpoint that qualifies. It sets `EMMA_OPENROUTER_ZDR` on the harness. | Turn off Settings → Models → private routing, or route to a paid or local model |
 
 ## macOS permissions

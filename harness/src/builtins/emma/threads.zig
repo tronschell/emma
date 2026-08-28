@@ -11,7 +11,7 @@ const bridge = @import("../../tools/emma/bridge.zig");
 const ToolSpec = tool_dispatch.Tool;
 
 const threads_description =
-    "Emma's threads: the durable conversations in the user's sidebar. A thread keeps its whole history and outlives every run inside it, so it is what the user comes back to. Actions:\n" ++
+    "Emma's threads: the conversations in the user's sidebar. A thread keeps its whole history and outlives every run inside it, so it is what the user comes back to. Actions:\n" ++
     "spawn — start a thread of its own in this project, owned by this one. With prompt, a main agent of its own starts work in it immediately and in parallel with this turn; nothing comes back here, so say it is running and check on it later. Without prompt the thread is created empty for the user to pick up.\n" ++
     "list — every thread with its owner, message count and whether an agent is working in it right now.\n" ++
     "read — one thread's most recent messages, by ID. This is how you pick up what another conversation already worked out.\n" ++
@@ -271,7 +271,7 @@ pub const goal = ToolSpec{
 };
 
 const agents_description =
-    "See and steer what is running right now: every live agent and subagent, with its thread, status, mode, model, tool count, token spend and what it is doing this moment. Call it with no arguments for the list. Give agent and message to send a message into a run already in flight — it arrives with that agent's next batch of tool results, which is how you correct one without losing its work. Give agent and stop to end one and everything under it. Use threads for the durable conversations themselves, running or not.";
+    "See and steer what is running right now: every live agent and subagent, with its thread, status, mode, model, tool count, token spend and what it is doing this moment. Call it with no arguments for the list. Give agent and message to send a message into a run already in flight — it arrives with that agent's next batch of tool results, which is how you correct one without losing its work. Give agent and stop to end one and everything under it. Use threads for the conversations themselves, running or not.";
 
 pub const agents = ToolSpec{
     .name = "agents",

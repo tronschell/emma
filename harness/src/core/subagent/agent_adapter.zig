@@ -7,6 +7,7 @@ const credentials = @import("../auth/credentials.zig");
 const model_provider = @import("../config/model_provider.zig");
 const auto_classifier = @import("../permissions/auto_classifier.zig");
 const command_admission = @import("../permissions/command_admission.zig");
+const permission_prompter = @import("../permissions/permission_prompter.zig");
 const command_output_content = @import("../tooling/command_output_content.zig");
 const file_mutation = @import("../tooling/file_mutation.zig");
 const tool_admission = @import("../tooling/tool_admission.zig");
@@ -20,6 +21,7 @@ const context_contract = @import("../workspace/context_contract.zig");
 const hooks = @import("../hooks/hooks.zig");
 const execution_memory = @import("../agent/execution_memory.zig");
 const gateway_error_format = @import("../shared/gateway_error_format.zig");
+const agent_steps = @import("../config/agent_steps.zig");
 const io_mod = @import("../shared/io.zig");
 const session_codec = @import("../session/session_codec.zig");
 const types = @import("../shared/types.zig");
@@ -30,6 +32,15 @@ const parent_delivery_projector = @import("parent_delivery_projector.zig");
 const tool_host = @import("tool_host.zig");
 
 const Allocator = std.mem.Allocator;
+
+fn subagentDeadlineMs() ?i64 {
+    const runtime_ms = agent_steps.resolveRuntimeMs(
+        agent_runtime.default_subagent_runtime_ms,
+        io_mod.getenv("FX_SUBAGENT_RUNTIME_SECONDS"),
+    );
+    if (runtime_ms <= 0) return null;
+    return io_mod.milliTimestamp() +| runtime_ms;
+}
 
 pub const ProviderRoute = struct {
     agent_stream_provider: stream_provider.Provider,
@@ -90,6 +101,7 @@ pub const Config = struct {
     host: *tool_host.Runtime,
     tool_context: tool_runtime.Context,
     live_mirror: ?LiveMirror = null,
+    permission_prompter: ?permission_prompter.Prompter = null,
     provider_routes: ProviderRoutes,
     system_prompt: []const u8,
     model_prompt_overlay: ?[]const u8 = null,
@@ -271,6 +283,7 @@ pub fn run(
             .custom_tool_guidance = config.custom_tool_guidance,
             .agent_step_limit = config.tool_context.agent_step_limit,
             .max_tool_result_bytes = config.tool_context.max_tool_result_bytes,
+            .deadline_ms = subagentDeadlineMs(),
             .cancel_flag = cancel,
             .fast_mode = config.tool_context.fast_mode,
             .effort = admission.effort,
@@ -494,7 +507,8 @@ fn admissionContext(
 ) tool_runtime.Context {
     var tool_ctx = tool_runtime.withAdvertisedDynamicToolNames(context.toolContext(), dynamic_names);
     tool_ctx.permission_review_turn = review;
-    tool_ctx.permission_prompter = context.turn.permissionPrompter();
+    tool_ctx.permission_prompter = context.config.permission_prompter orelse
+        context.turn.permissionPrompter();
     return tool_ctx;
 }
 

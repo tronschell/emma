@@ -1,10 +1,12 @@
 import { computerTools } from "./computer";
 import { MEMORY_COMMANDS, type MemoryCommand } from "./memory";
+import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS } from "../shared/components";
 import { ARTIFACT_KINDS, ARTIFACT_SURFACES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TITLE_CHARS } from "../shared/artifacts";
 import { parseVisual, type Visual } from "../shared/visualize";
 import { CLI_IDS } from "../shared/cli";
 import type { WrittenPlugin } from "../shared/plugins";
 import { MAX_PLAN_BYTES, MAX_PLAN_TITLE_CHARS, PLAN_STATUSES, type PlanStatus } from "../shared/plan";
+import { GOAL_ACTIONS, GOAL_UPDATE_STATUSES, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, type GoalAction, type GoalUpdateStatus } from "../shared/goal";
 import { KEEP_KINDS, MAX_NOTE_BYTES, isKeepKind, keepKindLabel, type KeepKind } from "../shared/vault";
 import { toolGate, type PermissionMode } from "../shared/permissions";
 
@@ -25,8 +27,13 @@ export type ToolAvailability = {
 
 export type ToolDefinition = { name: string; description: string; inputSchema: Record<string, unknown> };
 
+export const COMPONENT_ACTIONS = ["list", "get", "place", "create", "rewrite"] as const;
+export type ComponentAction = (typeof COMPONENT_ACTIONS)[number];
+
 export const THREAD_ACTIONS = ["spawn", "list", "read", "message", "rename"] as const;
 export type ThreadAction = (typeof THREAD_ACTIONS)[number];
+
+export const GOAL_VERBS: Record<GoalAction, string> = { set: "setting", get: "checking", update: "updating", extend: "extending", clear: "clearing" };
 
 export const PLAN_ACTIONS = ["read", "write", "run", "update", "delete"] as const;
 export type PlanAction = (typeof PLAN_ACTIONS)[number];
@@ -47,6 +54,17 @@ const BROWSER_VERBS: Record<BrowserAction, string> = {
   screenshot: "taking a screenshot", wait: "waiting for", back: "going back", forward: "going forward",
   reload: "reloading", close: "closing the browser",
 };
+
+const GOAL_DESCRIPTION =
+  "A durable objective for this thread, pursued across turns instead of inside one. While a goal is active Emma drives another turn at it as soon as you stop talking, and another after that, until it is achieved, out of budget, blocked three turns running, or the user stops it. That is what a goal buys: work that outlives the turn it was asked for.\n" +
+  "Set one when the user asks for an end state rather than an answer — a migration finished, a bug hunted to its root, a feature built and verified — or when they say to keep at it until it works. Do not set one for anything you can simply do now.\n" +
+  "Actions:\n" +
+  "set — start pursuing objective. Write it as the end state, with what \"done\" looks like inside it, because every later turn is judged against those words and nothing else. tokenBudget caps the whole pursuit and defaults to 200000; this replaces whatever the thread was pursuing before.\n" +
+  "get — the objective, the status, the turns taken, the seconds spent, and the budget left.\n" +
+  "update — status active, paused, complete or blocked. complete is refused without evidence, and evidence means the end state itself: what you ran, what it printed, what changed. Never send it because the budget is nearly gone or because you are stopping. blocked wants reason, one line naming what is in the way; it only sticks once the same blocker has stopped you on three consecutive goal turns, so report it and keep working — Emma counts the streak, and a goal picked back up counts again from zero.\n" +
+  "extend — add extraTokens to the budget and start pursuing again, for a goal that ran out with real work left. Ask the user first: it is their spend.\n" +
+  "clear — stop pursuing and take the goal off the thread. That is the user dropping it, not you deciding it is hard.\n" +
+  "One goal to a thread. A subagent lives inside a turn and cannot hold one, so tell it the objective in its brief instead; work worth several subagents wants the plan tool underneath this one.";
 
 const FOLDER_FIELD = {
   folder: { type: "string", description: "Name of this thread's connected folder. A thread works in exactly one, so omit this." },
@@ -181,6 +199,23 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
+    name: "secret",
+    needs: "always",
+    description:
+      "Read something secret through the model the user picked for their secrets, without any of it entering this conversation. Keys, tokens, passwords, .env files, vault entries, whatever the user keeps private.\n" +
+      "command runs on this Mac in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github.\n" +
+      "Use it whenever the work touches a secret — which keys are set, why a request comes back unauthorised, whether two tokens differ, what is in a credentials file. Do it here rather than reading the file yourself: whatever you read has been sent to the model running you and stays in this thread, and that model is not the one the user chose for this.\n" +
+      "Ask one specific question: \"which of these are empty\" beats \"what is in here\". Never ask for a value in full — ask only what you need to know to carry on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "What you need to know about the output. One specific question, never a request to repeat a secret in full." },
+        command: { type: "string", description: "The command whose output holds the secret. It runs in this thread's folder, and its output reaches nothing but the secrets model." },
+      },
+      required: ["question", "command"],
+    },
+  },
+  {
     name: "context",
     needs: "always",
     description:
@@ -202,7 +237,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
       "Break a large job into steps, write them down in a durable markdown file, and hand each step to its own subagent. Steps that wait on nothing run at the same time, so a plan is how several subagents work in parallel instead of one doing everything in sequence. The user watches it in the thread's inspector.\n" +
       "Reach for it when the work is more than one subagent's worth, when parts of it can go at once, or when the user asks for a plan. Spawn a subagent directly for a single self-contained job, and write no plan at all for a job that never fans out — a straight chain of steps runs nothing in parallel and loses your context at every handover.\n" +
       "Actions:\n" +
-      "read — with id, one plan as its markdown; without, every plan and how far along it is. Read before you update: the file is what the last wave left behind.\n" +
+      "read — with id, one plan as its markdown; without, every plan and how far along it is. It changes only when you change it, so read it once per wave, not before every update.\n" +
       "write — create the plan, or rewrite its whole shape. steps is a JSON array, as a string: id, title, brief, tasks, and needs naming the steps it waits on. Rewriting keeps what has already happened — a step that keeps its id keeps its status, a task that keeps its text keeps its tick — so restructuring halfway is safe.\n" +
       "run — start whatever can start: marks every step whose dependencies are done as running and hands you one brief per step. Spawn one subagent per brief, record what each answered with update as it comes back, and run again straight away — a step starts as soon as its own needs are done, not when the rest of its wave is.\n" +
       "update — the state, not the shape: a step's status, its result, or check to tick its nth task off. This is how a subagent reports where it is inside its own step, and how you write a finished step's answer back.\n" +
@@ -228,10 +263,28 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
+    name: "goal",
+    needs: "always",
+    description: GOAL_DESCRIPTION,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: [...GOAL_ACTIONS], description: "set, get, update, extend or clear. Defaults to get." },
+        objective: { type: "string", description: "The end state to pursue, written so another agent could tell whether it had been reached. Required by set." },
+        tokenBudget: { type: "number", description: "Tokens the whole pursuit may spend, across every turn it takes. Defaults to 200000." },
+        status: { type: "string", enum: [...GOAL_UPDATE_STATUSES], description: "What update sets the goal to: active, paused, complete or blocked." },
+        evidence: { type: "string", description: "What proves the objective is reached: what you ran, what it printed, what changed. Required by status complete." },
+        reason: { type: "string", description: "What is blocking you, in one line. Required by status blocked, and compared against the last one to count the streak." },
+        extraTokens: { type: "number", description: "Tokens to add to the budget. Required by extend." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "threads",
     needs: "always",
     description:
-      "Emma's threads: the durable conversations in the user's sidebar. A thread keeps its whole history and outlives every run inside it, so it is what the user comes back to. Actions:\n" +
+      "Emma's threads: the conversations in the user's sidebar. A thread keeps its whole history and outlives every run inside it, so it is what the user comes back to. Actions:\n" +
       "spawn — start a thread of its own in this project, owned by this one. With prompt, a main agent of its own starts work in it immediately and in parallel with this turn; nothing comes back here, so say it is running and check on it later. Without prompt the thread is created empty for the user to pick up.\n" +
       "list — every thread with its owner, message count and whether an agent is working in it right now.\n" +
       "read — one thread's most recent messages, by ID. This is how you pick up what another conversation already worked out.\n" +
@@ -254,7 +307,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "agents",
     needs: "always",
     description:
-      "See and steer what is running right now: every live agent and subagent, with its thread, status, mode, model, tool count, token spend and what it is doing this moment. Call it with no arguments for the list. Give agent and message to send a message into a run already in flight — it arrives with that agent's next batch of tool results, which is how you correct one without losing its work. Give agent and stop to end one and everything under it. Use threads for the durable conversations themselves, running or not.",
+      "See and steer what is running right now: every live agent and subagent, with its thread, status, mode, model, tool count, token spend and what it is doing this moment. Call it with no arguments for the list. Give agent and message to send a message into a run already in flight — it arrives with that agent's next batch of tool results, which is how you correct one without losing its work. Give agent and stop to end one and everything under it. Use threads for the conversations themselves, running or not.",
     inputSchema: {
       type: "object",
       properties: {
@@ -388,6 +441,27 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
+    name: "component",
+    needs: "always",
+    description:
+      "Build something into Emma's own interface — a panel, a counter, a button, a small tool — mounted where the user points, and reloading in place every time you rewrite it. This is what \"build yourself an X\" means. It is not an artifact: an artifact is a thing the user keeps outside the conversation, a component is a piece of Emma.\n" +
+      "The order is fixed and there is no way around it. place first — the window lights up and the user clicks the spot it belongs in: the sidebar, the context bar, or the composer, never the transcript, which is rebuilt for every thread. The result names what they picked, and they can drag it elsewhere afterwards. Then ask them whatever the request left open: what it shows, where its numbers come from, how it should behave. Only then create.\n" +
+      "code is one ES module: export default (api) => Component. api is { h, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma }; h is React.createElement, so there is no JSX and nothing to import — h(\"div\", { className: \"…\" }, …). emma is the same bridge the app uses. Reuse the app's own class names wherever one fits, so it looks like it belongs there.\n" +
+      "Style it in Emma's design system, from her own tokens — never a colour, radius or face of your own. Ground: var(--bg) for the window, var(--surface-2) for a card, --surface-3 hover, --surface-4 active. Ink: var(--text), var(--text-2) for labels, var(--text-3) for captions. Rules are 1px var(--border), or var(--border-strong) for a region outline, and never both on one edge. var(--accent) is action, state and data only, never emphasis; var(--accent-soft) is the only accent fill over a large area; var(--danger) is destructive. Space on var(--s-1) 4px through var(--s-8) 32px, sizes from var(--fs-2xs) up. A control is 28px tall, 1px bordered, transparent. Every corner is square — no border-radius anywhere. var(--font-mono) is the interface face for anything on the grid: labels, values, buttons, counts, with uppercase labels tracked by var(--ls-caps). var(--font) is for sentences. Density is the point: if it looks cramped, take something out rather than adding padding.\n" +
+      "rewrite replaces the whole module of an id that exists and hot-reloads it, which is how you iterate: the user says what is wrong, you rewrite, they watch it change. Keep going until they are happy.\n" +
+      "No delete. A component is the user's to remove, from the \u22ef in its corner.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: [...COMPONENT_ACTIONS], description: "What to do. place asks the user where it goes; create builds it there; rewrite replaces one whole; list and get read what is already built. Defaults to list." },
+        id: { type: "string", description: "The component to act on, as create or list reported it. Required for get and rewrite." },
+        title: { type: "string", description: "What the user would call it. Required on create, and shown in its \u22ef menu." },
+        code: { type: "string", description: "The whole module. Required on create and rewrite." },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "workflow",
     needs: "always",
     description:
@@ -408,6 +482,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
         prompt: { type: "string", description: "What the task does, for a one-step task. Also the summary shown for a graph." },
         nodes: { type: "string", description: "The node graph as a JSON array. Omit for a one-step task that just runs prompt." },
         permissionMode: { type: "string", enum: ["ask", "acceptEdits", "full"], description: "What the unattended run may do. Nobody is there to answer a question, so \"ask\" declines every gated call." },
+        model: { type: "string", description: "The model every run of this task uses, as \"openrouter:<model-id>\". Omit or send empty to run on whichever model the app is set to." },
         variables: { type: "string", description: "A JSON object of starting variables, for run and test." },
       },
       required: [],
@@ -519,14 +594,17 @@ export type ToolArgs =
   | { name: "run_tool"; tool?: string; input?: string }
   | { name: "memory"; command: MemoryCommand }
   | { name: "vision"; question: string; path?: string; url?: string; folder?: string }
+  | { name: "secret"; question: string; command: string }
   | { name: "plan"; action: PlanAction; id?: string; title?: string; goal?: string; steps?: string; step?: string; status?: PlanStatus; result?: string; check?: number }
+  | { name: "goal"; action: GoalAction; objective?: string; tokenBudget?: number; status?: GoalUpdateStatus; evidence?: string; reason?: string; extraTokens?: number }
   | { name: "context"; compact: boolean }
   | { name: "keep"; kind: KeepKind; title?: string; text?: string; url?: string }
   | { name: "web_search"; query: string; limit: number }
   | { name: "install_mcp"; server: string; command: string; argv: string[]; env: Record<string, string> }
   | { name: "artifact"; action: ArtifactAction; id?: string; file?: string; title?: string; kind?: string; language?: string; surface?: string; content?: string; oldStr?: string; newStr?: string }
+  | { name: "component"; action: ComponentAction; id?: string; title?: string; code?: string }
   | ({ name: "visualize" } & Visual)
-  | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; variables?: string }
+  | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; model?: string; variables?: string }
   | { name: "autoresearch"; action: ResearchAction; jobId?: string; title?: string; projectDir?: string; metricName?: string; metricKind?: string; metricPrompt?: string; direction?: string; evalCommand?: string; prompt?: string; proposerModel?: string; permissionMode?: string; maxSeconds?: number; maxTokens?: number; maxMicroDollars?: number };
 
 export const CLI_ACTIONS = ["run", "send"] as const;
@@ -654,6 +732,8 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       if (parsed.path && parsed.url) throw new Error('Send either "path" or "url", not both — one call looks at one image.');
       return parsed;
     }
+    case "secret":
+      return { name, question: requiredText(args.question, "question", 2048), command: requiredText(args.command, "command", MAX_COMMAND_CHARS) };
     case "plan": {
       const action = PLAN_ACTIONS.find((candidate) => candidate === (args.action ?? "read"));
       if (!action) throw new Error(`action must be one of ${PLAN_ACTIONS.join(", ")}.`);
@@ -679,6 +759,31 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       if (action === "write" && !parsed.steps) throw new Error('The "steps" argument is required: a JSON array of steps, as a string.');
       if (action === "update" && !parsed.step) throw new Error('Say which step: pass step with its id. Rewrite the whole plan with "write" instead.');
       if (action === "update" && parsed.status === undefined && parsed.result === undefined && parsed.check === undefined) throw new Error('An update needs something to change: "status", "result" or "check".');
+      return parsed;
+    }
+    case "goal": {
+      const action = GOAL_ACTIONS.find((candidate) => candidate === (args.action ?? "get"));
+      if (!action) throw new Error(`action must be one of ${GOAL_ACTIONS.join(", ")}.`);
+      const status = args.status === undefined || args.status === null ? undefined : GOAL_UPDATE_STATUSES.find((candidate) => candidate === args.status);
+      if (args.status !== undefined && args.status !== null && !status) throw new Error(`status must be one of ${GOAL_UPDATE_STATUSES.join(", ")}.`);
+      const parsed = {
+        name,
+        action,
+        objective: optionalText(args.objective, "objective", MAX_GOAL_OBJECTIVE_CHARS)?.trim(),
+        tokenBudget: args.tokenBudget === undefined || args.tokenBudget === null ? undefined : whole(args.tokenBudget, "tokenBudget"),
+        status,
+        evidence: optionalText(args.evidence, "evidence", MAX_GOAL_EVIDENCE_CHARS)?.trim(),
+        reason: optionalText(args.reason, "reason", MAX_GOAL_REASON_CHARS)?.trim(),
+        extraTokens: args.extraTokens === undefined || args.extraTokens === null ? undefined : whole(args.extraTokens, "extraTokens"),
+      } as const;
+      if (action === "set" && !parsed.objective) throw new Error('The "objective" argument is required: say what end state this thread is to reach.');
+      if (action === "extend" && !parsed.extraTokens) throw new Error('The "extraTokens" argument is required: say how many more tokens the goal may spend.');
+      if (action === "update" && !parsed.status) throw new Error('The "status" argument is required: active, paused, complete or blocked.');
+      if (parsed.status === "complete" && !parsed.evidence) throw new Error("A goal is complete only with evidence: what you ran, what it printed, what changed. Verify the end state itself and send that, or keep working.");
+      if (parsed.status === "blocked" && !parsed.reason) throw new Error('The "reason" argument is required with status blocked: one line naming what is in the way, so the same blocker can be recognised next turn.');
+      for (const [field, value] of [["tokenBudget", parsed.tokenBudget], ["extraTokens", parsed.extraTokens]] as const) {
+        if (value !== undefined && (value <= 0 || value > MAX_GOAL_TOKEN_BUDGET)) throw new Error(`${field} must be between 1 and ${MAX_GOAL_TOKEN_BUDGET}.`);
+      }
       return parsed;
     }
     case "context":
@@ -753,6 +858,21 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
     }
     case "visualize":
       return { name, ...parseVisual(args) };
+    case "component": {
+      const action = COMPONENT_ACTIONS.find((candidate) => candidate === (args.action ?? "list"));
+      if (!action) throw new Error(`action must be one of ${COMPONENT_ACTIONS.join(", ")}.`);
+      const parsed = {
+        name,
+        action,
+        id: optionalText(args.id, "id", 64),
+        title: optionalText(args.title, "title", MAX_COMPONENT_TITLE_CHARS),
+        code: args.code === undefined || args.code === null ? undefined : bounded(args.code, "code", MAX_COMPONENT_CHARS),
+      } as const;
+      if ((action === "get" || action === "rewrite") && !parsed.id) throw new Error('The "id" argument is required. List them with component {"action":"list"}.');
+      if (action === "create" && !parsed.title) throw new Error('The "title" argument is required: what the user would call this.');
+      if ((action === "create" || action === "rewrite") && parsed.code === undefined) throw new Error('The "code" argument is required \u2014 the whole module, exporting default (api) => Component.');
+      return parsed;
+    }
     case "workflow": {
       const action = WORKFLOW_ACTIONS.find((candidate) => candidate === (args.action ?? "list"));
       if (!action) throw new Error(`action must be one of ${WORKFLOW_ACTIONS.join(", ")}.`);
@@ -765,6 +885,7 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         prompt: optionalText(args.prompt, "prompt", 8 * 1024),
         nodes: optionalText(args.nodes, "nodes", MAX_WORKFLOW_NODE_CHARS),
         permissionMode: optionalText(args.permissionMode, "permissionMode", 32),
+        model: optionalText(args.model, "model", 128),
         variables: optionalText(args.variables, "variables", MAX_WORKFLOW_NODE_CHARS),
       };
     }
@@ -833,7 +954,7 @@ function requiredText(value: unknown, field: string, max: number): string {
 }
 
 function optionalText(value: unknown, field: string, max: number): string | undefined {
-  if (value === undefined || value === null) return undefined;
+  if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string" || !value.trim()) throw new Error(`The "${field}" argument must be a non-empty string.`);
   if (value.length > max) throw new Error(`The "${field}" argument is longer than ${max} characters.`);
   return value;
@@ -944,11 +1065,16 @@ export function describeToolCall(args: AnyToolArgs): string {
     case "memory": return args.command.command === "rename" ? `renaming ${args.command.old_path}` : `${args.command.command.replace("_", " ")} ${args.command.path}`;
     case "advisor": return "asking the advisor";
     case "vision": return `looking at ${(args.path ?? args.url ?? "an image").slice(0, 64)}`;
+    case "secret": return `asking the secrets model about ${args.command.slice(0, 64)}`;
     case "plan":
       if (args.action === "run") return `starting the next wave of ${args.id ?? "the plan"}`;
       if (args.action === "update") return `marking ${args.step} in ${args.id ?? "the plan"}`;
       if (args.action === "read" && !args.id) return "listing the plans";
       return `${PLAN_VERBS[args.action]} the plan ${args.title ?? args.id ?? ""}`.trim();
+    case "goal":
+      if (args.action === "set") return `setting this thread's goal: ${args.objective ?? ""}`.trim();
+      if (args.action === "update") return `marking the goal ${args.status}`;
+      return `${GOAL_VERBS[args.action]} this thread's goal`;
     case "context": return args.compact ? "compacting this thread" : "checking the context window";
     case "read_trace": return "reading its own trace";
     case "threads":
@@ -966,6 +1092,10 @@ export function describeToolCall(args: AnyToolArgs): string {
     case "artifact":
       if (args.action === "list") return "listing artifacts";
       return args.action === "create" ? `creating the artifact "${args.title ?? ""}"` : `${ARTIFACT_VERBS[args.action]} the artifact ${args.id ?? ""}`.trim();
+    case "component":
+      if (args.action === "place") return "asking where this goes";
+      if (args.action === "list") return "listing what it built";
+      return args.action === "create" ? `building "${args.title ?? ""}" into the interface` : `reworking the component ${args.id ?? ""}`.trim();
     case "visualize": return `drawing ${args.title}`;
     case "workflow": return args.action === "list" ? "listing the scheduled tasks" : `${WORKFLOW_VERBS[args.action]} the task ${args.title ?? args.jobId ?? ""}`.trim();
     case "autoresearch": return args.action === "list" ? "listing the autoresearch jobs" : `${RESEARCH_VERBS[args.action]} the experiment ${args.title ?? args.jobId ?? ""}`.trim();

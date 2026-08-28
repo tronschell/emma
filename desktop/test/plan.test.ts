@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { PLAN_PAD, PLAN_ROW, mergePlan, parsePlan, parsePlanSteps, planLayout, planProblems, planProgress, planRows, planState, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
+import { MAX_PLAN_REVISIONS, PLAN_PAD, PLAN_ROW, mergePlan, parsePlan, parsePlanSteps, planLayout, planProblems, planProgress, planRows, planState, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
 import { deletePlan, editPlan, listPlans, readPlan, savePlan } from "../main/plans";
 import { parseToolArgs } from "../main/tools";
 
@@ -233,4 +233,56 @@ test("a whole wave ticking the same file at once loses nothing", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a rewrite records what it changed, and the file is where that is kept", () => {
+  const before = plan([step("survey"), step("port", ["survey"]), step("drop")]);
+  const after = mergePlan(before, plan([
+    step("survey", [], { brief: "Read every caller, twice." }),
+    step("port", ["survey"]),
+    step("verify", ["port"]),
+  ]), "2026-08-24T09:00:00Z");
+  assert.deepEqual(after.revisions, [{ at: "2026-08-24T09:00:00Z", steps: 3, added: ["verify"], removed: ["drop"], rewritten: ["survey"] }]);
+  assert.deepEqual(parsePlan("ship-it", renderPlan(after)).revisions, after.revisions);
+  assert.equal(renderPlan(parsePlan("ship-it", renderPlan(after))), renderPlan(after));
+  // A plan that was never rewritten carries no revisions at all, so the round
+  // trip of an untouched plan is still the plan.
+  assert.equal(parsePlan("ship-it", renderPlan(before)).revisions, undefined);
+});
+
+test("the revisions kept are the recent ones, and the oldest fall off", () => {
+  let current = plan([step("survey")]);
+  for (let index = 0; index < MAX_PLAN_REVISIONS + 5; index += 1) {
+    current = mergePlan(current, plan([step("survey", [], { title: `Do survey ${index}` })]), `2026-08-24T09:${String(index).padStart(2, "0")}:00Z`);
+  }
+  assert.equal(current.revisions?.length, MAX_PLAN_REVISIONS);
+  assert.equal(current.revisions?.at(-1)?.at, "2026-08-24T09:36:00Z");
+  assert.equal(current.revisions?.[0].at, "2026-08-24T09:05:00Z");
+});
+
+test("a hand-mangled revisions section loses lines, never the plan", () => {
+  const parsed = parsePlan("notes", [
+    "# Half a plan",
+    "",
+    "some goal",
+    "",
+    "## step-1 · First `todo`",
+    "needs: —",
+    "",
+    "the brief survives",
+    "",
+    "## Revisions",
+    "",
+    "- 2026-08-24T09:00:00Z · 2 steps · added: port · removed: · rewritten: NOT AN ID",
+    "- who knows",
+    "",
+    "- · steps",
+    "- 2026-08-24T10:00:00Z · 900 steps",
+  ].join("\n"));
+  assert.equal(parsed.steps.length, 1);
+  assert.equal(parsed.steps[0].brief, "the brief survives", "the revisions heading does not eat the brief");
+  assert.deepEqual(parsed.revisions, [
+    { at: "2026-08-24T09:00:00Z", steps: 2, added: ["port"], removed: [], rewritten: [] },
+    { at: "2026-08-24T10:00:00Z", steps: 24, added: [], removed: [], rewritten: [] },
+  ]);
 });

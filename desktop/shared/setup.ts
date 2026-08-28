@@ -5,7 +5,7 @@ export const SETUP_PERMISSIONS = [
     id: "accessibility",
     tasks: ["Control this Mac", "Quick Ask on ⌥⌥", "Bound shortcuts"],
     title: "Accessibility",
-    what: "Opens Quick Ask on ⌥⌥, and moves the pointer when you ask.",
+    what: "Opens Quick Ask when you double-tap Option, and moves the pointer when you ask.",
     why: "Double-tapping the left Option key is a key press in whatever app is in front, so macOS only reports it to an app you have trusted. The same grant is what lets Emma click and type for you — and that still asks before every run.",
     pane: "com.apple.preference.security?Privacy_Accessibility",
     relaunch: true,

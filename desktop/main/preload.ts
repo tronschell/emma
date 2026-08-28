@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { ThreadStep } from "../shared/agents";
 import type { KeepRequest, VaultKind } from "../shared/vault";
+import type { GoalStatus } from "../shared/goal";
 
 let nextListener = 1;
 const listeners = new Map<number, () => void>();
@@ -46,6 +47,13 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:notch-hover", wrapped);
     return () => ipcRenderer.removeListener("emma:notch-hover", wrapped);
   },
+  updateReady: () => ipcRenderer.invoke("emma:update-ready"),
+  installUpdate: () => ipcRenderer.invoke("emma:install-update"),
+  onUpdateReady: (listener: (value: string) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => { if (typeof value === "string") listener(value); };
+    ipcRenderer.on("emma:update-ready", wrapped);
+    return () => ipcRenderer.removeListener("emma:update-ready", wrapped);
+  },
   onDelta: (listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
       const chunk = value as { threadId?: unknown; delta?: unknown; thinking?: unknown };
@@ -69,6 +77,14 @@ contextBridge.exposeInMainWorld("emma", {
     };
     ipcRenderer.on("emma:context-experiment", wrapped);
     return () => ipcRenderer.removeListener("emma:context-experiment", wrapped);
+  },
+  onRoutedModel: (listener: (value: { threadId: string; model: string; fellBack: boolean }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const routed = value as { threadId?: unknown; model?: unknown; fellBack?: unknown };
+      if (typeof routed?.threadId === "string" && typeof routed.model === "string") listener({ threadId: routed.threadId, model: routed.model, fellBack: routed.fellBack === true });
+    };
+    ipcRenderer.on("emma:routed-model", wrapped);
+    return () => ipcRenderer.removeListener("emma:routed-model", wrapped);
   },
   onContextBreakdown:(listener: (value: { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
@@ -103,14 +119,35 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:artifacts-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:artifacts-changed", wrapped);
   },
+  listComponents: () => ipcRenderer.invoke("emma:list-components"),
+  readComponent: (id: string) => ipcRenderer.invoke("emma:read-component", id),
+  deleteComponent: (id: string) => ipcRenderer.invoke("emma:delete-component", id),
+  enableComponent: (id: string, enabled: boolean) => ipcRenderer.invoke("emma:enable-component", { id, enabled }),
+  moveComponent: (value: { id: string; selector: string; label: string }) => ipcRenderer.invoke("emma:move-component", value),
+  shootComponent: (value: { id: string; x: number; y: number; width: number; height: number }) => ipcRenderer.invoke("emma:shoot-component", value),
+  answerPlace: (value: { id: string; selector?: string; label?: string }) => ipcRenderer.send("emma:answer-place", value),
+  onComponentsChanged: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:components-changed", wrapped);
+    return () => ipcRenderer.removeListener("emma:components-changed", wrapped);
+  },
+  onComponentPlace: (listener: (value: { id: string; title: string }) => void) => {
+    const wrapped = (_event: unknown, value: { id: string; title: string }) => listener(value);
+    ipcRenderer.on("emma:component-place", wrapped);
+    return () => ipcRenderer.removeListener("emma:component-place", wrapped);
+  },
   readVisual: (id: string) => ipcRenderer.invoke("emma:read-visual", id),
   exportVisual: (id: string, width: number) => ipcRenderer.invoke("emma:export-visual", { id, width }),
   listPlans: () => ipcRenderer.invoke("emma:list-plans"),
+  setGoal: (value: { threadId: string; objective: string; tokenBudget?: number }) => ipcRenderer.invoke("emma:set-goal", value),
+  updateGoal: (value: { threadId: string; status?: GoalStatus; evidence?: string; reason?: string; extraTokens?: number }) => ipcRenderer.invoke("emma:update-goal", value),
+  clearGoal: (threadId: string) => ipcRenderer.invoke("emma:clear-goal", threadId),
   onPlansChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:plans-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:plans-changed", wrapped);
   },
+  exportThreadStats: (value: { folder: string; files: { name: string; text: string }[] }) => ipcRenderer.invoke("emma:export-thread-stats", value),
   listFolders: () => ipcRenderer.invoke("emma:list-folders"),
   pluginCatalog: () => ipcRenderer.invoke("emma:plugin-catalog"),
   addMarketplace: (value: { source: string; ref: string; sparse: string }) => ipcRenderer.invoke("emma:add-marketplace", value),
@@ -150,10 +187,27 @@ contextBridge.exposeInMainWorld("emma", {
   forgetFolder: (id: string) => ipcRenderer.invoke("emma:forget-folder", id),
   listFolderFiles: (id: string) => ipcRenderer.invoke("emma:list-folder-files", id),
   gitStatus: (id: string) => ipcRenderer.invoke("emma:git-status", id),
+  gitReady: (id: string) => ipcRenderer.invoke("emma:git-ready", id),
+  gitInit: (id: string) => ipcRenderer.invoke("emma:git-init", id),
+  gitHistory: (value: { folderId: string; skip?: number; limit?: number }) => ipcRenderer.invoke("emma:git-history", value),
+  gitCommit: (value: { folderId: string; message: string; paths: string[]; amend?: boolean }) => ipcRenderer.invoke("emma:git-commit", value),
+  gitDiscard: (value: { folderId: string; paths: string[] }) => ipcRenderer.invoke("emma:git-discard", value),
+  gitRun: (value: { folderId: string; args: string[] }) => ipcRenderer.invoke("emma:git-run", value),
+  gitMessage: (value: { folderId: string }) => ipcRenderer.invoke("emma:git-message", value),
+  mobileStatus: () => ipcRenderer.invoke("emma:mobile-status"),
+  mobilePair: (relay: string) => ipcRenderer.invoke("emma:mobile-pair", relay),
+  mobileCancelPair: () => ipcRenderer.invoke("emma:mobile-cancel-pair"),
+  mobileUnpair: () => ipcRenderer.invoke("emma:mobile-unpair"),
+  onMobileStatus: (listener: (value: { paired: boolean; connected: boolean; name: string }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object") listener(value as { paired: boolean; connected: boolean; name: string }); };
+    ipcRenderer.on("emma:mobile-status", wrapped);
+    return () => ipcRenderer.removeListener("emma:mobile-status", wrapped);
+  },
+  machineSample: () => ipcRenderer.invoke("emma:machine-sample"),
   listEditors: () => ipcRenderer.invoke("emma:list-editors"),
   openInEditor: (value: { folderId?: string; path: string; editorId: string }) => ipcRenderer.invoke("emma:open-in-editor", value),
   setWorktree: (value: { folderId: string; name: string; on: boolean }) => ipcRenderer.invoke("emma:set-worktree", value),
-  setBranch: (value: { folderId: string; branch: string; create: boolean }) => ipcRenderer.invoke("emma:set-branch", value),
+  setBranch: (value: { folderId: string; branch: string; create: boolean; from?: string }) => ipcRenderer.invoke("emma:set-branch", value),
   readFolderFile: (value: { folderId: string; path: string }) => ipcRenderer.invoke("emma:read-folder-file", value),
   attachFiles: () => ipcRenderer.invoke("emma:attach-files"),
   attachData: (value: { name: string; data: ArrayBuffer }) => ipcRenderer.invoke("emma:attach-data", value),
@@ -175,13 +229,17 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:computer-run-progress", wrapped);
     return () => ipcRenderer.removeListener("emma:computer-run-progress", wrapped);
   },
+  setProviders: (value: unknown) => ipcRenderer.invoke("emma:set-providers", value),
+  testProvider: (value: unknown) => ipcRenderer.invoke("emma:test-provider", value),
   setVerifier: (value: unknown) => ipcRenderer.invoke("emma:set-verifier", value),
   setToolSettings: (value: unknown) => ipcRenderer.invoke("emma:set-tool-settings", value),
   setZoom: (value: number) => ipcRenderer.invoke("emma:set-zoom", value),
   setTagger: (value: unknown) => ipcRenderer.invoke("emma:set-tagger", value),
   setHarnessExperiments: (value: unknown) => ipcRenderer.invoke("emma:set-harness-experiments", value),
   setImprovements: (value: unknown) => ipcRenderer.invoke("emma:set-improvements", value),
+  forceArm: (value: { threadId: string; arm: "a" | "b" }) => ipcRenderer.invoke("emma:force-arm", value),
   listToolTargets: () => ipcRenderer.invoke("emma:list-tool-targets"),
+  capabilityUsage: () => ipcRenderer.invoke("emma:capability-usage"),
   onToolsChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:tools-changed", wrapped);
@@ -201,6 +259,8 @@ contextBridge.exposeInMainWorld("emma", {
   readCliRun: (id: string) => ipcRenderer.invoke("emma:read-cli-run", id),
   stopCliRun: (id: string) => ipcRenderer.invoke("emma:stop-cli-run", id),
   installedClis: () => ipcRenderer.invoke("emma:installed-clis"),
+  cliModels: (value: { cli: string; refresh?: boolean }) => ipcRenderer.invoke("emma:cli-models", value),
+  setCliRunModel: (value: { id: string; model: string }) => ipcRenderer.invoke("emma:cli-run-model", value),
   sendCliRun: (value: { id: string; prompt: string }) => ipcRenderer.invoke("emma:send-cli-run", value),
   onCliRuns: (listener: () => void) => {
     const wrapped = () => listener();
@@ -211,6 +271,8 @@ contextBridge.exposeInMainWorld("emma", {
   browserOpen: (value: { threadId: string; url: string }) => ipcRenderer.invoke("emma:browser-open", value),
   browserNav: (value: { threadId: string; action: "back" | "forward" | "reload" | "close" }) => ipcRenderer.invoke("emma:browser-nav", value),
   browserPlace: (value: { threadId: string; bounds: { x: number; y: number; width: number; height: number } | null }) => ipcRenderer.invoke("emma:browser-place", value),
+  browserClips: () => ipcRenderer.invoke("emma:browser-clips"),
+  browserClipUse: (value: { threadId: string; index: number }) => ipcRenderer.invoke("emma:browser-clip-use", value),
   browserNewTab: (value: { threadId: string; url?: string }) => ipcRenderer.invoke("emma:browser-tab-new", value),
   browserSelectTab: (value: { threadId: string; tabId: string }) => ipcRenderer.invoke("emma:browser-tab-select", value),
   browserCloseTab: (value: { threadId: string; tabId: string }) => ipcRenderer.invoke("emma:browser-tab-close", value),
@@ -219,7 +281,15 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:browser", wrapped);
     return () => ipcRenderer.removeListener("emma:browser", wrapped);
   },
-  openTerminal: (value: { threadId: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:terminal-open", value),
+  onBrowserShow: (listener: (value: { threadId: string }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const shown = value as { threadId?: unknown };
+      if (typeof shown?.threadId === "string") listener({ threadId: shown.threadId });
+    };
+    ipcRenderer.on("emma:browser-show", wrapped);
+    return () => ipcRenderer.removeListener("emma:browser-show", wrapped);
+  },
+  openTerminal: (value: { threadId: string; columns: number; rows: number; cli?: string }) => ipcRenderer.invoke("emma:terminal-open", value),
   writeTerminal: (value: { id: string; data: string }) => ipcRenderer.invoke("emma:terminal-write", value),
   resizeTerminal: (value: { id: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:terminal-resize", value),
   closeTerminal: (id: string) => ipcRenderer.invoke("emma:terminal-close", id),
@@ -238,7 +308,21 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:terminals", wrapped);
     return () => ipcRenderer.removeListener("emma:terminals", wrapped);
   },
+  harnessReport: () => ipcRenderer.invoke("emma:harness-report"),
+  restartHarness: () => ipcRenderer.invoke("emma:restart-harness"),
+  onHarnessLog: (listener: (line: { at: number; flow: string; label: string; body: string }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const line = value as { at?: unknown; flow?: unknown; label?: unknown; body?: unknown };
+      if (typeof line?.at === "number" && typeof line.flow === "string" && typeof line.label === "string" && typeof line.body === "string") {
+        listener({ at: line.at, flow: line.flow, label: line.label, body: line.body });
+      }
+    };
+    ipcRenderer.on("emma:harness-log", wrapped);
+    return () => ipcRenderer.removeListener("emma:harness-log", wrapped);
+  },
   openLink: (url: string) => ipcRenderer.invoke("emma:open-link", url),
+  listMemories: () => ipcRenderer.invoke("emma:list-memories"),
+  deleteMemory: (path: string) => ipcRenderer.invoke("emma:delete-memory", path),
   listAgents: () => ipcRenderer.invoke("emma:list-agents"),
   listSpans: () => ipcRenderer.invoke("emma:list-spans"),
   threadTraces: (threadId: string) => ipcRenderer.invoke("emma:thread-traces", threadId),
@@ -264,6 +348,7 @@ contextBridge.exposeInMainWorld("emma", {
   },
   setZeroRetention: (value: boolean) => ipcRenderer.invoke("emma:set-zero-retention", value),
   listCredentials: () => ipcRenderer.invoke("emma:list-credentials"),
+  openRouterBalance: () => ipcRenderer.invoke("emma:openrouter-balance"),
   saveCredential: (value: { env: string; secret?: string }) => ipcRenderer.invoke("emma:save-credential", value),
   fetchUrl: (url: string) => ipcRenderer.invoke("emma:fetch-url", url),
   clipPage: () => ipcRenderer.invoke("emma:clip-page"),

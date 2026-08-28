@@ -1,5 +1,6 @@
 const std = @import("std");
 const std_builtin = @import("builtin");
+const app_runtime_setup = @import("../core/app/app_runtime_setup.zig");
 const command_admission = @import("../core/permissions/command_admission.zig");
 const auth_runtime = @import("../core/auth/auth_runtime.zig");
 const credentials = @import("../core/auth/credentials.zig");
@@ -56,6 +57,7 @@ const tool_presentation = @import("../core/tooling/tool_presentation.zig");
 const tool_result_errors = @import("../core/tooling/tool_result_errors.zig");
 const tool_runtime = @import("../core/tooling/tool_runtime.zig");
 const command_output_content = @import("../core/tooling/command_output_content.zig");
+const builtin_skills = @import("../builtins/skills.zig");
 const builtin_tools = @import("../builtins/tools.zig");
 const test_builtin_gateway = if (std_builtin.is_test)
     @import("../builtins/gateway.zig")
@@ -749,6 +751,12 @@ pub fn handlePrompt(
         };
     }
 
+    if (comptime !host_target.is_wasm) {
+        const loaded_skills = try app_runtime_setup.loadSkills(alloc, state.workspace_root, builtin_skills.root_policy);
+        skill_runtime.traceDiagnostics("acp_prompt", loaded_skills.diagnostics);
+        state.skills.replaceLoaded(alloc, loaded_skills.dir, loaded_skills.skills, loaded_skills.diagnostics);
+    }
+
     try refreshProjectContext(
         state,
         alloc,
@@ -998,6 +1006,7 @@ pub fn runSubagentChild(
     return subagent_agent_adapter.run(.{
         .host = subagent_host,
         .tool_context = child_tool_context,
+        .permission_prompter = child_tool_context.permission_prompter,
         .live_mirror = if (ctx.child == null) null else .{
             .ctx = @ptrCast(&ctx),
             .push_text = pushText,
@@ -1339,6 +1348,7 @@ fn agentRuntimeDeps(ctx: *AcpContext) agent_runtime.AgentRuntimeDeps {
         .push_system_notice = pushSystemNotice,
         .push_context_notice = pushContextNotice,
         .push_context_experiment = pushContextExperiment,
+        .push_routed_model = pushRoutedModel,
         .push_command_output_complete = pushCommandOutputComplete,
         .push_http_error = pushHttpError,
         .available_model_capabilities = availableModelCapabilities,
@@ -1515,7 +1525,7 @@ fn appendRuntimeContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.Ar
     try ctx.state.cfg.context_registry.appendDefaultTransient(.{
         .workspace_root = ctx.state.workspace_root,
         .access_scope = ctx.state.workspace_access.scope(ctx.state.workspace_root),
-        .interactive = false,
+        .interactive = true,
         .permission_mode = ctx.captured_permission_mode orelse session.permission_mode,
         .sandbox_backend = ctx.captured_sandbox_backend orelse session.sandbox_backend,
         .tracker = null,
@@ -1795,7 +1805,12 @@ fn requestAcpPermission(
     try writePermissionOption(&params.writer, "allow_always", "Allow for this session", "allow_always");
     try params.writer.writeByte(',');
     try writePermissionOption(&params.writer, "reject_once", "Reject", "reject_once");
-    try params.writer.writeAll("]}");
+    try params.writer.writeAll("]");
+    if (ctx.child) |child| {
+        try params.writer.writeByte(',');
+        try acp_types.writeChildTagMeta(&params.writer, child.id, child.title, child.ended);
+    }
+    try params.writer.writeByte('}');
 
     try ctx.state.writer.writeRequest(
         alloc,
@@ -2485,6 +2500,14 @@ fn pushContextExperiment(raw_ctx: *anyopaque, outcome: context_experiments.Outco
     // ponytail: a subagent's copy is dropped — `writeChildTaggedUpdate` refuses an
     // update that already carries `_meta`, and a status line is not worth failing
     // the step it reports on. Merge the two `_meta` objects if children need it.
+    ctx.sendUpdate(out.writer.buffered()) catch {};
+}
+
+fn pushRoutedModel(raw_ctx: *anyopaque, model: []const u8, fell_back: bool) !void {
+    const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
+    var out: std.Io.Writer.Allocating = .init(ctx.alloc);
+    defer out.deinit();
+    try acp_types.writeRoutedModelInfoUpdate(&out.writer, model, fell_back);
     ctx.sendUpdate(out.writer.buffered()) catch {};
 }
 

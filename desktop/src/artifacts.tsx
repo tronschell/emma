@@ -12,7 +12,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ARTIFACT_EXTENSIONS, ARTIFACT_KINDS, ARTIFACT_LABELS, artifactFrameUrl, SURFACE_LABELS, type Artifact, type ArtifactKind, type ArtifactMeta } from "../shared/artifacts";
 import { reasonText } from "./errors";
 import { tokenize } from "./highlight";
-import { TrashIcon } from "./icons";
+import { Mark, TrashIcon } from "./icons";
 import { Markdown } from "./markdown";
 
 const MermaidArtifact = lazy(() => import("./mermaid-artifact"));
@@ -103,15 +103,10 @@ export function ArtifactCard({ id, onOpen }: { id: string; onOpen: (id: string) 
   </button>;
 }
 
-/** The page behind the nav tab. `select` opens one straight into its dialog. */
 export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; select?: string; openArtifact: (artifact: Artifact) => void }) {
   const [list, setList] = useState<ArtifactMeta[]>([]);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<ArtifactKind | "">("");
-  // `select` is read as an edge, not a level: whichever the caller last named is
-  // open until something else is picked or the dialog is closed against it.
-  // ponytail: a repeat of the same id after a close is a no-op — hand it a value
-  // that changes (the id and a counter) if a second click must re-open.
   const [picked, setPicked] = useState<{ id: string; from?: string }>({ id: "" });
   const openId = picked.from === select ? picked.id : select ?? "";
   const openArtifactId = (id: string) => setPicked({ id, from: select });
@@ -124,7 +119,6 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
       .then((found) => { if (active) setList(found); })
       .catch(() => { if (active) setError("Emma could not read the artifacts folder."); });
     load();
-    // A turn, a scheduled task or this page itself writes one; the folder is the truth.
     const stop = window.emma.onArtifactsChanged(load);
     return () => { active = false; stop(); };
   }, []);
@@ -132,8 +126,6 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
   const remove = async (id: string) => {
     try {
       await window.emma.deleteArtifact(id);
-      // The change event will say the same thing; dropping it here is what makes
-      // the card leave on the click rather than on the round trip.
       setList((current) => current.filter((item) => item.id !== id));
       setDoomed(null);
       if (openId === id) openArtifactId("");
@@ -146,9 +138,7 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
 
   return <section className="artifacts-view">
     <header>
-      <span>Artifacts · what the conversations made</span>
       <h2>Artifacts</h2>
-      <p>Each one is a file on disk that a thread wrote and you kept. Open it to read it, edit it in a new thread, or reveal it in Finder.</p>
     </header>
     {error && <p className="dialog-error">{error}</p>}
     {list.length > 0 && <div className="artifacts-toolbar">
@@ -157,15 +147,12 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
       {kinds.map((name) => <button key={name} type="button" className={`shelf-chip ${kind === name ? "on" : ""}`} disabled={busy} onClick={() => setKind(name)}>{ARTIFACT_LABELS[name]}</button>)}
     </div>}
     {!list.length && <div className="content-empty">
-      <span className="mark" aria-hidden="true">◆</span>
+      <Mark />
       <h2>Nothing kept yet</h2>
       <p>An artifact is something a conversation produced that is worth keeping — a document, a snippet, a page, a drawing, a diagram. Type <b>/artifact</b> in a thread to make one.</p>
     </div>}
     {list.length > 0 && !shown.length && <p className="artifact-missing">Nothing matches that.</p>}
-    <div className="artifact-grid">{shown.map((meta) =>
-      // Keyed by version: a rewritten artifact is a different picture, so the card
-      // that holds its content remounts and reads the file again.
-      <GridCard key={`${meta.id}:${meta.version}`} meta={meta} busy={busy} open={() => openArtifactId(meta.id)} edit={openArtifact} remove={() => setDoomed(meta)} />)}</div>
+    <div className="artifact-grid">{shown.map((meta) => <GridCard key={`${meta.id}:${meta.version}`} meta={meta} busy={busy} open={() => openArtifactId(meta.id)} edit={openArtifact} remove={() => setDoomed(meta)} />)}</div>
     {openId && <ArtifactDialog id={openId} busy={busy} close={() => openArtifactId("")} edit={openArtifact} remove={setDoomed} />}
     {doomed && <ConfirmDialog meta={doomed} busy={busy} close={() => setDoomed(null)} confirm={() => void remove(doomed.id)} />}
   </section>;

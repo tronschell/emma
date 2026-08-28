@@ -191,10 +191,15 @@ export async function chatCompletion(
   key: string,
   { maxTokens, timeoutMs, label }: { maxTokens: number; timeoutMs: number; label: string },
 ): Promise<string> {
+  // The model may be a chain — a router picked in Settings arrives as `a,b,c`,
+  // best first. OpenRouter's own `models` array does the falling through, so a
+  // rate-limited free verifier is answered by the next name instead of a 429.
+  // The primary is repeated as `model` for endpoints that never heard of it.
+  const [primary, ...rest] = settings.model.split(",").map((id) => id.trim()).filter(Boolean);
   const response = await fetch(settings.endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
-    body: JSON.stringify({ model: settings.model, messages, temperature: 0, max_tokens: maxTokens, stream: false }),
+    body: JSON.stringify({ model: primary ?? settings.model, ...(rest.length ? { models: [primary, ...rest] } : {}), messages, temperature: 0, max_tokens: maxTokens, stream: false }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`The ${label} endpoint answered ${response.status}.`);

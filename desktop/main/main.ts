@@ -1,23 +1,27 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, protocol, screen, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
 import path from "node:path";
-import { externalUrl, keepRequest, publicUrl, runCommandRequest, trustedSender, validJpegDataUrl, validateRequest, vaultRequest } from "./ipc";
+import { externalUrl, keepRequest, publicUrl, runCommandRequest, statsExportRequest, trustedSender, validJpegDataUrl, validateRequest, vaultRequest, type Request } from "./ipc";
 import { renderResults, webSearch } from "./web-search";
 import { clipPage, fetchReadablePage, frontmostApplication, frontmostPage, frontmostTab } from "./clip";
 import { discoverImports, saveImportManifest } from "./imports";
 import { loadUiPlugins } from "./plugins";
-import { hotspotLayout, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout, type NotchGeometry } from "./overlay";
+import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout, type NotchGeometry } from "./overlay";
 import { BoundedLines, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
 import { describeRun, packVariables, parseVariables, parseWorkflow, runWorkflow, type WorkflowNode } from "../shared/workflow";
-import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, mirrorSkillsToHarness, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
+import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
+import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "./invocations";
 import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
 import { artifactFiles, deleteArtifact, listArtifacts, queryArtifact, readArtifact, readArtifactFile, updateArtifact, updateArtifactFile, writeArtifact, writeArtifactFile } from "./artifacts";
-import { ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
+import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
+import { deleteComponent, listComponents, readComponent, readComponentShot, setComponentAnchor, setComponentEnabled, writeComponent, writeComponentShot } from "./components";
+import { COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, PLACE_TIMEOUT_MS, type ComponentAnchor } from "../shared/components";
 import { deletePlan, editPlan, listPlans, readPlan, writePlan } from "./plans";
+import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
 import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage } from "../shared/visualize";
 import { captureVisual, keepVisual, readVisual } from "./visuals";
@@ -27,36 +31,44 @@ import { AttachmentStore, isImageAttachment, type Attachment } from "./attachmen
 import { defaultVaultRoot, vaultReady } from "./setup";
 import { applyNoteTags, detectObsidianVaults, keepNote, listNotes, obsidianInstallCommand, obsidianInstalled, readVault, saveVault } from "./vault";
 import { tagNote } from "./vault-tags";
-import { DEFAULT_VAULT_FOLDER, MAX_NOTE_BYTES, noteFolder, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
+import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, noteFolder, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
-import { CatalogCache, fetchOpenRouterCatalog } from "./catalog";
-import { addWorktree, gitSnapshot, mainCheckout, switchBranch } from "./git";
+import { CatalogCache, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
+import { validateGitArgs } from "../shared/git";
+import { installUpdate, readyUpdate, startUpdates } from "./update";
+import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, runGit, switchBranch, writeCommitMessage } from "./git";
 import { installedEditors, openInEditor } from "./editors";
+import { machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
 import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
-import { contextBlock, MAX_FILE_BYTES, mergeSkillContext } from "../shared/folders";
-import { mentions, pathName } from "../shared/slash";
+import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
+import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
-import { MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, FREE_ROUTER_KEY, freeRouterChain, holdBindings, isCursorCommand, isEnvName, isThinkingLevel, isKeybindAction, keybindCommands, normalizeLocalModelEndpoint, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
-import { applied, validateImprovements } from "../shared/improvement";
+import { MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { applied, validateImprovements, type Arm } from "../shared/improvement";
 import { frontApplicationNote, ScreenContextStore, type FrontApplication } from "../shared/screen-context";
-import { AgentRuntime, lastAssistantMessage, OWN_TOOLS, type TurnRequest } from "./agent-loop";
+import { AgentRuntime, benchReplay, benchThread, haltBench, inheritBench, lastAssistantMessage, ownBench, OWN_TOOLS, refuseBenchTurn, towardGoal, type TurnRequest } from "./agent-loop";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
-import { cliHarness, describeRuns } from "../shared/cli";
-import { setConnections, setImprovements, setPrompts, setSystemPrompt, verifierLessons, withTrialArm, writeHarnessPrompt } from "./system-prompt";
+import { CliModelCatalog } from "./cli-models";
+import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
+import { forceArm, setConnections, setImprovements, setPrompts, setSystemPrompt, verifierLessons, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { detectConnections, isConnectionId, outdatedConnections, setUpConnection } from "./connections";
 import { Harness, describePath, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
+import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
 import { advise } from "./advisor";
 import { look } from "./vision";
-import { runMemoryCommand } from "./memory";
+import { readSecret } from "./secret";
+import { listMemories, runMemoryCommand } from "./memory";
 import { browserArgv, BROWSER_NAVIGATIONS, describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolNeeds, type ToolArgs } from "./tools";
 import { Browsers, type BrowserStatus } from "./browser";
 import { Terminals } from "./terminal";
 import { MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT } from "../shared/terminal";
-import { asPermissionMode, DEFAULT_PERMISSION_MODE, toolGate, type PermissionMode } from "../shared/permissions";
-import { editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
+import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type PermissionMode } from "../shared/permissions";
+import { agentName, editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
+import { createBridge, type Bridge } from "./bridge";
+import { MAX_ASK_MS, PROTOCOL_VERSION, relayOrigin, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
@@ -161,8 +173,10 @@ let modelCatalog: CatalogCache | undefined;
 let capabilities: ImportedCapabilityRuntime | undefined;
 let computerRuntime: ComputerUseRuntime | undefined;
 let agents: AgentRuntime | undefined;
+let bridge: Bridge | undefined;
 const background = new BackgroundCommands(() => broadcast("emma:background"));
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
+let cliModels: CliModelCatalog;
 const browsers = new Browsers(() => broadcast("emma:browser"));
 const terminals = new Terminals(
   () => nativeHelper("emma-pty"),
@@ -171,6 +185,40 @@ const terminals = new Terminals(
 );
 let runBanner: BrowserWindow | null = null;
 const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute }>();
+
+const DEFAULT_THREAD_TITLE = "New thread";
+
+type ThreadRecord = { id: string; title?: string; kind?: string; archivedAt?: string | null; goal?: Goal | null };
+
+const goals = new Map<string, Goal>();
+const goalDriving = new Set<string>();
+const goalStopped = new Set<string>();
+const turnSpend = new Map<string, { output: number; total: number }>();
+
+function noteTurnSpend(threadId: string, usage: { inputTokens: number; outputTokens: number }) {
+  const seen = turnSpend.get(threadId) ?? { output: 0, total: 0 };
+  const step = usage.inputTokens + Math.max(0, usage.outputTokens - seen.output);
+  const spent = { output: Math.max(seen.output, usage.outputTokens), total: seen.total + step };
+  turnSpend.set(threadId, spent);
+  return spent.total;
+}
+
+function noteThread(value: unknown): ThreadRecord | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const thread = value as ThreadRecord;
+  if (typeof thread.id !== "string") return undefined;
+  if (thread.goal && typeof thread.goal === "object") goals.set(thread.id, thread.goal);
+  else goals.delete(thread.id);
+  return thread;
+}
+
+function primeGoals(snapshot: unknown) {
+  const threads = (snapshot as { threads?: unknown[] } | null)?.threads;
+  if (Array.isArray(threads)) for (const thread of threads) noteThread(thread);
+}
+
+const GOAL_CONTINUATION = "Continue working toward this thread's goal.";
+
 const threadFolderIds = (threadId: string) => threadContexts.get(threadId)?.folderIds ?? [];
 function namedPath(value: unknown): string | undefined {
   if (typeof value !== "string" || !value || value.length > 1024) throw new Error("That path is invalid");
@@ -194,15 +242,61 @@ function attachFolder(threadId: string, folderId: string) {
 }
 const skillAttachment = new SkillAttachmentStore();
 const harnesses = new Map<string, Harness>();
+const harnessLog: HarnessLogLine[] = [];
+
+function noteHarnessLog(line: HarnessLogLine) {
+  harnessLog.push(line);
+  if (harnessLog.length > MAX_LOG_LINES) harnessLog.splice(0, harnessLog.length - MAX_LOG_LINES);
+  broadcast("emma:harness-log", line);
+}
+
+const readHarnessReport = (): HarnessReport => ({
+  processes: [...harnesses.values()].map((client) => client.state),
+  lines: harnessLog,
+});
+
+function restartHarnesses() {
+  const stopped = harnesses.size;
+  for (const client of harnesses.values()) client.close();
+  harnesses.clear();
+  noteHarnessLog({ at: Date.now(), flow: "err", label: "restart", body: `Emma stopped ${stopped} emma-cli ${stopped === 1 ? "process" : "processes"}. The next turn starts a fresh one.` });
+  return readHarnessReport();
+}
 const harnessText = new Map<string, string>();
 const harnessThought = new Map<string, string>();
+const harnessRouted = new Map<string, string>();
 const harnessChildren = new Map<string, { childId: string; title: string; startedAt: number; client: Harness }>();
 const stopThread = (threadId: string) => {
+  goalStopped.add(threadId);
   agents?.stop(threadId);
   const child = harnessChildren.get(threadId);
-  if (child) { void child.client.cancelChild(child.childId).catch(() => undefined); return; }
-  for (const harness of harnesses.values()) void harness.cancel(threadId);
+  if (child) void child.client.cancelChild(child.childId).catch(() => undefined);
+  else for (const harness of harnesses.values()) void harness.cancel(threadId);
+  if (!benchThread(threadId)) return;
+  void answerRequest("setThreadArchived", { threadId, archived: "true" }).then(() => changed()).catch(() => undefined);
+  for (const id of haltBench(threadId)) if (id !== threadId) stopThread(id);
 };
+function stopEveryThread() {
+  agents!.stopAll();
+  for (const threadId of goalDriving) goalStopped.add(threadId);
+  for (const threadId of harnessText.keys()) stopThread(threadId);
+  for (const threadId of harnessChildren.keys()) stopThread(threadId);
+}
+async function steerThread(threadId: string, text: string) {
+  const child = harnessChildren.get(threadId);
+  if (child) {
+    if (!child.client.running) throw new Error("That subagent's harness is no longer running.");
+    await child.client.steerChild(child.childId, text);
+    return;
+  }
+  for (const harness of harnesses.values()) {
+    if (await harness.steer(threadId, text)) return;
+  }
+  agents!.steer(threadId, text);
+}
+function answerAsk(id: string, allowed: boolean) {
+  agents!.answer(id, allowed);
+}
 let hotkeyHelper: ChildProcess | undefined;
 let mainWindow: BrowserWindow | null = null;
 let overlay: BrowserWindow | null = null;
@@ -218,12 +312,28 @@ let verifier: VerifierSettings = defaultVerifier;
 let toolSettings: ToolSettings = defaultToolSettings;
 let harnessExperiments: HarnessExperiments = defaultHarnessExperiments;
 
-const toolsChanged = () => {
+const toolsChanged = async () => {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:tools-changed");
   for (const client of harnesses.values()) client.rebindServers();
-  syncHarnessSkills();
+  await syncHarnessSkills();
 };
 const artifactsChanged = () => broadcast("emma:artifacts-changed");
+const componentsChanged = () => broadcast("emma:components-changed");
+
+const placements = new Map<string, ComponentAnchor>();
+let placeAsk: { id: string; settle: (anchor: ComponentAnchor | undefined) => void } | undefined;
+
+function askPlace(title: string): Promise<ComponentAnchor | undefined> {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Emma's window is not open, so there is nowhere for the user to point at.");
+  placeAsk?.settle(undefined);
+  const id = randomUUID();
+  needsYou("Emma needs a spot", `Point at where \u201c${title}\u201d goes`);
+  mainWindow.webContents.send("emma:component-place", { id, title });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { if (placeAsk?.id === id) placeAsk.settle(undefined); }, PLACE_TIMEOUT_MS);
+    placeAsk = { id, settle: (anchor) => { clearTimeout(timer); placeAsk = undefined; resolve(anchor); } };
+  });
+}
 const plansChanged = () => broadcast("emma:plans-changed");
 let overlayPreferencesReady = false;
 let queuedOverlayToggle: { command?: string } | null = null;
@@ -233,7 +343,7 @@ let closeOverlayWhenIdle = false;
 let notches: NotchGeometry[] = [];
 let hotspot: BrowserWindow | null = null;
 let hotspotKey = "";
-let hotspotTimer: ReturnType<typeof setInterval> | undefined;
+let hotspotTimer: ReturnType<typeof setTimeout> | undefined;
 const HOTSPOT_WARM = 220;
 let radial: BrowserWindow | null = null;
 let overlayBaseHeight = 0;
@@ -596,7 +706,7 @@ function openHotspot() {
   const key = notch ? [display.id, display.bounds.y, notch.x, notch.width, notch.height].join(":") : "";
   if (key === hotspotKey) return;
   hotspotKey = key;
-  clearInterval(hotspotTimer);
+  clearTimeout(hotspotTimer);
   closeHotspot();
   if (!notch) return;
   const layout = hotspotLayout(display, notch);
@@ -628,22 +738,26 @@ function openHotspot() {
     });
     void load(window, "hotspot", { notchLeft: String(layout.notch.left), notchWidth: String(layout.notch.width), notchHeight: String(layout.notch.height) });
   };
-  hotspotTimer = setInterval(() => {
+  const poll = () => {
     const point = screen.getCursorScreenPoint();
-    if ((overlay && !overlay.isDestroyed()) || !near(point, HOTSPOT_WARM)) {
+    const warm = !(overlay && !overlay.isDestroyed()) && near(point, HOTSPOT_WARM);
+    if (!warm) {
       hovering = false;
       closeHotspot();
-      return;
+    } else {
+      if (!hotspot) build();
+      const inside = near(point, 0);
+      if (inside !== hovering) {
+        hovering = inside;
+        if (hotspot && !hotspot.isDestroyed()) {
+          hotspot.setIgnoreMouseEvents(!inside, { forward: true });
+          hotspot.webContents.send("emma:notch-hover", inside);
+        }
+      }
     }
-    if (!hotspot) build();
-    const inside = near(point, 0);
-    if (inside === hovering) return;
-    hovering = inside;
-    if (hotspot && !hotspot.isDestroyed()) {
-      hotspot.setIgnoreMouseEvents(!inside, { forward: true });
-      hotspot.webContents.send("emma:notch-hover", inside);
-    }
-  }, 120);
+    hotspotTimer = setTimeout(poll, hotspotPollDelay(warm));
+  };
+  poll();
 }
 
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -704,6 +818,8 @@ function pageMayAsk(contents: Electron.WebContents | null, permission: string, k
   return permission === "media" && kinds.length > 0 && kinds.every((kind) => kind === "audio");
 }
 
+const memoryRoot = () => path.join(app.getPath("userData"), "memories");
+
 function setupStatus(): SetupStatus {
   const mac = process.platform === "darwin";
   const vault = readVault(app.getPath("userData"));
@@ -749,6 +865,17 @@ function boundedCapabilityId(value: unknown, label: string) {
   return value;
 }
 
+function gitRequest(value: unknown, label: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} request is invalid`);
+  return value as Record<string, unknown>;
+}
+
+function gitCount(value: unknown, label: string) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_HISTORY * 10_000) throw new Error(`${label} is invalid`);
+  return value;
+}
+
 function browserRequest(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Browser request is invalid");
   const candidate = value as Record<string, unknown>;
@@ -778,6 +905,13 @@ function browserPlaceRequest(value: unknown) {
     return Math.round(found);
   };
   return { threadId, bounds: { x: side("x"), y: side("y"), width: Math.max(0, side("width")), height: Math.max(0, side("height")) } };
+}
+
+function browserClipRequest(value: unknown) {
+  const { candidate, threadId } = browserRequest(value);
+  const index = candidate.index;
+  if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index > 64) throw new Error("Clipboard item is invalid");
+  return { threadId, index };
 }
 
 function browserNavRequest(value: unknown) {
@@ -817,7 +951,34 @@ async function bestLearnedSkill(task: string) {
 
 async function skillParams(task: string): Promise<Record<string, string>> {
   const skill = await bestLearnedSkill(task);
-  return skill ? { skillContext: skill.instructions } : {};
+  if (!skill) return {};
+  void recordUse(app.getPath("userData"), skillKey(skill.id));
+  return { skillContext: skill.instructions };
+}
+
+
+function goalIpc(value: unknown): Record<string, unknown> & { threadId: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Goal request is invalid");
+  const request = value as Record<string, unknown>;
+  return { ...request, threadId: boundedCapabilityId(request.threadId, "Goal thread") };
+}
+
+function boundedGoalText(value: unknown, label: string, max: number, required: boolean): string {
+  if (value === undefined || value === null) {
+    if (required) throw new Error(`${label} is required`);
+    return "";
+  }
+  if (typeof value !== "string") throw new Error(`${label} is invalid`);
+  const text = value.trim();
+  if (required && !text) throw new Error(`${label} is required`);
+  if (text.length > max) throw new Error(`${label} is longer than ${max} characters`);
+  return text;
+}
+
+function wholeGoalNumber(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > MAX_GOAL_TOKEN_BUDGET) throw new Error(`${label} is invalid`);
+  return value;
 }
 
 function threadMode(threadId: string): PermissionMode {
@@ -852,11 +1013,37 @@ function agentMessage(value: unknown) {
   return { threadId, text: candidate.text };
 }
 
+function forceArmRequest(value: unknown): { threadId: string; arm: Arm } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Arm request is invalid");
+  const candidate = value as Record<string, unknown>;
+  const threadId = boundedCapabilityId(candidate.threadId, "Arm thread");
+  if (candidate.arm !== "a" && candidate.arm !== "b") throw new Error("Arm request is invalid");
+  return { threadId, arm: candidate.arm };
+}
+
 function reportRunProgress(step: number, action: string, actions: number) {
   if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", { step, action, actions });
 }
 
+const BRIDGE_EVENTS: Record<string, (payload: unknown) => BridgeEvent> = {
+  "emma:changed": () => ({ k: "evt", t: "invalidate", what: "snapshot" }),
+  "emma:artifacts-changed": () => ({ k: "evt", t: "invalidate", what: "artifacts" }),
+  "emma:plans-changed": () => ({ k: "evt", t: "invalidate", what: "plans" }),
+  "emma:notes-changed": () => ({ k: "evt", t: "invalidate", what: "notes" }),
+  "emma:components-changed": () => ({ k: "evt", t: "invalidate", what: "components" }),
+  "emma:cli-runs": () => ({ k: "evt", t: "invalidate", what: "cliRuns" }),
+  "emma:background": () => ({ k: "evt", t: "invalidate", what: "background" }),
+  "emma:delta": (payload) => ({ k: "evt", ...(payload as { threadId: string; delta: string; thinking?: boolean }), t: "delta" }),
+  "emma:step": (payload) => ({ k: "evt", t: "step", step: payload as RemoteStep }),
+  "emma:agents": (payload) => ({ k: "evt", t: "agents", agents: payload as LiveAgent[] }),
+  "emma:spans": (payload) => ({ k: "evt", t: "spans", spans: payload as Record<string, TraceSpan[]> }),
+  "emma:folder-attached": (payload) => ({ k: "evt", ...(payload as { threadId: string; folderId: string }), t: "folder-attached" }),
+  "emma:context-experiment": (payload) => ({ k: "evt", ...(payload as { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }), t: "context-experiment" }),
+  "emma:context-breakdown": (payload) => ({ k: "evt", ...(payload as { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }), t: "context-breakdown" }),
+};
+
 function broadcast(channel: string, payload?: unknown) {
+  if (bridge?.sending() && Object.hasOwn(BRIDGE_EVENTS, channel)) bridge.event(BRIDGE_EVENTS[channel](payload));
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
@@ -1017,6 +1204,14 @@ function folderImage(threadId: string, named: string | undefined, relative: stri
   }
 }
 
+const shotFile = (extension: string) => path.join(app.getPath("temp"), `emma-shot-${randomUUID()}.${extension}`);
+
+function shownToUser(file: string, said: string): string {
+  if (!existsSync(file)) throw new Error("Emma could not save that screenshot.");
+  const held = attachments!.hold(file);
+  return `${said} It is saved at ${held.path}. Show it to the user by writing ![a short description](${held.path}) on its own line in your answer — that draws the picture in the conversation. You cannot see it yourself; look_at_image reads it if you need to know what is in it.`;
+}
+
 async function ensureComputerRun(threadId: string, task: string) {
   if (computerRuntime!.active) return;
   computerRuntime!.start(threadId);
@@ -1088,10 +1283,20 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       await ensureComputerRun(turn.threadId, turn.content);
       reportRunProgress(computerRuntime!.steps, String(args.args.action ?? "act"), computerRuntime!.actions);
       if (!computerRuntime!.step()) throw new Error("This computer run reached its step limit.");
-      return await computerRuntime!.execute(args.args);
+      const said = await computerRuntime!.execute(args.args);
+      if (args.args.action !== "screenshot" || !computerRuntime!.shot) return said;
+      const file = shotFile("jpg");
+      await writeFile(file, Buffer.from(computerRuntime!.shot.slice(computerRuntime!.shot.indexOf(",") + 1), "base64"));
+      return shownToUser(file, said);
     }
     case "browser": {
+      if (args.action !== "close") broadcast("emma:browser-show", { threadId: turn.threadId });
       if (args.action === "open") return `Opened ${browserPage(await browsers.open(turn.threadId, args.url!))}. Snapshot it to see what is on it.`;
+      if (args.action === "screenshot") {
+        const file = shotFile("png");
+        await browsers.run(turn.threadId, ["screenshot", ...(args.selector ? [args.selector] : []), file]);
+        return shownToUser(file, "Took a screenshot of the page.");
+      }
       const navigation = BROWSER_NAVIGATIONS.find((candidate) => candidate === args.action);
       if (!navigation) return await browsers.run(turn.threadId, browserArgv(args));
       const status = await browsers.navigate(turn.threadId, navigation);
@@ -1099,17 +1304,17 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     }
     case "write_skill": {
       const skill = await writeLearnedSkill(app.getPath("userData"), args.skill, args.instructions);
-      toolsChanged();
+      await toolsChanged();
       return `Saved the skill "${skill.name}". Future runs can find it by name.`;
     }
     case "write_tool": {
       const tool = await writeEmmaTool(app.getPath("userData"), args.tool, args.description, args.code);
-      toolsChanged();
+      await toolsChanged();
       return `Saved the tool "${tool.name}". Run it with run_tool {"name":"${tool.name}","input":"…"}, in this thread or any later one.`;
     }
     case "write_plugin": {
       const { plugin } = await writePlugin(app.getPath("userData"), args.plugin);
-      toolsChanged();
+      await toolsChanged();
       const names = plugin.skills.map((skill) => skill.name).join(", ");
       return `Packaged and installed the plugin "${plugin.name}" at ${plugin.root}. It carries ${plugin.skills.length} ${plugin.skills.length === 1 ? "skill" : "skills"} (${names}), usable by name from the next turn. It is listed on the Plugins page under "Written by Emma".`;
     }
@@ -1127,14 +1332,21 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       return await runCommand(cwd, `${shellQuoted(match.run)} ${shellQuoted(args.input ?? "")}`);
     }
     case "memory":
-      return await runMemoryCommand(path.join(app.getPath("userData"), "memories"), args.command);
+      return await runMemoryCommand(memoryRoot(), args.command);
     case "vision": {
       const image = args.url ? publicUrl(args.url)?.href : folderImage(turn.threadId, args.folder, args.path!);
       if (!image) throw new Error("That is not a public image URL. Use a path in a connected folder for a file on this Mac.");
       return await look(toolSettings.vision, image, args.question);
     }
+    case "secret": {
+      const attached = threadFolder(turn.threadId);
+      const output = await runCommand(attached ? folders!.directory(attached) : homedir(), args.command);
+      return await readSecret(toolSettings.secret, args.command, output, args.question);
+    }
     case "plan":
       return await planTool(args, turn);
+    case "goal":
+      return await goalTool(args, turn);
     case "context":
       return await reportContext(turn, args.compact);
     case "keep":
@@ -1146,7 +1358,7 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     }
     case "install_mcp": {
       const { id } = await capabilities!.installMcpServer({ name: args.server, command: args.command, args: args.argv, env: args.env });
-      toolsChanged();
+      await toolsChanged();
       return `Installed "${args.server}" (${id}) into Emma's configuration — the harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools.`;
     }
     case "workflow":
@@ -1155,8 +1367,48 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       return await researchTool(args);
     case "artifact":
       return await artifactTool(args, turn.threadId);
+    case "component":
+      return await componentTool(args, turn.threadId);
     case "visualize":
       return `${visualMarker(keepVisual({ title: args.title, html: args.html }))} Drawn in the conversation, under the answer you are writing. Do not repeat in prose what it already shows.`;
+  }
+}
+
+
+
+function goalRequest(method: string, params: Record<string, string>): Promise<ThreadRecord | undefined> {
+  return host!.request({ method, params }).then((thread) => {
+    const noted = noteThread(thread);
+    changed();
+    return noted;
+  });
+}
+
+async function goalTool(args: Extract<ToolArgs, { name: "goal" }>, turn: TurnRequest): Promise<string> {
+  const threadId = turn.parentThreadId ?? turn.threadId;
+  switch (args.action) {
+    case "get":
+      return goalResult("get", threadId, goals.get(threadId));
+    case "set": {
+      const thread = await goalRequest("setGoal", { threadId, objective: args.objective!, tokenBudget: String(args.tokenBudget ?? DEFAULT_GOAL_TOKEN_BUDGET) });
+      if (thread?.title === DEFAULT_THREAD_TITLE) {
+        await host!.request({ method: "renameThread", params: { threadId, title: goalTitle(args.objective!) } }).catch(() => undefined);
+        changed();
+      }
+      return goalResult("set", threadId, goals.get(threadId));
+    }
+    case "update": {
+      await goalRequest("updateGoal", { threadId, status: args.status!, evidence: args.evidence ?? "", reason: args.reason ?? "" });
+      return goalResult("update", threadId, goals.get(threadId));
+    }
+    case "extend": {
+      await goalRequest("updateGoal", { threadId, extraTokens: String(args.extraTokens) });
+      return goalResult("extend", threadId, goals.get(threadId));
+    }
+    case "clear": {
+      await goalRequest("clearGoal", { threadId });
+      return goalResult("clear", threadId, undefined);
+    }
   }
 }
 
@@ -1207,7 +1459,7 @@ async function planTool(args: Extract<ToolArgs, { name: "plan" }>, turn: TurnReq
         const left = plan.steps.filter((step) => step.status !== "done");
         if (!left.length) return `Every step of "${plan.title}" is done. Tell the user what it added up to.`;
         const running = left.filter((step) => step.status === "running");
-        if (running.length) return `${running.map((step) => step.id).join(", ")} ${running.length === 1 ? "is" : "are"} still marked running in "${plan.title}". Wait for them, or set one failed with plan update if it will not finish.`;
+        if (running.length) return `${running.map((step) => step.id).join(", ")} ${running.length === 1 ? "is" : "are"} still marked running in "${plan.title}". Wait for each with subagent {"command":{"inspect":{"id":"<the id create gave you>","sections":["status","messages"],"wait":{"until":"settled","timeout_ms":60000}}}} rather than re-reading the plan, or set one failed with plan update if it will not finish.`;
         return `Nothing in "${plan.title}" can start: ${left.map((step) => `${step.id} waits on ${step.needs.join(", ") || "nothing, yet is not todo"}`).join("; ")}.\n${planProblems(plan).join("\n")}`;
       }
       await editPlan(userData, plan.id, (current) => ({
@@ -1219,7 +1471,7 @@ async function planTool(args: Extract<ToolArgs, { name: "plan" }>, turn: TurnReq
         + `Spawn one subagent per brief below, all in one message, with subagent {"command":{"create":{"name":"<step id>","mode":"one_off","prompt":"<that step's whole brief>"}}}. `
         + `Then wait for each with subagent {"command":{"inspect":{"id":"<the id create gave you>","sections":["status","messages"],"wait":{"until":"settled","timeout_ms":60000}}}} — 60000 is the ceiling, so inspect again when one comes back wait_timed_out — `
         + `and write what it answered back with plan {"action":"update","id":"${plan.id}","step":"<step id>","status":"done","result":"<its answer in one line>"} — status "failed" for one that did not finish.\n\n`
-        + wave.map((step) => `### ${step.id}\n${stepBrief(plan, step)}`).join("\n\n")
+        + wave.map((step) => `### ${step.id}\n${towardGoal(turn, stepBrief(plan, step))}`).join("\n\n")
         + (ready.length > wave.length ? `\n\n${ready.length - wave.length} more were ready but held back — at most ${MAX_LIVE_SUBAGENTS} steps run at once.` : "")
         + `\n\nRecord each one as it lands and ask plan {"action":"run","id":"${plan.id}"} again straight away: whatever its result released starts then, without waiting for the rest of these.`;
     }
@@ -1310,6 +1562,41 @@ async function artifactTool(args: Extract<ToolArgs, { name: "artifact" }>, threa
   }
 }
 
+async function componentTool(args: Extract<ToolArgs, { name: "component" }>, threadId: string): Promise<string> {
+  const userData = app.getPath("userData");
+  switch (args.action) {
+    case "list": {
+      const built = await listComponents(userData);
+      if (!built.length) return 'Emma has built nothing into her interface yet. Start with component {"action":"place"} \u2014 the user points at where it goes.';
+      return `Components:\n${built.map((one) => `${one.id} \u2014 ${one.title} \u2014 in ${one.anchor.label} \u2014 v${one.version}${one.disabled ? " \u2014 switched off by the user" : ""}`).join("\n")}`;
+    }
+    case "get": {
+      const one = await readComponent(userData, args.id!);
+      return `${one.title} (${one.id}) \u2014 in ${one.anchor.label}, version ${one.version}\n\n${one.code}`;
+    }
+    case "place": {
+      const anchor = await askPlace(args.title ?? "the new component");
+      if (!anchor) return "The user did not pick a spot, so there is nowhere to build. Ask them where it should go before trying again.";
+      placements.set(threadId, anchor);
+      return `The user pointed at ${anchor.label}. Now ask them whatever the request left open \u2014 what it shows, where its numbers come from, how it behaves \u2014 unless they already said it. Then build it with component {"action":"create","title":"\u2026","code":"\u2026"}.`;
+    }
+    case "create": {
+      const anchor = placements.get(threadId);
+      if (!anchor) throw new Error('There is nowhere to put it yet. Call component {"action":"place"} first: the user points at the spot and this thread remembers it.');
+      const saved = await writeComponent(userData, { title: args.title!, code: args.code!, anchor, sourceThreadId: threadId });
+      placements.delete(threadId);
+      componentsChanged();
+      return `Built "${saved.title}" (${saved.id}) into ${anchor.label}, and it is on screen now. Ask the user how it looks: component {"action":"rewrite","id":"${saved.id}","code":"\u2026"} reloads it in place while they watch. The \u22ef in its corner is how they delete it.`;
+    }
+    case "rewrite": {
+      const existing = await readComponent(userData, args.id!);
+      const saved = await writeComponent(userData, { id: existing.id, title: args.title ?? existing.title, code: args.code!, sourceThreadId: threadId });
+      componentsChanged();
+      return `Reworked "${saved.title}" \u2014 v${saved.version}, reloaded in place. Ask whether that is what they meant.`;
+    }
+  }
+}
+
 function runCommand(cwd: string, command: string, timeoutMs = MAX_COMMAND_MS): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn("/bin/bash", ["-lc", command], { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -1332,7 +1619,7 @@ const MAX_COMMAND_OUTPUT = 16 * 1024;
 const MAX_CLI_VIEW_CHARS = 128 * 1024;
 const MAX_COMMAND_MS = 120_000;
 
-function harnessClient(cwd: string, key = cwd): Harness {
+function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
   const running = harnesses.get(key);
   if (running?.running) {
     harnesses.delete(key);
@@ -1346,7 +1633,8 @@ function harnessClient(cwd: string, key = cwd): Harness {
     binaryPath,
     cwd,
     home: path.join(app.getPath("userData"), "harness"),
-    apiKey: process.env.OPENROUTER_API_KEY,
+    apiKey: route ? route.apiKey : process.env.OPENROUTER_API_KEY,
+    chatUrl: route?.chatUrl,
     onDelta: (threadId, delta) => {
       harnessText.set(threadId, (harnessText.get(threadId) ?? "") + delta);
       agents?.noteDelta(threadId, delta);
@@ -1359,14 +1647,27 @@ function harnessClient(cwd: string, key = cwd): Harness {
     },
     onToolCall: (call) => {
       agents?.noteTool(call.threadId, call.toolCallId, call.title || call.kind, call);
+      void recordUse(app.getPath("userData"), mcpToolKey(call.title), `${call.threadId}:${call.toolCallId}`);
       const wrote = noteHarnessChange(cwd, call);
       broadcast("emma:step", wrote ? { ...call, edit: editStat(wrote) } : call);
     },
     onContextExperiment: (threadId, fired) => broadcast("emma:context-experiment", { threadId, ...fired }),
     onContextBreakdown: (threadId, parts) => broadcast("emma:context-breakdown", { threadId, ...parts }),
-    onUsage: (threadId, usage) => agents?.noteUsage(threadId, usage),
+    onRoutedModel: (threadId, routed) => {
+      harnessRouted.set(threadId, routed.model);
+      broadcast("emma:routed-model", { threadId, ...routed });
+    },
+    onUsage: (threadId, usage) => {
+      agents?.noteUsage(threadId, usage);
+      const goal = goals.get(threadId);
+      if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) stopThread(threadId);
+    },
     onChildStart: async ({ parentThreadId, childId, title }) => {
-      const created = await host!.request({ method: "createThread", params: { parentThreadId, title, kind: "subagent" } });
+      // Named, not titled: the harness hands a child the sentence it was given,
+      // and a fanned-out plan gives every step of a wave the same one. The prompt
+      // stays on the record below — it is what the transcript reads back.
+      const name = agentName(childId, new Set(agents!.list().map((agent) => agent.title)));
+      const created = await host!.request({ method: "createThread", params: { parentThreadId, title: name, kind: "subagent" } });
       const threadId = (created as { id?: unknown }).id;
       if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
       harnessText.set(threadId, "");
@@ -1376,16 +1677,17 @@ function harnessClient(cwd: string, key = cwd): Harness {
       agents!.adopt({
         threadId,
         content: title,
-        title,
+        title: name,
         parentThreadId,
         depth: (parent?.depth ?? 0) + 1,
         mode: parent?.mode ?? DEFAULT_PERMISSION_MODE,
-        model: parent?.model ?? "",
+        model: modelName(parent?.model),
+        effort: parent?.effort ?? "",
         parentSpanId: agents!.spanFor(parentThreadId),
       });
       return threadId;
     },
-    onChildEnd: (threadId) => {
+    onChildEnd: (threadId, reason) => {
       const child = harnessChildren.get(threadId);
       if (!child) return;
       harnessChildren.delete(threadId);
@@ -1394,16 +1696,18 @@ function harnessClient(cwd: string, key = cwd): Harness {
       harnessText.delete(threadId);
       harnessThought.delete(threadId);
       const spent = agents!.list().find((agent) => agent.threadId === threadId);
-      agents!.finish(threadId);
+      // A reason means the process went out from under it rather than the child
+      // finishing, so the rail says so instead of calling an interrupted run done.
+      agents!.finish(threadId, reason);
       void recordTurn({
         threadId,
         prompt: child.title,
         thinking,
-        answer: spoken || "(the subagent finished without an answer)",
+        answer: spoken || (reason ? `(this subagent stopped: ${reason})` : "(the subagent finished without an answer)"),
         durationMilliseconds: String(Date.now() - child.startedAt),
         outputTokens: String(spent?.outputTokens ?? 0),
         inputTokens: String(spent?.inputTokens ?? 0),
-        model: modelName(threadModel(threadId)),
+        model: harnessRouted.get(threadId) ?? modelName(threadModel(threadId)),
       }).catch((error: unknown) => console.error("Emma: a subagent's transcript could not be recorded", error));
     },
     onPlan: () => {},
@@ -1434,8 +1738,9 @@ function harnessClient(cwd: string, key = cwd): Harness {
     },
     onToolRequest: (threadId, name, args) => runEmmaTool(threadId, name, args),
     mcpServers: (threadId) => harnessMcpServers(threadId),
+    onLog: noteHarnessLog,
   });
-  harnesses.set(cwd, client);
+  harnesses.set(key, client);
   reapHarnesses();
   return client;
 }
@@ -1485,8 +1790,8 @@ function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | und
   return change;
 }
 
-function syncHarnessSkills() {
-  void mirrorSkillsToHarness(app.getPath("userData"), path.join(app.getPath("userData"), "harness"), toolSettings.disabledSkills)
+async function syncHarnessSkills() {
+  await mirrorSkillsToHarness(app.getPath("userData"), path.join(app.getPath("userData"), "harness"), toolSettings.disabledSkills)
     .catch((error) => console.warn("Emma could not mirror skills to the harness:", error instanceof Error ? error.message : error));
 }
 
@@ -1514,9 +1819,10 @@ async function runEmmaTool(threadId: string, wireName: string, args: Record<stri
     });
     if (!allowed) throw new Error(`The user did not allow ${wireName} to run. Do not try it again this turn; say what you needed it for instead.`);
   }
-  return OWN_TOOLS.has(name)
-    ? await agents!.runThreadTool(parsed, turn)
-    : await executeTool(parsed as ToolArgs, turn);
+  const call = () => OWN_TOOLS.has(name)
+    ? agents!.runThreadTool(parsed, turn)
+    : executeTool(parsed as ToolArgs, turn);
+  return turn.bench ? await benchReplay.run(true, call) : await call();
 }
 
 function whyUnavailable(threadId: string, name: string, called = name): string | undefined {
@@ -1538,17 +1844,35 @@ async function harnessMcpServers(_threadId: string): Promise<HarnessMcpServer[]>
   }
 }
 
+let routers: ModelRouter[] = [];
+let providers: ProviderProfile[] = [];
+
+export type ProviderRoute = { id: string; chatUrl: string; apiKey: string };
+
+function providerFor(key: string | undefined): ProviderProfile | undefined {
+  return key?.startsWith("provider:") ? providers.find((item) => item.id === key.slice("provider:".length)) : undefined;
+}
+
+function providerRoute(key: string | undefined): ProviderRoute | undefined {
+  const profile = providerFor(key);
+  if (!profile) return undefined;
+  return { id: profile.id, chatUrl: providerChatUrl(profile), apiKey: (profile.credentialEnv ? process.env[profile.credentialEnv] : "") || "no-key" };
+}
+
 function harnessModel(key: string | undefined) {
-  if (key === FREE_ROUTER_KEY) return freeRouterChain(modelCatalog?.ids());
-  return key?.startsWith("openrouter:") ? key.slice("openrouter:".length) : undefined;
+  const routerId = routerIdFor(key);
+  if (routerId) return routerChain(modelCatalog?.ids(), routers.find((router) => router.id === routerId)?.models ?? []);
+  if (key?.startsWith("openrouter:")) return key.slice("openrouter:".length);
+  return providerFor(key)?.modelId;
 }
 
 function modelName(key: string | undefined) {
-  return key?.startsWith("openrouter:") ? key.slice("openrouter:".length) : key ?? "";
+  if (key?.startsWith("openrouter:")) return key.slice("openrouter:".length);
+  return providerFor(key)?.modelId ?? key ?? "";
 }
 
-function contextWindowFor(model: string | undefined) {
-  return modelCatalog?.contextLength(model?.split(",")[0]);
+function contextWindowFor(model: string | undefined, key?: string) {
+  return providerFor(key)?.contextWindow || modelCatalog?.contextLength(model?.split(",")[0]);
 }
 
 function thinkingRoute(model: string | undefined, level: string | undefined): ThinkingRoute | undefined {
@@ -1576,13 +1900,12 @@ function selectModel(method: string, params: Record<string, string>): unknown {
     selectedEffort = "";
     return { model: "" };
   }
-  if (method === "selectLocalModel") {
-    const baseUrl = normalizeLocalModelEndpoint(params.baseUrl);
-    if (!baseUrl) throw new Error("A local model server has to be on this Mac.");
-    if (!isEnvName(params.credentialEnv)) throw new Error("The local model key must be the name of an environment variable.");
-    selectedModel = "";
-    selectedEffort = "";
-    return { model: params.modelId };
+  if (method === "selectProviderModel") {
+    const profile = providers.find((item) => item.id === params.providerId);
+    if (!profile) throw new Error("That provider is not set up. Add it again in Settings → Models.");
+    selectedModel = `provider:${profile.id}`;
+    selectedEffort = thinkingLevel(params.effort);
+    return { model: profile.modelId };
   }
   const modelId = catalogued(params.modelId);
   selectedModel = `openrouter:${modelId}`;
@@ -1592,9 +1915,23 @@ function selectModel(method: string, params: Record<string, string>): unknown {
 
 function answerRequest(method: string, params: Record<string, string> = {}): Promise<unknown> {
   switch (method) {
-    case "listOpenRouterModels": return modelCatalog!.refresh(() => fetchOpenRouterCatalog());
-    case "selectOpenRouterModel": case "selectLocalModel": case "selectFallbackModel": case "setThreadModel":
+    // Every models page asks for the catalog on mount; only an explicit reload, or a day
+    // since the last good fetch, is worth going back to OpenRouter for.
+    case "listOpenRouterModels":
+      return modelCatalog!.refresh(() => fetchOpenRouterCatalog(), params.force ? 0 : 24 * 60 * 60 * 1000);
+    case "selectOpenRouterModel": case "selectProviderModel": case "selectFallbackModel": case "setThreadModel":
       return Promise.resolve().then(() => selectModel(method, params));
+    case "createThread":
+      return host!.request({ method, params }).then((created) => {
+        const id = (created as { id?: unknown } | null)?.id;
+        if (typeof id === "string" && params.parentThreadId && inheritBench(id, params.parentThreadId)) stopThread(id);
+        return created;
+      });
+    case "setRouters":
+      return Promise.resolve().then(() => {
+        routers = validateRouters(JSON.parse(params.routers ?? "[]"));
+        return { routers: routers.length };
+      });
     default: return host!.request({ method, params });
   }
 }
@@ -1622,15 +1959,55 @@ function attachedImagePaths(value: unknown): string[] {
   return ids.flatMap((id) => {
     try {
       const file = attachments!.read(id);
-      return file.text === undefined ? [file.path] : [];
+      return file.text === undefined ? [attachments!.forModel(file)] : [];
     } catch { return []; }
-  });
+  }).slice(0, MAX_TURN_IMAGES);
 }
 
-async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
+/** How long a woken harness gets to show that its model connection outlived the sleep. */
+const WAKE_GRACE_MS = 45_000;
+/** The harness each running turn is on, so a sleep can be told which processes to take down. */
+const harnessRuns = new Map<string, Harness>();
+/** Threads whose harness Emma killed because a sleep had wedged it. */
+const sleepWedged = new Set<string>();
+const SLEEP_CONTINUATION = "This Mac went to sleep mid-turn and the connection to the model was lost. Carry on from the last step you finished.";
+const pausedRecovery = new Set<string>();
+const CRASH_CONTINUATION = "The harness process died mid-turn and has been restarted. Carry on from the last step you finished, and check what is already on disk before redoing any of it.";
+
+/**
+ * Picks the turns that were in flight when the lid closed back up.
+ *
+ * macOS freezes this process and takes its sockets down with it, and neither end
+ * ever reads the end of the model's stream: the harness sits in a read that will
+ * never return, so on wake the run stays at "searching" for as long as the
+ * machine was shut. The idle reaper is no answer — it counts awake time, so it
+ * is another half hour away, and it fails the turn rather than continuing it.
+ *
+ * So: wait long enough for a connection that did survive to prove it, then kill
+ * whatever is still silent. The turn is picked up in `runOnHarness`, where a
+ * fresh process resumes the same session — the id is on disk with the whole
+ * transcript behind it — and the model carries on from its last finished step.
+ */
+async function resumeAfterSleep() {
+  if (harnessRuns.size === 0) return;
+  await new Promise((resolve) => setTimeout(resolve, WAKE_GRACE_MS));
+  const wedged = new Set<Harness>();
+  for (const [threadId, client] of [...harnessRuns]) {
+    if (client.silentFor < WAKE_GRACE_MS || harnessRuns.get(threadId) !== client) continue;
+    sleepWedged.add(threadId);
+    wedged.add(client);
+  }
+  // Not removed from `harnesses` here: `harnessClient` drops a client that is no
+  // longer running and starts a replacement, which is exactly what the retry wants.
+  for (const client of wedged) client.close();
+}
+
+async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key = cwd) {
   harnessText.set(turn.threadId, "");
   harnessThought.set(turn.threadId, "");
+  harnessRouted.delete(turn.threadId);
   harnessTurns.set(turn.threadId, turn);
+  harnessRuns.set(turn.threadId, client);
   const startedAt = Date.now();
   agents!.adopt({ ...turn, model: modelName(turn.model) });
   const route = harnessModel(turn.model);
@@ -1638,14 +2015,18 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
     const { stopReason, usage } = await client.prompt(turn.threadId, cwd, turn.content, turn.mode, route, {
       skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
       images: attachedImagePaths(turn.params?.attachedImages),
-      contextWindow: contextWindowFor(route),
+      contextWindow: contextWindowFor(route, turn.model),
       effort: thinkingRoute(route, turn.effort),
       experiments: harnessExperiments,
       compact: compactNext.delete(turn.threadId),
+      continueRecovery: turn.continueRecovery,
     });
     agents!.noteUsage(turn.threadId, usage);
     const spoken = (harnessText.get(turn.threadId) ?? "").trim();
-    if (failedTurn(stopReason)) throw new Error(spoken || "The run was refused.");
+    if (failedTurn(stopReason)) {
+      pausedRecovery.add(turn.threadId);
+      throw new Error(spoken || "The run was refused.");
+    }
     agents!.finish(turn.threadId);
     return await recordTurn({
       threadId: turn.threadId,
@@ -1655,45 +2036,94 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest) {
       durationMilliseconds: String(Date.now() - startedAt),
       outputTokens: String(usage.outputTokens),
       inputTokens: String(usage.inputTokens),
-      model: modelName(turn.model),
+      model: harnessRouted.get(turn.threadId) ?? modelName(turn.model),
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     agents!.finish(turn.threadId, detail);
+    // Killed by `resumeAfterSleep` rather than finished, so the turn is not over:
+    // a new process, the same session, and a prompt that says where it left off.
+    // Skipped when the user stopped the run themselves — a sleep is not a reason
+    // to restart something they asked to end.
+    if (sleepWedged.delete(turn.threadId) && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
+      agents!.forget(turn.threadId);
+      return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, content: SLEEP_CONTINUATION }, key);
+    }
+    if (pausedRecovery.delete(turn.threadId) && !turn.continueRecovery && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
+      agents!.forget(turn.threadId);
+      try {
+        return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, continueRecovery: true }, key);
+      } catch {
+        throw error;
+      }
+    }
+    // The process itself died — a panic, an OOM kill, a pipe that went away —
+    // rather than the turn ending. Same shape as the sleep recovery: a fresh
+    // process resumes the session from disk, so the model still has its whole
+    // transcript and carries on from where it stopped. Once only: a turn already
+    // carrying the continuation crashed with it, which is a crash loop and not a
+    // blip, and a user who stopped the run is not asking for another one.
+    if (!client.running && turn.content !== CRASH_CONTINUATION && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
+      agents!.forget(turn.threadId);
+      try {
+        return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, content: CRASH_CONTINUATION }, key);
+      } catch {
+        throw error;
+      }
+    }
     const spoken = (harnessText.get(turn.threadId) ?? "").trim();
     const thought = harnessThought.get(turn.threadId) ?? "";
-    if (spoken || thought.trim()) {
+    const stopped = agents!.list().find((agent) => agent.threadId === turn.threadId);
+    const stoppedUsage = { inputTokens: stopped?.inputTokens ?? 0, outputTokens: stopped?.outputTokens ?? 0 };
+    // Recorded even when the run said nothing at all. A turn only reaches the
+    // thread file when it is recorded, so bailing out here threw away the
+    // message the user typed along with everything the run did — a first-call
+    // failure like RequestTooLarge left the thread reading as empty.
+    try {
       return await recordTurn({
         threadId: turn.threadId,
         prompt: turn.content,
         thinking: thought,
         answer: `${spoken}\n\n_(this run stopped: ${detail})_`.trim(),
         durationMilliseconds: String(Date.now() - startedAt),
-        outputTokens: "0",
-        inputTokens: "0",
+        outputTokens: String(stoppedUsage.outputTokens),
+        inputTokens: String(stoppedUsage.inputTokens),
         model: turn.model ?? "",
       });
+    } catch {
+      throw error;
     }
-    throw error;
   } finally {
     harnessText.delete(turn.threadId);
     harnessThought.delete(turn.threadId);
+    harnessRouted.delete(turn.threadId);
     harnessTurns.delete(turn.threadId);
+    harnessRuns.delete(turn.threadId);
+    turnSpend.delete(turn.threadId);
     for (const [id, opened] of harnessBefore) if (opened.threadId === turn.threadId) harnessBefore.delete(id);
   }
 }
 
-async function driveTurn(turn: TurnRequest) {
+
+const activeGoal = (threadId: string) => {
+  const goal = goals.get(threadId);
+  return goalPursuing(goal) ? goal : undefined;
+};
+
+async function runTurn(turn: TurnRequest) {
   agents!.forget(turn.threadId);
   turn.subagent ??= threadSubagent(turn.threadId);
   turn.effort ??= harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "";
+  turn.objective ??= activeGoal(turn.threadId)?.objective;
   const cwd = harnessCwd(turn.threadId);
-  const key = harnessKey(cwd, turn.nested ? turn.threadId : undefined);
+  const nested = turn.nested ? turn.threadId : undefined;
+  const route = providerRoute(turn.model);
+  const key = harnessKey(cwd, nested, route?.id);
   try {
     writeHarnessPrompt(path.join(app.getPath("userData"), "harness"), { model: turn.model, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools });
-    return await runOnHarness(harnessClient(cwd, key), cwd, withTrialArm(turn));
+    return await runOnHarness(harnessClient(cwd, key, route), cwd, withGoal(withTrialArm(turn), activeGoal(turn.threadId)), key);
   } finally {
-    if (key !== cwd) {
+    if (nested) {
       harnesses.get(key)?.close();
       harnesses.delete(key);
     }
@@ -1705,9 +2135,308 @@ async function driveTurn(turn: TurnRequest) {
   }
 }
 
+async function runRequest(request: Request): Promise<unknown> {
+  if (request.params.attachedContext) {
+    const { attachedContext, skillContext, ...params } = request.params;
+    request = { method: request.method, params: { ...params, skillContext: mergeSkillContext(attachedContext, skillContext) } };
+  }
+  const { threadId, content, ...extra } = request.params;
+  const result = request.method === "sendMessage"
+    ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: { ...await skillParams(content), ...extra } })
+    : await answerRequest(request.method, request.params);
+  if (request.method === "setResearchJobStatus") {
+    if (request.params.status === "running") startResearchJob(request.params.jobId);
+    else stopResearchJob(request.params.jobId);
+  }
+  if (request.method === "deleteResearchJob") stopResearchJob(request.params.jobId);
+  if (!READ_ONLY_METHODS.has(request.method)) changed();
+  return result;
+}
+
+const desktopIdentity: DesktopIdentity = {
+  id: createHash("sha256").update(app.getPath("userData")).digest("hex").slice(0, 32),
+  name: hostname().replace(/\.local$/, ""),
+  version: app.getVersion(),
+  protocol: PROTOCOL_VERSION,
+};
+
+function livePartial(): LiveState["partial"] {
+  const partial: LiveState["partial"] = {};
+  for (const [threadId, text] of harnessText) partial[threadId] = { text, thinking: harnessThought.get(threadId) ?? "" };
+  for (const [threadId, thinking] of harnessThought) partial[threadId] ??= { text: "", thinking };
+  return partial;
+}
+
+const MESSAGE_PAGE = 40;
+
+type StoredThreads = { threads: (Omit<ThreadSummary, "messages"> & { messages: Message[] })[]; warnings: string[] };
+
+async function threadStore(): Promise<StoredThreads> {
+  const stored = await runRequest(validateRequest({ method: "snapshot", params: {} })) as Partial<StoredThreads>;
+  return { threads: stored.threads ?? [], warnings: stored.warnings ?? [] };
+}
+
+function threadSummary(thread: unknown): ThreadSummary {
+  const { messages, ...rest } = thread as { messages?: unknown[] };
+  return { ...rest, messages: Array.isArray(messages) ? messages.length : 0 } as ThreadSummary;
+}
+
+function bridgeLive(): LiveState {
+  return { agents: agents!.list(), spans: agents!.spans(), asks: [], partial: livePartial(), desktop: desktopIdentity };
+}
+
+async function namedGit(cwd: string, args: string[]): Promise<string> {
+  const result = await runGit(cwd, args);
+  if (!result.ok) throw new Error(result.output || `git ${args[0]} failed`);
+  return result.output;
+}
+
+async function gitSynced(cwd: string, result: { ok: boolean; output: string }): Promise<GitSyncResult> {
+  const snapshot = await gitSnapshot(cwd);
+  return { ok: result.ok, output: result.output, ahead: snapshot?.ahead ?? 0, behind: snapshot?.behind ?? 0 };
+}
+
+async function bridgeDispatch(method: BridgeMethod, params: Record<string, unknown>): Promise<unknown> {
+  const userData = app.getPath("userData");
+  const flag = (value: unknown, label: string) => {
+    if (typeof value !== "boolean") throw new Error(`${label} is invalid`);
+    return value;
+  };
+  const cwd = () => folders!.directory(boundedCapabilityId(params.folderId, "Folder"));
+  const paths = () => {
+    const files = commitPaths(params.paths);
+    if (!files.length) throw new Error("Pick at least one file.");
+    return files;
+  };
+  switch (method) {
+    case "snapshot": {
+      const stored = await threadStore();
+      return {
+        threads: stored.threads.map((thread) => ({ ...threadSummary(thread), folderIds: threadFolderIds((thread as { id: string }).id) })),
+        warnings: stored.warnings,
+      };
+    }
+    case "threadMessages": {
+      const threadId = boundedCapabilityId(params.threadId, "Thread");
+      const thread = (await threadStore()).threads.find((entry) => entry.id === threadId);
+      if (!thread) throw new Error("That thread is gone.");
+      const total = thread.messages.length;
+      const before = Math.min(gitCount(params.before, "Before") ?? total, total);
+      const limit = Math.min(gitCount(params.limit, "Limit") || MESSAGE_PAGE, MESSAGE_PAGE);
+      const from = Math.max(0, before - limit);
+      return { messages: thread.messages.slice(from, before), total, from };
+    }
+    case "live":
+      return bridgeLive();
+    case "createThread": {
+      const parentThreadId = params.parentThreadId === undefined ? undefined : boundedCapabilityId(params.parentThreadId, "Parent thread");
+      const created = await answerRequest(method, parentThreadId ? { parentThreadId } : {});
+      changed();
+      return threadSummary(created);
+    }
+    case "renameThread":
+      return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, title: params.title } })));
+    case "setThreadArchived":
+      return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, archived: flag(params.archived, "Archived") ? "true" : "false" } })));
+    case "sendMessage":
+      return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, content: params.content } })));
+    case "stopAgent":
+      if (params.threadId === undefined) stopEveryThread();
+      else stopThread(boundedCapabilityId(params.threadId, "Thread"));
+      return { stopped: true };
+    case "steerAgent": {
+      const request = agentMessage(params);
+      await steerThread(request.threadId, request.text);
+      return { steered: true };
+    }
+    case "answerPermission":
+      answerAsk(boundedCapabilityId(params.id, "Permission"), flag(params.allowed, "Permission answer"));
+      return { answered: true };
+    case "getThreadContext": {
+      const threadId = boundedCapabilityId(params.threadId, "Thread");
+      const context = threadContexts.get(threadId);
+      return { threadId, folderIds: context?.folderIds ?? [], mode: context?.mode ?? DEFAULT_PERMISSION_MODE, model: context?.model ?? "" };
+    }
+    case "setThreadContext": {
+      const { threadId, ...context } = threadContextRequest(params);
+      threadContexts.set(threadId, context);
+      agents!.setMode(threadId, context.mode);
+      return { threadId, folderIds: context.folderIds, mode: context.mode, model: context.model };
+    }
+    case "threadTraces": {
+      const traces = await host!.request({ method: "readTrace", params: { threadId: boundedCapabilityId(params.threadId, "Thread") } });
+      return Array.isArray(traces) ? traces : [];
+    }
+    case "listModels": {
+      const catalog = await runRequest(validateRequest({ method: "listOpenRouterModels", params: params.force === true ? { force: "true" } : {} }));
+      const models = (catalog as { models?: { id: string; name: string; contextLength: number; free: boolean; reasoningEfforts?: string[] }[] }).models ?? [];
+      return models.map((model): ModelEntry => ({ id: model.id, key: `openrouter:${model.id}`, name: model.name, contextLength: model.contextLength, free: model.free, efforts: model.reasoningEfforts ?? [] }));
+    }
+    case "setThreadModel":
+      await runRequest(validateRequest({ method, params: { threadId: params.threadId, modelId: params.modelId, ...(params.effort === undefined ? {} : { effort: params.effort }) } }));
+      return { set: true };
+    case "listFolders":
+      return visibleFolders();
+    case "listPlans":
+      return await listPlans(userData);
+    case "listCommands": {
+      const threadId = params.threadId === undefined ? undefined : boundedCapabilityId(params.threadId, "Thread");
+      const [skills, servers, artifacts] = await Promise.all([
+        searchImportedSkills(userData, "", MAX_SKILL_RESULTS).catch(() => []),
+        listImportedMcpServers(userData).catch(() => []),
+        listArtifacts(userData).catch(() => []),
+      ]);
+      const vault = readVault(userData);
+      const grants = visibleFolders();
+      const attached = threadId === undefined ? [] : threadContexts.get(threadId)?.folderIds ?? [];
+      return {
+        slash: [
+          ...BUILTIN_COMMANDS,
+          ...skills.map((skill) => ({ id: skill.id, name: skill.name, kind: "skill" as const, detail: `${skill.source} · skill` })),
+          ...servers.map((server) => ({ id: server.id, name: server.name, kind: "mcp" as const, detail: `${server.source} · MCP server` })),
+          ...TOOL_CATALOG
+            .filter((tool) => !toolSettings.disabledTools.includes(tool.name))
+            .map((tool) => ({ id: `tool:${tool.name}`, name: tool.name, kind: "tool" as const, detail: tool.blurb })),
+        ],
+        at: [
+          ...artifacts.map((artifact) => ({ id: `artifact:${artifact.id}`, name: pathName(artifact.title), kind: "artifact" as const, detail: `${ARTIFACT_LABELS[artifact.kind]} · artifact` })),
+          ...(vault ? listNotes(vault) : []).map((note) => ({ id: `note:${note.path}`, name: pathName(note.title), kind: "page" as const, detail: [keepKindLabel(note.kind), ...note.tags].join(" · ") })),
+          ...attached.flatMap((folderId) => {
+            const folder = grants.find((grant) => grant.id === folderId);
+            return folder ? folders!.files(folderId).map((file) => ({ id: `file:${folderId}:${file.path}`, name: pathName(file.path), kind: "file" as const, detail: `${folder.name}/${file.path}` })) : [];
+          }),
+        ],
+      } satisfies CommandMenu;
+    }
+    case "listArtifacts":
+      return await listArtifacts(userData);
+    case "readArtifact": {
+      const id = boundedCapabilityId(params.id, "Artifact");
+      const { path: _file, ...artifact } = await readArtifact(userData, id);
+      return { ...artifact, files: artifact.kind === "app" ? await artifactFiles(userData, id) : [] };
+    }
+    case "deleteArtifact":
+      await deleteArtifact(userData, boundedCapabilityId(params.id, "Artifact"));
+      artifactsChanged();
+      return { deleted: true };
+    case "readBlob": {
+      const id = boundedCapabilityId(params.id, "Artifact");
+      if (params.file === undefined) {
+        const artifact = await readArtifact(userData, id);
+        return { mime: "text/plain; charset=utf-8", base64: Buffer.from(artifact.content, "utf8").toString("base64") };
+      }
+      const file = boundedCapabilityId(params.file, "Artifact file");
+      return { mime: artifactFileType(file), base64: Buffer.from(await readArtifactFile(userData, id, file), "utf8").toString("base64") };
+    }
+    case "gitReady":
+      return await gitReady(cwd());
+    case "gitStatus": {
+      const snapshot = await gitSnapshot(cwd());
+      if (!snapshot || params.diff === true) return snapshot;
+      return { ...snapshot, diff: "", truncated: false };
+    }
+    case "gitFileDiff": {
+      const [file] = commitPaths([params.path]);
+      const directory = cwd();
+      const tracked = await runGit(directory, ["diff", "--no-color", "HEAD", "--", file]);
+      return { diff: (tracked.ok ? tracked : await runGit(directory, ["diff", "--no-color", "--", file])).output };
+    }
+    case "gitHistory":
+      return await gitHistory(cwd(), { skip: gitCount(params.skip, "Skip"), limit: gitCount(params.limit, "Limit") });
+    case "gitStage":
+      await namedGit(cwd(), ["add", "--", ...paths()]);
+      return { staged: true };
+    case "gitUnstage":
+      await namedGit(cwd(), ["restore", "--staged", "--", ...paths()]);
+      return { unstaged: true };
+    case "gitCommit": {
+      const message = params.message === undefined ? "" : params.message;
+      if (typeof message !== "string" || Buffer.byteLength(message) > MAX_COMMIT_MESSAGE_BYTES) throw new Error("That commit message is invalid");
+      return { hash: await commit(cwd(), { message, paths: params.paths, amend: params.amend === true }) };
+    }
+    case "gitDiscard":
+      await discard(cwd(), params.paths);
+      return { discarded: true };
+    case "gitMessage": {
+      const snapshot = await gitSnapshot(cwd());
+      if (!snapshot) throw new Error("That folder is not a git repository.");
+      return { message: await writeCommitMessage(tagger, { diff: snapshot.diff, files: snapshot.files }) };
+    }
+    case "gitPush": {
+      const directory = cwd();
+      return await gitSynced(directory, await runGit(directory, ["push", ...(params.setUpstream === true ? ["--set-upstream", "origin", "HEAD"] : [])]));
+    }
+    case "gitPull": {
+      const directory = cwd();
+      return await gitSynced(directory, await runGit(directory, ["pull", ...(params.rebase === true ? ["--rebase"] : [])]));
+    }
+    case "setBranch": {
+      const branch = boundedCapabilityId(params.branch, "Branch");
+      await switchBranch(cwd(), branch, params.create === true, params.from === undefined ? undefined : boundedCapabilityId(params.from, "Branch"));
+      return { branch };
+    }
+  }
+}
+
+function driveTurn(turn: TurnRequest) {
+  refuseBenchTurn(turn.threadId);
+  turn.bench = benchThread(turn.threadId);
+  return runDrivenTurn(turn);
+}
+
+async function runDrivenTurn(turn: TurnRequest) {
+  if (!turn.goalTurn) goalStopped.delete(turn.threadId);
+  let recorded: unknown;
+  try {
+    recorded = await runTurn(turn);
+  } catch (error) {
+    await noteGoalFailure(turn.threadId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  const thread = noteThread(recorded);
+  await noteGoalFailure(turn.threadId, agents!.list().find((agent) => agent.threadId === turn.threadId)?.error);
+  if (!turn.goalTurn) void continueGoal(turn, thread).catch((error: unknown) => console.error("Emma: a goal's continuation failed", error));
+  return recorded;
+}
+
+async function noteGoalFailure(threadId: string, detail: string | undefined) {
+  if (!usageLimitedFailure(detail) || !goals.get(threadId)) return;
+  await goalRequest("updateGoal", { threadId, status: "usageLimited", reason: detail!.slice(0, MAX_GOAL_REASON_CHARS) }).catch(() => undefined);
+}
+
+const goalHalted = (threadId: string) =>
+  goalStopped.has(threadId) || agents!.list().some((agent) => agent.threadId === threadId
+    && (agent.status === "stopped" || agent.status === "running" || agent.status === "waiting"));
+
+async function continueGoal(turn: TurnRequest, thread: ThreadRecord | undefined) {
+  const threadId = turn.threadId;
+  const subagent = !!turn.parentThreadId || !!turn.depth || thread?.kind === "subagent";
+  if (subagent || thread?.archivedAt || goalDriving.has(threadId)) return;
+  goalDriving.add(threadId);
+  let archived = false;
+  try {
+    while (!archived && goalDrivesAgain({ goal: goals.get(threadId), subagent, halted: goalHalted(threadId) })) {
+      archived = !!noteThread(await driveTurn({
+        threadId,
+        content: GOAL_CONTINUATION,
+        mode: turn.mode,
+        title: turn.title,
+        model: turn.model,
+        subagent: turn.subagent,
+        goalTurn: true,
+        objective: goals.get(threadId)?.objective,
+      }))?.archivedAt;
+    }
+  } finally {
+    goalDriving.delete(threadId);
+    goalStopped.delete(threadId);
+  }
+}
+
+
 type StoredJob = {
   id: string; title: string; schedule: string; prompt: string; nodes: string; outputs: string;
-  sourceDomains: string[]; enabled: boolean; permissionMode: string;
+  sourceDomains: string[]; enabled: boolean; permissionMode: string; model: string;
   nextRunAt?: string | null; lastRunAt?: string | null;
 };
 
@@ -1766,7 +2495,7 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
   const mode = asPermissionMode(job.permissionMode);
   const run = await runWorkflow(nodes, parseVariables(job.variables), async (prompt) => {
     const content = await resolveMentions(prompt, job.threadId);
-    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: threadModel(job.threadId) });
+    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || threadModel(job.threadId) });
     return lastAssistantMessage(outcome) ?? "";
   });
   await host!.request({ method: "finishScheduledJob", params: { jobId: job.jobId, outputs: packVariables(run.variables), depth: String(job.depth) } });
@@ -1785,7 +2514,7 @@ function describeNode(node: WorkflowNode): string {
 
 function describeJob(job: StoredJob): string {
   const { nodes, errors } = parseWorkflow(job.nodes, job.prompt);
-  const state = [`trigger ${job.schedule}`, job.enabled ? "" : "paused", `mode ${job.permissionMode}`, job.nextRunAt ? `next ${job.nextRunAt}` : "", job.lastRunAt ? `last ran ${job.lastRunAt}` : ""].filter(Boolean).join(" · ");
+  const state = [`trigger ${job.schedule}`, job.enabled ? "" : "paused", `mode ${job.permissionMode}`, job.model ? `model ${modelName(job.model)}` : "", job.nextRunAt ? `next ${job.nextRunAt}` : "", job.lastRunAt ? `last ran ${job.lastRunAt}` : ""].filter(Boolean).join(" · ");
   return [
     `${job.title} (${job.id})`,
     state,
@@ -1844,6 +2573,7 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
           nodes,
           sourceDomains: JSON.stringify(existing?.sourceDomains ?? []),
           permissionMode: asPermissionMode(args.permissionMode ?? existing?.permissionMode),
+          model: args.model ?? existing?.model ?? "",
         },
       }) as { id?: string };
       changed();
@@ -2021,6 +2751,7 @@ function appPage(content: string): string {
 protocol.registerSchemesAsPrivileged([
   { scheme: ARTIFACT_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
   { scheme: VISUAL_SCHEME, privileges: { standard: true, secure: true } },
+  { scheme: COMPONENT_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 
 app.commandLine.appendSwitch("remote-debugging-port", "0");
@@ -2030,6 +2761,7 @@ if (!primaryInstance) app.quit();
 else app.on("second-instance", () => { void app.whenReady().then(openMain); });
 
 if (primaryInstance) app.whenReady().then(() => {
+  if (!app.isPackaged) app.dock?.setIcon(path.join(app.getAppPath(), "assets", "emma-dock.png"));
   session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) => pageMayAsk(contents, permission, details.mediaType ? [details.mediaType] : []));
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(pageMayAsk(contents, permission, (details as { mediaTypes?: string[] }).mediaTypes ?? [])));
   protocol.handle(ARTIFACT_SCHEME, async (request) => {
@@ -2060,11 +2792,25 @@ if (primaryInstance) app.whenReady().then(() => {
       return notFound("That artifact is no longer in the folder.");
     }
   });
+  protocol.handle(COMPONENT_SCHEME, async (request) => {
+    const notFound = (why: string) => new Response(why, { status: 404, headers: { "content-type": "text/plain" } });
+    try {
+      const url = new URL(request.url);
+      const id = boundedCapabilityId(url.hostname, "Component");
+      const file = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+      if (file === COMPONENT_SHOT_PATH) return new Response(new Uint8Array(await readComponentShot(app.getPath("userData"), id)), { headers: { "content-type": "image/png" } });
+      if (file !== COMPONENT_MODULE_PATH) return notFound("A component serves its module and its picture, nothing else.");
+      return new Response((await readComponent(app.getPath("userData"), id)).code, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+    } catch {
+      return notFound("That component is no longer in the folder.");
+    }
+  });
   protocol.handle(VISUAL_SCHEME, (request) => {
     const visual = readVisual(new URL(request.url).hostname);
     if (!visual) return new Response("That visual is no longer in this conversation.", { status: 404, headers: { "content-type": "text/plain" } });
     return new Response(visualPage(visual.html), { headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": VISUAL_CSP } });
   });
+  cliModels = new CliModelCatalog(app.getPath("userData"));
   credentials = new CredentialStore(app.getPath("userData"));
   folders = new FolderStore(app.getPath("userData"));
   const storedVault = readVault(app.getPath("userData"));
@@ -2073,17 +2819,23 @@ if (primaryInstance) app.whenReady().then(() => {
   modelCatalog = new CatalogCache(app.getPath("userData"));
   startHost();
   fireEvent("launch");
-  void host!.request({ method: "snapshot", params: {} }).catch(() => undefined);
+  void host!.request({ method: "snapshot", params: {} }).then(primeGoals).catch(() => undefined);
   capabilities = new ImportedCapabilityRuntime(app.getPath("userData"));
   void seedBuiltinSkills(builtinSkills(), app.getPath("userData"), path.join(app.getPath("userData"), "harness"), ["artifact"]).then(syncHarnessSkills);
   computerRuntime = new ComputerUseRuntime(nativeHelper());
   agents = new AgentRuntime({
     request: (method, params) => answerRequest(method, params),
     ask: (request: PermissionAsk) => {
-      if (!mainWindow || mainWindow.isDestroyed()) { agents!.answer(request.id, false); return; }
+      const askedAt = Date.now();
+      const reached = bridge ? bridge.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) : false;
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        if (!reached) answerAsk(request.id, false);
+        return;
+      }
       needsYou("Emma needs your approval", request.summary);
       mainWindow.webContents.send("emma:permission-ask", request);
     },
+    answered: (id, allowed) => bridge?.resolved(id, allowed),
     verify: (request, threadId) => {
       const lessons = verifierLessons(threadId);
       return review(lessons ? { ...verifier, system: `${verifier.system}\n\n${lessons}` } : verifier, request);
@@ -2097,6 +2849,14 @@ if (primaryInstance) app.whenReady().then(() => {
     changed: () => { broadcast("emma:agents", agents!.list()); broadcast("emma:spans", agents!.spans()); },
     step: (step) => broadcast("emma:step", step),
   });
+  bridge = createBridge({
+    userData: app.getPath("userData"),
+    identity: desktopIdentity,
+    dispatch: bridgeDispatch,
+    live: bridgeLive,
+    onStatus: (status) => broadcast("emma:mobile-status", status),
+  });
+  bridge.start();
   configureResearch({
     request: (method, params) => answerRequest(method, params),
     turn: (request) => driveTurn(request),
@@ -2112,12 +2872,13 @@ if (primaryInstance) app.whenReady().then(() => {
     changed,
   });
   void resumeResearchJobs().catch((error: unknown) => console.error("Emma: could not resume the autoresearch jobs", error));
+  powerMonitor.on("resume", () => void resumeAfterSleep().catch((error: unknown) => console.error("Emma: could not pick a turn back up after sleep", error)));
   ipcMain.handle("emma:request", async (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {
       throw new Error("IPC sender is not allowed");
     }
     let request = validateRequest(value);
-    if (request.method === "listOpenRouterModels") return answerRequest(request.method);
+    if (request.method === "listOpenRouterModels") return answerRequest(request.method, request.params);
     let screenContextId: string | undefined;
     let skillAttachmentId: string | undefined;
     if (request.method === "sendMessage" && request.params.skillAttachmentId !== undefined) {
@@ -2156,23 +2917,13 @@ if (primaryInstance) app.whenReady().then(() => {
           params: { threadId: request.params.threadId, content: request.params.content, ...(request.params.attachedContext ? { attachedContext: request.params.attachedContext } : {}), ...(request.params.attachedImages ? { attachedImages: request.params.attachedImages } : {}), ...(request.params.screenContext ? { screenContext: request.params.screenContext } : {}), skillContext: skill.instructions },
         };
       }
-      if (request.params.attachedContext) {
-        const { attachedContext, skillContext, ...params } = request.params;
-        request = { method: request.method, params: { ...params, skillContext: mergeSkillContext(attachedContext, skillContext) } };
-      }
-      const { threadId, content, ...extra } = request.params;
-      const result = request.method === "sendMessage"
-        ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: { ...await skillParams(content), ...extra } })
-        : await answerRequest(request.method, request.params);
-      if (request.method === "setResearchJobStatus") {
-        if (request.params.status === "running") startResearchJob(request.params.jobId);
-        else stopResearchJob(request.params.jobId);
-      }
-      if (request.method === "deleteResearchJob") stopResearchJob(request.params.jobId);
+      const result = await runRequest(request);
       delivered = true;
       if (screenClaimed) annotationAttachment.finish(screenContextId!, true);
-      if (skillClaimed) skillAttachment.finish(skillAttachmentId!, true);
-      if (!READ_ONLY_METHODS.has(request.method)) changed();
+      if (skillClaimed) {
+        skillAttachment.finish(skillAttachmentId!, true);
+        void recordUse(app.getPath("userData"), skillKey(skillAttachmentId!));
+      }
       return result;
     } finally {
       if (screenClaimed && !delivered) annotationAttachment.finish(screenContextId!, false);
@@ -2185,6 +2936,31 @@ if (primaryInstance) app.whenReady().then(() => {
     threadContexts.set(threadId, context);
     agents!.setMode(threadId, context.mode);
     return context.mode;
+  });
+  ipcMain.handle("emma:update-ready", (event) => {
+    mainWindowSender(event);
+    return readyUpdate();
+  });
+  ipcMain.handle("emma:install-update", (event) => {
+    mainWindowSender(event);
+    installUpdate();
+  });
+  ipcMain.handle("emma:harness-report", (event) => {
+    mainWindowSender(event);
+    return readHarnessReport();
+  });
+  ipcMain.handle("emma:restart-harness", (event) => {
+    mainWindowSender(event);
+    return restartHarnesses();
+  });
+  ipcMain.handle("emma:list-memories", (event) => {
+    mainWindowSender(event);
+    return listMemories(memoryRoot());
+  });
+  ipcMain.handle("emma:delete-memory", async (event, value: unknown) => {
+    mainWindowSender(event);
+    await runMemoryCommand(memoryRoot(), { command: "delete", path: typeof value === "string" ? value : "" });
+    return listMemories(memoryRoot());
   });
   ipcMain.handle("emma:list-agents", (event) => {
     mainWindowSender(event);
@@ -2223,6 +2999,19 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return clis.stop(boundedCapabilityId(value, "CLI run"));
   });
+  ipcMain.handle("emma:cli-models", (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = (value ?? {}) as { cli?: unknown; refresh?: unknown };
+    const cli = boundedCapabilityId(request.cli, "CLI");
+    if (!CLI_IDS.includes(cli)) throw new Error("Emma does not know that CLI.");
+    return cliModels.read(cli, (id) => clis.where(id), request.refresh === true);
+  });
+  ipcMain.handle("emma:cli-run-model", (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = (value ?? {}) as { id?: unknown; model?: unknown };
+    const model = typeof request.model === "string" ? request.model.slice(0, 128).trim() : "";
+    return clis.setModel(boundedCapabilityId(request.id, "CLI run"), model);
+  });
   ipcMain.handle("emma:installed-clis", (event) => {
     mainWindowSender(event);
     return clis.installed();
@@ -2253,6 +3042,15 @@ if (primaryInstance) app.whenReady().then(() => {
     browsers.hideAllExcept(threadId);
     browsers.place(threadId, bounds);
   });
+  ipcMain.handle("emma:browser-clips", (event) => {
+    mainWindowSender(event);
+    return browsers.clips();
+  });
+  ipcMain.handle("emma:browser-clip-use", (event, value: unknown) => {
+    mainWindowSender(event);
+    const { threadId, index } = browserClipRequest(value);
+    browsers.reuseClip(threadId, index);
+  });
   ipcMain.handle("emma:browser-tab-new", (event, value: unknown) => {
     mainWindowSender(event);
     const { candidate, threadId } = browserRequest(value);
@@ -2274,7 +3072,8 @@ if (primaryInstance) app.whenReady().then(() => {
     const candidate = terminalRequest(value);
     const threadId = boundedCapabilityId(candidate.threadId, "Terminal thread");
     const { columns, rows } = terminalSize(candidate);
-    return terminals.open({ threadId, cwd: folders!.directory(grantFor(threadId, undefined)), columns, rows });
+    const cli = typeof candidate.cli === "string" ? candidate.cli : undefined;
+    return terminals.open({ threadId, cwd: folders!.directory(grantFor(threadId, undefined)), columns, rows, cli });
   });
   ipcMain.handle("emma:terminal-write", (event, value: unknown) => {
     mainWindowSender(event);
@@ -2322,22 +3121,17 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!value || typeof value !== "object") return;
     const answer = value as Record<string, unknown>;
     if (typeof answer.id !== "string" || typeof answer.allowed !== "boolean") return;
-    agents!.answer(answer.id, answer.allowed);
+    answerAsk(answer.id, answer.allowed);
   });
   ipcMain.handle("emma:steer-agent", async (event, value: unknown) => {
     mainWindowSender(event);
     const request = agentMessage(value);
-    const child = harnessChildren.get(request.threadId);
-    if (!child) { agents!.steer(request.threadId, request.text); return; }
-    if (!child.client.running) throw new Error("That subagent's harness is no longer running.");
-    await child.client.steerChild(child.childId, request.text);
+    await steerThread(request.threadId, request.text);
   });
   ipcMain.on("emma:stop-agent", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || ![mainWindow?.webContents, runBanner?.webContents].includes(event.sender)) return;
     if (typeof value === "string") { stopThread(value); return; }
-    agents!.stopAll();
-    for (const threadId of harnessText.keys()) stopThread(threadId);
-    for (const threadId of harnessChildren.keys()) stopThread(threadId);
+    stopEveryThread();
   });
   ipcMain.handle("emma:thread-changes", (event, value: unknown) => {
     mainWindowSender(event);
@@ -2365,6 +3159,27 @@ if (primaryInstance) app.whenReady().then(() => {
     agents?.stopAll();
     computerRuntime?.abort("stopped by the user");
     closeRunBanner();
+  });
+  ipcMain.handle("emma:set-providers", (event, value: unknown) => {
+    mainWindowSender(event);
+    providers = validateProviders(value);
+    recycleHarnesses();
+    return providers;
+  });
+  ipcMain.handle("emma:test-provider", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const draft = (value ?? {}) as Partial<ProviderProfile>;
+    const [profile] = validateProviders([{
+      id: "test",
+      name: "Test",
+      contextWindow: 0,
+      baseUrl: draft.baseUrl,
+      credentialEnv: draft.credentialEnv ?? "",
+      modelId: typeof draft.modelId === "string" && draft.modelId.trim() ? draft.modelId : "probe",
+      insecure: draft.insecure === true,
+    }]);
+    const key = profile.credentialEnv ? process.env[profile.credentialEnv] ?? "" : "";
+    return await probeProvider(profile.baseUrl, key, typeof draft.modelId === "string" ? draft.modelId.trim() : "");
   });
   ipcMain.handle("emma:set-verifier", (event, value: unknown) => {
     mainWindowSender(event);
@@ -2398,6 +3213,13 @@ if (primaryInstance) app.whenReady().then(() => {
     setImprovements(applied(store));
     return store;
   });
+  ipcMain.handle("emma:force-arm", (event, value: unknown) => {
+    mainWindowSender(event);
+    const { threadId, arm } = forceArmRequest(value);
+    ownBench(threadId);
+    forceArm(threadId, arm);
+    return arm;
+  });
   ipcMain.handle("emma:reveal-path", (event, value: unknown) => {
     mainWindowSender(event);
     const found = namedPath(value);
@@ -2419,6 +3241,48 @@ if (primaryInstance) app.whenReady().then(() => {
     } catch {
       return { path: found, text: null };
     }
+  });
+  ipcMain.handle("emma:set-goal", async (event, value: unknown) => {
+    panelSender(event);
+    const request = goalIpc(value);
+    const objective = boundedGoalText(request.objective, "Goal objective", MAX_GOAL_OBJECTIVE_CHARS, true);
+    const budget = wholeGoalNumber(request.tokenBudget, "Goal token budget");
+    const thread = await goalRequest("setGoal", { threadId: request.threadId, objective, tokenBudget: String(budget ?? DEFAULT_GOAL_TOKEN_BUDGET) });
+    if (thread?.title === DEFAULT_THREAD_TITLE) {
+      await host!.request({ method: "renameThread", params: { threadId: request.threadId, title: goalTitle(objective) } }).catch(() => undefined);
+      changed();
+    }
+    return thread;
+  });
+  ipcMain.handle("emma:update-goal", async (event, value: unknown) => {
+    panelSender(event);
+    const request = goalIpc(value);
+    if (request.status !== undefined && !isGoalStatus(request.status)) throw new Error("Goal status is invalid");
+    const extra = wholeGoalNumber(request.extraTokens, "Goal extra tokens");
+    if (request.status === undefined && extra === undefined) throw new Error("A goal update needs a status or extra tokens");
+    const updated = await goalRequest("updateGoal", {
+      threadId: request.threadId,
+      ...(request.status === undefined ? {} : { status: request.status }),
+      evidence: boundedGoalText(request.evidence, "Goal evidence", MAX_GOAL_EVIDENCE_CHARS, false),
+      reason: boundedGoalText(request.reason, "Goal blocker", MAX_GOAL_REASON_CHARS, false),
+      ...(extra === undefined ? {} : { extraTokens: String(extra) }),
+    });
+    goalStopped.delete(request.threadId);
+    agents?.forget(request.threadId);
+    if (goalPursuing(goals.get(request.threadId)) && !goalHalted(request.threadId)) {
+      void driveTurn({
+        threadId: request.threadId,
+        content: GOAL_CONTINUATION,
+        mode: threadMode(request.threadId),
+        title: "This thread",
+        model: threadModel(request.threadId),
+      }).catch((error: unknown) => console.error("Emma: a resumed goal could not start", error));
+    }
+    return updated;
+  });
+  ipcMain.handle("emma:clear-goal", async (event, value: unknown) => {
+    panelSender(event);
+    return await goalRequest("clearGoal", { threadId: boundedCapabilityId(value, "Goal thread") });
   });
   ipcMain.handle("emma:list-plans", (event) => {
     panelSender(event);
@@ -2465,6 +3329,67 @@ if (primaryInstance) app.whenReady().then(() => {
     const request = value as Record<string, unknown>;
     return queryArtifact(app.getPath("userData"), boundedCapabilityId(request.id, "Artifact"), request.sql, request.params);
   });
+  ipcMain.handle("emma:list-components", (event) => {
+    panelSender(event);
+    return listComponents(app.getPath("userData"));
+  });
+  ipcMain.handle("emma:delete-component", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const gone = await deleteComponent(app.getPath("userData"), boundedCapabilityId(value, "Component"));
+    componentsChanged();
+    return gone;
+  });
+  ipcMain.handle("emma:enable-component", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
+    const request = value as Record<string, unknown>;
+    const meta = await setComponentEnabled(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), request.enabled === true);
+    componentsChanged();
+    return meta;
+  });
+  ipcMain.handle("emma:move-component", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
+    const request = value as Record<string, unknown>;
+    const meta = await setComponentAnchor(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), { selector: request.selector, label: request.label });
+    componentsChanged();
+    return meta;
+  });
+  ipcMain.handle("emma:read-component", (event, value: unknown) => {
+    mainWindowSender(event);
+    return readComponent(app.getPath("userData"), boundedCapabilityId(value, "Component"));
+  });
+  ipcMain.handle("emma:shoot-component", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
+    const request = value as Record<string, unknown>;
+    const id = boundedCapabilityId(request.id, "Component");
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed()) return false;
+    const zoom = event.sender.getZoomFactor() || 1;
+    const whole = window.getContentBounds();
+    const round = (candidate: unknown, high: number) => Math.max(0, Math.min(high, Math.round(typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0)));
+    const scaled = (candidate: unknown) => typeof candidate === "number" && Number.isFinite(candidate) ? candidate * zoom : 0;
+    const rect = {
+      x: round(scaled(request.x), whole.width),
+      y: round(scaled(request.y), whole.height),
+      width: round(scaled(request.width), whole.width),
+      height: round(scaled(request.height), whole.height),
+    };
+    if (rect.width < 8 || rect.height < 8) return false;
+    await writeComponentShot(app.getPath("userData"), id, (await window.webContents.capturePage(rect)).toPNG());
+    componentsChanged();
+    return true;
+  });
+  ipcMain.on("emma:answer-place", (event, value: unknown) => {
+    if (!placeAsk) return;
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) { placeAsk.settle(undefined); return; }
+    const request = value as Record<string, unknown>;
+    if (request.id !== placeAsk.id) return;
+    if (typeof request.selector !== "string" || !request.selector.trim()) { placeAsk.settle(undefined); return; }
+    placeAsk.settle({ selector: request.selector, label: typeof request.label === "string" ? request.label : request.selector });
+  });
   ipcMain.handle("emma:read-visual", (event, value: unknown) => {
     mainWindowSender(event);
     const visual = readVisual(boundedCapabilityId(value, "Visual"));
@@ -2488,6 +3413,19 @@ if (primaryInstance) app.whenReady().then(() => {
     await writeFile(choice.filePath, png);
     return choice.filePath;
   });
+  ipcMain.handle("emma:export-thread-stats", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = statsExportRequest(value);
+    const choice = await dialog.showSaveDialog(mainWindow!, {
+      title: "Export thread stats",
+      buttonLabel: "Export",
+      defaultPath: path.join(app.getPath("documents"), request.folder),
+    });
+    if (choice.canceled || !choice.filePath) return "";
+    await mkdir(choice.filePath, { recursive: true });
+    for (const file of request.files) await writeFile(path.join(choice.filePath, file.name), file.text, "utf8");
+    return choice.filePath;
+  });
   ipcMain.handle("emma:list-folders", (event) => {
     mainWindowSender(event);
     return visibleFolders();
@@ -2504,7 +3442,7 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:remove-marketplace", async (event, value: unknown) => {
     mainWindowSender(event);
     const catalog = await removeMarketplace(app.getPath("userData"), value);
-    toolsChanged();
+    await toolsChanged();
     return catalog;
   });
   ipcMain.handle("emma:refresh-marketplace", async (event, value: unknown) => {
@@ -2515,13 +3453,13 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     const request = (value ?? {}) as Record<string, unknown>;
     const catalog = await installPlugin(app.getPath("userData"), request.marketplace, request.plugin);
-    toolsChanged();
+    await toolsChanged();
     return catalog;
   });
   ipcMain.handle("emma:uninstall-plugin", async (event, value: unknown) => {
     mainWindowSender(event);
     const catalog = await uninstallPlugin(app.getPath("userData"), value);
-    toolsChanged();
+    await toolsChanged();
     return catalog;
   });
   ipcMain.handle("emma:trust-plugin-hooks", async (event, value: unknown) => {
@@ -2631,6 +3569,71 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return await gitSnapshot(folders!.directory(boundedCapabilityId(value, "Folder")));
   });
+  ipcMain.handle("emma:git-ready", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return await gitReady(folders!.directory(boundedCapabilityId(value, "Folder")));
+  });
+  ipcMain.handle("emma:git-init", async (event, value: unknown) => {
+    mainWindowSender(event);
+    await initRepo(folders!.directory(boundedCapabilityId(value, "Folder")));
+    changed();
+  });
+  ipcMain.handle("emma:git-history", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = gitRequest(value, "History");
+    const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
+    return await gitHistory(cwd, { skip: gitCount(request.skip, "Skip"), limit: gitCount(request.limit, "Limit") });
+  });
+  ipcMain.handle("emma:git-commit", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = gitRequest(value, "Commit");
+    const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
+    const message = request.message === undefined ? "" : request.message;
+    if (typeof message !== "string" || Buffer.byteLength(message) > MAX_COMMIT_MESSAGE_BYTES) throw new Error("That commit message is invalid");
+    return await commit(cwd, { message, paths: request.paths, amend: request.amend === true });
+  });
+  ipcMain.handle("emma:git-discard", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = gitRequest(value, "Discard");
+    await discard(folders!.directory(boundedCapabilityId(request.folderId, "Folder")), request.paths);
+  });
+  ipcMain.handle("emma:git-run", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = gitRequest(value, "Git command");
+    const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
+    return await runGit(cwd, validateGitArgs(request.args));
+  });
+  ipcMain.handle("emma:git-message", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = gitRequest(value, "Commit message");
+    const snapshot = await gitSnapshot(folders!.directory(boundedCapabilityId(request.folderId, "Folder")));
+    if (!snapshot) throw new Error("That folder is not a git repository.");
+    return await writeCommitMessage(tagger, { diff: snapshot.diff, files: snapshot.files });
+  });
+  ipcMain.handle("emma:mobile-status", (event) => {
+    mainWindowSender(event);
+    return bridge!.status();
+  });
+  ipcMain.handle("emma:mobile-pair", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const relay = relayOrigin(process.env.EMMA_RELAY_URL || value);
+    if (!relay) throw new Error("Set the address of your own relay in Settings → Mobile before pairing a phone.");
+    return await bridge!.pair(relay);
+  });
+  ipcMain.handle("emma:mobile-cancel-pair", (event) => {
+    mainWindowSender(event);
+    bridge!.cancelPair();
+    return bridge!.status();
+  });
+  ipcMain.handle("emma:mobile-unpair", (event) => {
+    mainWindowSender(event);
+    bridge!.unpair();
+    return bridge!.status();
+  });
+  ipcMain.handle("emma:machine-sample", (event) => {
+    mainWindowSender(event);
+    return machineSample();
+  });
   ipcMain.handle("emma:list-editors", (event) => {
     mainWindowSender(event);
     return installedEditors();
@@ -2657,7 +3660,7 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Branch request is invalid");
     const request = value as Record<string, unknown>;
     const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
-    await switchBranch(cwd, boundedCapabilityId(request.branch, "Branch"), request.create === true);
+    await switchBranch(cwd, boundedCapabilityId(request.branch, "Branch"), request.create === true, request.from === undefined ? undefined : boundedCapabilityId(request.from, "Branch"));
     changed();
   });
   ipcMain.handle("emma:set-worktree", async (event, value: unknown) => {
@@ -2718,10 +3721,10 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!isConnectionId(request.id) || (request.action !== "install" && request.action !== "upgrade")) throw new Error("Connection setup request is invalid");
     return setUpConnection(request.id, request.action);
   });
-  ipcMain.handle("emma:import-agent-sources", (event, value: unknown) => {
+  ipcMain.handle("emma:import-agent-sources", async (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents || !Array.isArray(value) || value.length > 8 || value.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
-    const saved = saveImportManifest(app.getPath("userData"), homedir(), value);
-    toolsChanged();
+    const saved = await saveImportManifest(app.getPath("userData"), homedir(), value);
+    await toolsChanged();
     return saved;
   });
   ipcMain.handle("emma:search-imported-skills", async (event, value: unknown) => {
@@ -2734,8 +3737,17 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return {
       written: (await listEmmaTools(app.getPath("userData"))).map((tool) => ({ id: `run_tool:${tool.name}`, name: tool.name, source: tool.description })),
-      skills: await capabilities!.searchSkills("", 64),
+      skills: (await capabilities!.searchSkills("", 64)).filter((skill) => skill.source !== "installed"),
       servers: await capabilities!.listMcpServers(),
+    };
+  });
+  ipcMain.handle("emma:capability-usage", async (event) => {
+    mainWindowSender(event);
+    const usage = await readUsage(app.getPath("userData"));
+    const [skills, servers] = await Promise.all([capabilities!.searchSkills("", MAX_SKILL_RESULTS), capabilities!.listMcpServers()]);
+    return {
+      skills: skills.filter((skill) => skill.source !== "installed").map((skill) => ({ id: skill.id, name: skill.name, source: skill.source, days: usage[skillKey(skill.id)] ?? {} })),
+      servers: servers.map((server) => ({ id: server.id, name: server.name, source: `${server.source} · ${server.command}`, days: daysUnder(usage, mcpServerPrefix(server.name)) })),
     };
   });
   ipcMain.handle("emma:select-imported-skill", async (event, value: unknown) => {
@@ -2773,6 +3785,10 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:list-credentials", (event) => {
     mainWindowSender(event);
     return credentials!.list();
+  });
+  ipcMain.handle("emma:openrouter-balance", (event) => {
+    mainWindowSender(event);
+    return fetchOpenRouterBalance(process.env.OPENROUTER_API_KEY ?? "");
   });
   ipcMain.handle("emma:save-credential", (event, value: unknown) => {
     mainWindowSender(event);
@@ -2971,6 +3987,7 @@ if (primaryInstance) app.whenReady().then(() => {
     }
   });
   openMain();
+  startUpdates((version) => broadcast("emma:update-ready", version));
   readNotchGeometry();
   screen.on("display-added", readNotchGeometry);
   screen.on("display-removed", readNotchGeometry);
@@ -2983,8 +4000,9 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("will-quit", () => {
+  bridge?.stop();
   globalShortcut.unregisterAll();
-  clearInterval(hotspotTimer);
+  clearTimeout(hotspotTimer);
   hotkeyHelper?.kill();
   computerRuntime?.abort("app quit");
   background.stopAll();

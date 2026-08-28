@@ -250,6 +250,7 @@ type ActiveRun = {
   lastActionAt: number;
   helper: InputHelper | undefined;
   frame: CapturedFrame | undefined;
+  shot: string | undefined;
   zoom: [number, number, number, number] | undefined;
 };
 
@@ -272,7 +273,7 @@ export class ComputerUseRuntime {
     if (process.platform !== "darwin") throw new Error("Computer use is macOS only in this build");
     if (!THREAD_ID.test(threadId)) throw new Error("Computer run thread is invalid");
     if (this.run) throw new Error("A computer run is already active");
-    this.run = { threadId, startedAt: Date.now(), steps: 0, actions: 0, lastActionAt: 0, helper: undefined, frame: undefined, zoom: undefined };
+    this.run = { threadId, startedAt: Date.now(), steps: 0, actions: 0, lastActionAt: 0, helper: undefined, frame: undefined, shot: undefined, zoom: undefined };
     this.log(`Emma computer run started for ${threadId}`);
     return { threadId, maxSteps: MAX_RUN_STEPS };
   }
@@ -294,6 +295,10 @@ export class ComputerUseRuntime {
     return this.run?.actions ?? 0;
   }
 
+  get shot() {
+    return this.run?.shot;
+  }
+
   async execute(value: unknown): Promise<string> {
     const run = this.require();
     const action = validateAction(value);
@@ -306,7 +311,7 @@ export class ComputerUseRuntime {
     if (action.action === "screenshot") {
       run.zoom = undefined;
       const frame = await this.screenshot();
-      return `Captured this display at ${frame.width}x${frame.height} pixels. The image is attached to this message.`;
+      return `Captured this display at ${frame.width}x${frame.height} pixels.`;
     }
     if (action.action === "zoom") {
       // The zoom is not a capture of its own: it arms the next screenshot, which
@@ -359,6 +364,7 @@ export class ComputerUseRuntime {
     run.zoom = undefined;
     const frame = compressScreenFrame(image);
     run.frame = { displayId: display.id, width: frame.width, height: frame.height, region: region as [number, number, number, number], full: [captured.width, captured.height] };
+    run.shot = frame.image;
     return frame;
   }
 

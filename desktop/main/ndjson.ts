@@ -79,9 +79,9 @@ export type HostResponse = { id: string; ok: true; result: unknown } | { id: str
 /// upstream of it finished — with its thread already saved. Pushed rather than
 /// replied to, and carrying the mode the job was saved with, the graph to walk and
 /// the variables to walk it with, because all of that runs in this process.
-export type HostDueJob = { dueJob: { jobId: string; threadId: string; title: string; prompt: string; nodes: string; variables: string; permissionMode: string; depth: number } };
+export type HostDueJob = { dueJob: { jobId: string; threadId: string; title: string; prompt: string; nodes: string; variables: string; permissionMode: string; model: string; depth: number } };
 
-const DUE_JOB_FIELDS = ["jobId", "threadId", "title", "prompt", "nodes", "variables", "permissionMode"] as const;
+const DUE_JOB_FIELDS = ["jobId", "threadId", "title", "prompt", "nodes", "variables", "permissionMode", "model"] as const;
 
 export function parseHostLine(line: string): HostResponse | HostDueJob {
   const value: unknown = JSON.parse(line);

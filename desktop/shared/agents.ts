@@ -62,6 +62,61 @@ export function agentColor(index: number): string {
   return AGENT_COLORS[index % AGENT_COLORS.length];
 }
 
+/**
+ * What a subagent is called. A child arrives named by the sentence it was handed,
+ * so a fanned-out plan renders as eight rows of the same truncated paragraph. A
+ * name is shorter, tells them apart at a glance, and gives the user something to
+ * say out loud.
+ */
+export const AGENT_NAMES = [
+  "Ada", "Aiden", "Alba", "Alex", "Alice", "Amara", "Amos", "Anders", "Andre", "Angie",
+  "Anita", "Anton", "Archie", "Aria", "Arlo", "Asa", "Ashe", "Astrid", "Aubrey", "August",
+  "Aurora", "Avery", "Axel", "Baker", "Basil", "Bea", "Beau", "Bell", "Benji", "Bianca",
+  "Birdie", "Blaise", "Bo", "Bodhi", "Boone", "Bram", "Bree", "Brooks", "Bruno", "Cal",
+  "Callum", "Calvin", "Camila", "Carter", "Casey", "Cass", "Cato", "Cedar", "Celia", "Cleo",
+  "Clyde", "Cody", "Cora", "Cosmo", "Cyrus", "Dahlia", "Dane", "Dario", "Dashiell", "Davi",
+  "Delia", "Dev", "Dexter", "Dinah", "Dmitri", "Dora", "Dorian", "Dove", "Drew", "Duke",
+  "Eamon", "Eden", "Edie", "Elias", "Ellis", "Eloise", "Elsie", "Emma", "Enzo", "Esme",
+  "Etta", "Ewan", "Ezra", "Fable", "Faye", "Felix", "Fern", "Finn", "Flora", "Floyd",
+  "Forrest", "Frank", "Freya", "Gabe", "Gable", "Gia", "Gideon", "Gil", "Gloria", "Grady",
+  "Greta", "Gus", "Hal", "Hana", "Harlan", "Harper", "Hattie", "Hazel", "Heath", "Hector",
+  "Hollis", "Hugo", "Ida", "Idris", "Ines", "Ira", "Iris", "Isla", "Ivan", "Ivy",
+  "Jace", "Jada", "Jasper", "Javi", "Jeanie", "Jem", "Jonah", "John", "Jules", "June",
+  "Juniper", "Kai", "Kalindi", "Karim", "Kasper", "Katy", "Keira", "Kenji", "Kit", "Knox",
+  "Kyra", "Lachlan", "Lana", "Lars", "Lear", "Leif", "Lena", "Leo", "Levi", "Lila",
+  "Linus", "Livia", "Logan", "Lola", "Lorne", "Lou", "Luca", "Lucia", "Luka", "Lyle",
+  "Lyra", "Mabel", "Mack", "Maeve", "Magnus", "Maia", "Malik", "Mara", "Marco", "Margot",
+  "Mateo", "Maude", "Mavis", "Maya", "Mercer", "Milo", "Mira", "Mirek", "Mona", "Moss",
+  "Murray", "Nadia", "Nash", "Nell", "Neo", "Nico", "Nina", "Noa", "Noel", "Nora",
+  "Nova", "Oakley", "Odessa", "Odin", "Olive", "Omar", "Oona", "Opal", "Orson", "Oscar",
+  "Otis", "Otto", "Owen", "Ozzy", "Pablo", "Paloma", "Paz", "Pearl", "Pedro", "Percy",
+  "Petra", "Phoebe", "Pilar", "Pip", "Piper", "Quill", "Quinn", "Rafa", "Ramona", "Raven",
+  "Rex", "Rhea", "Rhys", "Rico", "Rilke", "Rio", "Rita", "River", "Roan", "Robin",
+  "Roma", "Romy", "Roscoe", "Rosa", "Rowan", "Roy", "Ruby", "Rufus", "Russ", "Ruth",
+  "Ryder", "Sable", "Sadie", "Saga", "Sana", "Sasha", "Saul", "Scout", "Sebastian", "Selma",
+  "Senna", "Shai", "Shane", "Shiloh", "Sid", "Sigrid", "Silas", "Simone", "Sloane", "Sol",
+  "Solveig", "Sonny", "Soren", "Stella", "Sten", "Sunny", "Sylvie", "Tadeo", "Talia", "Tam",
+  "Tao", "Tara", "Tate", "Teddy", "Tess", "Thea", "Theo", "Tilda", "Tobin", "Tom",
+  "Tomas", "Tova", "Tris", "Tron", "Truman", "Tully", "Uma", "Vada", "Val", "Vera",
+  "Vero", "Vidal", "Vince", "Viola", "Vivi", "Wade", "Walker", "Wanda", "Warren", "Wells",
+  "Wesley", "Whit", "Wilder", "Willa", "Winnie", "Wren", "Wyatt", "Xander", "Yara", "Yuri",
+  "Zadie", "Zane", "Zara", "Zeke", "Zelda", "Zia", "Zoe", "Zuri",
+] as const;
+
+/**
+ * A name for one subagent, picked off `seed` so every update about the same
+ * child answers the same, with `taken` skipped so two live siblings never share.
+ */
+export function agentName(seed: string, taken: ReadonlySet<string> = new Set()): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) hash = (Math.imul(hash, 31) + seed.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < AGENT_NAMES.length; i += 1) {
+    const name = AGENT_NAMES[(hash + i) % AGENT_NAMES.length];
+    if (!taken.has(name)) return name;
+  }
+  return AGENT_NAMES[hash % AGENT_NAMES.length];
+}
+
 export type AgentStatus = "running" | "waiting" | "done" | "failed" | "stopped";
 
 export type LiveAgent = {
@@ -75,6 +130,9 @@ export type LiveAgent = {
   model: string;
   /** What it is doing right now, in the user's words — "reading src/main.ts", "bash". */
   activity: string;
+  prompt: string;
+  /** A tool call is open right now, as opposed to the model thinking. */
+  tool: boolean;
   startedAt: number;
   endedAt?: number;
   steps: number;
@@ -83,6 +141,7 @@ export type LiveAgent = {
   outputTokens: number;
   /** Milliseconds of model generation, so tokens per second is honest about wall time. */
   generationMs: number;
+  effort?: string;
   /** Set when the loop ended badly, for the tab to show instead of a blank transcript. */
   error?: string;
 };

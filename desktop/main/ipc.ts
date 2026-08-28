@@ -24,8 +24,9 @@ export const methods = [
   "listOpenRouterModels",
   "selectOpenRouterModel",
   "setThreadModel",
-  "selectLocalModel",
+  "selectProviderModel",
   "selectFallbackModel",
+  "setRouters",
 ] as const;
 
 export type Method = (typeof methods)[number];
@@ -49,13 +50,16 @@ const fields: Record<Method, readonly string[]> = {
   listOpenRouterModels: [],
   selectOpenRouterModel: ["modelId"],
   setThreadModel: ["threadId", "modelId"],
-  selectLocalModel: ["baseUrl", "modelId", "credentialEnv"],
+  selectProviderModel: ["providerId"],
   selectFallbackModel: [],
+  setRouters: ["routers"],
 };
 
 const optionalFields: Partial<Record<Method, readonly string[]>> = {
   sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages"],
+  listOpenRouterModels: ["force"],
   selectOpenRouterModel: ["effort"],
+  selectProviderModel: ["effort"],
   setThreadModel: ["effort"],
   saveScheduledJob: ["jobId", "nodes"],
   runScheduledJob: ["variables"],
@@ -83,7 +87,7 @@ export function validateRequest(value: unknown): Request {
   }
   for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
-    const optionalCredential = (method === "selectLocalModel" && key === "credentialEnv") || key === "effort" || (method === "setThreadModel" && key === "modelId");
+    const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId");
     const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
     if (text.length > maxLength || (key !== "content" && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
@@ -235,6 +239,31 @@ export function readablePage(html: string): { title: string; text: string } {
   const description = decodeEntities(metaContent(html, "og:description") || metaContent(html, "description")).trim();
   const body = text.length >= 400 || !description ? text : `${description}\n\n${text}`.trim();
   return { title: decodeEntities(title).replace(/\s+/g, " ").trim().slice(0, 256), text: body.slice(0, MAX_FETCHED_TEXT_CHARS) };
+}
+
+export const MAX_STATS_SHEETS = 24;
+export const MAX_STATS_BYTES = 64 * 1024 * 1024;
+
+export function statsExportRequest(value: unknown): { folder: string; files: { name: string; text: string }[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Stats export is invalid");
+  const candidate = value as { folder?: unknown; files?: unknown };
+  const folder = typeof candidate.folder === "string" ? candidate.folder.trim() : "";
+  if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(folder)) throw new Error("Stats folder name is invalid");
+  if (!Array.isArray(candidate.files) || !candidate.files.length || candidate.files.length > MAX_STATS_SHEETS) throw new Error("Stats export is invalid");
+  const names = new Set<string>();
+  let bytes = 0;
+  const files = candidate.files.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Stats sheet is invalid");
+    const sheet = entry as { name?: unknown; text?: unknown };
+    if (typeof sheet.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}\.csv$/.test(sheet.name)) throw new Error("Stats sheet name is invalid");
+    if (names.has(sheet.name)) throw new Error("Stats sheet name is repeated");
+    names.add(sheet.name);
+    if (typeof sheet.text !== "string") throw new Error("Stats sheet is invalid");
+    bytes += Buffer.byteLength(sheet.text, "utf8");
+    if (bytes > MAX_STATS_BYTES) throw new Error("Stats export is too large");
+    return { name: sheet.name, text: sheet.text };
+  });
+  return { folder, files };
 }
 
 export function trustedSender(value: string, appRoot: string, devServer?: string): boolean {

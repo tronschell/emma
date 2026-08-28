@@ -16,11 +16,13 @@ const thread = (replies: number): Thread => ({
     : { role: "assistant" as const, content: "x".repeat(900), timestamp: "2026-08-23T10:01:00.000Z", generation: { outputTokens: 400, durationMilliseconds: 8_000, inputTokens: 3_000, model: "anthropic/claude-sonnet-4.5" } }),
 });
 
-const working = (toolCalls: number): LiveAgent => ({
-  threadId: "t1",
+const working = (toolCalls: number, threadId = "t1"): LiveAgent => ({
+  threadId,
+  prompt: "",
   title: "Ledger",
   color: "#4f9dff",
   status: "running",
+  tool: false,
   mode: "acceptEdits",
   model: "sonnet",
   activity: "bash",
@@ -82,4 +84,30 @@ test("naming the prefix moves mass out of the residual, it does not add any", ()
   assert.equal(after.total, before.total, "the window is what the provider billed either way");
   const residual = (ledger: typeof before) => ledger.rows.find((row) => row.label === "Tool results & retries")?.chars ?? 0;
   assert.equal(residual(before) - residual(after), 8_000);
+});
+
+test("every row says which list it drills into", () => {
+  const attachment: ContextUse = { kind: "messages", label: "notes/plan.txt", chars: 4_000, turns: 2 };
+  const ledger = buildLedger(thread(1), [attachment], 200_000, [working(7)], NO_EXPERIMENTS, 4, BREAKDOWN);
+  assert.deepEqual(
+    ledger.rows.map((row) => [row.label, row.source]).sort(),
+    [
+      ["2 messages", "messages"],
+      ["Memory files", "memory"],
+      ["Skills", "skills"],
+      ["System prompt", "prompt"],
+      ["System tools", "tools"],
+      ["This turn · 7 tool calls", "turn"],
+      ["notes/plan.txt", "attachment"],
+    ].sort(),
+  );
+  const residual = buildLedger(thread(1), [], 200_000, [], NO_EXPERIMENTS, 0, BREAKDOWN).rows.find((row) => row.label === "Tool results & retries");
+  assert.equal(residual?.source, "residual");
+});
+
+test("a subagent's work stays out of the manager's own window", () => {
+  const alone = buildLedger(thread(1), [], 200_000, [working(7)], NO_EXPERIMENTS, 4);
+  const delegating = buildLedger(thread(1), [], 200_000, [working(7), { ...working(90, "sub-1"), parentThreadId: "t1", inputTokens: 400_000 }], NO_EXPERIMENTS, 4);
+  assert.equal(delegating.total, alone.total, "the subagent's context is its own, not carried here");
+  assert.equal(delegating.calls, alone.calls, "nor are its tool calls this turn's");
 });

@@ -76,6 +76,14 @@ pub fn writeContextExperimentInfoUpdate(
     try writer.writeAll("}}}}");
 }
 
+pub fn writeRoutedModelInfoUpdate(writer: *std.Io.Writer, model: []const u8, fell_back: bool) !void {
+    try writer.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"routedModel\":{\"model\":");
+    try writeJsonStr(model, writer);
+    try writer.writeAll(",\"fellBack\":");
+    try writer.writeAll(if (fell_back) "true" else "false");
+    try writer.writeAll("}}}}");
+}
+
 pub fn writeTurnUsageInfoUpdate(writer: *std.Io.Writer, usage: TurnUsage) !void {
     try writer.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":");
     try writer.print("{d},\"outputTokens\":{d}", .{ usage.input_tokens, usage.output_tokens });
@@ -224,13 +232,28 @@ pub fn writeChildTaggedUpdate(
     if (update_json.len <= 2 or update_json[update_json.len - 1] != '}') return error.InvalidChildUpdate;
     if (std.mem.indexOf(u8, update_json, "\"_meta\"") != null) return error.InvalidChildUpdate;
     try w.writeAll(update_json[0 .. update_json.len - 1]);
-    try w.writeAll(",\"_meta\":{\"fx\":{\"child\":{\"id\":");
+    try w.writeByte(',');
+    try writeChildTagMeta(w, child_id, title, ended);
+    try w.writeByte('}');
+}
+
+/// The `_meta` member a child's message carries, so a client can fan a subagent
+/// out onto a timeline of its own. Written on permission requests as well as on
+/// updates: a question a client cannot attribute to the child that asked it is a
+/// question it cannot put in front of the user.
+pub fn writeChildTagMeta(
+    w: *std.Io.Writer,
+    child_id: []const u8,
+    title: []const u8,
+    ended: bool,
+) !void {
+    try w.writeAll("\"_meta\":{\"fx\":{\"child\":{\"id\":");
     try writeJsonStr(child_id, w);
     try w.writeAll(",\"title\":");
     try writeJsonStr(title, w);
     try w.writeAll(",\"state\":");
     try writeJsonStr(if (ended) "ended" else "running", w);
-    try w.writeAll("}}}}");
+    try w.writeAll("}}}");
 }
 
 /// The bare update a child's last tag rides on, so its end is announced even when
@@ -575,6 +598,16 @@ test "context experiment info update reports both levers" {
     try writeContextExperimentInfoUpdate(&out.writer, 0, true, 0, 310);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"reinjected\":true") != null);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"addedTokens\":310") != null);
+}
+
+test "the routed model rides the same info channel as the other status updates" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeRoutedModelInfoUpdate(&out.writer, "b/two:free", true);
+    try std.testing.expectEqualStrings(
+        "{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"routedModel\":{\"model\":\"b/two:free\",\"fellBack\":true}}}}",
+        out.writer.buffered(),
+    );
 }
 
 test "context breakdown info update names every prefix section" {

@@ -6,7 +6,8 @@ import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
-import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
+import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
+import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 
 /** The fixture lives beside this test in source, not in the compiled output. */
 const fakeAgent = path.join(process.cwd(), "test", "fake-acp-agent.mjs");
@@ -26,9 +27,10 @@ function harness(
   const asks: PermissionAsk[] = [];
   const contexts: PermissionContext[] = [];
   const children: { parentThreadId: string; childId: string; title: string }[] = [];
-  const ended: string[] = [];
+  const ended: { threadId: string; reason?: string }[] = [];
   const usages: { threadId: string; inputTokens: number; outputTokens: number }[] = [];
   const toolRequests: { threadId: string; name: string; args: Record<string, unknown> }[] = [];
+  const logs: HarnessLogLine[] = [];
   const client = new Harness({
     binaryPath: process.execPath,
     args: [fakeAgent],
@@ -40,10 +42,11 @@ function harness(
     onThought: (_threadId, delta) => thoughts.push(delta),
     onToolCall: (call) => calls.push(call),
     onContextExperiment: () => {},
+    onRoutedModel: () => {},
     onContextBreakdown: () => {},
     onUsage: (threadId, usage) => usages.push({ threadId, ...usage }),
     onChildStart: (child) => { children.push(child); return Promise.resolve(`thread_for_${child.childId}`); },
-    onChildEnd: (threadId) => ended.push(threadId),
+    onChildEnd: (threadId, reason) => ended.push({ threadId, reason }),
     onPlan: () => {},
     onPermission: (ask, options, context) => {
       asks.push(ask);
@@ -54,8 +57,9 @@ function harness(
       toolRequests.push({ threadId, name, args });
       return runTool(threadId, name, args);
     },
+    onLog: (line) => logs.push(line),
   });
-  return { client, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, usages, toolRequests };
+  return { client, logs, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, usages, toolRequests };
 }
 
 test("every mode routes its decision back to Emma", () => {
@@ -213,6 +217,21 @@ test("one turn streams deltas, reports tool calls, and an allow reaches the harn
   }
 });
 
+test("a harness that has gone quiet reports how long, and closing it hands the wedged turn back", async () => {
+  // What a closed lid leaves behind: the model's socket is gone, the harness sits
+  // in a read that never returns, and the run shows "searching" forever. Emma's
+  // recovery reads `silentFor` to tell that apart from a turn still working, then
+  // closes the process — which has to reject the prompt, or nothing picks it up.
+  const { client, deltas } = harness(async () => "allow_once");
+  const wedged = client.prompt("thread-1", workspace, "wedge", "ask");
+  while (!deltas.some((entry) => entry.delta === "wedged")) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(client.silentFor < 1000, `just heard from it: ${client.silentFor}`);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.ok(client.silentFor >= 50, `nothing since: ${client.silentFor}`);
+  client.close();
+  await assert.rejects(wedged, /Harness closed/);
+});
+
 test("a subagent's words land on a thread of its own, never in its parent's answer", async () => {
   const { client, deltas, calls, children, ended, usages } = harness(async () => "allow_once");
   try {
@@ -233,10 +252,26 @@ test("a subagent's words land on a thread of its own, never in its parent's answ
     // "the child is doing nothing" looked, when it was working the whole time.
     assert.deepEqual(usages, [{ threadId: "thread_for_child_1", inputTokens: 777, outputTokens: 42 }]);
     // Ended exactly once, so nothing is left showing as running forever.
-    assert.deepEqual(ended, ["thread_for_child_1"]);
+    assert.deepEqual(ended, [{ threadId: "thread_for_child_1", reason: undefined }]);
   } finally {
     client.close();
   }
+});
+
+test("a subagent left running when its process dies is told, not left spinning", async () => {
+  const { client, children, ended } = harness(async () => "allow_once");
+  await client.prompt("thread-parent", workspace, "orphan a subagent", "ask");
+  assert.deepEqual(children.map((child) => child.childId), ["child_1"]);
+  // The turn is over and nothing is pending, but the child's slot is still
+  // running inside this process: reaped as idle here, four agents died silently.
+  assert.equal(client.busy, true);
+  assert.deepEqual(ended, []);
+  client.close();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // Announced with why, because the `ended` tag it would have sent went down
+  // with the pipe — and without this the run showed as running forever.
+  assert.deepEqual(ended, [{ threadId: "thread_for_child_1", reason: "Harness closed" }]);
+  assert.equal(client.busy, false);
 });
 
 test("one of Emma's own tools runs in Emma and its answer reaches the harness", async () => {
@@ -344,6 +379,24 @@ test("a declined permission denies the tool rather than silently allowing it", a
   }
 });
 
+test("a subagent's permission question is asked against the subagent, not its parent", async () => {
+  // A child rides its parent's ACP session, so its question arrives tagged with
+  // `_meta.fx.child` like everything else it says. Answered against the parent's
+  // thread the dialog named the wrong agent — and in the agent rail nothing was
+  // waiting on anything, which is what made a blocked subagent look like a hang.
+  const { client, asks, children } = harness(async () => "allow_once");
+  try {
+    const { stopReason } = await client.prompt("thread-parent", workspace, "childask", "ask");
+    assert.equal(stopReason, "end_turn");
+    assert.deepEqual(children.map((child) => child.childId), ["child_1"]);
+    assert.equal(asks.length, 1);
+    assert.equal(asks[0].threadId, "thread_for_child_1");
+    assert.equal(asks[0].tool, "index.html");
+  } finally {
+    client.close();
+  }
+});
+
 test("a thread whose session another thread displaced still gets its own turn back", async () => {
   // One harness process serves every thread in a workspace, and it holds exactly
   // one session: a second thread's `session/new` replaces the first thread's
@@ -412,6 +465,9 @@ test("a turn started inside a turn needs a process of its own, not the one its p
     assert.equal(harnessKey(workspace), workspace);
     assert.notEqual(harnessKey(workspace, "thread-sub"), harnessKey(workspace));
     assert.notEqual(harnessKey(workspace, "thread-sub"), harnessKey(workspace, "thread-other"));
+    assert.notEqual(harnessKey(workspace, undefined, "deepseek"), harnessKey(workspace));
+    assert.notEqual(harnessKey(workspace, undefined, "deepseek"), harnessKey(workspace, undefined, "zai"));
+    assert.equal(harnessKey(workspace, undefined, ""), harnessKey(workspace));
   } finally {
     parent.client.close();
     spare.client.close();
@@ -562,4 +618,74 @@ test("the prefix breakdown crosses the same channel, byte for byte with the Zig 
   });
   assert.equal(contextBreakdownReported({ _meta: { fx: { turnUsage: { inputTokens: 10 } } } }), undefined);
   assert.equal(contextBreakdownReported({}), undefined);
+});
+
+test("everything Emma sends the agent is recorded, minus the streamed chunks", async () => {
+  const { client, logs } = harness(async () => "allow_once");
+  try {
+    await client.prompt("thread-1", workspace, "do it", "acceptEdits");
+    const sent = logs.filter((line) => line.flow === "out");
+    const prompt = sent.find((line) => line.label.startsWith("session/prompt"));
+    assert.ok(prompt, sent.map((line) => line.label).join(", "));
+    assert.ok(prompt.body.includes("do it"), prompt.body);
+    assert.ok(sent.some((line) => line.label.startsWith("initialize")));
+    assert.ok(sent.some((line) => line.label.startsWith("session/set_mode")));
+
+    const read = logs.filter((line) => line.flow === "in");
+    assert.ok(read.length > 0);
+    assert.ok(!read.some((line) => line.body.includes("_chunk")), read.map((line) => line.body).join("\n"));
+  } finally {
+    client.close();
+  }
+});
+
+test("a process that dies says so on the log, and a close Emma asked for does not", async () => {
+  const { client, logs } = harness(async () => "allow_once");
+  await client.prompt("thread-1", workspace, "hello", "ask");
+  client.close();
+  const stopped = logs.filter((line) => line.flow === "err" && line.label === "stopped");
+  assert.equal(stopped.length, 1);
+  assert.equal(stopped[0].body, CLOSED_BY_EMMA);
+  assert.equal(harnessHealth([{ cwd: workspace, running: false, busy: false, silentMs: 10, failure: CLOSED_BY_EMMA }]), "ready");
+});
+
+test("a handshake the agent refuses leaves a dead client, not a running one", async () => {
+  const { client, logs } = harness(async () => "allow_once", undefined, async () => "", path.join(tmpdir(), `emma-refused-handshake-${process.pid}`));
+  await assert.rejects(client.prompt("thread-1", workspace, "refuse-initialize", "ask"));
+  assert.equal(client.running, false);
+  assert.equal(client.state.failure, "no credential");
+  assert.ok(logs.some((line) => line.flow === "in" && line.label.startsWith("error")), logs.map((line) => line.label).join(", "));
+  client.close();
+});
+
+test("health reads the process, and offline is a death Emma did not ask for", () => {
+  const state = (extra: Partial<HarnessState>): HarnessState =>
+    ({ cwd: workspace, running: false, busy: false, silentMs: 0, failure: "", ...extra });
+  assert.equal(harnessHealth([]), "ready");
+  assert.equal(harnessHealth([state({ running: true })]), "online");
+  assert.equal(harnessHealth([state({ running: true, silentMs: STALL_MS + 1 })]), "online");
+  assert.equal(harnessHealth([state({ running: true, busy: true, silentMs: STALL_MS + 1 })]), "stalled");
+  assert.equal(harnessHealth([state({ failure: "emma-cli exited with code 1" })]), "offline");
+  assert.equal(harnessHealth([state({ failure: CLOSED_BY_EMMA })]), "ready");
+});
+
+test("the fix prompt carries the failure and the traffic, not just the word broken", () => {
+  const prompt = fixPrompt({
+    processes: [{ cwd: workspace, running: false, busy: false, silentMs: 4000, failure: "emma-cli exited with code 101" }],
+    lines: [
+      { at: 0, flow: "out", label: "session/prompt #7", body: '{"method":"session/prompt"}' },
+      { at: 1, flow: "err", label: "stderr", body: "thread 'main' panicked" },
+    ],
+  });
+  assert.ok(prompt.includes("agent offline"), prompt);
+  assert.ok(prompt.includes("emma-cli exited with code 101"));
+  assert.ok(prompt.includes("thread 'main' panicked"));
+  assert.ok(prompt.includes("desktop/main/harness.ts"));
+});
+
+test("a blank title on a progress update is nothing to merge, not a wipe", () => {
+  assert.equal(toolCallText("  Read src/App.tsx "), "Read src/App.tsx");
+  assert.equal(toolCallText(""), null);
+  assert.equal(toolCallText("   "), null);
+  assert.equal(toolCallText(undefined), null);
 });

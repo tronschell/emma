@@ -422,7 +422,7 @@ fn selectResult(
 }
 
 const test_tools = [_]tool_dispatch.Tool{
-    testTool("emma_threads", "Work with durable conversation threads.", .on_select),
+    testTool("emma_threads", "Work with conversation threads.", .on_select),
     testTool("emma_knowledge", "Save a page into the knowledge base.", .on_select),
     testTool("emma_screen", "Read the authorized screen context.", .on_select),
 };
@@ -431,8 +431,8 @@ test "native tool search matches tokens across name and description, case-insens
     const alloc = std.testing.allocator;
 
     // Tokens split across name and description, in mixed case. All three tools
-    // are named `emma_*`, so the one that also answers `durable` comes first.
-    const both = try searchOutput(alloc, test_tools[0..], .{}, "{\"query\":\"EMMA durable\"}");
+    // are named `emma_*`, so the one that also answers `conversation` comes first.
+    const both = try searchOutput(alloc, test_tools[0..], .{}, "{\"query\":\"EMMA conversation\"}");
     defer alloc.free(both);
     try std.testing.expect(std.mem.startsWith(u8, both, "{\"tools\":[{\"name\":\"emma_threads\""));
     try std.testing.expect(std.mem.find(u8, both, "\"count\":3") != null);
@@ -459,7 +459,7 @@ test "native tool search ranks the tool a written-out question is asking for" {
     const tools = [_]tool_dispatch.Tool{
         testTool("write_file", "Write the whole contents of a file in this workspace.", .on_select),
         testTool("knowledge", "Save a page in this workspace to the knowledge base.", .on_select),
-        testTool("threads", "List, read and write the durable conversation threads.", .on_select),
+        testTool("threads", "List, read and write the conversation threads.", .on_select),
     };
 
     const body = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"list the threads in this workspace\"}");
@@ -479,7 +479,7 @@ test "native tool search returns names and descriptions but never input schemas"
     defer alloc.free(body);
 
     try std.testing.expect(std.mem.find(u8, body, "\"name\":\"emma_threads\"") != null);
-    try std.testing.expect(std.mem.find(u8, body, "Work with durable conversation threads.") != null);
+    try std.testing.expect(std.mem.find(u8, body, "Work with conversation threads.") != null);
     // The context-cost contract: a schema here would put every hidden tool back
     // into every prompt, which is the exact cost this pair exists to avoid.
     try std.testing.expect(std.mem.find(u8, body, "inputSchema") == null);
@@ -538,7 +538,7 @@ test "native tool search omits a tool denied by a global deny rule" {
 test "native tool search never returns an already advertised tool" {
     const alloc = std.testing.allocator;
     const tools = [_]tool_dispatch.Tool{
-        testTool("emma_threads", "Work with durable conversation threads.", .on_select),
+        testTool("emma_threads", "Work with conversation threads.", .on_select),
         testTool("read_file", "Read one emma file from disk.", .always),
         testTool("emma_hidden", "Reachable by emma name only.", .never),
     };
@@ -582,7 +582,7 @@ test "native tool select reports the exact registry schema through the dynamic s
 test "native tool select rejects unknown, already advertised and never advertised names" {
     const alloc = std.testing.allocator;
     const tools = [_]tool_dispatch.Tool{
-        testTool("emma_threads", "Work with durable conversation threads.", .on_select),
+        testTool("emma_threads", "Work with conversation threads.", .on_select),
         testTool("read_file", "Read one file from disk.", .always),
         testTool("emma_hidden", "Reachable by name only.", .never),
     };

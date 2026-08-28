@@ -18,7 +18,7 @@ The vault is outside both and is never deleted.
 
 ## Environment variables
 
-### Emma's own — these six, and no others
+### Emma's own — these eight, and no others
 
 | Variable | Read by | What it does | Default |
 | --- | --- | --- | --- |
@@ -27,14 +27,20 @@ The vault is outside both and is never deleted.
 | `EMMA_PROVIDER_API_KEY` | `emma-cli` | The harness's **only** credential source — no OAuth, no login ([credentials.zig:9](../harness/src/core/auth/credentials.zig#L9)). Whitespace-only counts as absent. Electron sets it at spawn from the stored `OPENROUTER_API_KEY`. | unset → public catalog only |
 | `EMMA_PROVIDER_CHAT_URL` | `emma-cli` | Chat-completions URL override ([emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41)). Empty is treated as unset. | OpenRouter |
 | `EMMA_OPENROUTER_ZDR` | `emma-cli` | Presence-checked, not parsed. Demands zero-data-retention routing. Free models have no ZDR endpoint, so this turns them into 404s. Settings → Models toggles it and closes idle harnesses so the next spawn sees it. | unset → off |
+| `EMMA_RELAY_URL` | Electron main | The pairing relay for Emma Mobile, overriding **Settings → Mobile → Relay**. Origin only — scheme and host, no path or query — or it is discarded ([mobile-protocol.ts](../desktop/shared/mobile-protocol.ts)). | unset → the address in Settings, and no pairing until one is set |
+| `EMMA_UPDATE_URL` | Electron main | Origin of the Squirrel.Mac update server, replacing `https://update.electronjs.org`. Origin only — scheme and host, no path or query — and `http://` only on loopback, or it is discarded ([shared/update.ts](../desktop/shared/update.ts)). The feed is that origin plus `/tronschell/emma/darwin-arm64/<version>` | unset → `https://update.electronjs.org` |
 | `EMMA_UPGRADE_BASE_URL` | `emma-cli` | Self-update CDN base. Discarded unless it is loopback HTTP with an explicit port and no path, query or fragment — so self-update is off in practice, and Emma ships `emma-cli` in the bundle anyway. | unset → disabled |
+
+`EMMA_UPDATE_FAKE` is not one of the eight: an unpackaged build announces that
+version to the workspace popup so the update surface can be exercised without a
+release, and a packaged build ignores it.
 
 `EMMA_KNOWLEDGE_DIR` no longer exists. Neither does the `~/Documents/Emma Knowledge`
 mirror it pointed at — the vault replaced both. There is no `EMMA_TOOLS`: a
 `grep EMMA_[A-Z_]*` matches it inside `MAX_EMMA_TOOLS`, a plain constant in
 [capabilities.ts:19](../desktop/main/capabilities.ts#L19).
 
-`EMMA_CDP_PORT` is not one of the seven: it is read only by
+`EMMA_CDP_PORT` is not one of the eight: it is read only by
 [scripts/drive.mjs](../desktop/scripts/drive.mjs), a dev helper that attaches to
 a running Emma over CDP. Default `9222`.
 
@@ -139,7 +145,7 @@ Every write is atomic: temp file, then rename.
 
 ```markdown
 ---
-emma-thread-format: 12
+emma-thread-format: 13
 id: "1787453493-cbe6-18ce4f7b7b4713c8-0"
 title: "New thread"
 parent-thread-id: ""
@@ -153,13 +159,18 @@ trace-count: 0
 ---
 ```
 
-Format is `12` ([thread.rs:108](../crates/core/src/thread.rs#L108)); a file
-claiming a higher one is rejected. Messages carry `Role:`, `Time:`,
+Format is `13` ([thread.rs:108](../crates/core/src/thread.rs#L108)); a file
+claiming a higher one is rejected. A thread pursuing a goal carries twelve more
+front-matter keys between `archived-at` and `message-count` — `goal-objective`,
+`goal-status`, `goal-evidence`, `goal-blocked-reason`, `goal-blocked-streak`,
+`goal-blocked-at-turn`, `goal-token-budget`, `goal-tokens-used`,
+`goal-time-used-seconds`, `goal-turns`, `goal-created-at` and `goal-updated-at`
+— and a thread without one carries none of them ([goals.md](goals.md)). Messages carry `Role:`, `Time:`,
 `Generation: present|none` and, when a model produced them, `Output-Tokens:`,
 `Duration-Milliseconds:`, `Input-Tokens:`, `Model:`, then the quoted content.
 There are no `knowledge-base-id` fields any more.
 
-Scheduled jobs are `emma-scheduled-job-format: 3`, research records
+Scheduled jobs are `emma-scheduled-job-format: 4`, research records
 `emma-research-format: 2`.
 
 ## Electron `userData`
@@ -173,9 +184,12 @@ Scheduled jobs are `emma-scheduled-job-format: 3`, research records
 | `imports.json` | | What was imported from Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf and Devin at first launch. Paths only, and only ones that existed |
 | `installed-plugins.json` | | Plugins installed from the Plugins page: id, marketplace, version, contributed skill and MCP paths |
 | `plugin-hooks.json` | | Hash of each plugin lifecycle hook you reviewed. Nothing runs without a match, so editing a hook on disk turns it off |
+| `mobile-peer.json` | `0600` in `0700` | `{room, key, name, relay, pairedAt}` for the one paired phone. `key` is base64 `safeStorage` ciphertext; pairing is refused outright when the keychain is unavailable. A record that fails to decrypt, or whose `relay` is not a `wss://` origin, loads as no pairing ([pairing.ts](../desktop/main/pairing.ts)) |
 | `openrouter-catalog.json` | `0600` | `{fetchedAt, models[]}`. Prices are micro-dollars per million tokens so the math stays integer. The offline first-launch list is compiled into [catalog-seed.ts](../desktop/main/catalog-seed.ts); `npm run seed:catalog` refreshes it |
 | `artifacts/<id>/meta.json` | `0600` in `0700` | `{id, title, kind, language, createdAt, updatedAt, version, surface?, sourceThreadId?, sourceJobId?}` |
 | `artifacts/<id>/content.<ext>` | `0600` | `markdown`→`md`, `code`→`txt`, `html`/`app`→`html`, `svg`→`svg`, `mermaid`→`mmd`, `react`→`jsx`. An `app` artifact may also hold `data.sqlite` |
+| `components/<id>/meta.json` | `0600` in `0700` | `{id, title, anchor: {selector, label}, createdAt, updatedAt, version, disabled?, sourceThreadId?}` |
+| `components/<id>/module.js` | `0600` | The module served at `emma-component://<id>/module.js?v=<version>`. `shot.png` beside it is the picture Settings → Built by Emma shows |
 | `plans/<id>.md` | | One plan. The Markdown **is** the record — `parsePlan(renderPlan(p))` round-trips |
 | `skills/<slug>/SKILL.md` | `0600` in `0700` | The seven bundled skills plus anything written or imported |
 | `tools/<slug>/run` | `0700` | An Emma-authored tool. Must start with `#!` |
@@ -218,7 +232,7 @@ Inside `Local Storage/`, not a file of Emma's own.
 | `emma.overlayMode.v1` | Quick Ask permission mode | `context.ts` |
 | `emma.contextPage.v1` | The pinned context page | `context-bar.tsx` |
 | `emma.improvements.v1` | System-prompt improvements | `improvements.ts` |
-| `emma.threadFolders.v1`, `emma.threadModes.v1`, `emma.threadTags.v1`, `emma.threadAttachments.v1`, `emma.threadBlocks.v1`, `emma.threadCleared.v1`, `emma.threadExperiments.v1`, `emma.threadContextUses.v2`, `emma.threadContextBreakdown.v1` | Per-thread renderer state | `context.ts` |
+| `emma.threadFolders.v1`, `emma.threadModes.v1`, `emma.threadDraft.v1`, `emma.threadTags.v1`, `emma.threadAttachments.v1`, `emma.threadBlocks.v1`, `emma.threadCleared.v1`, `emma.threadExperiments.v1`, `emma.threadContextUses.v2`, `emma.threadContextBreakdown.v1` | Per-thread renderer state | `context.ts` |
 
 `validateSettings` ([settings.ts](../desktop/shared/settings.ts)) validates on
 both read and write. Ceilings: exactly 3 `quickActions` (label ≤ 40 chars,

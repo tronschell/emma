@@ -9,12 +9,17 @@ export type ContextPick =
   | { kind: "artifact"; id: string; title: string }
   | { kind: "attachment"; id: string; name: string; path: string; thumbnail?: string }
   | { kind: "terminal"; id: string; text: string; lines: number }
-  | { kind: "visual"; id: string; title: string; label: string; html: string };
+  | { kind: "diff"; id: string; path: string; text: string; lines: number }
+  | { kind: "visual"; id: string; title: string; label: string; html: string }
+  | { kind: "component"; id: string; title: string };
 
 export const MAX_FOLDERS = 16;
 export const MAX_FOLDER_FILES = 400;
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_ATTACHED_CONTEXT_CHARS = 32 * 1024;
+export const MAX_TURN_IMAGES = 8;
+
+export const isImageAttachment = (name: string) => /\.(png|jpe?g|gif|bmp)$/i.test(name);
 
 export const MAX_SKILL_CONTEXT_BYTES = 64 * 1024;
 

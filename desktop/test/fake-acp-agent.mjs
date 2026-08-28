@@ -36,6 +36,10 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
 
   const { id, method, params } = message;
   if (method === "initialize") {
+    if ((process.env.HOME ?? "").includes("refused")) {
+      send({ jsonrpc: "2.0", id, error: { code: -32600, message: "no credential" } });
+      return;
+    }
     send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: {} } });
     return;
   }
@@ -93,6 +97,21 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
       return;
     }
+    // A turn that streams and then never answers — the shape of a model socket
+    // that a sleeping Mac took down, which neither end ever reads the end of.
+    if (params.prompt.some((part) => part.text?.includes("wedge"))) {
+      notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "wedged" } });
+      return;
+    }
+    // A subagent still working when the turn that started it ends: its slot runs
+    // on a thread of its own inside the harness, so the prompt answers and the
+    // child goes on talking with no `ended` tag behind it.
+    if (params.prompt.some((part) => part.text?.includes("orphan"))) {
+      const tag = { _meta: { fx: { child: { id: "child_1", title: "read the docs", state: "running" } } } };
+      notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "still reading" }, ...tag });
+      send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
+      return;
+    }
     // A subagent, which has no ACP session of its own: it rides this one tagged
     // with `_meta.fx.child`, and the client fans it back out onto its own thread.
     if (params.prompt.some((part) => part.text?.includes("subagent"))) {
@@ -101,6 +120,34 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "child speaks" }, ...tag("running") });
       notify(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_1", title: "read", kind: "read", status: "pending", ...tag("running") });
       notify(sessionId, { sessionUpdate: "session_info_update", _meta: { fx: { turnUsage: { inputTokens: 777, outputTokens: 42 }, child: { id: "child_1", title: "read the docs", state: "running" } } } });
+      notify(sessionId, { sessionUpdate: "session_info_update", ...tag("ended") });
+      send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
+      return;
+    }
+    // A subagent's permission question, which rides the parent's session tagged
+    // with the child it came from exactly as its updates do.
+    if (params.prompt.some((part) => part.text?.includes("childask"))) {
+      const tag = (state) => ({ _meta: { fx: { child: { id: "child_1", title: "read the docs", state } } } });
+      notify(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_1", title: "file_mutation", kind: "edit", status: "pending", ...tag("running") });
+      const outcome = await new Promise((resolve) => {
+        permissionReply = resolve;
+        send({
+          jsonrpc: "2.0",
+          id: 99,
+          method: "session/request_permission",
+          params: {
+            sessionId,
+            toolCall: { toolCallId: "call_1", title: "file_mutation", kind: "edit", rawInput: { path: "index.html" } },
+            options: [
+              { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+              { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+            ],
+            ...tag("running"),
+          },
+        });
+      });
+      const allowed = outcome?.outcome?.outcome === "selected";
+      notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: allowed ? "child wrote it" : "child denied" }, ...tag("running") });
       notify(sessionId, { sessionUpdate: "session_info_update", ...tag("ended") });
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
       return;

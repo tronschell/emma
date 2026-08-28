@@ -36,8 +36,10 @@ export const AGENT_TOOLS = [
   "memory",
   "advisor",
   "vision",
+  "secret",
   "web_search",
   "plan",
+  "goal",
   "threads",
   "read_trace",
   "context",
@@ -47,6 +49,7 @@ export const AGENT_TOOLS = [
   "workflow",
   "autoresearch",
   "artifact",
+  "component",
   "visualize",
 ] as const;
 export type AgentToolName = (typeof AGENT_TOOLS)[number];
@@ -57,6 +60,7 @@ type GatedMode = Exclude<PermissionMode, "auto">;
 
 const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   plan: { ask: "auto", acceptEdits: "auto", full: "auto" },
+  goal: { ask: "auto", acceptEdits: "auto", full: "auto" },
   read_trace: { ask: "auto", acceptEdits: "auto", full: "auto" },
   context: { ask: "auto", acceptEdits: "auto", full: "auto" },
   threads: { ask: "auto", acceptEdits: "auto", full: "auto" },
@@ -67,6 +71,7 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   memory: { ask: "auto", acceptEdits: "auto", full: "auto" },
   advisor: { ask: "auto", acceptEdits: "auto", full: "auto" },
   vision: { ask: "auto", acceptEdits: "auto", full: "auto" },
+  secret: { ask: "ask", acceptEdits: "ask", full: "auto" },
   web_search: { ask: "auto", acceptEdits: "auto", full: "auto" },
   keep: { ask: "auto", acceptEdits: "auto", full: "auto" },
   cli: { ask: "ask", acceptEdits: "ask", full: "auto" },
@@ -78,6 +83,7 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   workflow: { ask: "ask", acceptEdits: "ask", full: "auto" },
   autoresearch: { ask: "ask", acceptEdits: "ask", full: "auto" },
   artifact: { ask: "auto", acceptEdits: "auto", full: "auto" },
+  component: { ask: "auto", acceptEdits: "auto", full: "auto" },
   visualize: { ask: "auto", acceptEdits: "auto", full: "auto" },
 };
 
@@ -97,11 +103,13 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "cli_runs", label: "CLI runs", blurb: "Lists the installed CLIs and watches the runs already going.", group: "This Mac" },
   { name: "advisor", label: "Advisor", blurb: "Consults a stronger model with this thread's transcript for a plan.", group: "Thinking" },
   { name: "vision", label: "Vision", blurb: "Asks a model that can see about an image, for one that cannot.", group: "Thinking" },
+  { name: "secret", label: "Secrets", blurb: "Runs a command whose output holds keys or tokens, and sends that output only to the model you picked for secrets.", group: "This Mac" },
   { name: "memory", label: "Memory", blurb: "Emma's own notes directory, carried between conversations.", group: "Thinking" },
   { name: "write_skill", label: "Write skill", blurb: "Records a durable lesson so later runs do not repeat a mistake.", group: "Thinking" },
   { name: "read_trace", label: "Read trace", blurb: "Reads what past turns in this thread actually did, call by call.", group: "Thinking" },
   { name: "context", label: "Context window", blurb: "Reads how full this thread's context window is, and folds its older turns into one summary.", group: "Thinking" },
   { name: "plan", label: "Plan", blurb: "Breaks a job into steps in a markdown file, then runs the ones that can go at once as parallel subagents.", group: "Threads" },
+  { name: "goal", label: "Goal", blurb: "Gives a thread an objective it keeps working at across turns, inside a token budget you set.", group: "Threads" },
   { name: "threads", label: "Threads", blurb: "Starts, lists, reads, renames and messages the threads in your sidebar.", group: "Threads" },
   { name: "write_tool", label: "Write tool", blurb: "Writes a script of Emma's own, callable by name in later threads.", group: "Extensions" },
   { name: "write_plugin", label: "Write plugin", blurb: "Packages skills as a ChatGPT and Codex plugin and installs it on the Plugins page.", group: "Extensions" },
@@ -111,6 +119,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "workflow", label: "Scheduled tasks", blurb: "Builds and runs the workflows in the Scheduled section.", group: "Automation" },
   { name: "autoresearch", label: "Autoresearch", blurb: "Builds and runs the long experiment loops in the Autoresearch section.", group: "Automation" },
   { name: "artifact", label: "Artifacts", blurb: "Writes and edits the documents, pages and drawings kept on the Artifacts page.", group: "Thinking" },
+  { name: "component", label: "Build into Emma", blurb: "Builds a piece of Emma\u2019s own interface where you point, and reworks it while you watch. Delete one from the \u22ef in its corner.", group: "Thinking" },
   { name: "visualize", label: "Visualize", blurb: "Draws a picture inline in the conversation — charts, panels, anything it can draw. Nothing is saved until you keep it.", group: "Thinking" },
 ];
 

@@ -97,13 +97,13 @@ const tools_and_verification_section =
     \\
     \\- The advertised tool list starts nearly empty by design. A capability missing from it is loadable, not absent: call search_tools once with a phrase for what you need (read a file, edit a file, search file contents, run a command, git, plan), then select_tool on the matches before using them.
     \\- Do this before answering that something is out of reach, and before substituting a shell command for a tool that exists.
-    \\- What is behind that door, when the session carries it: reading, writing, editing and searching files, language-server symbols, commands and long-running processes, the web, skills, delegated agents and threads, plans and goals, a browser, the machine itself, durable memory, and whatever MCP servers are connected. Search for the capability; the search names the tool.
-    \\- advisor is a stronger reviewer that already sees this conversation — the task, every call you have made, every result you have read — and you pass it none of that. Consult it before substantive work, when you are stuck, before changing approach, and when you believe the work is done. Weigh what it says; when the evidence in front of you contradicts it, name the conflict and ask again rather than switching silently.
-    \\- vision is how an image becomes readable when the model cannot see one natively: it inspects the images the user attached, or local image paths they supplied, and returns what is visible. A model that cannot see attached images is refused every other tool while any are pending, so call vision first, naming the visual evidence the task needs.
+    \\- What is behind that door, when the session carries it: files, language-server symbols, commands and long-running processes, the web, skills, delegated agents and threads, plans and goals, a browser, the machine itself, durable memory, and connected MCP servers. Search for the capability; the search names the tool.
+    \\- advisor is a stronger reviewer that already sees this conversation and receives none of it from you. Consult it before substantive work, when you are stuck, before changing approach, and when you believe the work is done. When your evidence contradicts it, name the conflict and ask again rather than switching silently.
+    \\- vision is how an image becomes readable when the model cannot see one natively: it reads attached images or local image paths. A model that cannot see attached images is refused every other tool while any are pending, so call vision first.
     \\- Choose the smallest suitable capability.
+    \\- A call whose arguments and result you have already seen is not progress. Do not repeat one; two steps that add no new evidence mean change approach or stop and report.
+    \\- While a delegated agent runs, do work that does not overlap it. When you need its result, wait once with that tool's own wait, never by polling, sleeping, or re-reading state.
     \\- After code changes, verify the relevant behavior with direct checks such as formatting, a focused test, build, CLI run, or eval before claiming it works. Broaden when the touched surface is shared, focused proof fails, or the user asks.
-    \\- If the user names a test file, run it directly or infer the closest command from local conventions. When no test is named, inspect only enough changed-file metadata to select the checks.
-    \\- Prefer build, test, typecheck, CLI, or other direct checks appropriate to the change.
     \\- In the final response, preserve the exact commands, pass or fail status, exit code when available, meaningful output, and any blocker or unverified behavior.
 ;
 
@@ -120,18 +120,6 @@ pub fn modelPromptOverlay(model: []const u8) ?[]const u8 {
     return null;
 }
 
-// The prompt the user can rewrite: `$HOME/.fx/system-prompt.md` replaces every
-// section above, and the tool section is appended back under it. That section is
-// not up for replacement — the advertised tool list starts nearly empty, so an
-// agent never told to call `search_tools` cannot reach a single tool.
-//
-// Read at the top of a turn rather than at startup, so an edit lands on the next
-// turn instead of the next process, and because the entry config is built before
-// the IO is up. The one static buffer is safe here: the agent loop is
-// single-threaded, and a turn already holds its own slice of it.
-//
-// ponytail: a file read per turn, no stat cache. Two syscalls against a prompt
-// that is sent whole to a model is not the cost worth watching.
 const system_prompt_override_bytes = 16 * 1024;
 var override_storage: [system_prompt_override_bytes * 4]u8 = undefined;
 

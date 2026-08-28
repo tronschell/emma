@@ -19,6 +19,8 @@ const MAX_TOOL_DESCRIPTION_BYTES = 1024;
 const MAX_EMMA_TOOLS = 64;
 const MAX_MCP_FILES = 16;
 const MAX_MCP_SERVERS = 32;
+const MIRRORED_SKILL_MARKER = ".emma-mirrored";
+const INSTALLED_SKILL_SOURCE = "installed";
 
 type ImportedSource = {
   id: string;
@@ -242,46 +244,33 @@ export async function seedBuiltinSkills(builtinRoot: string, userData: string, h
   return seeded;
 }
 
-/**
- * Copies every skill Emma can see into the harness's own skill root.
- *
- * The harness discovers skills from its `$HOME`, which Emma points at a profile
- * of its own — so it saw only the five bundled skills that `seedBuiltinSkills`
- * happened to write there. Everything the user imported and everything the agent
- * wrote for itself was invisible on that path.
- *
- * Copied, not symlinked: the harness drops symlinked skill directories.
- *
- * `disabled` is honoured here because the harness has no notion of a skill being
- * switched off in Settings — the only way to withhold one is not to write it.
- */
 export async function mirrorSkillsToHarness(userData: string, harnessHome: string, disabled: string[] = []) {
-  const skills = await enumerateSkills(await loadManifest(userData));
   const root = path.join(harnessHome, ".fx", "skills");
+  const skills = await enumerateSkills(await loadManifest(userData), root);
   const blocked = new Set(disabled);
   const mirrored: string[] = [];
+  const managed = new Set(skills.filter((skill) => skill.managed).map((skill) => skill.name));
   for (const skill of skills) {
-    if (blocked.has(skill.id) || blocked.has(skill.name) || mirrored.includes(skill.name)) continue;
+    if (skill.managed && (blocked.has(skill.id) || blocked.has(skill.name)) || mirrored.includes(skill.name)) continue;
     try {
       const content = await readBounded(path.join(skill.root, skill.name, "SKILL.md"), MAX_SKILL_BYTES);
       if (!content.trim()) continue;
-      const directory = path.join(root, skill.name);
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      // The harness's catalog is description-driven, and a skill with no
-      // description is advertised with an empty one and effectively never
-      // chosen. Emma stores no description, so the first line stands in.
-      await writeFile(path.join(directory, "SKILL.md"), withFrontmatter(skill.name, content), { encoding: "utf8", mode: 0o600 });
+      if (skill.managed) {
+        const directory = path.join(root, skill.name);
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(path.join(directory, "SKILL.md"), withFrontmatter(skill.name, content), { encoding: "utf8", mode: 0o600 });
+        await writeFile(path.join(directory, MIRRORED_SKILL_MARKER), "", { encoding: "utf8", mode: 0o600 });
+      }
       mirrored.push(skill.name);
-    } catch { /* one unreadable skill does not stop the rest */ }
+    } catch { continue; }
   }
   const kept = new Set(mirrored);
   for (const entry of await readdir(root).catch(() => [])) {
-    if (!kept.has(entry)) await rm(path.join(root, entry), { recursive: true, force: true }).catch(() => {});
+    if (!kept.has(entry) && (managed.has(entry) || await isMirroredSkill(root, entry))) await rm(path.join(root, entry), { recursive: true, force: true }).catch(() => {});
   }
   return mirrored;
 }
 
-/** Gives a skill the `name`/`description` header the harness's catalog reads. */
 function withFrontmatter(name: string, content: string) {
   if (content.startsWith("---\n")) return content;
   const summary = content.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("#")) ?? name;
@@ -293,26 +282,47 @@ function skillId(source: string, rootIndex: number, name: string) {
   return `skill:${source}:${rootIndex}:${name}`;
 }
 
-async function enumerateSkills(manifest: ImportManifest) {
-  const skills: Array<ImportedSkill & { root: string }> = [];
+type LocatedSkill = ImportedSkill & { root: string; managed: boolean };
+
+async function skillsAtRoot(source: string, rootIndex: number, root: string, managed: boolean) {
+  const skills: LocatedSkill[] = [];
+  let entries;
+  try { entries = (await readdir(root, { withFileTypes: true })).slice(0, MAX_SKILLS_PER_ROOT); } catch { return skills; }
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink() || !/^[a-zA-Z0-9._-]{1,96}$/.test(entry.name)) continue;
+    try {
+      const handle = await open(path.join(root, entry.name, "SKILL.md"), "r");
+      try {
+        const information = await handle.stat();
+        if (!information.isFile() || information.size > MAX_SKILL_BYTES) continue;
+      } finally {
+        await handle.close();
+      }
+      skills.push({ id: skillId(source, rootIndex, entry.name), source, name: entry.name, root, managed });
+    } catch { continue; }
+  }
+  return skills;
+}
+
+async function isMirroredSkill(root: string, name: string) {
+  try {
+    const marker = await open(path.join(root, name, MIRRORED_SKILL_MARKER), "r");
+    try { return (await marker.stat()).isFile(); }
+    finally { await marker.close(); }
+  } catch { return false; }
+}
+
+async function enumerateSkills(manifest: ImportManifest, installedRoot?: string) {
+  const skills: LocatedSkill[] = [];
   for (const source of manifest.sources) {
     for (const [rootIndex, root] of source.skillRoots.slice(0, MAX_SKILL_ROOTS).entries()) {
-      let entries;
-      try { entries = (await readdir(root, { withFileTypes: true })).slice(0, MAX_SKILLS_PER_ROOT); } catch { continue; }
-      for (const entry of entries) {
-        if (!entry.isDirectory() && !entry.isSymbolicLink() || !/^[a-zA-Z0-9._-]{1,96}$/.test(entry.name)) continue;
-        try {
-          const skillPath = path.join(root, entry.name, "SKILL.md");
-          const handle = await open(skillPath, "r");
-          try {
-            const information = await handle.stat();
-            if (!information.isFile() || information.size > MAX_SKILL_BYTES) continue;
-          } finally {
-            await handle.close();
-          }
-          skills.push({ id: skillId(source.id, rootIndex, entry.name), source: source.id, name: entry.name, root });
-        } catch { /* a disappearing imported file is not a renderer error */ }
-      }
+      skills.push(...await skillsAtRoot(source.id, rootIndex, root, true));
+    }
+  }
+  if (installedRoot) {
+    const known = new Set(skills.map((skill) => skill.name));
+    for (const skill of await skillsAtRoot(INSTALLED_SKILL_SOURCE, 0, installedRoot, false)) {
+      if (!known.has(skill.name) && !await isMirroredSkill(installedRoot, skill.name)) skills.push(skill);
     }
   }
   return skills;
@@ -328,17 +338,15 @@ function searchText(query: string, ...values: string[]) {
 }
 
 export async function searchImportedSkills(userData: string, query: string, limit = 16) {
-  // Empty means "list them all" — what the composer's "/" menu asks for, and what
-  // searchText already answers. The length ceiling is what this guard is for.
   if (typeof query !== "string" || query.length > 256 || Buffer.byteLength(query, "utf8") > 256) throw new Error("skill search is invalid");
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SKILL_RESULTS) throw new Error("skill result limit is invalid");
-  const skills = await enumerateSkills(await loadManifest(userData));
+  const skills = await enumerateSkills(await loadManifest(userData), path.join(userData, "harness", ".fx", "skills"));
   return skills.filter((skill) => searchText(query, skill.name, skill.source)).slice(0, limit).map(toSkillMetadata);
 }
 
 export async function loadImportedSkill(userData: string, id: string) {
   boundedString(id, 256, "skill selection");
-  const skill = (await enumerateSkills(await loadManifest(userData))).find((candidate) => candidate.id === id);
+  const skill = (await enumerateSkills(await loadManifest(userData), path.join(userData, "harness", ".fx", "skills"))).find((candidate) => candidate.id === id);
   if (!skill) throw new Error("That skill is no longer installed — run /import again to bring it back.");
   const root = await realpath(skill.root);
   const directory = await realpath(path.join(skill.root, skill.name));

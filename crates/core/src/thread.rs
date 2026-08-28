@@ -105,11 +105,134 @@ impl FromStr for ThreadKind {
     }
 }
 
-const THREAD_FORMAT: u64 = 12;
+const THREAD_FORMAT: u64 = 13;
 
 pub const MAX_THREAD_MESSAGES: usize = 1_024;
 pub const MAX_THREAD_TRACES: usize = 64;
 pub const MAX_TRACE_BYTES: usize = 16 * 1024;
+
+pub const MAX_GOAL_OBJECTIVE_CHARS: usize = 2_000;
+pub const MAX_GOAL_EVIDENCE_CHARS: usize = 4_000;
+pub const MAX_GOAL_REASON_CHARS: usize = 1_000;
+pub const DEFAULT_GOAL_TOKEN_BUDGET: u64 = 200_000;
+pub const GOAL_BLOCKED_TURNS: u64 = 3;
+pub const MAX_GOAL_TURNS: u64 = 40;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalStatus {
+    Active,
+    Paused,
+    Complete,
+    Blocked,
+    BudgetLimited,
+    UsageLimited,
+}
+
+impl GoalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Complete => "complete",
+            Self::Blocked => "blocked",
+            Self::BudgetLimited => "budgetLimited",
+            Self::UsageLimited => "usageLimited",
+        }
+    }
+
+    pub fn pursuing(self) -> bool {
+        self == Self::Active
+    }
+
+    pub fn settled(self) -> bool {
+        matches!(self, Self::Complete | Self::Blocked)
+    }
+}
+
+impl FromStr for GoalStatus {
+    type Err = ValidationError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "active" => Ok(Self::Active),
+            "paused" => Ok(Self::Paused),
+            "complete" => Ok(Self::Complete),
+            "blocked" => Ok(Self::Blocked),
+            "budgetLimited" => Ok(Self::BudgetLimited),
+            "usageLimited" => Ok(Self::UsageLimited),
+            _ => Err(ValidationError::new("unknown goal status")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Goal {
+    pub objective: String,
+    pub status: GoalStatus,
+    pub evidence: String,
+    pub blocked_reason: String,
+    pub blocked_streak: u64,
+    pub blocked_at_turn: u64,
+    pub token_budget: u64,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+    pub turns: u64,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl Goal {
+    pub fn new(
+        objective: impl Into<String>,
+        token_budget: u64,
+        at: Timestamp,
+    ) -> Result<Self, ValidationError> {
+        let objective = capped(
+            "goal objective",
+            objective.into(),
+            MAX_GOAL_OBJECTIVE_CHARS,
+            true,
+        )?;
+        Ok(Self {
+            objective,
+            status: GoalStatus::Active,
+            evidence: String::new(),
+            blocked_reason: String::new(),
+            blocked_streak: 0,
+            blocked_at_turn: 0,
+            token_budget: match token_budget {
+                0 => DEFAULT_GOAL_TOKEN_BUDGET,
+                budget => budget,
+            },
+            tokens_used: 0,
+            time_used_seconds: 0,
+            turns: 0,
+            created_at: at,
+            updated_at: at,
+        })
+    }
+
+    pub fn tokens_left(&self) -> u64 {
+        self.token_budget.saturating_sub(self.tokens_used)
+    }
+}
+
+fn capped(
+    name: &str,
+    value: String,
+    max: usize,
+    required: bool,
+) -> Result<String, ValidationError> {
+    let value: String = value.trim().chars().take(max).collect();
+    validate_text(name, &value, required)?;
+    Ok(value)
+}
+
+fn same_blocker(previous: &str, reason: &str) -> bool {
+    !previous.is_empty() && previous.eq_ignore_ascii_case(reason)
+}
 
 impl FromStr for ThreadRole {
     type Err = ValidationError;
@@ -254,6 +377,7 @@ pub struct Thread {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub archived_at: Option<Timestamp>,
+    pub goal: Option<Goal>,
     pub messages: Vec<ThreadMessage>,
     #[serde(skip)]
     pub traces: Vec<ThreadTrace>,
@@ -272,6 +396,7 @@ impl Thread {
             created_at,
             updated_at: created_at,
             archived_at: None,
+            goal: None,
             messages: Vec::new(),
             traces: Vec::new(),
         })
@@ -281,6 +406,148 @@ impl Thread {
         self.traces.push(trace);
         while self.traces.len() > MAX_THREAD_TRACES {
             self.traces.remove(0);
+        }
+    }
+
+    pub fn set_goal(
+        &mut self,
+        objective: impl Into<String>,
+        token_budget: u64,
+        at: Timestamp,
+    ) -> Result<&Goal, ValidationError> {
+        let mut goal = Goal::new(objective, token_budget, at)?;
+        if let Some(spent) = self.goal.as_ref().filter(|goal| !goal.status.settled()) {
+            goal.tokens_used = spent.tokens_used;
+            goal.turns = spent.turns;
+            goal.time_used_seconds = spent.time_used_seconds;
+            goal.created_at = spent.created_at;
+        }
+        self.goal = Some(goal);
+        Ok(self.goal.as_ref().expect("a goal was just set"))
+    }
+
+    pub fn clear_goal(&mut self) -> bool {
+        self.goal.take().is_some()
+    }
+
+    pub fn update_goal(
+        &mut self,
+        status: GoalStatus,
+        evidence: &str,
+        reason: &str,
+        at: Timestamp,
+    ) -> Result<&Goal, ValidationError> {
+        let evidence = capped(
+            "goal evidence",
+            evidence.to_owned(),
+            MAX_GOAL_EVIDENCE_CHARS,
+            false,
+        )?;
+        let reason = capped(
+            "goal blocker",
+            reason.to_owned(),
+            MAX_GOAL_REASON_CHARS,
+            false,
+        )?;
+        let goal = self
+            .goal
+            .as_mut()
+            .ok_or_else(|| ValidationError::new("this thread has no goal"))?;
+        if goal.status == GoalStatus::Complete
+            || (goal.status.settled() && status != GoalStatus::Active)
+        {
+            return Err(ValidationError::new(format!(
+                "this goal is already {}",
+                goal.status.as_str()
+            )));
+        }
+        match status {
+            GoalStatus::Complete => {
+                if evidence.is_empty() {
+                    return Err(ValidationError::new(
+                        "a goal is complete only with evidence: what was run, what it printed, what changed",
+                    ));
+                }
+                goal.evidence = evidence;
+                goal.status = GoalStatus::Complete;
+            }
+            GoalStatus::Blocked => {
+                if goal.blocked_streak == 0 || goal.blocked_at_turn != goal.turns {
+                    goal.blocked_streak = match same_blocker(&goal.blocked_reason, &reason) {
+                        true => goal.blocked_streak + 1,
+                        false => 1,
+                    };
+                    goal.blocked_at_turn = goal.turns;
+                }
+                goal.blocked_reason = reason;
+                goal.status = match goal.blocked_streak >= GOAL_BLOCKED_TURNS {
+                    true => GoalStatus::Blocked,
+                    false => GoalStatus::Active,
+                };
+            }
+            GoalStatus::Active => {
+                goal.status = GoalStatus::Active;
+                goal.blocked_streak = 0;
+                goal.blocked_reason = String::new();
+                if !evidence.is_empty() {
+                    goal.evidence = evidence;
+                }
+            }
+            status => {
+                goal.status = status;
+                if !evidence.is_empty() {
+                    goal.evidence = evidence;
+                }
+                if !reason.is_empty() {
+                    goal.blocked_reason = reason;
+                }
+            }
+        }
+        goal.updated_at = at;
+        Ok(self.goal.as_ref().expect("a goal was just updated"))
+    }
+
+    pub fn extend_goal(
+        &mut self,
+        extra_tokens: u64,
+        at: Timestamp,
+    ) -> Result<&Goal, ValidationError> {
+        let goal = self
+            .goal
+            .as_mut()
+            .ok_or_else(|| ValidationError::new("this thread has no goal"))?;
+        if goal.status == GoalStatus::Complete {
+            return Err(ValidationError::new("this goal is already complete"));
+        }
+        goal.token_budget = goal.token_budget.saturating_add(match extra_tokens {
+            0 => DEFAULT_GOAL_TOKEN_BUDGET,
+            tokens => tokens,
+        });
+        goal.status = GoalStatus::Active;
+        goal.turns = 0;
+        goal.blocked_streak = 0;
+        goal.blocked_reason = String::new();
+        goal.updated_at = at;
+        Ok(self.goal.as_ref().expect("a goal was just extended"))
+    }
+
+    pub fn note_goal_turn(&mut self, tokens: u64, duration_milliseconds: u64, at: Timestamp) {
+        let Some(goal) = self.goal.as_mut() else {
+            return;
+        };
+        if goal.status == GoalStatus::Paused {
+            return;
+        }
+        goal.turns += 1;
+        goal.tokens_used = goal.tokens_used.saturating_add(tokens);
+        goal.time_used_seconds = goal
+            .time_used_seconds
+            .saturating_add(duration_milliseconds / 1_000);
+        goal.updated_at = at;
+        if goal.status.pursuing()
+            && (goal.tokens_used >= goal.token_budget || goal.turns >= MAX_GOAL_TURNS)
+        {
+            goal.status = GoalStatus::BudgetLimited;
         }
     }
 
@@ -334,6 +601,23 @@ impl Thread {
                 .map(|at| at.to_string())
                 .unwrap_or_default(),
         );
+        if let Some(goal) = &self.goal {
+            field(&mut output, "goal-objective", &goal.objective);
+            field(&mut output, "goal-status", goal.status.as_str());
+            field(&mut output, "goal-evidence", &goal.evidence);
+            field(&mut output, "goal-blocked-reason", &goal.blocked_reason);
+            output.push_str(&format!("goal-blocked-streak: {}\n", goal.blocked_streak));
+            output.push_str(&format!("goal-blocked-at-turn: {}\n", goal.blocked_at_turn));
+            output.push_str(&format!("goal-token-budget: {}\n", goal.token_budget));
+            output.push_str(&format!("goal-tokens-used: {}\n", goal.tokens_used));
+            output.push_str(&format!(
+                "goal-time-used-seconds: {}\n",
+                goal.time_used_seconds
+            ));
+            output.push_str(&format!("goal-turns: {}\n", goal.turns));
+            field(&mut output, "goal-created-at", &goal.created_at.to_string());
+            field(&mut output, "goal-updated-at", &goal.updated_at.to_string());
+        }
         output.push_str(&format!("message-count: {}\n", self.messages.len()));
         output.push_str(&format!("trace-count: {}\n---\n", self.traces.len()));
         for (index, message) in self.messages.iter().enumerate() {
@@ -402,6 +686,46 @@ impl Thread {
         let archived_at = match header.optional("archived-at")? {
             value if value.is_empty() => None,
             value => Some(value.parse()?),
+        };
+        let objective = header.optional("goal-objective")?;
+        let goal = match objective.trim().is_empty() {
+            true => None,
+            false => Some(Goal {
+                objective: capped("goal objective", objective, MAX_GOAL_OBJECTIVE_CHARS, true)?,
+                status: match header.optional("goal-status")?.as_str() {
+                    "" => GoalStatus::Active,
+                    value => value.parse()?,
+                },
+                evidence: capped(
+                    "goal evidence",
+                    header.optional("goal-evidence")?,
+                    MAX_GOAL_EVIDENCE_CHARS,
+                    false,
+                )?,
+                blocked_reason: capped(
+                    "goal blocker",
+                    header.optional("goal-blocked-reason")?,
+                    MAX_GOAL_REASON_CHARS,
+                    false,
+                )?,
+                blocked_streak: header.optional_number("goal-blocked-streak")?,
+                blocked_at_turn: header.optional_number("goal-blocked-at-turn")?,
+                token_budget: match header.optional_number("goal-token-budget")? {
+                    0 => DEFAULT_GOAL_TOKEN_BUDGET,
+                    budget => budget,
+                },
+                tokens_used: header.optional_number("goal-tokens-used")?,
+                time_used_seconds: header.optional_number("goal-time-used-seconds")?,
+                turns: header.optional_number("goal-turns")?,
+                created_at: match header.optional("goal-created-at")? {
+                    value if value.is_empty() => created_at,
+                    value => value.parse()?,
+                },
+                updated_at: match header.optional("goal-updated-at")? {
+                    value if value.is_empty() => updated_at,
+                    value => value.parse()?,
+                },
+            }),
         };
         let count: usize = header
             .number("message-count")?
@@ -495,6 +819,7 @@ impl Thread {
             created_at,
             updated_at,
             archived_at,
+            goal,
             messages,
             traces,
         })
