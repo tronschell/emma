@@ -224,9 +224,10 @@ contextBridge.exposeInMainWorld("emma", {
   clearImportedSkill: (id: string) => ipcRenderer.invoke("emma:clear-imported-skill", id),
   listImportedMcpServers: () => ipcRenderer.invoke("emma:list-imported-mcp-servers"),
   stopComputerRun: () => ipcRenderer.send("emma:stop-computer-run"),
-  onComputerRunProgress: (listener: (value: { step: number; action: string; actions: number }) => void) => {
-    const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object") listener(value as { step: number; action: string; actions: number }); };
+  onComputerRunProgress: (listener: (value: unknown) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => listener(value);
     ipcRenderer.on("emma:computer-run-progress", wrapped);
+    ipcRenderer.send("emma:computer-run-ready");
     return () => ipcRenderer.removeListener("emma:computer-run-progress", wrapped);
   },
   setProviders: (value: unknown) => ipcRenderer.invoke("emma:set-providers", value),

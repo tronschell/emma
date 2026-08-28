@@ -54,6 +54,14 @@ static void write_result(NSDictionary *result) {
     fflush(stdout);
 }
 
+static void write_cursor(NSDictionary *cursor) {
+    write_result(@{@"event": @"cursor", @"cursor": cursor ?: NSNull.null});
+}
+
+static BOOL matching_cursor(NSDictionary *before, NSDictionary *after) {
+    return before && after && [before isEqualToDictionary:after];
+}
+
 static uint64_t process_birth(pid_t pid) {
     struct proc_bsdinfo info = {0};
     if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)
@@ -132,6 +140,63 @@ static BOOL element_in_process(AXUIElementRef element, pid_t pid) {
     pid_t actual = 0;
     return element && CFGetTypeID(element) == AXUIElementGetTypeID()
         && AXUIElementGetPid(element, &actual) == kAXErrorSuccess && actual == pid;
+}
+
+static BOOL valid_bounds(CGRect bounds) {
+    return isfinite(bounds.origin.x) && isfinite(bounds.origin.y) && isfinite(bounds.size.width) && isfinite(bounds.size.height)
+        && fabs(bounds.origin.x) <= 100000 && fabs(bounds.origin.y) <= 100000
+        && bounds.size.width > 0 && bounds.size.width <= 16384 && bounds.size.height > 0 && bounds.size.height <= 16384
+        && fabs(CGRectGetMaxX(bounds)) <= 100000 && fabs(CGRectGetMaxY(bounds)) <= 100000;
+}
+
+static CGRect clipped_control(CGRect control, CGRect window, CGRect display) {
+    if (!valid_bounds(control) || !valid_bounds(window) || !valid_bounds(display)) return CGRectNull;
+    CGRect clipped = CGRectIntersection(CGRectIntersection(control, window), display);
+    return valid_bounds(clipped) ? clipped : CGRectNull;
+}
+
+static BOOL matching_bounds(CGRect left, CGRect right) {
+    return valid_bounds(left) && valid_bounds(right) && fabs(left.origin.x - right.origin.x) <= 0.5
+        && fabs(left.origin.y - right.origin.y) <= 0.5 && fabs(left.size.width - right.size.width) <= 0.5
+        && fabs(left.size.height - right.size.height) <= 0.5;
+}
+
+static BOOL element_bounds(AXUIElementRef element, CGRect *bounds) {
+    id position = attribute(element, kAXPositionAttribute);
+    id size = attribute(element, kAXSizeAttribute);
+    CGPoint point = CGPointZero;
+    CGSize dimensions = CGSizeZero;
+    if (!position || !size || CFGetTypeID((__bridge CFTypeRef)position) != AXValueGetTypeID()
+        || CFGetTypeID((__bridge CFTypeRef)size) != AXValueGetTypeID()
+        || AXValueGetType((__bridge AXValueRef)position) != kAXValueCGPointType
+        || AXValueGetType((__bridge AXValueRef)size) != kAXValueCGSizeType
+        || !AXValueGetValue((__bridge AXValueRef)position, kAXValueCGPointType, &point)
+        || !AXValueGetValue((__bridge AXValueRef)size, kAXValueCGSizeType, &dimensions)) return NO;
+    *bounds = CGRectMake(point.x, point.y, dimensions.width, dimensions.height);
+    return valid_bounds(*bounds);
+}
+
+static NSDictionary *matching_window(NSArray *windows, pid_t pid, CGRect bounds) {
+    if (!windows || windows.count > 4096 || !valid_bounds(bounds)) return nil;
+    NSDictionary *match = nil;
+    for (id item in windows) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *window = item;
+        id frame = window[(__bridge NSString *)kCGWindowBounds];
+        CGRect actual = CGRectNull;
+        if (!integer_in_range(window[(__bridge NSString *)kCGWindowOwnerPID], 1, INT_MAX)
+            || [window[(__bridge NSString *)kCGWindowOwnerPID] intValue] != pid
+            || !integer_in_range(window[(__bridge NSString *)kCGWindowNumber], 1, UINT32_MAX)
+            || ![frame isKindOfClass:[NSDictionary class]]
+            || !CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)frame, &actual)
+            || !matching_bounds(bounds, actual)) continue;
+        if (match) return nil;
+        match = window;
+    }
+    double alpha = 0;
+    if (!match || ![match[(__bridge NSString *)kCGWindowIsOnscreen] isEqual:@YES]
+        || !finite_number(match[(__bridge NSString *)kCGWindowAlpha], &alpha) || alpha <= 0 || alpha > 1) return nil;
+    return match;
 }
 
 static BOOL allowed_role(NSString *role) {
@@ -251,6 +316,8 @@ static NSDictionary *mutation_result(AXError error) {
     NSTimeInterval _snapshot_at;
     NSUInteger _state_bytes;
     BOOL _truncated;
+    NSDictionary *_cursor;
+    id _cursor_element;
 }
 
 - (instancetype)initWithIdentity:(NSDictionary *)identity blockedPID:(pid_t)blocked_pid {
@@ -292,6 +359,52 @@ static NSDictionary *mutation_result(AXError error) {
         if (!parent || CFGetTypeID((__bridge CFTypeRef)parent) != AXUIElementGetTypeID()) return NO;
     }
     return NO;
+}
+
+- (NSDictionary *)cursorForElement:(AXUIElementRef)element {
+    pid_t pid = [_identity[@"pid"] intValue];
+    if (!element_in_process(element, pid) || !within_deadline()) return nil;
+    id window = [string_attribute(element, kAXRoleAttribute) isEqualToString:(__bridge NSString *)kAXWindowRole]
+        ? (__bridge id)element : attribute(element, kAXWindowAttribute);
+    if (!window || CFGetTypeID((__bridge CFTypeRef)window) != AXUIElementGetTypeID()
+        || !element_in_process((__bridge AXUIElementRef)window, pid)
+        || ![self allowedElement:(__bridge AXUIElementRef)window]
+        || ![string_attribute((__bridge AXUIElementRef)window, kAXRoleAttribute) isEqualToString:(__bridge NSString *)kAXWindowRole]
+        || ![attribute((__bridge AXUIElementRef)window, kAXMinimizedAttribute) isEqual:@NO]) return nil;
+    CGRect control = CGRectNull;
+    CGRect ax_window = CGRectNull;
+    if (!element_bounds(element, &control) || !element_bounds((__bridge AXUIElementRef)window, &ax_window)) return nil;
+    NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    NSDictionary *match = matching_window(windows, pid, ax_window);
+    CGRect bounds = CGRectNull;
+    if (!match || !within_deadline() || !CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)match[(__bridge NSString *)kCGWindowBounds], &bounds)) return nil;
+    CGDirectDisplayID displays[32];
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(0, NULL, &count) != kCGErrorSuccess || !count || count > 32
+        || CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess) return nil;
+    CGRect best = CGRectNull;
+    CGFloat best_area = 0;
+    for (uint32_t index = 0; index < count; index += 1) {
+        CGRect clipped = clipped_control(CGRectIntersection(control, ax_window), bounds, CGDisplayBounds(displays[index]));
+        CGFloat area = CGRectIsNull(clipped) ? 0 : clipped.size.width * clipped.size.height;
+        if (area > best_area) {
+            best = clipped;
+            best_area = area;
+        }
+    }
+    if (!best_area || !within_deadline()) return nil;
+    CGPoint anchor = CGPointMake(CGRectGetMidX(best), CGRectGetMidY(best));
+    if (anchor.x <= CGRectGetMinX(best) || anchor.x >= CGRectGetMaxX(best)
+        || anchor.y <= CGRectGetMinY(best) || anchor.y >= CGRectGetMaxY(best)) return nil;
+    return @{@"windowId": match[(__bridge NSString *)kCGWindowNumber],
+        @"bounds": @{@"x": @(bounds.origin.x), @"y": @(bounds.origin.y), @"width": @(bounds.size.width), @"height": @(bounds.size.height)},
+        @"x": @(anchor.x), @"y": @(anchor.y)};
+}
+
+- (void)showCursor:(NSDictionary *)cursor element:(AXUIElementRef)element {
+    _cursor = cursor;
+    _cursor_element = cursor ? (__bridge id)element : nil;
+    write_cursor(cursor);
 }
 
 - (void)appendElement:(AXUIElementRef)element depth:(NSUInteger)depth text:(NSMutableString *)text {
@@ -360,10 +473,12 @@ static NSDictionary *mutation_result(AXError error) {
 
 - (NSDictionary *)setValue:(NSString *)value element:(AXUIElementRef)element expected:(NSString *)expected {
     if (!settable(element, kAXValueAttribute)) return failure(@"This control's value cannot be set through accessibility. No keyboard fallback was used.");
+    NSDictionary *cursor = [self cursorForElement:element];
     if (![self validApplication] || ![self allowedElement:element] || !within_deadline()) return failure(@"The approved app or control changed. Get app state again.");
     if (expected && ![string_attribute(element, kAXValueAttribute) isEqualToString:expected]) return failure(@"The text changed while preparing the insertion. Nothing was written; get app state again.");
     if (!within_deadline()) return failure(@"App control was stopped or timed out. No text was written.");
     AXUIElementSetMessagingTimeout(element, 1.0);
+    [self showCursor:cursor element:element];
     AXError error = AXUIElementSetAttributeValue(element, kAXValueAttribute, (__bridge CFStringRef)value);
     if (error != kAXErrorSuccess) return mutation_result(error);
     NSString *actual = string_attribute(element, kAXValueAttribute);
@@ -393,12 +508,27 @@ static NSDictionary *mutation_result(AXError error) {
         return failure(@"The app does not expose a writable scrollbar. No mouse or global-input fallback was used.");
     }
     double next = MAX(minimum, MIN(maximum, value + (increasing ? 1 : -1) * (maximum - minimum) * [request[@"amount"] doubleValue] / 10));
+    NSDictionary *cursor = [self cursorForElement:element];
     if (![self validApplication] || ![self allowedElement:bar] || !within_deadline()) return failure(@"The approved app or scrollbar changed. Get app state again.");
     AXUIElementSetMessagingTimeout(bar, 1.0);
+    [self showCursor:cursor element:element];
     return mutation_result(AXUIElementSetAttributeValue(bar, kAXValueAttribute, (__bridge CFNumberRef)@(next)));
 }
 
 - (NSDictionary *)handle:(NSDictionary *)request {
+    _cursor = nil;
+    _cursor_element = nil;
+    NSDictionary *result = [self performRequest:request];
+    if (_cursor && (![self validApplication]
+        || !matching_cursor(_cursor, [self cursorForElement:(__bridge AXUIElementRef)_cursor_element]))) {
+        write_result(@{@"event": @"cursor-invalidated"});
+    }
+    _cursor = nil;
+    _cursor_element = nil;
+    return result;
+}
+
+- (NSDictionary *)performRequest:(NSDictionary *)request {
     operation_deadline = [NSDate timeIntervalSinceReferenceDate] + 5;
     if (!validate_action(request)) return failure(@"Invalid app action or unsupported fields.");
     if (![self validApplication]) return failure(@"The approved app has closed or changed. Open it and request approval again.");
@@ -443,10 +573,13 @@ static NSDictionary *mutation_result(AXError error) {
     if ([action isEqualToString:@"scroll"]) return [self scroll:request element:element];
     if ([action isEqualToString:@"click"]) {
         if (![action_names(element) containsObject:(__bridge NSString *)kAXPressAction]) return failure(@"This control does not expose a background press action. No mouse fallback was used.");
+        NSDictionary *cursor = [self cursorForElement:element];
         if (![self validApplication] || ![self allowedElement:element] || !within_deadline()) return failure(@"The approved app or control changed. Get app state again.");
         AXUIElementSetMessagingTimeout(element, 1.0);
+        [self showCursor:cursor element:element];
         return mutation_result(AXUIElementPerformAction(element, kAXPressAction));
     }
+    NSDictionary *cursor = [self cursorForElement:element];
     id focused = attribute(_root, kAXFocusedUIElementAttribute);
     if (!focused || CFGetTypeID((__bridge CFTypeRef)focused) != AXUIElementGetTypeID()
         || !CFEqual((__bridge CFTypeRef)focused, element)) return failure(@"Key input requires the app's already-focused control. Emma will not activate or focus the app.");
@@ -459,6 +592,7 @@ static NSDictionary *mutation_result(AXError error) {
     if (down && up && within_deadline() && [self validApplication] && within_deadline()) {
         CGEventSetFlags(down, 0);
         CGEventSetFlags(up, 0);
+        [self showCursor:cursor element:element];
         CGEventPostToPid([_identity[@"pid"] intValue], down);
         CGEventPostToPid([_identity[@"pid"] intValue], up);
         posted = YES;
@@ -473,6 +607,48 @@ static NSDictionary *mutation_result(AXError error) {
 
 static void self_test(void) {
     double number = 0;
+    CGRect window_bounds = CGRectMake(-100, 20, 200, 100);
+    CGRect display_bounds = CGRectMake(0, 0, 1440, 900);
+    assert(valid_bounds(window_bounds));
+    assert(!valid_bounds(CGRectMake(NAN, 0, 100, 100)));
+    assert(!valid_bounds(CGRectMake(0, 0, INFINITY, 100)));
+    assert(!valid_bounds(CGRectMake(0, 0, 0, 100)));
+    assert(!valid_bounds(CGRectMake(0, 0, 16385, 100)));
+    assert(!valid_bounds(CGRectMake(100000, 0, 1, 1)));
+    CGRect clipped = clipped_control(CGRectMake(-20, 80, 200, 80), window_bounds, display_bounds);
+    assert(CGRectEqualToRect(clipped, CGRectMake(0, 80, 100, 40)));
+    assert(CGRectGetMidX(clipped) == 50 && CGRectGetMidY(clipped) == 100);
+    assert(CGRectIsNull(clipped_control(CGRectMake(200, 80, 20, 20), window_bounds, display_bounds)));
+    assert(CGRectIsNull(clipped_control(CGRectMake(-90, 40, 20, 20), window_bounds, display_bounds)));
+    assert(matching_bounds(window_bounds, CGRectMake(-99.5, 20, 200, 100)));
+    assert(!matching_bounds(window_bounds, CGRectMake(-99, 20, 200, 100)));
+    NSDictionary *window_frame = CFBridgingRelease(CGRectCreateDictionaryRepresentation(window_bounds));
+    NSDictionary *window_info = @{(__bridge NSString *)kCGWindowOwnerPID: @42, (__bridge NSString *)kCGWindowNumber: @73,
+        (__bridge NSString *)kCGWindowIsOnscreen: @YES, (__bridge NSString *)kCGWindowAlpha: @1,
+        (__bridge NSString *)kCGWindowBounds: window_frame};
+    assert([matching_window(@[window_info], 42, window_bounds) isEqualToDictionary:window_info]);
+    assert(!matching_window(@[window_info], 43, window_bounds));
+    assert(!matching_window(@[window_info, window_info], 42, window_bounds));
+    NSMutableDictionary *invisible_window = [window_info mutableCopy];
+    invisible_window[(__bridge NSString *)kCGWindowIsOnscreen] = @NO;
+    assert(!matching_window(@[invisible_window], 42, window_bounds));
+    assert(!matching_window(@[window_info, invisible_window], 42, window_bounds));
+    invisible_window[(__bridge NSString *)kCGWindowIsOnscreen] = @YES;
+    invisible_window[(__bridge NSString *)kCGWindowAlpha] = @0;
+    assert(!matching_window(@[invisible_window], 42, window_bounds));
+    NSDictionary *cursor = @{@"windowId": @73, @"bounds": @{@"x": @(-100), @"y": @20, @"width": @200, @"height": @100}, @"x": @0, @"y": @50};
+    assert(matching_cursor(cursor, [cursor copy]));
+    assert(!matching_cursor(cursor, nil));
+    assert(!matching_cursor(nil, cursor));
+    NSMutableDictionary *changed_cursor = [cursor mutableCopy];
+    changed_cursor[@"windowId"] = @74;
+    assert(!matching_cursor(cursor, changed_cursor));
+    changed_cursor[@"windowId"] = @73;
+    changed_cursor[@"x"] = @1;
+    assert(!matching_cursor(cursor, changed_cursor));
+    changed_cursor[@"x"] = @0;
+    changed_cursor[@"bounds"] = @{@"x": @(-99), @"y": @20, @"width": @200, @"height": @100};
+    assert(!matching_cursor(cursor, changed_cursor));
     assert(!allowed_role(nil));
     assert(!allowed_role(@""));
     assert(!allowed_role((__bridge NSString *)kAXMenuBarRole));

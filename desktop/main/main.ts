@@ -6,6 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { externalUrl, keepRequest, publicUrl, runCommandRequest, statsExportRequest, trustedSender, validJpegDataUrl, validateRequest, vaultRequest, type Request } from "./ipc";
+import { roundComputerCursor, COMPUTER_CURSOR_MS, type ComputerRunProgress } from "../shared/computer";
 import { renderResults, webSearch } from "./web-search";
 import { clipPage, fetchReadablePage, frontmostApplication, frontmostPage, frontmostTab } from "./clip";
 import { discoverImports, saveImportManifest } from "./imports";
@@ -184,6 +185,12 @@ const terminals = new Terminals(
   () => broadcast("emma:terminals"),
 );
 let runBanner: BrowserWindow | null = null;
+let computerCursorWindow: BrowserWindow | null = null;
+let computerCursorReady = false;
+let computerCursorTimer: ReturnType<typeof setTimeout> | undefined;
+let computerProgress: ComputerRunProgress | undefined;
+let computerCursorProgress: ComputerRunProgress | undefined;
+let computerCursorAt = 0;
 const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute }>();
 
 const DEFAULT_THREAD_TITLE = "New thread";
@@ -484,7 +491,7 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
   return window;
 }
 
-async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotation" | "hotspot" | "run" | "radial" = "main", extra: Record<string, string> = {}) {
+async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotation" | "hotspot" | "run" | "radial" | "computerCursor" = "main", extra: Record<string, string> = {}) {
   const painted = new Promise<void>((resolve) => {
     window.once("ready-to-show", () => resolve());
     setTimeout(resolve, 2000).unref();
@@ -500,7 +507,7 @@ async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotatio
     if (window.isDestroyed()) return;
     if (mode === "main") window.show();
     else if (mode === "overlay" || mode === "annotation") { window.showInactive(); window.focus(); }
-    else window.showInactive();
+    else if (mode !== "computerCursor") window.showInactive();
   } catch (error) {
     if (!window.isDestroyed()) console.error("Emma window failed to load", error);
   }
@@ -1022,8 +1029,35 @@ function forceArmRequest(value: unknown): { threadId: string; arm: Arm } {
   return { threadId, arm: candidate.arm };
 }
 
-function reportRunProgress(step: number, action: string, actions: number) {
-  if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", { step, action, actions });
+function reportRunProgress(progress: ComputerRunProgress) {
+  computerProgress = progress;
+  if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", progress);
+  if (progress.cursor === undefined) return;
+  computerCursorProgress = progress;
+  computerCursorAt = Date.now();
+  showComputerCursor();
+}
+
+function showComputerCursor() {
+  clearTimeout(computerCursorTimer);
+  const window = computerCursorWindow;
+  if (!window || window.isDestroyed()) return;
+  const progress = computerCursorProgress;
+  const remaining = COMPUTER_CURSOR_MS - (Date.now() - computerCursorAt);
+  const cursor = progress?.cursor && roundComputerCursor(progress.cursor);
+  if (!computerRuntime?.active || !computerCursorReady || !cursor || remaining <= 0) {
+    window.hide();
+    return;
+  }
+  try {
+    window.setBounds(cursor.bounds);
+    window.webContents.send("emma:computer-run-progress", { ...progress, cursor });
+    window.showInactive();
+    window.moveAbove(`window:${cursor.windowId}:0`);
+    computerCursorTimer = setTimeout(() => { if (!window.isDestroyed()) window.hide(); }, remaining);
+  } catch {
+    window.hide();
+  }
 }
 
 const BRIDGE_EVENTS: Record<string, (payload: unknown) => BridgeEvent> = {
@@ -1290,7 +1324,6 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
         if (allowed && !signal.aborted) openRunBanner(turn.threadId, `${target.name} · background app control`);
         return allowed;
       });
-      reportRunProgress(computerRuntime!.steps, `${String(args.args.action)}${args.args.app ? ` · ${args.args.app}` : ""}`, computerRuntime!.actions);
       return said;
     }
     case "browser": {
@@ -2664,10 +2697,36 @@ function openRunBanner(threadId: string, task: string) {
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   window.on("closed", () => { if (runBanner === window) runBanner = null; });
   void load(window, "run", { threadId, task: task.slice(0, 200), maxSteps: String(MAX_RUN_STEPS) });
+  const cursor = secureWindow({
+    width: 1,
+    height: 1,
+    title: "Emma activity cursor",
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    focusable: false,
+    skipTaskbar: true,
+  });
+  computerCursorWindow = cursor;
+  cursor.setIgnoreMouseEvents(true);
+  cursor.setHiddenInMissionControl(true);
+  cursor.on("closed", () => { if (computerCursorWindow === cursor) computerCursorWindow = null; });
+  void load(cursor, "computerCursor");
 }
 
 function closeRunBanner() {
   globalShortcut.unregister("Escape");
+  clearTimeout(computerCursorTimer);
+  computerCursorReady = false;
+  computerProgress = undefined;
+  computerCursorProgress = undefined;
+  computerCursorAt = 0;
+  if (computerCursorWindow && !computerCursorWindow.isDestroyed()) computerCursorWindow.destroy();
+  computerCursorWindow = null;
   if (runBanner && !runBanner.isDestroyed()) runBanner.destroy();
   runBanner = null;
 }
@@ -2790,7 +2849,7 @@ if (primaryInstance) app.whenReady().then(() => {
   void host!.request({ method: "snapshot", params: {} }).then(primeGoals).catch(() => undefined);
   capabilities = new ImportedCapabilityRuntime(app.getPath("userData"));
   void seedBuiltinSkills(builtinSkills(), app.getPath("userData"), path.join(app.getPath("userData"), "harness"), ["artifact"]).then(syncHarnessSkills);
-  computerRuntime = new ComputerUseRuntime(nativeHelper("emma-computer"), closeRunBanner);
+  computerRuntime = new ComputerUseRuntime(nativeHelper("emma-computer"), closeRunBanner, console.log, reportRunProgress);
   agents = new AgentRuntime({
     request: (method, params) => answerRequest(method, params),
     ask: (request: PermissionAsk) => {
@@ -3105,6 +3164,15 @@ if (primaryInstance) app.whenReady().then(() => {
     const answer = value as Record<string, unknown>;
     if (typeof answer.id !== "string" || typeof answer.allowed !== "boolean") return;
     answerAsk(answer.id, answer.allowed);
+  });
+  ipcMain.on("emma:computer-run-ready", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame) return;
+    if (event.sender === computerCursorWindow?.webContents) {
+      computerCursorReady = true;
+      showComputerCursor();
+    } else if (event.sender === runBanner?.webContents && computerProgress) {
+      event.sender.send("emma:computer-run-progress", computerProgress);
+    }
   });
   ipcMain.handle("emma:steer-agent", async (event, value: unknown) => {
     mainWindowSender(event);

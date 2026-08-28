@@ -10,6 +10,7 @@ import { nested, newest, spawnedAgents, spawnedByTurn, threadAt, threadDepth, th
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { THINKING_LABELS, ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_KEYS_URL, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetProvider, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, providerCredentials, providerReach, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
+import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { defaultPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, WIDE_BROWSER_WIDTH, type PaneLayout } from "./layout";
 import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -444,19 +445,38 @@ function App() {
   if (query.has("hotspot")) return <NotchHotspot />;
   if (query.has("radial")) return <RadialCommands />;
   if (query.has("run")) return <ComputerRunBanner task={query.get("task") ?? ""} maxSteps={Number(query.get("maxSteps")) || 0} />;
+  if (query.has("computerCursor")) return <ComputerActivityCursor />;
   return query.has("overlay") ? <Overlay /> : <Workspace />;
 }
 
 function ComputerRunBanner({ task, maxSteps }: { task: string; maxSteps: number }) {
-  const [progress, setProgress] = useState({ step: 0, action: "starting", actions: 0 });
-  useEffect(() => window.emma.onComputerRunProgress(setProgress), []);
+  const [progress, setProgress] = useState<ComputerRunProgress>({ step: 0, action: "Starting", actions: 0 });
+  useEffect(() => window.emma.onComputerRunProgress((value) => { if (validComputerProgress(value)) setProgress(value); }), []);
   return <div className="run-banner" role="status">
     <span className="run-banner-pulse" aria-hidden="true" />
     <div className="run-banner-body">
-      <strong>Emma is using this Mac · {progress.action}</strong>
+      <strong>Emma · {progress.action}{progress.app ? ` in ${progress.app}` : ""}</strong>
       <small>Step {progress.step}/{maxSteps} · {progress.actions} action{progress.actions === 1 ? "" : "s"} · {task}</small>
     </div>
     <button type="button" onClick={() => window.emma.stopComputerRun()}>Stop · esc</button>
+  </div>;
+}
+
+function ComputerActivityCursor() {
+  const [progress, setProgress] = useState<ComputerRunProgress>();
+  useEffect(() => window.emma.onComputerRunProgress((value) => { if (validComputerProgress(value) && value.cursor) setProgress(value); }), []);
+  const cursor = progress?.cursor;
+  if (!cursor) return null;
+  const x = cursor.x - cursor.bounds.x;
+  const y = cursor.y - cursor.bounds.y;
+  return <div className="computer-cursor-surface" aria-hidden="true">
+    <div key={cursor.windowId} className="computer-cursor" style={{ transform: `translate(${x}px, ${y}px)` }}>
+      <span key={progress.actions} className="computer-cursor-ring" />
+      <svg className="computer-cursor-arrow" width="27" height="34" viewBox="0 0 27 34"><path d="M1 1L23 19L13 20L9 30Z" /></svg>
+      <span className="computer-cursor-label" data-left={x > cursor.bounds.width - 210 || undefined} data-above={y > cursor.bounds.height - 75 || undefined}>
+        <strong>Emma</strong><span>{progress.action}</span>
+      </span>
+    </div>
   </div>;
 }
 

@@ -323,7 +323,7 @@ declare global {
       clearImportedSkill(id: string): Promise<void>;
       listImportedMcpServers(): Promise<ImportedMcpServer[]>;
       stopComputerRun(): void;
-      onComputerRunProgress(listener: (value: { step: number; action: string; actions: number }) => void): () => void;
+      onComputerRunProgress(listener: (value: unknown) => void): () => void;
       setProviders(value: ProviderProfile[]): Promise<ProviderProfile[]>;
       testProvider(value: { baseUrl: string; credentialEnv: string; modelId: string; insecure: boolean }): Promise<{ models: string[]; tools: boolean; error: string }>;
       setVerifier(value: VerifierSettings): Promise<VerifierSettings>;

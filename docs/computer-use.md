@@ -92,6 +92,27 @@ The always-on-top run banner identifies the app, shows progress and provides Sto
 Escape is registered globally while the banner is open; failure to register it
 stops the turn. Calls also appear in the thread's execution trace.
 
+## Activity cursor
+
+An orange Emma cursor and action label mark the control being edited, typed into,
+pressed or scrolled. The cursor glides between controls in the same window over
+280 ms and pulses on arrival. Read-state steps do not interrupt that movement.
+The operating system's Reduce Motion preference disables the glide and pulse.
+
+The transparent overlay is click-through, cannot take focus and never moves the
+real pointer. It is ordered immediately above the approved target window, not
+always on top of unrelated apps. Accessibility geometry and public window metadata
+identify the window and control; no screenshot is taken. These coordinates stay
+inside Emma and are not added to model tool results. Missing, ambiguous,
+minimized or off-display geometry suppresses the cue without changing the action.
+
+The cue expires after 1.4 seconds and disappears immediately on Stop or turn end.
+A post-action check also clears it when the action changes or closes the target
+window/control. It marks the last action, not continuous tracking: manual window
+moves or asynchronous layout changes after that check can leave the old location
+visible for the remainder of the short cue lifetime. The run banner remains the
+continuous status and Stop control.
+
 Implementation: [computer.ts](../desktop/main/computer.ts) owns grants and helper
 lifetime; [computer.m](../desktop/native/computer.m) enforces app identity and
 accessibility actions; [main.ts](../desktop/main/main.ts) connects human approval,
@@ -122,9 +143,15 @@ the returned state. The final build repeated the approved interaction successful
 Automated checks cover validation, snapshot ownership, process replacement,
 concurrent calls, turn admission, parent-only harness calls and permission
 cancellation. Native helper self-tests and the desktop, Rust and Zig checks passed.
+Cursor regressions cover native geometry, progress framing, invalidation, the
+sandboxed preload, overlay lifetime and stable coordinates across display boundaries.
+The actual cursor renderer was also exercised in an isolated Electron visual
+fixture: captured intermediate frames showed the glide in both directions and
+the arrival pulse. The background app workflow was repeated with the cursor build.
 This is not release certification: OS permission grant/denial prompts, the physical
 global Escape shortcut, lock/suspend behavior, VoiceOver, multiple displays,
-release signing and non-macOS behavior were not manually verified.
+the system Reduce Motion setting, release signing and non-macOS behavior were not
+manually verified.
 
 ## See also
 

@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
 import type { ComputerApp } from "../main/computer";
+import type { ComputerCursor, ComputerRunProgress } from "../shared/computer";
 
 const target: ComputerApp = { id: "com.test.Editor", name: "Test Editor", pid: 12345, path: "/Applications/Test Editor.app", launchedAt: 1_700_000_000_000 };
 const other: ComputerApp = { ...target, id: "com.test.Other", name: "Other App", pid: 12346, path: "/Applications/Other.app" };
@@ -13,6 +14,7 @@ const sent: { app: ComputerApp; action: Record<string, unknown> }[] = [];
 const spawned: { args: string[]; child: EventEmitter & { killed: boolean } }[] = [];
 let captures = 0;
 let snapshots = 0;
+let cursorEvents: () => unknown[] = () => [];
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const childProcess: typeof import("node:child_process") = require("node:child_process");
@@ -36,6 +38,7 @@ mock.method(childProcess, "spawn", (_helper: string, args: string[]) => {
           stdout.write(`${JSON.stringify({ ok: false, error: "The approved app instance changed" })}\n`);
           return;
         }
+        for (const event of cursorEvents()) stdout.write(`${JSON.stringify(event)}\n`);
         stdout.write(`${JSON.stringify(action.action === "get_app_state"
           ? { ok: true, snapshot: `snapshot-${++snapshots}`, text: '[0] AXTextField "Test field"' }
           : { ok: true, text: "Performed the app action" })}\n`);
@@ -58,8 +61,8 @@ const { ComputerUseRuntime, computerAction, computerTools, MAX_RUN_STEPS }: type
 const darwinOnly = { skip: process.platform !== "darwin" && "computer use is macOS only" };
 const thread = "1755000000-1a2b-3c4d5e6f-0";
 const runtimes: InstanceType<typeof ComputerUseRuntime>[] = [];
-const runtime = () => {
-  const computer = new ComputerUseRuntime("/fake/emma-computer", () => {}, () => {});
+const runtime = (progress?: (value: ComputerRunProgress) => void) => {
+  const computer = new ComputerUseRuntime("/fake/emma-computer", () => {}, () => {}, progress);
   runtimes.push(computer);
   computer.start(thread);
   return computer;
@@ -77,6 +80,84 @@ afterEach(() => {
   sent.length = 0;
   spawned.length = 0;
   captures = 0;
+  cursorEvents = () => [];
+});
+
+const cursor: ComputerCursor = { windowId: 42, bounds: { x: -100, y: 20, width: 500, height: 400 }, x: 120, y: 80 };
+
+test("cursor events describe approved mutations without becoming tool results", darwinOnly, async () => {
+  const progress: ComputerRunProgress[] = [];
+  let settled = false;
+  const computer = runtime((value) => {
+    if (value.cursor) assert.equal(settled, false);
+    progress.push(value);
+  });
+  const snapshot = token(await computer.execute(thread, state(), allow));
+  assert.ok(progress.every((value) => !("cursor" in value)));
+  cursorEvents = () => [{ event: "cursor", cursor }];
+  const result = await computer.execute(thread, click(snapshot), allow);
+  settled = true;
+  assert.match(result, /Performed the app action/);
+  assert.doesNotMatch(result, /windowId|bounds|cursor/);
+  assert.deepEqual(progress.filter((value) => value.cursor), [{ step: 2, actions: 2, action: "Clicking", app: target.name, cursor }]);
+  cursorEvents = () => [];
+  const beforeRead = progress.length;
+  await computer.execute(thread, state(), allow);
+  assert.ok(progress.slice(beforeRead).every((value) => !("cursor" in value)));
+  await assert.rejects(computer.execute(thread, state(other), async () => false), /did not allow/);
+  assert.equal(progress.filter((value) => value.cursor).length, 1);
+});
+
+test("native invalidation hides the cue without settling or replacing the action result", darwinOnly, async () => {
+  const progress: ComputerRunProgress[] = [];
+  let settled = false;
+  const computer = runtime((value) => {
+    if ("cursor" in value) assert.equal(settled, false);
+    progress.push(value);
+  });
+  const snapshot = token(await computer.execute(thread, state(), allow));
+  cursorEvents = () => [{ event: "cursor", cursor }, { event: "cursor-invalidated" }];
+  const result = await computer.execute(thread, click(snapshot), allow);
+  settled = true;
+  assert.deepEqual(progress.filter((value) => "cursor" in value).map((value) => value.cursor), [cursor, null]);
+  assert.match(result, /Performed the app action/);
+  assert.doesNotMatch(result, /windowId|bounds|cursor/);
+  assert.equal(spawned.at(-1)!.child.killed, false);
+});
+
+test("malformed, duplicate and read-only cursor events close the helper", darwinOnly, async () => {
+  for (const events of [
+    [{ event: "cursor", cursor: { ...cursor, x: NaN } }],
+    [{ event: "cursor", cursor, extra: true }],
+    [{ event: "other", cursor }],
+    [{ event: "cursor", cursor }, { event: "cursor", cursor }],
+    [{ event: "cursor-invalidated" }],
+    [{ event: "cursor", cursor }, { event: "cursor-invalidated", extra: true }],
+    [{ event: "cursor", cursor }, { event: "cursor-invalidated" }, { event: "cursor-invalidated" }],
+  ]) {
+    const computer = runtime();
+    const snapshot = token(await computer.execute(thread, state(), allow));
+    cursorEvents = () => events;
+    await assert.rejects(computer.execute(thread, click(snapshot), allow), /Invalid computer cursor event/);
+    assert.equal(spawned.at(-1)!.child.killed, true);
+    computer.end(thread);
+    cursorEvents = () => [];
+  }
+  for (const event of [{ event: "cursor", cursor }, { event: "cursor-invalidated" }]) {
+    const computer = runtime();
+    cursorEvents = () => [event];
+    await assert.rejects(computer.execute(thread, state(), allow), /Invalid computer cursor event/);
+    assert.equal(spawned.at(-1)!.child.killed, true);
+  }
+});
+
+test("stopping at a cursor event discards the action reply and kills its helper", darwinOnly, async () => {
+  const computer = runtime((value) => { if (value.cursor) computer.abort(); });
+  const snapshot = token(await computer.execute(thread, state(), allow));
+  cursorEvents = () => [{ event: "cursor", cursor }];
+  await assert.rejects(computer.execute(thread, click(snapshot), allow), /Computer run ended/);
+  assert.equal(computer.active, false);
+  assert.equal(spawned.at(-1)!.child.killed, true);
 });
 
 test("computer accepts only bounded app-scoped commands", () => {

@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { desktopCapturer, systemPreferences, type Display } from "electron";
 import { BoundedLines } from "./ndjson";
 import { MAX_SCREEN_CONTEXT_CHARS, validJpegDataUrl } from "./ipc";
+import { computerActionLabels, validComputerCursor, type ComputerCursor, type ComputerRunProgress } from "../shared/computer";
 
 export const MAX_RUN_STEPS = 20;
 const MAX_RUN_MS = 10 * 60_000;
@@ -132,7 +133,7 @@ async function listApps(helper: string, signal: AbortSignal): Promise<ComputerAp
 class AppHelper {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly lines = new BoundedLines(MAX_HELPER_BYTES);
-  private pending: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
+  private pending: { resolve: (line: string) => void; reject: (error: Error) => void; cursor?: (value: ComputerCursor | null) => void; cursorSeen: boolean; cursorInvalidated: boolean } | undefined;
   private failure: Error | undefined;
   private readonly cancel = () => this.close();
 
@@ -144,6 +145,21 @@ class AppHelper {
         for (const line of this.lines.push(data)) {
           const pending = this.pending;
           if (!pending) throw new Error("Unexpected computer helper response");
+          const message: unknown = JSON.parse(line);
+          if (message && typeof message === "object" && "event" in message) {
+            const event = message as Record<string, unknown>;
+            this.signal.throwIfAborted();
+            if (event.event === "cursor-invalidated") {
+              if (Object.keys(event).length !== 1 || !pending.cursorSeen || pending.cursorInvalidated || !pending.cursor) throw new Error("Invalid computer cursor event");
+              pending.cursorInvalidated = true;
+              pending.cursor(null);
+            } else {
+              if (event.event !== "cursor" || Object.keys(event).length !== 2 || pending.cursorSeen || !pending.cursor || (event.cursor !== null && !validComputerCursor(event.cursor))) throw new Error("Invalid computer cursor event");
+              pending.cursorSeen = true;
+              pending.cursor(event.cursor as ComputerCursor | null);
+            }
+            continue;
+          }
           this.pending = undefined;
           pending.resolve(line);
         }
@@ -157,13 +173,16 @@ class AppHelper {
     signal.addEventListener("abort", this.cancel, { once: true });
   }
 
-  async send(action: Record<string, unknown>) {
+  async send(action: Record<string, unknown>, cursor?: (value: ComputerCursor | null) => void) {
     this.signal.throwIfAborted();
     if (this.failure) throw this.failure;
     if (this.pending) throw new Error("A computer action is already in progress");
     const line = await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => this.close(new Error("Computer action timed out and may already have happened. Do not retry it automatically.")), HELPER_TIMEOUT_MS);
       this.pending = {
+        cursor,
+        cursorSeen: false,
+        cursorInvalidated: false,
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); },
       };
@@ -200,7 +219,7 @@ type ActiveRun = {
 export class ComputerUseRuntime {
   private run: ActiveRun | undefined;
 
-  constructor(private readonly helperPath: string, private readonly ended: () => void = () => {}, private readonly log: (line: string) => void = console.log) {}
+  constructor(private readonly helperPath: string, private readonly ended: () => void = () => {}, private readonly log: (line: string) => void = console.log, private readonly progress: (value: ComputerRunProgress) => void = () => {}) {}
 
   get active() { return Boolean(this.run && !this.run.controller.signal.aborted); }
   get threadId() { return this.run?.threadId; }
@@ -228,6 +247,7 @@ export class ComputerUseRuntime {
   private async perform(run: ActiveRun, action: ComputerAction, approve: ApproveApp): Promise<string> {
     this.check(run);
     if (++run.steps > MAX_RUN_STEPS) { this.abort("reached its step limit"); throw new Error("This computer run reached its step limit"); }
+    this.progress({ step: run.steps, actions: run.actions, action: computerActionLabels[action.action] });
     if (action.app && run.denied.has(action.app)) throw new Error("The user did not allow this app. Do not try it again this turn.");
     const apps = await listApps(this.helperPath, run.controller.signal);
     this.check(run);
@@ -255,7 +275,13 @@ export class ComputerUseRuntime {
     run.actions++;
     run.lastActionAt = Date.now();
     this.log(`Emma computer action ${run.actions}: ${action.action} in ${app.id}`);
-    const result = await grant.helper.send(payload);
+    const progress = { step: run.steps, actions: run.actions, action: computerActionLabels[action.action], app: app.name };
+    this.progress(progress);
+    const report = (cursor: ComputerCursor | null) => {
+      this.check(run);
+      this.progress({ ...progress, cursor });
+    };
+    const result = await grant.helper.send(payload, action.action === "get_app_state" ? undefined : report);
     this.check(run);
     if (typeof result.text !== "string" || result.text.length > 32768) throw new Error("Invalid computer app state");
     if (action.action === "get_app_state") {

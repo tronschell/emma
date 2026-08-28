@@ -1,6 +1,6 @@
 import type { Snapshot } from "./types";
 
-const OVERLAY_SURFACES = ["annotation", "hotspot", "radial", "run", "overlay"];
+const OVERLAY_SURFACES = ["annotation", "hotspot", "radial", "run", "overlay", "computerCursor"];
 const query = new URLSearchParams(location.search);
 
 export const isWorkspaceWindow = !OVERLAY_SURFACES.some((key) => query.has(key));
