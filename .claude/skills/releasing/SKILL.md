@@ -65,15 +65,30 @@ release, and nothing releases on a schedule.
 ## CI
 
 [`ci.yml`](../../../.github/workflows/ci.yml) runs on every PR and every push to
-`main`, on one `macos-15` runner, and is exactly the six checks from
-[`AGENTS.md`](../../../AGENTS.md) plus the title check. Nothing is CI-only; every
-step reproduces locally with the same command. If CI fails on a step you cannot
-reproduce, suspect a stale local build before suspecting the runner.
+`main`, on one `macos-15` runner, and is the six checks from
+[`AGENTS.md`](../../../AGENTS.md), the title check, and `npm run build:native` —
+the clang builds of `desktop/native/` and their two `--self-test` binaries, which
+`npm run check` does not cover and which take about two seconds. Nothing is
+CI-only; every step reproduces locally with the same command. If CI fails on a
+step you cannot reproduce, suspect a stale local build before suspecting the
+runner.
 
 Pinned in the workflow and duplicated from the repo's own pins — change both
 together: **Node 24**, **Zig 0.16.0** (also
 [`harness/build.zig.zon`](../../../harness/build.zig.zon)), macOS runner image.
 Rust follows [`rust-toolchain.toml`](../../../rust-toolchain.toml) on its own.
+
+Third-party actions are pinned to a full commit SHA, never a tag — a mutable tag
+is code execution the repo did not review, and `release.yml` runs one of them in
+the job that unlocks the signing keychain. First-party `actions/*` stay on tags.
+The convention elsewhere writes the version in a trailing comment; comments are
+banned here, so the version goes in the step's `name` instead. Re-pin with
+`gh api repos/OWNER/REPO/git/ref/tags/TAG` and update the `name` to match.
+
+Both workflows declare `permissions:` explicitly rather than inheriting the
+repository default. `ci.yml` needs only `contents: read`. In `release.yml` the
+scope is per job: `changelog` needs `contents: write` and `pull-requests: write`
+for release-please, `package` only `contents: write` for `gh release upload`.
 
 ## Builds and money
 
