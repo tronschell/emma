@@ -96,6 +96,43 @@ What happens behind the sheet, in [`bridge.ts`](../desktop/main/bridge.ts):
 The QR contains the raw key in the clear. It is on your screen for two minutes —
 treat it like a password, and pair only a phone you are holding.
 
+The two minutes are enforced in the main process, not in the sheet that draws
+the code. `pair()` arms a timer for `PAIRING_TTL_MS` that calls `cancelPair()`
+itself, so a renderer that crashes or a window that is destroyed cannot leave
+the staged key live and the room claimed. The renderer's countdown is a
+courtesy on top of it. The timer is cleared when the first sealed frame commits
+the pairing, when the sheet is cancelled, and on quit, and it is unref'd so it
+never holds the process open.
+
+## The handshake
+
+Both ends send a 16-byte hello and derive one session digest,
+`sha256(macHello ‖ phoneHello)`, which is the AES-GCM associated data for every
+frame of that connection and the point from which the replay counters run. The
+Mac re-randomises its hello on every socket it opens, which is what kills a
+frame captured on an earlier connection.
+
+Within one connection the Mac still has to accept a second handshake: a phone
+that goes out of range or is backgrounded rejoins with a fresh hello while the
+Mac's socket is still open, and refusing it would leave the bridge dead until
+the Mac's own socket cycled. So the handshake is open to anything that can write
+into the relay room, and a handshake resets the replay counters.
+
+`FrameCodec` therefore records the digest of every session under which a frame
+has actually been opened, and refuses any handshake that lands back on one of
+them. A genuine rejoin carries a hello the phone has just randomised, so its
+session is new and it is heard. A replay of a captured hello necessarily
+reproduces a session that already carried traffic, so it is refused and the
+frames captured under it stay shut — including the case where the attacker
+first sends junk to move the Mac off the session it is on. Only sessions that
+carried traffic are remembered, so greeting the bridge with junk costs no
+memory, and the set is cleared on every `restart()`.
+
+Handshakes are otherwise unauthenticated work, so the Mac answers each one with
+its hello but pushes an unsolicited live state at most once a second. A phone
+that greets in a quiet moment still gets its snapshot; a flood of greetings
+cannot make the Mac serialise and seal the agent list over and over.
+
 ## What a paired phone can do
 
 | | |

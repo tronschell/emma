@@ -30,6 +30,8 @@ export class FrameCodec {
   private mine = randomBytes(HANDSHAKE_BYTES);
   private theirs: Buffer | undefined;
   private session: Buffer | undefined;
+  private sessionId = "";
+  private readonly opened = new Set<string>();
   private sent = 0;
   private seen = 0;
 
@@ -53,6 +55,8 @@ export class FrameCodec {
     this.mine = randomBytes(HANDSHAKE_BYTES);
     this.theirs = undefined;
     this.session = undefined;
+    this.sessionId = "";
+    this.opened.clear();
     this.sent = 0;
     this.seen = 0;
     return this.mine;
@@ -62,11 +66,15 @@ export class FrameCodec {
     if (data.byteLength !== HANDSHAKE_BYTES) return false;
     const bytes = Buffer.from(data instanceof Uint8Array ? data : new Uint8Array(data));
     if (this.theirs?.equals(bytes)) return false;
-    this.theirs = bytes;
     const digest = createHash("sha256");
     digest.update(this.role === "mac" ? this.mine : bytes);
     digest.update(this.role === "mac" ? bytes : this.mine);
-    this.session = digest.digest();
+    const session = digest.digest();
+    const id = session.toString("hex");
+    if (this.opened.has(id)) return false;
+    this.theirs = bytes;
+    this.session = session;
+    this.sessionId = id;
     this.sent = 0;
     this.seen = 0;
     return true;
@@ -95,6 +103,7 @@ export class FrameCodec {
       if (!Number.isSafeInteger(envelope?.n) || (envelope.n as number) <= this.seen) return undefined;
       if (!isFrame(envelope.m, this.role)) return undefined;
       this.seen = envelope.n as number;
+      this.opened.add(this.sessionId);
       return envelope.m;
     } catch {
       return undefined;
