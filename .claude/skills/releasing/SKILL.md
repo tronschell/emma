@@ -83,7 +83,10 @@ is code execution the repo did not review, and `release.yml` runs one of them in
 the job that unlocks the signing keychain. First-party `actions/*` stay on tags.
 The convention elsewhere writes the version in a trailing comment; comments are
 banned here, so the version goes in the step's `name` instead. Re-pin with
-`gh api repos/OWNER/REPO/git/ref/tags/TAG` and update the `name` to match.
+`gh api repos/OWNER/REPO/git/ref/tags/TAG`, and update the `name` to match. If
+that returns `"type": "tag"` the tag is annotated and the SHA is the tag object,
+not the commit — dereference it with `gh api repos/OWNER/REPO/git/tags/SHA` and
+pin `.object.sha`. `release-please-action` is annotated; `setup-zig` is not.
 
 Both workflows declare `permissions:` explicitly rather than inheriting the
 repository default. `ci.yml` needs only `contents: read`. In `release.yml` the
@@ -96,14 +99,15 @@ Public repos get unlimited free Actions minutes on standard runners, macOS
 included, so both workflows cost nothing. Larger runners are not free; do not
 reach for them.
 
-What is **not** free and therefore not wired up:
+What is **not** free:
 
-- **Signing and notarization.** No Apple Developer identity, so `package:mac`
-  ships an unsigned bundle and Gatekeeper blocks it on any Mac but the one that
-  built it. This is a known release blocker in
-  [`docs/development.md`](../../../docs/development.md), not an oversight.
-  Signing needs an Apple Developer Program account and its certificate in repo
-  secrets.
+- **Signing and notarization.** These need a paid Apple Developer Program
+  account. `release.yml` wires both up, but they only run once
+  `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`
+  and `APPLE_API_ISSUER` are in repo secrets; without them the release job fails
+  at the import step. `npm run package:mac` alone still produces an unsigned
+  bundle, which Gatekeeper blocks on any Mac but the one that built it. See
+  [`docs/development.md`](../../../docs/development.md).
 - **Fork PRs cannot read secrets.** Any signing step must live in the release
   job on the main repo, never in the PR job — a workflow that needs a secret to
   pass turns every outside contribution red.
