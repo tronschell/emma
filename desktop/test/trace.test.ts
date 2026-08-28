@@ -94,8 +94,8 @@ test("spans survive the round trip through the thread", () => {
 });
 
 test("a stored span keeps its arguments but not a whole file", () => {
-  const [stored] = decodeSpans(encodeSpans([span("call:a", 1, 2, { input: "x".repeat(4096) })]));
-  assert.ok(stored.input!.length < 1100, `kept ${stored.input!.length} characters`);
+  const [stored] = decodeSpans(encodeSpans([span("call:a", 1, 2, { input: "x".repeat(64 * 1024) })]));
+  assert.ok(stored.input!.length < 17 * 1024, `kept ${stored.input!.length} characters`);
   assert.ok(stored.input!.endsWith("…"));
 });
 

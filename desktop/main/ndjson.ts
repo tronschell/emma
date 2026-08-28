@@ -75,18 +75,67 @@ export function recordedTurn({ thinking, answer, ...rest }: RecordedTurn): Recor
 
 export type HostResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
-/// A scheduled job the host just fired — by the clock, by hand, or because the job
-/// upstream of it finished — with its thread already saved. Pushed rather than
-/// replied to, and carrying the mode the job was saved with, the graph to walk and
-/// the variables to walk it with, because all of that runs in this process.
 export type HostDueJob = { dueJob: { jobId: string; threadId: string; title: string; prompt: string; nodes: string; variables: string; permissionMode: string; model: string; depth: number } };
 
 const DUE_JOB_FIELDS = ["jobId", "threadId", "title", "prompt", "nodes", "variables", "permissionMode", "model"] as const;
 
-export function parseHostLine(line: string): HostResponse | HostDueJob {
+export const MAX_HOST_CHUNK_BYTES = 64 * 1024;
+export const MAX_HOST_ASSEMBLED_BYTES = 256 * 1024 * 1024;
+
+type HostChunk = { id: string; chunk: string; sequence: number; end: boolean };
+
+export class HostResponses {
+  private partial = new Map<string, { chunks: string[]; bytes: number; sequence: number; oversized: boolean }>();
+
+  constructor(private readonly maxBytes = MAX_HOST_ASSEMBLED_BYTES) {}
+
+  push(response: HostResponse | HostDueJob | HostChunk): HostResponse | HostDueJob | undefined {
+    if ("dueJob" in response) return response;
+    const current = this.partial.get(response.id);
+    if (!("chunk" in response)) {
+      if (current) throw new Error("Host response ended without final chunk");
+      return response;
+    }
+    const state = current ?? { chunks: [], bytes: 0, sequence: 0, oversized: false };
+    if (response.sequence !== state.sequence) throw new Error("Invalid host chunk sequence");
+    state.sequence++;
+    if (!state.oversized) {
+      state.bytes += Buffer.byteLength(response.chunk);
+      if (state.bytes > this.maxBytes) {
+        state.oversized = true;
+        state.chunks = [];
+      } else state.chunks.push(response.chunk);
+    }
+    if (!response.end) {
+      this.partial.set(response.id, state);
+      return;
+    }
+    this.partial.delete(response.id);
+    if (state.oversized) return { id: response.id, ok: false, error: "Host response exceeds the 256 MiB runtime limit" };
+    const complete = parseHostLine(state.chunks.join(""));
+    if ("dueJob" in complete || "chunk" in complete || complete.id !== response.id) throw new Error("Invalid assembled host response");
+    return complete;
+  }
+
+  end() {
+    if (this.partial.size) throw new Error("Host response ended mid-response");
+  }
+
+  clear() {
+    this.partial.clear();
+  }
+}
+
+export function parseHostLine(line: string): HostResponse | HostDueJob | HostChunk {
   const value: unknown = JSON.parse(line);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid host response");
   const response = value as Record<string, unknown>;
+  if (Object.hasOwn(response, "chunk")) {
+    if (Object.keys(response).length !== 4 || typeof response.id !== "string" || typeof response.chunk !== "string" || !response.chunk.length || Buffer.byteLength(response.chunk) > MAX_HOST_CHUNK_BYTES || !Number.isSafeInteger(response.sequence) || (response.sequence as number) < 0 || typeof response.end !== "boolean") {
+      throw new Error("Invalid host chunk envelope");
+    }
+    return response as HostChunk;
+  }
   if (Object.hasOwn(response, "dueJob")) {
     const job = response.dueJob as Record<string, unknown>;
     if (!job || typeof job !== "object" || typeof job.depth !== "number" || DUE_JOB_FIELDS.some((field) => typeof job[field] !== "string")) {

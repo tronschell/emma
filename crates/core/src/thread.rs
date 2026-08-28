@@ -109,7 +109,7 @@ const THREAD_FORMAT: u64 = 13;
 
 pub const MAX_THREAD_MESSAGES: usize = 1_024;
 pub const MAX_THREAD_TRACES: usize = 64;
-pub const MAX_TRACE_BYTES: usize = 16 * 1024;
+pub const MAX_TRACE_BYTES: usize = 1024 * 1024;
 
 pub const MAX_GOAL_OBJECTIVE_CHARS: usize = 2_000;
 pub const MAX_GOAL_EVIDENCE_CHARS: usize = 4_000;

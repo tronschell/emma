@@ -49,6 +49,11 @@ use `--text-2`.
 `--accent` aliases `--orange` and `--danger` aliases `--rose`; Settings →
 Appearance repoints `--accent` at another palette hue and everything derived
 follows. `--accent-soft` is the accent at 14%. `--danger-surface` is `#2a1620`.
+`--accent-2` is `oklch(from var(--accent) l c calc(h + 150))` — the accent's
+own lightness and chroma at a rotated hue, so it stays a second colour against
+whatever accent is set, a custom hex included. It marks a moment rather than a
+state: the reveal a component wipes in behind ([components.md](components.md))
+is the only thing that uses it.
 
 The accent is for **action and state only**: primary action, active state,
 focus ring, checked control, and literal quantities meant to be read as data.

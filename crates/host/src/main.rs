@@ -232,16 +232,47 @@ fn serve(
             Ok((id, result)) => json!({ "id": id, "ok": true, "result": result }),
             Err((id, error)) => json!({ "id": id, "ok": false, "error": error }),
         };
-        let mut encoded = serde_json::to_vec(&response)
-            .map_err(|error| format!("could not encode response: {error}"))?;
-        encoded.push(b'\n');
+        write_response(writer, &response)?;
+    }
+    Ok(())
+}
+
+const RESPONSE_CHUNK_BYTES: usize = 64 * 1024;
+
+fn write_response(writer: &Mutex<impl Write>, response: &Value) -> Result<(), String> {
+    let encoded = serde_json::to_string(response)
+        .map_err(|error| format!("could not encode response: {error}"))?;
+    let write_line = |line: &str| -> Result<(), String> {
         let mut writer = writer
             .lock()
             .map_err(|_| "Emma host output lock was poisoned".to_string())?;
         writer
-            .write_all(&encoded)
+            .write_all(line.as_bytes())
+            .and_then(|()| writer.write_all(b"\n"))
             .and_then(|()| writer.flush())
-            .map_err(|error| format!("could not write response: {error}"))?;
+            .map_err(|error| format!("could not write response: {error}"))
+    };
+    if encoded.len() <= RESPONSE_CHUNK_BYTES {
+        return write_line(&encoded);
+    }
+    let mut offset = 0;
+    let mut sequence = 0;
+    while offset < encoded.len() {
+        let mut end = (offset + RESPONSE_CHUNK_BYTES).min(encoded.len());
+        while !encoded.is_char_boundary(end) {
+            end -= 1;
+        }
+        write_line(
+            &json!({
+                "id": response["id"],
+                "chunk": &encoded[offset..end],
+                "sequence": sequence,
+                "end": end == encoded.len(),
+            })
+            .to_string(),
+        )?;
+        offset = end;
+        sequence += 1;
     }
     Ok(())
 }

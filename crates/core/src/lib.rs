@@ -129,14 +129,19 @@ mod tests {
         assert_eq!(markdown.matches("\n---\n").count(), 1);
         assert_eq!(Thread::from_markdown(&markdown).unwrap(), thread);
 
-        let runaway = (0..4_096)
+        let lines = MAX_TRACE_BYTES / 8;
+        let runaway = (0..lines)
             .map(|index| format!("#{index} bash 1ms ok"))
             .collect::<Vec<_>>()
             .join("\n");
         let clamped = ThreadTrace::new(Timestamp::from_unix_seconds(3), &runaway).unwrap();
         assert!(clamped.text.len() <= MAX_TRACE_BYTES);
         assert!(clamped.text.starts_with("#0 bash"));
-        assert!(clamped.text.ends_with("#4095 bash 1ms ok"));
+        assert!(
+            clamped
+                .text
+                .ends_with(&format!("#{} bash 1ms ok", lines - 1))
+        );
         assert!(clamped.text.contains("lines elided"));
 
         let unbroken = "A".repeat(MAX_TRACE_BYTES * 4);

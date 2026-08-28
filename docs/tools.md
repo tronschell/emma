@@ -41,7 +41,7 @@ for each running app per turn, in every mode. Full matrix in
 | `workflow` | Builds and runs the Scheduled tasks: a trigger plus a node graph. | ask | [workflow.ts](../desktop/shared/workflow.ts) |
 | `autoresearch` | Builds and runs the long experiment loops. | ask | [research.ts](../desktop/main/research.ts) |
 | `artifact` | Documents, code, pages, drawings and apps on the Artifacts page. Actions: `list`, `get`, `create`, `update`, `rewrite`. No delete. | auto | [artifacts.ts](../desktop/main/artifacts.ts) |
-| `component` | Pieces of Emma's own interface, built where the user points. Actions: `list`, `get`, `place`, `create`, `rewrite`. No delete — the user removes one from the ⋯ in its corner. | auto | [components.ts](../desktop/main/components.ts) |
+| `component` | Widgets in Emma's own interface, built into the context bar. Actions: `list`, `get`, `create`, `rewrite`. No delete — the user switches one off or removes it from the ⋯ in its header. | auto | [components.ts](../desktop/main/components.ts) |
 | `visualize` | Draws one self-contained HTML document inline in the conversation. Nothing is saved. | auto | [visuals.ts](../desktop/main/visuals.ts) |
 
 ### Availability, beyond the gate
@@ -84,11 +84,12 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
   whole region of Emma's own interface live, from a `code`/`js` artifact exporting
   `(api) => Component`. Adding something *new* to the interface is `component`
   instead, and is not an artifact.
-- `component` is ordered, and the order is enforced in main rather than asked for:
-  `place` lights the window up and blocks until the user clicks the element it
-  belongs in, and `create` is refused until they have. Same module contract as a
-  region — `export default (api) => Component`, no imports, no JSX — and each
-  `rewrite` bumps the version so the mounted copy reloads in place.
+- `component` builds into the context bar and nowhere else, which is enforced in
+  main rather than asked for. Same module contract as a region —
+  `export default (api) => Component`, no imports, no JSX — plus `fetch` and the
+  `variables` it declared, and each `rewrite` bumps the version so the mounted
+  copy reloads in place. `expand` gives it a ⤢ that opens it over the window. See
+  [components.md](components.md).
 - `visualize` and `artifact` writes lead with a `[visual:id]` / `[artifact:id]`
   token that Emma uses to render them. Leave it in place.
 
@@ -107,7 +108,7 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
 | `MAX_COMMAND_OUTPUT` | 16 KiB | main.ts |
 
 Computer-use ceilings are in [computer-use.md](computer-use.md); vault limits in
-[knowledge.md](knowledge.md).
+[knowledge.md](knowledge.md); component limits in [components.md](components.md).
 
 ## The harness's builtins
 

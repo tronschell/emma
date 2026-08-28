@@ -188,7 +188,7 @@ Scheduled jobs are `emma-scheduled-job-format: 4`, research records
 | `openrouter-catalog.json` | `0600` | `{fetchedAt, models[]}`. Prices are micro-dollars per million tokens so the math stays integer. The offline first-launch list is compiled into [catalog-seed.ts](../desktop/main/catalog-seed.ts); `npm run seed:catalog` refreshes it |
 | `artifacts/<id>/meta.json` | `0600` in `0700` | `{id, title, kind, language, createdAt, updatedAt, version, surface?, sourceThreadId?, sourceJobId?}` |
 | `artifacts/<id>/content.<ext>` | `0600` | `markdown`→`md`, `code`→`txt`, `html`/`app`→`html`, `svg`→`svg`, `mermaid`→`mmd`, `react`→`jsx`. An `app` artifact may also hold `data.sqlite` |
-| `components/<id>/meta.json` | `0600` in `0700` | `{id, title, anchor: {selector, label}, createdAt, updatedAt, version, disabled?, sourceThreadId?}` |
+| `components/<id>/meta.json` | `0600` in `0700` | `{id, title, createdAt, updatedAt, version, expands?, variables?, disabled?, sourceThreadId?}` |
 | `components/<id>/module.js` | `0600` | The module served at `emma-component://<id>/module.js?v=<version>`. `shot.png` beside it is the picture Settings → Built by Emma shows |
 | `plans/<id>.md` | | One plan. The Markdown **is** the record — `parsePlan(renderPlan(p))` round-trips |
 | `skills/<slug>/SKILL.md` | `0600` in `0700` | The seven bundled skills plus anything written or imported |

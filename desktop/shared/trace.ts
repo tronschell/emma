@@ -26,6 +26,7 @@ export type TraceSpan = {
   /** The call's arguments as the model sent them, so a trace says *why* a step went wrong. */
   input?: string;
   output?: string;
+  said?: number;
   /**
    * Roughly what this span added to the thread's context: the answer a model
    * request streamed back, the text a tool call handed the model. Estimated at
@@ -223,7 +224,7 @@ export function formatDuration(ms: number): string {
    inspector has to draw them again after a restart. */
 
 /** One trace in the durable record. `crates/core` clamps again at its own boundary. */
-export const MAX_TRACE_CHARS = 16 * 1024;
+export const MAX_TRACE_CHARS = 1024 * 1024;
 /** How much of one argument list or one result a span line keeps. */
 const MAX_SPAN_TEXT = 240;
 /** Room reserved for the elision note, so clamping never overshoots the cap. */
@@ -293,7 +294,7 @@ export function renderTrace(spans: readonly TraceSpan[], now: number, header: Re
    that knows it is JSON. */
 
 /** How much of one argument list or one result a stored span keeps. */
-const MAX_STORED_TEXT = 1024;
+const MAX_STORED_TEXT = 16 * 1024;
 
 function stored(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -351,6 +352,7 @@ export function decodeSpans(text: string): TraceSpan[] {
       input: typeof span.input === "string" ? span.input : undefined,
       output: typeof span.output === "string" ? span.output : undefined,
       tokens: typeof span.tokens === "number" ? span.tokens : undefined,
+      said: typeof span.said === "number" && span.said >= 0 ? span.said : undefined,
     });
   }
   return spans;

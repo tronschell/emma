@@ -23,6 +23,7 @@ to a file in this repo.
 | Annotated screen context | A compressed JPEG | Stays in Electron's main process |
 | Notes you keep | Markdown and attachments | The vault folder **you** chose. Nowhere else |
 | Threads, traces, jobs, plans, memories, artifacts | Markdown and JSON | `~/Library/Application Support/Emma` (`EMMA_DATA_DIR` moves it) |
+| Component `fetch` | Whatever a widget Emma built puts in its request, with `{{NAME}}` filled in from the variables you saved | The public https address that widget names. Nothing until Emma has built one and you have filled its variables |
 | Provider keys | Your API keys | Keychain-encrypted on disk, plus the environment of Emma's own child processes |
 
 No telemetry, no analytics and no crash reporter exist anywhere in Emma. Grep for
@@ -182,6 +183,12 @@ network request. **The renderer never receives a key** — `list()` returns
 Second models store the *name* of an environment variable, never a secret; main
 reads `process.env[settings.credentialEnv]` per call. Same for `web_search`.
 
+A component stores names too. Its module writes `{{NAME}}` into a url, header or
+body and main substitutes it on the way out, from `process.env`, and only for
+the names that component declared. So model-written code that nobody read never
+holds a key, and cannot reach one belonging to something else. See
+[components.md](components.md).
+
 ## Renderer hardening
 
 Every window is built by `secureWindow()`: `nodeIntegration: false`,
@@ -227,8 +234,9 @@ ready; a second launch quits and raises the first window.
   note is written only when you ask for one.
 - **Threads, plans, traces, memories, artifacts, skills, tools.** Markdown and JSON
   under `~/Library/Application Support/Emma`, moved by `EMMA_DATA_DIR`.
-- **Anything at all, until you send a turn.** The CSP has no remote `connect-src`,
-  and the catalog fetch carries no credential and no query.
+- **Anything at all, until you send a turn** — or open a thread whose context bar
+  holds a component Emma built that fetches on its own. The CSP has no remote
+  `connect-src`, and the catalog fetch carries no credential and no query.
 
 **Reset Emma**, in **Settings → Data & privacy**, deletes every thread, artifact,
 plan, connected folder, saved key and setting on this Mac, then restarts Emma

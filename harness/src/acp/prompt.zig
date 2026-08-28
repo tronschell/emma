@@ -83,7 +83,6 @@ const ToolExecutionResult = agent_runtime.ToolExecutionResult;
 const McpHasToolFn = tool_mcp_runtime.HasToolFn;
 
 pub const TerminalOutcome = union(enum) {
-    /// Why the turn stopped, plus what it cost, summed over this turn's steps.
     stop_reason: struct {
         reason: acp_types.StopReason,
         usage: acp_types.TurnUsage = .{},
@@ -91,9 +90,6 @@ pub const TerminalOutcome = union(enum) {
     rpc_error: jsonrpc.RpcError,
 };
 
-/// Which subagent an `AcpContext` speaks for, when it is not the session itself.
-/// Set only on the context `runSubagentChild` builds, so tagging is a property of
-/// the context rather than something every send site has to remember.
 const ChildTag = struct {
     id: []const u8,
     title: []const u8,
@@ -104,32 +100,14 @@ const AcpContext = struct {
     alloc: Allocator,
     state: *server.ServerState,
     session_id: []const u8,
-    /// Set when this context belongs to a subagent rather than to the session.
     child: ?ChildTag = null,
-    /// Tool-call IDs already announced with a pending update. Keys are owned
-    /// copies of provider call ids so the ID stays stable from permission
-    /// review through execution.
     published_tool_calls: std.StringHashMapUnmanaged(void) = .empty,
     stop_reason: acp_types.StopReason = .end_turn,
     auto_classifier: permission_auto_classifier.Classifier =
         permission_auto_classifier.Classifier.disabled(),
-    /// Mode and permission policy captured at prompt dispatch so mid-turn
-    /// session/set_mode changes never mutate a running turn.
     captured_mode: ?[]const u8 = null,
     captured_permission_mode: ?PermissionMode = null,
     captured_sandbox_backend: ?sandbox.BackendKind = null,
-    /// Summed across every model step in this turn.
-    ///
-    /// Not the session ledger's before/after delta, which is what this used to
-    /// be and why every turn reported zero: the ledger only credits usage that
-    /// arrives with a Vercel AI Gateway generation identity (`gen_` plus 26
-    /// Crockford characters), and an OpenAI-compatible provider has none — so
-    /// `session_usage.record` took its early return and the counters never moved.
-    /// The per-step `report_usage` callback carries the numbers the provider
-    /// actually sent, and every other front end was already reading them there.
-    /// ponytail: the ledger stays at zero for this route, so `/usage` and cost
-    /// reporting still under-count; fixing that means giving the ledger a path
-    /// for usage with no billing identity.
     turn_usage: acp_types.TurnUsage = .{},
     context_breakdown: acp_types.ContextBreakdown = .{},
     context_breakdown_sent: bool = false,
@@ -162,9 +140,6 @@ const AcpContext = struct {
     }
 
     fn sendUpdate(self: *AcpContext, update_json: []const u8) !void {
-        // A subagent's words are not the session's answer, so they are tagged
-        // rather than merged: untagged, a child's text would land in the parent's
-        // durable reply as if the parent had said it.
         const child = self.child orelse return self.sendRawUpdate(update_json);
         var tagged: std.Io.Writer.Allocating = .init(self.alloc);
         defer tagged.deinit();
@@ -172,8 +147,6 @@ const AcpContext = struct {
         try self.sendRawUpdate(tagged.writer.buffered());
     }
 
-    /// Closes a child out, so a front end watching it knows the run ended rather
-    /// than inferring it from the updates stopping.
     fn sendChildEnded(self: *AcpContext) !void {
         if (self.child == null) return;
         self.child.?.ended = true;
@@ -229,7 +202,7 @@ const AcpContext = struct {
         errdefer self.alloc.free(owned_id);
         var out: std.Io.Writer.Allocating = .init(self.alloc);
         defer out.deinit();
-        try acp_types.writeToolCall(&out.writer, owned_id, title, kind, .pending, boundedArguments(call.arguments_json));
+        try acp_types.writeToolCallWithPath(&out.writer, owned_id, title, kind, .pending, boundedArguments(call.arguments_json), editFilePath(arena, call));
         try self.sendUpdate(out.writer.buffered());
         try self.published_tool_calls.put(self.alloc, owned_id, {});
         return owned_id;
@@ -388,17 +361,42 @@ const AcpContext = struct {
     }
 };
 
-/// ponytail: 4 KiB of a call's arguments on the wire, which covers everything but
-/// a whole-file write; raise it if a client ever needs to replay a call verbatim.
-/// The cut backs off any trailing UTF-8 continuation bytes so the JSON string the
-/// client parses is still valid text.
 const max_raw_input_bytes = 4096;
+
+fn editFilePath(arena: Allocator, call: ToolCall) ?[]const u8 {
+    if (!std.mem.eql(u8, call.name, "write_file") and !std.mem.eql(u8, call.name, "edit_file")) return null;
+    const args = std.json.parseFromSliceLeaky(std.json.Value, arena, call.arguments_json, .{}) catch return null;
+    if (args != .object) return null;
+    const value = args.object.get("path") orelse return null;
+    if (value != .string or value.string.len == 0 or std.mem.indexOfScalar(u8, value.string, 0) != null) return null;
+    return value.string;
+}
 
 fn boundedArguments(arguments_json: []const u8) []const u8 {
     if (arguments_json.len <= max_raw_input_bytes) return arguments_json;
     var end: usize = max_raw_input_bytes;
     while (end > 0 and arguments_json[end] & 0xc0 == 0x80) end -= 1;
     return arguments_json[0..end];
+}
+
+test "edit metadata survives bounded arguments and preserves complete paths" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const file_path = "nested/" ** 50 ++ "file.txt";
+    const args = "{\"content\":\"" ++ "x" ** 6000 ++ "\",\"path\":\"" ++ file_path ++ "\"}";
+    for ([_][]const u8{ "write_file", "edit_file" }) |name| {
+        const call = ToolCall{ .id = "edit", .name = name, .arguments_json = args };
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try acp_types.writeToolCallWithPath(&out.writer, call.id, name, .edit, .pending, boundedArguments(args), editFilePath(alloc, call));
+        const wire = try std.json.parseFromSliceLeaky(std.json.Value, alloc, out.writer.buffered(), .{});
+        try std.testing.expectEqualStrings(file_path, wire.object.get("_emma_filePath").?.string);
+        try std.testing.expect(wire.object.get("rawInput").?.string.len <= max_raw_input_bytes);
+    }
+    for ([_][]const u8{ "{}", "[]", "{", "{\"path\":2}", "{\"path\":\"\"}", "{\"path\":\"a\\u0000b\"}" }) |invalid| {
+        try std.testing.expect(editFilePath(alloc, .{ .id = "bad", .name = "write_file", .arguments_json = invalid }) == null);
+    }
 }
 
 test "boundedArguments cuts on a character boundary" {
@@ -454,14 +452,6 @@ const AcpElicitationResponderContext = struct {
     }
 };
 
-/// Runs one of Emma's own tools by asking the client to run it.
-///
-/// The harness owns the turn but not the tool: Emma's stores live in Electron.
-/// So a call becomes an outbound `_emma/callTool` request on the same channel
-/// permission and elicitation already use, and the turn blocks on the answer.
-/// The only way out other than a reply is the user cancelling — an Emma tool
-/// has no honest deadline, since connecting a folder or running a thread can
-/// legitimately take minutes.
 const AcpEmmaToolResponderContext = struct {
     acp: *AcpContext,
     tool_call_id: []const u8,
@@ -532,16 +522,12 @@ fn emmaToolParamsJson(
     try std.json.Stringify.value(tool_call_id, .{}, &out.writer);
     try out.writer.writeAll(",\"name\":");
     try std.json.Stringify.value(name, .{}, &out.writer);
-    // Already validated as a JSON object by the bridge decode, so it is embedded
-    // rather than re-encoded: the client sees exactly what the model wrote.
     try out.writer.writeAll(",\"arguments\":");
     try out.writer.writeAll(arguments_json);
     try out.writer.writeByte('}');
     return try out.toOwnedSlice();
 }
 
-/// Takes `output` out of the client's result. A reply that is not shaped that
-/// way is the client's bug, and the model cannot fix it by retrying.
 fn emmaToolOutput(alloc: Allocator, result_json: []const u8) ![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, result_json, .{}) catch
         return error.EmmaToolFailed;
@@ -601,8 +587,6 @@ const Osc8Link = struct {
     end: usize,
 };
 
-/// Parses an OSC-8 hyperlink sequence (`ESC ]8;params;uri ST`) starting at
-/// `index`. An empty uri marks the end of a hyperlink span.
 fn parseOsc8Link(text: []const u8, index: usize) ?Osc8Link {
     if (!std.mem.startsWith(u8, text[index..], "\x1b]8;")) return null;
     const end = display_width.ansiSequenceEnd(text, index);
@@ -619,10 +603,6 @@ fn parseOsc8Link(text: []const u8, index: usize) ?Osc8Link {
     return .{ .uri = body[separator + 1 ..], .end = end };
 }
 
-/// Removes ANSI escape sequences so ACP clients receive Markdown-compatible
-/// text. OSC-8 hyperlinks become Markdown links so their targets survive the
-/// conversion. Returns the original slice when no escape byte is present;
-/// callers free the result only when it differs from the input.
 fn stripAnsiAlloc(alloc: Allocator, text: []const u8) ![]const u8 {
     if (std.mem.findScalar(u8, text, 0x1b) == null) return text;
     var out: std.ArrayList(u8) = .empty;
@@ -650,8 +630,6 @@ fn stripAnsiAlloc(alloc: Allocator, text: []const u8) ![]const u8 {
             index += 1;
         }
     }
-    // A link left open by a chunk boundary still closes with its target so
-    // the emitted Markdown stays balanced.
     if (open_link_uri) |uri| try appendMarkdownLinkClose(alloc, &out, uri);
     return try out.toOwnedSlice(alloc);
 }
@@ -662,8 +640,6 @@ fn appendMarkdownLinkClose(alloc: Allocator, out: *std.ArrayList(u8), uri: []con
     try out.append(alloc, ')');
 }
 
-/// Runs a prompt turn under the mode and permission policy captured at
-/// dispatch. Mid-turn session/set_mode changes only affect later prompts.
 fn captureSessionImageSnapshots(
     alloc: Allocator,
     session: *server.ActiveSessionState,
@@ -925,18 +901,6 @@ pub fn handlePrompt(
     } };
 }
 
-/// One subagent turn, mirrored onto the parent's ACP stream as it runs.
-///
-/// The child's own runtime deps publish text and tool lifecycle to
-/// `turn.appendLive*`, a bounded buffer only the TUI reads — so over ACP a
-/// subagent used to be a single opaque `subagent` tool call with nothing inside
-/// it. `live_mirror` gives those same events a second destination, and the
-/// context below tags everything it sends with the child's id, so a front end can
-/// fan the child out onto a transcript of its own instead of gluing its words
-/// into the parent's answer.
-///
-/// The ids need no namespacing: this context keeps its own `published_tool_calls`,
-/// and a client that separates children by tag never has two in one timeline.
 pub fn runSubagentChild(
     raw: ?*anyopaque,
     turn: *subagent_execution.TurnContext,
@@ -960,16 +924,12 @@ pub fn runSubagentChild(
         .alloc = alloc,
         .state = state,
         .session_id = session_id,
-        // Only a child that has been attached has an id to be watched under; one
-        // that has not runs exactly as it did before, unmirrored.
         .child = if (turn.child_id) |child_id| .{ .id = child_id, .title = childTitle(message.content) } else null,
         .captured_mode = captured_mode,
         .captured_permission_mode = admission.permission_mode,
         .captured_sandbox_backend = admission.sandbox_backend,
     };
     defer ctx.deinitPublishedToolCalls();
-    // Announced whichever way the run ends, including the error paths below, so a
-    // front end never leaves a subagent showing as running forever.
     defer ctx.sendChildEnded() catch {};
     var child_projection = state.cfg.mode_registry.buildGatewayToolProjection(
         alloc,
@@ -1099,8 +1059,6 @@ fn buildAgentConfig(state: *server.ServerState, session: *server.ActiveSessionSt
         .context_limits = state.context_limits,
         .context_experiments = experiments: {
             var experiments = session.context_experiments;
-            // The client sends the real window on its own option; reuse it
-            // rather than asking for the same number twice.
             experiments.context_window_tokens = session.session_rt.context_window_tokens;
             break :experiments experiments;
         },
@@ -1361,25 +1319,11 @@ fn agentRuntimeDeps(ctx: *AcpContext) agent_runtime.AgentRuntimeDeps {
     };
 }
 
-/// One turn's usage. See `AcpContext.turn_usage` for why the session ledger
-/// cannot answer this on an OpenAI-compatible route.
-///
-/// The two halves are counted differently on purpose. Output is genuinely
-/// cumulative — every step writes new tokens. Input is not: each step resends
-/// the whole conversation, so summing it counts the same context once per step
-/// and reports a number far larger than anything that was ever in the window.
-/// The client subtracts this from measured characters to size the "retrieval and
-/// retries" row of its context ledger, and a sum made that residual grow without
-/// bound until the ledger read as more-than-full. The last step's prompt is the
-/// carried context, so that is what the turn reports.
 fn reportTurnUsage(raw_ctx: *anyopaque, usage: types.Usage) void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     ctx.noteTurnUsage(usage);
     var out: std.Io.Writer.Allocating = .init(ctx.alloc);
     defer out.deinit();
-    // A child's numbers carry its tag in the same `_meta` rather than a second
-    // one, which `writeChildTaggedUpdate` refuses — silently, so a subagent read
-    // as having spent nothing at all.
     if (ctx.child) |child| {
         acp_types.writeChildTurnUsageInfoUpdate(&out.writer, ctx.turn_usage, child.id, child.title, child.ended) catch return;
         ctx.sendRawUpdate(out.writer.buffered()) catch {};
@@ -1489,13 +1433,6 @@ fn availableModelCapabilities(
     return withPublishedEfforts(ctx, model, ctx.state.capability_resolver.available(model));
 }
 
-/// The stops the client sent on the `reasoning_effort` option, over whatever the
-/// catalog answered. Both hooks take them because either one can end up being the
-/// capabilities a request is built from, and an effort missing from the set the
-/// request is checked against is dropped on the way to the gateway.
-///
-/// Only for the model they were published for: the same session resolves other
-/// models — a reviewer's, a subagent's — and their vocabularies are their own.
 fn withPublishedEfforts(
     ctx: *AcpContext,
     model: []const u8,
@@ -1534,9 +1471,6 @@ fn appendRuntimeContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.Ar
     }, arena, messages);
 }
 
-/// Steering rides the same per-step channel the children's deliveries do, and
-/// under the same rule: it is acknowledged, and so dropped, only once a request
-/// carrying it may have reached the model.
 const steer_ack_delivery_id = "acp-steer";
 
 fn childDeliveries(
@@ -2330,14 +2264,6 @@ fn commitAcpStateReplacement(
     }
 }
 
-/// Folds this session's older turns into one summary, on request.
-///
-/// The ACP command list has always advertised `compact` and nothing honoured
-/// it. This is the same lever `/compact` pulls in the TUI, and it is a method of
-/// its own rather than a prompt because the model is not involved: the summary
-/// is built the next time a prompt reads the context history, so nothing here
-/// costs a generation. `waitsForActivePrompt` keeps it out of a turn already in
-/// flight, whose history is being read on another thread.
 pub fn handleCompact(
     state: *server.ServerState,
     alloc: Allocator,
@@ -2350,8 +2276,6 @@ pub fn handleCompact(
     session.session_rt.forceCompaction();
     const start = session.session_rt.contextHistoryStart();
     const compacted = start != before;
-    // Only when something moved: an unchanged session is not worth a durable
-    // write, and a session with no store behind it compacts in memory alone.
     if (compacted) {
         if (session.writable) |*writable| try commitAcpStateReplacement(alloc, session, writable, false);
     }
@@ -2365,7 +2289,6 @@ pub fn handleCompact(
     try state.writer.writeResponse(alloc, msg.id, out.writer.buffered());
 }
 
-/// Stores grants on the active ACP session without persisting them.
 fn retainAcpGrant(raw_ctx: *anyopaque, tool_name: []const u8, target_path: []const u8) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     ctx.state.subagent_authority_mutex.lockUncancelable(io_mod.getIo());
@@ -2394,9 +2317,6 @@ fn pushRouteRecoveryStatus(
 fn pushText(raw_ctx: *anyopaque, emission: agent_runtime.TextEmission) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     const text = switch (emission) {
-        // The client renders markdown itself, so it gets the model's own bytes.
-        // `assistant_rendered` is the TUI projection — box-drawing tables, `•`
-        // bullets, ANSI — which is unparseable once it reaches a markdown view.
         .assistant_source => |text| text,
         .reasoning => |text| {
             if (text.len != 0) ctx.sendAgentThought(text) catch {};
@@ -2425,11 +2345,6 @@ fn pushToolLifecycle(raw_ctx: *anyopaque, event: types.ToolLifecycleEvent) !void
     }
 }
 
-/// A subagent's tool calls, published on the parent's stream.
-///
-/// The session's own `pushToolLifecycle` only opens a call, because the parent
-/// closes its calls from `executeToolCall` — a path a child never takes, since
-/// `subagent_agent_adapter` installs its own. So this one opens and closes.
 fn pushChildToolLifecycle(raw_ctx: *anyopaque, event: types.ToolLifecycleEvent) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     switch (event) {
@@ -2446,8 +2361,6 @@ fn pushChildToolLifecycle(raw_ctx: *anyopaque, event: types.ToolLifecycleEvent) 
         .terminal => |terminal| {
             const text = terminal.result orelse terminal.outcome.summary;
             switch (terminal.outcome.kind) {
-                // Still running as far as anyone watching is concerned: the call
-                // is waiting on something and will report again.
                 .deferred => {},
                 .completed => ctx.sendToolCallCompletedWithCommandResult(terminal.id.call_id, text, null) catch {},
                 .denied, .cancelled, .failed => ctx.sendToolCallError(terminal.id.call_id, text) catch {},
@@ -2457,9 +2370,6 @@ fn pushChildToolLifecycle(raw_ctx: *anyopaque, event: types.ToolLifecycleEvent) 
     }
 }
 
-/// What to call a subagent in a list of them: the opening line of the work it was
-/// given, which is the only name a child has. Cut on a character boundary, since
-/// a title is written straight into JSON.
 fn childTitle(content: []const u8) []const u8 {
     const line = content[0 .. std.mem.indexOfScalar(u8, content, '\n') orelse content.len];
     const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -2470,7 +2380,6 @@ fn childTitle(content: []const u8) []const u8 {
 
 test "a child is named after the first line of its brief, never mid-character" {
     try std.testing.expectEqualStrings("read the docs", childTitle("  read the docs \nthen report"));
-    // 27 three-byte characters: the 80-byte cut falls inside the 27th.
     const wide = "日" ** 27;
     const title = childTitle(wide);
     try std.testing.expectEqual(@as(usize, 78), title.len);
@@ -2489,17 +2398,11 @@ fn pushContextNotice(raw_ctx: *anyopaque, text: []const u8) !void {
     try pushSystemNotice(raw_ctx, text);
 }
 
-/// Status, not words: it rides the info channel rather than the agent text a
-/// notice takes, because anything sent as agent text lands in the durable reply
-/// as though the model had said it.
 fn pushContextExperiment(raw_ctx: *anyopaque, outcome: context_experiments.Outcome) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     var out: std.Io.Writer.Allocating = .init(ctx.alloc);
     defer out.deinit();
     try acp_types.writeContextExperimentInfoUpdate(&out.writer, outcome.pruned_results, outcome.reinjected, outcome.saved_tokens, outcome.added_tokens);
-    // ponytail: a subagent's copy is dropped — `writeChildTaggedUpdate` refuses an
-    // update that already carries `_meta`, and a status line is not worth failing
-    // the step it reports on. Merge the two `_meta` objects if children need it.
     ctx.sendUpdate(out.writer.buffered()) catch {};
 }
 
@@ -3701,8 +3604,6 @@ test "ACP stream adapter strips ANSI from agent chunks and suppresses writer fai
         };
         const deps = agentRuntimeDeps(&ctx);
 
-        // `operational` is the styled path that still reaches the client now that
-        // the assistant's own text is forwarded as unrendered source.
         for (spans) |span| try deps.push_text(deps.ctx, .{ .operational = span });
         try deps.push_text(deps.ctx, .{ .operational = "" });
         try capture.sync(io_mod.getIo());
@@ -4044,8 +3945,8 @@ test "ACP pending tool_call updates keep provider ids stable and dedupe" {
 
     const call = ToolCall{
         .id = "provider_call_7",
-        .name = "terminal",
-        .arguments_json = "{\"action\":\"exec\",\"command\":\"ls\"}",
+        .name = "write_file",
+        .arguments_json = "{\"content\":\"" ++ "x" ** 6000 ++ "\",\"path\":\"" ++ "nested/" ** 50 ++ "file.txt\"}",
     };
     const first = try ctx.sendToolCallPending(alloc, call);
     const second = try ctx.sendToolCallPending(alloc, call);
@@ -4062,6 +3963,10 @@ test "ACP pending tool_call updates keep provider ids stable and dedupe" {
         if (line.len == 0) continue;
         try std.testing.expect(std.mem.find(u8, line, "\"toolCallId\":\"provider_call_7\"") != null);
         try std.testing.expect(std.mem.find(u8, line, "\"sessionUpdate\":\"tool_call\"") != null);
+        const wire = try std.json.parseFromSliceLeaky(std.json.Value, alloc, line, .{});
+        const update = wire.object.get("params").?.object.get("update").?.object;
+        try std.testing.expectEqualStrings("nested/" ** 50 ++ "file.txt", update.get("_emma_filePath").?.string);
+        try std.testing.expect(update.get("rawInput").?.string.len <= max_raw_input_bytes);
         pending_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), pending_count);

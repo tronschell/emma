@@ -56,7 +56,7 @@ const streamedChunk = (message: Record<string, unknown>) => {
 
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 
-export type HarnessToolCall = ThreadStep;
+export type HarnessToolCall = ThreadStep & { filePath?: string };
 
 export type ContextExperimentFired = { prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number };
 
@@ -139,7 +139,7 @@ export type HarnessDeps = {
   onLog?: (line: HarnessLogLine) => void;
 };
 
-export type PermissionContext = { outsideWorkspace: boolean; mode: PermissionMode; kind: string };
+export type PermissionContext = { outsideWorkspace: boolean; kind: string };
 
 export type PermissionOption = { optionId: string; name: string; kind: string };
 
@@ -200,11 +200,11 @@ export class Harness {
 
   private readonly children = new Map<string, { thread: Promise<string>; ended: boolean }>();
 
-  private readonly modes = new Map<string, PermissionMode>();
   private nextId = 1;
   private rebind = false;
 
   private cancelled = new Set<string>();
+  private readonly permissionChecks = new Set<{ threadId: string; childId?: string; cancelled: boolean }>();
   private failure: Error | undefined;
 
   private heardAt = 0;
@@ -288,10 +288,10 @@ export class Harness {
   }
 
   private async runPrompt(threadId: string, cwd: string, text: string, mode: PermissionMode, model?: string, extra: TurnExtras = {}): Promise<{ stopReason: StopReason; usage: TurnUsage }> {
+    for (const check of this.permissionChecks.values()) if (check.threadId === threadId && !check.childId) check.cancelled = true;
     await this.start();
     const opening = !this.sessions.has(threadId);
     const sessionId = await this.activeSession(threadId, cwd);
-    this.modes.set(threadId, mode);
     if (opening) await this.lifecycle("SessionStart", threadId, sessionId, mode, model, { source: "startup" });
     await this.request("session/set_mode", { sessionId, modeId: HARNESS_MODE_ID });
 
@@ -324,6 +324,7 @@ export class Harness {
       prompt,
       ...(extra.continueRecovery ? { _meta: { fx: { continueRecovery: true } } } : {}),
     })) as { stopReason?: string; usage?: { inputTokens?: unknown; outputTokens?: unknown } } | null;
+    for (const check of this.permissionChecks.values()) if (check.threadId === threadId && !check.childId) check.cancelled = true;
     const stopReason = (result?.stopReason ?? "end_turn") as StopReason;
     await this.lifecycle("Stop", threadId, sessionId, mode, model, { stop_hook_active: false, stop_reason: stopReason });
     return {
@@ -348,6 +349,7 @@ export class Harness {
   async cancel(threadId: string) {
     this.cancelled.add(threadId);
     if (this.computerTurn?.threadId === threadId) this.computerTurn = undefined;
+    for (const check of this.permissionChecks.values()) if (check.threadId === threadId) check.cancelled = true;
     const sessionId = this.sessions.get(threadId);
 
     if (!sessionId || sessionId !== this.active || !this.running) return;
@@ -367,6 +369,7 @@ export class Harness {
   }
 
   async cancelChild(childId: string) {
+    for (const check of this.permissionChecks.values()) if (check.childId === childId) check.cancelled = true;
     await this.request("session/cancel_child", { childId });
   }
 
@@ -579,6 +582,8 @@ export class Harness {
           status: (update.status as HarnessToolCall["status"]) ?? known?.status ?? "pending",
 
           input: rawInput(update.rawInput) ?? known?.input,
+          filePath: update._emma_filePath === undefined ? known?.filePath
+            : typeof update._emma_filePath === "string" && update._emma_filePath.length > 0 && !update._emma_filePath.includes("\0") ? update._emma_filePath : undefined,
 
           output: toolOutput(update.content) ?? known?.output,
           at: Date.now(),
@@ -637,31 +642,34 @@ export class Harness {
     }
 
     const child = childTag(params);
-    const asking = child ? await this.childThread(threadId, child).catch(() => threadId) : threadId;
+    const check = { threadId, childId: child?.id, cancelled: this.cancelled.has(threadId) };
+    this.permissionChecks.add(check);
+    const asking = child ? await this.childThread(threadId, child).catch(() => undefined) : threadId;
     const call = (params.toolCall ?? {}) as { toolCallId?: unknown; title?: unknown; kind?: unknown; rawInput?: unknown };
 
     const title = String(call.title ?? "tool");
     const named = title === "file_mutation" ? describePath(call.rawInput) ?? title : title;
     const ask: PermissionAsk = {
       id: String(call.toolCallId ?? id),
-      threadId: asking,
+      threadId: asking ?? threadId,
       tool: named,
       summary: named === title ? String(call.title ?? "This run wants to use a tool.") : `writing ${named}`,
       detail: typeof call.rawInput === "string" ? call.rawInput : JSON.stringify(call.rawInput ?? {}, null, 2).slice(0, 4096),
     };
     const context: PermissionContext = {
       outsideWorkspace: callEscapesWorkspace(this.deps.cwd, call.rawInput),
-      mode: this.modes.get(threadId) ?? "ask",
       kind: String(call.kind ?? "other"),
     };
 
     let chosen: string | null;
     try {
-      chosen = await this.deps.onPermission(ask, options, context);
+      chosen = asking && !check.cancelled && !this.failure && !(child && this.children.get(`${threadId}/${child.id}`)?.ended)
+        ? await this.deps.onPermission(ask, options, context) : null;
     } catch {
       chosen = null;
     }
-
+    if (check.cancelled || this.failure || (child && this.children.get(`${threadId}/${child.id}`)?.ended)) chosen = null;
+    this.permissionChecks.delete(check);
     this.send({
       jsonrpc: "2.0",
       id,
@@ -696,6 +704,7 @@ export class Harness {
   }
 
   private fail(error: Error) {
+    for (const check of this.permissionChecks.values()) check.cancelled = true;
     if (!this.failure) this.log("err", "stopped", error.message);
     this.failure ??= error;
     for (const pending of this.pending.values()) pending.reject(this.failure);

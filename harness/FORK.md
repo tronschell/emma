@@ -104,6 +104,10 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   (server, workspace root), a data-only registry of about fifty servers in
   `src/core/lsp/servers.zig`, and the `lsp` tool's nine actions. An agent that
   can ask a real language server does not have to guess a definition from text.
+- **Skill catalog budget.** `skill_catalog_bytes` defaults to 64 KiB instead
+  of upstream's 16 KiB, which omitted `scheduled-tasks` and `threads` once
+  imported skills filled the catalog. Per-description limits, explicit catalog
+  overrides, and overflow warnings are unchanged.
 - **Tool description cap.** `gateway_schema.description_max_bytes` was
   upstream's 1024 and is 4 KiB. `cappedDescriptionAlloc` truncates silently, so
   at 1024 `workflow` and `autoresearch` lost their last commands with nothing to
@@ -236,3 +240,10 @@ below.
 
 Upstream's byte-exact tool schema oracles are never taken: Emma advertises a
 different tool set, so those hashes cannot match by construction.
+
+### Edit review metadata
+
+Pending `write_file` and `edit_file` ACP calls carry `_emma_filePath`, parsed
+from their complete arguments before the 4 KiB display preview is truncated.
+Emma retains this path across status updates to capture before/after file
+contents for review and revert; history replay does not create new captures.

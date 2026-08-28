@@ -60,19 +60,9 @@ impl fmt::Display for ScheduledJobId {
 pub struct ScheduledJob {
     pub id: ScheduledJobId,
     pub title: String,
-    /// What fires this job: a five-field cron expression, `manual`, `after <job-id>`
-    /// when another job finishing is the trigger, or `on <event>` for one of the
-    /// app events Emma raises. Only a cron job has a next run to wait for.
     pub schedule: String,
     pub prompt: String,
-    /// The job's node graph, as the JSON the desktop's workflow runner reads.
-    /// Empty means the whole job is one agent step running `prompt`, which is
-    /// what every job saved before workflows existed is. The grammar lives in
-    /// `desktop/shared/workflow.ts`; core stores it and never interprets it.
     pub nodes: String,
-    /// The variables the last finished run left behind, as a JSON object. They are
-    /// what a job triggered `after` this one starts with, and what the workspace
-    /// shows under the last run.
     pub outputs: String,
     pub source_domains: Vec<String>,
     pub enabled: bool,
@@ -80,12 +70,7 @@ pub struct ScheduledJob {
     pub next_run_at: Option<Timestamp>,
     pub last_run_at: Option<Timestamp>,
     pub last_thread_id: Option<String>,
-    /// What the run may do when it fires. An unattended job is still a full agent
-    /// turn, so the mode chosen when it was saved is the one it runs under.
     pub permission_mode: String,
-    /// The model key the run is pinned to, as the desktop writes it
-    /// (`openrouter:<id>`, or empty for whichever model the app is set to).
-    /// Core stores it and never interprets it.
     pub model: String,
 }
 
@@ -94,9 +79,6 @@ pub const PERMISSION_MODES: [&str; 3] = ["ask", "acceptEdits", "full"];
 pub const MAX_SCHEDULED_MODEL_LEN: usize = 128;
 pub const MAX_WORKFLOW_NODE_BYTES: usize = 32 * 1024;
 pub const MAX_WORKFLOW_OUTPUT_BYTES: usize = 16 * 1024;
-/// How far a chain of `after` triggers may run before core stops firing. Two jobs
-/// that trigger each other are a loop, and a loop of unattended agent turns is the
-/// one failure here nobody is watching.
 pub const MAX_TRIGGER_DEPTH: u32 = 3;
 
 pub fn stored_permission_mode(stored: String) -> String {
@@ -108,6 +90,28 @@ pub fn stored_permission_mode(stored: String) -> String {
 
 impl ScheduledJob {
     pub fn new(
+        title: String,
+        schedule: String,
+        prompt: String,
+        nodes: String,
+        source_domains: Vec<String>,
+        permission_mode: String,
+        created_at: Timestamp,
+    ) -> Result<Self, ValidationError> {
+        let mut job = Self::from_fields(
+            title,
+            schedule,
+            prompt,
+            nodes,
+            source_domains,
+            permission_mode,
+            created_at,
+        )?;
+        job.book_next_run(created_at)?;
+        Ok(job)
+    }
+
+    pub(crate) fn from_fields(
         title: String,
         schedule: String,
         prompt: String,
@@ -155,9 +159,6 @@ impl ScheduledJob {
                 domains.push(domain);
             }
         }
-        let next_run_at = cron_expression(&schedule)
-            .map(|cron| next_run(cron, created_at))
-            .transpose()?;
         Ok(Self {
             id: ScheduledJobId::generate(created_at),
             title,
@@ -168,7 +169,7 @@ impl ScheduledJob {
             source_domains: domains,
             enabled: true,
             created_at,
-            next_run_at,
+            next_run_at: None,
             last_run_at: None,
             last_thread_id: None,
             permission_mode,
@@ -176,9 +177,6 @@ impl ScheduledJob {
         })
     }
 
-    /// The clock's own claim: true once, for the run that is due now, and the next
-    /// occurrence is booked before the caller is told, so a tick that overlaps the
-    /// last one cannot run the same unattended turn twice.
     pub fn claim_run(&mut self, now: Timestamp) -> Result<bool, ValidationError> {
         let Some(due) = self.next_run_at else {
             return Ok(false);
@@ -187,15 +185,17 @@ impl ScheduledJob {
             return Ok(false);
         }
         self.last_run_at = Some(now);
-        self.next_run_at = cron_expression(&self.schedule)
-            .map(|cron| next_run(cron, now))
-            .transpose()?;
+        self.book_next_run(now)?;
         Ok(true)
     }
 
-    /// A run somebody else decided on: the user pressing run, Emma testing a job,
-    /// or an upstream job finishing. It records the run without touching the cron
-    /// booking, so running a weekly job by hand does not skip its Monday.
+    pub(crate) fn book_next_run(&mut self, now: Timestamp) -> Result<(), ValidationError> {
+        self.next_run_at = cron_expression(&self.schedule)
+            .map(|cron| next_run(cron, now))
+            .transpose()?;
+        Ok(())
+    }
+
     pub fn start_run(&mut self, now: Timestamp) {
         self.last_run_at = Some(now);
     }
@@ -263,8 +263,6 @@ impl ScheduledJob {
     pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
         let mut lines = markdown.lines();
         exact(&mut lines, "---")?;
-        // A job saved before modes existed ran with no tools at all, which is what
-        // "ask" gives an unattended run: every gated call is declined on timeout.
         let format = match prefixed(&mut lines, "emma-scheduled-job-format: ")? {
             "1" => 1,
             "2" => 2,
@@ -280,8 +278,6 @@ impl ScheduledJob {
         let title = field_value(&mut lines, "title")?;
         let schedule = field_value(&mut lines, "schedule")?;
         let prompt = field_value(&mut lines, "prompt")?;
-        // A job saved before workflows existed is one agent step running its prompt,
-        // which is exactly what an empty graph means.
         let (nodes, outputs) = if format >= 3 {
             (
                 field_value(&mut lines, "nodes")?,
@@ -308,8 +304,6 @@ impl ScheduledJob {
         } else {
             "ask".to_string()
         };
-        // A job saved before models could be pinned runs on whatever model the app
-        // is set to, which is what an empty key means.
         let model = if format >= 4 {
             field_value(&mut lines, "model")?
         } else {
@@ -340,7 +334,7 @@ impl ScheduledJob {
         if lines.next().is_some() {
             return Err(ValidationError::new("scheduled job has trailing content"));
         }
-        let mut job = Self::new(
+        let mut job = Self::from_fields(
             title,
             schedule,
             prompt,
@@ -349,11 +343,8 @@ impl ScheduledJob {
             permission_mode,
             created_at,
         )?;
-        // Only two invariants survive manual runs: a run cannot predate the job, and
-        // a cron job is exactly the kind that has a next occurrence booked. A stale
-        // booking is not an error — it is a job whose Mac was asleep, and it fires.
         if last_run_at.is_some_and(|last| last < created_at)
-            || next_run_at.is_some() != job.next_run_at.is_some()
+            || next_run_at.is_some() != cron_expression(&job.schedule).is_some()
         {
             return Err(ValidationError::new(
                 "scheduled job run timestamps are invalid",
@@ -370,8 +361,6 @@ impl ScheduledJob {
     }
 }
 
-/// The cron half of a trigger, or `None` when the job is fired by something other
-/// than the clock. Everything that asks "when does this run next" goes through here.
 fn cron_expression(schedule: &str) -> Option<&str> {
     (schedule.split_ascii_whitespace().count() == 5).then_some(schedule)
 }
@@ -533,7 +522,6 @@ impl ScheduledJobStore {
         Ok(job)
     }
 
-    /// Deleting a job that is already gone is a success: the caller wanted it gone.
     pub fn delete(&self, id: &ScheduledJobId) -> Result<(), ScheduledJobStoreError> {
         match fs::remove_file(self.path_for(id)) {
             Ok(()) => Ok(()),
@@ -691,7 +679,6 @@ mod tests {
                 .permission_mode,
             "ask"
         );
-        // A job saved before models could be pinned keeps running on the app's model.
         let unpinned = job
             .to_markdown()
             .replacen(
@@ -745,8 +732,6 @@ mod tests {
             let mut job = job(trigger);
             assert_eq!(job.next_run_at, None, "{trigger} booked a run");
             assert_eq!(job.claim_run(now), Ok(false), "{trigger} claimed a run");
-            // It still runs when something else fires it, and that run is recorded
-            // without inventing a schedule for it.
             job.start_run(now);
             assert_eq!(job.last_run_at, Some(now));
             assert_eq!(job.next_run_at, None);

@@ -19,7 +19,6 @@ pub const Skill = struct {
     description: []const u8,
     path: []const u8,
     source: SkillSource,
-    /// Owned with discovered catalog entries. Null keeps managed skills strict.
     read_authority: ?[]const u8 = null,
 };
 
@@ -55,7 +54,6 @@ pub const SkillDiagnostic = struct {
     cause: SkillDiagnosticCause,
 };
 
-/// Owns the validated candidate directory and metadata file handles.
 pub const OpenedSkillCandidate = struct {
     dir: std.Io.Dir,
     skill_file: std.Io.File,
@@ -278,9 +276,6 @@ const SkillEntry = struct {
     linked: bool,
 };
 
-/// Deduplicates filesystem aliases without collapsing distinct skills that
-/// share metadata names. Ordered discovery makes the first logical root the
-/// stable source and display path for each canonical candidate directory.
 const CanonicalSkillPaths = struct {
     paths: std.StringHashMapUnmanaged(void) = .empty,
 
@@ -445,11 +440,6 @@ fn canonicalPathHasReadAuthority(
     return pathInsideReadAuthorities(read_authority, extra_authorities, canonical_path);
 }
 
-/// Parses FX_SKILL_SYMLINK_AUTHORITIES (colon-separated absolute paths) into
-/// owned duplicates. Returns an empty slice when the variable is unset or
-/// contains no valid absolute paths. Relative entries and entries containing
-/// `..` components are silently skipped. The caller must free each entry and
-/// the slice itself via `freeExternalAuthorities`.
 fn externalSymlinkAuthorities(alloc: Allocator) ![][]const u8 {
     const raw = io_mod.getenv("FX_SKILL_SYMLINK_AUTHORITIES") orelse return &.{};
     if (raw.len == 0) return &.{};
@@ -777,8 +767,6 @@ fn inspectSkillCandidateFile(
     return .{ .valid = .{ .content = content, .metadata = metadata } };
 }
 
-/// Opens and validates the exact advertised candidate without rescanning skill roots.
-/// The caller must deinitialize a `.current` candidate.
 pub fn openValidatedSkillCandidate(alloc: Allocator, skill: Skill) error{OutOfMemory}!SkillCandidateOpenResult {
     const candidate_name = std.fs.path.basename(skill.path);
     if (candidate_name.len == 0) return .{ .skipped = .unreadable };
@@ -1230,8 +1218,6 @@ pub const SkillMenu = struct {
         const item_count = self.filteredItemCount(items);
         if (!self.active or item_count == 0) return false;
         const max_rows: u16 = @max(visible_rows, 1);
-        // Clamp at both ends instead of wrapping: at the top the selection
-        // stays on the first skill, at the bottom on the last.
         const current: i32 = @intCast(self.selected_index % item_count);
         var next = current + delta;
         if (next < 0) next = 0;
@@ -1999,12 +1985,10 @@ test "skill menu opens focuses moves and clamps loaded items" {
     try std.testing.expectEqual(@as(usize, 0), runtime.menu.selected_index);
     try std.testing.expectEqualStrings("managed", runtime.selectedMenuSkill().?.name);
 
-    // Up from the top clamps instead of wrapping to the last item.
     try std.testing.expect(runtime.moveMenuSelection(-1));
     try std.testing.expectEqual(@as(usize, 0), runtime.menu.selected_index);
     try std.testing.expectEqualStrings("managed", runtime.selectedMenuSkill().?.name);
 
-    // Down past the last item clamps on the last skill.
     try std.testing.expect(runtime.moveMenuSelection(1));
     try std.testing.expect(runtime.moveMenuSelection(1));
     try std.testing.expect(runtime.moveMenuSelection(1));
@@ -2486,6 +2470,24 @@ test "bounded skill descriptions measure encoded bytes without cutting an entity
     try std.testing.expect(std.mem.find(u8, result.notice.?, "encoded&quot;&#x1b;") != null);
     try std.testing.expect(std.mem.find(u8, result.notice.?, "\x1b") == null);
     try std.testing.expect(std.mem.find(u8, result.text, "BODY MUST NOT APPEAR") == null);
+}
+
+test "default skill catalog keeps bundled skills after imports exceed 16 KiB" {
+    const alloc = std.testing.allocator;
+    const skills = [_]Skill{staticSkill("imported", "d" ** 1024, .global_fx)} ** 16 ++ [_]Skill{
+        staticSkill("scheduled-tasks", "Create scheduled tasks.", .global_fx),
+        staticSkill("threads", "Manage threads.", .global_fx),
+    };
+    const limits = context_limits.Values{};
+    var result = try buildSkillsSystemPromptSectionWithLimits(alloc, &skills, limits);
+    defer result.deinit(alloc);
+
+    try std.testing.expect(result.notice == null);
+    try std.testing.expect(result.text.len > 16 * 1024);
+    try std.testing.expect(result.text.len <= limits.skill_catalog_bytes.effectiveBytes());
+    try std.testing.expectEqual(skills.len, std.mem.count(u8, result.text, "  <skill>\n"));
+    try std.testing.expect(std.mem.find(u8, result.text, "<name>scheduled-tasks</name>") != null);
+    try std.testing.expect(std.mem.find(u8, result.text, "<name>threads</name>") != null);
 }
 
 test "skill catalog one-byte overflow reports every omitted name in stable order" {
@@ -3786,8 +3788,6 @@ test "loadVisibleSkills discovers a linked candidate resolved via external symli
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // The skill source lives outside the home/workspace, simulating a Nix
-    // store path. The symlink in the skills directory points to it.
     try writeTempFile(
         &tmp,
         "external-store/linked-skill/SKILL.md",

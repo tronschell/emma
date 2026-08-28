@@ -53,6 +53,7 @@ the global pointer; screen-context and annotation capture are separate features.
 | Renderer → main | `trustedFrame` in [`main.ts`](../desktop/main/main.ts) | Sender must be the main frame and its URL must be `<appPath>/dist-renderer/index.html`, or the `EMMA_DEV_SERVER_URL` origin (`trustedSender`) |
 | Renderer → main | `validateRequest` in [`ipc.ts`](../desktop/main/ipc.ts) | Method must be in a 20-entry allowlist; exact required and optional field lists; every value a string; per-key length caps; whole envelope ≤ 128 KiB |
 | Renderer → main | `keepRequest`, `vaultRequest`, `runCommandRequest`, `validJpegDataUrl` | Per-channel shape checks for the channels that do not reach the host |
+| Renderer → main | `componentCall` in [`components.ts`](../desktop/main/components.ts) | A widget Emma built asking to reach the outside: one of five methods, well-formed header names, `{{NAME}}` filled only for the variables that component declared, and `publicUrl` narrowed to public **https** |
 | Main → host | `MAX_REQUEST_BYTES` 128 KiB in [`main.rs`](../crates/host/src/main.rs) | Oversize lines are refused with the request id recovered, not dropped silently |
 | Host → main | serde `deny_unknown_fields` on every params struct | An unknown or misspelled field is an error, not a default |
 | Host → main | `BoundedLines` in [`ndjson.ts`](../desktop/main/ndjson.ts) | 16 MiB per line, UTF-8 fatal decode, `parseHostLine` re-checks every envelope |
@@ -90,8 +91,8 @@ Emma's own directory so it never reads the user's `~/.fx`.
 `emma-core` owns parsing, validation and atomic persistence. `$EMMA_DATA_DIR`, or
 `~/Library/Application Support/Emma` when unset, holds `threads/`, `scheduled/`
 and `research/` — one Markdown file per record, written to `.{id}.tmp` and
-renamed over the destination. Artifacts, plans, skills, tools and credentials are
-Electron's, under `userData`, and reach the renderer over named IPC channels
+renamed over the destination. Artifacts, components, plans, skills, tools and credentials
+are Electron's, under `userData`, and reach the renderer over named IPC channels
 rather than through the host. Kept notes go into the user's own vault, not into
 Emma's data directory — see [knowledge.md](knowledge.md). Full inventory in
 [data.md](data.md).
@@ -148,3 +149,9 @@ Vendor brand marks are credited in
 - [harness.md](harness.md) — the fx fork and the ACP session
 - [data.md](data.md) — every file and environment variable
 - [privacy.md](privacy.md) — what leaves this Mac
+
+## Host response framing
+
+The Rust host keeps responses up to 64 KiB as ordinary NDJSON envelopes. Larger responses are serialized intact, then emitted as `{id, chunk, sequence, end}` frames. Each `chunk` contains at most 64 KiB of UTF-8 JSON text, split only between Unicode characters. Sequences start at zero; `end: true` identifies the final frame. The output mutex covers one whole frame, allowing scheduled `dueJob` events between frames.
+
+Electron retains the 16 MiB line limit and validates and assembles chunks by pending request ID. Missing, repeated, out-of-order, mismatched, or malformed frames fail the transport; EOF with unfinished chunks also fails it. A response exceeding 256 MiB of assembled UTF-8 text is discarded through its final frame and rejects only that request, leaving the host available. Histories, traces, metadata, and renderer snapshot semantics are unchanged below this explicit runtime limit. Serialization and final parsing still hold the complete response in memory; framing is not pagination.

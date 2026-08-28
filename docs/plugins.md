@@ -9,6 +9,9 @@ Four seams, no in-process JavaScript SDK:
 | [Plugins](#plugins) | The ChatGPT and Codex plugin format — manifest, skills, MCP config, hooks — from a marketplace |
 | [UI plugins](#ui-plugins) | One bounded CSS file that restyles the app |
 
+A fifth seam is Emma writing interface rather than capability: the `component`
+tool, whose widgets land in the context bar. See [components.md](components.md).
+
 ## Imports
 
 Settings → **Imports & plugins** scans this Mac for skills and MCP configs
@@ -48,13 +51,14 @@ servers, 128 KiB manifest, 256 KiB config.
 
 ## Emma's own capabilities
 
-Emma owns three places under `<userData>`, and writes only there:
+Emma owns four places under `<userData>`, and writes only there:
 
 | Path | Written by | What it holds |
 | --- | --- | --- |
 | `skills/<slug>/SKILL.md` | `write_skill` | A durable lesson |
 | `mcp.json` | `install_mcp` | The one MCP config Emma owns |
 | `tools/<slug>/run` + `about.txt` | `write_tool` | An executable script of her own |
+| `components/<id>/module.js` + `meta.json` | `component` | A widget in the context bar |
 
 Both capability files are synthesized into the manifest as an implicit `emma`
 source, so they need no import step. Enumeration re-reads them on every call and
@@ -74,10 +78,16 @@ command gets fixed.
 | `write_plugin` | Packages skills as a plugin and installs it | auto |
 | `install_mcp` | Adds a server to `mcp.json` | **ask** |
 | `run_tool` | Lists the written tools and runs one | **ask** |
+| `component` | Writes `components/<id>/module.js` and its `meta.json` | auto |
 
 Gates are in [`desktop/shared/permissions.ts`](../desktop/shared/permissions.ts);
-in `full` all five are auto, and in `auto` the `ask` row is used and the call
-goes to the verifier model.
+in `full` all six are auto, and in `auto` the `ask` rows are used and those calls
+go to the verifier model.
+
+`component` is auto for the same reason `write_skill` is: it writes a file into
+Emma's own folder. The code it writes reaches the network only through
+`emma:component-fetch`, which is public https, and only with the variables the
+component declared — so there is no arbitrary-code gate to place on it.
 
 The two halves of a tool are gated apart on purpose: writing a file into Emma's
 own folder never asks, while running one is arbitrary code on the user's Mac and

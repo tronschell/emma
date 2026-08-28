@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, net, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -12,15 +12,15 @@ import { clipPage, fetchReadablePage, frontmostApplication, frontmostPage, front
 import { discoverImports, saveImportManifest } from "./imports";
 import { loadUiPlugins } from "./plugins";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout, type NotchGeometry } from "./overlay";
-import { BoundedLines, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
+import { BoundedLines, HostResponses, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
 import { describeRun, packVariables, parseVariables, parseWorkflow, runWorkflow, type WorkflowNode } from "../shared/workflow";
 import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
 import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "./invocations";
 import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
 import { artifactFiles, deleteArtifact, listArtifacts, queryArtifact, readArtifact, readArtifactFile, updateArtifact, updateArtifactFile, writeArtifact, writeArtifactFile } from "./artifacts";
 import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
-import { deleteComponent, listComponents, readComponent, readComponentShot, setComponentAnchor, setComponentEnabled, writeComponent, writeComponentShot } from "./components";
-import { COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, PLACE_TIMEOUT_MS, type ComponentAnchor } from "../shared/components";
+import { componentCall, deleteComponent, listComponents, readComponent, readComponentShot, setComponentEnabled, setComponentExpands, writeComponent, writeComponentShot } from "./components";
+import { COMPONENT_FETCH_TIMEOUT_MS, COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, COMPONENT_ZONE_LABEL, MAX_COMPONENT_FETCH_BYTES } from "../shared/components";
 import { deletePlan, editPlan, listPlans, readPlan, writePlan } from "./plans";
 import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
@@ -55,7 +55,7 @@ import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
 import { forceArm, setConnections, setImprovements, setPrompts, setSystemPrompt, verifierLessons, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { detectConnections, isConnectionId, outdatedConnections, setUpConnection } from "./connections";
-import { Harness, describePath, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
+import { Harness, escapesRoot, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
 import { advise } from "./advisor";
@@ -77,6 +77,7 @@ const SNAPSHOT_CACHE_MS = 5000;
 class Host {
   private child: ChildProcessWithoutNullStreams;
   private lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
+  private responses = new HostResponses();
   private nextId = 1;
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: Error | null = null;
@@ -89,7 +90,7 @@ class Host {
       try { for (const line of this.lines.push(data)) { if (this.failure) break; this.receive(line); } }
       catch (error) { this.abort(error instanceof Error ? error : new Error("Emma host protocol error")); }
     });
-    this.child.stdout.on("end", () => { try { this.lines.end(); } catch (error) { this.abort(error as Error); } });
+    this.child.stdout.on("end", () => { try { this.lines.end(); this.responses.end(); } catch (error) { this.abort(error as Error); } });
     this.child.stderr.on("data", (data) => console.error(String(data).trim()));
     this.child.once("error", (error) => this.fail(error));
     this.child.stdin.on("error", (error) => this.fail(error));
@@ -136,7 +137,10 @@ class Host {
 
   private receive(line: string) {
     try {
-      const response = parseHostLine(line);
+      const frame = parseHostLine(line);
+      if (!("dueJob" in frame) && !this.pending.has(frame.id)) throw new Error("Unexpected host response ID");
+      const response = this.responses.push(frame);
+      if (!response) return;
       if ("dueJob" in response) {
         const job = response.dueJob;
         this.storeChanged();
@@ -163,6 +167,7 @@ class Host {
     this.snapshot = undefined;
     for (const request of this.pending.values()) request.reject(this.failure);
     this.pending.clear();
+    this.responses.clear();
   }
 }
 
@@ -328,20 +333,6 @@ const toolsChanged = async () => {
 const artifactsChanged = () => broadcast("emma:artifacts-changed");
 const componentsChanged = () => broadcast("emma:components-changed");
 
-const placements = new Map<string, ComponentAnchor>();
-let placeAsk: { id: string; settle: (anchor: ComponentAnchor | undefined) => void } | undefined;
-
-function askPlace(title: string): Promise<ComponentAnchor | undefined> {
-  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Emma's window is not open, so there is nowhere for the user to point at.");
-  placeAsk?.settle(undefined);
-  const id = randomUUID();
-  needsYou("Emma needs a spot", `Point at where \u201c${title}\u201d goes`);
-  mainWindow.webContents.send("emma:component-place", { id, title });
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => { if (placeAsk?.id === id) placeAsk.settle(undefined); }, PLACE_TIMEOUT_MS);
-    placeAsk = { id, settle: (anchor) => { clearTimeout(timer); placeAsk = undefined; resolve(anchor); } };
-  });
-}
 const plansChanged = () => broadcast("emma:plans-changed");
 let overlayPreferencesReady = false;
 let queuedOverlayToggle: { command?: string } | null = null;
@@ -964,7 +955,6 @@ async function skillParams(task: string): Promise<Record<string, string>> {
   return { skillContext: skill.instructions };
 }
 
-
 function goalIpc(value: unknown): Record<string, unknown> & { threadId: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Goal request is invalid");
   const request = value as Record<string, unknown>;
@@ -1411,8 +1401,6 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
   }
 }
 
-
-
 function goalRequest(method: string, params: Record<string, string>): Promise<ThreadRecord | undefined> {
   return host!.request({ method, params }).then((thread) => {
     const noted = noteThread(thread);
@@ -1599,37 +1587,35 @@ async function artifactTool(args: Extract<ToolArgs, { name: "artifact" }>, threa
   }
 }
 
+function variableNote(variables: string[] | undefined): string {
+  if (!variables?.length) return "";
+  const missing = variables.filter((name) => !process.env[name]);
+  if (!missing.length) return ` It reads ${variables.join(", ")}, and every one of them is set.`;
+  return ` It needs ${missing.join(", ")}: tell the user to open Settings \u2192 Built by Emma and fill ${missing.length > 1 ? "them" : "it"} in, or the component has nothing to fetch with.`;
+}
+
 async function componentTool(args: Extract<ToolArgs, { name: "component" }>, threadId: string): Promise<string> {
   const userData = app.getPath("userData");
   switch (args.action) {
     case "list": {
       const built = await listComponents(userData);
-      if (!built.length) return 'Emma has built nothing into her interface yet. Start with component {"action":"place"} \u2014 the user points at where it goes.';
-      return `Components:\n${built.map((one) => `${one.id} \u2014 ${one.title} \u2014 in ${one.anchor.label} \u2014 v${one.version}${one.disabled ? " \u2014 switched off by the user" : ""}`).join("\n")}`;
+      if (!built.length) return 'Emma has built nothing into her interface yet. Build one with component {"action":"create","title":"\u2026","code":"\u2026"} and it appears in the context bar.';
+      return `Components:\n${built.map((one) => `${one.id} \u2014 ${one.title} \u2014 v${one.version}${one.expands ? " \u2014 opens full screen" : ""}${one.variables?.length ? ` \u2014 needs ${one.variables.join(", ")}` : ""}${one.disabled ? " \u2014 switched off by the user" : ""}`).join("\n")}`;
     }
     case "get": {
       const one = await readComponent(userData, args.id!);
-      return `${one.title} (${one.id}) \u2014 in ${one.anchor.label}, version ${one.version}\n\n${one.code}`;
-    }
-    case "place": {
-      const anchor = await askPlace(args.title ?? "the new component");
-      if (!anchor) return "The user did not pick a spot, so there is nowhere to build. Ask them where it should go before trying again.";
-      placements.set(threadId, anchor);
-      return `The user pointed at ${anchor.label}. Now ask them whatever the request left open \u2014 what it shows, where its numbers come from, how it behaves \u2014 unless they already said it. Then build it with component {"action":"create","title":"\u2026","code":"\u2026"}.`;
+      return `${one.title} (${one.id}) \u2014 version ${one.version}${one.expands ? ", opens full screen" : ""}${one.variables?.length ? `, needs ${one.variables.join(", ")}` : ""}\n\n${one.code}`;
     }
     case "create": {
-      const anchor = placements.get(threadId);
-      if (!anchor) throw new Error('There is nowhere to put it yet. Call component {"action":"place"} first: the user points at the spot and this thread remembers it.');
-      const saved = await writeComponent(userData, { title: args.title!, code: args.code!, anchor, sourceThreadId: threadId });
-      placements.delete(threadId);
+      const saved = await writeComponent(userData, { title: args.title!, code: args.code!, expands: args.expand, variables: args.variables, sourceThreadId: threadId });
       componentsChanged();
-      return `Built "${saved.title}" (${saved.id}) into ${anchor.label}, and it is on screen now. Ask the user how it looks: component {"action":"rewrite","id":"${saved.id}","code":"\u2026"} reloads it in place while they watch. The \u22ef in its corner is how they delete it.`;
+      return `Built "${saved.title}" (${saved.id}) into ${COMPONENT_ZONE_LABEL}, and it is on screen now.${variableNote(saved.variables)} Ask the user how it looks: component {"action":"rewrite","id":"${saved.id}","code":"\u2026"} reloads it in place while they watch. The \u22ef in its header is how they switch it off or delete it.`;
     }
     case "rewrite": {
       const existing = await readComponent(userData, args.id!);
-      const saved = await writeComponent(userData, { id: existing.id, title: args.title ?? existing.title, code: args.code!, sourceThreadId: threadId });
+      const saved = await writeComponent(userData, { id: existing.id, title: args.title ?? existing.title, code: args.code!, expands: args.expand, variables: args.variables, sourceThreadId: threadId });
       componentsChanged();
-      return `Reworked "${saved.title}" \u2014 v${saved.version}, reloaded in place. Ask whether that is what they meant.`;
+      return `Reworked "${saved.title}" \u2014 v${saved.version}, reloaded in place.${variableNote(saved.variables)} Ask whether that is what they meant.`;
     }
   }
 }
@@ -1678,7 +1664,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       broadcast("emma:delta", { threadId, delta });
     },
     onThought: (threadId, delta) => {
-      if (agents && !agents.noteDelta(threadId, delta)) return;
+      if (agents && !agents.noteDelta(threadId, delta, true)) return;
       harnessThought.set(threadId, (harnessThought.get(threadId) ?? "") + delta);
       broadcast("emma:delta", { threadId, delta, thinking: true });
     },
@@ -1714,7 +1700,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         title: name,
         parentThreadId,
         depth: (parent?.depth ?? 0) + 1,
-        mode: parent?.mode ?? DEFAULT_PERMISSION_MODE,
+        mode: agents!.mode(parentThreadId),
         model: modelName(parent?.model),
         effort: parent?.effort ?? "",
         parentSpanId: agents!.spanFor(parentThreadId),
@@ -1751,6 +1737,8 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       }
     },
     onPermission: async (ask, options, context) => {
+      const authorized = agents!.authorization(ask.threadId);
+      if (!authorized()) return null;
       const pick = (...kinds: string[]) => {
         for (const kind of kinds) {
           const found = options.find((option) => option.kind === kind)?.optionId;
@@ -1763,10 +1751,10 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         broadcast("emma:step", { threadId: ask.threadId, toolCallId: ask.id, title: `blocked: ${ask.tool} is outside the connected folder`, kind: "other", status: "failed", at: Date.now() });
         return deny();
       }
-      if (context.mode === "full") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
-      if (context.mode === "acceptEdits" && context.kind === "edit") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
+      if (agents!.mode(ask.threadId) === "full") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
+      if (agents!.mode(ask.threadId) === "acceptEdits" && context.kind === "edit") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
       const allowed = await agents!.question({ threadId: ask.threadId, tool: ask.tool, summary: ask.summary, detail: ask.detail });
-      return allowed ? pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null : deny();
+      return allowed && authorized() ? pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null : deny();
     },
     onToolRequest: (threadId, name, args) => runEmmaTool(threadId, name, args),
     mcpServers: (threadId) => harnessMcpServers(threadId),
@@ -1800,20 +1788,27 @@ const harnessBefore = new Map<string, { threadId: string; text: string | null }>
 
 function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | undefined {
   if (call.kind !== "edit") return;
-  const relative = describePath(call.input);
-  if (!relative) return;
+  const relative = call.filePath;
+  if (typeof relative !== "string" || !relative || relative.includes("\0") || escapesRoot(cwd, relative)) return;
   const grant = folders!.list().find((folder) => folder.path === cwd);
   if (!grant) return;
   const absolute = path.resolve(cwd, relative);
   if (absolute !== cwd && !absolute.startsWith(cwd + path.sep)) return;
   const read = () => { try { return readFileSync(absolute, "utf8"); } catch { return null; } };
 
-  if (call.status !== "completed") {
-    if (!harnessBefore.has(call.toolCallId)) harnessBefore.set(call.toolCallId, { threadId: call.threadId, text: read() });
+  const key = `${call.threadId}:${call.toolCallId}`;
+  if (call.status === "failed") {
+    harnessBefore.delete(key);
     return;
   }
-  const before = harnessBefore.get(call.toolCallId)?.text ?? null;
-  harnessBefore.delete(call.toolCallId);
+  if (call.status !== "completed") {
+    if (!harnessBefore.has(key)) harnessBefore.set(key, { threadId: call.threadId, text: read() });
+    return;
+  }
+  const opened = harnessBefore.get(key);
+  if (!opened) return;
+  const before = opened.text;
+  harnessBefore.delete(key);
   const after = read();
   if (after === null || after === before) return;
   const change: FileChange = { folderId: grant.id, path: path.relative(cwd, absolute), before, after, at: Date.now() };
@@ -1834,11 +1829,12 @@ const HARNESS_TOOL_NAMES: Record<string, string> = { look_at_image: "vision" };
 async function runEmmaTool(threadId: string, wireName: string, args: Record<string, unknown>): Promise<string> {
   const name = HARNESS_TOOL_NAMES[wireName] ?? wireName;
   const turn = harnessTurns.get(threadId);
-  const running = () => agents!.isLive(threadId);
-  if (!turn || !running()) throw new Error("Emma's tools are only available while a turn is running.");
-  const gate = toolGate(turn.mode, name, toolSettings.disabledTools);
+  const authorized = agents!.authorization(threadId);
+  if (!turn || !authorized()) throw new Error("Emma's tools are only available while a turn is running.");
+  const mode = agents!.mode(threadId);
+  const gate = toolGate(mode, name, toolSettings.disabledTools);
   if (gate === "hidden") {
-    throw new Error(`${wireName} is not available in ${turn.mode} mode, or is switched off in Settings → Tools.`);
+    throw new Error(`${wireName} is not available in ${mode} mode, or is switched off in Settings → Tools.`);
   }
   const unavailable = whyUnavailable(threadId, name, wireName);
   if (unavailable) throw new Error(unavailable);
@@ -1852,10 +1848,11 @@ async function runEmmaTool(threadId: string, wireName: string, args: Record<stri
     });
     if (!allowed) throw new Error(`The user did not allow ${wireName} to run. Do not try it again this turn; say what you needed it for instead.`);
   }
-  if (harnessTurns.get(threadId) !== turn || !running()) throw new Error("This turn ended before the tool could run.");
+  if (harnessTurns.get(threadId) !== turn || !authorized()) throw new Error("This turn is no longer running.");
+  const current = { ...turn, mode: agents!.mode(threadId) };
   const call = () => OWN_TOOLS.has(name)
-    ? agents!.runThreadTool(parsed, turn)
-    : executeTool(parsed as ToolArgs, turn);
+    ? agents!.runThreadTool(parsed, current)
+    : executeTool(parsed as ToolArgs, current);
   return turn.bench ? await benchReplay.run(true, call) : await call();
 }
 
@@ -2054,6 +2051,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    turn = { ...turn, mode: agents!.mode(turn.threadId) };
     agents!.finish(turn.threadId, detail);
     if (sleepWedged.delete(turn.threadId) && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
@@ -2104,7 +2102,6 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     for (const [id, opened] of harnessBefore) if (opened.threadId === turn.threadId) harnessBefore.delete(id);
   }
 }
-
 
 const activeGoal = (threadId: string) => {
   const goal = goals.get(threadId);
@@ -2417,7 +2414,7 @@ async function continueGoal(turn: TurnRequest, thread: ThreadRecord | undefined)
       archived = !!noteThread(await driveTurn({
         threadId,
         content: GOAL_CONTINUATION,
-        mode: turn.mode,
+        mode: threadContexts.get(threadId)?.mode ?? agents!.mode(threadId),
         title: turn.title,
         model: turn.model,
         subagent: turn.subagent,
@@ -2430,7 +2427,6 @@ async function continueGoal(turn: TurnRequest, thread: ThreadRecord | undefined)
     goalStopped.delete(threadId);
   }
 }
-
 
 type StoredJob = {
   id: string; title: string; schedule: string; prompt: string; nodes: string; outputs: string;
@@ -2493,7 +2489,7 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
   const mode = asPermissionMode(job.permissionMode);
   const run = await runWorkflow(nodes, parseVariables(job.variables), async (prompt) => {
     const content = await resolveMentions(prompt, job.threadId);
-    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || threadModel(job.threadId) });
+    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel });
     return lastAssistantMessage(outcome) ?? "";
   });
   await host!.request({ method: "finishScheduledJob", params: { jobId: job.jobId, outputs: packVariables(run.variables), depth: String(job.depth) } });
@@ -3199,8 +3195,10 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!value || typeof value !== "object") throw new Error("Revert request is invalid");
     const request = value as Record<string, unknown>;
     const folderId = boundedCapabilityId(request.folderId, "Revert folder");
-    const file = boundedCapabilityId(request.path, "Revert path");
+    const file = request.path;
+    if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
     if (typeof request.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
+    if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
     folders!.write(folderId, file, request.before);
     changed();
     return true;
@@ -3396,13 +3394,30 @@ if (primaryInstance) app.whenReady().then(() => {
     componentsChanged();
     return meta;
   });
-  ipcMain.handle("emma:move-component", async (event, value: unknown) => {
+  ipcMain.handle("emma:expand-component", async (event, value: unknown) => {
     mainWindowSender(event);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
     const request = value as Record<string, unknown>;
-    const meta = await setComponentAnchor(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), { selector: request.selector, label: request.label });
+    const meta = await setComponentExpands(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), request.expands === true);
     componentsChanged();
     return meta;
+  });
+  ipcMain.handle("emma:component-fetch", async (event, value: unknown) => {
+    panelSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
+    const request = value as Record<string, unknown>;
+    const meta = await readComponent(app.getPath("userData"), boundedCapabilityId(request.id, "Component"));
+    const call = componentCall(meta, request.request, process.env);
+    const url = publicUrl(call.url);
+    if (!url || url.protocol !== "https:") throw new Error(`${meta.title} tried to reach ${String(call.url).slice(0, 80)}. A component reaches public https addresses only.`);
+    const response = await net.fetch(url.href, {
+      method: call.method,
+      headers: call.headers,
+      body: call.body,
+      signal: AbortSignal.timeout(COMPONENT_FETCH_TIMEOUT_MS),
+    });
+    const body = (await response.text()).slice(0, MAX_COMPONENT_FETCH_BYTES);
+    return { status: response.status, ok: response.ok, body };
   });
   ipcMain.handle("emma:read-component", (event, value: unknown) => {
     mainWindowSender(event);
@@ -3429,15 +3444,6 @@ if (primaryInstance) app.whenReady().then(() => {
     await writeComponentShot(app.getPath("userData"), id, (await window.webContents.capturePage(rect)).toPNG());
     componentsChanged();
     return true;
-  });
-  ipcMain.on("emma:answer-place", (event, value: unknown) => {
-    if (!placeAsk) return;
-    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) return;
-    if (!value || typeof value !== "object" || Array.isArray(value)) { placeAsk.settle(undefined); return; }
-    const request = value as Record<string, unknown>;
-    if (request.id !== placeAsk.id) return;
-    if (typeof request.selector !== "string" || !request.selector.trim()) { placeAsk.settle(undefined); return; }
-    placeAsk.settle({ selector: request.selector, label: typeof request.label === "string" ? request.label : request.selector });
   });
   ipcMain.handle("emma:read-visual", (event, value: unknown) => {
     mainWindowSender(event);
