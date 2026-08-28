@@ -87,7 +87,9 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
 - `component` builds into the context bar and nowhere else, which is enforced in
   main rather than asked for. Same module contract as a region —
   `export default (api) => Component`, no imports, no JSX — plus `fetch` and the
-  `variables` it declared, and each `rewrite` bumps the version so the mounted
+  `variables` it declared. Credential-bearing requests require native approval
+  of the exact fixed-URL template; widget IDs are not isolated identities.
+  Each `rewrite` bumps the version so the mounted
   copy reloads in place. `expand` gives it a ⤢ that opens it over the window. See
   [components.md](components.md).
 - `visualize` and `artifact` writes lead with a `[visual:id]` / `[artifact:id]`

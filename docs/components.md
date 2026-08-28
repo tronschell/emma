@@ -7,9 +7,10 @@ and no frame — and it reloads in place every time she rewrites it.
 Where a component *goes* is not a choice. It goes in the context bar, under the
 built-in widgets and inside their chrome (`COMPONENT_ZONE` in
 [`desktop/shared/components.ts`](../desktop/shared/components.ts)). Every other
-part of the window is off limits, which is the whole point: the column owns the
-padding, the header row and the reveal, so a model-written widget cannot push the
-transcript sideways or leave a hole in the composer.
+part of the window is outside the supported placement contract: the column owns
+the padding, header row and reveal. This is a layout convention, not a security
+sandbox. Components execute in the same renderer as the app and can access its
+DOM and bridge; treat them as code you are choosing to run.
 
 ## The module
 
@@ -24,28 +25,41 @@ one prop, `expanded`.
 | | |
 | --- | --- |
 | `emma` | The same bridge the app uses: `emma.request("snapshot", {})` for threads and jobs, `emma.threadTraces(id)`, `emma.machineSample()`, and the rest. Everything the app knows, a component knows |
-| `fetch(url, init)` | One request through the main process. `init` is `{ method, headers, body }`; the answer is `{ status, ok, body }`, `body` capped at 1 MiB. Public https only — `publicUrl` refuses localhost and every private range — and 20 seconds |
+| `fetch(url, init)` | One request through main. `init` is `{ method, headers, body }`; the answer is `{ status, ok, body }`. Fixed public HTTPS only, DNS-checked and pinned; redirects rejected. Responses must be uncompressed UTF-8 text within 1 MiB, with a 20-second timeout |
 | `variables` | The environment variable names this component declared, as names. Never the values |
 
 ## Variables
 
-Anything secret — an API key, a workspace id, a private base url — is declared by
-name when the component is created:
+Credentials a component needs are declared by environment-variable name when it
+is created:
 
 ```
 component {"action":"create","title":"Linear issues","code":"…","expand":true,"variables":["LINEAR_API_KEY"]}
 ```
 
 The user fills them in **Settings → Built by Emma**, where each component lists
-what it asked for. Values go through the existing `CredentialStore` — encrypted
-by `safeStorage`, mirrored into main's environment, never returned to the
-renderer.
+what it asked for. Values go through `CredentialStore` — encrypted by
+`safeStorage` and mirrored into main's environment. The credential-list API
+returns masked summaries, not full values.
 
-The module writes `{{LINEAR_API_KEY}}` into a url, a header value or a body and
-main substitutes it on the way out. A name the component did not declare is
-refused, and an unset one is refused with the setting to open. So the module —
-which nobody read — never holds the key, and cannot read a key belonging to
-something else.
+The module writes `{{LINEAR_API_KEY}}` into a header value or body; placeholders
+in URLs are refused. Main substitutes only declared, set names. Before sending
+credentials it shows a native confirmation for the fixed URL, method, template
+and variable names. Approval lasts for that exact template and component version
+in the current app session; changing the template, component or credential values
+asks again. Keyless requests do not need this credential confirmation.
+
+Declining is remembered for that exact request in the current session too. To
+reconsider an unchanged request, restart Emma. Approval records are bounded, so
+older requests may ask again during a long session.
+
+Widgets share the renderer and full bridge, so a component ID is not an isolated
+identity and declarations are not private per-widget credential stores. Approval
+authorizes that request, not the trustworthiness of the module or service. The
+destination receives the secret. Obvious raw, JSON, URL-encoded and base64
+credential echoes are blocked, but a malicious service can transform a secret;
+this is not a guarantee against leakage. Review the template and destination,
+and do not approve credentials for code you do not trust.
 
 ## Full screen
 
@@ -106,6 +120,7 @@ export default ({ h, useState, useEffect, emma, fetch }) => ({ expanded }) => {
 | `MAX_COMPONENT_CHARS` | 64 KiB of module source |
 | `MAX_COMPONENT_TITLE_CHARS` | 80 |
 | `MAX_COMPONENT_VARIABLES` | 8 declared names |
+| `MAX_COMPONENT_REQUEST_BYTES` | 8 KiB of request data |
 | `MAX_COMPONENT_FETCH_BYTES` | 1 MiB of response body |
 | `COMPONENT_FETCH_TIMEOUT_MS` | 20 000 ms |
 | `MAX_COMPONENT_SHOT_BYTES` | 4 MiB for the Settings thumbnail |

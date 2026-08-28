@@ -6,6 +6,7 @@ export const MAX_COMPONENT_TITLE_CHARS = 80;
 export const MAX_COMPONENTS = 64;
 export const MAX_COMPONENT_SHOT_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPONENT_VARIABLES = 8;
+export const MAX_COMPONENT_REQUEST_BYTES = 8 * 1024;
 export const MAX_COMPONENT_FETCH_BYTES = 1024 * 1024;
 export const COMPONENT_FETCH_TIMEOUT_MS = 20_000;
 export const COMPONENT_ZONE = "aside.inspector .inspector-body";

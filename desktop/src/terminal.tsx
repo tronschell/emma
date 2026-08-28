@@ -14,6 +14,7 @@ const LINK_MENU_WIDTH = 340;
 export function useTerminals(threadId: string): TerminalTab[] {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   useEffect(() => {
+    if (!threadId) return;
     let alive = true;
     const read = () => void window.emma.listTerminals(threadId)
       .then((found) => { if (alive) setTabs(found); })
@@ -22,7 +23,7 @@ export function useTerminals(threadId: string): TerminalTab[] {
     const stop = window.emma.onTerminals(read);
     return () => { alive = false; stop(); };
   }, [threadId]);
-  return tabs;
+  return tabs.filter((tab) => tab.threadId === threadId);
 }
 
 export async function closeTerminals(threadId: string) {

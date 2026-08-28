@@ -12,7 +12,7 @@ for how a prepared version reaches the download page.
 | --- | --- | --- | --- |
 | Xcode Command Line Tools | any current | — | `clang`, for the four native helpers; full Xcode is required for packaging |
 | Rust | 1.97.1 | [rust-toolchain.toml](../rust-toolchain.toml) | `crates/core`, `crates/host` |
-| Zig | 0.16.0+ | [harness/build.zig.zon](../harness/build.zig.zon) `minimum_zig_version` | `harness/` |
+| Zig | 0.16.0 | [harness/build.zig.zon](../harness/build.zig.zon) and CI | `harness/` |
 | Node | 24.x | [desktop/package.json](../desktop/package.json) (`@types/node` 24.10.1) | everything in `desktop/` |
 | Electron | 43.4.0 | installed by npm | — |
 
@@ -22,7 +22,7 @@ brew install zig
 ```
 
 `rustup` reads `rust-toolchain.toml` and installs 1.97.1 the first time you run
-`cargo` here. The first build also downloads
+`cargo` here. The first `start`, `package:mac`, or `vendor:ripgrep` run downloads
 [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 from GitHub and checks it
 against a pinned SHA-256 ([vendor-ripgrep.mjs](../desktop/scripts/vendor-ripgrep.mjs)),
 so it needs network once.
@@ -30,7 +30,7 @@ so it needs network once.
 ## Install and run
 
 ```bash
-git clone <your-remote> emma
+git clone https://github.com/tronschell/emma.git
 cd emma
 npm --prefix desktop install
 npm run dev
@@ -71,11 +71,11 @@ Emma takes a single-instance lock, so a second launch focuses the first window
 instead of opening one. A packaged `Emma.app` and a dev run share that lock —
 see [troubleshooting.md](troubleshooting.md).
 
-A five-step walkthrough opens once (**Emma · Quick Ask · Permissions ·
+A six-step walkthrough opens once (**Emma · Model · Quick Ask · Permissions ·
 Knowledge · Agents**), gated on `emma.setupSeen.v1` in `localStorage`. Skip any
 step; Emma asks again when it needs to.
 
-Step 4 picks your **vault** — an Obsidian vault or any plain folder. Emma writes
+Step 5 picks your **vault** — an Obsidian vault or any plain folder. Emma writes
 one Markdown note per save into `<vault>/knowledge-base`; there is no second
 copy. See [data.md](data.md) for the layout.
 

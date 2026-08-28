@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, net, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -19,8 +19,8 @@ import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey 
 import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
 import { artifactFiles, deleteArtifact, listArtifacts, queryArtifact, readArtifact, readArtifactFile, updateArtifact, updateArtifactFile, writeArtifact, writeArtifactFile } from "./artifacts";
 import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
-import { componentCall, deleteComponent, listComponents, readComponent, readComponentShot, setComponentEnabled, setComponentExpands, writeComponent, writeComponentShot } from "./components";
-import { COMPONENT_FETCH_TIMEOUT_MS, COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, COMPONENT_ZONE_LABEL, MAX_COMPONENT_FETCH_BYTES } from "../shared/components";
+import { ComponentRequests, deleteComponent, listComponents, readComponent, readComponentShot, setComponentEnabled, setComponentExpands, writeComponent, writeComponentShot } from "./components";
+import { COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, COMPONENT_ZONE_LABEL } from "../shared/components";
 import { deletePlan, editPlan, listPlans, readPlan, writePlan } from "./plans";
 import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
@@ -332,6 +332,7 @@ const toolsChanged = async () => {
 };
 const artifactsChanged = () => broadcast("emma:artifacts-changed");
 const componentsChanged = () => broadcast("emma:components-changed");
+const componentRequests = new ComponentRequests();
 
 const plansChanged = () => broadcast("emma:plans-changed");
 let overlayPreferencesReady = false;
@@ -3406,18 +3407,21 @@ if (primaryInstance) app.whenReady().then(() => {
     panelSender(event);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
     const request = value as Record<string, unknown>;
-    const meta = await readComponent(app.getPath("userData"), boundedCapabilityId(request.id, "Component"));
-    const call = componentCall(meta, request.request, process.env);
-    const url = publicUrl(call.url);
-    if (!url || url.protocol !== "https:") throw new Error(`${meta.title} tried to reach ${String(call.url).slice(0, 80)}. A component reaches public https addresses only.`);
-    const response = await net.fetch(url.href, {
-      method: call.method,
-      headers: call.headers,
-      body: call.body,
-      signal: AbortSignal.timeout(COMPONENT_FETCH_TIMEOUT_MS),
+    if (Object.keys(request).length !== 2 || !("request" in request)) throw new Error("Component request is invalid");
+    return componentRequests.fetch(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), request.request, process.env, async (meta, template) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return false;
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: "Component API access",
+        message: `Allow “${meta.title.replace(/\s+/g, " ")}” to use ${template.variables.join(", ")}?`,
+        detail: `This approves only the exact request below until Emma quits. A changed request or component needs new approval. Components share Emma's interface and can repeat approved requests; this is not a separate account for each widget. Only approve an endpoint you trust with these credentials.\n\n${JSON.stringify(template, null, 2)}`,
+        buttons: ["Cancel", "Allow this request"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return choice.response === 1;
     });
-    const body = (await response.text()).slice(0, MAX_COMPONENT_FETCH_BYTES);
-    return { status: response.status, ok: response.ok, body };
   });
   ipcMain.handle("emma:read-component", (event, value: unknown) => {
     mainWindowSender(event);

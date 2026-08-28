@@ -15,13 +15,13 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`package.json`](../package.json) · [`justfile`](../justfile) | Shims onto `desktop`'s scripts. `just` has `check`, `test`, `dev`, `run`, `package` |
 | [`crates/core/src/`](../crates/core/src) | `thread.rs`, `live.rs`, `scheduled.rs`, `research.rs`, `record.rs` (timestamps, validation, quoting), `lib.rs` (re-exports + integration tests) |
 | [`crates/host/src/`](../crates/host/src) | `main.rs` — the `emma-host` NDJSON server; `runtime.rs` — resolves the data root and starts the live runtime |
-| [`desktop/main/`](../desktop/main) | Electron main. 40 files: lifecycle, windows, IPC, and every runtime touching disk, a process, the network, the screen or a model |
-| [`desktop/src/`](../desktop/src) | Sandboxed React 19 renderer, 41 modules. No Node, no Electron imports |
-| [`desktop/src/styles/`](../desktop/src/styles) | 15 stylesheets; `tokens.css` holds the design tokens |
-| [`desktop/shared/`](../desktop/shared) | 23 modules both processes agree on — `permissions.ts`, `settings.ts`, `vault.ts`, `artifacts.ts`, `plan.ts`, `workflow.ts`, `context-bar.ts`, `trace.ts`, `usage.ts`. Nothing here may import Electron |
-| [`desktop/test/`](../desktop/test) | 43 `node --test` files plus `fake-acp-agent.mjs` |
-| [`desktop/native/`](../desktop/native) | `quick_ask.m` → `emma-option-tap`, `transcribe.m` → `emma-transcribe`, `pty.c` → `emma-pty`, and `Info.extra.plist` |
-| [`desktop/scripts/`](../desktop/scripts) | `dev.mjs`, `vendor-ripgrep.mjs`, `seed-catalog.mjs`, and the CDP drivers `drive.mjs`, `shot.mjs`, `dismiss.mjs` |
+| [`desktop/main/`](../desktop/main) | Electron lifecycle, windows, IPC, and every runtime touching disk, a process, the network, the screen or a model |
+| [`desktop/src/`](../desktop/src) | Sandboxed React 19 renderer. No Node, no Electron imports |
+| [`desktop/src/styles/`](../desktop/src/styles) | Stylesheets; `tokens.css` holds the design tokens |
+| [`desktop/shared/`](../desktop/shared) | Types and validation both processes agree on — permissions, settings, vault, artifacts, plans, workflows, context bar, traces and usage. Nothing here may import Electron |
+| [`desktop/test/`](../desktop/test) | `node --test` suites and the fake ACP agent |
+| [`desktop/native/`](../desktop/native) | `quick_ask.m` → `emma-option-tap`, `computer.m` → `emma-computer`, `transcribe.m` → `emma-transcribe`, `pty.c` → `emma-pty`, and `Info.extra.plist` |
+| [`desktop/scripts/`](../desktop/scripts) | Development, packaging and release checks, vendoring, catalog generation, and the CDP drivers `drive.mjs`, `shot.mjs`, `dismiss.mjs` |
 | [`desktop/skills/`](../desktop/skills) | Seven bundled skills: `artifact`, `autoresearch`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
 | `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here |
 | [`harness/`](../harness) | `emma-cli`. `src/acp/` (the ACP server), `src/builtins/` (registry; `builtins/emma/` holds Emma's tool *schemas*), `src/core/` (the engine), `src/gateway/` (model transport), `src/tools/`, `src/ui/` |
@@ -39,7 +39,7 @@ that is a rule, and Apache-2.0 §4 keeps `LICENSE` and
 | macOS | 12 or later, Apple silicon | `desktop/native/Info.extra.plist` and `desktop/scripts/package-mac.mjs` |
 | Node | 24+ | no `engines` field |
 | Rust | 1.97.1 | [`rust-toolchain.toml`](../rust-toolchain.toml) |
-| Zig | 0.16.0 minimum | [`harness/build.zig.zon`](../harness/build.zig.zon) |
+| Zig | 0.16.0 | [`harness/build.zig.zon`](../harness/build.zig.zon) and CI |
 | Electron | 43.4.0 | [`desktop/package.json`](../desktop/package.json) |
 | TypeScript · React · Vite · Tailwind · ESLint | 6.0.3 · 19.2.8 · 8.2.2 · 4.3.3 · 10.0.1 | same |
 | Xcode | `clang` for native helpers, full Xcode for packaging | `actool` is required by Electron Packager |
@@ -116,7 +116,7 @@ data directory — give the second one `--user-data-dir`.
 exercises the same IPC path a click does.
 
 ```sh
-node desktop/scripts/drive.mjs 'await window.emma.request("snapshot", {})'
+node desktop/scripts/drive.mjs 'return await window.emma.request("snapshot", {})'
 ```
 
 Main-process `console.*` goes to the terminal that ran `npm run dev`; there is no
@@ -178,8 +178,10 @@ to `main` with a merge commit to build and publish it. See the
 The five Apple secret names were configured when inspected on August 28, 2026;
 the first signed and notarized GitHub build must still prove their validity.
 Unsigned local bundles cannot prove Gatekeeper acceptance or update installation.
-The existing Electron updater needs two published signed releases for an actual
-upgrade test. Verify privacy prompts, shortcuts, VoiceOver, display geometry,
+A local update rehearsal needs two signed bundles and a compatible feed; it does
+not prove the public GitHub feed or Developer ID/notarization path. Verify an
+upgrade between published signed versions before claiming that distribution path
+works end to end. Also verify privacy prompts, shortcuts, VoiceOver, display geometry,
 and the minimum supported macOS on real hardware. Windows and Intel Mac
 packages are not part of this release path.
 

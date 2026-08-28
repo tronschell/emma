@@ -34,8 +34,9 @@ broken install, not a reason to fall back.
 | `default_model_catalog_base_url` | `https://openrouter.ai/api/v1` |
 | `retry_count` | `3` |
 
-The request body ends `,"stream":false}` — nothing is streamed at the HTTP layer;
-tokens still arrive incrementally in the UI, over ACP.
+The request body ends `,"stream":false}` — nothing is streamed at the HTTP layer.
+Completed model replies and tool activity are forwarded to the UI over ACP;
+there are no live provider token deltas while a completion is still pending.
 
 ## When a model goes quiet
 
@@ -196,7 +197,7 @@ today is served without touching the network, and one fetch is shared by every
 caller in flight — the panes that list models all ask on mount. The **Reload
 OpenRouter catalog** button sends `force`, which drops the age gate.
 
-[catalog-seed.ts](../desktop/main/catalog-seed.ts) compiles **334** rows into the
+[catalog-seed.ts](../desktop/main/catalog-seed.ts) compiles a model snapshot into the
 app for a first launch with neither cache nor network. Regenerate with
 `npm run seed:catalog`, which hits the same public endpoint and needs no
 credential.
@@ -215,7 +216,7 @@ chain it is the **first** id's window that is sent (`model.split(",")[0]`).
 1. You paste a key in **Settings → Models → provider keys**. It goes over IPC to main and no further.
 2. `set(env, secret)` validates: the name against `isEnvName` (`/^[A-Za-z_][A-Za-z0-9_]{0,63}$/`), the secret 1–`MAX_SECRET_CHARS` (512) printable ASCII (`/^[!-~]+$/`).
 3. `save()` encrypts each secret with Electron `safeStorage.encryptString` — the macOS keychain — and base64s it. If `isEncryptionAvailable()` is false it throws: *"This Mac's keychain is unavailable, so Emma will not store a key in plain text."*
-4. The blob lands at `<userData>/credentials.json`, written to a `.tmp` with mode `0o600` in a directory created `0o700`, then renamed. `<userData>` is `~/Library/Application Support/Emma`.
+4. The blob lands at `<userData>/credentials.json`, written to a `.tmp` with mode `0o600` in a directory created `0o700`, then renamed. `userData` is Electron's profile directory, separate from `EMMA_DATA_DIR`; see [data.md](data.md).
 5. `applyToEnv(process.env)` decrypts and mirrors the secrets onto Electron's own environment, clearing names it set on an earlier pass.
 6. `Harness` spawns `emma-cli` with `{ ...process.env, HOME: <userData>/harness, AI_GATEWAY_API_KEY: key, EMMA_PROVIDER_API_KEY: key }`, where `key` is `process.env.OPENROUTER_API_KEY`.
 
@@ -312,16 +313,16 @@ The switch writes `EMMA_OPENROUTER_ZDR=1` into Electron's environment and calls
 an `openrouter.ai` chat URL, the harness appends
 `"provider":{"data_collection":"deny","zdr":true}` to every request body.
 
-It is **off by default**, and it belongs off unless you route to a paid or local
-model: zero retention narrows routing to endpoints that offer it, and no free
-OpenRouter endpoint does — every free model fails while it is on.
+It is **off by default**. Zero retention narrows routing to endpoints that offer
+it; a model with no qualifying endpoint fails. Availability can change, and a
+free or paid badge does not establish the endpoint's data policy.
 
-The flag rides the harness request body only: the verifier, vision and advisor
-calls go out with no routing flags. And it sits *below* your OpenRouter account's
-own prompt-logging setting, which Emma can neither read nor change — that opt-in
-is what unlocks parts of the free catalog. Check it yourself at
+The flag rides the harness request body only: verifier, vision, advisor, secrets
+and note-tagger calls go out with no routing flags. It does not change your
+OpenRouter account's prompt-logging settings, which Emma cannot read or change.
+Check them yourself at
 [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy). See
-[privacy.md](privacy.md).
+[privacy.md](privacy.md). This is not an app-wide offline or privacy switch.
 
 ## The second models
 
