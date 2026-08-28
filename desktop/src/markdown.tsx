@@ -6,21 +6,41 @@
    The blocks come out as a fragment, so they land as direct children of
    .message-body and inherit the prose rules conversation.css already owns. */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { FileMark } from "./git";
+import { GlobeIcon } from "./icons";
 import { parseBlocks, type Item, type Row, type Span } from "./markdown-parse";
 import { openPreview } from "./preview";
 import { CodeBlock } from "./run-block";
+
+function PathSpan({ path, text }: { path: string; text: string }) {
+  return <code className="md-path" role="button" tabIndex={0} title={`Open ${path}`}
+    onClick={() => openPreview(path)}
+    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openPreview(path); } }}
+  ><FileMark path={path} />{text || path}</code>;
+}
+
+function Picture({ path, alt }: { path: string; alt: string }) {
+  const [source, setSource] = useState("");
+  useEffect(() => {
+    let live = true;
+    void window.emma.previewPath(path)
+      .then((found) => { if (live) setSource(found?.image ?? ""); })
+      .catch(() => { if (live) setSource(""); });
+    return () => { live = false; };
+  }, [path]);
+  if (!source) return <PathSpan path={path} text={alt} />;
+  return <img className="md-image" src={source} alt={alt} title={path} onClick={() => openPreview(path, alt || undefined)} />;
+}
 
 function Spans({ spans }: { spans: Span[] }) {
   return <>{spans.map((span, index) => {
     // Links open through the window-open handler in main.ts, same as every
     // other link in the app; nothing here opens anything by itself.
-    if (span.href) return <a key={index} href={span.href} target="_blank" rel="noreferrer">{span.text}</a>;
+    if (span.href) return <a key={index} href={span.href} target="_blank" rel="noreferrer"><span className="git-type" aria-hidden="true"><GlobeIcon /></span>{span.text}</a>;
+    if (span.image && span.path) return <Picture key={index} path={span.path} alt={span.text} />;
     // Opens the file in Emma, with its location and a reveal in the header.
-    if (span.path) return <code key={index} className="md-path" role="button" tabIndex={0} title={`Open ${span.path}`}
-      onClick={() => openPreview(span.path!)}
-      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openPreview(span.path!); } }}
-    >{span.text}</code>;
+    if (span.path) return <PathSpan key={index} path={span.path} text={span.text} />;
     if (span.code) return <code key={index}>{span.text}</code>;
     if (span.bold) return <strong key={index}>{span.text}</strong>;
     if (span.strike) return <del key={index}>{span.text}</del>;
