@@ -66,6 +66,8 @@ const assistant_prefill_recovery_prompt =
     "Continue from the preceding tool result.";
 const repeated_terminal_validation_notice =
     "Repeated terminal validation failures stopped the tool loop. The invalid terminal calls were not executed and produced no terminal effect.";
+const repeated_malformed_arguments_notice =
+    "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
 const Config = runtime_config.Config;
 const LifecycleContext = runtime_lifecycle.LifecycleContext;
 const PreparedToolCall = runtime_lifecycle.PreparedToolCall;
@@ -275,6 +277,39 @@ fn liveAuthorityUnavailable(
     resolved: runtime_deps.ResolvedLiveToolAuthority,
 ) bool {
     return resolved.decision == .unavailable;
+}
+
+fn permissionModeForAction(
+    captured: types.PermissionMode,
+    root_live: ?types.PermissionMode,
+    child_live: ?types.PermissionMode,
+) types.PermissionMode {
+    return child_live orelse root_live orelse captured;
+}
+
+fn snapshotRootPermissionMode(deps: *const AgentRuntimeDeps) ?types.PermissionMode {
+    const snapshot = deps.snapshot_root_permission_mode orelse return null;
+    return snapshot(deps.ctx);
+}
+
+test "permission mode for action prefers child then live root then captured fallback" {
+    const cases = [_]struct {
+        captured: types.PermissionMode,
+        root_live: ?types.PermissionMode,
+        child_live: ?types.PermissionMode,
+        expected: types.PermissionMode,
+    }{
+        .{ .captured = .ask, .root_live = null, .child_live = null, .expected = .ask },
+        .{ .captured = .ask, .root_live = .auto, .child_live = null, .expected = .auto },
+        .{ .captured = .auto, .root_live = .ask, .child_live = null, .expected = .ask },
+        .{ .captured = .ask, .root_live = .auto, .child_live = .yolo, .expected = .yolo },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.expected,
+            permissionModeForAction(case.captured, case.root_live, case.child_live),
+        );
+    }
 }
 
 fn rejectPermissionForLiveAuthority(
@@ -2729,6 +2764,7 @@ fn processQueuedPromptLoop(
     defer turn_permission_recovery.deinit(arena);
     var terminal_validation_retry: runtime_tool_admission.TerminalValidationRetryState = .{};
     defer terminal_validation_retry.deinit(arena);
+    var malformed_arguments_retry: runtime_tool_admission.MalformedArgumentsRetryState = .{};
     var completed_tool_names = completed_tool_names_ptr.*;
     defer completed_tool_names_ptr.* = completed_tool_names;
     var context_delivery_state: context_contract.DeliveryState = if (deps.context_enabled)
@@ -4904,16 +4940,26 @@ fn processQueuedPromptLoop(
 
         var step_batch = runtime_tool_batch.StepBatchState{};
         terminal_validation_retry.beginBatch();
+        malformed_arguments_retry.beginBatch();
+        for (effective_tool_calls) |tool_call| {
+            malformed_arguments_retry.observe(tool_call);
+        }
         var settled_vision_ids: std.ArrayList(usize) = .empty;
         defer mem_utils.deinitList(arena, &settled_vision_ids);
         var parallel_skip_until: usize = 0;
         for (prepared_tool_calls, 0..) |prepared_tool_call, tool_call_index| {
             if (tool_call_index < parallel_skip_until) continue;
             const tool_call = prepared_tool_call.call();
+            const root_live_permission_mode = snapshotRootPermissionMode(deps);
+            const root_action_permission_mode = permissionModeForAction(
+                job.permission_mode,
+                root_live_permission_mode,
+                null,
+            );
 
             const parallel_candidate_len = if (successful_vision_mode != .required and
                 !context_delta and
-                (job.permission_mode == .auto or job.permission_mode == .yolo) and
+                (root_action_permission_mode == .auto or root_action_permission_mode == .yolo) and
                 deps.live_tool_authority == null)
                 runtime_parallel_execution.parallelReadOnlyPrefixLen(deps.tool_registry, effective_tool_calls[tool_call_index..])
             else
@@ -5065,7 +5111,7 @@ fn processQueuedPromptLoop(
                         parallel_call.id,
                         auto_permission_phase,
                     );
-                    const maybe_parallel_permission: ?command_admission.PermissionOutcome = runtime_tool_admission.requestToolPermissionTraced(deps, arena, parallel_call, parallel_review_context, job.permission_mode, local_grants.items, null, null, advertised_dynamic_tool_names, config.workspace_root, step_ctx) catch |err| blk: {
+                    const maybe_parallel_permission: ?command_admission.PermissionOutcome = runtime_tool_admission.requestToolPermissionTraced(deps, arena, parallel_call, parallel_review_context, root_action_permission_mode, local_grants.items, null, null, advertised_dynamic_tool_names, config.workspace_root, step_ctx) catch |err| blk: {
                         if (err != error.Cancelled or !config.cancel_flag.load(.seq_cst)) return err;
                         break :blk null;
                     };
@@ -5218,6 +5264,7 @@ fn processQueuedPromptLoop(
                         .root_user_intent_context = parallel_execution_root_user_context,
                         .current_turn_messages = within_turn_suffix.items,
                         .session_grants = local_grants.items,
+                        .permission_mode = root_action_permission_mode,
                         .advertised_dynamic_tool_names = advertised_dynamic_tool_names,
                         .max_tool_result_bytes = config.max_tool_result_bytes,
                         .classification_complete = executable_classification_complete.items,
@@ -5549,7 +5596,7 @@ fn processQueuedPromptLoop(
                                     deps.tool_registry,
                                     arena,
                                     tool_call,
-                                    job.permission_mode,
+                                    root_action_permission_mode,
                                     lifecycle.scope.kind == .interactive,
                                 );
                                 const status_started = if (runtime_tool_admission.deferVisibleLifecycleUntilAfterPermission(tool_call.name) and
@@ -5961,10 +6008,11 @@ fn processQueuedPromptLoop(
                 }
                 break :live resolved;
             } else null;
-            const action_permission_mode: types.PermissionMode = if (live_authority != null)
-                live_authority.?.authority.permission_mode
-            else
-                job.permission_mode;
+            const action_permission_mode = permissionModeForAction(
+                job.permission_mode,
+                root_live_permission_mode,
+                if (live_authority) |resolved| resolved.authority.permission_mode else null,
+            );
             const action_grants: []const PermissionGrant = if (live_authority) |resolved|
                 resolved.authority.grants
             else
@@ -6582,6 +6630,7 @@ fn processQueuedPromptLoop(
                 .result_allocator = arena,
                 .call = execution_call,
                 .authority = execution_authority,
+                .permission_mode = action_permission_mode,
                 .root_user_intent_context = tool_execution_root_user_context,
                 .root_user_messages = &.{},
                 .root_user_evidence_complete = true,
@@ -7461,6 +7510,28 @@ fn processQueuedPromptLoop(
             &within_turn_suffix,
             &step_batch,
         );
+        if (malformed_arguments_retry.finishBatch()) {
+            debug_trace.eventf(
+                "agent",
+                "repeated_malformed_tool_arguments",
+                step_ctx,
+                "tool_call_count={d}",
+                .{effective_tool_calls.len},
+            );
+            try finishFailedTurnWithNotice(
+                deps,
+                finalization,
+                arena,
+                job,
+                within_turn_suffix.items,
+                &summary_accumulator,
+                stop_state,
+                &finish_trace,
+                repeated_malformed_arguments_notice,
+                "repeated_malformed_tool_arguments",
+            );
+            return;
+        }
         if (terminal_validation_retry.finishBatch()) {
             try deps.push_system_notice(
                 deps.ctx,

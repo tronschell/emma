@@ -196,6 +196,80 @@ pub const plan = ToolSpec{
     .irreversible_fn = bridge.isIrreversible,
 };
 
+const goal_description =
+    "A durable objective for this thread, pursued across turns instead of inside one. While a goal is active Emma drives another turn at it as soon as you stop talking, and another after that, until it is achieved, out of budget, blocked three turns running, or the user stops it. That is what a goal buys: work that outlives the turn it was asked for.\n" ++
+    "Set one when the user asks for an end state rather than an answer — a migration finished, a bug hunted to its root, a feature built and verified — or when they say to keep at it until it works. Do not set one for anything you can simply do now.\n" ++
+    "Actions:\n" ++
+    "set — start pursuing objective. Write it as the end state, with what \"done\" looks like inside it, because every later turn is judged against those words and nothing else. tokenBudget caps the whole pursuit and defaults to 200000; this replaces whatever the thread was pursuing before.\n" ++
+    "get — the objective, the status, the turns taken, the seconds spent, and the budget left.\n" ++
+    "update — status active, paused, complete or blocked. complete is refused without evidence, and evidence means the end state itself: what you ran, what it printed, what changed. Never send it because the budget is nearly gone or because you are stopping. blocked wants reason, one line naming what is in the way; it only sticks once the same blocker has stopped you on three consecutive goal turns, so report it and keep working — Emma counts the streak, and a goal picked back up counts again from zero.\n" ++
+    "extend — add extraTokens to the budget and start pursuing again, for a goal that ran out with real work left. Ask the user first: it is their spend.\n" ++
+    "clear — stop pursuing and take the goal off the thread. That is the user dropping it, not you deciding it is hard.\n" ++
+    "One goal to a thread. A subagent lives inside a turn and cannot hold one, so tell it the objective in its brief instead; work worth several subagents wants the plan tool underneath this one.";
+
+pub const goal = ToolSpec{
+    .name = "goal",
+    .description = goal_description,
+    .gateway_schema = .{
+        .name = "goal",
+        .description = goal_description,
+        .input_schema = .{
+            .properties = &.{
+                .{
+                    .name = "action",
+                    .json_type = .string,
+                    .description = "set, get, update, extend or clear. Defaults to get.",
+                    .shape = &.{ .enum_values = &.{ "set", "get", "update", "extend", "clear" } },
+                },
+                .{
+                    .name = "objective",
+                    .json_type = .string,
+                    .description = "The end state to pursue, written so another agent could tell whether it had been reached. Required by set.",
+                },
+                .{
+                    .name = "tokenBudget",
+                    .json_type = .number,
+                    .description = "Tokens the whole pursuit may spend, across every turn it takes. Defaults to 200000.",
+                },
+                .{
+                    .name = "status",
+                    .json_type = .string,
+                    .description = "What update sets the goal to: active, paused, complete or blocked.",
+                    .shape = &.{ .enum_values = &.{ "active", "paused", "complete", "blocked" } },
+                },
+                .{
+                    .name = "evidence",
+                    .json_type = .string,
+                    .description = "What proves the objective is reached: what you ran, what it printed, what changed. Required by status complete.",
+                },
+                .{
+                    .name = "reason",
+                    .json_type = .string,
+                    .description = "What is blocking you, in one line. Required by status blocked, and compared against the last one to count the streak.",
+                },
+                .{
+                    .name = "extraTokens",
+                    .json_type = .number,
+                    .description = "Tokens to add to the budget. Required by extend.",
+                },
+            },
+            .required = &.{},
+        },
+    },
+    .advertisement = .on_select,
+    .executor_kind = .emma,
+    .activity_kind = .write,
+    .requires_approval = false,
+    .action_label = "Working toward the goal",
+    .completed_action_label = "Worked toward the goal",
+    .permission_target_kind = .none,
+    .decode = bridge.decode,
+    .validate = bridge.validate,
+    .call = bridge.call,
+    .reads_only_fn = bridge.readsAndWrites,
+    .irreversible_fn = bridge.isReversible,
+};
+
 const agents_description =
     "See and steer what is running right now: every live agent and subagent, with its thread, status, mode, model, tool count, token spend and what it is doing this moment. Call it with no arguments for the list. Give agent and message to send a message into a run already in flight — it arrives with that agent's next batch of tool results, which is how you correct one without losing its work. Give agent and stop to end one and everything under it. Use threads for the durable conversations themselves, running or not.";
 
@@ -282,4 +356,4 @@ pub const read_trace = ToolSpec{
     .irreversible_fn = bridge.isReversible,
 };
 
-pub const all = [_]ToolSpec{ threads, context, plan, agents, read_trace };
+pub const all = [_]ToolSpec{ threads, context, plan, goal, agents, read_trace };

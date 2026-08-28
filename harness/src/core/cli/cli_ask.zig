@@ -270,7 +270,7 @@ fn runAskChild(
                 .permission_reviewer_provider = ctx.cfg.permission_reviewer_provider,
             },
         },
-        .system_prompt = ctx.cfg.prompt_policy.system_prompt,
+        .system_prompt = ctx.cfg.prompt_policy.systemPrompt(),
         .model_prompt_overlay = ctx.cfg.prompt_policy.modelPromptOverlay(admission.model),
         .skills_prompt_section = ctx.subagent_skills_prompt,
         .explicit_skills_prompt_section = ctx.subagent_explicit_skills_prompt,
@@ -1151,6 +1151,13 @@ fn writeAskUsage(deps: RunDeps, usage: []const u8) !void {
     try deps.write_stderr(deps.stderr_ctx, "\n");
 }
 
+fn askErrorNotice(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.ImagePreparationFailed => image_attachments.image_preparation_failed_notice,
+        else => null,
+    };
+}
+
 fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: RunDeps) !u8 {
     var interrupt_scope = try headless_interrupt.Scope.install(
         deps.install_headless_interrupt,
@@ -1234,7 +1241,9 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
 
     var effective_cfg = cfg;
     if (options.system_prompt_override) |sp| {
+        // `--system` outranks the prompt file the resolver would otherwise read.
         effective_cfg.prompt_policy.system_prompt = sp;
+        effective_cfg.prompt_policy.system_prompt_fn = null;
     }
 
     const output_mode = selectOutputMode(
@@ -1263,7 +1272,13 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
             );
             return 1;
         }
-        if (!options.json_output) return err;
+        if (!options.json_output) {
+            const notice = askErrorNotice(err) orelse return err;
+            try deps.write_stderr(deps.stderr_ctx, "fx ask: ");
+            try deps.write_stderr(deps.stderr_ctx, notice);
+            try deps.write_stderr(deps.stderr_ctx, "\n");
+            return 1;
+        }
         const json = try renderErrorJsonResult(alloc, @errorName(err));
         defer alloc.free(json);
         try deps.write_stdout(deps.stdout_ctx, json);
@@ -1659,7 +1674,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     const semantic_presentation = if (ctx.presenter) |value| value.semanticSink() else null;
     try ctx.checkCancellation();
     options.deps.process_queued_prompt(&deps, semantic_presentation, ctx.lifecycleContext(), .{
-        .system_prompt = cfg.prompt_policy.system_prompt,
+        .system_prompt = cfg.prompt_policy.systemPrompt(),
         .model_prompt_overlay = cfg.prompt_policy.modelPromptOverlay(ctx.model),
         .skills_prompt_section = skills_section,
         .explicit_skills_prompt_section = explicit_skills.text,
@@ -5004,6 +5019,23 @@ test "stdin prompt errors keep exact structured names" {
     try std.testing.expectEqualStrings(
         "{\"output\":\"\",\"exit_code\":1,\"model\":\"\",\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"error\":\"PromptInputReadFailed\"}\n",
         read_failure,
+    );
+}
+
+test "image preparation failure has stable text and JSON contracts" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectEqualStrings(
+        image_attachments.image_preparation_failed_notice,
+        askErrorNotice(error.ImagePreparationFailed).?,
+    );
+    try std.testing.expect(askErrorNotice(error.Cancelled) == null);
+    try std.testing.expect(askErrorNotice(error.TimedOut) == null);
+
+    const json = try renderErrorJsonResult(alloc, @errorName(error.ImagePreparationFailed));
+    defer alloc.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"output\":\"\",\"exit_code\":1,\"model\":\"\",\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"error\":\"ImagePreparationFailed\"}\n",
+        json,
     );
 }
 

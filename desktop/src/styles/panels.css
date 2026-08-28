@@ -40,7 +40,7 @@
 .inspector-body > header button { min-height: 30px; padding: var(--s-2) var(--s-4); border: 0; border-top: 1px solid var(--border); text-align: left; }
 .inspector-body > header button:hover:not(:disabled) { border-color: var(--border); }
 
-.inspector-body > section, .inspector-body > .git-panel, .bar-widget-body > section, .bar-widget-body > .git-panel { display: grid; gap: var(--s-2); margin: 0 calc(var(--s-4) * -1); padding: var(--s-4); border: 0; border-bottom: 1px solid var(--border); }
+.inspector-body > section, .inspector-body > .git-panel, .bar-widget-body > section, .bar-widget-body > .git-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin: 0 calc(var(--s-4) * -1); padding: var(--s-4); border: 0; border-bottom: 1px solid var(--border); }
 .inspector-body > section:last-child, .inspector-body > .git-panel:last-child { border-bottom: 0; padding-bottom: 0; }
 .inspector-body label, .inspector-body section > span { display: grid; gap: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; }
 .inspector-body section > p { color: var(--text-3); font: var(--fs-sm)/1.55 var(--font); text-wrap: pretty; }

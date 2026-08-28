@@ -65,6 +65,7 @@ const AcpMethod = enum {
     session_compact,
     session_set_config_option,
     session_set_mode,
+    session_steer,
     session_steer_child,
     session_cancel_child,
     unknown,
@@ -82,6 +83,7 @@ const AcpMethod = enum {
         if (std.mem.eql(u8, method, "session/compact")) return .session_compact;
         if (std.mem.eql(u8, method, "session/set_config_option")) return .session_set_config_option;
         if (std.mem.eql(u8, method, "session/set_mode")) return .session_set_mode;
+        if (std.mem.eql(u8, method, "session/steer")) return .session_steer;
         if (std.mem.eql(u8, method, "session/steer_child")) return .session_steer_child;
         if (std.mem.eql(u8, method, "session/cancel_child")) return .session_cancel_child;
         return .unknown;
@@ -91,6 +93,7 @@ const AcpMethod = enum {
         return switch (self) {
             .initialize,
             .session_cancel,
+            .session_steer,
             .session_steer_child,
             .session_cancel_child,
             .session_set_mode,
@@ -264,6 +267,9 @@ pub const ServerState = struct {
     /// Only to keep one steering message's invocation id apart from the next, for
     /// two sent inside the same millisecond.
     steer_sequence: u64 = 0,
+    steer_mutex: std.Io.Mutex = .init,
+    pending_steers: std.ArrayListUnmanaged([]u8) = .empty,
+    steers_in_flight: usize = 0,
     skills: skill_runtime.Runtime = .{},
     context_snapshot: context_contract.GatheredContextSnapshot = .{},
     worker: worker_runtime.WorkerRuntime = .{},
@@ -315,6 +321,8 @@ pub const ServerState = struct {
         self.pending_outbound.deinit(self.alloc);
         clearPendingLegacyUrls(self);
         self.pending_legacy_urls.deinit(self.alloc);
+        for (self.pending_steers.items) |text| self.alloc.free(text);
+        self.pending_steers.deinit(self.alloc);
     }
 };
 
@@ -1048,6 +1056,7 @@ fn dispatch(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void 
         return state.writer.writeResponse(alloc, msg.id, "null");
     }
 
+    if (method == .session_steer) return handleSteer(state, alloc, msg);
     if (method == .session_steer_child) return handleSteerChild(state, alloc, msg);
     if (method == .session_cancel_child) return handleCancelChild(state, alloc, msg);
 
@@ -1086,6 +1095,7 @@ fn dispatch(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void 
         .session_set_mode => handleSetMode(state, alloc, msg),
         .initialize,
         .session_cancel,
+        .session_steer,
         .session_steer_child,
         .session_cancel_child,
         .session_remove,
@@ -1782,6 +1792,105 @@ fn modelCommitFailureTerminatesConnection(err: anyerror) bool {
 /// connection rather than from the model — the same path the TUI's child
 /// composer takes, so the message is queued on the child and arrives with its
 /// next turn instead of interrupting the call it is in the middle of.
+/// A steering message is read once, by the running turn, at its next model step.
+pub const max_steer_bytes = 16 * 1024;
+pub const max_pending_steers = 8;
+const steering_open = "<user_steering trusted_runtime_context=\"true\">\n" ++
+    "The user sent this while you were working. Follow it from here.\n";
+const steering_close = "</user_steering>\n";
+
+/// Renders what is waiting without consuming it: only an acknowledged request
+/// clears the queue, so a step that never reached the model projects the same
+/// text again rather than swallowing it.
+pub fn takePendingSteering(state: *ServerState, arena: Allocator) !?[]const u8 {
+    state.steer_mutex.lockUncancelable(io_mod.getIo());
+    defer state.steer_mutex.unlock(io_mod.getIo());
+    if (state.pending_steers.items.len == 0) return null;
+
+    var needed = steering_open.len + steering_close.len;
+    for (state.pending_steers.items) |text| needed += 6 * text.len + 8;
+    const buffer = try arena.alloc(u8, needed);
+    var writer: std.Io.Writer = .fixed(buffer);
+    writer.writeAll(steering_open) catch return null;
+    for (state.pending_steers.items) |text| {
+        writer.writeAll("- ") catch return null;
+        std.json.Stringify.value(text, .{}, &writer) catch return null;
+        writer.writeByte('\n') catch return null;
+    }
+    writer.writeAll(steering_close) catch return null;
+    state.steers_in_flight = state.pending_steers.items.len;
+    return writer.buffered();
+}
+
+pub fn clearDeliveredSteering(state: *ServerState) void {
+    state.steer_mutex.lockUncancelable(io_mod.getIo());
+    defer state.steer_mutex.unlock(io_mod.getIo());
+    var delivered = @min(state.steers_in_flight, state.pending_steers.items.len);
+    state.steers_in_flight = 0;
+    while (delivered > 0) : (delivered -= 1) {
+        state.alloc.free(state.pending_steers.orderedRemove(0));
+    }
+}
+
+fn handleSteer(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void {
+    const invalid_params = jsonrpc.RpcError{ .code = ErrorCode.invalid_params, .message = "Expected content" };
+    const params = msg.params_raw orelse return state.writer.writeError(alloc, msg.id, invalid_params);
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, params, .{}) catch
+        return state.writer.writeError(alloc, msg.id, invalid_params);
+    defer parsed.deinit();
+    if (parsed.value != .object) return state.writer.writeError(alloc, msg.id, invalid_params);
+    const content = switch (parsed.value.object.get("content") orelse .null) {
+        .string => |value| value,
+        else => return state.writer.writeError(alloc, msg.id, invalid_params),
+    };
+    if (content.len == 0 or content.len > max_steer_bytes) return state.writer.writeError(alloc, msg.id, .{
+        .code = ErrorCode.invalid_params,
+        .message = "Steering text is empty or longer than this connection accepts",
+    });
+    if (parsed.value.object.get("sessionId")) |requested| {
+        const active = state.active_session orelse return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No session is loaded",
+        });
+        if (requested != .string or !std.mem.eql(u8, requested.string, active.session_id)) {
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_request,
+                .message = "That session is not the one this connection is running",
+            });
+        }
+    }
+    if (state.active_prompt == null) return state.writer.writeError(alloc, msg.id, .{
+        .code = ErrorCode.invalid_request,
+        .message = "No turn is running to steer",
+    });
+
+    state.steer_mutex.lockUncancelable(io_mod.getIo());
+    defer state.steer_mutex.unlock(io_mod.getIo());
+    if (state.pending_steers.items.len >= max_pending_steers) return state.writer.writeError(alloc, msg.id, .{
+        .code = ErrorCode.invalid_request,
+        .message = "Too many steering messages are already waiting on this turn",
+    });
+    const owned = state.alloc.dupe(u8, content) catch return state.writer.writeError(alloc, msg.id, .{
+        .code = ErrorCode.internal_error,
+        .message = "Out of memory",
+    });
+    state.pending_steers.append(state.alloc, owned) catch {
+        state.alloc.free(owned);
+        return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.internal_error,
+            .message = "Out of memory",
+        });
+    };
+    debug_trace.eventf(
+        "worker",
+        "steer_enqueued",
+        .{},
+        "bytes={d} pending={d}",
+        .{ content.len, state.pending_steers.items.len },
+    );
+    return state.writer.writeResponse(alloc, msg.id, "null");
+}
+
 fn handleSteerChild(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !void {
     const invalid_params = jsonrpc.RpcError{ .code = ErrorCode.invalid_params, .message = "Expected childId and content" };
     const params = msg.params_raw orelse return state.writer.writeError(alloc, msg.id, invalid_params);
@@ -2010,7 +2119,39 @@ test "ACP prompt gate policy keeps lifecycle interruption responsive" {
     try std.testing.expect(!AcpMethod.session_steer_child.waitsForActivePrompt());
     try std.testing.expectEqual(AcpMethod.session_cancel_child, AcpMethod.parse("session/cancel_child"));
     try std.testing.expect(!AcpMethod.session_cancel_child.waitsForActivePrompt());
+    try std.testing.expectEqual(AcpMethod.session_steer, AcpMethod.parse("session/steer"));
+    try std.testing.expect(!AcpMethod.session_steer.waitsForActivePrompt());
     try std.testing.expect(AcpMethod.unknown.waitsForActivePrompt());
+}
+
+test "steering survives a step that never reached the model, and is dropped once one did" {
+    const alloc = std.testing.allocator;
+    var state = ServerState{
+        .alloc = alloc,
+        .cfg = undefined,
+        .writer = jsonrpc.Writer.init(),
+    };
+    defer state.deinit();
+    try state.pending_steers.append(alloc, try alloc.dupe(u8, "stop\nediting"));
+    try state.pending_steers.append(alloc, try alloc.dupe(u8, "use the other file"));
+
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const rendered = (try takePendingSteering(&state, arena)).?;
+    try std.testing.expectEqualStrings(
+        "<user_steering trusted_runtime_context=\"true\">\n" ++
+            "The user sent this while you were working. Follow it from here.\n" ++
+            "- \"stop\\nediting\"\n" ++
+            "- \"use the other file\"\n" ++
+            "</user_steering>\n",
+        rendered,
+    );
+
+    try std.testing.expectEqualStrings(rendered, (try takePendingSteering(&state, arena)).?);
+    clearDeliveredSteering(&state);
+    try std.testing.expectEqual(@as(?[]const u8, null), try takePendingSteering(&state, arena));
 }
 
 test "ACP initialize request validation requires a uint16 protocol version" {

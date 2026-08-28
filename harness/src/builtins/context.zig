@@ -97,6 +97,9 @@ const tools_and_verification_section =
     \\
     \\- The advertised tool list starts nearly empty by design. A capability missing from it is loadable, not absent: call search_tools once with a phrase for what you need (read a file, edit a file, search file contents, run a command, git, plan), then select_tool on the matches before using them.
     \\- Do this before answering that something is out of reach, and before substituting a shell command for a tool that exists.
+    \\- What is behind that door, when the session carries it: reading, writing, editing and searching files, language-server symbols, commands and long-running processes, the web, skills, delegated agents and threads, plans and goals, a browser, the machine itself, durable memory, and whatever MCP servers are connected. Search for the capability; the search names the tool.
+    \\- advisor is a stronger reviewer that already sees this conversation — the task, every call you have made, every result you have read — and you pass it none of that. Consult it before substantive work, when you are stuck, before changing approach, and when you believe the work is done. Weigh what it says; when the evidence in front of you contradicts it, name the conflict and ask again rather than switching silently.
+    \\- vision is how an image becomes readable when the model cannot see one natively: it inspects the images the user attached, or local image paths they supplied, and returns what is visible. A model that cannot see attached images is refused every other tool while any are pending, so call vision first, naming the visual evidence the task needs.
     \\- Choose the smallest suitable capability.
     \\- After code changes, verify the relevant behavior with direct checks such as formatting, a focused test, build, CLI run, or eval before claiming it works. Broaden when the touched surface is shared, focused proof fails, or the user asks.
     \\- If the user names a test file, run it directly or infer the closest command from local conventions. When no test is named, inspect only enough changed-file metadata to select the checks.
@@ -117,8 +120,48 @@ pub fn modelPromptOverlay(model: []const u8) ?[]const u8 {
     return null;
 }
 
+// The prompt the user can rewrite: `$HOME/.fx/system-prompt.md` replaces every
+// section above, and the tool section is appended back under it. That section is
+// not up for replacement — the advertised tool list starts nearly empty, so an
+// agent never told to call `search_tools` cannot reach a single tool.
+//
+// Read at the top of a turn rather than at startup, so an edit lands on the next
+// turn instead of the next process, and because the entry config is built before
+// the IO is up. The one static buffer is safe here: the agent loop is
+// single-threaded, and a turn already holds its own slice of it.
+//
+// ponytail: a file read per turn, no stat cache. Two syscalls against a prompt
+// that is sent whole to a model is not the cost worth watching.
+const system_prompt_override_bytes = 16 * 1024;
+var override_storage: [system_prompt_override_bytes * 4]u8 = undefined;
+
+pub fn systemPrompt() []const u8 {
+    const home = io_mod.getenv("HOME") orelse return gateway_system_prompt;
+    if (home.len == 0) return gateway_system_prompt;
+    return readSystemPromptOverride(home) orelse gateway_system_prompt;
+}
+
+fn readSystemPromptOverride(home: []const u8) ?[]const u8 {
+    var path_storage: [4096]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_storage, "{s}/.fx/system-prompt.md", .{home}) catch return null;
+
+    var file = std.Io.Dir.openFileAbsolute(io_mod.getIo(), path, .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+    }) catch return null;
+    defer file.close(io_mod.getIo());
+
+    var fixed: std.heap.FixedBufferAllocator = .init(&override_storage);
+    const arena = fixed.allocator();
+    const text = io_mod.readFileToEnd(arena, &file, system_prompt_override_bytes) catch return null;
+    const body = std.mem.trim(u8, text, trim_chars);
+    if (body.len == 0) return null;
+    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ body, tools_and_verification_section }) catch return null;
+}
+
 pub const prompt_policy = prompt_policy_contract.Policy{
     .system_prompt = gateway_system_prompt,
+    .system_prompt_fn = systemPrompt,
     .model_prompt_overlay_fn = modelPromptOverlay,
 };
 
@@ -3650,6 +3693,26 @@ test "gateway_system_prompt: compact ordered sections" {
     try std.testing.expect(gateway_system_prompt.len < 8 * 1024);
 }
 
+test "a system prompt file replaces the built-in sections and keeps the tool contract" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(home);
+
+    try std.testing.expect(readSystemPromptOverride(home) == null);
+
+    try writeTestFile(tmp.dir, ".fx/system-prompt.md", "\n  You are Emma.\n  ");
+    const replaced = readSystemPromptOverride(home).?;
+    try std.testing.expect(std.mem.startsWith(u8, replaced, "You are Emma."));
+    try expectContains(replaced, tools_and_verification_section);
+    try expectNotContains(replaced, identity_section);
+
+    try writeTestFile(tmp.dir, ".fx/system-prompt.md", "   \n\n");
+    try std.testing.expect(readSystemPromptOverride(home) == null);
+}
+
 test "gateway_system_prompt: local workspace authority" {
     try expectDefaultPromptContains("You are fx, a local coding CLI assistant with tool access.");
     try expectDefaultPromptContains("real local workspace");
@@ -3706,6 +3769,10 @@ test "gateway_system_prompt: focused tools and live verification" {
     try expectDefaultPromptContains("call search_tools once with a phrase for what you need");
     try expectDefaultPromptContains("then select_tool on the matches before using them");
     try expectDefaultPromptContains("before substituting a shell command for a tool that exists");
+    try expectDefaultPromptContains("What is behind that door, when the session carries it");
+    try expectDefaultPromptContains("advisor is a stronger reviewer that already sees this conversation");
+    try expectDefaultPromptContains("vision is how an image becomes readable when the model cannot see one natively");
+    try expectDefaultPromptContains("refused every other tool while any are pending");
     try expectDefaultPromptContains("Choose the smallest suitable capability.");
     try expectDefaultPromptContains("verify the relevant behavior with direct checks");
     try expectDefaultPromptContains("Broaden when the touched surface is shared");
