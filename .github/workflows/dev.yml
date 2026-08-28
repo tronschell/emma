@@ -1,0 +1,29 @@
+name: dev checks
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: validate the PR title and branch flow
+        run: node desktop/scripts/release.mjs pr
+      - name: verify the release rules without building the app
+        run: node --test desktop/test/release.test.mjs

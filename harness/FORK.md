@@ -90,6 +90,15 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   when they stopped being MCP servers: `Registry.toolAllowed` waves through
   anything the registry does not know, so bridging had made that list
   irrelevant to them.
+- **App-scoped computer use.** `computer` advertises running-app discovery,
+  accessibility state, and background actions against one exact app instance
+  instead of global screenshots, pointer coordinates, and keyboard shortcuts.
+  Mutations name an element from a single-use state snapshot. Calls still cross
+  `_emma/callTool`; Emma owns the app approval and enforces it only for the current
+  parent turn, regardless of full or auto mode. Child agents cannot use computer
+  and must ask the parent to perform app actions. There is no
+  activation, clipboard, or global-input fallback, and no Codex desktop runtime
+  is copied or bundled.
 - **Language servers.** `src/core/lsp/` and `src/tools/lsp/` are new — a
   JSON-RPC client with `Content-Length` framing, a process pool keyed by
   (server, workspace root), a data-only registry of about fifty servers in

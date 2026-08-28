@@ -359,6 +359,23 @@ pub(crate) fn elide_middle(text: &str, max: usize) -> String {
             high -= 1;
         }
     }
+    if head.is_empty() && tail.is_empty() {
+        let half = budget / 2;
+        let mut start = half.min(text.len());
+        while start > 0 && !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = text.len().saturating_sub(half).max(start);
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+        return format!(
+            "{}\n  … {} bytes elided …\n{}",
+            &text[..start],
+            end - start,
+            &text[end..]
+        );
+    }
     tail.reverse();
     let note = format!("  … {} lines elided …", high - low);
     head.push(&note);

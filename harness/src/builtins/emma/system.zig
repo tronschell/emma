@@ -1,10 +1,3 @@
-//! The Mac underneath Emma: other coding CLIs, the pointer, the advisor, MCP.
-//!
-//! Every spec here executes in the Electron host through `tools/emma/bridge.zig`.
-//! What lives in this file is only what the model sees: the name, the wording,
-//! and the argument schema. They are `.on_select` because Emma ships enough
-//! tools that advertising all of them would cost more context than the turn.
-
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const bridge = @import("../../tools/emma/bridge.zig");
 
@@ -62,8 +55,6 @@ pub const cli = ToolSpec{
     .advertisement = .on_select,
     .executor_kind = .emma,
     .activity_kind = .command,
-    // Emma gates its own tools at execution, by thread mode and by Settings →
-    // Tools, so a second prompt here would only ask the user twice.
     .requires_approval = false,
     .action_label = "Running CLI",
     .completed_action_label = "Ran CLI",
@@ -72,8 +63,6 @@ pub const cli = ToolSpec{
     .validate = bridge.validate,
     .call = bridge.call,
     .reads_only_fn = bridge.readsAndWrites,
-    // Another coding agent editing and running commands in the user's folder,
-    // with its own approvals possibly skipped. Nothing here can be taken back.
     .irreversible_fn = bridge.isIrreversible,
 };
 
@@ -111,10 +100,7 @@ pub const cli_runs = ToolSpec{
     .decode = bridge.decode,
     .validate = bridge.validate,
     .call = bridge.call,
-    // Listing and reading are the two common shapes, but `stop` kills a turn,
-    // which is a write however it is spelled.
     .reads_only_fn = bridge.readsAndWrites,
-    // A stopped run can be sent the same prompt again.
     .irreversible_fn = bridge.isReversible,
 };
 
@@ -142,7 +128,6 @@ pub const advisor = ToolSpec{
     },
     .advertisement = .on_select,
     .executor_kind = .emma,
-    // A second opinion on the transcript. Nothing on this Mac changes.
     .activity_kind = .read,
     .requires_approval = false,
     .action_label = "Consulting advisor",
@@ -202,13 +187,17 @@ pub const install_mcp = ToolSpec{
     .validate = bridge.validate,
     .call = bridge.call,
     .reads_only_fn = bridge.readsAndWrites,
-    // A wrong entry is fixed by installing over it, which is what the tool's own
-    // description tells the model to do.
     .irreversible_fn = bridge.isReversible,
 };
 
 const computer_description =
-    "Take over this Mac's real pointer and keyboard. Only for work that has no other route: driving a GUI app, or looking at the screen. Never for files or code — use read_file, write_file and terminal. The user must have asked for it, or you must ask them first and get a yes in the conversation; a granted permission dialog is not that ask. Call with action \"screenshot\" first, then use the returned pixel coordinates. Coordinates are [x, y] in screenshot pixels, top-left origin. Use \"zoom\" on a region when small text is hard to read.";
+    "Use a macOS app in the background through app-scoped accessibility controls. Prefer dedicated tools for files, code and structured integrations.\n" ++
+    "list_apps returns running apps and their bundle identifiers and process IDs. get_app_state reads an app's accessibility text and returns a snapshot token with element_index values. Supply app as a bundle identifier; supply pid to distinguish multiple running instances. If the app is not running, ask the user to open it.\n" ++
+    "Emma asks the user before reading or controlling the exact running app. Approval lasts only for the current parent turn; full and auto modes never bypass it. Child agents cannot use computer and must ask the parent to perform app actions. A denial means do not use that app again this turn.\n" ++
+    "App approval is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those. Never use this to approve Emma's own dialogs.\n" ++
+    "Every mutation requires snapshot and element_index from the latest get_app_state for that app. A snapshot is single-use: perform one action, then get_app_state again before the next action.\n" ++
+    "type_text supports only plain AXTextField or AXComboBox controls, not rich text. key dispatch does not prove the app handled it; verify the result with get_app_state.\n" ++
+    "Only click, set_value, type_text, key and scroll are supported. There is no screenshot, coordinate, global shortcut, app activation or clipboard fallback. If an accessibility operation is unavailable, stop and explain the limitation.";
 
 pub const computer = ToolSpec{
     .name = "computer",
@@ -221,77 +210,73 @@ pub const computer = ToolSpec{
                 .{
                     .name = "action",
                     .json_type = .string,
-                    // The `computer_toolset_20260801` vocabulary, aliases included,
-                    // so a model that already knows the Anthropic tool needs no
-                    // retraining. Undescribed there and undescribed here.
                     .shape = &.{ .enum_values = &.{
-                        "screenshot",
-                        "zoom",
-                        "cursor_position",
-                        "wait",
-                        "mouse_move",
-                        "left_click",
-                        "right_click",
-                        "middle_click",
-                        "double_click",
-                        "triple_click",
-                        "left_mouse_down",
-                        "left_mouse_up",
-                        "left_click_drag",
-                        "scroll",
-                        "type",
-                        "key",
-                        "hold_key",
-                        "move",
+                        "list_apps",
+                        "get_app_state",
                         "click",
+                        "set_value",
+                        "type_text",
+                        "key",
+                        "scroll",
                     } },
                 },
                 .{
-                    .name = "coordinate",
-                    .json_type = .array,
-                    .description = "[x, y] in screenshot pixels. Required for mouse_move, the clicks, scroll, and the end of left_click_drag.",
-                    .shape = &.{ .array_values = .{ .json_type = .number } },
+                    .name = "app",
+                    .json_type = .string,
+                    .description = "Running app's bundle identifier. Required except for list_apps.",
+                    .min_length = 1,
                 },
                 .{
-                    .name = "start_coordinate",
-                    .json_type = .array,
-                    .description = "[x, y] the drag starts from, for left_click_drag.",
-                    .shape = &.{ .array_values = .{ .json_type = .number } },
+                    .name = "pid",
+                    .json_type = .integer,
+                    .description = "Optional running process ID from list_apps, to distinguish instances of the same app.",
+                    .minimum = 1,
                 },
                 .{
-                    .name = "region",
-                    .json_type = .array,
-                    .description = "[x0, y0, x1, y1] in screenshot pixels, for zoom. The next screenshot shows only this box, magnified.",
-                    .shape = &.{ .array_values = .{ .json_type = .number } },
+                    .name = "snapshot",
+                    .json_type = .string,
+                    .description = "Single-use token from the latest get_app_state. Required for every mutation.",
+                    .min_length = 1,
+                    .max_length = 64,
+                },
+                .{
+                    .name = "element_index",
+                    .json_type = .integer,
+                    .description = "Target element from that snapshot's accessibility text. Required for every mutation.",
+                    .minimum = 0,
+                    .maximum = 399,
+                },
+                .{
+                    .name = "value",
+                    .json_type = .string,
+                    .description = "Replacement value for set_value. Required for set_value; an empty string clears the value.",
                 },
                 .{
                     .name = "text",
                     .json_type = .string,
-                    .description = "For \"type\", the text to type. For \"key\" and \"hold_key\", a combo such as cmd+s, ctrl+shift+tab, Return. On a click or scroll, the modifiers to hold, such as shift or cmd+alt.",
+                    .description = "Text to insert in a plain AXTextField or AXComboBox, not rich text. Required for type_text.",
                 },
                 .{
-                    .name = "scroll_direction",
+                    .name = "key",
                     .json_type = .string,
-                    .description = "Which way to scroll.",
+                    .description = "Named nonmodifier key. Required for key; modifier combinations and global shortcuts are unsupported.",
+                },
+                .{
+                    .name = "direction",
+                    .json_type = .string,
+                    .description = "Required direction for scroll.",
                     .shape = &.{ .enum_values = &.{ "up", "down", "left", "right" } },
                 },
                 .{
-                    .name = "scroll_amount",
-                    .json_type = .number,
-                    .description = "Wheel lines to scroll, 1 to 50.",
-                },
-                .{
-                    .name = "duration",
-                    .json_type = .number,
-                    .description = "Seconds, for wait and hold_key. At most 300.",
-                },
-                .{
-                    .name = "repeat",
-                    .json_type = .number,
-                    .description = "Press the key this many times, for \"key\". At most 32.",
+                    .name = "amount",
+                    .json_type = .integer,
+                    .description = "Scroll amount from 1 to 10. Defaults to 1.",
+                    .minimum = 1,
+                    .maximum = 10,
                 },
             },
             .required = &.{"action"},
+            .additional_properties = false,
         },
     },
     .advertisement = .on_select,
@@ -305,9 +290,61 @@ pub const computer = ToolSpec{
     .validate = bridge.validate,
     .call = bridge.call,
     .reads_only_fn = bridge.readsAndWrites,
-    // A real click on a real screen. Whatever it hit already happened.
     .irreversible_fn = bridge.isIrreversible,
 };
+
+test "computer schema exposes only app-scoped background controls" {
+    const std = @import("std");
+    const gateway_schema = @import("../../core/tooling/gateway_schema.zig");
+    const alloc = std.testing.allocator;
+    const json = try gateway_schema.builtinFunctionSchemaJsonAlloc(alloc, computer.gateway_schema);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const description = parsed.value.object.get("description").?.string;
+    try std.testing.expectEqualStrings(computer_description, description);
+    for ([_][]const u8{
+        "current parent turn",
+        "Child agents cannot use computer",
+        "purchases, deletions, sending private data",
+        "ask separately for those",
+        "plain AXTextField or AXComboBox controls, not rich text",
+        "key dispatch does not prove the app handled it",
+        "verify the result with get_app_state",
+    }) |required_text| try std.testing.expect(std.mem.find(u8, description, required_text) != null);
+    const schema = parsed.value.object.get("inputSchema").?.object;
+    const properties = schema.get("properties").?.object;
+    const actions = properties.get("action").?.object.get("enum").?.array.items;
+    const expected_actions = [_][]const u8{ "list_apps", "get_app_state", "click", "set_value", "type_text", "key", "scroll" };
+    try std.testing.expectEqual(expected_actions.len, actions.len);
+    for (expected_actions, actions) |expected, actual| try std.testing.expectEqualStrings(expected, actual.string);
+    const expected_properties = [_][2][]const u8{
+        .{ "action", "string" },
+        .{ "app", "string" },
+        .{ "pid", "integer" },
+        .{ "snapshot", "string" },
+        .{ "element_index", "integer" },
+        .{ "value", "string" },
+        .{ "text", "string" },
+        .{ "key", "string" },
+        .{ "direction", "string" },
+        .{ "amount", "integer" },
+    };
+    try std.testing.expectEqual(expected_properties.len, properties.count());
+    for (expected_properties) |expected| {
+        try std.testing.expectEqualStrings(expected[1], properties.get(expected[0]).?.object.get("type").?.string);
+    }
+    try std.testing.expectEqual(@as(i64, 64), properties.get("snapshot").?.object.get("maxLength").?.integer);
+    try std.testing.expectEqual(@as(i64, 399), properties.get("element_index").?.object.get("maximum").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), properties.get("amount").?.object.get("minimum").?.integer);
+    try std.testing.expectEqual(@as(i64, 10), properties.get("amount").?.object.get("maximum").?.integer);
+    try std.testing.expect(properties.get("value").?.object.get("minLength") == null);
+    try std.testing.expect(!schema.get("additionalProperties").?.bool);
+    try std.testing.expectEqual(@as(usize, 1), schema.get("required").?.array.items.len);
+    try std.testing.expectEqualStrings("action", schema.get("required").?.array.items[0].string);
+    try std.testing.expectEqual(tool_dispatch.ExecutorKind.emma, computer.executor_kind);
+    try std.testing.expect(!computer.requires_approval);
+}
 
 const secret_description =
     "Read something secret through the model the user picked for their secrets, without any of it entering this conversation. Keys, tokens, passwords, .env files, vault entries, whatever the user keeps private.\n" ++

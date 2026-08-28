@@ -1,9 +1,3 @@
-/* Puts a ripgrep binary in desktop/vendor/rg, which is what the app bundles and
-   what the `ripgrep` tool runs. Pinned by version *and* by the SHA-256 the
-   release publishes: this downloads an executable, so the hash is the check that
-   what arrived is what BurntSushi built. Already there and unchanged: does
-   nothing, so it is cheap to run before every build. */
-
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,25 +5,25 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "14.1.1";
+const VERSION = "15.2.0";
 const ARCHIVES = {
-  arm64: { target: "aarch64-apple-darwin", sha256: "24ad76777745fbff131c8fbc466742b011f925bfa4fffa2ded6def23b5b937be" },
-  x64: { target: "x86_64-apple-darwin", sha256: "fc87e78f7cb3fea12d69072e7ef3b21509754717b746368fd40d88963630e2b3" },
+  arm64: { target: "aarch64-apple-darwin", sha256: "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4" },
+  x64: { target: "x86_64-apple-darwin", sha256: "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1" },
 };
 
 const vendor = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vendor");
 const binary = path.join(vendor, "rg");
 const stamp = path.join(vendor, "rg.version");
 const want = `ripgrep ${VERSION} ${process.arch}\n`;
+const files = ["rg", "COPYING", "LICENSE-MIT", "UNLICENSE"];
 
-if (existsSync(binary) && existsSync(stamp) && readFileSync(stamp, "utf8") === want) {
+if (files.every((name) => existsSync(path.join(vendor, name))) && existsSync(stamp) && readFileSync(stamp, "utf8") === want) {
   console.log(`ripgrep ${VERSION} already vendored.`);
   process.exit(0);
 }
 
 const archive = process.platform === "darwin" ? ARCHIVES[process.arch] : undefined;
 if (!archive) {
-  // Not fatal: the tool falls back to the PATH's rg, then to grep.
   console.warn(`No pinned ripgrep for ${process.platform}/${process.arch}; Emma will use the rg or grep already on this machine.`);
   process.exit(0);
 }
@@ -48,7 +42,7 @@ mkdirSync(vendor, { recursive: true });
 const tarball = path.join(vendor, `${name}.tar.gz`);
 writeFileSync(tarball, bytes);
 try {
-  execFileSync("tar", ["-xzf", tarball, "-C", vendor, "--strip-components=1", `${name}/rg`]);
+  execFileSync("tar", ["-xzf", tarball, "-C", vendor, "--strip-components=1", ...files.map((file) => `${name}/${file}`)]);
 } finally {
   rmSync(tarball, { force: true });
 }

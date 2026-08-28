@@ -108,7 +108,30 @@ test("a greeting that repeats is ignored, and one of the wrong size is not a gre
   assert.equal(mac.greet(hello), true);
   assert.equal(mac.greet(hello), false);
   assert.equal(mac.greet(Uint8Array.from(hello)), false);
+  assert.equal(mac.greet(randomBytes(HANDSHAKE_BYTES)), true, "a phone that rejoins with a fresh hello has to be heard");
+});
+
+test("a junk greeting cannot rewind the handshake onto a session that already carried a frame", () => {
+  const { mac, phone } = link();
+  const captured = sealed(phone, request);
+  assert.deepEqual(mac.open(captured), request);
+
   assert.equal(mac.greet(randomBytes(HANDSHAKE_BYTES)), true);
+  assert.equal(mac.greet(phone.hello), false, "a replayed hello restored a spent session");
+  assert.equal(mac.open(captured), undefined, "a junk greeting reopened the replay window");
+  assert.equal(mac.open(sealed(phone, request)), undefined);
+});
+
+test("a phone that rejoins mid-connection is heard again, and its old frames are not", () => {
+  const { mac, phone } = link();
+  const captured = sealed(phone, request);
+  assert.deepEqual(mac.open(captured), request);
+
+  const rejoined = phone.restart();
+  assert.equal(mac.greet(rejoined), true, "a genuine reconnect was refused");
+  assert.equal(phone.greet(mac.hello), true);
+  assert.deepEqual(mac.open(sealed(phone, request)), request);
+  assert.equal(mac.open(captured), undefined);
 });
 
 test("flipping any single byte of a sealed frame drops it", () => {

@@ -37,7 +37,7 @@ Two projects reach Emma through the fork, listed in
 
 | Project | Used for | License | Link |
 | --- | --- | --- | --- |
-| ripgrep 14.1.1 (Andrew Gallant) | The harness's file search. Downloaded by `desktop/scripts/vendor-ripgrep.mjs` to `desktop/vendor/rg`, pinned by version and by the SHA-256 the release publishes, then bundled | MIT / Unlicense | [BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep) |
+| ripgrep 15.2.0 (Andrew Gallant) | The harness's file search. Downloaded by `desktop/scripts/vendor-ripgrep.mjs` to `desktop/vendor/rg`, pinned by version and by the SHA-256 the release publishes, then bundled | MIT / Unlicense | [BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep) |
 
 ## Desktop
 
@@ -123,10 +123,11 @@ packaging, never the trademark.
 
 ## Emma's own licensing
 
-**There is no root `LICENSE` file.** The only license file in the repository is
-[`harness/LICENSE`](../harness/LICENSE), which is fx's Apache-2.0 and covers the
-fork, not the rest of the tree. `Cargo.toml` sets `license = "Apache-2.0"` on
-the Rust workspace, and `desktop/package.json` is `"private": true` with no
-license field. Until a root `LICENSE` lands, the repository as a whole is
-unlicensed: no grant is offered to anyone, and nothing here should be read as
-one.
+The root [`LICENSE`](../LICENSE) records the MIT terms stated in the README.
+The harness retains its Apache-2.0 license and notices, and the Rust workspace
+declares Apache-2.0. Fonts and brand assets retain their own terms.
+
+Packaged apps include these notices under `Contents/Resources/notices/`.
+Vite generates the bundled renderer's license list, Cargo metadata locates
+the Rust dependency license texts, and the pinned ripgrep archive supplies
+its original license files. Electron's own notices remain in its bundle.

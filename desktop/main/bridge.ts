@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { HANDSHAKE_BYTES, HEARTBEAT_MS, isBridgeMethod } from "../shared/mobile-protocol";
+import { HANDSHAKE_BYTES, HEARTBEAT_MS, isBridgeMethod, PAIRING_TTL_MS } from "../shared/mobile-protocol";
 import type { BridgeEvent, BridgeFrame, BridgeMethod, DesktopIdentity, LiveState, PairingPayload, PermissionAsk } from "../shared/mobile-protocol";
 import { FrameCodec } from "./frames";
 import { clearPeer, loadPeer, mintPeer, pairingPayload, savePeer, type Peer } from "./pairing";
@@ -7,6 +7,7 @@ import { clearPeer, loadPeer, mintPeer, pairingPayload, savePeer, type Peer } fr
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 const CLAIM_TIMEOUT_MS = 10_000;
+const GREET_LIVE_MS = 1_000;
 const MAX_ID_CHARS = 128;
 const MAX_ERROR_CHARS = 200;
 const PEER_GONE = "-";
@@ -60,10 +61,12 @@ export function createBridge(deps: BridgeDeps): Bridge {
   let socket: WebSocket | undefined;
   let beat: ReturnType<typeof setInterval> | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  let expiry: ReturnType<typeof setTimeout> | undefined;
   let claim: { settle: (error?: Error) => void } | undefined;
   let backoff = BACKOFF_MIN_MS;
   let running = false;
   let phone = false;
+  let announced = 0;
   let lastSeen = 0;
   let reported: BridgeStatus = { paired: false, connected: false, name: "", lastSeen: 0 };
 
@@ -109,7 +112,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
       (error: unknown) => {
         send({ k: "res", id, ok: false, error: safeError(error) });
       },
-    );
+    ).catch(() => undefined);
   };
 
   const drop = (ws: WebSocket, code: number) => {
@@ -139,11 +142,34 @@ export function createBridge(deps: BridgeDeps): Bridge {
     }, wait);
   };
 
+  const unstage = () => {
+    if (expiry === undefined) return;
+    clearTimeout(expiry);
+    expiry = undefined;
+  };
+
   const commit = () => {
     if (!staged) return;
-    savePeer(deps.userData, staged);
+    try {
+      savePeer(deps.userData, staged);
+    } catch (error) {
+      console.error("emma bridge: could not save the paired phone", error);
+      return;
+    }
     saved = staged;
     staged = undefined;
+    unstage();
+  };
+
+  const cancelPair = () => {
+    unstage();
+    if (!staged) return;
+    staged = undefined;
+    peer = saved;
+    codec = peer ? codecFor(peer) : undefined;
+    phone = false;
+    changed();
+    reconnect();
   };
 
   const receive = (ws: WebSocket, data: unknown) => {
@@ -163,6 +189,9 @@ export function createBridge(deps: BridgeDeps): Bridge {
       } catch {
         return;
       }
+      const now = Date.now();
+      if (now - announced < GREET_LIVE_MS) return;
+      announced = now;
       send({ k: "evt", t: "live", state: liveState() });
       return;
     }
@@ -202,6 +231,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
     ws.binaryType = "arraybuffer";
     socket = ws;
     phone = false;
+    announced = 0;
     ws.onopen = () => {
       if (socket !== ws) return;
       backoff = BACKOFF_MIN_MS;
@@ -245,6 +275,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
 
   const farewell = (reason: "revoked" | "shutdown") => {
     send({ k: "evt", t: "bye", reason });
+    unstage();
     if (retry !== undefined) {
       clearTimeout(retry);
       retry = undefined;
@@ -268,7 +299,11 @@ export function createBridge(deps: BridgeDeps): Bridge {
       send(event);
     },
     ask(ask) {
-      pending.set(ask.id, ask);
+      if (peer) {
+        const now = Date.now();
+        for (const [id, held] of pending) if (held.expiresAt <= now) pending.delete(id);
+        pending.set(ask.id, ask);
+      }
       return send({ k: "evt", t: "permission-ask", ask }) && phone;
     },
     resolved(id, allowed) {
@@ -278,38 +313,39 @@ export function createBridge(deps: BridgeDeps): Bridge {
     status,
     async pair(relay) {
       const next = mintPeer(deps.identity.name, relay);
+      unstage();
       staged = next;
       peer = next;
       codec = codecFor(next);
       running = true;
       changed();
       reconnect();
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => claim?.settle(new Error(NO_RELAY)), CLAIM_TIMEOUT_MS);
-        claim = {
-          settle: (error) => {
-            if (!claim) return;
-            claim = undefined;
-            clearTimeout(timer);
-            if (error) reject(error);
-            else resolve();
-          },
-        };
-      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => claim?.settle(new Error(NO_RELAY)), CLAIM_TIMEOUT_MS);
+          claim = {
+            settle: (error) => {
+              if (!claim) return;
+              claim = undefined;
+              clearTimeout(timer);
+              if (error) reject(error);
+              else resolve();
+            },
+          };
+        });
+      } catch (error) {
+        cancelPair();
+        throw error;
+      }
+      expiry = setTimeout(cancelPair, PAIRING_TTL_MS);
+      expiry.unref();
       return pairingPayload(next);
     },
-    cancelPair() {
-      if (!staged) return;
-      staged = undefined;
-      peer = saved;
-      codec = peer ? codecFor(peer) : undefined;
-      phone = false;
-      changed();
-      reconnect();
-    },
+    cancelPair,
     unpair() {
       farewell("revoked");
       clearPeer(deps.userData);
+      pending.clear();
       saved = undefined;
       staged = undefined;
       peer = undefined;

@@ -11,7 +11,8 @@ The 26 names in `AGENT_TOOLS`. Schemas are in
 [tools.ts](../desktop/main/tools.ts); `runEmmaTool` in
 [main.ts](../desktop/main/main.ts) checks the gate and dispatches. Gate column:
 `ask` means a dialog in `ask`/`acceptEdits`, the verifier in `auto`, and through
-in `full`; `auto` means it never stops. Full matrix in
+in `full`; `auto` means it never stops. `app approval` is an explicit human grant
+for each running app per turn, in every mode. Full matrix in
 [permissions.md](permissions.md).
 
 | Tool | What it does | Gate | Implemented in |
@@ -19,7 +20,7 @@ in `full`; `auto` means it never stops. Full matrix in
 | `browser` | Drives a real Chrome, mirrored in the browser pane. `snapshot` returns an accessibility tree with `@e1` refs; later actions take a ref or a CSS selector. | ask | [browser.ts](../desktop/main/browser.ts) |
 | `cli` | Runs Claude Code, Codex, Pi, OpenCode or Cursor in a connected folder and takes turns with it. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
 | `cli_runs` | Lists installed CLIs and every run, reads one run's output, or stops its turn. | auto | [cli.ts](../desktop/main/cli.ts) |
-| `computer` | Takes the real pointer, keyboard and screen. macOS only. | ask | [computer.ts](../desktop/main/computer.ts) |
+| `computer` | Reads and operates approved running macOS apps through accessibility, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
 | `write_skill` | Records a durable lesson as `<userData>/skills/<slug>/SKILL.md`. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_tool` | Writes an executable script into Emma's data folder, callable later by name. `code` must start with a `#!` line. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_plugin` | Packages skills as a ChatGPT/Codex plugin and installs it on the Plugins page. | auto | [marketplace.ts](../desktop/main/marketplace.ts) |
@@ -56,6 +57,14 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
 
 ### Shapes worth knowing
 
+- `computer` — `list_apps` returns running-app metadata without an app grant.
+  `get_app_state` asks for the exact app before returning accessibility text, a
+  snapshot and element indices. `click`, `set_value`, `type_text`, `key` and
+  `scroll` require that app's single-use snapshot and an element index. Snapshots
+  expire after 60 seconds. App approval belongs only to the active parent turn;
+  delegated harness agents cannot use `computer`. Menu bars are excluded, and
+  grants never persist across turns. Full behavior and unsupported controls in
+  [computer-use.md](computer-use.md).
 - `keep` — `kind` is `page` | `note` | `selection` (a `screenshot` note exists but
   is not a tool argument). No arguments at all keeps the page in front of the
   user. The note lands immediately; a small model fills in title and tags a moment
@@ -162,8 +171,12 @@ The agent loop lives in the harness (`emma-cli acp`, see
 `requires_approval = false`; the harness dispatches them back into Electron over
 `_emma/callTool`, which lands in `runEmmaTool`. That function maps the wire name
 (`look_at_image` → `vision`), checks `toolGate`, checks availability, parses the
-arguments with `parseToolArgs`, raises the dialog on an `ask` gate, then runs the
-call. Tool results return as one text string — there is no image channel.
+arguments with `parseToolArgs`, raises the dialog on an ordinary `ask` gate, then
+runs the call. `computer` instead resolves the app and obtains a human-only grant
+inside its implementation, so neither Full access nor the Auto verifier bypasses
+it. Before dispatch, the harness bridge rejects child computer calls and calls
+without a current parent tool-call ID. Tool results return as one text string —
+there is no image channel.
 
 The harness's own tools never leave the harness process; their permission requests
 come back over ACP to `onPermission` in [main.ts](../desktop/main/main.ts).

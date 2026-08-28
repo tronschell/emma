@@ -1,4 +1,4 @@
-import { computerTools } from "./computer";
+import { computerAction, computerTools } from "./computer";
 import { MEMORY_COMMANDS, type MemoryCommand } from "./memory";
 import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS } from "../shared/components";
 import { ARTIFACT_KINDS, ARTIFACT_SURFACES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TITLE_CHARS } from "../shared/artifacts";
@@ -655,9 +655,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         unattended: flag(args.unattended, "unattended"),
         folder: optionalText(args.folder, "folder", 256),
       } as const;
-      // Checked here rather than in the runtime: a missing argument is a mistake
-      // the model can fix from the message, and the alternative is spawning a CLI
-      // with an empty prompt or resuming a run that was never named.
       if (!parsed.prompt) throw new Error('The "prompt" argument is required — say what the CLI should do.');
       if (action === "run" && !parsed.cli) throw new Error(`The "cli" argument is required for run: one of ${CLI_IDS.join(", ")}.`);
       if (action === "run" && !CLI_IDS.includes(parsed.cli!)) throw new Error(`Emma does not know a CLI called "${parsed.cli}". It knows ${CLI_IDS.join(", ")}.`);
@@ -667,7 +664,7 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
     case "cli_runs":
       return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop") };
     case "computer":
-      return { name, args };
+      return { name, args: computerAction(args) };
     case "browser": {
       const action = BROWSER_ACTIONS.find((candidate) => candidate === args.action);
       if (!action) throw new Error(`action must be one of ${BROWSER_ACTIONS.join(", ")}.`);
@@ -726,8 +723,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       return { name, question: optionalText(args.question, "question", 1024) };
     case "vision": {
       const parsed = { name, question: requiredText(args.question, "question", 2048), path: optionalText(args.path, "path", 1024), url: optionalText(args.url, "url", 2048), folder } as const;
-      // One image per call: two sources is a question about which one, and the
-      // answer would come back about whichever main happened to resolve first.
       if (!parsed.path && !parsed.url) throw new Error('Name the image: "path" for a file in a connected folder, or "url" for one on the web.');
       if (parsed.path && parsed.url) throw new Error('Send either "path" or "url", not both — one call looks at one image.');
       return parsed;
@@ -751,9 +746,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         result: optionalText(args.result, "result", 2000),
         check: args.check === undefined || args.check === null ? undefined : whole(args.check, "check"),
       } as const;
-      // Each action's own required fields, refused here rather than half-done in the
-      // store: a run with no id would pick whichever plan happened to be first, and
-      // an update naming no step has nothing to change.
       if (action !== "read" && action !== "write" && !parsed.id) throw new Error('The "id" argument is required. List the plans with plan {"action":"read"}.');
       if (action === "write" && !parsed.title) throw new Error('The "title" argument is required to write a plan.');
       if (action === "write" && !parsed.steps) throw new Error('The "steps" argument is required: a JSON array of steps, as a string.');
@@ -794,8 +786,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       const agent = optionalText(args.agent, "agent", 128);
       const message = optionalText(args.message, "message", MAX_TASK_PROMPT_CHARS);
       const stop = flag(args.stop, "stop");
-      // Steering an unnamed agent would go to whichever run happened to be
-      // first, so the two levers require their target rather than defaulting.
       if ((message !== undefined || stop) && !agent) throw new Error("Say which agent: pass agent with the thread ID the list reports.");
       if (message !== undefined && stop) throw new Error("Send a message or stop it, not both.");
       return { name, agent, message, stop };
@@ -806,9 +796,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       const title = optionalText(args.title, "title", 128);
       const thread = optionalText(args.thread, "thread", 96);
       const prompt = optionalText(args.prompt, "prompt", MAX_TASK_PROMPT_CHARS);
-      // Each action's own required fields, refused here rather than half-done in
-      // the loop: a spawn with no title puts an unnamed row in the sidebar, and a
-      // message with no thread would go to whichever one happened to be first.
       if ((action === "spawn" || action === "rename") && !title) throw new Error(`Say what to call it: pass title with three or four words naming the thread.`);
       if ((action === "read" || action === "message") && !thread) throw new Error("Say which thread: pass thread with the ID the list reports.");
       if (action === "message" && !prompt) throw new Error("Say what to send: pass prompt with the message for that thread.");
@@ -839,16 +826,11 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         kind: optionalText(args.kind, "kind", 32),
         language: optionalText(args.language, "language", 64),
         surface: optionalText(args.surface, "surface", 16),
-        // An artifact may legitimately be emptied, so these bound the size and nothing else.
         content: args.content === undefined || args.content === null ? undefined : bounded(args.content, "content", MAX_ARTIFACT_CONTENT_CHARS),
         oldStr: optionalText(args.old_str, "old_str", MAX_ARTIFACT_CONTENT_CHARS),
         newStr: args.new_str === undefined || args.new_str === null ? undefined : bounded(args.new_str, "new_str", MAX_ARTIFACT_CONTENT_CHARS),
       } as const;
-      // Checked here so the refusal names the missing argument, rather than reaching
-      // the store as a create with no content or a get with no id.
       if (action !== "list" && action !== "create" && !parsed.id) throw new Error('The "id" argument is required. List the artifacts to see them.');
-      // A file belongs to an artifact that already exists, and `create` is the one
-      // action that mints an id — so a file has nothing to be created inside of.
       if (parsed.file && (action === "list" || action === "create")) throw new Error('"file" names a file inside an artifact that already exists. Create the app first, then rewrite the file into it.');
       if (action === "create" && !parsed.title) throw new Error('The "title" argument is required to create an artifact.');
       if (action === "create" && !parsed.kind) throw new Error(`The "kind" argument is required: one of ${ARTIFACT_KINDS.join(", ")}.`);
@@ -916,17 +898,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
   }
 }
 
-/**
- * POSIX single-quoting, for the one place main builds a command line rather than
- * taking one: a tool's own path and the input string handed to it, which must
- * arrive as exactly two words however they are punctuated. Everything inside
- * single quotes is literal to the shell, and the only escape is closing and
- * reopening around a quote of its own. Here rather than in main.ts because this
- * is the half worth a test, and main.ts pulls in Electron.
- *
- * The script runs under a login shell, so a tool with `#!/usr/bin/env python3`
- * finds the same Python the user's terminal does.
- */
 export function shellQuoted(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -1034,7 +1005,6 @@ function memoryCommand(args: Record<string, unknown>): MemoryCommand {
       return { command, path, view_range: range as [number, number] };
     }
     case "create":
-      // A memory may legitimately be emptied, so this is `text`, not `requiredText`.
       return { command, path, file_text: text(args.file_text, "file_text") };
     case "str_replace":
       return { command, path, old_str: requiredText(args.old_str, "old_str", 32 * 1024), new_str: args.new_str === undefined || args.new_str === null ? undefined : text(args.new_str, "new_str") };
@@ -1047,12 +1017,11 @@ function memoryCommand(args: Record<string, unknown>): MemoryCommand {
   }
 }
 
-/** A short, human phrase for the agent list and the run banner. */
 export function describeToolCall(args: AnyToolArgs): string {
   switch (args.name) {
     case "cli": return args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`;
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
-    case "computer": return typeof args.args.action === "string" ? String(args.args.action).replace(/_/g, " ") : "using the computer";
+    case "computer": return `${String(args.args.action).replace(/_/g, " ")}${args.args.app ? ` in ${args.args.app}` : ""}`;
     case "browser": {
       if (args.action === "get") return `reading the page's ${args.field ?? "text"}`;
       const target = args.action === "open" ? args.url : args.action === "press" ? args.key : args.selector;

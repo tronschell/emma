@@ -7,7 +7,7 @@ use std::{
         mpsc::{self, RecvTimeoutError, Sender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -645,11 +645,17 @@ pub fn start_live_runtime(
         .name("emma-live-runtime".into())
         .spawn(move || {
             let mut runtime = Runtime::new(thread_root, scheduled_root, research_root, jobs);
+            let tick = Duration::from_secs(30);
+            let mut due = Instant::now() + tick;
             loop {
-                match receiver.recv_timeout(Duration::from_secs(30)) {
+                match receiver.recv_timeout(due.saturating_duration_since(Instant::now())) {
                     Ok(command) => runtime.handle(command),
-                    Err(RecvTimeoutError::Timeout) => runtime.run_due_jobs(),
+                    Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
+                }
+                if Instant::now() >= due {
+                    runtime.run_due_jobs();
+                    due = Instant::now() + tick;
                 }
             }
         })
@@ -1108,7 +1114,7 @@ impl Runtime {
         self.scheduled
             .save(&job)
             .map_err(|error| LiveError::new(format!("could not save scheduled job: {error}")))?;
-        self.fire_trigger(&format!("after {job_id}"), outputs, depth + 1)?;
+        self.fire_trigger(&format!("after {job_id}"), outputs, depth.saturating_add(1))?;
         Ok(job)
     }
 

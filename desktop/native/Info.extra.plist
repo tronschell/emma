@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Merged into Emma.app's Info.plist by electron-packager's extend-info flag.
-
-     Electron's default plist covers the microphone but not speech recognition, and
-     TCC kills any process that touches Speech.framework without a usage string. It
-     reads the *responsible* process's plist, which for the spawned `emma-transcribe`
-     helper is Emma.app, so the string has to be here rather than in the helper. -->
 <plist version="1.0">
 <dict>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Emma uses the microphone only when you start dictation. Recordings are transcribed on this Mac.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Emma uses the speech recognizer built into macOS to turn what you dictate into text. Recordings are transcribed on this Mac.</string>
 </dict>

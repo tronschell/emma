@@ -63,6 +63,7 @@ export class Terminals {
       written: 0,
     };
     this.tabs.set(entry.id, entry);
+    child.stdin?.on("error", () => undefined);
     child.stdout?.on("data", (chunk: Buffer) => this.take(entry, chunk));
     child.stderr?.on("data", (chunk: Buffer) => this.take(entry, chunk));
     child.on("error", (reason: Error) => {

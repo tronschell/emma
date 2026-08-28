@@ -29,6 +29,12 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 
 ## Quickstart
 
+Published macOS builds are distributed through
+[GitHub Releases](https://github.com/tronschell/emma/releases). For a published
+version, unzip `Emma-vX.Y.Z-darwin-arm64.zip` and move `Emma.app` to Applications.
+Requires macOS 12 or later on Apple silicon. The toolchains below are only
+needed to build from source.
+
 ```bash
 npm install --prefix desktop
 npm run dev
@@ -40,11 +46,11 @@ Double-tap the physical **left Option** key to open Quick Ask. Pick a model in *
 
 | | |
 |---|---|
-| **OS** | macOS on Apple silicon |
+| **OS** | macOS 12 or later on Apple silicon |
 | **Node** | 24+ |
 | **Rust** | 1.97.1 (`rust-toolchain.toml` pins it) |
 | **Zig** | 0.16.0 |
-| **Xcode CLT** | `clang` builds three native helpers |
+| **Xcode** | `clang` builds four native helpers; packaging also needs full Xcode's `actool` |
 
 New to the repo? **[docs/getting-started.md](docs/getting-started.md)**
 
@@ -136,16 +142,18 @@ docs/           Product and architecture contracts
 ## Development
 
 ```bash
-npm --prefix desktop run check       # test, typecheck, lint, renderer build
+npm --prefix desktop run check
 cargo test --workspace --locked
 (cd harness && zig build test)
 ```
 
 [`AGENTS.md`](AGENTS.md) is the source of truth for anyone — human or agent — changing this repo. `just check`, `just test`, and `just package` wrap the rest; `npm run package:mac` builds the app.
 
-> **Not release-ready.** `dev.local.emma` is provisional: bundle ID, minimum macOS version, signing, distribution, and an update owner are all still open.
-
-PR titles are the changelog (conventional commits); release-please writes `CHANGELOG.md`. → **[docs/development.md](docs/development.md)**
+Release flow: feature branches → `dev` → `main`. PR titles drive the generated
+changelog and version; promoting a prepared release to `main` automatically
+checks, builds, signs, notarizes, and publishes the macOS app. Apple secret names
+are configured; the first signed GitHub release still needs end-to-end verification.
+→ **[Release guide](docs/releases.md)** · **[Development](docs/development.md)**
 
 ## Docs
 
@@ -157,7 +165,7 @@ Forked from [vercel-labs/fx](https://github.com/vercel-labs/fx) (Apache-2.0, © 
 
 ## License
 
-MIT — do whatever you want with it, keep the copyright notice. Subtrees with their own terms:
+MIT — see [`LICENSE`](LICENSE). Subtrees with their own terms:
 
 | | |
 |---|---|

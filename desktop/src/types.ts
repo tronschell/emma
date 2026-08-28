@@ -68,7 +68,6 @@ export interface ScheduledJob {
   lastRunAt?: string;
   lastThreadId?: string;
   permissionMode: PermissionMode;
-  /** The model key each run is pinned to, or empty for whichever model the app is set to. */
   model: string;
 }
 
@@ -324,7 +323,7 @@ declare global {
       clearImportedSkill(id: string): Promise<void>;
       listImportedMcpServers(): Promise<ImportedMcpServer[]>;
       stopComputerRun(): void;
-      onComputerRunProgress(listener: (value: { step: number; action: string; actions: number }) => void): () => void;
+      onComputerRunProgress(listener: (value: unknown) => void): () => void;
       setProviders(value: ProviderProfile[]): Promise<ProviderProfile[]>;
       testProvider(value: { baseUrl: string; credentialEnv: string; modelId: string; insecure: boolean }): Promise<{ models: string[]; tools: boolean; error: string }>;
       setVerifier(value: VerifierSettings): Promise<VerifierSettings>;
@@ -377,6 +376,7 @@ declare global {
       deleteMemory(path: string): Promise<MemoryNote[]>;
       listAgents(): Promise<LiveAgent[]>;
       listSpans(): Promise<Record<string, TraceSpan[]>>;
+      livePartial(): Promise<Record<string, { text: string; thinking: string }>>;
       threadTraces(threadId: string): Promise<{ timestamp: string; text: string }[]>;
       steerAgent(value: { threadId: string; text: string }): Promise<void>;
       stopAgent(threadId?: string): void;
@@ -386,6 +386,7 @@ declare global {
       onAgents(listener: (value: LiveAgent[]) => void): () => void;
       onSpans(listener: (value: Record<string, TraceSpan[]>) => void): () => void;
       onPermissionAsk(listener: (value: PermissionAsk) => void): () => void;
+      onPermissionResolved(listener: (value: { id: string; allowed: boolean }) => void): () => void;
       setZeroRetention(value: boolean): Promise<void>;
       listCredentials(): Promise<CredentialSummary[]>;
       openRouterBalance(): Promise<KeyBalance>;

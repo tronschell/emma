@@ -40,7 +40,7 @@ export type Block =
 /* Bare URLs autolink last, so a `[text](url)` above still wins the address.
    The tail excludes closing punctuation: a link at the end of a sentence
    must not swallow the period. */
-const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_|(!?)\[([^\]]*)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()\[\]]*[^\s<>()\[\].,;:!?'"])/g;
+const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_|(!?)\[([^\]]*)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()[\]]*[^\s<>()[\].,;:!?'"])/g;
 const FENCE = /^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;

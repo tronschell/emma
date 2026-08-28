@@ -2,28 +2,28 @@ name: ci
 
 on:
   pull_request:
-  push:
     branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_call:
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
     steps:
       - uses: actions/checkout@v5
-
-      - name: pr title is a conventional commit
-        if: github.event_name == 'pull_request'
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          printf '%s\n' "$TITLE" | grep -qE '^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\([a-z0-9 ._/-]+\))?!?: .+' && exit 0
-          echo "PR title drives the changelog. Use: fix(notch): stop the island stealing focus"
-          echo "Types: feat fix perf refactor docs test build ci chore revert"
-          exit 1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
@@ -31,7 +31,12 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - uses: mlugg/setup-zig@v2
+      - name: validate the PR title and branch flow
+        if: github.event_name == 'pull_request'
+        run: node desktop/scripts/release.mjs pr
+
+      - name: setup-zig v2.2.1
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.16.0
 
@@ -41,13 +46,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - run: npm ci
         working-directory: desktop
 
       - run: npm run check
+        working-directory: desktop
+
+      - run: npm run build:native
         working-directory: desktop
 
       - run: cargo fmt --all -- --check
@@ -57,3 +65,7 @@ jobs:
 
       - run: zig build test
         working-directory: harness
+
+      - name: package the release candidate without signing secrets
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        run: npm run package:mac

@@ -249,7 +249,7 @@ export class Browsers {
     session.pinned = undefined;
     session.activeId = undefined;
     this.sessions.delete(session.name);
-    if (this.path) spawn(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore" }).unref();
+    if (this.path) spawn(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore" }).on("error", () => undefined).unref();
   }
 
   private layout(session: Session) {

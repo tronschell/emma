@@ -53,3 +53,11 @@ test("the terminal is a full-width row under the thread, not a fourth column", (
   assert.match(layout, /grid-template-rows:\s*minmax\(0, 1fr\) min\(var\(--terminal-height, 0px\), 60%\)/);
   assert.match(row, /grid-column: 1 \/ -1/);
 });
+
+test("output that arrived during a failed replay is still written to the pane", () => {
+  const source = readFileSync(path.join(__dirname, "..", "..", "src", "terminal.tsx"), "utf8");
+  const replay = source.slice(source.indexOf("readTerminal(tab.id)"), source.indexOf("term.onData"));
+  const failed = replay.slice(replay.indexOf(".catch("));
+  assert.match(failed, /for \(const chunk of queued\) term\.write\(chunk\.data\)/);
+  assert.match(failed, /queued\.length = 0/);
+});
