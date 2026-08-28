@@ -42,6 +42,7 @@ its implementation asks for the resolved app rather than each individual call.
 | `vision` | auto | auto | auto | auto |
 | `web_search` | auto | auto | auto | auto |
 | `plan` | auto | auto | auto | auto |
+| `goal` | auto | auto | auto | auto |
 | `threads` | auto | auto | auto | auto |
 | `read_trace` | auto | auto | auto | auto |
 | `context` | auto | auto | auto | auto |
@@ -52,11 +53,17 @@ its implementation asks for the resolved app rather than each individual call.
 | `workflow` | ask | ask | verifier | auto |
 | `autoresearch` | ask | ask | verifier | auto |
 | `artifact` | auto | auto | auto | auto |
+| `component` | auto | auto | auto | auto |
 | `visualize` | auto | auto | auto | auto |
 
 Seven tools use the ordinary gate: `browser`, `cli`, `run_tool`, `secret`,
 `install_mcp`, `workflow`, `autoresearch`. `computer` requires a human app grant;
 its `list_apps` action returns only running-app metadata without that grant.
+
+Creating a component uses its ordinary tool gate, but sending a widget request
+with credentials requires a separate native approval of the exact request
+template in every mode. This is not approval of all future widget requests.
+See [components.md](components.md).
 
 `hidden` is not in the table: no mode hides a tool. It comes from a Settings →
 Tools switch or an unknown name, checked first, and applies in every mode. A

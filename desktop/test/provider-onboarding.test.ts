@@ -21,6 +21,22 @@ function handler(owner: string, name: string) {
 function compile(code: string, scope: Record<string, unknown>) {
   return Function(...Object.keys(scope), ts.transpile(`return (${code});`, { target: ts.ScriptTarget.ES2022 }))(...Object.values(scope));
 }
+
+test("privacy copy distinguishes agent routing from secondary models and background requests", () => {
+  const parts: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxText(node)) parts.push(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(named(source, "SettingsBody"));
+  const copy = parts.join(" ").replace(/\s+/g, " ");
+  assert.match(copy, /main agent loop on OpenRouter/);
+  assert.match(copy, /does not cover secondary models, tools or account logging/);
+  assert.match(copy, /separate opt-ins/);
+  assert.match(copy, /ordinary request metadata/);
+  assert.doesNotMatch(copy, /every free model|no free endpoint qualifies|Nothing is reported about you|No telemetry, no analytics/i);
+});
+
 function setup() {
   let settings = structuredClone(defaultSettings);
   let saved = settings;

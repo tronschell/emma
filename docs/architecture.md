@@ -36,10 +36,11 @@ Four processes, three trust boundaries. Every boundary validates its input.
 | Renderer | no | no | no | no |
 | Electron main | yes | yes | yes | yes |
 | `emma-host` | Markdown stores only | no | no | no |
-| `emma-cli` | its workspace root | providers + MCP | yes | no |
+| `emma-cli` | permission-gated files and commands | providers + MCP | yes | no |
 
-`emma-host` depends on `serde` and `serde_json` and nothing else — it cannot
-open a socket or spawn a child. The harness runs the agent loop; current parent-turn
+`emma-host` depends on `serde` and `serde_json`; its implementation does not
+open a socket or spawn a child. This is a code boundary, not an OS sandbox.
+The harness runs the agent loop; current parent-turn
 `computer` calls return over ACP as `_emma/callTool`. Electron main owns exact-app
 approval, the stop switch, and the native helper's app-scoped accessibility controls.
 Child agents cannot use the grant. Computer use does not capture the screen or drive
@@ -51,9 +52,9 @@ the global pointer; screen-context and annotation capture are separate features.
 | Boundary | Checked by | What it enforces |
 | --- | --- | --- |
 | Renderer → main | `trustedFrame` in [`main.ts`](../desktop/main/main.ts) | Sender must be the main frame and its URL must be `<appPath>/dist-renderer/index.html`, or the `EMMA_DEV_SERVER_URL` origin (`trustedSender`) |
-| Renderer → main | `validateRequest` in [`ipc.ts`](../desktop/main/ipc.ts) | Method must be in a 20-entry allowlist; exact required and optional field lists; every value a string; per-key length caps; whole envelope ≤ 128 KiB |
+| Renderer → main | `validateRequest` in [`ipc.ts`](../desktop/main/ipc.ts) | Method must be in the allowlist; exact required and optional field lists; every value a string; per-key length caps; whole envelope ≤ 128 KiB |
 | Renderer → main | `keepRequest`, `vaultRequest`, `runCommandRequest`, `validJpegDataUrl` | Per-channel shape checks for the channels that do not reach the host |
-| Renderer → main | `componentCall` in [`components.ts`](../desktop/main/components.ts) | A widget Emma built asking to reach the outside: one of five methods, well-formed header names, `{{NAME}}` filled only for the variables that component declared, and `publicUrl` narrowed to public **https** |
+| Renderer → main | Component request validation and execution | Fixed public HTTPS destinations, bounded requests/responses, and native approval before credentials are sent; widgets share the renderer and are not isolated identities. See [components.md](components.md) |
 | Main → host | `MAX_REQUEST_BYTES` 128 KiB in [`main.rs`](../crates/host/src/main.rs) | Oversize lines are refused with the request id recovered, not dropped silently |
 | Host → main | serde `deny_unknown_fields` on every params struct | An unknown or misspelled field is an error, not a default |
 | Host → main | `BoundedLines` in [`ndjson.ts`](../desktop/main/ndjson.ts) | 16 MiB per line, UTF-8 fatal decode, `parseHostLine` re-checks every envelope |
@@ -70,8 +71,8 @@ table and the trace writer exist once.
 **NDJSON to `emma-host`** — one JSON request object per line in, one
 `{id, ok, result}` or `{id, ok, error}` envelope per line out. It is
 request/response only, with one exception: the host pushes unsolicited
-`{"dueJob": …}` lines when a scheduled job comes due. Nothing streams on this
-path. Assistant text arrives from the harness instead, and main rebroadcasts it
+`{"dueJob": …}` lines when a scheduled job comes due. Large responses use the
+chunk framing described below. Assistant text arrives from the harness instead, and main rebroadcasts it
 as `emma:delta`; the durable message is written afterwards with `recordTurn`, so
 a delta is never persisted. `recordTurn` is the one request with no natural
 ceiling, so `recordedTurn` in `ndjson.ts` elides the middle of the prompt, the

@@ -24,8 +24,10 @@ release automation.
 - A push to `main` runs the shared CI workflow before packaging. Signing,
   notarization, stapling, Gatekeeper validation, and asset upload must all
   succeed before the draft becomes public. Published releases are not replaced.
-- Release preparation and publication are separate jobs. Only preparation and
-  publication receive write permissions; PR checks receive no Apple secrets.
+- Release preparation and publication are separate jobs. Only preparation,
+  draft validation, and publication receive write permissions. GitHub requires
+  push access to read draft releases; keep `contents: write` on `plan` even though
+  it only reads release state. PR checks receive no Apple secrets.
 - Sign after locale trimming. Keep native executables, skills, and dependency
   notices in the package. `npm run package:mac` verifies the unsigned bundle;
   signing and a real update installation still need separate verification.

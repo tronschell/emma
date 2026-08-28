@@ -49,7 +49,7 @@ is the tour; this is the reference.
 | [Architecture](architecture.md) | Process boundaries, the trust model, the product contract |
 | [Development](development.md) | Repo map, house rules, toolchains, builds, tests, packaging |
 | [Data](data.md) | Every file Emma reads or writes, every environment variable |
-| [Releasing](../.claude/skills/releasing/SKILL.md) | PR titles, the generated changelog, CI, builds, and what signing still blocks |
+| [Releasing](releases.md) | PR titles, the generated changelog, CI, downloads, signing, and update verification |
 | [Credits](credits.md) | Every dependency, what it is used for, and its license |
 | [Icon sources](icon-sources.md) | Where each vendor mark came from and under what terms |
 
