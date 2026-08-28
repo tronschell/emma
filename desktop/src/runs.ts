@@ -253,8 +253,17 @@ export function joinPartial(restored: string, held: string): string {
  * what has been said, which is the shape of a turn anyway.
  */
 export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { text: string; thinking: string }): Block[] {
+  const byId = new Map(spans.map((span) => [span.id, span]));
+  const ownedHere = (span: TraceSpan) => {
+    let at = byId.get(span.parentId ?? "");
+    for (let hops = spans.length; at && hops > 0; hops -= 1) {
+      if (at.id.startsWith("agent:")) return at.id === `agent:${threadId}`;
+      at = byId.get(at.parentId ?? "");
+    }
+    return true;
+  };
   const calls = spans
-    .filter((span) => span.id.startsWith("call:"))
+    .filter((span) => span.id.startsWith("call:") && ownedHere(span))
     .sort((left, right) => left.startedAt - right.startedAt)
     .map((span): Block => ({
       kind: "step",
