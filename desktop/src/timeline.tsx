@@ -47,8 +47,12 @@ export function Timeline({ threadId, sending, carriedTokens, sample }: { threadI
   const take = useCallback((trees: Record<string, TraceSpan[]>) => setLive(trees[threadId] ?? []), [threadId]);
   useEffect(() => {
     if (sample) return;
-    void window.emma.listSpans().then(take).catch(() => undefined);
-    return window.emma.onSpans(take);
+    let alive = true;
+    void window.emma.listSpans()
+      .then((trees) => { if (alive) take(trees); })
+      .catch(() => undefined);
+    const stop = window.emma.onSpans(take);
+    return () => { alive = false; stop(); };
   }, [sample, take]);
 
   // Refetched when the turn ends, because that is when its trace lands on the

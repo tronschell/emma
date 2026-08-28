@@ -107,7 +107,11 @@ export function TerminalSurface({ tab, active, onSelect, onLink }: {
       }
       queued.length = 0;
       replayedTo = saved.at;
-    }).catch(() => { replayedTo = 0; });
+    }).catch(() => {
+      for (const chunk of queued) term.write(chunk.data);
+      queued.length = 0;
+      replayedTo = 0;
+    });
 
     const typed = term.onData((data) => void window.emma.writeTerminal({ id: tab.id, data }).catch(() => undefined));
     const resized = term.onResize(({ cols, rows }) => void window.emma.resizeTerminal({ id: tab.id, columns: cols, rows }).catch(() => undefined));

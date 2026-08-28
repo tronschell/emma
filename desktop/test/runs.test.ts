@@ -233,6 +233,19 @@ test("a turn main has said nothing about yet restores as nothing", () => {
   assert.deepEqual(restoreBlocks("quiet", [], undefined), []);
 });
 
+test("a parent's restore leaves its subagents' calls to the subagent", () => {
+  const spans: TraceSpan[] = [
+    { id: "agent:parent", name: "Parent", kind: "agent", startedAt: 0, status: "running" },
+    { id: "call:own", name: "read runs.ts", kind: "read", startedAt: 1, status: "ok", parentId: "agent:parent" },
+    { id: "call:spawn", name: "subagent", kind: "subagent", startedAt: 2, status: "running", parentId: "agent:parent" },
+    { id: "agent:child", name: "Child", kind: "agent", startedAt: 3, status: "running", parentId: "call:spawn" },
+    { id: "call:theirs", name: "grep in the child", kind: "search", startedAt: 4, status: "ok", parentId: "agent:child" },
+  ];
+  const calls = (threadId: string) => restoreBlocks(threadId, spans).map((block) => block.kind === "step" ? block.step.toolCallId : block.kind);
+  assert.deepEqual(calls("parent"), ["own", "spawn"]);
+  assert.deepEqual(calls("child"), ["theirs"]);
+});
+
 test("a delta that beat the restore is folded into the answer, not left standing alone", async () => {
   liveSpans = {};
   livePartials = { "recovered-overlap": { text: "The answer is 42, because ", thinking: "" } };
