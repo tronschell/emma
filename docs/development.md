@@ -156,8 +156,6 @@ runners do and do not cover — is in
 
 Still open, all verified against the build as it stands:
 
-- **Bundle id is `dev.local.emma`**, set by `--app-bundle-id`. A development
-  identifier; nobody owns that reverse-DNS prefix.
 - **No signing identity in the repo secrets.** [`release.yml`](../.github/workflows/release.yml)
   signs and notarizes, but only once `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`,
   `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` are set. Until

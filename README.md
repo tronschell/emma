@@ -143,7 +143,7 @@ cargo test --workspace --locked
 
 [`AGENTS.md`](AGENTS.md) is the source of truth for anyone — human or agent — changing this repo. `just check`, `just test`, and `just package` wrap the rest; `npm run package:mac` builds the app.
 
-> **Not release-ready.** `dev.local.emma` is provisional: bundle ID, minimum macOS version, signing, distribution, and an update owner are all still open.
+> **Not release-ready.** The release job signs and notarizes, but the notarization secrets are not set yet; minimum macOS version and distribution are still open.
 
 PR titles are the changelog (conventional commits); release-please writes `CHANGELOG.md`. → **[docs/development.md](docs/development.md)**
 
