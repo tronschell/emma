@@ -47,6 +47,35 @@ jobs:
       - run: npm run package:mac
         working-directory: desktop
 
+      - name: import the signing certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          printf '%s' "$CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p runner "$RUNNER_TEMP/build.keychain"
+          security default-keychain -s "$RUNNER_TEMP/build.keychain"
+          security unlock-keychain -p runner "$RUNNER_TEMP/build.keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/build.keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k runner "$RUNNER_TEMP/build.keychain"
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: sign the app
+        run: npx electron-osx-sign release/Emma-darwin-arm64/Emma.app
+        working-directory: desktop
+
+      - name: notarize and staple
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          printf '%s' "$API_KEY_P8" | base64 -d > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER" --wait
+          xcrun stapler staple desktop/release/Emma-darwin-arm64/Emma.app
+          rm "$RUNNER_TEMP/AuthKey.p8"
+
       - name: zip the app
         run: ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "Emma-${{ needs.changelog.outputs.tag }}-darwin-arm64.zip"
 

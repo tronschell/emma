@@ -158,9 +158,17 @@ Still open, all verified against the build as it stands:
 
 - **Bundle id is `dev.local.emma`**, set by `--app-bundle-id`. A development
   identifier; nobody owns that reverse-DNS prefix.
-- **No signing identity.** The packager call has no `--osx-sign` and no
-  notarization step, so Gatekeeper blocks the build on any Mac but the one that
-  made it. Unsigned dev builds also never get macOS notification permission.
+- **No signing identity in the repo secrets.** [`release.yml`](../.github/workflows/release.yml)
+  signs and notarizes, but only once `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`,
+  `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` are set. Until
+  they are, the release job fails at the import step rather than shipping an
+  unsigned zip. Signing happens after `package:mac` rather than inside it,
+  because `trim-packaged-locales.mjs` deletes `.lproj` directories out of
+  `Electron Framework.framework` and `Contents/Resources` — both inside code
+  seals, so a bundle signed by the packager would be broken by the trim that
+  follows it. `npm run package:mac` on its own still produces an unsigned
+  bundle, which Gatekeeper blocks on any Mac but the one that made it. Unsigned
+  dev builds also never get macOS notification permission.
 - **No minimum macOS version of Emma's own.** `Info.extra.plist` declares only
   the speech usage string; the bundle carries Electron's default floor. The
   three native helpers are built `-mmacosx-version-min=12.0`.
@@ -170,8 +178,7 @@ Still open, all verified against the build as it stands:
   ([desktop/main/update.ts](../desktop/main/update.ts)), but Squirrel.Mac refuses
   an unsigned bundle: the check ends in an `error` event, which is logged and
   otherwise ignored. The workspace popup and `quitAndInstall` are written and
-  exercised, and neither can run for real until the signing identity above
-  lands. `emma-cli` has its own separate self-update path, which resolves to
+  exercised, and neither can run for real until the secrets above land. `emma-cli` has its own separate self-update path, which resolves to
   `null` unless `EMMA_UPGRADE_BASE_URL` names a loopback host — only the fork's
   own end-to-end test does that.
 
