@@ -377,6 +377,7 @@ declare global {
       deleteMemory(path: string): Promise<MemoryNote[]>;
       listAgents(): Promise<LiveAgent[]>;
       listSpans(): Promise<Record<string, TraceSpan[]>>;
+      livePartial(): Promise<Record<string, { text: string; thinking: string }>>;
       threadTraces(threadId: string): Promise<{ timestamp: string; text: string }[]>;
       steerAgent(value: { threadId: string; text: string }): Promise<void>;
       stopAgent(threadId?: string): void;

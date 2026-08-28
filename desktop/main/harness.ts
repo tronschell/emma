@@ -399,6 +399,7 @@ export class Harness {
       console.error(`emma-cli: ${text}`);
       this.log("err", "stderr", text);
     });
+    child.stdin.on("error", (error: Error) => this.fail(error));
     child.once("error", (error) => this.fail(error));
     child.once("exit", (code, signal) => this.fail(new Error(this.exitReason(code, signal))));
 
@@ -644,7 +645,7 @@ export class Harness {
     // A message carrying a method is the harness talking to Emma; one carrying
     // only an id is Emma's own call coming back.
     if (typeof message.method === "string") {
-      void this.handleIncoming(message);
+      void this.handleIncoming(message).catch((error: unknown) => this.log("err", "dropped", error instanceof Error ? error.message : String(error)));
       return;
     }
     if (typeof message.id !== "number") return;

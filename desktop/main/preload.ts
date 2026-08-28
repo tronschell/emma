@@ -325,6 +325,7 @@ contextBridge.exposeInMainWorld("emma", {
   deleteMemory: (path: string) => ipcRenderer.invoke("emma:delete-memory", path),
   listAgents: () => ipcRenderer.invoke("emma:list-agents"),
   listSpans: () => ipcRenderer.invoke("emma:list-spans"),
+  livePartial: () => ipcRenderer.invoke("emma:live-partial"),
   threadTraces: (threadId: string) => ipcRenderer.invoke("emma:thread-traces", threadId),
   steerAgent: (value: { threadId: string; text: string }) => ipcRenderer.invoke("emma:steer-agent", value),
   stopAgent: (threadId?: string) => ipcRenderer.send("emma:stop-agent", threadId),

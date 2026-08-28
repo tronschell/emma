@@ -5,6 +5,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
+import type { TraceSpan } from "../shared/trace";
 import { visualDrawn } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
@@ -226,6 +227,79 @@ export function mergeStep(blocks: Block[], step: ThreadStep): Block[] {
 /// and closed again when main stops reporting the agent as alive.
 function adoptForeign(threadId: string) {
   write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now() });
+  void rehydrate(threadId, began(threadId));
+}
+
+const generations = new Map<string, number>();
+let generation = 0;
+
+function began(threadId: string): number {
+  generation += 1;
+  generations.set(threadId, generation);
+  return generation;
+}
+
+export function joinPartial(restored: string, held: string): string {
+  for (let size = Math.min(restored.length, held.length); size > 0; size -= 1) {
+    if (restored.endsWith(held.slice(0, size))) return restored + held.slice(size);
+  }
+  return restored + held;
+}
+
+/**
+ * What main still holds of a turn already in flight: every tool call it has made,
+ * and the answer and reasoning streamed so far. The order between them is gone —
+ * only the calls carry a clock — so it reads as thinking, then the calls, then
+ * what has been said, which is the shape of a turn anyway.
+ */
+export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { text: string; thinking: string }): Block[] {
+  const calls = spans
+    .filter((span) => span.id.startsWith("call:"))
+    .sort((left, right) => left.startedAt - right.startedAt)
+    .map((span): Block => ({
+      kind: "step",
+      step: {
+        threadId,
+        toolCallId: span.id.slice("call:".length),
+        title: span.name,
+        kind: span.kind,
+        status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : "in_progress",
+        input: span.input,
+        output: span.output,
+        at: span.startedAt,
+      },
+    }));
+  const said = (text: string | undefined, kind: "text" | "thinking"): Block[] => text?.trim() ? [{ kind, text }] : [];
+  return [...said(partial?.thinking, "thinking"), ...calls, ...said(partial?.text, "text")];
+}
+
+/**
+ * A reload leaves the window with a running turn it never saw start. Main has
+ * kept the whole turn — a phone joining mid-turn is handed the same thing — so
+ * the transcript is put back rather than left reading as an empty thread with a
+ * spinner over it. Anything that arrived while this was in flight stands: only
+ * what the run is missing is put in front of it.
+ */
+function rehydrate(threadId: string, token: number) {
+  void Promise.all([window.emma.listSpans(), window.emma.livePartial()])
+    .then(([spans, partial]) => {
+      const restored = restoreBlocks(threadId, spans[threadId] ?? [], partial[threadId]);
+      if (!restored.length || generations.get(threadId) !== token) return;
+      write(threadId, (run) => {
+        const calls = new Set(run.blocks.flatMap((block) => block.kind === "step" ? [block.step.toolCallId] : []));
+        const held = [...run.blocks];
+        const blocks = restored.flatMap((block): Block[] => {
+          if (block.kind === "step") return calls.has(block.step.toolCallId) ? [] : [block];
+          if (block.kind !== "text" && block.kind !== "thinking") return [block];
+          const at = held.findIndex((other) => other.kind === block.kind);
+          if (at < 0) return [block];
+          const [taken] = held.splice(at, 1);
+          return [{ kind: block.kind, text: joinPartial(block.text, "text" in taken ? taken.text : "") }];
+        });
+        return { blocks: [...blocks, ...held] };
+      });
+    })
+    .catch(() => undefined);
 }
 
 function reconcile(live: LiveAgent[]) {
@@ -245,6 +319,7 @@ function reconcile(live: LiveAgent[]) {
     if (live.some((agent) => agent.threadId === threadId && (agent.status === "running" || agent.status === "waiting"))) continue;
     // Its blocks stand in for the message it just wrote, exactly as a turn
     // this window sent does — `drain` is not the only way a turn ends here.
+    began(threadId);
     write(threadId, (current) => ({ sending: false, foreign: false, landed: current.blocks.length ? [...current.landed, current.blocks] : current.landed }));
     // Anything typed here while the other window's turn ran was queued rather
     // than sent, so this is where it finally goes.
@@ -367,6 +442,7 @@ async function drain(threadId: string, reload: () => unknown) {
   for (;;) {
     const next = read(threadId).queue[0];
     if (!next) return;
+    began(threadId);
     write(threadId, {
       sending: true, foreign: false, pending: next, stopped: false, activeAt: Date.now(),
       blocks: next.notice ? [{ kind: "notice", text: next.notice, plain: true }] : [],

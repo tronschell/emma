@@ -109,7 +109,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
       (error: unknown) => {
         send({ k: "res", id, ok: false, error: safeError(error) });
       },
-    );
+    ).catch(() => undefined);
   };
 
   const drop = (ws: WebSocket, code: number) => {
@@ -141,7 +141,12 @@ export function createBridge(deps: BridgeDeps): Bridge {
 
   const commit = () => {
     if (!staged) return;
-    savePeer(deps.userData, staged);
+    try {
+      savePeer(deps.userData, staged);
+    } catch (error) {
+      console.error("emma bridge: could not save the paired phone", error);
+      return;
+    }
     saved = staged;
     staged = undefined;
   };

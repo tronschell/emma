@@ -55,13 +55,14 @@ jobs:
           printf '%s' "$CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p runner "$RUNNER_TEMP/build.keychain"
           security default-keychain -s "$RUNNER_TEMP/build.keychain"
+          security list-keychains -d user -s "$RUNNER_TEMP/build.keychain" login.keychain
           security unlock-keychain -p runner "$RUNNER_TEMP/build.keychain"
           security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/build.keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k runner "$RUNNER_TEMP/build.keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k runner "$RUNNER_TEMP/build.keychain"
           rm "$RUNNER_TEMP/cert.p12"
 
       - name: sign the app
-        run: npx electron-osx-sign release/Emma-darwin-arm64/Emma.app
+        run: npx electron-osx-sign release/Emma-darwin-arm64/Emma.app --keychain "$RUNNER_TEMP/build.keychain"
         working-directory: desktop
 
       - name: notarize and staple

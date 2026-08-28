@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, dropQueued, groupBlocks, mergeStep, pairBlocks, releaseHeld, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
+import type { TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
 import type { Message } from "../src/types";
 
@@ -25,6 +26,9 @@ let request: (method: string, params: { content: string }) => Promise<unknown> =
   return new Promise<void>((resolve) => { release = resolve; });
 };
 const stopped: string[] = [];
+/* What main still holds of a turn in flight, which is all a reloaded window has. */
+let liveSpans: Record<string, TraceSpan[]> = {};
+let livePartials: Record<string, { text: string; thinking: string }> = {};
 /* Main broadcasts to every window, so the store is driven from outside here too. */
 let pushDelta: (value: { threadId: string; delta: string }) => void = () => undefined;
 let pushAgents: (value: LiveAgent[]) => void = () => undefined;
@@ -38,6 +42,8 @@ let pushAgents: (value: LiveAgent[]) => void = () => undefined;
     onContextBreakdown: () => () => undefined,
     onAgents: (listener: typeof pushAgents) => { pushAgents = listener; return () => undefined; },
     listAgents: () => Promise.resolve([]),
+    listSpans: () => Promise.resolve(liveSpans),
+    livePartial: () => Promise.resolve(livePartials),
     stopAgent: (threadId?: string) => { stopped.push(threadId ?? ""); },
   },
 };
@@ -195,6 +201,76 @@ test("a recovered run draws the prompt main is still working on", async () => {
   pushAgents([]);
   await settle();
   assert.equal(runOf("recovered-echo").sending, false);
+});
+
+test("a reloaded window puts the running turn's calls and answer back", async () => {
+  liveSpans = {
+    "recovered-blocks": [
+      { id: "agent:recovered-blocks", name: "This thread", kind: "agent", startedAt: 0, status: "running" },
+      { id: "call:2", name: "read runs.ts", kind: "read", startedAt: 2, status: "ok", output: "…" },
+      { id: "call:1", name: "grep adoptForeign", kind: "search", startedAt: 1, status: "ok" },
+    ],
+  };
+  livePartials = { "recovered-blocks": { text: "Found it: ", thinking: "where does the state live" } };
+  wire();
+  pushAgents([liveAgent("recovered-blocks", "why is the transcript empty")]);
+  await settle();
+  const blocks = runOf("recovered-blocks").blocks;
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text),
+    ["where does the state live", "grep adoptForeign", "read runs.ts", "Found it: "]);
+  // The stream carries on into the restored answer rather than opening a second one.
+  pushDelta({ threadId: "recovered-blocks", delta: "here" });
+  await settle();
+  const text = runOf("recovered-blocks").blocks.filter((block) => block.kind === "text");
+  assert.deepEqual(text.map((block) => block.text), ["Found it: here"]);
+  liveSpans = {};
+  livePartials = {};
+  pushAgents([]);
+  await settle();
+});
+
+test("a turn main has said nothing about yet restores as nothing", () => {
+  assert.deepEqual(restoreBlocks("quiet", [], undefined), []);
+});
+
+test("a delta that beat the restore is folded into the answer, not left standing alone", async () => {
+  liveSpans = {};
+  livePartials = { "recovered-overlap": { text: "The answer is 42, because ", thinking: "" } };
+  wire();
+  pushDelta({ threadId: "recovered-overlap", delta: "of the mice" });
+  await settle();
+  const blocks = runOf("recovered-overlap").blocks.filter((block) => block.kind === "text");
+  assert.deepEqual(blocks.map((block) => block.text), ["The answer is 42, because of the mice"]);
+  livePartials = {};
+  pushAgents([]);
+  await settle();
+});
+
+test("a restore that lands after its run ended is dropped", async () => {
+  liveSpans = { "stale-restore": [{ id: "call:9", name: "read old.ts", kind: "read", startedAt: 1, status: "ok" }] };
+  livePartials = { "stale-restore": { text: "the previous answer", thinking: "" } };
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const spansOf = window.emma.listSpans;
+  window.emma.listSpans = () => held.then(() => liveSpans);
+  wire();
+  pushAgents([liveAgent("stale-restore", "the old prompt")]);
+  await settle();
+  pushAgents([]);
+  await settle();
+  release?.();
+  await settle();
+  assert.deepEqual(runOf("stale-restore").blocks, []);
+  window.emma.listSpans = spansOf;
+  liveSpans = {};
+  livePartials = {};
+});
+
+test("overlapping text keeps whichever stream ran longer", () => {
+  assert.equal(joinPartial("abcdef", "def"), "abcdef");
+  assert.equal(joinPartial("abcdef", "defgh"), "abcdefgh");
+  assert.equal(joinPartial("abcdef", ""), "abcdef");
+  assert.equal(joinPartial("abc", "xyz"), "abcxyz");
 });
 
 test("a turn's tool calls are drawn where they happened, and a burst of them is one list", () => {

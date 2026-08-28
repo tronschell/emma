@@ -1636,13 +1636,13 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
     apiKey: route ? route.apiKey : process.env.OPENROUTER_API_KEY,
     chatUrl: route?.chatUrl,
     onDelta: (threadId, delta) => {
+      if (agents && !agents.noteDelta(threadId, delta)) return;
       harnessText.set(threadId, (harnessText.get(threadId) ?? "") + delta);
-      agents?.noteDelta(threadId, delta);
       broadcast("emma:delta", { threadId, delta });
     },
     onThought: (threadId, delta) => {
+      if (agents && !agents.noteDelta(threadId, delta)) return;
       harnessThought.set(threadId, (harnessThought.get(threadId) ?? "") + delta);
-      agents?.noteDelta(threadId, delta);
       broadcast("emma:delta", { threadId, delta, thinking: true });
     },
     onToolCall: (call) => {
@@ -3110,6 +3110,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return agents!.spans();
   });
+  ipcMain.handle("emma:live-partial", (event) => {
+    mainWindowSender(event);
+    return livePartial();
+  });
   ipcMain.handle("emma:thread-traces", async (event, value: unknown) => {
     mainWindowSender(event);
     const threadId = boundedCapabilityId(value, "Trace thread");
@@ -3383,7 +3387,7 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.on("emma:answer-place", (event, value: unknown) => {
     if (!placeAsk) return;
-    mainWindowSender(event);
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) return;
     if (!value || typeof value !== "object" || Array.isArray(value)) { placeAsk.settle(undefined); return; }
     const request = value as Record<string, unknown>;
     if (request.id !== placeAsk.id) return;

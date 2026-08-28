@@ -15,3 +15,5 @@
 /harness/zig-out
 /node_modules
 /.claude/worktrees
+*.p12
+*.p8

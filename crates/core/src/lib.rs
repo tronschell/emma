@@ -139,6 +139,18 @@ mod tests {
         assert!(clamped.text.ends_with("#4095 bash 1ms ok"));
         assert!(clamped.text.contains("lines elided"));
 
+        let unbroken = "A".repeat(MAX_TRACE_BYTES * 4);
+        let kept = ThreadTrace::new(Timestamp::from_unix_seconds(3), &unbroken).unwrap();
+        assert!(kept.text.len() <= MAX_TRACE_BYTES);
+        assert!(kept.text.starts_with("AAAA"));
+        assert!(kept.text.ends_with("AAAA"));
+        assert!(kept.text.contains("bytes elided"));
+
+        let headed = format!("{}\ntail line", "B".repeat(MAX_TRACE_BYTES * 4));
+        let kept = ThreadTrace::new(Timestamp::from_unix_seconds(3), &headed).unwrap();
+        assert!(kept.text.starts_with("BBBB"));
+        assert!(kept.text.ends_with("tail line"));
+
         for index in 0..MAX_THREAD_TRACES + 4 {
             thread.record_trace(
                 ThreadTrace::new(Timestamp::from_unix_seconds(4), &format!("run {index}")).unwrap(),
