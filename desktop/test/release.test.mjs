@@ -1,10 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { checkPullRequest, checkVersionAdvance, releasePlan, stableVersion, verifyCandidate } from "../scripts/release.mjs";
+
+test("dev checks never compile the app and full CI only targets main", () => {
+  const workflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
+  assert.match(workflow("ci"), /pull_request:\n    branches: \[main\]/);
+  assert.doesNotMatch(workflow("ci"), /^\s+push:/m);
+  const dev = workflow("dev");
+  assert.match(dev, /pull_request:\n    branches: \[dev\]/);
+  assert.deepEqual([...dev.matchAll(/^\s+run: (.+)$/gm)].map((match) => match[1]), ["node desktop/scripts/release.mjs pr", "node --test desktop/test/release.test.mjs"]);
+  assert.deepEqual([...dev.matchAll(/^\s+- uses: (.+)$/gm)].map((match) => match[1]), ["actions/checkout@v5", "actions/setup-node@v5"]);
+});
 
 test("feature PRs target dev and only the same repository's dev promotes to main", () => {
   const repository = "tronschell/emma";

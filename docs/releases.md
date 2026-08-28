@@ -18,6 +18,11 @@ force pushes and deletion are disabled. `dev` requires linear history, and
 rebase merging is disabled, so feature and generated release PRs are squash
 merged. The squash commit uses the PR title and body.
 
+Feature PRs into `dev` run only lightweight branch, title, and release-rule
+checks on Ubuntu. They do not install app dependencies, compile, or package
+Emma. Full tests and app builds run only for promotion to `main` and its release
+push. Pushes to `dev` only prepare the generated version/changelog PR.
+
 ```sh
 git fetch origin
 git switch -c feat/my-change origin/dev
@@ -39,8 +44,9 @@ versions in feature PRs, or create or move release tags yourself.
    and a **draft**, not a public release. Do not change `dev` between this
    preparation and promotion.
 4. Open a `dev` → `main` PR with a conventional title such as
-   `chore(release): promote dev`. Its checks also package an unsigned candidate
-   without Apple credentials. Merge it with **Create a merge commit**, not
+   `chore(release): promote dev`. Its full checks compile and test all layers,
+   then package an unsigned candidate without Apple credentials. Merge it with
+   **Create a merge commit**, not
    squash. Keep the `dev` branch.
 5. The push to `main` automatically runs all checks, builds the tagged source,
    signs every executable, notarizes and staples the app, checks Gatekeeper,

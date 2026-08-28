@@ -158,10 +158,14 @@ npm --prefix desktop run package:mac -- /tmp/emma-release-check
 
 ### Continuous integration
 
-PRs into `dev` or `main`, pushes to `dev`, and release pushes to `main` run
-the same six checks and native self-tests on `macos-15`. Promotion PRs also
-exercise unsigned packaging without secrets. Main's release workflow calls
-the shared checks before the signing job can run.
+Feature PRs into `dev` run only branch/title validation and release-rule tests
+on Ubuntu, with no app dependency installation, compilation, or packaging.
+Pushes to `dev` only prepare the generated release PR.
+
+Promotion PRs into `main` and release pushes to `main` run the six checks and
+native self-tests on `macos-15`. Promotion PRs also exercise unsigned packaging
+without secrets. Main's release workflow calls the shared checks before the
+signing job can run.
 
 Features start from and squash-merge into `dev`. A generated release PR on
 `dev` prepares a version, tag, and draft release. Promote the exact candidate
