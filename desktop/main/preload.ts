@@ -347,6 +347,14 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:permission-ask", wrapped);
     return () => ipcRenderer.removeListener("emma:permission-ask", wrapped);
   },
+  onPermissionResolved: (listener: (value: { id: string; allowed: boolean }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const answer = value as { id?: unknown; allowed?: unknown };
+      if (typeof answer?.id === "string" && typeof answer.allowed === "boolean") listener({ id: answer.id, allowed: answer.allowed });
+    };
+    ipcRenderer.on("emma:permission-resolved", wrapped);
+    return () => ipcRenderer.removeListener("emma:permission-resolved", wrapped);
+  },
   setZeroRetention: (value: boolean) => ipcRenderer.invoke("emma:set-zero-retention", value),
   listCredentials: () => ipcRenderer.invoke("emma:list-credentials"),
   openRouterBalance: () => ipcRenderer.invoke("emma:openrouter-balance"),

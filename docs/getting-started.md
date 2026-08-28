@@ -85,8 +85,8 @@ re-checks when Emma comes back to the front.
 
 | Grant | Why, exactly | Status Emma can read |
 | --- | --- | --- |
-| Accessibility | `NSEvent addGlobalMonitorForEventsMatchingMask` only reports other apps' key presses to a trusted process — that is the left-Option double-tap. The same grant lets [quick_ask.m](../desktop/native/quick_ask.m) post `CGEvent` mouse and key events for computer use. **Relaunch Emma after granting.** | `isTrustedAccessibilityClient` |
-| Screen Recording | Every capture: the ▣ orb, the ✎ annotation sheet, and the `computer` tool's `screenshot`. [computer.ts:99](../desktop/main/computer.ts#L99) checks it and refuses by name before capturing. **Relaunch after granting.** | `getMediaAccessStatus("screen")` |
+| Accessibility | `NSEvent addGlobalMonitorForEventsMatchingMask` only reports other apps' key presses to a trusted process — that is the left-Option double-tap. The same grant lets [computer.m](../desktop/native/computer.m) read and operate approved apps' accessibility controls; each app still needs separate approval. **Relaunch Emma after granting.** | `isTrustedAccessibilityClient` |
+| Screen Recording | The separate ▣ screen-context orb and ✎ annotation sheet capture the display; the app-scoped `computer` tool does not take screenshots. [captureDisplay](../desktop/main/computer.ts) checks this grant before capturing. **Relaunch after granting.** | `getMediaAccessStatus("screen")` |
 | Microphone | Dictation into the composer. | `getMediaAccessStatus("microphone")` |
 | Speech Recognition | Only the `macOS · built in` dictation engine, through the `emma-transcribe` helper. A local Whisper server needs neither. | none — row reads `[--]` |
 | Files & Folders | Writing notes into the vault folder you chose. Checked by writing `.emma-write-check` and deleting it ([vault.ts:106](../desktop/main/vault.ts#L106)), because TCC has no query API. | write probe |
@@ -163,7 +163,7 @@ Departure Mono (SIL OFL). Vendor brand marks:
 - [data.md](data.md) — every file Emma writes, every env var
 - [concepts.md](concepts.md) — threads, runs, the vocabulary
 - [permissions.md](permissions.md) — the four modes and the gate table
-- [computer-use.md](computer-use.md) — pointer and keyboard control
+- [computer-use.md](computer-use.md) — approved app-scoped accessibility controls
 - [models.md](models.md) — providers, the catalog, routers
 - [harness.md](harness.md) — `emma-cli`, the fx fork
 - [notch.md](notch.md) — Quick Ask and the island

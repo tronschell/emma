@@ -68,7 +68,6 @@ export interface ScheduledJob {
   lastRunAt?: string;
   lastThreadId?: string;
   permissionMode: PermissionMode;
-  /** The model key each run is pinned to, or empty for whichever model the app is set to. */
   model: string;
 }
 
@@ -387,6 +386,7 @@ declare global {
       onAgents(listener: (value: LiveAgent[]) => void): () => void;
       onSpans(listener: (value: Record<string, TraceSpan[]>) => void): () => void;
       onPermissionAsk(listener: (value: PermissionAsk) => void): () => void;
+      onPermissionResolved(listener: (value: { id: string; allowed: boolean }) => void): () => void;
       setZeroRetention(value: boolean): Promise<void>;
       listCredentials(): Promise<CredentialSummary[]>;
       openRouterBalance(): Promise<KeyBalance>;

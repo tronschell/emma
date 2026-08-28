@@ -19,7 +19,7 @@ to a file in this repo.
 | `web_fetch`, page clipping | The URL you or the model named | That site |
 | Dictation | Recorded audio | `127.0.0.1:8080`, or on-device macOS Speech.framework. Never off this Mac |
 | Transcript cleanup | The raw transcript | `127.0.0.1:8081`. Never off this Mac |
-| Computer use | Screenshots, pointer and keyboard actions | Stays in Electron. The model gets text only |
+| Computer use | Running-app metadata; approved app's accessibility text and action results | The turn's model as tool results; actions execute in the approved app |
 | Annotated screen context | A compressed JPEG | Stays in Electron's main process |
 | Notes you keep | Markdown and attachments | The vault folder **you** chose. Nowhere else |
 | Threads, traces, jobs, plans, memories, artifacts | Markdown and JSON | `~/Library/Application Support/Emma` (`EMMA_DATA_DIR` moves it) |
@@ -138,18 +138,26 @@ Audio never touches durable storage: a temp WAV under
 `mkdtemp(tmpdir(), "emma-voice-")` at mode `0o600`, removed in a `finally`.
 `MAX_UTTERANCE_BYTES` is 12 MiB. See [voice.md](voice.md).
 
-## Screens
+## App text and images
 
-**Screens do not reach the model.** Three image paths, three destinations.
+**Computer use sends app text, not screenshots.** `list_apps` returns running-app
+names, bundle IDs, PIDs and paths without reading window contents. Reading state
+requires your explicit approval of that running app, even in Auto or Full access.
+Its accessible window titles, labels and values then reach the turn's model as
+ordinary tool results. Secure controls are omitted, but ordinary controls can
+still contain private information. Typing and clicking can also send data through
+the target app; app approval is not approval for every consequential action.
+See [computer-use.md](computer-use.md).
+
+The `computer` tool does not capture screens or use the clipboard. Its grants
+exist only for the active parent turn; delegated harness agents cannot use them.
+Stop, Escape, screen lock, suspend, turn end and quit revoke access. The app's menu
+bar and its system commands are excluded. Other image paths are unchanged:
 
 - **The `vision` tool** — the deliberate exception. It posts one image to the
   configured vision endpoint and hands back words. A `url` argument goes through
   `publicUrl`; a `path` argument must be inside a connected folder. Advertised to
   the model as `look_at_image`.
-- **Computer-use screenshots** — captured with `desktopCapturer`, compressed, and
-  used inside Electron to map coordinates. The `computer` tool result is a text
-  string; `_emma/callTool` has no image channel. See
-  [computer-use.md](computer-use.md).
 - **The yellow pen's annotated capture** — compressed into `ScreenContextStore`
   and put on `request.params.screenContext`, but `runOnHarness` reads only
   `skillContext` and `attachedImages` off `turn.params`. The frame is dropped
@@ -211,8 +219,9 @@ ready; a second launch quits and raises the first window.
 - **Recorded audio and raw transcripts.** Forced local at two boundaries.
 - **Your API keys.** Encrypted at rest, mirrored only into Emma's own child
   processes, masked before the renderer sees them.
-- **Screens.** Computer-use frames and the annotated capture both stay in the main
-  process. `vision` is the one exception, and only for the image you name.
+- **The annotated capture.** The yellow pen's frame stays in the main process.
+  Computer use captures no images, but sends approved app text to the model.
+  Images attached to messages or passed to `vision` do leave this Mac.
 - **Your notes.** `keep` writes plain Markdown into the vault folder you chose and
   nowhere else. There is no second copy and no mirror. Nothing saves silently: a
   note is written only when you ask for one.
@@ -229,7 +238,7 @@ your folder. It cannot be undone.
 ## See also
 
 - [permissions.md](permissions.md) — the four modes and the gate matrix
-- [computer-use.md](computer-use.md) — the pointer, the ceilings, the kill switch
+- [computer-use.md](computer-use.md) — app grants, data limits and the kill switch
 - [tools.md](tools.md) — every tool and what it can reach
 - [models.md](models.md) — providers, keys, the catalog, the second models
 - [voice.md](voice.md) — local dictation setup

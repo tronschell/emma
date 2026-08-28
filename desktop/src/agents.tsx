@@ -1,7 +1,3 @@
-/* Everything the workspace shows about a running agent: the mode picker beside ＋,
-   the live rail in the sidebar, a subagent's own tab, and the changes diff. The
-   records are read-only — main owns the loops — so nothing here does more than
-   ask a question and render an answer. */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { diffLines, diffStat, tokensPerSecond, type BackgroundTask, type FileChange, type LiveAgent, type PermissionAsk } from "../shared/agents";
@@ -14,7 +10,6 @@ import { ReadMarkdown } from "./preview";
 import type { Spawned } from "./threads";
 import { reasonText } from "./errors";
 
-/** The live tree, refreshed by main whenever an agent starts, steps, or ends. */
 export function useAgents(): LiveAgent[] {
   const [agents, setAgents] = useState<LiveAgent[]>([]);
   useEffect(() => {
@@ -29,17 +24,10 @@ const alive = (agent: LiveAgent) => agent.status === "running" || agent.status =
 const permissionModeMeanings: Record<PermissionMode, string> = {
   ask: "Request permission before making any changes",
   acceptEdits: "Edit files without asking, but ask before running anything",
-  auto: "A verifier model clears each call, or it comes to you",
-  full: "Run unattended, asking for nothing",
+  auto: "A verifier clears gated calls; app access still asks you",
+  full: "Skip file and command approvals; app access still asks you",
 };
 
-/**
- * The picker beside ＋: the ＋ menu's popover and rows, opened by a trigger that
- * matches the model button. It was a native <select>, which painted a light
- * system panel with a blue row and the system face into a dark mono app.
- * Everything that select gave for free is redone here — arrows, Home/End,
- * type-ahead, Enter/Space, Escape back to the trigger, and the listbox roles.
- */
 export function ModeTrigger({ ref, mode, open, disabled, onToggle }: { ref?: RefObject<HTMLButtonElement | null>; mode: PermissionMode; open: boolean; disabled?: boolean; onToggle: () => void }) {
   return <button ref={ref} type="button" className="mode-trigger" disabled={disabled} title={permissionModeHints[mode]}
     aria-haspopup="listbox" aria-expanded={open} aria-label={`Permission mode, currently ${permissionModeNames[mode]}`} onClick={onToggle}>
@@ -49,12 +37,9 @@ export function ModeTrigger({ ref, mode, open, disabled, onToggle }: { ref?: Ref
   </button>;
 }
 
-/** The rows, apart from the trigger so the island can open them as a band instead of a popover. */
 export function ModeMenu({ ref, mode, setMode, close }: { ref?: RefObject<HTMLDivElement | null>; mode: PermissionMode; setMode: (mode: PermissionMode) => void; close: () => void }) {
   const [active, setActive] = useState(() => Math.max(0, PERMISSION_MODES.indexOf(mode)));
   const own = useRef<HTMLDivElement>(null);
-  // Roving DOM focus, which is what the select's own highlight was: the row the
-  // arrows land on is the row a screen reader announces.
   useEffect(() => { own.current?.querySelectorAll<HTMLButtonElement>("[role=option]")[active]?.focus(); }, [active]);
   const keys = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape" || event.key === "Tab") { event.preventDefault(); close(); return; }
@@ -65,8 +50,6 @@ export function ModeMenu({ ref, mode, setMode, close }: { ref?: RefObject<HTMLDi
       return;
     }
     if (event.key === "Home" || event.key === "End") { event.preventDefault(); setActive(event.key === "Home" ? 0 : PERMISSION_MODES.length - 1); return; }
-    // Type-ahead. Five rungs with five distinct initials, so one letter is the
-    // whole of it; Enter and Space are the button's own.
     if (event.key.length === 1) {
       const found = PERMISSION_MODES.findIndex((value) => permissionModeNames[value].toLowerCase().startsWith(event.key.toLowerCase()));
       if (found >= 0) { event.preventDefault(); setActive(found); }
@@ -89,8 +72,6 @@ export function ModePicker({ mode, setMode, disabled }: { mode: PermissionMode; 
   const close = () => { setOpen(false); queueMicrotask(() => trigger.current?.focus()); };
   useEffect(() => {
     if (!open) return;
-    // Same outside-click rule as the model menu; no focus return, since the
-    // pointer has already chosen where it wants to be.
     const outside = (event: PointerEvent) => {
       const node = event.target as Node;
       if (!menu.current?.contains(node) && !trigger.current?.contains(node)) setOpen(false);
@@ -104,24 +85,26 @@ export function ModePicker({ mode, setMode, disabled }: { mode: PermissionMode; 
   </div>;
 }
 
-/**
- * One question at a time, oldest first: two agents can ask at once, and a stack of
- * modals would hide which agent is waiting on which answer.
- */
 export function PermissionPrompt({ agents }: { agents: LiveAgent[] }) {
   const [queue, setQueue] = useState<PermissionAsk[]>([]);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => window.emma.onPermissionAsk((ask) => setQueue((current) => [...current, ask])), []);
+  useEffect(() => window.emma.onPermissionResolved(({ id }) => setQueue((current) => current.filter((ask) => ask.id !== id))), []);
   const ask = queue[0];
-  useEffect(() => { if (ask && !dialog.current?.open) dialog.current?.showModal(); }, [ask]);
+  useEffect(() => {
+    const element = dialog.current;
+    if (!ask || !element) return;
+    if (!element.open) element.showModal();
+    return () => element.close();
+  }, [ask]);
   if (!ask) return null;
   const from = agents.find((agent) => agent.threadId === ask.threadId);
   const answer = (allowed: boolean) => {
     window.emma.answerPermission({ id: ask.id, allowed });
     dialog.current?.close();
-    setQueue((current) => current.slice(1));
+    setQueue((current) => current.filter((item) => item.id !== ask.id));
   };
-  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="permission-title" onCancel={(event) => { event.preventDefault(); answer(false); }}>
+  return <dialog key={ask.id} ref={dialog} className="modal-backdrop" aria-labelledby="permission-title" onCancel={(event) => { event.preventDefault(); answer(false); }}>
     <section className="agent-dialog permission-dialog">
       <header>
         <div><span>{from ? from.title : "Emma"} · {permissionModeNames[from?.mode ?? "ask"]}</span><h2 id="permission-title">{ask.summary}</h2></div>
@@ -129,14 +112,13 @@ export function PermissionPrompt({ agents }: { agents: LiveAgent[] }) {
       </header>
       <pre className="permission-detail">{ask.detail}</pre>
       <div className="computer-dialog-actions">
-        <button type="button" onClick={() => answer(false)}>Don&apos;t</button>
-        <button type="button" className="capability-action" autoFocus onClick={() => answer(true)}>Allow once</button>
+        <button type="button" autoFocus={ask.tool === "computer"} onClick={() => answer(false)}>Don&apos;t</button>
+        <button type="button" className="capability-action" autoFocus={ask.tool !== "computer"} onClick={() => answer(true)}>{ask.tool === "computer" ? "Allow for this turn" : "Allow once"}</button>
       </div>
     </section>
   </dialog>;
 }
 
-/** The sidebar rail. Only live agents: a finished one belongs in the transcript, not here. */
 export function AgentRail({ agents, active, onPick }: { agents: LiveAgent[]; active?: string; onPick: (agent: LiveAgent) => void }) {
   const live = agents.filter(alive);
   if (!live.length) return null;
@@ -145,14 +127,10 @@ export function AgentRail({ agents, active, onPick }: { agents: LiveAgent[]; act
     <span className="nav-label">{agent.title}</span>
     <small className="nav-label">{agent.activity}</small>
   </button>;
-  // A subagent sits under the thread that spawned it, and its own spawns under it;
-  // one whose parent has already finished is drawn at the top level rather than
-  // vanishing with it.
   const branch = (agent: LiveAgent) => {
     const kids = live.filter((other) => other.parentThreadId === agent.threadId);
     return <div key={agent.threadId}>
       {chip(agent)}
-      {/* Squarest grid that holds them: 4 → 2×2, 6 → 3×2. */}
       {!!kids.length && <div className="agent-kids" style={{ "--cols": Math.ceil(Math.sqrt(kids.length)) } as CSSProperties}>{kids.map(branch)}</div>}
     </div>;
   };
@@ -163,19 +141,12 @@ export function AgentRail({ agents, active, onPick }: { agents: LiveAgent[]; act
   </div>;
 }
 
-/**
- * The sidebar's background commands: what Emma left running, its output, and the
- * stop the user does not have to ask an agent for. Finished ones stay until they
- * age out of main's list, because their last lines are usually why they finished.
- */
 export function BackgroundRail() {
   const [tasks, setTasks] = useState<BackgroundTask[]>([]);
   const [open, setOpen] = useState("");
   const [output, setOutput] = useState("");
   const reload = () => void window.emma.listBackground().then(setTasks).catch(() => undefined);
   useEffect(() => { reload(); return window.emma.onBackground(reload); }, []);
-  // The list only changes on start and exit; a running command's output changes
-  // constantly, so the open one is polled while it is open.
   useEffect(() => {
     if (!open) return;
     const read = () => void window.emma.readBackground(open).then((found) => setOutput(found?.output ?? "")).catch(() => undefined);
@@ -201,7 +172,6 @@ export function BackgroundRail() {
   </div>;
 }
 
-/** `icon` is a rendered mark — a CLI tab wears its maker's logo where a subagent wears its dot. */
 export type AgentTab = { id: string; label: string; color?: string; icon?: ReactNode; closable: boolean };
 
 export function TabStrip({ tabs, active, onPick, onClose }: { tabs: AgentTab[]; active: string; onPick: (id: string) => void; onClose: (id: string) => void }) {
@@ -279,17 +249,6 @@ export function AgentPanel({ agent, transcript }: { agent: LiveAgent; transcript
   </section>;
 }
 
-/**
- * A thread the agent started, drawn in the transcript that started it.
- *
- * This is the whole of managing one from here: what is happening in it now, a
- * way in, a stop, and a line to send it — the same levers the agent itself has
- * through the `threads` tool, so the user is never behind their own agent.
- *
- * A message goes wherever it can be read: steered into the agent working there,
- * and started as a turn of its own when the thread is quiet. That is the rule the
- * tool follows too, because from out here "talk to that thread" is one intention.
- */
 export function ThreadCard({ id, title, onOpen }: { id: string; title: string; onOpen: (id: string) => void }) {
   const agent = useAgents().find((item) => item.threadId === id);
   const [message, setMessage] = useState("");
@@ -355,7 +314,6 @@ export function SubagentChips({ spawned, onOpen }: { spawned: Spawned[]; onOpen:
   </div>;
 }
 
-/** Everything this turn's agents rewrote, most recent first, with a way to put it back. */
 export function ChangesPanel({ changes, busy, onReverted }: { changes: FileChange[]; busy: boolean; onReverted: () => void }) {
   const [error, setError] = useState("");
   const stat = useMemo(() => diffStat(changes), [changes]);
@@ -379,7 +337,6 @@ export function ChangesPanel({ changes, busy, onReverted }: { changes: FileChang
           <ChangeCount stat={diffStat([change])} />
           <OpenIn folderId={change.folderId} path={change.path} />
           <ReadMarkdown folderId={change.folderId} path={change.path} />
-          {/* A created file has nothing to put back, and deleting is the user's call, not a button's. */}
           <button type="button" disabled={busy || change.before === null} title={change.before === null ? "Emma created this file — delete it yourself if you don't want it" : "Restore the text from before this turn"} onClick={() => revert(change)}>Revert</button>
         </header>
         <pre className="diff">{diffLines(change.before ?? "", change.after).map((line, index) => <span key={index} className={line.kind === "+" ? "added" : line.kind === "-" ? "removed" : undefined}>{line.kind}{line.text}{"\n"}</span>)}</pre>
@@ -389,6 +346,5 @@ export function ChangesPanel({ changes, busy, onReverted }: { changes: FileChang
 }
 
 export function ChangeCount({ stat }: { stat: { added: number; removed: number } }) {
-  // ASCII minus, not U+2212: the pixel mono face has no glyph for the typographic one.
   return <span className="change-count"><b>+{stat.added}</b> <i>-{stat.removed}</i></span>;
 }

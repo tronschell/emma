@@ -75,17 +75,10 @@ const time = (value: string) => timeFormat(new Date(value));
 
 const STATUS_TITLES: Record<string, string> = { tool: "Running a tool", running: "Thinking", waiting: "Waiting for you", failed: "Something went wrong", done: "Finished", idle: "Idle" };
 
-/** What the sidebar needs off a thread's live run, and nothing else. */
 type ThreadLive = { status: AgentStatus; tool: boolean; startedAt: number };
 
 const runStamp = (live?: ThreadLive) => live ? `${live.startedAt}:${live.status}` : "";
 
-/**
- * The mark in front of a thread's name. A live thread spins — or blinks the tool
- * mark while a call is open — and a finished one leaves a green tick behind until
- * you open it, so a thread that landed while you were elsewhere still says so.
- * Yellow is the half that wants you: an approval, or a run that fell over.
- */
 function ThreadStatus({ live, unseen }: { live?: ThreadLive; unseen?: boolean }) {
   const status = live?.status;
   const state = status === "running" ? (live?.tool ? "tool" : "running")
@@ -539,10 +532,6 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   const [error, setError] = useState("");
   const booted = useRef(takeBootSnapshot());
   const skipped = useRef(false);
-  // The interval, the focus handler and every `changed` event all call `load`,
-  // so several snapshots are in flight at once and the harness answers them out
-  // of order. A late one that predates the thread you just opened used to land
-  // last and re-pin the selection onto someone else's thread.
   const latest = useRef(0);
   const load = useCallback(async () => {
     const ticket = ++latest.current;
@@ -586,7 +575,6 @@ function Workspace() {
   }, []);
   const { snapshot, load, error, setError } = useSnapshot(pinSelections);
   const [view, setView] = useState<"threads" | "knowledge" | "artifacts" | "agent" | "scheduled" | "plugins" | "research" | "archive" | "settings">("threads");
-  // Browser-style back/forward over the view + thread pairs the app has shown.
   const trail = useRef({ stack: [] as { view: typeof view; threadId: string }[], at: -1, jumping: false });
   const [trailAt, setTrailAt] = useState(-1);
   const [trailLen, setTrailLen] = useState(0);
@@ -679,15 +667,9 @@ function Workspace() {
     }
     return map;
   }, [agents]);
-  // What you have already looked at, as the run's start paired with the state it
-  // was in. The start keeps a later turn's finish from inheriting the last one's
-  // tick; the state means leaving a thread mid-run still earns a tick when it
-  // lands, while a thread left open re-marks itself the moment it does.
   const [seenRuns, setSeenRuns] = useState<Record<string, string>>({});
   const openThreadId = view === "threads" && !selection.length ? thread?.id : undefined;
   const openStamp = openThreadId ? runStamp(threadStatus.get(openThreadId)) : "";
-  // Adjusted during render rather than in an effect: React re-runs this pass
-  // before it paints, so the row you just opened never flashes its own tick.
   if (openThreadId && openStamp && seenRuns[openThreadId] !== openStamp) setSeenRuns({ ...seenRuns, [openThreadId]: openStamp });
   const unseen = useCallback((id: string) => {
     const stamp = runStamp(threadStatus.get(id));
@@ -781,7 +763,6 @@ function Workspace() {
     addEventListener(OPEN_THREAD_EVENT, open);
     return () => removeEventListener(OPEN_THREAD_EVENT, open);
   }, [load]);
-  /** Connecting a folder means starting work in it: float it to the top and open a thread there. */
   const connectProject = () => {
     setError("");
     void window.emma.pickFolder().then((granted) => {
@@ -1122,7 +1103,6 @@ function variableRows(outputs: string) {
   return Object.entries(parseVariables(outputs)).slice(0, 12);
 }
 
-/** The model every run of one task uses. Empty means whichever model the app is set to. */
 function TaskModelPicker({ model, onChange, busy }: { model: string; onChange: (model: string) => void; busy: boolean }) {
   const settings = readSettings();
   const [catalog, setCatalog] = useState<OpenRouterCatalog["models"]>([]);
@@ -1135,8 +1115,6 @@ function TaskModelPicker({ model, onChange, busy }: { model: string; onChange: (
     document.addEventListener("pointerdown", away);
     return () => document.removeEventListener("pointerdown", away);
   }, [open]);
-  // Only routed models: a local profile is chosen for the app as a whole, not for
-  // one unattended run, so offering it here would pin a task to nothing.
   const entries = useMemo(() => modelEntries([], catalog), [catalog]);
   return <div className="task-model verifier-pick" ref={box}>
     <button type="button" className="verifier-pick-trigger" disabled={busy} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
@@ -1922,11 +1900,6 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     stopTurn(thread.id, undefined, reload);
     if (message.trim()) void send();
   };
-  /**
-   * Lifts one message out of the queue and into the turn already running, rather
-   * than waiting for it to end. Enter only ever queues, so this button is the one
-   * door into a live turn — the same split Codex draws between Tab and Enter.
-   */
   const steerQueued = (index: number) => {
     const turn = queued[index];
     if (!turn) return;
@@ -2174,9 +2147,6 @@ function readSettings(): UserSettings {
   return settings;
 }
 
-/* Hovering an accent swatch repoints --accent for as long as the pointer is on
-   it, so the whole app shows the hue before anything is saved; leaving puts the
-   saved accent back. */
 const accentValue = (accent: string) => (accent.startsWith("#") ? accent : `var(--${accent})`);
 const previewAccent = (accent: string) => document.documentElement.style.setProperty("--accent", accentValue(accent));
 
@@ -2677,7 +2647,7 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   if (page === "imports") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Imports & plugins</h2></header><AgentImports /></section>;
   if (page === "connections") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Connections</h2></header><ConnectionSettings settings={settings} onChange={saveConnections} busy={busy} /></section>;
   if (page === "mobile") return <section className="settings-view"><header><span>Settings / paired devices</span><h2>Mobile</h2></header><MobileSettings relay={settings.relayUrl} onRelay={saveRelay} busy={busy} /></section>;
-  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><div className="settings-head"><h3>Start fresh</h3><InfoDot>Threads, artifacts, plans, connected folders, saved keys, and every setting go. The notes in your vault are left where they are — they are your files, in your folder.</InfoDot></div><p>Deletes everything Emma keeps on this Mac, then restarts her empty. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><div className="settings-head"><h3>OpenRouter can be set to train on your prompts</h3><InfoDot>Opting in is what unlocks parts of the free catalog, and free routes are Emma’s default path — her fallback chain and her verifier and vision models are all free models. Your account setting sits above anything Emma sends, so <b>Private routing</b> does not override it.</InfoDot></div><p>Prompt logging is an opt-in on your OpenRouter account: switch it on and OpenRouter and the providers behind it may keep your prompts and Emma’s replies, and train on them. Emma cannot read that setting or change it — check it yourself.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><div className="settings-head"><h3>Zero-retention routing is opt-in</h3><InfoDot>The flag rides the harness request body, so it covers thread turns to an <code>openrouter.ai</code> endpoint and nothing else — the verifier, vision and advisor calls go out with no routing flags on them. No free endpoint qualifies, so every free model fails while it is on.</InfoDot></div><p>Emma’s own switch is off until you turn it on. <b>Private routing</b> in <b>Settings → Models</b> demands no-training, zero-retention endpoints and fails the turn rather than route around them.</p></div></section><section><div><div className="settings-head"><h3>Threads and notes stay local</h3><InfoDot>Thread records live in <code>~/Library/Application Support/Emma</code>, moved by <code>EMMA_DATA_DIR</code>. Saved notes live only in the vault folder you chose, as plain Markdown you can open in anything.</InfoDot></div><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><div className="settings-head"><h3>Dictation never leaves this Mac</h3><InfoDot>Checked at two boundaries: a non-local speech or cleanup endpoint is refused when you save it, and refused again before every use. The utterance goes to a temporary file, is read once, and is deleted — no audio is kept.</InfoDot></div><p>Recorded audio and raw transcripts only ever reach <code>127.0.0.1</code> or on-device macOS speech, and a settings file edited by hand cannot redirect them.</p></div></section><section><div><div className="settings-head"><h3>Screens never reach the model</h3><InfoDot>The <code>vision</code> tool is the deliberate exception: hand it an image and it posts that image to the vision endpoint set in <b>Settings → Models</b>.</InfoDot></div><p>The yellow pen’s capture is compressed and held in Emma’s own process, and the turn goes out without it. Computer-use screenshots stay there too — the <code>computer</code> tool answers in text.</p></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. A note is only ever written into your vault when you ask for one.</p></div></section><section><div><div className="settings-head"><h3>Every run is gated by the mode picker</h3><InfoDot>The step and action ceilings, the rate limit, the on-screen banner, the Escape kill switch, and the action log apply in every mode, with nothing that turns them off. A run also stops when the turn ends and when Emma quits.</InfoDot></div><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through.</p></div></section><section><div><h3>Nothing is reported about you</h3><p>No telemetry, no analytics, and no crash reporter exist anywhere in Emma.</p></div></section></div></section>;
+  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><div className="settings-head"><h3>Start fresh</h3><InfoDot>Threads, artifacts, plans, connected folders, saved keys, and every setting go. The notes in your vault are left where they are — they are your files, in your folder.</InfoDot></div><p>Deletes everything Emma keeps on this Mac, then restarts her empty. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><div className="settings-head"><h3>OpenRouter can be set to train on your prompts</h3><InfoDot>Opting in is what unlocks parts of the free catalog, and free routes are Emma’s default path — her fallback chain and her verifier and vision models are all free models. Your account setting sits above anything Emma sends, so <b>Private routing</b> does not override it.</InfoDot></div><p>Prompt logging is an opt-in on your OpenRouter account: switch it on and OpenRouter and the providers behind it may keep your prompts and Emma’s replies, and train on them. Emma cannot read that setting or change it — check it yourself.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><div className="settings-head"><h3>Zero-retention routing is opt-in</h3><InfoDot>The flag rides the harness request body, so it covers thread turns to an <code>openrouter.ai</code> endpoint and nothing else — the verifier, vision and advisor calls go out with no routing flags on them. No free endpoint qualifies, so every free model fails while it is on.</InfoDot></div><p>Emma’s own switch is off until you turn it on. <b>Private routing</b> in <b>Settings → Models</b> demands no-training, zero-retention endpoints and fails the turn rather than route around them.</p></div></section><section><div><div className="settings-head"><h3>Threads and notes stay local</h3><InfoDot>Thread records live in <code>~/Library/Application Support/Emma</code>, moved by <code>EMMA_DATA_DIR</code>. Saved notes live only in the vault folder you chose, as plain Markdown you can open in anything.</InfoDot></div><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><div className="settings-head"><h3>Dictation never leaves this Mac</h3><InfoDot>Checked at two boundaries: a non-local speech or cleanup endpoint is refused when you save it, and refused again before every use. The utterance goes to a temporary file, is read once, and is deleted — no audio is kept.</InfoDot></div><p>Recorded audio and raw transcripts only ever reach <code>127.0.0.1</code> or on-device macOS speech, and a settings file edited by hand cannot redirect them.</p></div></section><section><div><div className="settings-head"><h3>Computer use shares approved app text</h3><InfoDot>App titles, labels and values may reach your turn’s model after you approve the app. Computer use takes no screenshots and reads no clipboard. Images you attach, or pass to <code>vision</code>, still reach their configured model.</InfoDot></div><p>The <code>computer</code> tool returns running-app metadata, then accessibility text only from apps you approve for this turn. The yellow pen’s separate capture stays in Emma’s process; the turn goes out without it.</p></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. A note is only ever written into your vault when you ask for one.</p></div></section><section><div><div className="settings-head"><h3>App access always needs your approval</h3><InfoDot>A grant is for the named running app and active parent turn only. It is not shared with delegated work. Stop, Escape, screen lock, sleep, turn completion and quitting Emma revoke it. There is no always-allow setting.</InfoDot></div><p>Computer use controls supported accessibility elements in the background. Every app asks before access — even in <em>Auto</em> or <em>Full access</em>. Declining blocks that app for the rest of the turn; other apps need their own approval.</p></div></section><section><div><h3>Nothing is reported about you</h3><p>No telemetry, no analytics, and no crash reporter exist anywhere in Emma.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>Settings / about</span><h2>Emma</h2></header><div className="settings-lines prose-lines">{credits.map((credit) => <section key={credit.title}><div><h3>{credit.title}</h3><p>{credit.body}</p>{credit.href ? <a href={credit.href} target="_blank" rel="noreferrer">{credit.link}</a> : null}</div></section>)}</div></section>;
   return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Keybinds</h2></header>
     <KeybindSettings settings={settings} save={saveKeybinds} />
@@ -3247,8 +3217,6 @@ function SecondModelPicker({ label, off, draft, providers, routers, onChange, bu
   const entries = useMemo(() => {
     const listed = accepts ? catalog.filter(accepts) : catalog;
     const key = `openrouter:${draft.model}`;
-    // A chain that is not one of the user's routers — the shipped default is one —
-    // still names itself by its first model, with the fallbacks counted after it.
     const [first, ...rest] = draft.model.split(",");
     const brand = brandForModel(first, "openrouter");
     const saved: CatalogEntry[] = natural === key && !listed.some((model) => `openrouter:${model.id}` === key)
@@ -3669,9 +3637,6 @@ const NOTCH_LESSONS = [
   { key: "◎", line: "Orbs ring the cursor: capture, draw, save the page." },
 ] as const;
 
-/* The gesture, taught by doing it. A modifier fires no `keypress` and never
-   auto-repeats, so a release timestamp is the whole state — the same 0.35s window
-   the helper watches for (`event_input` in native/quick_ask.m). */
 const DOUBLE_TAP_MS = 350;
 
 const NOTCH_ORBS = [{ glyph: "▣", name: "Screen" }, { glyph: "✎", name: "Draw" }, { glyph: "⧉", name: "Save page" }] as const;

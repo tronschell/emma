@@ -15,7 +15,7 @@ Four processes, three trust boundaries. Every boundary validates its input.
                             │ allowlisted channels only
 ┌───────────────────────────┴─────────────────────────────────┐
 │ Electron main  (desktop/main)                               │
-│ Windows, global shortcuts, screen, pointer, filesystem,     │
+│ Windows, global shortcuts, screen, app controls, files,     │
 │ every provider call, every permission answer.               │
 └──────┬───────────────────────────────────┬──────────────────┘
        │ NDJSON over stdio                 │ ACP over stdio
@@ -31,7 +31,7 @@ Four processes, three trust boundaries. Every boundary validates its input.
 
 ## Who may touch what
 
-| | Filesystem | Network | Model | Screen / pointer |
+| | Filesystem | Network | Model | Screen / app controls |
 | --- | --- | --- | --- | --- |
 | Renderer | no | no | no | no |
 | Electron main | yes | yes | yes | yes |
@@ -39,9 +39,11 @@ Four processes, three trust boundaries. Every boundary validates its input.
 | `emma-cli` | its workspace root | providers + MCP | yes | no |
 
 `emma-host` depends on `serde` and `serde_json` and nothing else — it cannot
-open a socket or spawn a child. The harness runs the agent loop but never drives
-the pointer: `computer` calls come back down the ACP pipe as `_emma/callTool`
-and execute in Electron main, which owns the screen and the kill switch. See
+open a socket or spawn a child. The harness runs the agent loop; current parent-turn
+`computer` calls return over ACP as `_emma/callTool`. Electron main owns exact-app
+approval, the stop switch, and the native helper's app-scoped accessibility controls.
+Child agents cannot use the grant. Computer use does not capture the screen or drive
+the global pointer; screen-context and annotation capture are separate features. See
 [computer-use.md](computer-use.md).
 
 ## Validation at each boundary
