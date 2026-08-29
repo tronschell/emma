@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/tronschell/emma/compare/v0.2.0...v0.2.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **release:** harden widget requests and readiness checks ([3918861](https://github.com/tronschell/emma/commit/39188616bbfdf15bf9bfb03c44bcfd943f670681))
+
 ## [0.2.0](https://github.com/tronschell/emma/compare/v0.1.0...v0.2.0) (2026-08-28)
 
 
