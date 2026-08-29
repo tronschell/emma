@@ -7,7 +7,7 @@ use std::{
         mpsc::{self, RecvTimeoutError, Sender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -645,11 +645,17 @@ pub fn start_live_runtime(
         .name("emma-live-runtime".into())
         .spawn(move || {
             let mut runtime = Runtime::new(thread_root, scheduled_root, research_root, jobs);
+            let tick = Duration::from_secs(30);
+            let mut due = Instant::now() + tick;
             loop {
-                match receiver.recv_timeout(Duration::from_secs(30)) {
+                match receiver.recv_timeout(due.saturating_duration_since(Instant::now())) {
                     Ok(command) => runtime.handle(command),
-                    Err(RecvTimeoutError::Timeout) => runtime.run_due_jobs(),
+                    Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
+                }
+                if Instant::now() >= due {
+                    runtime.run_due_jobs();
+                    due = Instant::now() + tick;
                 }
             }
         })
@@ -1043,22 +1049,29 @@ impl Runtime {
             ),
             None => None,
         };
-        let mut job = ScheduledJob::new(
+        let now = Timestamp::now();
+        let mut job = ScheduledJob::from_fields(
             title,
             schedule,
             prompt,
             nodes,
             source_domains,
             permission_mode,
-            existing
-                .as_ref()
-                .map_or_else(Timestamp::now, |job| job.created_at),
+            now,
         )
         .map_err(|error| LiveError::new(format!("scheduled job is invalid: {error}")))?;
         job.set_model(model)
             .map_err(|error| LiveError::new(format!("scheduled job is invalid: {error}")))?;
+        if !existing
+            .as_ref()
+            .is_some_and(|existing| existing.schedule == job.schedule)
+        {
+            job.book_next_run(now)
+                .map_err(|error| LiveError::new(format!("scheduled job is invalid: {error}")))?;
+        }
         if let Some(existing) = existing {
             job.id = existing.id;
+            job.created_at = existing.created_at;
             job.enabled = existing.enabled;
             job.last_run_at = existing.last_run_at;
             job.last_thread_id = existing.last_thread_id;
@@ -1108,7 +1121,7 @@ impl Runtime {
         self.scheduled
             .save(&job)
             .map_err(|error| LiveError::new(format!("could not save scheduled job: {error}")))?;
-        self.fire_trigger(&format!("after {job_id}"), outputs, depth + 1)?;
+        self.fire_trigger(&format!("after {job_id}"), outputs, depth.saturating_add(1))?;
         Ok(job)
     }
 
@@ -1458,9 +1471,26 @@ impl Runtime {
     fn read_trace(&mut self, thread_id: ThreadId) -> Result<Vec<ThreadTrace>, LiveError> {
         self.threads
             .load(&thread_id)
-            .map(|thread| thread.traces)
+            .map(|thread| newest_within(thread.traces, MAX_TRACE_REPLY_BYTES))
             .map_err(|error| LiveError::new(format!("could not load thread {thread_id}: {error}")))
     }
+}
+
+pub const MAX_TRACE_REPLY_BYTES: usize = 8 * 1024 * 1024;
+
+fn newest_within(traces: Vec<ThreadTrace>, budget: usize) -> Vec<ThreadTrace> {
+    let mut room = budget;
+    let mut kept: Vec<ThreadTrace> = Vec::new();
+    for trace in traces.into_iter().rev() {
+        let cost = trace.text.len().saturating_add(64);
+        if cost > room && !kept.is_empty() {
+            break;
+        }
+        room = room.saturating_sub(cost);
+        kept.push(trace);
+    }
+    kept.reverse();
+    kept
 }
 
 fn validate_agent_text(
@@ -1481,6 +1511,21 @@ fn validate_agent_text(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_thread_of_huge_traces_answers_with_the_newest_that_fit() {
+        let big = |seconds: i64, size: usize| {
+            ThreadTrace::new(Timestamp::from_unix_seconds(seconds), &"x".repeat(size)).unwrap()
+        };
+        let traces = vec![big(1, 4_000), big(2, 4_000), big(3, 4_000)];
+        let kept = newest_within(traces, 8_500);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].timestamp, Timestamp::from_unix_seconds(2));
+        assert_eq!(kept[1].timestamp, Timestamp::from_unix_seconds(3));
+
+        let one = newest_within(vec![big(4, 4_000)], 16);
+        assert_eq!(one.len(), 1);
+    }
     use super::*;
 
     use std::{
@@ -1699,6 +1744,129 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_job_edits_book_changed_cron_from_now_and_preserve_run_state() {
+        let root = temp_child();
+        let runtime = Runtime::new(
+            root.join("threads"),
+            root.join("scheduled"),
+            root.join("research"),
+            no_jobs(),
+        );
+        let now = Timestamp::now().unix_seconds();
+        let mut original = ScheduledJob::new(
+            "Daily reading".into(),
+            "0 9 * * *".into(),
+            "Find useful reading".into(),
+            "[]".into(),
+            vec!["example.com".into()],
+            "acceptEdits".into(),
+            Timestamp::from_unix_seconds(now - 30 * 86_400),
+        )
+        .unwrap();
+        original.enabled = false;
+        original.next_run_at = Some(Timestamp::from_unix_seconds(now + 3 * 86_400));
+        original.last_run_at = Some(Timestamp::from_unix_seconds(now - 86_400));
+        original.last_thread_id = Some("thread-1700000000-a-b-c".into());
+        original.outputs = "{\"digest\":\"three items\"}".into();
+        original.model = "openrouter:deepseek/deepseek-chat".into();
+        for schedule in [
+            "0 9 * * *",
+            "0 10 * * *",
+            "manual",
+            "on page-saved",
+            "after job-1700000000-a-b-c",
+        ] {
+            runtime.scheduled.save(&original).unwrap();
+            let before = Timestamp::now();
+            let saved = runtime
+                .save_scheduled_job(
+                    Some(original.id.clone()),
+                    original.title.clone(),
+                    schedule.into(),
+                    original.prompt.clone(),
+                    original.nodes.clone(),
+                    original.source_domains.clone(),
+                    original.permission_mode.clone(),
+                    original.model.clone(),
+                )
+                .unwrap();
+            let after = Timestamp::now();
+            let mut expected = original.clone();
+            expected.schedule = schedule.into();
+            if schedule == "0 10 * * *" {
+                let next = saved.next_run_at.unwrap();
+                assert!(next > before);
+                assert!(next.unix_seconds() <= after.unix_seconds() + 86_400);
+                expected.next_run_at = Some(next);
+            } else if schedule != original.schedule {
+                expected.next_run_at = None;
+            }
+            assert_eq!(saved, expected);
+            assert_eq!(runtime.scheduled.load(&original.id).unwrap(), expected);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rare_cron_bookings_survive_reload_and_title_edits() {
+        let root = temp_child();
+        let runtime = Runtime::new(
+            root.join("threads"),
+            root.join("scheduled"),
+            root.join("research"),
+            no_jobs(),
+        );
+        let created_at = "2024-01-01T00:00:00Z".parse().unwrap();
+        for (schedule, booked_at, next_run_at) in [
+            (
+                "0 10 28 2 0",
+                "2026-08-28T00:00:00Z",
+                "2027-02-28T10:00:00Z",
+            ),
+            (
+                "0 10 29 2 *",
+                "2028-01-01T00:00:00Z",
+                "2028-02-29T10:00:00Z",
+            ),
+        ] {
+            let mut job = ScheduledJob::new(
+                "Rare reading".into(),
+                schedule.into(),
+                "Find useful reading".into(),
+                String::new(),
+                vec![],
+                "ask".into(),
+                booked_at.parse().unwrap(),
+            )
+            .unwrap();
+            job.created_at = created_at;
+            job.enabled = false;
+            assert_eq!(job.next_run_at, Some(next_run_at.parse().unwrap()));
+            runtime.scheduled.save(&job).unwrap();
+            assert_eq!(runtime.scheduled.load(&job.id).unwrap(), job);
+            let saved = runtime
+                .save_scheduled_job(
+                    Some(job.id.clone()),
+                    "Renamed reading".into(),
+                    job.schedule.clone(),
+                    job.prompt.clone(),
+                    job.nodes.clone(),
+                    job.source_domains.clone(),
+                    job.permission_mode.clone(),
+                    job.model.clone(),
+                )
+                .unwrap();
+            job.title = "Renamed reading".into();
+            assert_eq!(saved, job);
+            assert_eq!(runtime.scheduled.load(&job.id).unwrap(), job);
+            let snapshot = runtime.snapshot().unwrap();
+            assert!(snapshot.warnings.is_empty());
+            assert!(snapshot.scheduled_jobs.contains(&job));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn due_scheduled_job_claims_once_and_hands_its_turn_out_under_its_saved_mode() {
         let root = temp_child();
         let (sink, due) = collect_jobs();
@@ -1735,6 +1903,8 @@ mod tests {
         assert_eq!(handed[0].thread_id, threads[0].id.to_string());
         assert_eq!(handed[0].prompt, "Find useful reading");
         assert_eq!(handed[0].permission_mode, "acceptEdits");
+        assert_eq!(jobs[0].model, "openrouter:deepseek/deepseek-chat");
+        assert_eq!(handed[0].model, jobs[0].model);
         assert_eq!(
             jobs[0].last_thread_id.as_deref(),
             Some(threads[0].id.as_str())

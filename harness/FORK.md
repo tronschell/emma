@@ -29,7 +29,9 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
 - **Model transport.** Upstream talks to Vercel AI Gateway over the AI SDK
   language-model v3 protocol (`prompt`/`toolChoice` at `/v3/ai/language-model`).
   Emma talks to any OpenAI-compatible Chat Completions endpoint, which is the
-  provider seam the rest of Emma already uses.
+  provider seam the rest of Emma already uses. Replies are buffered rather than
+  streamed token by token. Malformed tool-call replies and allocation failures
+  release partially parsed calls and completion fields exactly once.
 - **Authentication.** Upstream's Vercel device OAuth, ChatGPT Codex OAuth, team
   selection, and credit balance are removed. Emma supplies a base URL, a model,
   and the *name* of an environment variable holding the credential; there is no
@@ -90,11 +92,24 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   when they stopped being MCP servers: `Registry.toolAllowed` waves through
   anything the registry does not know, so bridging had made that list
   irrelevant to them.
+- **App-scoped computer use.** `computer` advertises running-app discovery,
+  accessibility state, and background actions against one exact app instance
+  instead of global screenshots, pointer coordinates, and keyboard shortcuts.
+  Mutations name an element from a single-use state snapshot. Calls still cross
+  `_emma/callTool`; Emma owns the app approval and enforces it only for the current
+  parent turn, regardless of full or auto mode. Child agents cannot use computer
+  and must ask the parent to perform app actions. There is no
+  activation, clipboard, or global-input fallback, and no Codex desktop runtime
+  is copied or bundled.
 - **Language servers.** `src/core/lsp/` and `src/tools/lsp/` are new — a
   JSON-RPC client with `Content-Length` framing, a process pool keyed by
   (server, workspace root), a data-only registry of about fifty servers in
   `src/core/lsp/servers.zig`, and the `lsp` tool's nine actions. An agent that
   can ask a real language server does not have to guess a definition from text.
+- **Skill catalog budget.** `skill_catalog_bytes` defaults to 64 KiB instead
+  of upstream's 16 KiB, which omitted `scheduled-tasks` and `threads` once
+  imported skills filled the catalog. Per-description limits, explicit catalog
+  overrides, and overflow warnings are unchanged.
 - **Tool description cap.** `gateway_schema.description_max_bytes` was
   upstream's 1024 and is 4 KiB. `cappedDescriptionAlloc` truncates silently, so
   at 1024 `workflow` and `autoresearch` lost their last commands with nothing to
@@ -227,3 +242,10 @@ below.
 
 Upstream's byte-exact tool schema oracles are never taken: Emma advertises a
 different tool set, so those hashes cannot match by construction.
+
+### Edit review metadata
+
+Pending `write_file` and `edit_file` ACP calls carry `_emma_filePath`, parsed
+from their complete arguments before the 4 KiB display preview is truncated.
+Emma retains this path across status updates to capture before/after file
+contents for review and revert; history replay does not create new captures.

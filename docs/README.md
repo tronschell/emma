@@ -16,6 +16,7 @@ is the tour; this is the reference.
 | | |
 |---|---|
 | [Context bar](context-bar.md) | The thread inspector — every component, pages, and rearranging the column |
+| [Components](components.md) | The widgets Emma builds into the context bar: the module contract, variables, full screen |
 | [Permissions](permissions.md) | The four modes, the full gate matrix, the verifier, and what survives every mode |
 | [Tools](tools.md) | Every tool a turn can call: Emma's own, and the harness's builtins |
 | [Models](models.md) | OpenAI-compatible endpoints, credentials, the OpenRouter catalog, private routing |
@@ -48,7 +49,7 @@ is the tour; this is the reference.
 | [Architecture](architecture.md) | Process boundaries, the trust model, the product contract |
 | [Development](development.md) | Repo map, house rules, toolchains, builds, tests, packaging |
 | [Data](data.md) | Every file Emma reads or writes, every environment variable |
-| [Releasing](../.claude/skills/releasing/SKILL.md) | PR titles, the generated changelog, CI, builds, and what signing still blocks |
+| [Releasing](releases.md) | PR titles, the generated changelog, CI, downloads, signing, and update verification |
 | [Credits](credits.md) | Every dependency, what it is used for, and its license |
 | [Icon sources](icon-sources.md) | Where each vendor mark came from and under what terms |
 

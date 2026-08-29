@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { BlockList, isIP } from "node:net";
 import { MAX_ATTACHED_CONTEXT_CHARS } from "../shared/folders";
 import { isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
 
@@ -61,7 +62,7 @@ const optionalFields: Partial<Record<Method, readonly string[]>> = {
   selectOpenRouterModel: ["effort"],
   selectProviderModel: ["effort"],
   setThreadModel: ["effort"],
-  saveScheduledJob: ["jobId", "nodes"],
+  saveScheduledJob: ["jobId", "nodes", "model"],
   runScheduledJob: ["variables"],
   saveResearchJob: ["jobId", "metricPrompt", "prompt"],
   setResearchJobStatus: ["note"],
@@ -87,7 +88,7 @@ export function validateRequest(value: unknown): Request {
   }
   for (const key of [...expected, ...optional.filter((key) => key in params)]) {
     const text = params[key] as string;
-    const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId");
+    const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId") || (method === "saveScheduledJob" && key === "model");
     const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
     if (text.length > maxLength || (key !== "content" && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
@@ -169,23 +170,31 @@ export function externalUrl(value: string): URL | null {
   }
 }
 
+const nonPublicAddresses = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+  ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) nonPublicAddresses.addSubnet(address, prefix, "ipv4");
+for (const [address, prefix] of [["2001::", 23], ["2001:db8::", 32], ["2002::", 16], ["3fff::", 20]] as const) {
+  nonPublicAddresses.addSubnet(address, prefix, "ipv6");
+}
+const globalIpv6Addresses = new BlockList();
+globalIpv6Addresses.addSubnet("2000::", 3, "ipv6");
+
+export function publicAddress(address: string): boolean {
+  const family = isIP(address);
+  return family === 4 ? !nonPublicAddresses.check(address, "ipv4")
+    : family === 6 && globalIpv6Addresses.check(address, "ipv6") && !nonPublicAddresses.check(address, "ipv6");
+}
+
 export function publicUrl(value: string): URL | null {
   const url = externalUrl(value);
-  if (!url) return null;
-  const host = url.hostname.toLowerCase().replace(/^\[|]$/g, "");
+  if (!url || url.username || url.password) return null;
+  const host = url.hostname.toLowerCase().replace(/^\[|]$/g, "").replace(/\.$/, "");
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return null;
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host.replace(/^::ffff:/, ""));
-  if (v4) {
-    const [a, b] = v4.slice(1).map(Number);
-    if (a === 0 || a === 10 || a === 127 || a === 255) return null;
-    if (a === 169 && b === 254) return null;
-    if (a === 172 && b >= 16 && b <= 31) return null;
-    if (a === 192 && b === 168) return null;
-    if (a === 100 && b >= 64 && b <= 127) return null;
-    if (a > 255 || b > 255) return null;
-  } else if (host.includes(":")) {
-    if (host === "::1" || host === "::" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return null;
-  }
+  if (isIP(host) && !publicAddress(host)) return null;
   return url;
 }
 

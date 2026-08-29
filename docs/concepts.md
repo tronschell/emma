@@ -102,29 +102,34 @@ it.
 
 ## Component
 
-**A piece of Emma's own interface that Emma built, mounted where the user
-pointed.** Not an artifact: it does not outlive the interface, it *is* the
-interface, and it never appears on the Artifacts page. Stored at
-`<userData>/components/<id>/` as `meta.json`, `module.js` and `shot.png`, served
-over the `emma-component://` scheme, and mounted into the running React tree by
-`createPortal` at the CSS selector recorded in its anchor.
+**A widget in Emma's own interface that Emma built.** Not an artifact: it does
+not outlive the interface, it *is* the interface, and it never appears on the
+Artifacts page. Stored at `<userData>/components/<id>/` as `meta.json`,
+`module.js` and `shot.png`, served over the `emma-component://` scheme, and
+mounted into the running React tree by `createPortal`.
 
-The flow is fixed in main, not in the prompt. `component {"action":"place"}`
-lights the window up so the user clicks the zone the new thing belongs in;
-`create` is refused until they have, so the location is always theirs. There are
-three zones — the sidebar, the context bar and the composer — and the transcript
-is deliberately not one of them: it is rebuilt per thread, so an anchor into it
-would point at nothing the moment another conversation opens. The user moves a
-component between zones afterwards by dragging its ⠿ grip, or from **Move…** in
-its ⋯ menu. Each `rewrite` bumps the version, the module URL carries it, and the
-mounted copy reloads in place — that is the iteration loop. A new version wipes in behind a
-left-to-right ASCII reveal.
+There is one place it can go: the context bar, under the built-in widgets and in
+their chrome, so a component gets the column's padding and reveal rather than its
+own. That is enforced in main, not asked for in the prompt — a component that can
+land anywhere is a component that can break the layout it lands in.
 
-Deleting is the user's, from the ⋯ in the component's own corner or from
-**Settings → Built by Emma**, which shows each one's picture, switches it off, and
-sends it back to a thread as an attachment to keep working on. Limits in
+It reads the app through `emma` and the outside through `fetch`, which goes out
+through main against public https only. Secrets are environment variable names it
+declares in `variables`; the user fills them in **Settings → Built by Emma** and
+the module writes `{{NAME}}` into a url, header or body. The values never reach
+the renderer.
+
+`expand` gives it a ⤢ that opens it over the whole window and hands it
+`expanded`, for what will not read in 288px. Each `rewrite` bumps the version, the
+module URL carries it, and the mounted copy reloads in place — that is the
+iteration loop. A new version wipes in behind a left-to-right ASCII reveal.
+
+Deleting is the user's, from the ⋯ in the component's own header or from
+**Settings → Built by Emma**, which shows each one's picture, switches it off,
+fills in its variables, and sends it back to a thread as an attachment to keep
+working on. Limits in
 [`shared/components.ts`](../desktop/shared/components.ts): `MAX_COMPONENTS` 64,
-`MAX_COMPONENT_CHARS` 64 KiB.
+`MAX_COMPONENT_CHARS` 64 KiB, `MAX_COMPONENT_VARIABLES` 8.
 
 ## Context
 

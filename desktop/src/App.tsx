@@ -10,12 +10,13 @@ import { nested, newest, spawnedAgents, spawnedByTurn, threadAt, threadDepth, th
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
 import { THINKING_LABELS, ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_KEYS_URL, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetProvider, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, providerCredentials, providerReach, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
+import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { defaultPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, WIDE_BROWSER_WIDTH, type PaneLayout } from "./layout";
 import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { arrived, dropHeld, dropQueued, groupBlocks, pairBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
+import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { showsUpdate } from "../shared/update";
 import { brandForConnection, brandForImporter, brandForModel, brandForProvider, providerBrands, type BrandDefinition } from "./brands";
@@ -75,17 +76,10 @@ const time = (value: string) => timeFormat(new Date(value));
 
 const STATUS_TITLES: Record<string, string> = { tool: "Running a tool", running: "Thinking", waiting: "Waiting for you", failed: "Something went wrong", done: "Finished", idle: "Idle" };
 
-/** What the sidebar needs off a thread's live run, and nothing else. */
 type ThreadLive = { status: AgentStatus; tool: boolean; startedAt: number };
 
 const runStamp = (live?: ThreadLive) => live ? `${live.startedAt}:${live.status}` : "";
 
-/**
- * The mark in front of a thread's name. A live thread spins — or blinks the tool
- * mark while a call is open — and a finished one leaves a green tick behind until
- * you open it, so a thread that landed while you were elsewhere still says so.
- * Yellow is the half that wants you: an approval, or a run that fell over.
- */
 function ThreadStatus({ live, unseen }: { live?: ThreadLive; unseen?: boolean }) {
   const status = live?.status;
   const state = status === "running" ? (live?.tool ? "tool" : "running")
@@ -451,19 +445,38 @@ function App() {
   if (query.has("hotspot")) return <NotchHotspot />;
   if (query.has("radial")) return <RadialCommands />;
   if (query.has("run")) return <ComputerRunBanner task={query.get("task") ?? ""} maxSteps={Number(query.get("maxSteps")) || 0} />;
+  if (query.has("computerCursor")) return <ComputerActivityCursor />;
   return query.has("overlay") ? <Overlay /> : <Workspace />;
 }
 
 function ComputerRunBanner({ task, maxSteps }: { task: string; maxSteps: number }) {
-  const [progress, setProgress] = useState({ step: 0, action: "starting", actions: 0 });
-  useEffect(() => window.emma.onComputerRunProgress(setProgress), []);
+  const [progress, setProgress] = useState<ComputerRunProgress>({ step: 0, action: "Starting", actions: 0 });
+  useEffect(() => window.emma.onComputerRunProgress((value) => { if (validComputerProgress(value)) setProgress(value); }), []);
   return <div className="run-banner" role="status">
     <span className="run-banner-pulse" aria-hidden="true" />
     <div className="run-banner-body">
-      <strong>Emma is using this Mac · {progress.action}</strong>
+      <strong>Emma · {progress.action}{progress.app ? ` in ${progress.app}` : ""}</strong>
       <small>Step {progress.step}/{maxSteps} · {progress.actions} action{progress.actions === 1 ? "" : "s"} · {task}</small>
     </div>
     <button type="button" onClick={() => window.emma.stopComputerRun()}>Stop · esc</button>
+  </div>;
+}
+
+function ComputerActivityCursor() {
+  const [progress, setProgress] = useState<ComputerRunProgress>();
+  useEffect(() => window.emma.onComputerRunProgress((value) => { if (validComputerProgress(value) && value.cursor) setProgress(value); }), []);
+  const cursor = progress?.cursor;
+  if (!cursor) return null;
+  const x = cursor.x - cursor.bounds.x;
+  const y = cursor.y - cursor.bounds.y;
+  return <div className="computer-cursor-surface" aria-hidden="true">
+    <div key={cursor.windowId} className="computer-cursor" style={{ transform: `translate(${x}px, ${y}px)` }}>
+      <span key={progress.actions} className="computer-cursor-ring" />
+      <svg className="computer-cursor-arrow" width="27" height="34" viewBox="0 0 27 34"><path d="M1 1L23 19L13 20L9 30Z" /></svg>
+      <span className="computer-cursor-label" data-left={x > cursor.bounds.width - 210 || undefined} data-above={y > cursor.bounds.height - 75 || undefined}>
+        <strong>Emma</strong><span>{progress.action}</span>
+      </span>
+    </div>
   </div>;
 }
 
@@ -539,10 +552,6 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   const [error, setError] = useState("");
   const booted = useRef(takeBootSnapshot());
   const skipped = useRef(false);
-  // The interval, the focus handler and every `changed` event all call `load`,
-  // so several snapshots are in flight at once and the harness answers them out
-  // of order. A late one that predates the thread you just opened used to land
-  // last and re-pin the selection onto someone else's thread.
   const latest = useRef(0);
   const load = useCallback(async () => {
     const ticket = ++latest.current;
@@ -586,7 +595,6 @@ function Workspace() {
   }, []);
   const { snapshot, load, error, setError } = useSnapshot(pinSelections);
   const [view, setView] = useState<"threads" | "knowledge" | "artifacts" | "agent" | "scheduled" | "plugins" | "research" | "archive" | "settings">("threads");
-  // Browser-style back/forward over the view + thread pairs the app has shown.
   const trail = useRef({ stack: [] as { view: typeof view; threadId: string }[], at: -1, jumping: false });
   const [trailAt, setTrailAt] = useState(-1);
   const [trailLen, setTrailLen] = useState(0);
@@ -679,15 +687,9 @@ function Workspace() {
     }
     return map;
   }, [agents]);
-  // What you have already looked at, as the run's start paired with the state it
-  // was in. The start keeps a later turn's finish from inheriting the last one's
-  // tick; the state means leaving a thread mid-run still earns a tick when it
-  // lands, while a thread left open re-marks itself the moment it does.
   const [seenRuns, setSeenRuns] = useState<Record<string, string>>({});
   const openThreadId = view === "threads" && !selection.length ? thread?.id : undefined;
   const openStamp = openThreadId ? runStamp(threadStatus.get(openThreadId)) : "";
-  // Adjusted during render rather than in an effect: React re-runs this pass
-  // before it paints, so the row you just opened never flashes its own tick.
   if (openThreadId && openStamp && seenRuns[openThreadId] !== openStamp) setSeenRuns({ ...seenRuns, [openThreadId]: openStamp });
   const unseen = useCallback((id: string) => {
     const stamp = runStamp(threadStatus.get(id));
@@ -781,7 +783,6 @@ function Workspace() {
     addEventListener(OPEN_THREAD_EVENT, open);
     return () => removeEventListener(OPEN_THREAD_EVENT, open);
   }, [load]);
-  /** Connecting a folder means starting work in it: float it to the top and open a thread there. */
   const connectProject = () => {
     setError("");
     void window.emma.pickFolder().then((granted) => {
@@ -1122,7 +1123,6 @@ function variableRows(outputs: string) {
   return Object.entries(parseVariables(outputs)).slice(0, 12);
 }
 
-/** The model every run of one task uses. Empty means whichever model the app is set to. */
 function TaskModelPicker({ model, onChange, busy }: { model: string; onChange: (model: string) => void; busy: boolean }) {
   const settings = readSettings();
   const [catalog, setCatalog] = useState<OpenRouterCatalog["models"]>([]);
@@ -1135,8 +1135,6 @@ function TaskModelPicker({ model, onChange, busy }: { model: string; onChange: (
     document.addEventListener("pointerdown", away);
     return () => document.removeEventListener("pointerdown", away);
   }, [open]);
-  // Only routed models: a local profile is chosen for the app as a whole, not for
-  // one unattended run, so offering it here would pin a task to nothing.
   const entries = useMemo(() => modelEntries([], catalog), [catalog]);
   return <div className="task-model verifier-pick" ref={box}>
     <button type="button" className="verifier-pick-trigger" disabled={busy} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
@@ -1539,7 +1537,7 @@ function DropVeil({ onFiles }: { onFiles: (files: FileList) => void }) {
   const [over, setOver] = useState(false);
   const depth = useRef(0);
   const latest = useRef(onFiles);
-  latest.current = onFiles;
+  useEffect(() => { latest.current = onFiles; });
   useEffect(() => {
     const carriesFiles = (event: DragEvent) => event.dataTransfer?.types.includes("Files") ?? false;
     const enter = (event: DragEvent) => { if (carriesFiles(event)) { depth.current += 1; setOver(true); } };
@@ -1601,6 +1599,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   const [slashPick, setSlashPick] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [history, setHistory] = useState(-1);
+  const historyDraft = useRef("");
   const addPick = (pick: ContextPick) => setPicks((current) => current.some((item) => pickKey(item) === pickKey(pick)) ? current.map((item) => pickKey(item) === pickKey(pick) ? pick : item) : [...current, pick]);
   useEffect(() => {
     const take = (event: Event) => {
@@ -1788,6 +1787,19 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     return () => removeEventListener(OPEN_GOAL_EVENT, open);
   }, [threadId, setTab]);
   const cached = useMemo(() => cachedBlocks(thread?.id ?? ""), [thread?.id]);
+  const [traced, setTraced] = useState<{ threadId: string; traces: { timestamp: string; text: string }[] }>({ threadId: "", traces: [] });
+  useEffect(() => {
+    if (!threadId) return;
+    let alive = true;
+    void window.emma.threadTraces(threadId)
+      .then((traces) => { if (alive) setTraced({ threadId, traces }); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [threadId, thread?.messages.length]);
+  const recorded = useMemo(
+    () => tracedBlocks(traced.threadId, traced.threadId === threadId ? thread?.messages ?? [] : [], traced.traces),
+    [threadId, thread?.messages, traced],
+  );
   useEffect(() => {
     if (!thread) return;
     const paired = pairBlocks(thread.messages, run.landed, {});
@@ -1801,7 +1813,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   const echoTray = echo !== null && run.pending ? pendingAttachments(thread.id, run.pending.after, echo) : [];
   const unlanded = !sending && run.blocks.length > 0 && !arrived(thread.messages, run.blocks);
   const streaming = (sending || unlanded) && run.blocks.length ? run.blocks : null;
-  const landedBlocks = pairBlocks(thread.messages, unlanded ? run.landed.slice(0, -1) : run.landed, cached);
+  const landedBlocks = pairBlocks(thread.messages, unlanded ? run.landed.slice(0, -1) : run.landed, { ...recorded, ...cached });
   const setCapabilityRunning = (value: boolean) => { setCapabilityBusy(value); onSendingChange(value); };
   const localContext = contextCommands(folders, folderIds, folderFiles);
   const allCommands = commands;
@@ -1855,6 +1867,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     else openCapabilities();
   };
   const composerKeys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (slashOpen && slashMatches.length) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setSlashPick((current) => (Math.min(current, slashMatches.length - 1) + (event.key === "ArrowDown" ? 1 : slashMatches.length - 1)) % slashMatches.length); return; }
       if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); pickCommand(slashMatches[slashActive]); return; }
@@ -1867,10 +1880,11 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
       const edge = event.key === "ArrowUp" ? 0 : element.value.length;
       if (element.selectionStart === edge && element.selectionEnd === edge) {
         const next = event.key === "ArrowUp" ? Math.min(history + 1, past.length - 1) : history - 1;
-        if (next < -1) return;
+        if (!past.length || next < -1 || next === history) return;
         event.preventDefault();
+        if (history < 0) historyDraft.current = message;
         setHistory(next);
-        const text = next < 0 ? "" : past[next];
+        const text = next < 0 ? historyDraft.current : past[next];
         setMessage(text);
         queueMicrotask(() => { input.current?.setSelectionRange(text.length, text.length); setCaret(text.length); });
         return;
@@ -1878,15 +1892,16 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     }
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
   };
-  const send = async (event?: FormEvent, text?: string) => {
+  const send = (event?: FormEvent, text?: string) => {
     event?.preventDefault();
     if (locked) return;
     const content = (text ?? message).trim();
     if (!content) return;
     setRunError("");
     if (text === undefined) { setMessage(""); setHistory(-1); }
-    const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles) : { text: "", uses: [], images: [] };
     const attachedSkill = skill;
+    setSkill(null);
+    setPicks([]);
     const after = thread.messages.length;
     rememberTurnAttachments(thread.id, after, content, picks.map((pick) => ({
       kind: pick.kind,
@@ -1896,11 +1911,15 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     sendTurn(thread.id, {
       content,
       after,
-      params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
-      delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skills" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
+      params: {},
+      prepare: folderIds.length || picks.length || attachedSkill ? async () => {
+        const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles) : { text: "", uses: [], images: [] };
+        return {
+          params: { ...(attached.text ? { attachedContext: attached.text } : {}), ...(attached.images.length ? { attachedImages: JSON.stringify(attached.images) } : {}), ...(attachedSkill ? { skillAttachmentId: attachedSkill.id } : {}) },
+          delivered: () => noteUses([...attached.uses, ...(attachedSkill ? [{ kind: "skills" as const, label: `${attachedSkill.source}/${attachedSkill.name}`, chars: attachedSkill.chars ?? 0 }] : [])]),
+        };
+      } : undefined,
     }, reload);
-    setSkill(null);
-    setPicks([]);
   };
   const swapStalledModel = async (next: UserSettings) => {
     const label = modelKeyLabel(next, next.selectedModel);
@@ -1922,14 +1941,9 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     stopTurn(thread.id, undefined, reload);
     if (message.trim()) void send();
   };
-  /**
-   * Lifts one message out of the queue and into the turn already running, rather
-   * than waiting for it to end. Enter only ever queues, so this button is the one
-   * door into a live turn — the same split Codex draws between Tab and Enter.
-   */
   const steerQueued = (index: number) => {
     const turn = queued[index];
-    if (!turn) return;
+    if (!turn || !canSteer(turn)) return;
     const text = turn.content.trim();
     if (!text) return;
     if (text.length > 4096) { setRunError("Steering takes at most 4096 characters. Leave anything longer queued."); return; }
@@ -2087,7 +2101,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
       </div>
       <ProjectBar folders={folders} ids={folderIds} setFolders={setFolders} setIds={setFolderIds} git={git} name={worktreeName(thread.id)} busy={locked} />
       {sending && confirmStop && <div className="queued-stack" role="status"><div className="queued-row"><span>Press Esc again to stop Emma</span><button type="button" onClick={() => setConfirmStop(false)} aria-label="Keep going">×</button></div></div>}
-      {queued.length > 0 && <div className="queued-stack" aria-label="Queued messages">{queued.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Queued · {turn.content}</span><button type="button" className="steering" disabled={Object.keys(turn.params).length > 0} onClick={() => steerQueued(index)} aria-label="Steer this turn with this message now" title={Object.keys(turn.params).length ? "Attachments cannot be steered — this one waits for the turn to end" : "Steer — hand this to Emma at her next step instead of waiting for the turn to end"}>⤳</button><button type="button" onClick={() => dropQueued(thread.id, index)} aria-label="Drop this queued message">×</button></div>)}</div>}
+      {queued.length > 0 && <div className="queued-stack" aria-label="Queued messages">{queued.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Queued · {turn.content}</span><button type="button" className="steering" disabled={!canSteer(turn)} onClick={() => steerQueued(index)} aria-label="Steer this turn with this message now" title={!canSteer(turn) ? "Attachments cannot be steered — this one waits for the turn to end" : "Steer — hand this to Emma at her next step instead of waiting for the turn to end"}>⤳</button><button type="button" onClick={() => dropQueued(thread.id, index)} aria-label="Drop this queued message">×</button></div>)}</div>}
       {run.held.length > 0 && <div className="queued-stack held-stack" aria-label="Held messages">{run.held.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Held · {turn.content}</span><button type="button" onClick={() => releaseHeld(thread.id, index, reload)} aria-label="Send this held message">↑</button><button type="button" onClick={() => dropHeld(thread.id, index)} aria-label="Drop this held message">×</button></div>)}</div>}
       <DropVeil onFiles={attachDropped} />
       <form className="composer" onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label>{run.draft && <div className="composer-attachment queued-turn"><span>Not sent · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}
@@ -2174,9 +2188,6 @@ function readSettings(): UserSettings {
   return settings;
 }
 
-/* Hovering an accent swatch repoints --accent for as long as the pointer is on
-   it, so the whole app shows the hue before anything is saved; leaving puts the
-   saved accent back. */
 const accentValue = (accent: string) => (accent.startsWith("#") ? accent : `var(--${accent})`);
 const previewAccent = (accent: string) => document.documentElement.style.setProperty("--accent", accentValue(accent));
 
@@ -2624,7 +2635,19 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   };
   const updateAction = (index: number, field: string, value: string | boolean) => setSettings((current) => ({ ...current, quickActions: current.quickActions.map((action, actionIndex) => actionIndex === index ? { ...action, [field]: value } : action) as UserSettings["quickActions"] }));
   const save = (event: FormEvent) => { event.preventDefault(); try { const valid = persistSettings(settings); setSettings(valid); syncMainPreferences(valid); onModelChanged(valid); setSaved(true); } catch { setSaved(false); } };
-  const saveModelSettings = (next: UserSettings) => { const valid = persistSettings(next); setSettings(valid); onModelChanged(valid); };
+  const saveModelSettings = (next: UserSettings) => {
+    const valid = validateSettings(next);
+    const save = () => { const saved = persistSettings(valid); setSettings(saved); onModelChanged(saved); };
+    if (JSON.stringify(valid.providers) !== JSON.stringify(settings.providers)) return window.emma.setProviders(valid.providers).then(async () => {
+      try { save(); }
+      catch (reason) {
+        try { await window.emma.setProviders(settings.providers); }
+        catch (rollbackReason) { throw new Error(`${reasonText(reason)} Could not restore providers: ${reasonText(rollbackReason)}`, { cause: rollbackReason }); }
+        throw reason;
+      }
+    });
+    save();
+  };
   const saveNotch = (next: UserSettings) => { const valid = persistSettings(next); setSettings(valid); syncMainPreferences(valid); };
   const saveZeroRetention = async (requireZeroRetention: boolean) => {
     const valid = persistSettings({ ...settings, requireZeroRetention });
@@ -2667,7 +2690,7 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   if (page === "built") return <section className="settings-view"><header><span>Settings / built by Emma</span><h2>Built by Emma</h2><p>Every piece Emma has built into her own interface, where you pointed her at it. Send one to a thread to work on it again, switch it off to hide it without losing it, or delete it for good.</p></header><BuiltSettings busy={busy} onAttach={onAttach} /></section>;
   if (page === "contextbar") return <section className="settings-view settings-wide"><header><span>Settings / thread inspector</span><h2>Context bar</h2></header><ContextBarSettings pages={settings.contextPages} onChange={saveContextPages} busy={busy} /></section>;
   if (page === "appearance") return <section className="settings-view"><header><span>Settings / appearance</span><h2>Appearance</h2></header><div className="settings-lines"><section><div><h3>Accent</h3><p>The one hue that means action: primary buttons, the focus ring, a checked control, and any figure meant to read as data.</p></div><div className="accent-values">{ACCENT_CHOICES.map((hue) => <button key={hue} type="button" className={`accent-swatch ${settings.accent === hue ? "active" : ""}`} style={{ "--swatch": `var(--${hue})` } as CSSProperties} title={hue} aria-label={hue} aria-pressed={settings.accent === hue} disabled={busy} onPointerEnter={() => !busy && previewAccent(hue)} onPointerLeave={() => previewAccent(settings.accent)} onFocus={() => !busy && previewAccent(hue)} onBlur={() => previewAccent(settings.accent)} onClick={() => saveAppearance({ accent: hue })} />)}<ColorPicker className={`accent-swatch accent-custom ${settings.accent.startsWith("#") ? "active" : ""}`} label="Any colour" value={accentHex} disabled={busy} onChange={(hex) => saveAppearance({ accent: hex as AccentChoice })} /><small>{accentHex}</small></div></section><section><div><h3>Interface scale</h3><p>Zooms the whole window the way a browser does, from {MIN_UI_SCALE}% to {MAX_UI_SCALE}%. Everything scales together — type, rules, and spacing.</p></div><div className="font-values"><label>Scale · {settings.uiScale}%<input type="range" min={MIN_UI_SCALE} max={MAX_UI_SCALE} step={5} value={settings.uiScale} disabled={busy} onChange={(event) => saveAppearance({ uiScale: Number(event.target.value) })} /></label></div></section><section><div><h3>Conversation width</h3><p>How wide a thread reads. Wider pays off with the sidebar and the context bar closed; the composer keeps its own width.</p></div><div className="font-values"><label>Column<select value={settings.conversationWidth} disabled={busy} onChange={(event) => saveAppearance({ conversationWidth: event.target.value as ConversationWidth })}>{CONVERSATION_WIDTHS.map((width) => <option key={width.id} value={width.id}>{width.label} · {width.detail}</option>)}</select></label></div></section><section><div><h3>Section marks</h3><p>A hue each for the sidebar’s section marks. Off, they all draw in the same grey as their labels.</p><label className="check"><input type="checkbox" checked={settings.navIconColors} disabled={busy} onChange={(event) => saveAppearance({ navIconColors: event.target.checked })} /> Colour the section marks</label></div><div className="nav-hues">{NAV_VIEWS.map((view) => <ColorPicker key={view} className="nav-hue" label={navLabels[view]} value={navHueHex(settings, view)} disabled={busy || !settings.navIconColors} onChange={(hex) => saveAppearance({ navHues: { ...settings.navHues, [view]: hex as AccentChoice } })}><NavIcon view={view} /></ColorPicker>)}<button type="button" className="hue-reset" disabled={busy || !Object.keys(settings.navHues).length} onClick={() => saveAppearance({ navHues: {} })}>Reset</button></div></section><section><div><h3>Interface font</h3><p>Everything on the grid: the sidebar, tabs, buttons, model picker, and every label in Settings.</p></div><div className="font-values"><label>Face<select value={settings.interfaceFont} disabled={busy} onChange={(event) => saveAppearance({ interfaceFont: event.target.value as FontChoice })}>{FONT_CHOICES.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}</select></label><p className="font-sample" style={{ fontFamily: fontStack(settings.interfaceFont) }}>Threads · Knowledge · Agent 0123</p></div></section><section><div><h3>Agent font</h3><p>What the agent writes in a thread, plus the composer you answer it in.</p></div><div className="font-values"><label>Face<select value={settings.agentFont} disabled={busy} onChange={(event) => saveAppearance({ agentFont: event.target.value as FontChoice })}>{FONT_CHOICES.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}</select></label><p className="font-sample" style={{ fontFamily: fontStack(settings.agentFont) }}>The quick brown fox jumps over the lazy dog.</p></div></section></div></section>;
-  if (page === "models") return <section className="settings-view"><header><span>Settings / models &amp; providers</span><h2>Models</h2></header><ModelCatalog settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><ProviderSettings settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><VerifierPanel settings={settings} onSave={saveVerifier} busy={busy} /><AdvisorPanel settings={settings} onSave={(advisor) => saveTools({ ...settings.tools, advisor })} busy={busy} /><VisionPanel settings={settings} onSave={(vision) => saveTools({ ...settings.tools, vision })} busy={busy} /><SecretPanel settings={settings} onSave={(secret) => saveTools({ ...settings.tools, secret })} busy={busy} /><ProviderKeys settings={settings} act={act} busy={busy} /><div className="settings-lines"><section><div><h3>Private routing</h3><p>On, Emma demands endpoints that neither train on nor retain your prompts. OpenRouter offers no free endpoint that qualifies, so every free model fails while this is on — leave it off unless you route to a paid or local model. Changing it restarts the local agent.</p><label className="check"><input type="checkbox" checked={settings.requireZeroRetention} disabled={busy} onChange={(event) => void saveZeroRetention(event.target.checked)} /> Require no-training, zero-retention endpoints (blocks every free model)</label></div></section><section><div><div className="settings-head"><h3>When no model is chosen</h3><InfoDot>Emma sends no model with the turn, so the agent answers on its own default free route. Nothing runs on this Mac, and nothing works offline. With no OpenRouter key saved, the turn fails rather than falling back to anything.</InfoDot></div><p>Emma leaves the choice to the agent, which answers on its free OpenRouter route. Pick a model above to route every turn yourself.</p></div><strong className="status-idle"><i /> No model sent</strong></section><section><div><h3>Speech to text</h3><p>Dictation runs against local OpenAI-compatible servers and is set up on its own page — the microphone grant, the speech server, and the S1-mini cleanup pass all live in <b>Settings → Voice</b>.</p></div><div className="voice-values"><strong className={settings.transcriptionEnabled ? "status-live" : "status-idle"}><i /> {settings.transcriptionEnabled ? "On" : "Off"}</strong><small>Localhost only</small></div></section></div></section>;
+  if (page === "models") return <section className="settings-view"><header><span>Settings / models &amp; providers</span><h2>Models</h2></header><ModelCatalog settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><ProviderSettings settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><VerifierPanel settings={settings} onSave={saveVerifier} busy={busy} /><AdvisorPanel settings={settings} onSave={(advisor) => saveTools({ ...settings.tools, advisor })} busy={busy} /><VisionPanel settings={settings} onSave={(vision) => saveTools({ ...settings.tools, vision })} busy={busy} /><SecretPanel settings={settings} onSave={(secret) => saveTools({ ...settings.tools, secret })} busy={busy} /><ProviderKeys settings={settings} act={act} busy={busy} /><div className="settings-lines"><section><div><h3>Private routing</h3><p>Requests no-training, zero-retention endpoints for the main agent loop on OpenRouter. If no eligible endpoint exists, the request fails. This does not cover secondary models, tools or account logging. Changes apply to newly started agent processes.</p><label className="check"><input type="checkbox" checked={settings.requireZeroRetention} disabled={busy} onChange={(event) => void saveZeroRetention(event.target.checked)} /> Require no-training, zero-retention OpenRouter endpoints</label></div></section><section><div><div className="settings-head"><h3>When no model is chosen</h3><InfoDot>Emma sends no model with the turn, so the agent uses its default hosted OpenRouter route. That default needs network access and an OpenRouter key. Pick a local provider for local inference; other routes and tools have their own network behavior.</InfoDot></div><p>Emma leaves the choice to the agent, which answers on its free OpenRouter route. Pick a model above to route every turn yourself.</p></div><strong className="status-idle"><i /> No model sent</strong></section><section><div><h3>Speech to text</h3><p>Dictation runs against local OpenAI-compatible servers and is set up on its own page — the microphone grant, the speech server, and the S1-mini cleanup pass all live in <b>Settings → Voice</b>.</p></div><div className="voice-values"><strong className={settings.transcriptionEnabled ? "status-live" : "status-idle"}><i /> {settings.transcriptionEnabled ? "On" : "Off"}</strong><small>Localhost only</small></div></section></div></section>;
   if (page === "notch") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Notch</h2></header><NotchSettings settings={settings} onChange={saveNotch} busy={busy} /></section>;
   if (page === "voice") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Voice</h2></header><VoiceSettings settings={settings} onChange={saveModelSettings} busy={busy} /></section>;
   if (page === "prompts") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>System prompt</h2></header><PromptSettings settings={settings} onChange={savePrompts} busy={busy} /></section>;
@@ -2677,7 +2700,7 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   if (page === "imports") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Imports & plugins</h2></header><AgentImports /></section>;
   if (page === "connections") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Connections</h2></header><ConnectionSettings settings={settings} onChange={saveConnections} busy={busy} /></section>;
   if (page === "mobile") return <section className="settings-view"><header><span>Settings / paired devices</span><h2>Mobile</h2></header><MobileSettings relay={settings.relayUrl} onRelay={saveRelay} busy={busy} /></section>;
-  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><div className="settings-head"><h3>Start fresh</h3><InfoDot>Threads, artifacts, plans, connected folders, saved keys, and every setting go. The notes in your vault are left where they are — they are your files, in your folder.</InfoDot></div><p>Deletes everything Emma keeps on this Mac, then restarts her empty. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><div className="settings-head"><h3>OpenRouter can be set to train on your prompts</h3><InfoDot>Opting in is what unlocks parts of the free catalog, and free routes are Emma’s default path — her fallback chain and her verifier and vision models are all free models. Your account setting sits above anything Emma sends, so <b>Private routing</b> does not override it.</InfoDot></div><p>Prompt logging is an opt-in on your OpenRouter account: switch it on and OpenRouter and the providers behind it may keep your prompts and Emma’s replies, and train on them. Emma cannot read that setting or change it — check it yourself.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><div className="settings-head"><h3>Zero-retention routing is opt-in</h3><InfoDot>The flag rides the harness request body, so it covers thread turns to an <code>openrouter.ai</code> endpoint and nothing else — the verifier, vision and advisor calls go out with no routing flags on them. No free endpoint qualifies, so every free model fails while it is on.</InfoDot></div><p>Emma’s own switch is off until you turn it on. <b>Private routing</b> in <b>Settings → Models</b> demands no-training, zero-retention endpoints and fails the turn rather than route around them.</p></div></section><section><div><div className="settings-head"><h3>Threads and notes stay local</h3><InfoDot>Thread records live in <code>~/Library/Application Support/Emma</code>, moved by <code>EMMA_DATA_DIR</code>. Saved notes live only in the vault folder you chose, as plain Markdown you can open in anything.</InfoDot></div><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><div className="settings-head"><h3>Dictation never leaves this Mac</h3><InfoDot>Checked at two boundaries: a non-local speech or cleanup endpoint is refused when you save it, and refused again before every use. The utterance goes to a temporary file, is read once, and is deleted — no audio is kept.</InfoDot></div><p>Recorded audio and raw transcripts only ever reach <code>127.0.0.1</code> or on-device macOS speech, and a settings file edited by hand cannot redirect them.</p></div></section><section><div><div className="settings-head"><h3>Screens never reach the model</h3><InfoDot>The <code>vision</code> tool is the deliberate exception: hand it an image and it posts that image to the vision endpoint set in <b>Settings → Models</b>.</InfoDot></div><p>The yellow pen’s capture is compressed and held in Emma’s own process, and the turn goes out without it. Computer-use screenshots stay there too — the <code>computer</code> tool answers in text.</p></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. A note is only ever written into your vault when you ask for one.</p></div></section><section><div><div className="settings-head"><h3>Every run is gated by the mode picker</h3><InfoDot>The step and action ceilings, the rate limit, the on-screen banner, the Escape kill switch, and the action log apply in every mode, with nothing that turns them off. A run also stops when the turn ends and when Emma quits.</InfoDot></div><p>Driving the pointer and keyboard is the <code>computer</code> tool, so the composer’s permission mode decides it: <em>Ask</em> and <em>Accept edits</em> stop for your yes on every call, <em>Auto</em> sends the call to your verifier model, and <em>Full access</em> lets it through.</p></div></section><section><div><h3>Nothing is reported about you</h3><p>No telemetry, no analytics, and no crash reporter exist anywhere in Emma.</p></div></section></div></section>;
+  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><div className="settings-head"><h3>Start fresh</h3><InfoDot>Threads, artifacts, plans, connected folders, saved keys, and every setting go. The notes in your vault are left where they are — they are your files, in your folder.</InfoDot></div><p>Deletes everything Emma keeps on this Mac, then restarts her empty. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><div className="settings-head"><h3>OpenRouter account settings are separate</h3><InfoDot>Private input/output logging and using prompts to improve OpenRouter are separate opt-ins. A free or paid model is not a privacy guarantee. <b>Private routing</b> does not change your account settings.</InfoDot></div><p>Emma cannot read or change your account’s logging settings. Review your provider’s current data policy and your account settings before sending private material.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><div className="settings-head"><h3>Zero-retention routing is opt-in</h3><InfoDot>The flag covers the main agent loop at an <code>openrouter.ai</code> endpoint. Verifier, vision, advisor, secrets and note-tagger calls do not carry it. It also does not cover tools, widgets, browsers or external CLIs. A model without a qualifying endpoint fails; eligibility can change.</InfoDot></div><p>Emma’s switch is off by default. <b>Private routing</b> in <b>Settings → Models</b> requests no-training, zero-retention endpoints for OpenRouter agent turns. It is not an app-wide offline or privacy switch.</p></div></section><section><div><div className="settings-head"><h3>Threads and notes are stored locally</h3><InfoDot>Thread records live in <code>~/Library/Application Support/Emma</code>, moved by <code>EMMA_DATA_DIR</code>. Notes are written into your chosen vault. Relevant thread history and tool results reach the selected model; the note tagger may send note text to its own model.</InfoDot></div><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><div className="settings-head"><h3>Audio is transcribed locally</h3><InfoDot>Checked at two boundaries: a non-local speech or cleanup endpoint is refused when you save it, and refused again before every use. The utterance goes to a temporary file, is read once, and is deleted — no audio is kept.</InfoDot></div><p>Transcription and cleanup use loopback servers or on-device macOS speech. When you send the dictated words, they reach your selected thread model.</p></div></section><section><div><div className="settings-head"><h3>Computer use shares approved app text</h3><InfoDot>App titles, labels and values may reach your turn’s model after you approve the app. Computer use takes no screenshots and reads no clipboard. Images you attach, or pass to <code>vision</code>, still reach their configured model.</InfoDot></div><p>The <code>computer</code> tool returns running-app metadata, then accessibility text only from apps you approve for this turn. The yellow pen’s separate capture stays in Emma’s process; the turn goes out without it.</p></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. A note is only ever written into your vault when you ask for one.</p></div></section><section><div><div className="settings-head"><h3>App access always needs your approval</h3><InfoDot>A grant is for the named running app and active parent turn only. It is not shared with delegated work. Stop, Escape, screen lock, sleep, turn completion and quitting Emma revoke it. There is no always-allow setting.</InfoDot></div><p>Computer use controls supported accessibility elements in the background. Every app asks before access — even in <em>Auto</em> or <em>Full access</em>. Declining blocks that app for the rest of the turn; other apps need their own approval.</p></div></section><section><div><h3>No analytics or crash uploader</h3><p>Emma records local usage and execution traces but does not configure analytics or crash-report uploads. Providers, update checks, the catalog and enabled integrations still make network requests and receive ordinary request metadata.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>Settings / about</span><h2>Emma</h2></header><div className="settings-lines prose-lines">{credits.map((credit) => <section key={credit.title}><div><h3>{credit.title}</h3><p>{credit.body}</p>{credit.href ? <a href={credit.href} target="_blank" rel="noreferrer">{credit.link}</a> : null}</div></section>)}</div></section>;
   return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Keybinds</h2></header>
     <KeybindSettings settings={settings} save={saveKeybinds} />
@@ -3043,9 +3066,10 @@ const emptyDraft = { name: "", modelId: "", baseUrl: "", credentialEnv: "", cont
 
 const reachLabel: Record<string, string> = { "this-mac": "On this Mac", network: "Your network", internet: "Over the internet" };
 
-function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
+function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void | Promise<void>; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [probe, setProbe] = useState<{ models: string[]; tools: boolean; error: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -3064,32 +3088,44 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
     catch (reason) { setError(reasonText(reason)); }
     finally { setTesting(false); }
   };
-  const add = (event: FormEvent) => {
+  const add = async (event: FormEvent) => {
     event.preventDefault();
+    setSaving(true);
     setError("");
     setStatus("");
     try {
       const profile: ProviderProfile = { id: `p-${Date.now().toString(36)}`, name: draft.name, modelId: draft.modelId, baseUrl: draft.baseUrl, credentialEnv: draft.credentialEnv, contextWindow: Number(draft.contextWindow) || 0, insecure: draft.insecure };
       const next = validateSettings({ ...settings, providers: [...settings.providers, profile] });
-      onChange(next);
+      await onChange(next);
       setDraft(emptyDraft);
       setProbe(null);
       setStatus(`${profile.name} added. Choose Use to route the next turn.`);
     } catch (reason) { setError(reasonText(reason)); }
+    finally { setSaving(false); }
   };
   const select = async (profile: ProviderProfile) => {
     setError("");
     if (await act("selectProviderModel", { providerId: profile.id, effort: settings.thinkingLevel }) === undefined) return;
-    onChange({ ...settings, selectedModel: `provider:${profile.id}` });
-    setStatus(`${profile.name} answers the next turn.`);
+    try {
+      await onChange({ ...settings, selectedModel: `provider:${profile.id}` });
+      setStatus(`${profile.name} answers the next turn.`);
+    } catch (reason) { setError(reasonText(reason)); }
   };
-  const remove = (profile: ProviderProfile) => { if (canRemoveProvider(settings, profile.id)) onChange(forgetProvider(settings, profile.id)); };
+  const remove = async (profile: ProviderProfile) => {
+    if (!canRemoveProvider(settings, profile.id)) return;
+    setError("");
+    setStatus("");
+    setSaving(true);
+    try { await onChange(forgetProvider(settings, profile.id)); }
+    catch (reason) { setError(reasonText(reason)); }
+    finally { setSaving(false); }
+  };
   return <section className="local-model-settings" id="local-models">
     <header>
       <div><span>Providers</span><h3>Any OpenAI-compatible endpoint</h3></div>
       <strong>{settings.providers.length} saved</strong>
     </header>
-    <div className="provider-presets">{PROVIDER_PRESETS.map((item) => <button type="button" key={item.id} disabled={busy} title={item.detail} onClick={() => preset(item)}>{item.name || "Custom"}</button>)}</div>
+    <div className="provider-presets">{PROVIDER_PRESETS.map((item) => <button type="button" key={item.id} disabled={busy || saving} title={item.detail} onClick={() => preset(item)}>{item.name || "Custom"}</button>)}</div>
     <form className="local-model-form" onSubmit={add}>
       <label>Name<input required maxLength={64} value={draft.name} onChange={(event) => update("name", event.target.value)} placeholder="Mac Studio" /></label>
       <label>Base URL<input required maxLength={2048} value={draft.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} placeholder="http://127.0.0.1:1234/v1" /></label>
@@ -3098,8 +3134,8 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
       <label>Key env<input maxLength={64} value={draft.credentialEnv} onChange={(event) => update("credentialEnv", event.target.value)} placeholder="Optional · DEEPSEEK_API_KEY" /></label>
       <label>Context window<input inputMode="numeric" maxLength={9} value={draft.contextWindow} onChange={(event) => update("contextWindow", event.target.value.replace(/\D/g, ""))} placeholder="Optional · 131072" /></label>
       {reach === "network" && <label className="check"><input type="checkbox" checked={draft.insecure} onChange={(event) => update("insecure", event.target.checked)} /> Send prompts and the key unencrypted over my network</label>}
-      <button type="button" disabled={busy || testing || !draft.baseUrl} onClick={() => void test()}>{testing ? "Testing…" : "Test"}</button>
-      <button disabled={busy}>Add provider</button>
+      <button type="button" disabled={busy || saving || testing || !draft.baseUrl} onClick={() => void test()}>{testing ? "Testing…" : "Test"}</button>
+      <button disabled={busy || saving}>Add provider</button>
     </form>
     {probe && <p className="local-model-status" role="status">
       <span className={probe.models.length ? "provider-dot on" : "provider-dot"} /> {probe.models.length ? `${probe.models.length} models` : "No model list"}
@@ -3119,8 +3155,8 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
           </div>
         </div>
         <div>
-          <button type="button" disabled={busy} onClick={() => void select(profile)}>{settings.selectedModel === `provider:${profile.id}` ? "Active" : "Use"}</button>
-          <button type="button" disabled={busy || !canRemoveProvider(settings, profile.id)} title={settings.selectedModel === `provider:${profile.id}` ? "Select another model before removing the active provider" : "Remove provider"} onClick={() => remove(profile)}>Remove</button>
+          <button type="button" disabled={busy || saving} onClick={() => void select(profile)}>{settings.selectedModel === `provider:${profile.id}` ? "Active" : "Use"}</button>
+          <button type="button" disabled={busy || saving || !canRemoveProvider(settings, profile.id)} title={settings.selectedModel === `provider:${profile.id}` ? "Select another model before removing the active provider" : "Remove provider"} onClick={() => void remove(profile)}>Remove</button>
         </div>
       </div>)}
       {!settings.providers.length && <p className="local-model-empty">No providers yet.</p>}
@@ -3247,8 +3283,6 @@ function SecondModelPicker({ label, off, draft, providers, routers, onChange, bu
   const entries = useMemo(() => {
     const listed = accepts ? catalog.filter(accepts) : catalog;
     const key = `openrouter:${draft.model}`;
-    // A chain that is not one of the user's routers — the shipped default is one —
-    // still names itself by its first model, with the fallbacks counted after it.
     const [first, ...rest] = draft.model.split(",");
     const brand = brandForModel(first, "openrouter");
     const saved: CatalogEntry[] = natural === key && !listed.some((model) => `openrouter:${model.id}` === key)
@@ -3669,9 +3703,6 @@ const NOTCH_LESSONS = [
   { key: "◎", line: "Orbs ring the cursor: capture, draw, save the page." },
 ] as const;
 
-/* The gesture, taught by doing it. A modifier fires no `keypress` and never
-   auto-repeats, so a release timestamp is the whole state — the same 0.35s window
-   the helper watches for (`event_input` in native/quick_ask.m). */
 const DOUBLE_TAP_MS = 350;
 
 const NOTCH_ORBS = [{ glyph: "▣", name: "Screen" }, { glyph: "✎", name: "Draw" }, { glyph: "⧉", name: "Save page" }] as const;
@@ -4251,6 +4282,7 @@ function Overlay() {
     queueMicrotask(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
   };
   const composerKeys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (slashOpen) {
       if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
       if (slashMatches.length) {

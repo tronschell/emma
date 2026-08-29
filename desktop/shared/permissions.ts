@@ -18,10 +18,10 @@ export const permissionModeGlyphs: Record<PermissionMode, string> = {
 };
 
 export const permissionModeHints: Record<PermissionMode, string> = {
-  ask: "Every write, command, and click asks first.",
-  acceptEdits: "File edits go through; commands and the pointer still ask.",
-  auto: "A separate verifier model reads each gated call; anything it will not clear still asks you.",
-  full: "Nothing asks. Escape still stops a run.",
+  ask: "Writes and commands ask first; app access asks once per turn.",
+  acceptEdits: "File edits go through; commands and app access still ask.",
+  auto: "A verifier reviews gated calls. App access always asks you.",
+  full: "Tools run automatically; app access still asks. Escape stops a computer run.",
 };
 
 export const AGENT_TOOLS = [
@@ -76,7 +76,7 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   keep: { ask: "auto", acceptEdits: "auto", full: "auto" },
   cli: { ask: "ask", acceptEdits: "ask", full: "auto" },
   cli_runs: { ask: "auto", acceptEdits: "auto", full: "auto" },
-  computer: { ask: "ask", acceptEdits: "ask", full: "auto" },
+  computer: { ask: "ask", acceptEdits: "ask", full: "ask" },
   browser: { ask: "ask", acceptEdits: "ask", full: "auto" },
   agents: { ask: "auto", acceptEdits: "auto", full: "auto" },
   install_mcp: { ask: "ask", acceptEdits: "ask", full: "auto" },
@@ -98,7 +98,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "web_search", label: "Web search", blurb: "Searches the web through the provider configured below.", group: "Web" },
   { name: "keep", label: "Keep", blurb: "Saves a page, a highlight or a note into your knowledge base as Markdown.", group: "Web" },
   { name: "browser", label: "Browser", blurb: "Drives a real Chrome browser, mirrored in the browser pane so you can watch it and take the wheel.", group: "Web" },
-  { name: "computer", label: "Control this Mac", blurb: "Takes the real pointer and keyboard, and looks at the screen.", group: "This Mac" },
+  { name: "computer", label: "Computer use", blurb: "Reads and controls a running app in the background, only after you allow that app for the turn.", group: "This Mac" },
   { name: "cli", label: "Run another CLI", blurb: "Runs Claude Code, Codex, Pi, OpenCode or Cursor in a folder.", group: "This Mac" },
   { name: "cli_runs", label: "CLI runs", blurb: "Lists the installed CLIs and watches the runs already going.", group: "This Mac" },
   { name: "advisor", label: "Advisor", blurb: "Consults a stronger model with this thread's transcript for a plan.", group: "Thinking" },
@@ -119,7 +119,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "workflow", label: "Scheduled tasks", blurb: "Builds and runs the workflows in the Scheduled section.", group: "Automation" },
   { name: "autoresearch", label: "Autoresearch", blurb: "Builds and runs the long experiment loops in the Autoresearch section.", group: "Automation" },
   { name: "artifact", label: "Artifacts", blurb: "Writes and edits the documents, pages and drawings kept on the Artifacts page.", group: "Thinking" },
-  { name: "component", label: "Build into Emma", blurb: "Builds a piece of Emma\u2019s own interface where you point, and reworks it while you watch. Delete one from the \u22ef in its corner.", group: "Thinking" },
+  { name: "component", label: "Build into Emma", blurb: "Builds a widget into the context bar, and reworks it while you watch. Switch one off or delete it from the \u22ef in its header.", group: "Thinking" },
   { name: "visualize", label: "Visualize", blurb: "Draws a picture inline in the conversation — charts, panels, anything it can draw. Nothing is saved until you keep it.", group: "Thinking" },
 ];
 

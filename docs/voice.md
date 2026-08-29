@@ -128,5 +128,5 @@ The ▣ orb is the same capture without the pen.
 
 - [notch.md](notch.md) — the island, the orbs and the shortcuts
 - [privacy.md](privacy.md) — what leaves this Mac
-- [computer-use.md](computer-use.md) — the other screenshots, and where they stay
+- [computer-use.md](computer-use.md) — approved app controls without screen capture
 - [models.md](models.md) — the vision endpoint, the one exception

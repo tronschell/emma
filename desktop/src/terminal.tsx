@@ -14,6 +14,7 @@ const LINK_MENU_WIDTH = 340;
 export function useTerminals(threadId: string): TerminalTab[] {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   useEffect(() => {
+    if (!threadId) return;
     let alive = true;
     const read = () => void window.emma.listTerminals(threadId)
       .then((found) => { if (alive) setTabs(found); })
@@ -22,7 +23,7 @@ export function useTerminals(threadId: string): TerminalTab[] {
     const stop = window.emma.onTerminals(read);
     return () => { alive = false; stop(); };
   }, [threadId]);
-  return tabs;
+  return tabs.filter((tab) => tab.threadId === threadId);
 }
 
 export async function closeTerminals(threadId: string) {
@@ -107,7 +108,11 @@ export function TerminalSurface({ tab, active, onSelect, onLink }: {
       }
       queued.length = 0;
       replayedTo = saved.at;
-    }).catch(() => { replayedTo = 0; });
+    }).catch(() => {
+      for (const chunk of queued) term.write(chunk.data);
+      queued.length = 0;
+      replayedTo = 0;
+    });
 
     const typed = term.onData((data) => void window.emma.writeTerminal({ id: tab.id, data }).catch(() => undefined));
     const resized = term.onResize(({ cols, rows }) => void window.emma.resizeTerminal({ id: tab.id, columns: cols, rows }).catch(() => undefined));

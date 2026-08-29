@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { axisTicks, clampTrace, countCalls, decodeSpans, encodeSpans, formatDuration, layoutSpans, renderTrace, summarizeSpans, tokenAxis, type TraceSpan } from "../shared/trace";
 
 const span = (id: string, startedAt: number, endedAt: number | undefined, extra: Partial<TraceSpan> = {}): TraceSpan =>
@@ -92,8 +94,8 @@ test("spans survive the round trip through the thread", () => {
 });
 
 test("a stored span keeps its arguments but not a whole file", () => {
-  const [stored] = decodeSpans(encodeSpans([span("call:a", 1, 2, { input: "x".repeat(4096) })]));
-  assert.ok(stored.input!.length < 1100, `kept ${stored.input!.length} characters`);
+  const [stored] = decodeSpans(encodeSpans([span("call:a", 1, 2, { input: "x".repeat(64 * 1024) })]));
+  assert.ok(stored.input!.length < 17 * 1024, `kept ${stored.input!.length} characters`);
   assert.ok(stored.input!.endsWith("…"));
 });
 
@@ -153,4 +155,13 @@ test("the axis ticks on round numbers and stops short of the end", () => {
     assert.ok(marks.length <= 7, `${ms}ms: ${marks.length} ticks is a crowded axis`);
     assert.equal(marks[0], 0);
   }
+});
+
+test("the waterfall drops the spans it asked for before the thread changed under it", () => {
+  const source = readFileSync(path.join(__dirname, "..", "..", "src", "timeline.tsx"), "utf8");
+  const at = source.indexOf("window.emma.listSpans()");
+  const effect = source.slice(at, source.indexOf("[sample, take]", at));
+  assert.doesNotMatch(effect, /\.then\(take\)/);
+  assert.match(effect, /if \(alive\) take\(trees\)/);
+  assert.match(effect, /alive = false/);
 });

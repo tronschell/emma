@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, dropQueued, groupBlocks, mergeStep, pairBlocks, releaseHeld, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
+import type { TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
 import type { Message } from "../src/types";
 
@@ -25,6 +26,9 @@ let request: (method: string, params: { content: string }) => Promise<unknown> =
   return new Promise<void>((resolve) => { release = resolve; });
 };
 const stopped: string[] = [];
+/* What main still holds of a turn in flight, which is all a reloaded window has. */
+let liveSpans: Record<string, TraceSpan[]> = {};
+let livePartials: Record<string, { text: string; thinking: string }> = {};
 /* Main broadcasts to every window, so the store is driven from outside here too. */
 let pushDelta: (value: { threadId: string; delta: string }) => void = () => undefined;
 let pushAgents: (value: LiveAgent[]) => void = () => undefined;
@@ -38,6 +42,8 @@ let pushAgents: (value: LiveAgent[]) => void = () => undefined;
     onContextBreakdown: () => () => undefined,
     onAgents: (listener: typeof pushAgents) => { pushAgents = listener; return () => undefined; },
     listAgents: () => Promise.resolve([]),
+    listSpans: () => Promise.resolve(liveSpans),
+    livePartial: () => Promise.resolve(livePartials),
     stopAgent: (threadId?: string) => { stopped.push(threadId ?? ""); },
   },
 };
@@ -197,6 +203,89 @@ test("a recovered run draws the prompt main is still working on", async () => {
   assert.equal(runOf("recovered-echo").sending, false);
 });
 
+test("a reloaded window puts the running turn's calls and answer back", async () => {
+  liveSpans = {
+    "recovered-blocks": [
+      { id: "agent:recovered-blocks", name: "This thread", kind: "agent", startedAt: 0, status: "running" },
+      { id: "call:2", name: "read runs.ts", kind: "read", startedAt: 2, status: "ok", output: "…" },
+      { id: "call:1", name: "grep adoptForeign", kind: "search", startedAt: 1, status: "ok" },
+    ],
+  };
+  livePartials = { "recovered-blocks": { text: "Found it: ", thinking: "where does the state live" } };
+  wire();
+  pushAgents([liveAgent("recovered-blocks", "why is the transcript empty")]);
+  await settle();
+  const blocks = runOf("recovered-blocks").blocks;
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text),
+    ["where does the state live", "grep adoptForeign", "read runs.ts", "Found it: "]);
+  // The stream carries on into the restored answer rather than opening a second one.
+  pushDelta({ threadId: "recovered-blocks", delta: "here" });
+  await settle();
+  const text = runOf("recovered-blocks").blocks.filter((block) => block.kind === "text");
+  assert.deepEqual(text.map((block) => block.text), ["Found it: here"]);
+  liveSpans = {};
+  livePartials = {};
+  pushAgents([]);
+  await settle();
+});
+
+test("a turn main has said nothing about yet restores as nothing", () => {
+  assert.deepEqual(restoreBlocks("quiet", [], undefined), []);
+});
+
+test("a parent's restore leaves its subagents' calls to the subagent", () => {
+  const spans: TraceSpan[] = [
+    { id: "agent:parent", name: "Parent", kind: "agent", startedAt: 0, status: "running" },
+    { id: "call:own", name: "read runs.ts", kind: "read", startedAt: 1, status: "ok", parentId: "agent:parent" },
+    { id: "call:spawn", name: "subagent", kind: "subagent", startedAt: 2, status: "running", parentId: "agent:parent" },
+    { id: "agent:child", name: "Child", kind: "agent", startedAt: 3, status: "running", parentId: "call:spawn" },
+    { id: "call:theirs", name: "grep in the child", kind: "search", startedAt: 4, status: "ok", parentId: "agent:child" },
+  ];
+  const calls = (threadId: string) => restoreBlocks(threadId, spans).map((block) => block.kind === "step" ? block.step.toolCallId : block.kind);
+  assert.deepEqual(calls("parent"), ["own", "spawn"]);
+  assert.deepEqual(calls("child"), ["theirs"]);
+});
+
+test("a delta that beat the restore is folded into the answer, not left standing alone", async () => {
+  liveSpans = {};
+  livePartials = { "recovered-overlap": { text: "The answer is 42, because ", thinking: "" } };
+  wire();
+  pushDelta({ threadId: "recovered-overlap", delta: "of the mice" });
+  await settle();
+  const blocks = runOf("recovered-overlap").blocks.filter((block) => block.kind === "text");
+  assert.deepEqual(blocks.map((block) => block.text), ["The answer is 42, because of the mice"]);
+  livePartials = {};
+  pushAgents([]);
+  await settle();
+});
+
+test("a restore that lands after its run ended is dropped", async () => {
+  liveSpans = { "stale-restore": [{ id: "call:9", name: "read old.ts", kind: "read", startedAt: 1, status: "ok" }] };
+  livePartials = { "stale-restore": { text: "the previous answer", thinking: "" } };
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const spansOf = window.emma.listSpans;
+  window.emma.listSpans = () => held.then(() => liveSpans);
+  wire();
+  pushAgents([liveAgent("stale-restore", "the old prompt")]);
+  await settle();
+  pushAgents([]);
+  await settle();
+  release?.();
+  await settle();
+  assert.deepEqual(runOf("stale-restore").blocks, []);
+  window.emma.listSpans = spansOf;
+  liveSpans = {};
+  livePartials = {};
+});
+
+test("overlapping text keeps whichever stream ran longer", () => {
+  assert.equal(joinPartial("abcdef", "def"), "abcdef");
+  assert.equal(joinPartial("abcdef", "defgh"), "abcdefgh");
+  assert.equal(joinPartial("abcdef", ""), "abcdef");
+  assert.equal(joinPartial("abc", "xyz"), "abcxyz");
+});
+
 test("a turn's tool calls are drawn where they happened, and a burst of them is one list", () => {
   // A call, a line about it, a call: four lists, each under the line it followed.
   const alternating: Block[] = [{ kind: "text", text: "reading" }];
@@ -285,4 +374,60 @@ test("a turn the host refuses hands its text back once", async () => {
   assert.equal(reloaded, 1);
   assert.equal(takeDraft("failed"), "lost prompt");
   assert.equal(takeDraft("failed"), "");
+});
+
+const traceOf = (thread: string, startedAt: number, calls: [string, string, number?][]) => [
+  JSON.stringify({ v: 1, thread, model: "z-ai/glm-5.3-flash" }),
+  JSON.stringify({ id: `agent:${thread}`, name: "This thread", kind: "agent", startedAt, endedAt: startedAt + 500, status: "ok" }),
+  ...calls.map(([id, name, said], index) => JSON.stringify({
+    id: `call:${id}`, parentId: `agent:${thread}`, name, kind: "read", startedAt: startedAt + index + 1, endedAt: startedAt + index + 2, status: "ok", input: "{}", output: "done", said,
+  })),
+].join("\n");
+
+test("a turn nothing cached is rebuilt from the trace the host kept", () => {
+  const messages: Message[] = [
+    { role: "user", content: "restyle the app", timestamp: "2026-08-27T21:11:28Z" },
+    { role: "assistant", content: "<think>reading the styles</think>Done — it wears the new palette.", timestamp: "2026-08-27T21:11:28Z" },
+    { role: "user", content: "and the tests?", timestamp: "2026-08-27T21:12:37Z" },
+    { role: "assistant", content: "They pass.", timestamp: "2026-08-27T21:12:37Z" },
+  ];
+  const traces = [
+    { timestamp: "2026-08-27T19:50:59Z", text: traceOf("dither", 1787860252951, [["orphan", "a turn that never landed"]]) },
+    { timestamp: "2026-08-27T21:11:29Z", text: traceOf("dither", 1787865075384, [["one", "read index.css"], ["two", "write index.css"]]) },
+    { timestamp: "2026-08-27T21:12:37Z", text: traceOf("dither", 1787865143697, [["three", "npm test"]]) },
+  ];
+  const turns = tracedBlocks("dither", messages, traces);
+  assert.deepEqual(turns["2026-08-27T21:11:28Z"].map((block) => block.kind === "step" ? block.step.title : block.kind), ["thinking", "read index.css", "write index.css", "text"]);
+  assert.deepEqual(turns["2026-08-27T21:12:37Z"].map((block) => block.kind === "step" ? block.step.title : block.kind), ["npm test", "text"]);
+  assert.equal(Object.keys(turns).length, 2);
+});
+
+test("a message with no trace of its own keeps reading as the stored string", () => {
+  const messages: Message[] = [{ role: "assistant", content: "no tools were used", timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{ timestamp: "2026-08-27T19:50:59Z", text: traceOf("dither", 1787860252951, [["far", "an hour earlier"]]) }];
+  assert.deepEqual(tracedBlocks("dither", messages, traces), {});
+});
+
+test("a rebuilt turn puts each call back where the answer had reached", () => {
+  const content = "Reading the styles now.\nThen writing them.\nDone.";
+  const messages: Message[] = [{ role: "assistant", content, timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{
+    timestamp: "2026-08-27T21:11:28Z",
+    text: traceOf("dither", 1787865075384, [["one", "read index.css", 23], ["two", "write index.css", 42]]),
+  }];
+  const blocks = tracedBlocks("dither", messages, traces)[messages[0].timestamp];
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text), [
+    "Reading the styles now.",
+    "read index.css",
+    "\nThen writing them.",
+    "write index.css",
+    "\nDone.",
+  ]);
+});
+
+test("a call recorded before the answer was measured still reads in clock order", () => {
+  const messages: Message[] = [{ role: "assistant", content: "One answer, no offsets.", timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{ timestamp: "2026-08-27T21:11:28Z", text: traceOf("dither", 1787865075384, [["one", "read"], ["two", "write"]]) }];
+  const blocks = tracedBlocks("dither", messages, traces)[messages[0].timestamp];
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text), ["read", "write", "One answer, no offsets."]);
 });

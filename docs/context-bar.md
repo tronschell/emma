@@ -109,6 +109,14 @@ once, and a `metrics` list on anything but stats — or one that survives none o
 that — is dropped so the defaults draw. A page list that throws takes the whole settings object down
 to defaults rather than half-applying.
 
+## What Emma builds into it
+
+The bar is also the one place a component can land — a widget Emma writes with
+the `component` tool, mounted under the built-in ones in the same `.bar-widget`
+chrome, with the same header row and the same padding. Its header carries ⤢ when
+it was built to open full screen, and ⋯ to switch it off or delete it. See
+[components.md](components.md).
+
 ## Replacing the bar
 
 `context` is one of the four artifact surfaces

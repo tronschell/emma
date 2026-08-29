@@ -1,6 +1,6 @@
-import { computerTools } from "./computer";
+import { computerAction, computerTools } from "./computer";
 import { MEMORY_COMMANDS, type MemoryCommand } from "./memory";
-import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS } from "../shared/components";
+import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS, parseVariables } from "../shared/components";
 import { ARTIFACT_KINDS, ARTIFACT_SURFACES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TITLE_CHARS } from "../shared/artifacts";
 import { parseVisual, type Visual } from "../shared/visualize";
 import { CLI_IDS } from "../shared/cli";
@@ -27,7 +27,7 @@ export type ToolAvailability = {
 
 export type ToolDefinition = { name: string; description: string; inputSchema: Record<string, unknown> };
 
-export const COMPONENT_ACTIONS = ["list", "get", "place", "create", "rewrite"] as const;
+export const COMPONENT_ACTIONS = ["list", "get", "create", "rewrite"] as const;
 export type ComponentAction = (typeof COMPONENT_ACTIONS)[number];
 
 export const THREAD_ACTIONS = ["spawn", "list", "read", "message", "rename"] as const;
@@ -444,19 +444,23 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "component",
     needs: "always",
     description:
-      "Build something into Emma's own interface — a panel, a counter, a button, a small tool — mounted where the user points, and reloading in place every time you rewrite it. This is what \"build yourself an X\" means. It is not an artifact: an artifact is a thing the user keeps outside the conversation, a component is a piece of Emma.\n" +
-      "The order is fixed and there is no way around it. place first — the window lights up and the user clicks the spot it belongs in: the sidebar, the context bar, or the composer, never the transcript, which is rebuilt for every thread. The result names what they picked, and they can drag it elsewhere afterwards. Then ask them whatever the request left open: what it shows, where its numbers come from, how it should behave. Only then create.\n" +
-      "code is one ES module: export default (api) => Component. api is { h, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma }; h is React.createElement, so there is no JSX and nothing to import — h(\"div\", { className: \"…\" }, …). emma is the same bridge the app uses. Reuse the app's own class names wherever one fits, so it looks like it belongs there.\n" +
+      "Build a widget into Emma's own interface — a panel, a counter, a tracker, a small tool — and reload it in place every time you rewrite it. This is what \"build yourself an X\" means. It is not an artifact: an artifact is a thing the user keeps outside the conversation, a component is a piece of Emma.\n" +
+      "There is one place a component goes: the context bar down the right of a thread, under the built-in widgets, in their chrome. Nothing else in the window can be built into — that is what keeps a component from breaking the layout around it. Ask the user whatever the request left open first — what it shows, where its numbers come from, how it behaves — then create.\n" +
+      "The column is about 288px wide. Build for that. If what they asked for genuinely needs more room — a table, a board, a chart with axes — set expand true and it gets a ⤢ that opens it over the whole window; the component is handed `expanded` as a prop, so draw the dense reading when it is false and the full one when it is true.\n" +
+      "It can read everything the app knows through `emma`, and reach the outside through `fetch`. Declare API keys and other credentials as variable names; the user fills them in Settings → Built by Emma. Use {{LINEAR_API_KEY}} only in request headers or the body, never in the URL. Main asks the user in a native dialog before the exact request template can use credentials. Approval is for this app session and changes to the template, component or credentials need new approval. Components share the app's renderer and bridge, not isolated identities.\n" +
+      "code is one ES module: export default (api) => Component. api is { h, Fragment, useState, useEffect, useMemo, useRef, useCallback, emma, fetch, variables }; h is React.createElement, so there is no JSX and nothing to import — h(\"div\", { className: \"…\" }, …). emma is the same bridge the app uses. fetch(url, { method, headers, body }) goes out through main and answers { status, ok, body }; use a fixed public HTTPS URL, an at-most-8-KiB request and uncompressed UTF-8 responses of at most 1 MiB. Redirects and local/private destinations are refused. Reuse the app's own class names wherever one fits, so it looks like it belongs there.\n" +
       "Style it in Emma's design system, from her own tokens — never a colour, radius or face of your own. Ground: var(--bg) for the window, var(--surface-2) for a card, --surface-3 hover, --surface-4 active. Ink: var(--text), var(--text-2) for labels, var(--text-3) for captions. Rules are 1px var(--border), or var(--border-strong) for a region outline, and never both on one edge. var(--accent) is action, state and data only, never emphasis; var(--accent-soft) is the only accent fill over a large area; var(--danger) is destructive. Space on var(--s-1) 4px through var(--s-8) 32px, sizes from var(--fs-2xs) up. A control is 28px tall, 1px bordered, transparent. Every corner is square — no border-radius anywhere. var(--font-mono) is the interface face for anything on the grid: labels, values, buttons, counts, with uppercase labels tracked by var(--ls-caps). var(--font) is for sentences. Density is the point: if it looks cramped, take something out rather than adding padding.\n" +
       "rewrite replaces the whole module of an id that exists and hot-reloads it, which is how you iterate: the user says what is wrong, you rewrite, they watch it change. Keep going until they are happy.\n" +
-      "No delete. A component is the user's to remove, from the \u22ef in its corner.",
+      "No delete. A component is the user's to switch off or remove, from the \u22ef in its header or from Settings \u2192 Built by Emma.",
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: [...COMPONENT_ACTIONS], description: "What to do. place asks the user where it goes; create builds it there; rewrite replaces one whole; list and get read what is already built. Defaults to list." },
+        action: { type: "string", enum: [...COMPONENT_ACTIONS], description: "What to do. create builds one into the context bar; rewrite replaces one whole and reloads it; list and get read what is already built. Defaults to list." },
         id: { type: "string", description: "The component to act on, as create or list reported it. Required for get and rewrite." },
         title: { type: "string", description: "What the user would call it. Required on create, and shown in its \u22ef menu." },
         code: { type: "string", description: "The whole module. Required on create and rewrite." },
+        expand: { type: "boolean", description: "Give it a ⤢ that opens it over the whole window, for something that cannot be read in a 288px column. The component is handed `expanded` so it can draw both. Leave it off on a rewrite to keep what it has." },
+        variables: { type: "array", items: { type: "string" }, description: "Environment variable names this component needs. The user fills them in Settings \u2192 Built by Emma and approves each credential-bearing request template. Write {{NAME}} in headers or the body, never the URL. Leave it off on a rewrite to keep what it has." },
       },
       required: ["action"],
     },
@@ -602,7 +606,7 @@ export type ToolArgs =
   | { name: "web_search"; query: string; limit: number }
   | { name: "install_mcp"; server: string; command: string; argv: string[]; env: Record<string, string> }
   | { name: "artifact"; action: ArtifactAction; id?: string; file?: string; title?: string; kind?: string; language?: string; surface?: string; content?: string; oldStr?: string; newStr?: string }
-  | { name: "component"; action: ComponentAction; id?: string; title?: string; code?: string }
+  | { name: "component"; action: ComponentAction; id?: string; title?: string; code?: string; expand?: boolean; variables?: string[] }
   | ({ name: "visualize" } & Visual)
   | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; model?: string; variables?: string }
   | { name: "autoresearch"; action: ResearchAction; jobId?: string; title?: string; projectDir?: string; metricName?: string; metricKind?: string; metricPrompt?: string; direction?: string; evalCommand?: string; prompt?: string; proposerModel?: string; permissionMode?: string; maxSeconds?: number; maxTokens?: number; maxMicroDollars?: number };
@@ -655,9 +659,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         unattended: flag(args.unattended, "unattended"),
         folder: optionalText(args.folder, "folder", 256),
       } as const;
-      // Checked here rather than in the runtime: a missing argument is a mistake
-      // the model can fix from the message, and the alternative is spawning a CLI
-      // with an empty prompt or resuming a run that was never named.
       if (!parsed.prompt) throw new Error('The "prompt" argument is required — say what the CLI should do.');
       if (action === "run" && !parsed.cli) throw new Error(`The "cli" argument is required for run: one of ${CLI_IDS.join(", ")}.`);
       if (action === "run" && !CLI_IDS.includes(parsed.cli!)) throw new Error(`Emma does not know a CLI called "${parsed.cli}". It knows ${CLI_IDS.join(", ")}.`);
@@ -667,7 +668,7 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
     case "cli_runs":
       return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop") };
     case "computer":
-      return { name, args };
+      return { name, args: computerAction(args) };
     case "browser": {
       const action = BROWSER_ACTIONS.find((candidate) => candidate === args.action);
       if (!action) throw new Error(`action must be one of ${BROWSER_ACTIONS.join(", ")}.`);
@@ -726,8 +727,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       return { name, question: optionalText(args.question, "question", 1024) };
     case "vision": {
       const parsed = { name, question: requiredText(args.question, "question", 2048), path: optionalText(args.path, "path", 1024), url: optionalText(args.url, "url", 2048), folder } as const;
-      // One image per call: two sources is a question about which one, and the
-      // answer would come back about whichever main happened to resolve first.
       if (!parsed.path && !parsed.url) throw new Error('Name the image: "path" for a file in a connected folder, or "url" for one on the web.');
       if (parsed.path && parsed.url) throw new Error('Send either "path" or "url", not both — one call looks at one image.');
       return parsed;
@@ -751,9 +750,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         result: optionalText(args.result, "result", 2000),
         check: args.check === undefined || args.check === null ? undefined : whole(args.check, "check"),
       } as const;
-      // Each action's own required fields, refused here rather than half-done in the
-      // store: a run with no id would pick whichever plan happened to be first, and
-      // an update naming no step has nothing to change.
       if (action !== "read" && action !== "write" && !parsed.id) throw new Error('The "id" argument is required. List the plans with plan {"action":"read"}.');
       if (action === "write" && !parsed.title) throw new Error('The "title" argument is required to write a plan.');
       if (action === "write" && !parsed.steps) throw new Error('The "steps" argument is required: a JSON array of steps, as a string.');
@@ -794,8 +790,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       const agent = optionalText(args.agent, "agent", 128);
       const message = optionalText(args.message, "message", MAX_TASK_PROMPT_CHARS);
       const stop = flag(args.stop, "stop");
-      // Steering an unnamed agent would go to whichever run happened to be
-      // first, so the two levers require their target rather than defaulting.
       if ((message !== undefined || stop) && !agent) throw new Error("Say which agent: pass agent with the thread ID the list reports.");
       if (message !== undefined && stop) throw new Error("Send a message or stop it, not both.");
       return { name, agent, message, stop };
@@ -806,9 +800,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       const title = optionalText(args.title, "title", 128);
       const thread = optionalText(args.thread, "thread", 96);
       const prompt = optionalText(args.prompt, "prompt", MAX_TASK_PROMPT_CHARS);
-      // Each action's own required fields, refused here rather than half-done in
-      // the loop: a spawn with no title puts an unnamed row in the sidebar, and a
-      // message with no thread would go to whichever one happened to be first.
       if ((action === "spawn" || action === "rename") && !title) throw new Error(`Say what to call it: pass title with three or four words naming the thread.`);
       if ((action === "read" || action === "message") && !thread) throw new Error("Say which thread: pass thread with the ID the list reports.");
       if (action === "message" && !prompt) throw new Error("Say what to send: pass prompt with the message for that thread.");
@@ -839,16 +830,11 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         kind: optionalText(args.kind, "kind", 32),
         language: optionalText(args.language, "language", 64),
         surface: optionalText(args.surface, "surface", 16),
-        // An artifact may legitimately be emptied, so these bound the size and nothing else.
         content: args.content === undefined || args.content === null ? undefined : bounded(args.content, "content", MAX_ARTIFACT_CONTENT_CHARS),
         oldStr: optionalText(args.old_str, "old_str", MAX_ARTIFACT_CONTENT_CHARS),
         newStr: args.new_str === undefined || args.new_str === null ? undefined : bounded(args.new_str, "new_str", MAX_ARTIFACT_CONTENT_CHARS),
       } as const;
-      // Checked here so the refusal names the missing argument, rather than reaching
-      // the store as a create with no content or a get with no id.
       if (action !== "list" && action !== "create" && !parsed.id) throw new Error('The "id" argument is required. List the artifacts to see them.');
-      // A file belongs to an artifact that already exists, and `create` is the one
-      // action that mints an id — so a file has nothing to be created inside of.
       if (parsed.file && (action === "list" || action === "create")) throw new Error('"file" names a file inside an artifact that already exists. Create the app first, then rewrite the file into it.');
       if (action === "create" && !parsed.title) throw new Error('The "title" argument is required to create an artifact.');
       if (action === "create" && !parsed.kind) throw new Error(`The "kind" argument is required: one of ${ARTIFACT_KINDS.join(", ")}.`);
@@ -867,6 +853,8 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         id: optionalText(args.id, "id", 64),
         title: optionalText(args.title, "title", MAX_COMPONENT_TITLE_CHARS),
         code: args.code === undefined || args.code === null ? undefined : bounded(args.code, "code", MAX_COMPONENT_CHARS),
+        expand: args.expand === undefined || args.expand === null ? undefined : args.expand === true,
+        variables: args.variables === undefined || args.variables === null ? undefined : parseVariables(args.variables),
       } as const;
       if ((action === "get" || action === "rewrite") && !parsed.id) throw new Error('The "id" argument is required. List them with component {"action":"list"}.');
       if (action === "create" && !parsed.title) throw new Error('The "title" argument is required: what the user would call this.');
@@ -916,17 +904,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
   }
 }
 
-/**
- * POSIX single-quoting, for the one place main builds a command line rather than
- * taking one: a tool's own path and the input string handed to it, which must
- * arrive as exactly two words however they are punctuated. Everything inside
- * single quotes is literal to the shell, and the only escape is closing and
- * reopening around a quote of its own. Here rather than in main.ts because this
- * is the half worth a test, and main.ts pulls in Electron.
- *
- * The script runs under a login shell, so a tool with `#!/usr/bin/env python3`
- * finds the same Python the user's terminal does.
- */
 export function shellQuoted(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -1034,7 +1011,6 @@ function memoryCommand(args: Record<string, unknown>): MemoryCommand {
       return { command, path, view_range: range as [number, number] };
     }
     case "create":
-      // A memory may legitimately be emptied, so this is `text`, not `requiredText`.
       return { command, path, file_text: text(args.file_text, "file_text") };
     case "str_replace":
       return { command, path, old_str: requiredText(args.old_str, "old_str", 32 * 1024), new_str: args.new_str === undefined || args.new_str === null ? undefined : text(args.new_str, "new_str") };
@@ -1047,12 +1023,11 @@ function memoryCommand(args: Record<string, unknown>): MemoryCommand {
   }
 }
 
-/** A short, human phrase for the agent list and the run banner. */
 export function describeToolCall(args: AnyToolArgs): string {
   switch (args.name) {
     case "cli": return args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`;
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
-    case "computer": return typeof args.args.action === "string" ? String(args.args.action).replace(/_/g, " ") : "using the computer";
+    case "computer": return `${String(args.args.action).replace(/_/g, " ")}${args.args.app ? ` in ${args.args.app}` : ""}`;
     case "browser": {
       if (args.action === "get") return `reading the page's ${args.field ?? "text"}`;
       const target = args.action === "open" ? args.url : args.action === "press" ? args.key : args.selector;
@@ -1093,7 +1068,6 @@ export function describeToolCall(args: AnyToolArgs): string {
       if (args.action === "list") return "listing artifacts";
       return args.action === "create" ? `creating the artifact "${args.title ?? ""}"` : `${ARTIFACT_VERBS[args.action]} the artifact ${args.id ?? ""}`.trim();
     case "component":
-      if (args.action === "place") return "asking where this goes";
       if (args.action === "list") return "listing what it built";
       return args.action === "create" ? `building "${args.title ?? ""}" into the interface` : `reworking the component ${args.id ?? ""}`.trim();
     case "visualize": return `drawing ${args.title}`;

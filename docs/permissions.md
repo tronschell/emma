@@ -1,38 +1,38 @@
 # Permissions
 
-What a turn may do without stopping to ask. One table in
-[permissions.ts](../desktop/shared/permissions.ts) decides it; the mode picker in
-the composer picks which column a run reads.
+What a turn may do without stopping to ask. The mode picker chooses ordinary tool
+gates in [permissions.ts](../desktop/shared/permissions.ts). Computer use also
+requires explicit per-app approval in every mode, including Auto and Full access.
 
 ## The four modes
 
 `PERMISSION_MODES` is `["ask", "acceptEdits", "auto", "full"]`, default `ask`
 (`DEFAULT_PERMISSION_MODE`). There is no `plan` mode — planning is the `plan`
-tool now. Names, glyphs and hints are exactly what the picker renders.
+tool now.
 
 | Glyph | Name | Mode id | Hint |
 | --- | --- | --- | --- |
-| ◈ | Ask | `ask` | Every write, command, and click asks first. |
-| ◆ | Accept edits | `acceptEdits` | File edits go through; commands and the pointer still ask. |
-| ⬗ | Auto | `auto` | A separate verifier model reads each gated call; anything it will not clear still asks you. |
-| ⬥ | Full access | `full` | Nothing asks. Escape still stops a run. |
+| ◈ | Ask | `ask` | Writes and commands ask; computer access asks once per app per turn. |
+| ◆ | Accept edits | `acceptEdits` | File edits go through; commands and app access still ask. |
+| ⬗ | Auto | `auto` | A verifier clears ordinary gated calls; app access still asks you. |
+| ⬥ | Full access | `full` | Ordinary tools run automatically; app access still asks you. |
 
 Set the default for new threads in Settings → "Default permission mode". Changing
 the picker mid-run applies to the run in flight (`agents.setMode`).
 
 ## The gate matrix
 
-`toolGate(mode, tool, disabled)` returns `hidden`, `ask` or `auto`. Transcribed
-cell for cell from `GATES`, in `AGENT_TOOLS` order. `auto` has no column of its
-own — it reads the `ask` column and sends the question to the verifier instead of
-to you, so the two can never drift.
+`toolGate(mode, tool, disabled)` returns `hidden`, `ask` or `auto`. For ordinary
+tools, Auto reads the Ask column and sends gated calls to the verifier. The table
+below shows effective behavior: `computer` has an `ask` gate in every mode, but
+its implementation asks for the resolved app rather than each individual call.
 
 | Tool | `ask` | `acceptEdits` | `auto` | `full` |
 | --- | --- | --- | --- | --- |
 | `browser` | ask | ask | verifier | auto |
 | `cli` | ask | ask | verifier | auto |
 | `cli_runs` | auto | auto | auto | auto |
-| `computer` | ask | ask | verifier | auto |
+| `computer` | app approval | app approval | app approval | app approval |
 | `write_skill` | auto | auto | auto | auto |
 | `write_tool` | auto | auto | auto | auto |
 | `write_plugin` | auto | auto | auto | auto |
@@ -42,6 +42,7 @@ to you, so the two can never drift.
 | `vision` | auto | auto | auto | auto |
 | `web_search` | auto | auto | auto | auto |
 | `plan` | auto | auto | auto | auto |
+| `goal` | auto | auto | auto | auto |
 | `threads` | auto | auto | auto | auto |
 | `read_trace` | auto | auto | auto | auto |
 | `context` | auto | auto | auto | auto |
@@ -52,12 +53,17 @@ to you, so the two can never drift.
 | `workflow` | ask | ask | verifier | auto |
 | `autoresearch` | ask | ask | verifier | auto |
 | `artifact` | auto | auto | auto | auto |
+| `component` | auto | auto | auto | auto |
 | `visualize` | auto | auto | auto | auto |
 
-Eight tools gate: `browser`, `cli`, `computer`, `run_tool`, `secret`,
-`install_mcp`, `workflow`, `autoresearch`. Each runs a program, drives a
-signed-in browser, or hands out agent turns that execute later with nobody
-watching.
+Seven tools use the ordinary gate: `browser`, `cli`, `run_tool`, `secret`,
+`install_mcp`, `workflow`, `autoresearch`. `computer` requires a human app grant;
+its `list_apps` action returns only running-app metadata without that grant.
+
+Creating a component uses its ordinary tool gate, but sending a widget request
+with credentials requires a separate native approval of the exact request
+template in every mode. This is not approval of all future widget requests.
+See [components.md](components.md).
 
 `hidden` is not in the table: no mode hides a tool. It comes from a Settings →
 Tools switch or an unknown name, checked first, and applies in every mode. A
@@ -69,6 +75,9 @@ difference between those two modes is on the harness's side: `onPermission` in
 silently under `acceptEdits`, and asks for everything else.
 
 ## How `auto` works
+
+App approval is excluded from the verifier path: `question(..., { humanOnly:
+true })` always asks the user. Auto cannot approve app access or override a denial.
 
 [verifier.ts](../desktop/main/verifier.ts) is the second model. It is deliberately
 small — a 2.6B on a free route by default — configured in Settings → Models, with
@@ -103,6 +112,11 @@ again. Delegation itself is the harness's `subagent` tool, where `permission_mod
 "inherits the caller when omitted and cannot exceed it". One plan wave hands out
 at most `MAX_LIVE_SUBAGENTS = 8` briefs ([agents.ts](../desktop/shared/agents.ts)).
 
+A computer grant covers only the active parent turn that asked for it.
+Harness-delegated agents cannot call `computer`; the parent must perform app
+actions. A separate thread turn cannot borrow the grant. This scope is stated in
+the app approval dialog; each other app requires a separate grant.
+
 ## Where it is enforced
 
 `toolGate` has two call sites, because a filtered list is not an enforced one —
@@ -112,7 +126,9 @@ offered.
 1. `toolDefinitions` ([tools.ts](../desktop/main/tools.ts)) drops `hidden` tools
    from the advertised catalog.
 2. `runEmmaTool` ([main.ts](../desktop/main/main.ts)) checks the gate again when
-   the call actually arrives, and raises the dialog on `ask`.
+   the call actually arrives, and raises the dialog on `ask` for ordinary tools.
+   `computer` instead resolves the running app and requests explicit approval
+   before reading its state or creating its app-bound helper.
 
 Emma's tools are registered in the harness with `requires_approval = false`
 ([emma_tools.zig](../harness/src/builtins/emma_tools.zig)) precisely because Emma
@@ -137,20 +153,25 @@ yes into a session-wide grant. Emma's own dialog has no "allow always".
 ## The prompt
 
 `PermissionAsk` is `{ id, threadId, tool, summary, detail }`
-([agents.ts](../desktop/shared/agents.ts)). `summary` is the short phrase from
-`describeToolCall`; `detail` is the pretty-printed arguments, capped at 4096
+([agents.ts](../desktop/shared/agents.ts)). For ordinary tools, `summary` is the
+short phrase from `describeToolCall`; `detail` is the pretty-printed arguments, capped at 4096
 characters on both the Emma and harness paths. `install_mcp` renders its whole
 `env` object, values included — its schema warns the model about that.
 
 The dialog is `PermissionPrompt` ([agents.tsx](../desktop/src/agents.tsx)): a real
-`<dialog>`, one question at a time, **Don't** and **Allow once**. Escape answers
-`false`. Only the main window can answer; if there is no main window, main answers
-`false` immediately. `MAX_ASK_MS` is 10 minutes, and the timeout settles as
-`false` — a question nobody is there to answer never passes.
+`<dialog>`, one question at a time, **Don't** and **Allow once**. Computer prompts
+show the resolved app identity and **Allow for this turn**, with **Don't** focused
+by default. Escape answers `false`. If neither the main window nor a paired
+permission channel can receive the question, it is denied immediately.
+`MAX_ASK_MS` is 10 minutes; timeout, cancellation and ended or replaced turns
+settle `false`. A late answer cannot revive a request. An app denial is remembered
+for the rest of the turn, so the model cannot repeatedly ask for the same app.
 
 The renderer cannot bypass any of this: its whole permission vocabulary in
-[preload.ts](../desktop/main/preload.ts) is `onPermissionAsk` and
-`answerPermission({ id, allowed })`. It cannot name a tool or ask for one to run.
+[preload.ts](../desktop/main/preload.ts) is `onPermissionAsk`,
+`answerPermission({ id, allowed })` and `onPermissionResolved`. The last event
+removes prompts resolved elsewhere or by cancellation. It cannot name a tool or
+ask for one to run.
 `emma:answer-permission` checks the sender is the main window's main frame before
 looking at the payload, ids are `randomUUID()` and are deleted on first settle.
 
@@ -168,6 +189,9 @@ Normalised through `asPermissionMode` on save and again at execution, which fall
 back to `ask`. Nobody answers a question there, so `ask` declines every gated
 call. See [jobs.md](jobs.md) and [autoresearch.md](autoresearch.md).
 
+Saving Full access does not preapprove computer use. Unattended work cannot read
+or control an app unless a user explicitly answers that turn's app prompt.
+
 ## What survives every mode
 
 Nothing here consults the table, and `full` does not switch any of it off.
@@ -177,16 +201,19 @@ Nothing here consults the table, and `full` does not switch any of it off.
   while Emma is behind whatever app it is driving.
 - **The run banner.** Always-on-top at the `screen-saver` level, visible on every
   workspace including fullscreen, `focusable: false`, carrying the step count and
-  a Stop button. One of only two senders `emma:stop-agent` accepts.
-- **The ceilings.** `MAX_RUN_STEPS` 20, `MAX_RUN_ACTIONS` 400,
+  a Stop button. The main window and banner can send `emma:stop-computer-run`.
+- **App grants.** Exact running-app approval, revoked on Stop, Escape, lock,
+  suspend, turn end and quit. No persistent grant and no global-input fallback.
+- **The ceilings.** `MAX_RUN_STEPS` 20,
   `MIN_ACTION_INTERVAL_MS` 40, `MAX_RUN_MS` 10 min, and the rest in
   [computer-use.md](computer-use.md). Tool argument and output caps in
   [tools.md](tools.md).
 - **The workspace grant.** `context.outsideWorkspace` denies before any mode
   check.
 - **Argument validation.** `parseToolArgs` runs on every call.
-- **Screen Recording.** `captureDisplay` refuses outright when macOS has not
-  granted it.
+- **Accessibility.** Computer use cannot read or act on controls without the
+  macOS grant. Screen Recording is separate and required for annotation capture,
+  not for app-scoped computer use.
 - **The action log.** Every call, and every verifier review, lands in the durable
   trace.
 
@@ -210,7 +237,7 @@ saves tokens and gates nothing.
 ## See also
 
 - [tools.md](tools.md) — what each tool does, and the harness's own builtins
-- [computer-use.md](computer-use.md) — the pointer, the banner, and Escape
+- [computer-use.md](computer-use.md) — app grants, background controls and Escape
 - [privacy.md](privacy.md) — what leaves this Mac
 - [harness.md](harness.md) — `emma-cli`, ACP, and the permission channel
 - [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md) — unattended runs

@@ -60,9 +60,12 @@ permissions, VoiceOver behavior, display geometry, signing, and non-macOS paths.
 
 The changelog is generated, never written. A PR title is its changelog entry and
 must be a conventional commit — `fix(notch): stop the island stealing focus` —
-which CI enforces. Merging to `main` updates a standing release PR; merging that
-PR writes `CHANGELOG.md`, tags, and packages the app. Never hand-edit
-`CHANGELOG.md`, bump a version in a feature PR, or tag by hand.
+which CI enforces. Feature branches start from and squash-merge into `dev`, the
+default branch. A generated release PR on `dev` writes `CHANGELOG.md` and the
+version; merging it prepares a tag and draft release. Promote that exact `dev`
+tree to `main` with a merge commit to check, build, sign, notarize, and publish
+the app. Never squash the promotion, hand-edit `CHANGELOG.md`, bump a version in
+a feature PR, or tag by hand.
 
 The workflows in `.github/workflows/` run the checks above and nothing else that
 cannot be run locally. They are config, so the no-comments rule applies to them.

@@ -58,9 +58,6 @@ pub fn writeModelRecoveryInfoUpdate(
     try writer.writeAll("}}}}");
 }
 
-/// A context experiment that fired on one step. Emma's Harness settings switch
-/// these on, and without this the levers work invisibly — the client has no way
-/// to tell a step that was pruned from one that was not, and cannot say so.
 pub fn writeContextExperimentInfoUpdate(
     writer: *std.Io.Writer,
     pruned_results: usize,
@@ -178,17 +175,6 @@ pub fn writeSessionUpdate(w: *std.Io.Writer, session_id: []const u8, update_json
     try w.writeAll("}");
 }
 
-/// One subagent's update, riding the parent session's stream.
-///
-/// ACP has no nested sessions, so a child is carried on its parent's and named in
-/// `_meta` — the client fans it back out onto a transcript of its own. Without
-/// this a subagent is visible only to the TUI: nothing it says or does reaches a
-/// front end, so it cannot be listed, opened, or watched.
-///
-/// Spliced in ahead of the object's closing brace rather than threaded through
-/// every writer above, which would grow a `_meta` parameter on all of them for
-/// one caller. `state` closes the child out: a front end that only ever saw
-/// updates would have no way to know one had finished.
 pub fn writeChildTurnUsageInfoUpdate(
     w: *std.Io.Writer,
     usage: TurnUsage,
@@ -227,8 +213,6 @@ pub fn writeChildTaggedUpdate(
     title: []const u8,
     ended: bool,
 ) !void {
-    // An update that carries its own `_meta` would end up with the key twice, and
-    // an empty one has nothing to hang a comma off.
     if (update_json.len <= 2 or update_json[update_json.len - 1] != '}') return error.InvalidChildUpdate;
     if (std.mem.indexOf(u8, update_json, "\"_meta\"") != null) return error.InvalidChildUpdate;
     try w.writeAll(update_json[0 .. update_json.len - 1]);
@@ -237,10 +221,6 @@ pub fn writeChildTaggedUpdate(
     try w.writeByte('}');
 }
 
-/// The `_meta` member a child's message carries, so a client can fan a subagent
-/// out onto a timeline of its own. Written on permission requests as well as on
-/// updates: a question a client cannot attribute to the child that asked it is a
-/// question it cannot put in front of the user.
 pub fn writeChildTagMeta(
     w: *std.Io.Writer,
     child_id: []const u8,
@@ -256,8 +236,6 @@ pub fn writeChildTagMeta(
     try w.writeAll("}}}");
 }
 
-/// The bare update a child's last tag rides on, so its end is announced even when
-/// it finished without saying anything.
 pub const child_state_update = "{\"sessionUpdate\":\"session_info_update\"}";
 
 test "a child's update is tagged with the child it came from" {
@@ -285,8 +263,6 @@ pub fn writeAgentMessageChunk(w: *std.Io.Writer, text: []const u8) !void {
     try w.writeAll("}}");
 }
 
-/// The model's reasoning, which ACP keeps apart from the answer so a client can
-/// fold it away. Standard `agent_thought_chunk`, not an extension.
 pub fn writeAgentThoughtChunk(w: *std.Io.Writer, text: []const u8) !void {
     try w.writeAll("{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"type\":\"text\",\"text\":");
     try writeJsonStr(text, w);
@@ -299,10 +275,6 @@ pub fn writeUserMessageChunk(w: *std.Io.Writer, text: []const u8) !void {
     try w.writeAll("}}");
 }
 
-/// `raw_input_json` is ACP's optional `rawInput`: the call's arguments exactly as
-/// the model sent them. Upstream published it only on a permission request, which
-/// left a client's timeline able to say a tool ran but never with what — and the
-/// arguments are the whole of diagnosing why a run got stuck.
 pub fn writeToolCall(
     w: *std.Io.Writer,
     tool_call_id: []const u8,
@@ -310,6 +282,18 @@ pub fn writeToolCall(
     kind: ToolCallKind,
     status: ToolCallStatus,
     raw_input_json: ?[]const u8,
+) !void {
+    try writeToolCallWithPath(w, tool_call_id, title, kind, status, raw_input_json, null);
+}
+
+pub fn writeToolCallWithPath(
+    w: *std.Io.Writer,
+    tool_call_id: []const u8,
+    title: []const u8,
+    kind: ToolCallKind,
+    status: ToolCallStatus,
+    raw_input_json: ?[]const u8,
+    file_path: ?[]const u8,
 ) !void {
     try w.writeAll("{\"sessionUpdate\":\"tool_call\",\"toolCallId\":");
     try writeJsonStr(tool_call_id, w);
@@ -319,9 +303,11 @@ pub fn writeToolCall(
     try writeJsonStr(kind.jsonString(), w);
     try w.writeAll(",\"status\":");
     try writeJsonStr(status.jsonString(), w);
+    if (file_path) |value| {
+        try w.writeAll(",\"_emma_filePath\":");
+        try writeJsonStr(value, w);
+    }
     if (raw_input_json) |json| {
-        // Sent as a string, not spliced in as an object: the arguments come off
-        // the wire from a model and are not this writer's to vouch for as JSON.
         try w.writeAll(",\"rawInput\":");
         try writeJsonStr(json, w);
     }
@@ -369,9 +355,6 @@ pub fn writeInitializeResponse(w: *std.Io.Writer) !void {
     try w.writeAll("\"authMethods\":[]}");
 }
 
-/// What one turn cost. Upstream ACP has no usage field, so this is an Emma
-/// extension on the `session/prompt` result: a client that does not know it
-/// ignores it, and Emma reads it straight into the turn's telemetry.
 pub const TurnUsage = struct {
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,

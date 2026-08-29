@@ -11,9 +11,9 @@ message you hit is not here, grep for it — Emma's errors are literals.
 | A second launch just focuses the first window | Same lock — `app.on("second-instance")` re-opens the existing window. Intended. | — |
 | The dev run edits your real threads and vault | Both roots are shared: `EMMA_DATA_DIR` defaults to `~/Library/Application Support/Emma` and `userData` is named from `package.json`'s `"name"`. | `EMMA_DATA_DIR=/tmp/emma-data electron . --user-data-dir=/tmp/emma-dev-profile` |
 | Blank window, or every privileged IPC call throws `IPC sender is not allowed` | `trustedSender` accepts only the dev-server origin or `file://<appRoot>/dist-renderer/index.html` ([ipc.ts:240](../desktop/main/ipc.ts#L240)). Electron started without `EMMA_DEV_SERVER_URL`, or `dist-renderer/` was never built. | Use `npm run dev` (it sets the var), or `npm --prefix desktop run build:renderer` first |
-| `zig: command not found` during `build:host` | `build:harness` runs `(cd ../harness && zig build)`. | `brew install zig` — 0.16.0 or newer ([harness/build.zig.zon](../harness/build.zig.zon)) |
-| `clang: command not found` during `build:native` | The three helpers are compiled with `clang`. | `xcode-select --install` |
-| `build:native` compiles, then aborts | `emma-option-tap --self-test` or `emma-pty --self-test` failed; the `&&` chain stops. | Read the assertion it printed — a real regression in `native/quick_ask.m` or `native/pty.c` |
+| `zig: command not found` during `build:host` | `build:harness` runs `(cd ../harness && zig build)`. | Install Zig 0.16.0, matching CI and [harness/build.zig.zon](../harness/build.zig.zon) |
+| `clang: command not found` during `build:native` | The four helpers are compiled with `clang`. | `xcode-select --install` |
+| `build:native` compiles, then aborts | A native helper self-test failed; the `&&` chain stops. | Read the assertion from `emma-option-tap`, `emma-computer` or `emma-pty` and investigate before packaging |
 | `ripgrep checksum mismatch: expected …, got …. Nothing was written.` | `vendor:ripgrep` verifies the download against a per-arch SHA-256 ([vendor-ripgrep.mjs:45](../desktop/scripts/vendor-ripgrep.mjs#L45)). A proxy rewrote the tarball, or the pin is stale. | Retry off the proxy; if the pin really is stale, update version and hash together |
 | `ripgrep download failed: <status>` | GitHub release fetch failed. Needs network on first build only. | Retry, or drop a `rg` binary at `desktop/vendor/rg` yourself |
 | Rust build fails on toolchain | `rust-toolchain.toml` pins `1.97.1`; the workspace is edition 2024. | `rustup toolchain install 1.97.1` |
@@ -43,16 +43,16 @@ message you hit is not here, grep for it — Emma's errors are literals.
 | `That model is no longer in OpenRouter's catalog. Reload the models page and pick again.` | The saved id is absent from the cached catalog ([main.ts:1563](../desktop/main/main.ts#L1563)). | Reload Settings → Models and pick again |
 | `OpenRouter listed no models Emma can use — check your connection and try again` | The catalog fetch returned nothing usable ([catalog.ts:124](../desktop/main/catalog.ts#L124)). | Check the network; the compiled seed catalog covers first launch |
 | `That endpoint is plain http off this Mac.` | A provider base URL is `http:` on your network rather than loopback ([settings.ts](../desktop/shared/settings.ts)). | Tick the network box to accept unencrypted prompts and keys, or serve it over https |
-| Turns still answer from OpenRouter after picking a provider | The main window has not pushed the provider table to main yet, so `provider:<id>` resolves to nothing. | Open Settings once, then send the turn |
-| Every free model 404s | `requireZeroRetention` is on, and OpenRouter has no free endpoint that qualifies. It sets `EMMA_OPENROUTER_ZDR` on the harness. | Turn off Settings → Models → private routing, or route to a paid or local model |
+| A new provider cannot be selected | Provider registration or settings persistence failed. Saving must succeed before the profile can be used. | Read the error in Settings → Models, check the endpoint/profile, and retry saving; do not assume a displayed choice was persisted |
+| A model reports no eligible endpoint with Private routing on | The chosen model has no endpoint satisfying the requested no-training/zero-retention policy. | Pick a qualifying model or a local provider. Turn off Private routing only if its weaker privacy policy is acceptable |
 
 ## macOS permissions
 
 | Problem | Cause | Fix |
 | --- | --- | --- |
 | ⌥⌥ does nothing | `NSEvent addGlobalMonitorForEventsMatchingMask` reports other apps' keys only to a trusted process. `emma-option-tap` prints `Emma: Accessibility access is required to control the computer.` to stderr ([quick_ask.m:613](../desktop/native/quick_ask.m#L613)). | Grant Accessibility, then **relaunch Emma** — the running helper does not pick up a new grant |
-| `Screen Recording permission is required. Enable Emma in System Settings → Privacy & Security → Screen Recording.` | `getMediaAccessStatus("screen")` is `denied` or `restricted` ([computer.ts:99](../desktop/main/computer.ts#L99)). | Grant it, then relaunch |
-| `Emma could not capture this display. Check Screen Recording permission and try again.` | `desktopCapturer` returned no source for that display, or an empty thumbnail ([computer.ts:106](../desktop/main/computer.ts#L106)). | Grant Screen Recording; if it is granted, the display was disconnected mid-capture |
+| `Screen Recording permission is required. Enable Emma in System Settings → Privacy & Security → Screen Recording.` | `getMediaAccessStatus("screen")` is `denied` or `restricted` for the separate screen-context or annotation capture ([computer.ts](../desktop/main/computer.ts)); app-scoped computer use does not capture the screen. | Grant it, then relaunch |
+| `Emma could not capture this display. Check Screen Recording permission and try again.` | `desktopCapturer` returned no source for that screen-context or annotation capture, or an empty thumbnail ([computer.ts](../desktop/main/computer.ts)). | Grant Screen Recording; if it is granted, the display was disconnected mid-capture |
 | `macOS has not allowed Emma to read your browser — grant it in System Settings → Privacy & Security → Automation → Emma.` | The Apple Events send to Safari or Chrome was refused ([clip.ts:39](../desktop/main/clip.ts#L39)). macOS reports Automation grants to nobody, so this error is the only signal. | Grant Automation → Emma → that browser |
 | `macOS stopped Emma's speech helper. The built-in recognizer needs the packaged Emma.app — npm run package:mac.` | TCC reads the *responsible* process's `Info.plist` for `NSSpeechRecognitionUsageDescription`. Only `Emma.app` carries it (`--extend-info`); the dev Electron binary does not ([voice.ts:63](../desktop/main/voice.ts#L63)). | Package it, or use a local speech server instead |
 | `No speech-to-text server answered at <origin>. Start one in Settings → Voice.` | Nothing is listening on the configured loopback endpoint ([voice.ts:190](../desktop/main/voice.ts#L190)). | Start the server, or switch the engine |
@@ -80,13 +80,13 @@ Every ceiling below applies in **every** permission mode, `full` included.
 
 | Problem | Cause | Fix |
 | --- | --- | --- |
-| `This computer run reached its step limit.` | `MAX_RUN_STEPS` = 20 ([main.ts:1090](../desktop/main/main.ts#L1090)). | Ask again with a narrower goal |
-| `This computer run reached its action limit` | `MAX_RUN_ACTIONS` = 400 ([computer.ts:300](../desktop/main/computer.ts#L300)). | Same |
-| `A computer run is already active` | One run at a time ([computer.ts:274](../desktop/main/computer.ts#L274)). | Press Escape to stop the first |
-| `Computer action timed out` | `emma-option-tap` did not answer inside `HELPER_TIMEOUT_MS` = 5000 plus any hold ([computer.ts:215](../desktop/main/computer.ts#L215)). | Usually the Accessibility grant; relaunch after granting |
-| `Take a screenshot before pointing at the screen` | Coordinates are only valid against a captured frame ([computer.ts:425](../desktop/main/computer.ts#L425)). | — |
-| `Typed text is invalid` | Empty, or over `MAX_TYPED_CHARACTERS` = 4096. | — |
-| `duration must be between 0 and 300 seconds` / `repeat must be between 1 and 32` | `MAX_WAIT_SECONDS` = 300, `MAX_KEY_REPEAT` = 32. | — |
+| `This computer run reached its step limit` | `MAX_RUN_STEPS` = 20 ([computer.ts](../desktop/main/computer.ts)). | Ask again with a narrower goal |
+| `The user did not allow this app. Do not try it again this turn.` | Exact-app approval is required even in Full access. | Do not retry or work around the denial |
+| `Computer use must be performed by the parent turn with a current tool call.` | Child agents cannot use the parent's app grant ([harness.ts](../desktop/main/harness.ts)). | Ask the parent turn to perform app actions |
+| `Computer action timed out and may already have happened. Do not retry it automatically.` | `emma-computer` did not answer within 10 seconds ([computer.ts](../desktop/main/computer.ts)). | Inspect the app before starting a new turn; do not repeat the action automatically |
+| `Get a fresh app state before acting; that snapshot is stale or belongs to another app` | Mutations need an element from that app's latest single-use snapshot. | Call `get_app_state` again; screenshots and coordinates are unsupported |
+| A control cannot be pressed or edited in the background | The app does not expose the required accessibility operation; `type_text` supports only plain text fields and combo boxes. | Stop and explain the limitation; there is no pointer, activation or clipboard fallback |
+| `text is invalid` | Text is empty, exceeds 4096 characters, or contains a null byte. | Supply bounded plain text |
 | A run feels throttled | `MIN_ACTION_INTERVAL_MS` = 40 between actions, and `MAX_RUN_MS` caps a run at 10 minutes. | — |
 | `Emma could not open a debugging port for its browser, so the agent cannot drive it.` | The `browser` tool needs a CDP port on Emma's own `BrowserView` ([browser.ts:245](../desktop/main/browser.ts#L245)). | Relaunch Emma |
 
@@ -118,6 +118,6 @@ Every ceiling below applies in **every** permission mode, `full` included.
 - [getting-started.md](getting-started.md) — install and first run
 - [development.md](development.md) — checks, tests, packaging
 - [permissions.md](permissions.md) — the four modes and the gate table
-- [computer-use.md](computer-use.md) — the pointer loop in full
+- [computer-use.md](computer-use.md) — approved app-scoped accessibility controls
 - [models.md](models.md) — providers and routing
 - [harness.md](harness.md) — `emma-cli`, Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx)

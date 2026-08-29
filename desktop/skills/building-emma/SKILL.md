@@ -31,14 +31,14 @@ Take the cheapest thing that actually works. Most requests do not need a rebuild
    Lands in `<userData>/skills/<slug>/SKILL.md`, is live immediately, and needs
    no build. Reach for this first when the ask is "remember how to do X".
 2. **A component of your own** — the `component` tool. This is what "build
-   yourself an X" means, and it is not an artifact: `place` first, and the window
-   lights up so the user clicks the zone it belongs in — the sidebar, the context
-   bar or the composer; then ask them whatever the request left open; then
-   `create` with the module. It mounts there in the app's own tree, with its CSS
-   and its bridge, and every `rewrite` reloads it in place while they watch —
-   that is the loop to iterate in. They drag it to another zone by its ⠿ grip,
-   and delete it from the ⋯ in its corner or from **Settings → Built by Emma**,
-   which also shows each one, switches it off, and sends it back to a thread.
+   yourself an X" means, and it is not an artifact: ask them whatever the request
+   left open, then `create` with the module. It mounts in the context bar — the
+   only place a component goes — in the app's own tree, with its CSS and its
+   bridge, and every `rewrite` reloads it in place while they watch; that is the
+   loop to iterate in. `expand` gives it a ⤢ over the whole window, `variables`
+   are the keys it needs, and they switch it off or delete it from the ⋯ in its header, or from
+   **Settings → Built by Emma**, which also shows each one, switches it off,
+   fills in its variables, and sends it back to a thread.
 3. **A whole region replaced** — a `code` artifact with `surface` set to
    `navbar`, `chat`, `notch` or `context`, when the user wants the sidebar or the
    conversation pane itself to be yours rather than something added to it. Same

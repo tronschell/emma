@@ -1,6 +1,8 @@
 .built-host { display: contents; }
 
-.built { --built-ms: 720ms; position: relative; }
+.built { --built-ms: 720ms; }
+.built > header { grid-template-columns: minmax(0, 1fr) auto auto; padding-left: var(--s-4); }
+.built .bar-widget-body { position: relative; padding-block: var(--s-3); }
 .built-body { animation: built-in var(--built-ms) ease-out both; }
 
 .built-reveal {
@@ -9,7 +11,7 @@
   z-index: 2;
   overflow: hidden;
   margin: 0;
-  color: var(--text-2);
+  color: var(--accent-2);
   font: 11px/1.05 var(--font-mono);
   white-space: pre-wrap;
   word-break: break-all;
@@ -34,14 +36,7 @@
   to { opacity: 1; clip-path: inset(0 0 0 0); }
 }
 
-.built-menu { position: absolute; top: 2px; right: 2px; z-index: 3; display: flex; opacity: 0; transition: opacity 120ms ease; }
-.built:hover .built-menu, .built:focus-within .built-menu { opacity: 1; }
-.built-grip { cursor: grab; touch-action: none; }
-.built-grip[data-dragging] { cursor: grabbing; }
-[data-emma-drag], [data-emma-drag] * { cursor: grabbing !important; user-select: none; }
-.built-menu > button { display: grid; place-items: center; width: 20px; height: 20px; color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border); }
-.built-menu > button:hover, .built-menu > button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
-/* A component is appended at the end of its zone, so the menu always opens upward — downward would clip against the window. */
+.built-menu { position: relative; display: flex; }
 .built-menu-list { position: absolute; bottom: calc(100% + 4px); right: 0; z-index: 3; display: grid; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
 .built-menu-list button { height: 24px; padding: 0 var(--s-2); color: var(--text-2); font-size: var(--fs-2xs); text-align: left; white-space: nowrap; }
 .built-menu-list button:hover { color: var(--text); background: var(--surface-3); }
@@ -49,32 +44,12 @@
 
 .built-error { margin: 0; padding: var(--s-2); color: var(--danger); font-size: var(--fs-2xs); }
 
-[data-emma-place], [data-emma-place] * { cursor: crosshair !important; }
-[data-emma-lit] { outline: 2px solid var(--accent); outline-offset: -2px; background-color: var(--accent-soft); animation: built-glow 1.3s ease-in-out infinite; }
-
-@keyframes built-glow {
-  0%, 100% { outline-color: var(--accent); }
-  50% { outline-color: color-mix(in srgb, var(--accent) 35%, transparent); }
-}
-
-.placing {
-  position: fixed;
-  top: 14px;
-  left: 50%;
-  z-index: 60;
-  display: grid;
-  justify-items: center;
-  gap: 1px;
-  width: max-content;
-  padding: var(--s-2) var(--s-5);
-  background: var(--surface-2);
-  border: 1px solid var(--accent);
-  box-shadow: var(--shadow-lg);
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-.placing strong { font-size: var(--fs-sm); }
-.placing span { color: var(--text-3); font-size: var(--fs-2xs); }
+.built-full { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(1280px, 100%); height: min(840px, 100%); overflow: hidden; background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); }
+.built-full > header { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); }
+.built-full > header strong { font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; color: var(--text-2); }
+.built-full > header button { display: grid; place-items: center; width: 22px; height: 22px; color: var(--text-3); background: transparent; font: var(--fs-md)/1 var(--font-mono); }
+.built-full > header button:hover { color: var(--text); }
+.built-full .built-body { overflow: auto; padding: var(--s-5); }
 
 .built-empty { color: var(--text-3); font-size: var(--fs-sm); }
 .built-list { display: grid; gap: var(--s-3); }
@@ -88,12 +63,16 @@
 .built-card-acts { display: flex; gap: var(--s-2); }
 .built-card-acts button { height: 26px; padding: 0 var(--s-3); color: var(--text-2); background: var(--surface-3); border: 1px solid var(--border); font-size: var(--fs-2xs); }
 .built-card-acts button:hover:not(:disabled) { color: var(--text); background: var(--surface-4); }
+.built-vars { display: grid; gap: var(--s-2); grid-column: 1 / -1; padding-top: var(--s-3); border-top: 1px solid var(--border); }
+.built-vars label { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-2); }
+.built-vars span { color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); }
+.built-vars input { height: 26px; padding: 0 var(--s-2); color: var(--text); background: var(--surface-3); border: 1px solid var(--border); font: var(--fs-2xs)/1 var(--font-mono); }
+.built-vars button { height: 26px; padding: 0 var(--s-3); color: var(--text-2); background: var(--surface-3); border: 1px solid var(--border); font-size: var(--fs-2xs); }
+.built-vars button:hover:not(:disabled) { color: var(--text); background: var(--surface-4); }
 .built-list footer { display: flex; justify-content: flex-end; }
 .built-list footer button { height: 26px; padding: 0 var(--s-3); background: var(--danger-surface); border: 1px solid var(--border); font-size: var(--fs-2xs); }
 
 @media (prefers-reduced-motion: reduce) {
   .built-body { animation: none; }
   .built-reveal { animation-duration: 1ms; }
-  .built-menu { transition: none; }
-  [data-emma-lit] { animation: none; }
 }

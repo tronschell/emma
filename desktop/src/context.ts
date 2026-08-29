@@ -6,6 +6,7 @@ import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATAL
 import { allocateCells, CHARS_PER_TOKEN, mergeUses, rateByContext, systemChars, usageKey, type ContextUse } from "../shared/usage";
 import { SETTINGS_KEY, tagName, validateSettings } from "../shared/settings";
 import { keepKindLabel, type KeptNote } from "../shared/vault";
+import { COMPONENT_ZONE_LABEL } from "../shared/components";
 import type { LiveAgent } from "../shared/agents";
 import type { Message, Thread } from "./types";
 import type { Block } from "./runs";
@@ -605,7 +606,7 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
     if (pick.kind === "component") {
       try {
         const built = await window.emma.readComponent(pick.id);
-        sections.push({ heading: `The component "${built.title}" (${built.id}), which you built into ${built.anchor.label}`, body: built.code, label: pick.title });
+        sections.push({ heading: `The component "${built.title}" (${built.id}), which you built into ${COMPONENT_ZONE_LABEL}${built.expands ? " and which opens full screen" : ""}${built.variables?.length ? `, reading ${built.variables.join(", ")}` : ""}`, body: built.code, label: pick.title });
       } catch (reason) {
         sections.push({ heading: `Component ${pick.title}`, body: `Could not be read: ${reasonText(reason)}`, label: pick.title });
       }

@@ -6,20 +6,21 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { externalUrl, keepRequest, publicUrl, runCommandRequest, statsExportRequest, trustedSender, validJpegDataUrl, validateRequest, vaultRequest, type Request } from "./ipc";
+import { roundComputerCursor, COMPUTER_CURSOR_MS, type ComputerRunProgress } from "../shared/computer";
 import { renderResults, webSearch } from "./web-search";
 import { clipPage, fetchReadablePage, frontmostApplication, frontmostPage, frontmostTab } from "./clip";
 import { discoverImports, saveImportManifest } from "./imports";
 import { loadUiPlugins } from "./plugins";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout, type NotchGeometry } from "./overlay";
-import { BoundedLines, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
+import { BoundedLines, HostResponses, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
 import { describeRun, packVariables, parseVariables, parseWorkflow, runWorkflow, type WorkflowNode } from "../shared/workflow";
 import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
 import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "./invocations";
 import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
 import { artifactFiles, deleteArtifact, listArtifacts, queryArtifact, readArtifact, readArtifactFile, updateArtifact, updateArtifactFile, writeArtifact, writeArtifactFile } from "./artifacts";
 import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
-import { deleteComponent, listComponents, readComponent, readComponentShot, setComponentAnchor, setComponentEnabled, writeComponent, writeComponentShot } from "./components";
-import { COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, PLACE_TIMEOUT_MS, type ComponentAnchor } from "../shared/components";
+import { ComponentRequests, deleteComponent, listComponents, readComponent, readComponentShot, setComponentEnabled, setComponentExpands, writeComponent, writeComponentShot } from "./components";
+import { COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, COMPONENT_ZONE_LABEL } from "../shared/components";
 import { deletePlan, editPlan, listPlans, readPlan, writePlan } from "./plans";
 import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
@@ -54,7 +55,7 @@ import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
 import { forceArm, setConnections, setImprovements, setPrompts, setSystemPrompt, verifierLessons, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { detectConnections, isConnectionId, outdatedConnections, setUpConnection } from "./connections";
-import { Harness, describePath, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
+import { Harness, escapesRoot, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
 import { advise } from "./advisor";
@@ -76,6 +77,7 @@ const SNAPSHOT_CACHE_MS = 5000;
 class Host {
   private child: ChildProcessWithoutNullStreams;
   private lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
+  private responses = new HostResponses();
   private nextId = 1;
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: Error | null = null;
@@ -88,7 +90,7 @@ class Host {
       try { for (const line of this.lines.push(data)) { if (this.failure) break; this.receive(line); } }
       catch (error) { this.abort(error instanceof Error ? error : new Error("Emma host protocol error")); }
     });
-    this.child.stdout.on("end", () => { try { this.lines.end(); } catch (error) { this.abort(error as Error); } });
+    this.child.stdout.on("end", () => { try { this.lines.end(); this.responses.end(); } catch (error) { this.abort(error as Error); } });
     this.child.stderr.on("data", (data) => console.error(String(data).trim()));
     this.child.once("error", (error) => this.fail(error));
     this.child.stdin.on("error", (error) => this.fail(error));
@@ -135,7 +137,10 @@ class Host {
 
   private receive(line: string) {
     try {
-      const response = parseHostLine(line);
+      const frame = parseHostLine(line);
+      if (!("dueJob" in frame) && !this.pending.has(frame.id)) throw new Error("Unexpected host response ID");
+      const response = this.responses.push(frame);
+      if (!response) return;
       if ("dueJob" in response) {
         const job = response.dueJob;
         this.storeChanged();
@@ -162,6 +167,7 @@ class Host {
     this.snapshot = undefined;
     for (const request of this.pending.values()) request.reject(this.failure);
     this.pending.clear();
+    this.responses.clear();
   }
 }
 
@@ -184,6 +190,12 @@ const terminals = new Terminals(
   () => broadcast("emma:terminals"),
 );
 let runBanner: BrowserWindow | null = null;
+let computerCursorWindow: BrowserWindow | null = null;
+let computerCursorReady = false;
+let computerCursorTimer: ReturnType<typeof setTimeout> | undefined;
+let computerProgress: ComputerRunProgress | undefined;
+let computerCursorProgress: ComputerRunProgress | undefined;
+let computerCursorAt = 0;
 const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute }>();
 
 const DEFAULT_THREAD_TITLE = "New thread";
@@ -268,6 +280,7 @@ const harnessRouted = new Map<string, string>();
 const harnessChildren = new Map<string, { childId: string; title: string; startedAt: number; client: Harness }>();
 const stopThread = (threadId: string) => {
   goalStopped.add(threadId);
+  if (computerRuntime?.threadId === threadId) computerRuntime.abort();
   agents?.stop(threadId);
   const child = harnessChildren.get(threadId);
   if (child) void child.client.cancelChild(child.childId).catch(() => undefined);
@@ -319,21 +332,8 @@ const toolsChanged = async () => {
 };
 const artifactsChanged = () => broadcast("emma:artifacts-changed");
 const componentsChanged = () => broadcast("emma:components-changed");
+const componentRequests = new ComponentRequests();
 
-const placements = new Map<string, ComponentAnchor>();
-let placeAsk: { id: string; settle: (anchor: ComponentAnchor | undefined) => void } | undefined;
-
-function askPlace(title: string): Promise<ComponentAnchor | undefined> {
-  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Emma's window is not open, so there is nowhere for the user to point at.");
-  placeAsk?.settle(undefined);
-  const id = randomUUID();
-  needsYou("Emma needs a spot", `Point at where \u201c${title}\u201d goes`);
-  mainWindow.webContents.send("emma:component-place", { id, title });
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => { if (placeAsk?.id === id) placeAsk.settle(undefined); }, PLACE_TIMEOUT_MS);
-    placeAsk = { id, settle: (anchor) => { clearTimeout(timer); placeAsk = undefined; resolve(anchor); } };
-  });
-}
 const plansChanged = () => broadcast("emma:plans-changed");
 let overlayPreferencesReady = false;
 let queuedOverlayToggle: { command?: string } | null = null;
@@ -483,7 +483,7 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
   return window;
 }
 
-async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotation" | "hotspot" | "run" | "radial" = "main", extra: Record<string, string> = {}) {
+async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotation" | "hotspot" | "run" | "radial" | "computerCursor" = "main", extra: Record<string, string> = {}) {
   const painted = new Promise<void>((resolve) => {
     window.once("ready-to-show", () => resolve());
     setTimeout(resolve, 2000).unref();
@@ -499,7 +499,7 @@ async function load(window: BrowserWindow, mode: "main" | "overlay" | "annotatio
     if (window.isDestroyed()) return;
     if (mode === "main") window.show();
     else if (mode === "overlay" || mode === "annotation") { window.showInactive(); window.focus(); }
-    else window.showInactive();
+    else if (mode !== "computerCursor") window.showInactive();
   } catch (error) {
     if (!window.isDestroyed()) console.error("Emma window failed to load", error);
   }
@@ -956,7 +956,6 @@ async function skillParams(task: string): Promise<Record<string, string>> {
   return { skillContext: skill.instructions };
 }
 
-
 function goalIpc(value: unknown): Record<string, unknown> & { threadId: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Goal request is invalid");
   const request = value as Record<string, unknown>;
@@ -1021,8 +1020,35 @@ function forceArmRequest(value: unknown): { threadId: string; arm: Arm } {
   return { threadId, arm: candidate.arm };
 }
 
-function reportRunProgress(step: number, action: string, actions: number) {
-  if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", { step, action, actions });
+function reportRunProgress(progress: ComputerRunProgress) {
+  computerProgress = progress;
+  if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", progress);
+  if (progress.cursor === undefined) return;
+  computerCursorProgress = progress;
+  computerCursorAt = Date.now();
+  showComputerCursor();
+}
+
+function showComputerCursor() {
+  clearTimeout(computerCursorTimer);
+  const window = computerCursorWindow;
+  if (!window || window.isDestroyed()) return;
+  const progress = computerCursorProgress;
+  const remaining = COMPUTER_CURSOR_MS - (Date.now() - computerCursorAt);
+  const cursor = progress?.cursor && roundComputerCursor(progress.cursor);
+  if (!computerRuntime?.active || !computerCursorReady || !cursor || remaining <= 0) {
+    window.hide();
+    return;
+  }
+  try {
+    window.setBounds(cursor.bounds);
+    window.webContents.send("emma:computer-run-progress", { ...progress, cursor });
+    window.showInactive();
+    window.moveAbove(`window:${cursor.windowId}:0`);
+    computerCursorTimer = setTimeout(() => { if (!window.isDestroyed()) window.hide(); }, remaining);
+  } catch {
+    window.hide();
+  }
 }
 
 const BRIDGE_EVENTS: Record<string, (payload: unknown) => BridgeEvent> = {
@@ -1212,11 +1238,9 @@ function shownToUser(file: string, said: string): string {
   return `${said} It is saved at ${held.path}. Show it to the user by writing ![a short description](${held.path}) on its own line in your answer — that draws the picture in the conversation. You cannot see it yourself; look_at_image reads it if you need to know what is in it.`;
 }
 
-async function ensureComputerRun(threadId: string, task: string) {
-  if (computerRuntime!.active) return;
-  computerRuntime!.start(threadId);
-  openRunBanner(threadId, task);
-  await computerRuntime!.screenshot();
+function ensureComputerRun(threadId: string) {
+  if (!computerRuntime!.threadId) computerRuntime!.start(threadId);
+  if (computerRuntime!.threadId !== threadId) throw new Error("Another thread owns the computer run. Wait for it to finish.");
 }
 
 async function reportContext(turn: TurnRequest, compact: boolean): Promise<string> {
@@ -1280,14 +1304,18 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       return `${args.id} is ${state}.\n\n${read.output.trim() || "(no output yet)"}`;
     }
     case "computer": {
-      await ensureComputerRun(turn.threadId, turn.content);
-      reportRunProgress(computerRuntime!.steps, String(args.args.action ?? "act"), computerRuntime!.actions);
-      if (!computerRuntime!.step()) throw new Error("This computer run reached its step limit.");
-      const said = await computerRuntime!.execute(args.args);
-      if (args.args.action !== "screenshot" || !computerRuntime!.shot) return said;
-      const file = shotFile("jpg");
-      await writeFile(file, Buffer.from(computerRuntime!.shot.slice(computerRuntime!.shot.indexOf(",") + 1), "base64"));
-      return shownToUser(file, said);
+      ensureComputerRun(turn.threadId);
+      const said = await computerRuntime!.execute(turn.threadId, args.args, async (target, signal) => {
+        const allowed = await agents!.question({
+          threadId: turn.threadId,
+          tool: "computer",
+          summary: `Allow Emma to use ${target.name}?`,
+          detail: `${target.id}\n${target.path}\nProcess ${target.pid}\n\nAllow Emma to read and control this app in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`,
+        }, { humanOnly: true, signal });
+        if (allowed && !signal.aborted) openRunBanner(turn.threadId, `${target.name} · background app control`);
+        return allowed;
+      });
+      return said;
     }
     case "browser": {
       if (args.action !== "close") broadcast("emma:browser-show", { threadId: turn.threadId });
@@ -1373,8 +1401,6 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       return `${visualMarker(keepVisual({ title: args.title, html: args.html }))} Drawn in the conversation, under the answer you are writing. Do not repeat in prose what it already shows.`;
   }
 }
-
-
 
 function goalRequest(method: string, params: Record<string, string>): Promise<ThreadRecord | undefined> {
   return host!.request({ method, params }).then((thread) => {
@@ -1562,37 +1588,35 @@ async function artifactTool(args: Extract<ToolArgs, { name: "artifact" }>, threa
   }
 }
 
+function variableNote(variables: string[] | undefined): string {
+  if (!variables?.length) return "";
+  const missing = variables.filter((name) => !process.env[name]);
+  if (!missing.length) return ` It reads ${variables.join(", ")}, and every one of them is set.`;
+  return ` It needs ${missing.join(", ")}: tell the user to open Settings \u2192 Built by Emma and fill ${missing.length > 1 ? "them" : "it"} in, or the component has nothing to fetch with.`;
+}
+
 async function componentTool(args: Extract<ToolArgs, { name: "component" }>, threadId: string): Promise<string> {
   const userData = app.getPath("userData");
   switch (args.action) {
     case "list": {
       const built = await listComponents(userData);
-      if (!built.length) return 'Emma has built nothing into her interface yet. Start with component {"action":"place"} \u2014 the user points at where it goes.';
-      return `Components:\n${built.map((one) => `${one.id} \u2014 ${one.title} \u2014 in ${one.anchor.label} \u2014 v${one.version}${one.disabled ? " \u2014 switched off by the user" : ""}`).join("\n")}`;
+      if (!built.length) return 'Emma has built nothing into her interface yet. Build one with component {"action":"create","title":"\u2026","code":"\u2026"} and it appears in the context bar.';
+      return `Components:\n${built.map((one) => `${one.id} \u2014 ${one.title} \u2014 v${one.version}${one.expands ? " \u2014 opens full screen" : ""}${one.variables?.length ? ` \u2014 needs ${one.variables.join(", ")}` : ""}${one.disabled ? " \u2014 switched off by the user" : ""}`).join("\n")}`;
     }
     case "get": {
       const one = await readComponent(userData, args.id!);
-      return `${one.title} (${one.id}) \u2014 in ${one.anchor.label}, version ${one.version}\n\n${one.code}`;
-    }
-    case "place": {
-      const anchor = await askPlace(args.title ?? "the new component");
-      if (!anchor) return "The user did not pick a spot, so there is nowhere to build. Ask them where it should go before trying again.";
-      placements.set(threadId, anchor);
-      return `The user pointed at ${anchor.label}. Now ask them whatever the request left open \u2014 what it shows, where its numbers come from, how it behaves \u2014 unless they already said it. Then build it with component {"action":"create","title":"\u2026","code":"\u2026"}.`;
+      return `${one.title} (${one.id}) \u2014 version ${one.version}${one.expands ? ", opens full screen" : ""}${one.variables?.length ? `, needs ${one.variables.join(", ")}` : ""}\n\n${one.code}`;
     }
     case "create": {
-      const anchor = placements.get(threadId);
-      if (!anchor) throw new Error('There is nowhere to put it yet. Call component {"action":"place"} first: the user points at the spot and this thread remembers it.');
-      const saved = await writeComponent(userData, { title: args.title!, code: args.code!, anchor, sourceThreadId: threadId });
-      placements.delete(threadId);
+      const saved = await writeComponent(userData, { title: args.title!, code: args.code!, expands: args.expand, variables: args.variables, sourceThreadId: threadId });
       componentsChanged();
-      return `Built "${saved.title}" (${saved.id}) into ${anchor.label}, and it is on screen now. Ask the user how it looks: component {"action":"rewrite","id":"${saved.id}","code":"\u2026"} reloads it in place while they watch. The \u22ef in its corner is how they delete it.`;
+      return `Built "${saved.title}" (${saved.id}) into ${COMPONENT_ZONE_LABEL}, and it is on screen now.${variableNote(saved.variables)} Ask the user how it looks: component {"action":"rewrite","id":"${saved.id}","code":"\u2026"} reloads it in place while they watch. The \u22ef in its header is how they switch it off or delete it.`;
     }
     case "rewrite": {
       const existing = await readComponent(userData, args.id!);
-      const saved = await writeComponent(userData, { id: existing.id, title: args.title ?? existing.title, code: args.code!, sourceThreadId: threadId });
+      const saved = await writeComponent(userData, { id: existing.id, title: args.title ?? existing.title, code: args.code!, expands: args.expand, variables: args.variables, sourceThreadId: threadId });
       componentsChanged();
-      return `Reworked "${saved.title}" \u2014 v${saved.version}, reloaded in place. Ask whether that is what they meant.`;
+      return `Reworked "${saved.title}" \u2014 v${saved.version}, reloaded in place.${variableNote(saved.variables)} Ask whether that is what they meant.`;
     }
   }
 }
@@ -1636,13 +1660,13 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
     apiKey: route ? route.apiKey : process.env.OPENROUTER_API_KEY,
     chatUrl: route?.chatUrl,
     onDelta: (threadId, delta) => {
+      if (agents && !agents.noteDelta(threadId, delta)) return;
       harnessText.set(threadId, (harnessText.get(threadId) ?? "") + delta);
-      agents?.noteDelta(threadId, delta);
       broadcast("emma:delta", { threadId, delta });
     },
     onThought: (threadId, delta) => {
+      if (agents && !agents.noteDelta(threadId, delta, true)) return;
       harnessThought.set(threadId, (harnessThought.get(threadId) ?? "") + delta);
-      agents?.noteDelta(threadId, delta);
       broadcast("emma:delta", { threadId, delta, thinking: true });
     },
     onToolCall: (call) => {
@@ -1663,9 +1687,6 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) stopThread(threadId);
     },
     onChildStart: async ({ parentThreadId, childId, title }) => {
-      // Named, not titled: the harness hands a child the sentence it was given,
-      // and a fanned-out plan gives every step of a wave the same one. The prompt
-      // stays on the record below — it is what the transcript reads back.
       const name = agentName(childId, new Set(agents!.list().map((agent) => agent.title)));
       const created = await host!.request({ method: "createThread", params: { parentThreadId, title: name, kind: "subagent" } });
       const threadId = (created as { id?: unknown }).id;
@@ -1680,7 +1701,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         title: name,
         parentThreadId,
         depth: (parent?.depth ?? 0) + 1,
-        mode: parent?.mode ?? DEFAULT_PERMISSION_MODE,
+        mode: agents!.mode(parentThreadId),
         model: modelName(parent?.model),
         effort: parent?.effort ?? "",
         parentSpanId: agents!.spanFor(parentThreadId),
@@ -1696,8 +1717,6 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       harnessText.delete(threadId);
       harnessThought.delete(threadId);
       const spent = agents!.list().find((agent) => agent.threadId === threadId);
-      // A reason means the process went out from under it rather than the child
-      // finishing, so the rail says so instead of calling an interrupted run done.
       agents!.finish(threadId, reason);
       void recordTurn({
         threadId,
@@ -1719,6 +1738,8 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       }
     },
     onPermission: async (ask, options, context) => {
+      const authorized = agents!.authorization(ask.threadId);
+      if (!authorized()) return null;
       const pick = (...kinds: string[]) => {
         for (const kind of kinds) {
           const found = options.find((option) => option.kind === kind)?.optionId;
@@ -1731,10 +1752,10 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         broadcast("emma:step", { threadId: ask.threadId, toolCallId: ask.id, title: `blocked: ${ask.tool} is outside the connected folder`, kind: "other", status: "failed", at: Date.now() });
         return deny();
       }
-      if (context.mode === "full") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
-      if (context.mode === "acceptEdits" && context.kind === "edit") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
+      if (agents!.mode(ask.threadId) === "full") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
+      if (agents!.mode(ask.threadId) === "acceptEdits" && context.kind === "edit") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
       const allowed = await agents!.question({ threadId: ask.threadId, tool: ask.tool, summary: ask.summary, detail: ask.detail });
-      return allowed ? pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null : deny();
+      return allowed && authorized() ? pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null : deny();
     },
     onToolRequest: (threadId, name, args) => runEmmaTool(threadId, name, args),
     mcpServers: (threadId) => harnessMcpServers(threadId),
@@ -1768,20 +1789,27 @@ const harnessBefore = new Map<string, { threadId: string; text: string | null }>
 
 function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | undefined {
   if (call.kind !== "edit") return;
-  const relative = describePath(call.input);
-  if (!relative) return;
+  const relative = call.filePath;
+  if (typeof relative !== "string" || !relative || relative.includes("\0") || escapesRoot(cwd, relative)) return;
   const grant = folders!.list().find((folder) => folder.path === cwd);
   if (!grant) return;
   const absolute = path.resolve(cwd, relative);
   if (absolute !== cwd && !absolute.startsWith(cwd + path.sep)) return;
   const read = () => { try { return readFileSync(absolute, "utf8"); } catch { return null; } };
 
-  if (call.status !== "completed") {
-    if (!harnessBefore.has(call.toolCallId)) harnessBefore.set(call.toolCallId, { threadId: call.threadId, text: read() });
+  const key = `${call.threadId}:${call.toolCallId}`;
+  if (call.status === "failed") {
+    harnessBefore.delete(key);
     return;
   }
-  const before = harnessBefore.get(call.toolCallId)?.text ?? null;
-  harnessBefore.delete(call.toolCallId);
+  if (call.status !== "completed") {
+    if (!harnessBefore.has(key)) harnessBefore.set(key, { threadId: call.threadId, text: read() });
+    return;
+  }
+  const opened = harnessBefore.get(key);
+  if (!opened) return;
+  const before = opened.text;
+  harnessBefore.delete(key);
   const after = read();
   if (after === null || after === before) return;
   const change: FileChange = { folderId: grant.id, path: path.relative(cwd, absolute), before, after, at: Date.now() };
@@ -1802,15 +1830,17 @@ const HARNESS_TOOL_NAMES: Record<string, string> = { look_at_image: "vision" };
 async function runEmmaTool(threadId: string, wireName: string, args: Record<string, unknown>): Promise<string> {
   const name = HARNESS_TOOL_NAMES[wireName] ?? wireName;
   const turn = harnessTurns.get(threadId);
-  if (!turn) throw new Error("Emma's tools are only available while a turn is running.");
-  const gate = toolGate(turn.mode, name, toolSettings.disabledTools);
+  const authorized = agents!.authorization(threadId);
+  if (!turn || !authorized()) throw new Error("Emma's tools are only available while a turn is running.");
+  const mode = agents!.mode(threadId);
+  const gate = toolGate(mode, name, toolSettings.disabledTools);
   if (gate === "hidden") {
-    throw new Error(`${wireName} is not available in ${turn.mode} mode, or is switched off in Settings → Tools.`);
+    throw new Error(`${wireName} is not available in ${mode} mode, or is switched off in Settings → Tools.`);
   }
   const unavailable = whyUnavailable(threadId, name, wireName);
   if (unavailable) throw new Error(unavailable);
   const parsed = parseToolArgs(name, JSON.stringify(args));
-  if (gate === "ask") {
+  if (gate === "ask" && name !== "computer") {
     const allowed = await agents!.question({
       threadId,
       tool: name,
@@ -1819,9 +1849,11 @@ async function runEmmaTool(threadId: string, wireName: string, args: Record<stri
     });
     if (!allowed) throw new Error(`The user did not allow ${wireName} to run. Do not try it again this turn; say what you needed it for instead.`);
   }
+  if (harnessTurns.get(threadId) !== turn || !authorized()) throw new Error("This turn is no longer running.");
+  const current = { ...turn, mode: agents!.mode(threadId) };
   const call = () => OWN_TOOLS.has(name)
-    ? agents!.runThreadTool(parsed, turn)
-    : executeTool(parsed as ToolArgs, turn);
+    ? agents!.runThreadTool(parsed, current)
+    : executeTool(parsed as ToolArgs, current);
   return turn.bench ? await benchReplay.run(true, call) : await call();
 }
 
@@ -1915,8 +1947,6 @@ function selectModel(method: string, params: Record<string, string>): unknown {
 
 function answerRequest(method: string, params: Record<string, string> = {}): Promise<unknown> {
   switch (method) {
-    // Every models page asks for the catalog on mount; only an explicit reload, or a day
-    // since the last good fetch, is worth going back to OpenRouter for.
     case "listOpenRouterModels":
       return modelCatalog!.refresh(() => fetchOpenRouterCatalog(), params.force ? 0 : 24 * 60 * 60 * 1000);
     case "selectOpenRouterModel": case "selectProviderModel": case "selectFallbackModel": case "setThreadModel":
@@ -1964,30 +1994,13 @@ function attachedImagePaths(value: unknown): string[] {
   }).slice(0, MAX_TURN_IMAGES);
 }
 
-/** How long a woken harness gets to show that its model connection outlived the sleep. */
 const WAKE_GRACE_MS = 45_000;
-/** The harness each running turn is on, so a sleep can be told which processes to take down. */
 const harnessRuns = new Map<string, Harness>();
-/** Threads whose harness Emma killed because a sleep had wedged it. */
 const sleepWedged = new Set<string>();
 const SLEEP_CONTINUATION = "This Mac went to sleep mid-turn and the connection to the model was lost. Carry on from the last step you finished.";
 const pausedRecovery = new Set<string>();
 const CRASH_CONTINUATION = "The harness process died mid-turn and has been restarted. Carry on from the last step you finished, and check what is already on disk before redoing any of it.";
 
-/**
- * Picks the turns that were in flight when the lid closed back up.
- *
- * macOS freezes this process and takes its sockets down with it, and neither end
- * ever reads the end of the model's stream: the harness sits in a read that will
- * never return, so on wake the run stays at "searching" for as long as the
- * machine was shut. The idle reaper is no answer — it counts awake time, so it
- * is another half hour away, and it fails the turn rather than continuing it.
- *
- * So: wait long enough for a connection that did survive to prove it, then kill
- * whatever is still silent. The turn is picked up in `runOnHarness`, where a
- * fresh process resumes the same session — the id is on disk with the whole
- * transcript behind it — and the model carries on from its last finished step.
- */
 async function resumeAfterSleep() {
   if (harnessRuns.size === 0) return;
   await new Promise((resolve) => setTimeout(resolve, WAKE_GRACE_MS));
@@ -1997,12 +2010,11 @@ async function resumeAfterSleep() {
     sleepWedged.add(threadId);
     wedged.add(client);
   }
-  // Not removed from `harnesses` here: `harnessClient` drops a client that is no
-  // longer running and starts a replacement, which is exactly what the retry wants.
   for (const client of wedged) client.close();
 }
 
 async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key = cwd) {
+  computerRuntime?.end(turn.threadId);
   harnessText.set(turn.threadId, "");
   harnessThought.set(turn.threadId, "");
   harnessRouted.delete(turn.threadId);
@@ -2040,11 +2052,8 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    turn = { ...turn, mode: agents!.mode(turn.threadId) };
     agents!.finish(turn.threadId, detail);
-    // Killed by `resumeAfterSleep` rather than finished, so the turn is not over:
-    // a new process, the same session, and a prompt that says where it left off.
-    // Skipped when the user stopped the run themselves — a sleep is not a reason
-    // to restart something they asked to end.
     if (sleepWedged.delete(turn.threadId) && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
       return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, content: SLEEP_CONTINUATION }, key);
@@ -2057,12 +2066,6 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
         throw error;
       }
     }
-    // The process itself died — a panic, an OOM kill, a pipe that went away —
-    // rather than the turn ending. Same shape as the sleep recovery: a fresh
-    // process resumes the session from disk, so the model still has its whole
-    // transcript and carries on from where it stopped. Once only: a turn already
-    // carrying the continuation crashed with it, which is a crash loop and not a
-    // blip, and a user who stopped the run is not asking for another one.
     if (!client.running && turn.content !== CRASH_CONTINUATION && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
       try {
@@ -2075,10 +2078,6 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     const thought = harnessThought.get(turn.threadId) ?? "";
     const stopped = agents!.list().find((agent) => agent.threadId === turn.threadId);
     const stoppedUsage = { inputTokens: stopped?.inputTokens ?? 0, outputTokens: stopped?.outputTokens ?? 0 };
-    // Recorded even when the run said nothing at all. A turn only reaches the
-    // thread file when it is recorded, so bailing out here threw away the
-    // message the user typed along with everything the run did — a first-call
-    // failure like RequestTooLarge left the thread reading as empty.
     try {
       return await recordTurn({
         threadId: turn.threadId,
@@ -2094,6 +2093,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
       throw error;
     }
   } finally {
+    computerRuntime?.end(turn.threadId);
     harnessText.delete(turn.threadId);
     harnessThought.delete(turn.threadId);
     harnessRouted.delete(turn.threadId);
@@ -2104,13 +2104,13 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
   }
 }
 
-
 const activeGoal = (threadId: string) => {
   const goal = goals.get(threadId);
   return goalPursuing(goal) ? goal : undefined;
 };
 
 async function runTurn(turn: TurnRequest) {
+  if (harnessRuns.has(turn.threadId)) throw new Error("This thread is still running or finishing its current turn. Wait for it to finish before starting another.");
   agents!.forget(turn.threadId);
   turn.subagent ??= threadSubagent(turn.threadId);
   turn.effort ??= harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "";
@@ -2126,10 +2126,6 @@ async function runTurn(turn: TurnRequest) {
     if (nested) {
       harnesses.get(key)?.close();
       harnesses.delete(key);
-    }
-    if (!agents!.busy) {
-      computerRuntime?.abort("finished");
-      closeRunBanner();
     }
     changed();
   }
@@ -2419,7 +2415,7 @@ async function continueGoal(turn: TurnRequest, thread: ThreadRecord | undefined)
       archived = !!noteThread(await driveTurn({
         threadId,
         content: GOAL_CONTINUATION,
-        mode: turn.mode,
+        mode: threadContexts.get(threadId)?.mode ?? agents!.mode(threadId),
         title: turn.title,
         model: turn.model,
         subagent: turn.subagent,
@@ -2432,7 +2428,6 @@ async function continueGoal(turn: TurnRequest, thread: ThreadRecord | undefined)
     goalStopped.delete(threadId);
   }
 }
-
 
 type StoredJob = {
   id: string; title: string; schedule: string; prompt: string; nodes: string; outputs: string;
@@ -2495,7 +2490,7 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
   const mode = asPermissionMode(job.permissionMode);
   const run = await runWorkflow(nodes, parseVariables(job.variables), async (prompt) => {
     const content = await resolveMentions(prompt, job.threadId);
-    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || threadModel(job.threadId) });
+    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel });
     return lastAssistantMessage(outcome) ?? "";
   });
   await host!.request({ method: "finishScheduledJob", params: { jobId: job.jobId, outputs: packVariables(run.variables), depth: String(job.depth) } });
@@ -2672,7 +2667,10 @@ async function researchTool(args: Extract<ToolArgs, { name: "autoresearch" }>): 
 
 function openRunBanner(threadId: string, task: string) {
   closeRunBanner();
-  if (!globalShortcut.isRegistered("Escape")) globalShortcut.register("Escape", () => { computerRuntime?.abort("stopped by the user"); closeRunBanner(); });
+  if (!globalShortcut.register("Escape", () => stopThread(threadId))) {
+    stopThread(threadId);
+    throw new Error("Emma could not register the computer-use Escape stop shortcut");
+  }
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const width = Math.min(520, display.workArea.width - 40);
   const window = secureWindow({
@@ -2696,10 +2694,36 @@ function openRunBanner(threadId: string, task: string) {
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   window.on("closed", () => { if (runBanner === window) runBanner = null; });
   void load(window, "run", { threadId, task: task.slice(0, 200), maxSteps: String(MAX_RUN_STEPS) });
+  const cursor = secureWindow({
+    width: 1,
+    height: 1,
+    title: "Emma activity cursor",
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    focusable: false,
+    skipTaskbar: true,
+  });
+  computerCursorWindow = cursor;
+  cursor.setIgnoreMouseEvents(true);
+  cursor.setHiddenInMissionControl(true);
+  cursor.on("closed", () => { if (computerCursorWindow === cursor) computerCursorWindow = null; });
+  void load(cursor, "computerCursor");
 }
 
 function closeRunBanner() {
   globalShortcut.unregister("Escape");
+  clearTimeout(computerCursorTimer);
+  computerCursorReady = false;
+  computerProgress = undefined;
+  computerCursorProgress = undefined;
+  computerCursorAt = 0;
+  if (computerCursorWindow && !computerCursorWindow.isDestroyed()) computerCursorWindow.destroy();
+  computerCursorWindow = null;
   if (runBanner && !runBanner.isDestroyed()) runBanner.destroy();
   runBanner = null;
 }
@@ -2822,7 +2846,7 @@ if (primaryInstance) app.whenReady().then(() => {
   void host!.request({ method: "snapshot", params: {} }).then(primeGoals).catch(() => undefined);
   capabilities = new ImportedCapabilityRuntime(app.getPath("userData"));
   void seedBuiltinSkills(builtinSkills(), app.getPath("userData"), path.join(app.getPath("userData"), "harness"), ["artifact"]).then(syncHarnessSkills);
-  computerRuntime = new ComputerUseRuntime(nativeHelper());
+  computerRuntime = new ComputerUseRuntime(nativeHelper("emma-computer"), closeRunBanner, console.log, reportRunProgress);
   agents = new AgentRuntime({
     request: (method, params) => answerRequest(method, params),
     ask: (request: PermissionAsk) => {
@@ -2835,7 +2859,13 @@ if (primaryInstance) app.whenReady().then(() => {
       needsYou("Emma needs your approval", request.summary);
       mainWindow.webContents.send("emma:permission-ask", request);
     },
-    answered: (id, allowed) => bridge?.resolved(id, allowed),
+    answered: (id, allowed) => {
+      bridge?.resolved(id, allowed);
+      mainWindow?.webContents.send("emma:permission-resolved", { id, allowed });
+    },
+    stopped: (threadId) => {
+      if (computerRuntime?.threadId === threadId) computerRuntime.abort();
+    },
     verify: (request, threadId) => {
       const lessons = verifierLessons(threadId);
       return review(lessons ? { ...verifier, system: `${verifier.system}\n\n${lessons}` } : verifier, request);
@@ -2873,6 +2903,11 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   void resumeResearchJobs().catch((error: unknown) => console.error("Emma: could not resume the autoresearch jobs", error));
   powerMonitor.on("resume", () => void resumeAfterSleep().catch((error: unknown) => console.error("Emma: could not pick a turn back up after sleep", error)));
+  const stopComputerForLock = () => {
+    if (computerRuntime?.threadId) stopThread(computerRuntime.threadId);
+  };
+  powerMonitor.on("suspend", stopComputerForLock);
+  powerMonitor.on("lock-screen", stopComputerForLock);
   ipcMain.handle("emma:request", async (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) {
       throw new Error("IPC sender is not allowed");
@@ -3110,6 +3145,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return agents!.spans();
   });
+  ipcMain.handle("emma:live-partial", (event) => {
+    mainWindowSender(event);
+    return livePartial();
+  });
   ipcMain.handle("emma:thread-traces", async (event, value: unknown) => {
     mainWindowSender(event);
     const threadId = boundedCapabilityId(value, "Trace thread");
@@ -3122,6 +3161,15 @@ if (primaryInstance) app.whenReady().then(() => {
     const answer = value as Record<string, unknown>;
     if (typeof answer.id !== "string" || typeof answer.allowed !== "boolean") return;
     answerAsk(answer.id, answer.allowed);
+  });
+  ipcMain.on("emma:computer-run-ready", (event) => {
+    if (event.senderFrame !== event.sender.mainFrame) return;
+    if (event.sender === computerCursorWindow?.webContents) {
+      computerCursorReady = true;
+      showComputerCursor();
+    } else if (event.sender === runBanner?.webContents && computerProgress) {
+      event.sender.send("emma:computer-run-progress", computerProgress);
+    }
   });
   ipcMain.handle("emma:steer-agent", async (event, value: unknown) => {
     mainWindowSender(event);
@@ -3148,17 +3196,17 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!value || typeof value !== "object") throw new Error("Revert request is invalid");
     const request = value as Record<string, unknown>;
     const folderId = boundedCapabilityId(request.folderId, "Revert folder");
-    const file = boundedCapabilityId(request.path, "Revert path");
+    const file = request.path;
+    if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
     if (typeof request.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
+    if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
     folders!.write(folderId, file, request.before);
     changed();
     return true;
   });
   ipcMain.on("emma:stop-computer-run", (event) => {
     if (event.senderFrame !== event.sender.mainFrame || ![mainWindow?.webContents, runBanner?.webContents].includes(event.sender)) return;
-    agents?.stopAll();
-    computerRuntime?.abort("stopped by the user");
-    closeRunBanner();
+    if (computerRuntime?.threadId) stopThread(computerRuntime.threadId);
   });
   ipcMain.handle("emma:set-providers", (event, value: unknown) => {
     mainWindowSender(event);
@@ -3347,13 +3395,33 @@ if (primaryInstance) app.whenReady().then(() => {
     componentsChanged();
     return meta;
   });
-  ipcMain.handle("emma:move-component", async (event, value: unknown) => {
+  ipcMain.handle("emma:expand-component", async (event, value: unknown) => {
     mainWindowSender(event);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
     const request = value as Record<string, unknown>;
-    const meta = await setComponentAnchor(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), { selector: request.selector, label: request.label });
+    const meta = await setComponentExpands(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), request.expands === true);
     componentsChanged();
     return meta;
+  });
+  ipcMain.handle("emma:component-fetch", async (event, value: unknown) => {
+    panelSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Component request is invalid");
+    const request = value as Record<string, unknown>;
+    if (Object.keys(request).length !== 2 || !("request" in request)) throw new Error("Component request is invalid");
+    return componentRequests.fetch(app.getPath("userData"), boundedCapabilityId(request.id, "Component"), request.request, process.env, async (meta, template) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return false;
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: "Component API access",
+        message: `Allow “${meta.title.replace(/\s+/g, " ")}” to use ${template.variables.join(", ")}?`,
+        detail: `This approves only the exact request below until Emma quits. A changed request or component needs new approval. Components share Emma's interface and can repeat approved requests; this is not a separate account for each widget. Only approve an endpoint you trust with these credentials.\n\n${JSON.stringify(template, null, 2)}`,
+        buttons: ["Cancel", "Allow this request"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return choice.response === 1;
+    });
   });
   ipcMain.handle("emma:read-component", (event, value: unknown) => {
     mainWindowSender(event);
@@ -3380,15 +3448,6 @@ if (primaryInstance) app.whenReady().then(() => {
     await writeComponentShot(app.getPath("userData"), id, (await window.webContents.capturePage(rect)).toPNG());
     componentsChanged();
     return true;
-  });
-  ipcMain.on("emma:answer-place", (event, value: unknown) => {
-    if (!placeAsk) return;
-    mainWindowSender(event);
-    if (!value || typeof value !== "object" || Array.isArray(value)) { placeAsk.settle(undefined); return; }
-    const request = value as Record<string, unknown>;
-    if (request.id !== placeAsk.id) return;
-    if (typeof request.selector !== "string" || !request.selector.trim()) { placeAsk.settle(undefined); return; }
-    placeAsk.settle({ selector: request.selector, label: typeof request.label === "string" ? request.label : request.selector });
   });
   ipcMain.handle("emma:read-visual", (event, value: unknown) => {
     mainWindowSender(event);

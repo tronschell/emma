@@ -1,19 +1,3 @@
-//! Emma's model transport: OpenAI-compatible Chat Completions.
-//!
-//! Upstream fx speaks Vercel AI Gateway's AI SDK language-model v3 protocol
-//! (`prompt`/`toolChoice` posted to `/v3/ai/language-model`). Emma's provider
-//! seam everywhere else is "an OpenAI-compatible base URL, a model, and the
-//! name of an environment variable holding the credential", so this replaces
-//! that transport rather than wrapping it. It implements the same
-//! `stream_provider.Provider` interface the Gateway and Codex routes do, so
-//! the agent loop, tool admission, and permission layers above are untouched.
-//!
-//! ponytail: non-streaming (`"stream": false`) — the whole reply is handed to
-//! `on_content_chunk` in one call. The loop, tools, and permissions behave
-//! identically; only token-by-token rendering is lost. Upgrade path is an SSE
-//! decoder for OpenAI's `choices[].delta` frames, replacing `parseCompletion`
-//! with an incremental accumulator.
-
 const std = @import("std");
 
 const debug_trace = @import("../core/shared/debug_trace.zig");
@@ -37,8 +21,6 @@ pub const max_content_bytes = 256 * 1024;
 pub const max_tool_calls_per_step = 16;
 pub const max_routed_model_bytes = 256;
 
-/// Emma's default route. Any OpenAI-compatible endpoint works; this one is the
-/// catalog Emma already restricts to free, tool-capable, zero-retention models.
 pub const default_chat_url = "https://openrouter.ai/api/v1/chat/completions";
 pub const chat_url_env = "EMMA_PROVIDER_CHAT_URL";
 
@@ -52,28 +34,16 @@ pub fn chatUrl() []const u8 {
     return if (override.len == 0) default_chat_url else override;
 }
 
-/// The env var Emma's zero-retention toggle sets. This is its only reader.
 pub const zero_retention_env = "EMMA_OPENROUTER_ZDR";
 
 fn isOpenRouter(url: []const u8) bool {
     return std.mem.indexOf(u8, url, "://openrouter.ai/") != null;
 }
 
-/// OpenRouter honours per-request routing flags that keep a turn on endpoints
-/// which neither retain nor train on it.
-///
-/// This follows Emma's own toggle rather than being always on. Zero retention
-/// narrows routing to endpoints that offer it, and most free models offer none —
-/// forcing it turns every one of them into an unroutable 404 with no way for the
-/// user to opt out of a guarantee they never asked for.
 fn zeroRetentionRequested() bool {
     const value = io_mod.getenv(zero_retention_env) orelse return false;
     return value.len > 0;
 }
-
-// ---------------------------------------------------------------------------
-// Request building
-// ---------------------------------------------------------------------------
 
 fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest) ![]u8 {
     const budget: image_attachments.CaptureBudget = if (request.budget) |value|
@@ -82,8 +52,6 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
         .{};
     try budget.check();
 
-    // The vision route hands over already-read, hash-verified bytes and asks for
-    // a schema-shaped answer; neither half is meaningful without the other.
     if (request.verified_images != null and request.response_format == null) {
         return error.MissingStructuredResponseFormat;
     }
@@ -93,8 +61,6 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     const override_index: ?usize = if (request.verified_images == null) null else index: {
         if (request.messages.len == 0) return error.InvalidGatewayHistory;
         const last = request.messages.len - 1;
-        // Verified bytes replace the trailing prompt's own attachments, so a
-        // message that already carries images would send them twice.
         if (request.messages[last].role != .user or request.messages[last].images.len != 0) {
             return error.InvalidGatewayHistory;
         }
@@ -108,13 +74,6 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     defer out.deinit();
     const w = &out.writer;
 
-    // Emma's free router arrives as one comma-separated chain of model IDs,
-    // best first. OpenRouter's own `models` array takes it from there: a model
-    // that is rate-limited, down, or refuses on moderation falls through to the
-    // next in the list, on the provider's side of the wire. The primary is
-    // repeated as `model` so an endpoint that has never heard of `models` — a
-    // local llama-server on EMMA_PROVIDER_CHAT_URL — still gets a routable
-    // request rather than one with no model on it.
     var chain = std.mem.tokenizeScalar(u8, request.model, ',');
     const primary = chain.next() orelse return error.InvalidGatewayHistory;
     try w.writeAll("{\"model\":");
@@ -144,9 +103,6 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
 
     if (try writeTools(alloc, w, tools_json)) {
         try w.writeAll(",\"tool_choice\":");
-        // A required Vision gate is expressed by the advertisement itself, so
-        // the choice has to follow the narrowed tool list rather than the
-        // caller's default.
         const tool_choice = if (request.vision_mode == .required) types.ToolChoice.required else request.tool_choice;
         try std.json.Stringify.value(switch (tool_choice) {
             .auto => "auto",
@@ -158,8 +114,6 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     if (request.response_format) |format| try writeResponseFormat(alloc, w, format);
     if (request.max_output_tokens) |value| try w.print(",\"max_tokens\":{d}", .{value});
 
-    // Of the resolved provider options only these two have an OpenAI spelling.
-    // `fast` is an AI Gateway routing hint and prompt caching is implicit here.
     if (request.provider_options.reasoning) |*effort| {
         try w.writeAll(",\"reasoning_effort\":");
         try std.json.Stringify.value(effort.label(), .{}, w);
@@ -192,8 +146,6 @@ fn writeMessage(
     try std.json.Stringify.value(gateway_json.roleName(message.role), .{}, w);
 
     if (message.role == .tool) {
-        // A tool result is bound to the call it answers; without the id the
-        // provider cannot pair them and rejects the whole turn.
         try w.writeAll(",\"tool_call_id\":");
         try std.json.Stringify.value(message.tool_call_id orelse "", .{}, w);
     }
@@ -214,7 +166,6 @@ fn writeMessage(
             try w.writeAll(",\"function\":{\"name\":");
             try std.json.Stringify.value(call.name, .{}, w);
             try w.writeAll(",\"arguments\":");
-            // Arguments cross the wire as a JSON *string* holding JSON.
             try std.json.Stringify.value(
                 if (call.arguments_json.len == 0) "{}" else call.arguments_json,
                 .{},
@@ -228,10 +179,6 @@ fn writeMessage(
     try w.writeByte('}');
 }
 
-/// Resolves the flat fx advertisement for this step. A `required` Vision gate
-/// narrows it to the Vision tool alone so the model cannot answer around the
-/// gate; `optional` appends Vision to whatever else is on offer. Caller owns
-/// the returned slice.
 fn advertisedToolsJson(alloc: Allocator, request: stream_provider.BuildRequest) ![]u8 {
     const vision_schema = if (request.vision_mode != .unavailable)
         try visionSchemaJson(alloc, request.tool_registry)
@@ -252,8 +199,6 @@ fn advertisedToolsJson(alloc: Allocator, request: stream_provider.BuildRequest) 
     defer schemas.deinit(alloc);
     try schemas.appendSlice(alloc, request.selected_dynamic_tool_schemas);
     if (vision_schema) |schema| try schemas.append(alloc, schema);
-    // Reused so a dynamic tool that shadows a built-in name is dropped here
-    // rather than advertised twice.
     return tool_advertisement.buildGatewayToolsJsonWithSelectedDynamicSchemas(alloc, base, schemas.items);
 }
 
@@ -262,8 +207,6 @@ fn visionSchemaJson(alloc: Allocator, registry: tool_dispatch.Registry) ![]u8 {
     return gateway_schema.builtinFunctionSchemaJsonAlloc(alloc, vision_tool.gateway_schema);
 }
 
-/// fx advertises tools flat (`{"type","name","description","inputSchema"}`);
-/// OpenAI nests them under `function` and calls the schema `parameters`.
 fn writeTools(alloc: Allocator, w: *std.Io.Writer, tools_json: []const u8) !bool {
     const trimmed = std.mem.trim(u8, tools_json, " \n\r\t");
     if (trimmed.len == 0) return false;
@@ -339,8 +282,6 @@ fn writeImageContentParts(
     try w.writeByte(']');
 }
 
-/// OpenAI carries image bytes inline as a data URL under `image_url`, where the
-/// AI SDK used a `file` part with separate `mediaType` and `data` fields.
 fn writeImagePart(
     w: *std.Io.Writer,
     snapshot: image_attachments.VerifiedSnapshot,
@@ -350,7 +291,6 @@ fn writeImagePart(
     try w.writeAll("{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
     try w.writeAll(snapshot.media_type);
     try w.writeAll(";base64,");
-    // Chunked so a large attachment stays interruptible by the caller's budget.
     var offset: usize = 0;
     while (offset < snapshot.bytes.len) {
         try budget.check();
@@ -361,8 +301,6 @@ fn writeImagePart(
     try w.writeAll("\"}}");
 }
 
-/// The AI SDK asked for structured output with a flat `responseFormat`; OpenAI
-/// wraps the same name/description/schema triple in `json_schema`.
 fn writeResponseFormat(
     alloc: Allocator,
     w: *std.Io.Writer,
@@ -383,10 +321,6 @@ fn writeResponseFormat(
     try std.json.Stringify.value(schema.value, .{}, w);
     try w.writeAll("}}");
 }
-
-// ---------------------------------------------------------------------------
-// Transport
-// ---------------------------------------------------------------------------
 
 fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) anyerror!stream_provider.Result {
     if (request.cancel_flag.load(.seq_cst)) return error.Cancelled;
@@ -511,20 +445,17 @@ fn freeCompletion(alloc: Allocator, completion: *types.GatewayCompletion) void {
     completion.* = .{};
 }
 
-/// How much of an unparseable body to trace. Enough to see the shape that broke,
-/// short enough not to spill a whole answer into a log.
 const trace_body_bytes = 600;
 
 fn parseCompletion(alloc: Allocator, body: []const u8) !types.GatewayCompletion {
-    // A 200 that this function rejects is otherwise invisible: the caller sees
-    // only `InvalidProviderResponse` with no way to learn what the provider sent.
     errdefer debug_trace.logf(
         "emma_openai",
         "unparseable_completion body={s}",
         .{body[0..@min(body.len, trace_body_bytes)]},
     );
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
-        return error.InvalidProviderResponse;
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidProviderResponse,
     };
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProviderResponse;
@@ -545,25 +476,20 @@ fn parseCompletion(alloc: Allocator, body: []const u8) !types.GatewayCompletion 
         return error.InvalidProviderResponse;
     }
 
-    // OpenRouter (and vLLM, and DeepSeek) put the scratchpad here; a provider
-    // that does not reason simply omits it. Anything that is not a string is
-    // ignored rather than fatal: reasoning is never worth failing a good answer.
     const reasoning: []const u8 = if (message.object.get("reasoning")) |value| switch (value) {
         .string => |text| text,
         else => "",
     } else "";
 
     var completion: types.GatewayCompletion = .{};
+    errdefer freeCompletion(alloc, &completion);
     if (parsed.value.object.get("model")) |routed| {
         if (routed == .string and routed.string.len > 0 and routed.string.len <= max_routed_model_bytes) {
             completion.routed_model = try alloc.dupe(u8, routed.string);
         }
     }
-    errdefer if (completion.routed_model) |routed| alloc.free(@constCast(routed));
     completion.tool_calls = try parseToolCalls(alloc, message.object.get("tool_calls"));
-    errdefer types.freeToolCallSlice(alloc, @constCast(completion.tool_calls));
 
-    // An empty reply with no tool call is a dead turn, not a valid answer.
     if (content.len == 0 and completion.tool_calls.len == 0) return error.InvalidProviderResponse;
     completion.content = try alloc.dupe(u8, content);
     if (reasoning.len > 0 and reasoning.len <= max_content_bytes and std.unicode.utf8ValidateSlice(reasoning)) {
@@ -607,7 +533,7 @@ fn parseToolCalls(alloc: Allocator, value: ?std.json.Value) ![]const types.ToolC
 
     var list: std.ArrayList(types.ToolCall) = .empty;
     errdefer {
-        types.freeToolCallSlice(alloc, list.items);
+        for (list.items) |call| types.freeToolCall(alloc, call);
         list.deinit(alloc);
     }
 
@@ -633,19 +559,17 @@ fn parseToolCalls(alloc: Allocator, value: ?std.json.Value) ![]const types.ToolC
         else
             "";
 
-        try list.append(alloc, .{
-            .id = try alloc.dupe(u8, id),
-            .name = try alloc.dupe(u8, name.string),
-            .arguments_json = try alloc.dupe(u8, arguments),
+        const call = try types.dupeToolCall(alloc, .{
+            .id = id,
+            .name = name.string,
+            .arguments_json = arguments,
         });
+        errdefer types.freeToolCall(alloc, call);
+        try list.append(alloc, call);
     }
 
     return try list.toOwnedSlice(alloc);
 }
-
-// ---------------------------------------------------------------------------
-// Checks
-// ---------------------------------------------------------------------------
 
 test "request body is OpenAI shaped and rewrites fx tool advertisements" {
     const alloc = std.testing.allocator;
@@ -665,12 +589,10 @@ test "request body is OpenAI shaped and rewrites fx tool advertisements" {
     });
     defer alloc.free(body);
 
-    // OpenAI vocabulary, not AI SDK vocabulary.
     try std.testing.expect(std.mem.indexOf(u8, body, "\"messages\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt\":[") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_choice\":\"auto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"toolChoice\"") == null);
-    // The flat fx tool became a nested OpenAI function with `parameters`.
     try std.testing.expect(std.mem.indexOf(u8, body, "\"function\":{\"name\":\"read_file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"inputSchema\"") == null);
@@ -689,7 +611,6 @@ test "one model stays one model, and a chain becomes OpenRouter's fallback array
     });
     defer alloc.free(one);
     try std.testing.expect(std.mem.indexOf(u8, one, "\"model\":\"nvidia/nemotron-3-super-120b-a12b:free\"") != null);
-    // No chain, no array: every ordinary turn sends exactly what it used to.
     try std.testing.expect(std.mem.indexOf(u8, one, "\"models\"") == null);
 
     const chained = try build(null, alloc, .{
@@ -716,12 +637,9 @@ test "zero retention rides Emma's toggle instead of every request" {
     });
     defer alloc.free(body);
 
-    // The test process does not set the toggle, so the routing constraint must be
-    // absent: forcing it makes every free OpenRouter model an unroutable 404.
     try std.testing.expect(!zeroRetentionRequested());
     try std.testing.expect(std.mem.indexOf(u8, body, "\"zdr\":true") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"data_collection\"") == null);
-    // Emma's host reads the same name, so the two agree on one setting.
     try std.testing.expectEqualStrings("EMMA_OPENROUTER_ZDR", zero_retention_env);
 }
 
@@ -745,7 +663,6 @@ test "tool results carry their call id and assistant calls round trip" {
 
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_call_id\":\"call_1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"") != null);
-    // No tools advertised means no tool_choice, which some providers reject.
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_choice\"") == null);
 }
 
@@ -768,20 +685,34 @@ test "completion parsing accepts content, tool calls, and usage but rejects empt
     try std.testing.expectEqualStrings("bash", called.tool_calls[0].name);
     try std.testing.expectEqualStrings("call_1", called.tool_calls[0].id);
 
-    // No content and no tool call is a dead turn, not a valid answer.
-    // Reasoning rides beside the answer, not inside it: a model that thinks out
-    // loud must not have its scratchpad rendered as the reply.
     var reasoned = try parseCompletion(alloc,
         \\{"choices":[{"message":{"content":"4","reasoning":"two plus two"}}]}
     );
     defer freeCompletion(alloc, &reasoned);
     try std.testing.expectEqualStrings("4", reasoned.content.?);
     try std.testing.expectEqualStrings("two plus two", reasoned.reasoning.?);
-    // A provider that does not reason leaves it null rather than empty.
     try std.testing.expect(text.reasoning == null);
 
     try std.testing.expectError(error.InvalidProviderResponse, parseCompletion(alloc,
         \\{"choices":[{"message":{"content":""}}]}
     ));
     try std.testing.expectError(error.InvalidProviderResponse, parseCompletion(alloc, "{}"));
+}
+
+test "completion parsing frees earlier tool calls when a later call is invalid" {
+    try std.testing.expectError(error.InvalidProviderResponse, parseCompletion(std.testing.allocator,
+        \\{"model":"test/model","choices":[{"message":{"tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{}"}},null]}}]}
+    ));
+}
+
+test "completion parsing frees every allocation on failure" {
+    const Check = struct {
+        fn run(alloc: Allocator) !void {
+            var completion = try parseCompletion(alloc,
+                \\{"model":"test/model","choices":[{"message":{"content":"hello","reasoning":"thinking","tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{}"}},{"id":"call_2","function":{"name":"list_files","arguments":"{}"}}]}}]}
+            );
+            defer freeCompletion(alloc, &completion);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }

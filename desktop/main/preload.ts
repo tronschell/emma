@@ -123,18 +123,13 @@ contextBridge.exposeInMainWorld("emma", {
   readComponent: (id: string) => ipcRenderer.invoke("emma:read-component", id),
   deleteComponent: (id: string) => ipcRenderer.invoke("emma:delete-component", id),
   enableComponent: (id: string, enabled: boolean) => ipcRenderer.invoke("emma:enable-component", { id, enabled }),
-  moveComponent: (value: { id: string; selector: string; label: string }) => ipcRenderer.invoke("emma:move-component", value),
+  expandComponent: (value: { id: string; expands: boolean }) => ipcRenderer.invoke("emma:expand-component", value),
+  componentFetch: (value: { id: string; request: unknown }) => ipcRenderer.invoke("emma:component-fetch", value),
   shootComponent: (value: { id: string; x: number; y: number; width: number; height: number }) => ipcRenderer.invoke("emma:shoot-component", value),
-  answerPlace: (value: { id: string; selector?: string; label?: string }) => ipcRenderer.send("emma:answer-place", value),
   onComponentsChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:components-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:components-changed", wrapped);
-  },
-  onComponentPlace: (listener: (value: { id: string; title: string }) => void) => {
-    const wrapped = (_event: unknown, value: { id: string; title: string }) => listener(value);
-    ipcRenderer.on("emma:component-place", wrapped);
-    return () => ipcRenderer.removeListener("emma:component-place", wrapped);
   },
   readVisual: (id: string) => ipcRenderer.invoke("emma:read-visual", id),
   exportVisual: (id: string, width: number) => ipcRenderer.invoke("emma:export-visual", { id, width }),
@@ -224,9 +219,10 @@ contextBridge.exposeInMainWorld("emma", {
   clearImportedSkill: (id: string) => ipcRenderer.invoke("emma:clear-imported-skill", id),
   listImportedMcpServers: () => ipcRenderer.invoke("emma:list-imported-mcp-servers"),
   stopComputerRun: () => ipcRenderer.send("emma:stop-computer-run"),
-  onComputerRunProgress: (listener: (value: { step: number; action: string; actions: number }) => void) => {
-    const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object") listener(value as { step: number; action: string; actions: number }); };
+  onComputerRunProgress: (listener: (value: unknown) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => listener(value);
     ipcRenderer.on("emma:computer-run-progress", wrapped);
+    ipcRenderer.send("emma:computer-run-ready");
     return () => ipcRenderer.removeListener("emma:computer-run-progress", wrapped);
   },
   setProviders: (value: unknown) => ipcRenderer.invoke("emma:set-providers", value),
@@ -325,6 +321,7 @@ contextBridge.exposeInMainWorld("emma", {
   deleteMemory: (path: string) => ipcRenderer.invoke("emma:delete-memory", path),
   listAgents: () => ipcRenderer.invoke("emma:list-agents"),
   listSpans: () => ipcRenderer.invoke("emma:list-spans"),
+  livePartial: () => ipcRenderer.invoke("emma:live-partial"),
   threadTraces: (threadId: string) => ipcRenderer.invoke("emma:thread-traces", threadId),
   steerAgent: (value: { threadId: string; text: string }) => ipcRenderer.invoke("emma:steer-agent", value),
   stopAgent: (threadId?: string) => ipcRenderer.send("emma:stop-agent", threadId),
@@ -345,6 +342,14 @@ contextBridge.exposeInMainWorld("emma", {
     const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object") listener(value as { id: string; threadId: string; tool: string; summary: string; detail: string }); };
     ipcRenderer.on("emma:permission-ask", wrapped);
     return () => ipcRenderer.removeListener("emma:permission-ask", wrapped);
+  },
+  onPermissionResolved: (listener: (value: { id: string; allowed: boolean }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const answer = value as { id?: unknown; allowed?: unknown };
+      if (typeof answer?.id === "string" && typeof answer.allowed === "boolean") listener({ id: answer.id, allowed: answer.allowed });
+    };
+    ipcRenderer.on("emma:permission-resolved", wrapped);
+    return () => ipcRenderer.removeListener("emma:permission-resolved", wrapped);
   },
   setZeroRetention: (value: boolean) => ipcRenderer.invoke("emma:set-zero-retention", value),
   listCredentials: () => ipcRenderer.invoke("emma:list-credentials"),

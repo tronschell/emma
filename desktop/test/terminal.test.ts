@@ -2,8 +2,89 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { MAX_TERMINAL_SELECTION_CHARS, MAX_TERMINAL_SELECTION_LINES, terminalSelection, terminalTitle } from "../shared/terminal";
+import ts from "typescript";
+import { MAX_TERMINAL_SELECTION_CHARS, MAX_TERMINAL_SELECTION_LINES, terminalSelection, terminalTitle, type TerminalTab } from "../shared/terminal";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
+
+test("terminal subscriptions follow the selected thread and ignore stale tabs and responses", async () => {
+  const source = ts.createSourceFile("terminal.tsx", readFileSync(path.join(__dirname, "../../src/terminal.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const hook = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "useTerminals");
+  assert.ok(hook);
+  const requests: { threadId: string; resolve: (tabs: TerminalTab[]) => void }[] = [];
+  const listeners = new Set<() => void>();
+  let state: TerminalTab[] = [];
+  let writes = 0;
+  let stopped = 0;
+  let thread: string | undefined;
+  let cleanup: (() => void) | void = undefined;
+  let effect: (() => (() => void) | void) | undefined;
+  const scope = {
+    useState: () => [state, (tabs: TerminalTab[]) => { state = tabs; writes++; }],
+    useEffect(next: () => (() => void) | void, [id]: string[]) {
+      if (id === thread) return;
+      thread = id;
+      effect = next;
+    },
+    window: { emma: {
+      listTerminals: (threadId: string) => new Promise<TerminalTab[]>((resolve) => { requests.push({ threadId, resolve }); }),
+      onTerminals: (listener: () => void) => {
+        listeners.add(listener);
+        return () => { assert.equal(listeners.delete(listener), true); stopped++; };
+      },
+    } },
+  };
+  const invoke = Function(...Object.keys(scope), ts.transpile(`return (${hook.getText(source).replace(/^export /, "")});`, { target: ts.ScriptTarget.ES2022 }))(...Object.values(scope)) as (threadId: string) => TerminalTab[];
+  const render = (id: string) => {
+    const tabs = invoke(id);
+    if (effect) { cleanup?.(); cleanup = effect(); effect = undefined; }
+    return tabs;
+  };
+  const unmount = () => cleanup?.();
+  const respond = async (index: number, tabs: TerminalTab[]) => { requests[index].resolve(tabs); await Promise.resolve(); };
+  const changed = () => listeners.forEach((listener) => listener());
+  const first: TerminalTab = { id: "terminal-first", threadId: "first", title: "shell", cwd: "/tmp", running: true, exitCode: null };
+  const second = { ...first, id: "terminal-second", threadId: "second" };
+
+  assert.deepEqual(render(""), []);
+  assert.equal(requests.length, 0);
+  assert.equal(listeners.size, 0);
+  assert.deepEqual(render("first"), []);
+  assert.equal(listeners.size, 1);
+  assert.equal(requests[0].threadId, "first");
+  await respond(0, [first]);
+  assert.deepEqual(render("first"), [first]);
+  assert.equal(requests.length, 1);
+  changed();
+  await respond(1, [{ ...first, running: false }]);
+  assert.equal(render("first")[0].running, false);
+
+  changed();
+  assert.deepEqual(render("second"), []);
+  assert.equal(stopped, 1);
+  assert.equal(listeners.size, 1);
+  assert.deepEqual(requests.map((request) => request.threadId), ["first", "first", "first", "second"]);
+  await respond(3, [second]);
+  assert.deepEqual(render("second"), [second]);
+  const settledWrites = writes;
+  await respond(2, [first]);
+  assert.deepEqual(render("second"), [second]);
+  assert.equal(writes, settledWrites);
+
+  changed();
+  assert.deepEqual(render(""), []);
+  assert.equal(listeners.size, 0);
+  assert.equal(stopped, 2);
+  assert.equal(requests.length, 5);
+  await respond(4, [second]);
+  assert.deepEqual(render(""), []);
+  assert.equal(writes, settledWrites);
+  render("first");
+  unmount();
+  await respond(5, [first]);
+  assert.equal(listeners.size, 0);
+  assert.equal(stopped, 3);
+  assert.equal(writes, settledWrites);
+});
 
 test("a shell is named after the folder it was opened in", () => {
   assert.equal(terminalTitle("/Users/someone/Documents/emma"), "emma");
@@ -52,4 +133,12 @@ test("the terminal is a full-width row under the thread, not a fourth column", (
   assert.ok(layout && row);
   assert.match(layout, /grid-template-rows:\s*minmax\(0, 1fr\) min\(var\(--terminal-height, 0px\), 60%\)/);
   assert.match(row, /grid-column: 1 \/ -1/);
+});
+
+test("output that arrived during a failed replay is still written to the pane", () => {
+  const source = readFileSync(path.join(__dirname, "..", "..", "src", "terminal.tsx"), "utf8");
+  const replay = source.slice(source.indexOf("readTerminal(tab.id)"), source.indexOf("term.onData"));
+  const failed = replay.slice(replay.indexOf(".catch("));
+  assert.match(failed, /for \(const chunk of queued\) term\.write\(chunk\.data\)/);
+  assert.match(failed, /queued\.length = 0/);
 });

@@ -25,26 +25,35 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 - **A coding agent with the usual verbs.** Files, grep, shell, browser, screen, MCP tools, skills installed mid-turn, work fanned out to subagents.
 - **It drives the CLI you already use.** Claude Code, Codex, Pi, OpenCode, and Cursor run as workers in your working tree.
 - **Every turn is instrumented.** A span tree per run — model requests, tool calls, wall clock, token deltas — appended to the thread's Markdown.
-- **Plain files, no database.** Threads, plans, and notes are Markdown on disk in a folder you picked.
+- **Plain Markdown records.** Threads and plans stay on disk; kept notes go into the vault folder you picked.
 
 ## Quickstart
 
+Published macOS builds are distributed through
+[GitHub Releases](https://github.com/tronschell/emma/releases). For a published
+version, unzip `Emma-vX.Y.Z-darwin-arm64.zip` and move `Emma.app` to Applications.
+Requires macOS 12 or later on Apple silicon. The toolchains below are only
+needed to build from source. If there is no published download yet, use the
+source instructions:
+
 ```bash
+git clone https://github.com/tronschell/emma.git
+cd emma
 npm install --prefix desktop
 npm run dev
 ```
 
-Double-tap the physical **left Option** key to open Quick Ask. Pick a model in **Settings → Models**: any OpenAI-compatible endpoint, including a local one (Ollama, LM Studio, llama.cpp) for a fully offline setup. For hosted, `export OPENROUTER_API_KEY=…` or paste a key in Settings.
+Double-tap the physical **left Option** key to open Quick Ask. Pick a model in **Settings → Models**: any OpenAI-compatible endpoint, including a local one (Ollama, LM Studio, llama.cpp) for local inference. Optional tools and secondary models have their own routes; choosing a local chat model is not an app-wide offline switch. For hosted, `export OPENROUTER_API_KEY=…` or paste a key in Settings.
 
 ### Requirements
 
 | | |
 |---|---|
-| **OS** | macOS on Apple silicon |
+| **OS** | macOS 12 or later on Apple silicon |
 | **Node** | 24+ |
 | **Rust** | 1.97.1 (`rust-toolchain.toml` pins it) |
 | **Zig** | 0.16.0 |
-| **Xcode CLT** | `clang` builds three native helpers |
+| **Xcode** | `clang` builds four native helpers; packaging also needs full Xcode's `actool` |
 
 New to the repo? **[docs/getting-started.md](docs/getting-started.md)**
 
@@ -58,10 +67,10 @@ New to the repo? **[docs/getting-started.md](docs/getting-started.md)**
 
 | Mode | | What it means |
 |---|---|---|
-| `ask` | ◈ | Every write, command, and click asks first. **Default.** |
-| `acceptEdits` | ◆ | File edits go through; commands and the pointer still ask. |
-| `auto` | ⬗ | A verifier model reads each gated call; anything it won't clear still asks you. |
-| `full` | ⬥ | Nothing asks. Escape still stops a run. |
+| `ask` | ◈ | File writes and commands ask first; app access asks once per turn. **Default.** |
+| `acceptEdits` | ◆ | File edits go through; commands and app access still ask. |
+| `auto` | ⬗ | A verifier reads gated calls; anything it won't clear still asks you. App access always asks you. |
+| `full` | ⬥ | Tools run automatically; app access still asks. Escape stops a computer run. |
 
 One table in [`desktop/shared/permissions.ts`](desktop/shared/permissions.ts) decides what each mode advertises *and* what it gates, so the label and the check can't drift. Subagents inherit the mode. → **[docs/permissions.md](docs/permissions.md)** · **[docs/tools.md](docs/tools.md)**
 
@@ -101,7 +110,7 @@ A job is one validated trigger (cron, `manual`, `after <job-id>`, or an app even
 
 <img src="desktop/screenshots/model-picker.png" alt="The model picker: the live OpenRouter catalog with context lengths and starred favourites, provider marks, and a thinking slider" width="900">
 
-Any OpenAI-compatible local or hosted endpoint. Keys are encrypted with the OS keychain and reach the harness only through its spawn environment. **Private routing** demands endpoints that neither train on nor retain prompts — a turn fails rather than route elsewhere. → **[docs/models.md](docs/models.md)** · **[docs/privacy.md](docs/privacy.md)**
+Any OpenAI-compatible local or hosted endpoint. Keys are encrypted with the OS keychain and reach the harness through its spawn environment. **Private routing** requests no-training, zero-retention OpenRouter endpoints for the main agent loop and fails when none qualify. It does not cover secondary models, tools, or your provider account's logging settings. → **[docs/models.md](docs/models.md)** · **[docs/privacy.md](docs/privacy.md)**
 
 ## In a terminal
 
@@ -136,20 +145,25 @@ docs/           Product and architecture contracts
 ## Development
 
 ```bash
-npm --prefix desktop run check       # test, typecheck, lint, renderer build
+npm --prefix desktop run check
+cargo fmt --all -- --check
+cargo check --workspace --locked --all-targets
 cargo test --workspace --locked
+cargo clippy --workspace --locked --all-targets -- -D warnings
 (cd harness && zig build test)
 ```
 
 [`AGENTS.md`](AGENTS.md) is the source of truth for anyone — human or agent — changing this repo. `just check`, `just test`, and `just package` wrap the rest; `npm run package:mac` builds the app.
 
-> **Not release-ready.** `dev.local.emma` is provisional: bundle ID, minimum macOS version, signing, distribution, and an update owner are all still open.
-
-PR titles are the changelog (conventional commits); release-please writes `CHANGELOG.md`. → **[docs/development.md](docs/development.md)**
+Release flow: feature branches → `dev` → `main`. PR titles drive the generated
+changelog and version; promoting a prepared release to `main` automatically
+checks, builds, signs, notarizes, and publishes the macOS app. Apple secret names
+are configured; the first signed GitHub release still needs end-to-end verification.
+→ **[Release guide](docs/releases.md)** · **[Development](docs/development.md)**
 
 ## Docs
 
-Everything lives in **[`docs/`](docs/README.md)** — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [architecture](docs/architecture.md), [permissions](docs/permissions.md), [tools](docs/tools.md), [models](docs/models.md), [privacy](docs/privacy.md), [context bar](docs/context-bar.md), [knowledge](docs/knowledge.md), [notch](docs/notch.md), [voice](docs/voice.md), [terminal](docs/terminal.md), [jobs](docs/jobs.md), [autoresearch](docs/autoresearch.md), [computer use](docs/computer-use.md), [goals](docs/goals.md), [agents](docs/agents.md), [browser](docs/browser.md), [mobile](docs/mobile.md), [CLI](docs/cli.md), [harness](docs/harness.md), [plugins](docs/plugins.md), [design system](docs/design-system.md), [development](docs/development.md), [data](docs/data.md), [credits](docs/credits.md), [troubleshooting](docs/troubleshooting.md).
+Everything lives in **[`docs/`](docs/README.md)** — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [architecture](docs/architecture.md), [permissions](docs/permissions.md), [tools](docs/tools.md), [models](docs/models.md), [privacy](docs/privacy.md), [context bar](docs/context-bar.md), [components](docs/components.md), [knowledge](docs/knowledge.md), [notch](docs/notch.md), [voice](docs/voice.md), [terminal](docs/terminal.md), [jobs](docs/jobs.md), [autoresearch](docs/autoresearch.md), [computer use](docs/computer-use.md), [goals](docs/goals.md), [agents](docs/agents.md), [browser](docs/browser.md), [mobile](docs/mobile.md), [CLI](docs/cli.md), [harness](docs/harness.md), [plugins](docs/plugins.md), [design system](docs/design-system.md), [development](docs/development.md), [data](docs/data.md), [credits](docs/credits.md), [troubleshooting](docs/troubleshooting.md).
 
 ## Credits
 
@@ -157,7 +171,7 @@ Forked from [vercel-labs/fx](https://github.com/vercel-labs/fx) (Apache-2.0, © 
 
 ## License
 
-MIT — do whatever you want with it, keep the copyright notice. Subtrees with their own terms:
+MIT — see [`LICENSE`](LICENSE). Subtrees with their own terms:
 
 | | |
 |---|---|

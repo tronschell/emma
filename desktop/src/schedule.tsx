@@ -84,6 +84,8 @@ function localHint(hour: number, minute: number): string {
 
 export function TriggerPicker({ value, onChange, disabled }: { value: string; onChange: (trigger: string) => void; disabled: boolean }) {
   const trigger = parseTrigger(value);
+  const [raw, setRaw] = useState(trigger.kind === "cron");
+  if (raw) trigger.kind = "cron";
   const set = (patch: Partial<Trigger>) => onChange(buildTrigger({ ...trigger, ...patch }));
   const problem = triggerProblem(value);
   const time = <label className="trigger-field"><span>At (UTC)</span>
@@ -100,7 +102,8 @@ export function TriggerPicker({ value, onChange, disabled }: { value: string; on
   return <div className="trigger-picker">
     <label className="trigger-field trigger-repeats"><span>Repeats</span>
       <Picker label="Repeats" value={trigger.kind} options={KIND_OPTIONS} disabled={disabled} onChange={(kind) => {
-        onChange(kind === "cron" ? value : buildTrigger({ ...trigger, kind }));
+        setRaw(kind === "cron");
+        if (kind !== "cron") onChange(buildTrigger({ ...trigger, kind }));
       }} />
     </label>
     {trigger.kind === "minutes" && every("minutes", 59)}
@@ -179,6 +182,7 @@ export function PromptField({ value, onChange, commands, atItems, disabled, rows
     queueMicrotask(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
   };
   const keys = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (!slash) return;
     if (event.key === "Escape") { event.preventDefault(); setDismissed(true); return; }
     if (!matches.length) return;

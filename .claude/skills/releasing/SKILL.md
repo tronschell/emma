@@ -1,114 +1,50 @@
 ---
 name: releasing
-description: How Emma's changelog, CI, versioning, and builds work — conventional PR titles feed release-please, which writes CHANGELOG.md and cuts the tag; GitHub Actions runs the six checks on every PR and packages the macOS app on release. Use when writing a commit or PR title, adding or fixing a GitHub Actions workflow, cutting a release, bumping a version, asking where the changelog comes from, or asking how builds and distribution work.
+description: Prepare and publish Emma releases through feature branches, dev, and main; conventional PR titles feed generated versions and changelogs, and main publishes the signed macOS app. Use for release workflows, versioning, packaging, and distribution changes.
 ---
 
 # Releasing Emma
 
-Nobody writes the changelog. Nobody bumps a version by hand. Both fall out of PR
-titles.
+Read [`docs/releases.md`](../../../docs/releases.md) for the branch flow,
+credentials, verification, and recovery procedures before changing or running
+release automation.
 
-## The one rule for contributors
+## Invariants
 
-**The PR title is the changelog entry.** Squash-merge, conventional commit form:
+- Feature branches start from and squash-merge into `dev`, the default branch.
+  Conventional PR titles and bodies become the squash commits.
+- release-please owns the root version, `.release-please-manifest.json`, and
+  `CHANGELOG.md`. Do not hand-edit release metadata or tags.
+- The generated release PR targets `dev`. Merging it creates a tag and a draft
+  release, never a public download. Keep `draft` and `force-tag-creation` enabled
+  in `release-please-config.json` so later changelogs have a release boundary.
+- Promote the exact prepared tree from `dev` to `main` with a merge commit,
+  never squash. `desktop/scripts/release.mjs` checks the branch, version,
+  manifest, tag ancestry, and tree. A later change needs another prepared version.
+- A push to `main` runs the shared CI workflow before packaging. Signing,
+  notarization, stapling, Gatekeeper validation, and asset upload must all
+  succeed before the draft becomes public. Published releases are not replaced.
+- Release preparation and publication are separate jobs. Only preparation,
+  draft validation, and publication receive write permissions. GitHub requires
+  push access to read draft releases; keep `contents: write` on `plan` even though
+  it only reads release state. PR checks receive no Apple secrets.
+- Sign after locale trimming. Keep native executables, skills, and dependency
+  notices in the package. `npm run package:mac` verifies the unsigned bundle;
+  signing and a real update installation still need separate verification.
+- Keep release names exactly `vX.Y.Z` and the stable zip suffix
+  `darwin-arm64.zip`, as expected by the existing updater.
 
-```
-fix(notch): stop the island stealing focus from Quick Ask
-feat(jobs): after <job-id> triggers
-```
+## Workflow edits
 
-`type(scope): summary` — scope optional, `!` after it for a breaking change.
-[`ci.yml`](../../../.github/workflows/ci.yml) fails the PR if the title does not
-parse.
+Run the six checks in [`AGENTS.md`](../../../AGENTS.md). Package locally when
+changing the build, resources, target, signing, or notarization path, and launch
+and exercise the resulting app. Report unverified platform behavior.
 
-| Type | In the changelog | Bumps |
-| --- | --- | --- |
-| `feat` | Features | minor |
-| `fix` | Bug Fixes | patch |
-| `perf` | Performance | patch |
-| `refactor` `docs` `test` `build` `ci` `chore` `revert` | hidden | none |
-| any type with `!`, or a `BREAKING CHANGE:` body | Breaking | major |
+Keep Node 24, Zig 0.16.0, and the macOS runner aligned with the repository pins.
+Third-party actions use full commit SHAs; first-party `actions/*` use version
+references. Put action versions in step names, not YAML comments. Do not add
+Windows packaging before the native platform paths have been ported and tested.
 
-Commits inside the PR do not matter — squash uses the title.
-
-## What you must not do
-
-- **Do not edit `CHANGELOG.md`.** It is generated. A hand-written entry is
-  overwritten or duplicated at the next release.
-- **Do not bump `version` in `package.json` or `Cargo.toml` in a PR.**
-  release-please owns the root `package.json` version;
-  [`release.yml`](../../../.github/workflows/release.yml) stamps
-  `desktop/package.json` at package time so the built `Emma.app` carries the
-  released version. A hand bump collides with the release PR.
-- **Do not tag manually.** Merging the release PR creates the tag.
-- **No comments in the workflow YAML.** `AGENTS.md` covers config too. If a step
-  needs explaining, name the step.
-
-## The flow
-
-1. PR merges to `main` with a conventional title.
-2. `release.yml` runs release-please, which opens or updates a standing
-   **`chore(main): release X.Y.Z`** PR containing the `CHANGELOG.md` diff and
-   the version bump. It sits there accumulating entries until someone merges it.
-3. Merging that PR tags `vX.Y.Z` and publishes the GitHub Release.
-4. The same workflow then packages `Emma.app` on a macOS runner and attaches
-   `Emma-vX.Y.Z-darwin-arm64.zip` to that release.
-
-One repo setting has to be on before step 2 works: **Settings → Actions →
-General → Allow GitHub Actions to create and approve pull requests.** Without it
-release-please fails with `GitHub Actions is not permitted to create pull
-requests` and no release PR ever appears.
-
-Releasing is therefore one action: **merge the release PR.** Nothing else cuts a
-release, and nothing releases on a schedule.
-
-## CI
-
-[`ci.yml`](../../../.github/workflows/ci.yml) runs on every PR and every push to
-`main`, on one `macos-15` runner, and is exactly the six checks from
-[`AGENTS.md`](../../../AGENTS.md) plus the title check. Nothing is CI-only; every
-step reproduces locally with the same command. If CI fails on a step you cannot
-reproduce, suspect a stale local build before suspecting the runner.
-
-Pinned in the workflow and duplicated from the repo's own pins — change both
-together: **Node 24**, **Zig 0.16.0** (also
-[`harness/build.zig.zon`](../../../harness/build.zig.zon)), macOS runner image.
-Rust follows [`rust-toolchain.toml`](../../../rust-toolchain.toml) on its own.
-
-## Builds and money
-
-Public repos get unlimited free Actions minutes on standard runners, macOS
-included, so both workflows cost nothing. Larger runners are not free; do not
-reach for them.
-
-What is **not** free and therefore not wired up:
-
-- **Signing and notarization.** No Apple Developer identity, so `package:mac`
-  ships an unsigned bundle and Gatekeeper blocks it on any Mac but the one that
-  built it. This is a known release blocker in
-  [`docs/development.md`](../../../docs/development.md), not an oversight.
-  Signing needs an Apple Developer Program account and its certificate in repo
-  secrets.
-- **Fork PRs cannot read secrets.** Any signing step must live in the release
-  job on the main repo, never in the PR job — a workflow that needs a secret to
-  pass turns every outside contribution red.
-
-Packaging is **not** exercised on PRs — it is minutes-expensive and the release
-job is the first thing that runs it. A PR that changes `package:mac`,
-`electron-packager` flags, `native/`, or `vendor:ripgrep` must be packaged
-locally before merge:
-
-```sh
-npm run package:mac
-```
-
-## The other repos
-
-The phone app ([tronschell/emma-mobile](https://github.com/tronschell/emma-mobile),
-see [`docs/mobile.md`](../../../docs/mobile.md)) and the website are separate
-public repos and follow the same contract: conventional PR titles,
-release-please, free runners. Their differences are downstream of the platform,
-not of the process — iOS distribution needs the same paid Apple account as
-signing here, Android and the site do not, and the relay Worker deploys from its
-own repo to the operator's own Cloudflare account. Emma's version numbers and
-theirs are independent; do not try to lock them together.
+Preparing release infrastructure does not authorize publishing a release or
+merging unrelated work. Preserve existing dirty changes and leave a failed
+release as a draft until its cause is fixed.

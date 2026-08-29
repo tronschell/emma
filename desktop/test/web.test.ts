@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { publicUrl } from "../main/ipc";
+import { publicAddress, publicUrl } from "../main/ipc";
 import { parseToolArgs } from "../main/tools";
 import { defaultWebSearch, validateWebSearch, WEB_SEARCH_PROVIDERS } from "../shared/settings";
 
@@ -19,31 +19,39 @@ test("a URL the model chose cannot reach anything on this network", () => {
     "http://[::1]:9200/",
     "http://[fe80::1]/",
     "http://[fd00::1]/",
+    "https://[::ffff:127.0.0.1]/",
+    "https://[::ffff:10.0.0.1]/",
+    "https://[64:ff9b::7f00:1]/",
+    "https://[2002:7f00:1::]/",
+    "https://localhost./",
+    "https://ollama.localhost./",
+    "https://name:password@example.com/",
+    "https://224.0.0.1/",
+    "https://255.255.255.255/",
     "http://printer.local/",
     "http://metadata.internal/",
     "file:///etc/passwd",
   ]) {
     assert.equal(publicUrl(attempt), null, attempt);
   }
-  // Addresses next door to a blocked range are ordinary public addresses.
-  for (const allowed of ["https://example.com/a", "http://172.32.0.1/", "http://11.0.0.1/", "http://192.169.0.1/", "http://169.253.0.1/"]) {
+  for (const allowed of ["https://example.com/a", "http://172.32.0.1/", "http://11.0.0.1/", "http://192.169.0.1/", "http://169.253.0.1/", "https://[2606:4700:4700::1111]/"]) {
     assert.ok(publicUrl(allowed), allowed);
   }
+  assert.equal(publicAddress("not-an-address"), false);
+  assert.equal(publicAddress("192.0.2.1"), false);
+  assert.equal(publicAddress("2001:db8::1"), false);
+  assert.equal(publicAddress("8.8.8.8"), true);
 });
 
 test("the search provider round-trips, and picks up its own default endpoint", () => {
   assert.deepEqual(validateWebSearch(undefined), defaultWebSearch);
   assert.equal(validateWebSearch({}).provider, "fourget");
-  // Switching provider with the endpoint left blank fills in that provider's own.
   assert.equal(validateWebSearch({ provider: "searxng", endpoint: "" }).endpoint, "http://127.0.0.1:8888");
   assert.equal(validateWebSearch({ provider: "exa", credentialEnv: "EXA_API_KEY" }).credentialEnv, "EXA_API_KEY");
-  // An unknown provider falls back rather than throwing: a stale settings file
-  // should not stop Emma launching.
   assert.equal(validateWebSearch({ provider: "askjeeves" }).provider, "fourget");
   assert.throws(() => validateWebSearch({ endpoint: "http://searx.example.com" }), /https, or http on this Mac/);
   assert.throws(() => validateWebSearch({ endpoint: "not a url" }), /must be a URL/);
   assert.throws(() => validateWebSearch({ credentialEnv: "not a name" }), /environment variable name/);
-  // Every keyed provider names the variable its key is stored under.
   for (const provider of WEB_SEARCH_PROVIDERS) assert.ok(provider.keyless || provider.endpoint.startsWith("https://"), provider.id);
 });
 

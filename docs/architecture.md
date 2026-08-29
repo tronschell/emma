@@ -15,7 +15,7 @@ Four processes, three trust boundaries. Every boundary validates its input.
                             │ allowlisted channels only
 ┌───────────────────────────┴─────────────────────────────────┐
 │ Electron main  (desktop/main)                               │
-│ Windows, global shortcuts, screen, pointer, filesystem,     │
+│ Windows, global shortcuts, screen, app controls, files,     │
 │ every provider call, every permission answer.               │
 └──────┬───────────────────────────────────┬──────────────────┘
        │ NDJSON over stdio                 │ ACP over stdio
@@ -31,17 +31,20 @@ Four processes, three trust boundaries. Every boundary validates its input.
 
 ## Who may touch what
 
-| | Filesystem | Network | Model | Screen / pointer |
+| | Filesystem | Network | Model | Screen / app controls |
 | --- | --- | --- | --- | --- |
 | Renderer | no | no | no | no |
 | Electron main | yes | yes | yes | yes |
 | `emma-host` | Markdown stores only | no | no | no |
-| `emma-cli` | its workspace root | providers + MCP | yes | no |
+| `emma-cli` | permission-gated files and commands | providers + MCP | yes | no |
 
-`emma-host` depends on `serde` and `serde_json` and nothing else — it cannot
-open a socket or spawn a child. The harness runs the agent loop but never drives
-the pointer: `computer` calls come back down the ACP pipe as `_emma/callTool`
-and execute in Electron main, which owns the screen and the kill switch. See
+`emma-host` depends on `serde` and `serde_json`; its implementation does not
+open a socket or spawn a child. This is a code boundary, not an OS sandbox.
+The harness runs the agent loop; current parent-turn
+`computer` calls return over ACP as `_emma/callTool`. Electron main owns exact-app
+approval, the stop switch, and the native helper's app-scoped accessibility controls.
+Child agents cannot use the grant. Computer use does not capture the screen or drive
+the global pointer; screen-context and annotation capture are separate features. See
 [computer-use.md](computer-use.md).
 
 ## Validation at each boundary
@@ -49,8 +52,9 @@ and execute in Electron main, which owns the screen and the kill switch. See
 | Boundary | Checked by | What it enforces |
 | --- | --- | --- |
 | Renderer → main | `trustedFrame` in [`main.ts`](../desktop/main/main.ts) | Sender must be the main frame and its URL must be `<appPath>/dist-renderer/index.html`, or the `EMMA_DEV_SERVER_URL` origin (`trustedSender`) |
-| Renderer → main | `validateRequest` in [`ipc.ts`](../desktop/main/ipc.ts) | Method must be in a 20-entry allowlist; exact required and optional field lists; every value a string; per-key length caps; whole envelope ≤ 128 KiB |
+| Renderer → main | `validateRequest` in [`ipc.ts`](../desktop/main/ipc.ts) | Method must be in the allowlist; exact required and optional field lists; every value a string; per-key length caps; whole envelope ≤ 128 KiB |
 | Renderer → main | `keepRequest`, `vaultRequest`, `runCommandRequest`, `validJpegDataUrl` | Per-channel shape checks for the channels that do not reach the host |
+| Renderer → main | Component request validation and execution | Fixed public HTTPS destinations, bounded requests/responses, and native approval before credentials are sent; widgets share the renderer and are not isolated identities. See [components.md](components.md) |
 | Main → host | `MAX_REQUEST_BYTES` 128 KiB in [`main.rs`](../crates/host/src/main.rs) | Oversize lines are refused with the request id recovered, not dropped silently |
 | Host → main | serde `deny_unknown_fields` on every params struct | An unknown or misspelled field is an error, not a default |
 | Host → main | `BoundedLines` in [`ndjson.ts`](../desktop/main/ndjson.ts) | 16 MiB per line, UTF-8 fatal decode, `parseHostLine` re-checks every envelope |
@@ -67,8 +71,8 @@ table and the trace writer exist once.
 **NDJSON to `emma-host`** — one JSON request object per line in, one
 `{id, ok, result}` or `{id, ok, error}` envelope per line out. It is
 request/response only, with one exception: the host pushes unsolicited
-`{"dueJob": …}` lines when a scheduled job comes due. Nothing streams on this
-path. Assistant text arrives from the harness instead, and main rebroadcasts it
+`{"dueJob": …}` lines when a scheduled job comes due. Large responses use the
+chunk framing described below. Assistant text arrives from the harness instead, and main rebroadcasts it
 as `emma:delta`; the durable message is written afterwards with `recordTurn`, so
 a delta is never persisted. `recordTurn` is the one request with no natural
 ceiling, so `recordedTurn` in `ndjson.ts` elides the middle of the prompt, the
@@ -88,8 +92,8 @@ Emma's own directory so it never reads the user's `~/.fx`.
 `emma-core` owns parsing, validation and atomic persistence. `$EMMA_DATA_DIR`, or
 `~/Library/Application Support/Emma` when unset, holds `threads/`, `scheduled/`
 and `research/` — one Markdown file per record, written to `.{id}.tmp` and
-renamed over the destination. Artifacts, plans, skills, tools and credentials are
-Electron's, under `userData`, and reach the renderer over named IPC channels
+renamed over the destination. Artifacts, components, plans, skills, tools and credentials
+are Electron's, under `userData`, and reach the renderer over named IPC channels
 rather than through the host. Kept notes go into the user's own vault, not into
 Emma's data directory — see [knowledge.md](knowledge.md). Full inventory in
 [data.md](data.md).
@@ -146,3 +150,9 @@ Vendor brand marks are credited in
 - [harness.md](harness.md) — the fx fork and the ACP session
 - [data.md](data.md) — every file and environment variable
 - [privacy.md](privacy.md) — what leaves this Mac
+
+## Host response framing
+
+The Rust host keeps responses up to 64 KiB as ordinary NDJSON envelopes. Larger responses are serialized intact, then emitted as `{id, chunk, sequence, end}` frames. Each `chunk` contains at most 64 KiB of UTF-8 JSON text, split only between Unicode characters. Sequences start at zero; `end: true` identifies the final frame. The output mutex covers one whole frame, allowing scheduled `dueJob` events between frames.
+
+Electron retains the 16 MiB line limit and validates and assembles chunks by pending request ID. Missing, repeated, out-of-order, mismatched, or malformed frames fail the transport; EOF with unfinished chunks also fails it. A response exceeding 256 MiB of assembled UTF-8 text is discarded through its final frame and rejects only that request, leaving the host available. Histories, traces, metadata, and renderer snapshot semantics are unchanged below this explicit runtime limit. Serialization and final parsing still hold the complete response in memory; framing is not pagination.
