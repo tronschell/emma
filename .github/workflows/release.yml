@@ -123,7 +123,7 @@ jobs:
       - name: sign and verify the app and all native helpers
         working-directory: desktop
         run: |
-          npx --no-install electron-osx-sign release/Emma-darwin-arm64/Emma.app --platform=darwin --type=distribution --keychain "$RUNNER_TEMP/emma-signing.keychain-db"
+          npx --no-install electron-osx-sign release/Emma-darwin-arm64/Emma.app
           codesign --verify --deep --strict --verbose=2 release/Emma-darwin-arm64/Emma.app
 
       - name: notarize, staple, and verify Gatekeeper acceptance
