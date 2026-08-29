@@ -2,8 +2,7 @@
 
 Emma currently ships for **macOS 12 or later on Apple silicon**. GitHub Actions
 builds it on a standard `macos-15` Apple-silicon runner; a personal Mac or
-self-hosted runner is not required. Standard hosted runners are free for public
-repositories. [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+self-hosted runner is not required.
 
 ## Branches
 
@@ -88,9 +87,22 @@ Rust host, Zig harness, ripgrep, four native helpers, bundled skills, and
 dependency notices. End users do not need Node, Rust, Zig, or Xcode installed.
 
 The release title is exactly `vX.Y.Z`, matching the existing updater's version
-parser. The stable `darwin-arm64.zip` asset is compatible with the existing
-`update.electronjs.org` feed. Testing an actual update requires two signed
-published versions; local unsigned packages are not an update-install test.
+parser. The stable `darwin-arm64.zip` asset is the one the
+`update.electronjs.org` feed selects. Drafts and prereleases are not stable
+updates. Publishing a release without the compatible signed zip is not enough.
+
+On macOS, a packaged app checks the feed at launch and every six hours. Squirrel
+downloads a newer eligible version in the background. Only after the download
+finishes does Emma show **Update ready · X.Y.Z** with **Install and relaunch**.
+That button calls Electron's native updater to replace the app and restart it.
+There is no custom download-progress screen. The unpackaged `EMMA_UPDATE_FAKE`
+mode only exercises the notice; its install button does not install or restart.
+
+A local rehearsal can exercise real replacement and restart using two signed
+copies and `EMMA_UPDATE_URL` pointed at a loopback feed. An ad-hoc-signed mock is
+not evidence of Developer ID signing, notarization, Gatekeeper acceptance or the
+public GitHub-to-Electron feed. Verify that distribution path with an upgrade
+between published signed versions. Never publish a mock version to test the UI.
 
 ## Apple credentials
 
@@ -113,6 +125,10 @@ Developer ID Application identity, signs only after locale trimming, and
 removes its temporary certificate, private key, and keychain on exit. PR checks
 never receive signing secrets. Actions must be allowed to create pull requests
 under Settings → Actions → General; that permission was enabled when inspected.
+
+The plan job also needs `contents: write` to inspect the prepared draft through
+GitHub's API; it does not publish it. GitHub exposes drafts only to callers with
+repository push access. [GitHub release visibility](https://docs.github.com/en/rest/releases/releases#list-releases).
 
 ## Local verification
 
@@ -152,21 +168,13 @@ The release-policy regression test also runs inside `npm run check`:
 node --test desktop/test/release.test.mjs
 ```
 
-### Readiness check: August 28, 2026
+### Readiness evidence
 
-All six repository checks passed locally, including 628 desktop tests and the
-Rust and Zig suites. Workflow validation passed with actionlint. An isolated
-unsigned package passed its bundle and native-binary checks, launched, and
-created and renamed a thread through its normal preload/host bridge. The
-thread survived a restart and appeared in the packaged workspace.
-
-Mouse automation failed in the local control tool, so click-through testing is
-not verified. Startup also logged the existing `emma:terminal-list` error
-`Terminal thread is invalid`; thread persistence still worked. The update feed
-was deliberately disabled during this smoke test. Apple credential validity,
-signed installation and updating, privacy permissions, shortcuts, VoiceOver,
-display geometry, and macOS 12 hardware remain unverified. The new workflow
-has not yet run on GitHub, and no release was published by this readiness check.
+Record the candidate commit, check results and manual limits in
+[release-readiness.md](release-readiness.md). Passing results from an older tree
+are not evidence for a new candidate. Keep local packaging and mock-update
+results separate from successful GitHub signing, notarization and public-feed
+updates; a green test suite alone does not establish release readiness.
 
 ## Recovery
 

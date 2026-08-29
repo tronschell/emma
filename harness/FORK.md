@@ -29,7 +29,9 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
 - **Model transport.** Upstream talks to Vercel AI Gateway over the AI SDK
   language-model v3 protocol (`prompt`/`toolChoice` at `/v3/ai/language-model`).
   Emma talks to any OpenAI-compatible Chat Completions endpoint, which is the
-  provider seam the rest of Emma already uses.
+  provider seam the rest of Emma already uses. Replies are buffered rather than
+  streamed token by token. Malformed tool-call replies and allocation failures
+  release partially parsed calls and completion fields exactly once.
 - **Authentication.** Upstream's Vercel device OAuth, ChatGPT Codex OAuth, team
   selection, and credit balance are removed. Emma supplies a base URL, a model,
   and the *name* of an environment variable holding the credential; there is no

@@ -11,9 +11,9 @@ message you hit is not here, grep for it — Emma's errors are literals.
 | A second launch just focuses the first window | Same lock — `app.on("second-instance")` re-opens the existing window. Intended. | — |
 | The dev run edits your real threads and vault | Both roots are shared: `EMMA_DATA_DIR` defaults to `~/Library/Application Support/Emma` and `userData` is named from `package.json`'s `"name"`. | `EMMA_DATA_DIR=/tmp/emma-data electron . --user-data-dir=/tmp/emma-dev-profile` |
 | Blank window, or every privileged IPC call throws `IPC sender is not allowed` | `trustedSender` accepts only the dev-server origin or `file://<appRoot>/dist-renderer/index.html` ([ipc.ts:240](../desktop/main/ipc.ts#L240)). Electron started without `EMMA_DEV_SERVER_URL`, or `dist-renderer/` was never built. | Use `npm run dev` (it sets the var), or `npm --prefix desktop run build:renderer` first |
-| `zig: command not found` during `build:host` | `build:harness` runs `(cd ../harness && zig build)`. | `brew install zig` — 0.16.0 or newer ([harness/build.zig.zon](../harness/build.zig.zon)) |
-| `clang: command not found` during `build:native` | The three helpers are compiled with `clang`. | `xcode-select --install` |
-| `build:native` compiles, then aborts | `emma-option-tap --self-test` or `emma-pty --self-test` failed; the `&&` chain stops. | Read the assertion it printed — a real regression in `native/quick_ask.m` or `native/pty.c` |
+| `zig: command not found` during `build:host` | `build:harness` runs `(cd ../harness && zig build)`. | Install Zig 0.16.0, matching CI and [harness/build.zig.zon](../harness/build.zig.zon) |
+| `clang: command not found` during `build:native` | The four helpers are compiled with `clang`. | `xcode-select --install` |
+| `build:native` compiles, then aborts | A native helper self-test failed; the `&&` chain stops. | Read the assertion from `emma-option-tap`, `emma-computer` or `emma-pty` and investigate before packaging |
 | `ripgrep checksum mismatch: expected …, got …. Nothing was written.` | `vendor:ripgrep` verifies the download against a per-arch SHA-256 ([vendor-ripgrep.mjs:45](../desktop/scripts/vendor-ripgrep.mjs#L45)). A proxy rewrote the tarball, or the pin is stale. | Retry off the proxy; if the pin really is stale, update version and hash together |
 | `ripgrep download failed: <status>` | GitHub release fetch failed. Needs network on first build only. | Retry, or drop a `rg` binary at `desktop/vendor/rg` yourself |
 | Rust build fails on toolchain | `rust-toolchain.toml` pins `1.97.1`; the workspace is edition 2024. | `rustup toolchain install 1.97.1` |
@@ -43,8 +43,8 @@ message you hit is not here, grep for it — Emma's errors are literals.
 | `That model is no longer in OpenRouter's catalog. Reload the models page and pick again.` | The saved id is absent from the cached catalog ([main.ts:1563](../desktop/main/main.ts#L1563)). | Reload Settings → Models and pick again |
 | `OpenRouter listed no models Emma can use — check your connection and try again` | The catalog fetch returned nothing usable ([catalog.ts:124](../desktop/main/catalog.ts#L124)). | Check the network; the compiled seed catalog covers first launch |
 | `That endpoint is plain http off this Mac.` | A provider base URL is `http:` on your network rather than loopback ([settings.ts](../desktop/shared/settings.ts)). | Tick the network box to accept unencrypted prompts and keys, or serve it over https |
-| Turns still answer from OpenRouter after picking a provider | The main window has not pushed the provider table to main yet, so `provider:<id>` resolves to nothing. | Open Settings once, then send the turn |
-| Every free model 404s | `requireZeroRetention` is on, and OpenRouter has no free endpoint that qualifies. It sets `EMMA_OPENROUTER_ZDR` on the harness. | Turn off Settings → Models → private routing, or route to a paid or local model |
+| A new provider cannot be selected | Provider registration or settings persistence failed. Saving must succeed before the profile can be used. | Read the error in Settings → Models, check the endpoint/profile, and retry saving; do not assume a displayed choice was persisted |
+| A model reports no eligible endpoint with Private routing on | The chosen model has no endpoint satisfying the requested no-training/zero-retention policy. | Pick a qualifying model or a local provider. Turn off Private routing only if its weaker privacy policy is acceptable |
 
 ## macOS permissions
 

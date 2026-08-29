@@ -18,7 +18,7 @@ The vault is outside both and is never deleted.
 
 ## Environment variables
 
-### Emma's own — these eight, and no others
+### Emma's runtime variables
 
 | Variable | Read by | What it does | Default |
 | --- | --- | --- | --- |
@@ -26,21 +26,23 @@ The vault is outside both and is never deleted.
 | `EMMA_DEV_SERVER_URL` | Electron main | Windows `loadURL` the dev server instead of `loadFile`, **and** that origin joins the trusted-sender set gating every privileged IPC handler ([ipc.ts:240](../desktop/main/ipc.ts#L240)). Set by `scripts/dev.mjs`. | unset → `file://` only |
 | `EMMA_PROVIDER_API_KEY` | `emma-cli` | The harness's **only** credential source — no OAuth, no login ([credentials.zig:9](../harness/src/core/auth/credentials.zig#L9)). Whitespace-only counts as absent. Electron sets it at spawn from the stored `OPENROUTER_API_KEY`. | unset → public catalog only |
 | `EMMA_PROVIDER_CHAT_URL` | `emma-cli` | Chat-completions URL override ([emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41)). Empty is treated as unset. | OpenRouter |
-| `EMMA_OPENROUTER_ZDR` | `emma-cli` | Presence-checked, not parsed. Demands zero-data-retention routing. Free models have no ZDR endpoint, so this turns them into 404s. Settings → Models toggles it and closes idle harnesses so the next spawn sees it. | unset → off |
+| `EMMA_OPENROUTER_ZDR` | `emma-cli` | Demands zero-data-retention routing for OpenRouter harness requests. A selected model with no qualifying endpoint fails. Settings → Models toggles it and closes idle harnesses so the next spawn sees it. | unset → off |
 | `EMMA_RELAY_URL` | Electron main | The pairing relay for Emma Mobile, overriding **Settings → Mobile → Relay**. Origin only — scheme and host, no path or query — or it is discarded ([mobile-protocol.ts](../desktop/shared/mobile-protocol.ts)). | unset → the address in Settings, and no pairing until one is set |
 | `EMMA_UPDATE_URL` | Electron main | Origin of the Squirrel.Mac update server, replacing `https://update.electronjs.org`. Origin only — scheme and host, no path or query — and `http://` only on loopback, or it is discarded ([shared/update.ts](../desktop/shared/update.ts)). The feed is that origin plus `/tronschell/emma/darwin-arm64/<version>` | unset → `https://update.electronjs.org` |
 | `EMMA_UPGRADE_BASE_URL` | `emma-cli` | Self-update CDN base. Discarded unless it is loopback HTTP with an explicit port and no path, query or fragment — so self-update is off in practice, and Emma ships `emma-cli` in the bundle anyway. | unset → disabled |
 
-`EMMA_UPDATE_FAKE` is not one of the eight: an unpackaged build announces that
-version to the workspace popup so the update surface can be exercised without a
-release, and a packaged build ignores it.
+`EMMA_UPDATE_FAKE` is a development-only notice preview: an unpackaged build
+announces a newer version to the workspace without downloading anything. Its
+install button does not install or restart, and a packaged build ignores it.
+Use two signed disposable bundles and a local `EMMA_UPDATE_URL` feed for a real
+installation rehearsal; see [releases.md](releases.md).
 
 `EMMA_KNOWLEDGE_DIR` no longer exists. Neither does the `~/Documents/Emma Knowledge`
 mirror it pointed at — the vault replaced both. There is no `EMMA_TOOLS`: a
 `grep EMMA_[A-Z_]*` matches it inside `MAX_EMMA_TOOLS`, a plain constant in
 [capabilities.ts:19](../desktop/main/capabilities.ts#L19).
 
-`EMMA_CDP_PORT` is not one of the eight: it is read only by
+`EMMA_CDP_PORT` is a development helper variable, read only by
 [scripts/drive.mjs](../desktop/scripts/drive.mjs), a dev helper that attaches to
 a running Emma over CDP. Default `9222`.
 

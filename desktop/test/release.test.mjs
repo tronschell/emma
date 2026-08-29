@@ -8,12 +8,18 @@ import { checkPullRequest, checkVersionAdvance, releasePlan, stableVersion, veri
 
 test("dev checks never compile the app and full CI only targets main", () => {
   const workflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
-  assert.match(workflow("ci"), /pull_request:\n    branches: \[main\]/);
+  assert.match(workflow("ci"), /pull_request:\n {4}branches: \[main\]/);
   assert.doesNotMatch(workflow("ci"), /^\s+push:/m);
   const dev = workflow("dev");
-  assert.match(dev, /pull_request:\n    branches: \[dev\]/);
+  assert.match(dev, /pull_request:\n {4}branches: \[dev\]/);
   assert.deepEqual([...dev.matchAll(/^\s+run: (.+)$/gm)].map((match) => match[1]), ["node desktop/scripts/release.mjs pr", "node --test desktop/test/release.test.mjs"]);
   assert.deepEqual([...dev.matchAll(/^\s+- uses: (.+)$/gm)].map((match) => match[1]), ["actions/checkout@v5", "actions/setup-node@v5"]);
+});
+
+test("draft release validation has the permission GitHub requires to view drafts", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+  const plan = workflow.match(/^ {2}plan:\n([\s\S]*?)(?=^ {2}\S)/m)?.[1] ?? "";
+  assert.match(plan, /^ {4}permissions:\n {6}contents: write$/m);
 });
 
 test("feature PRs target dev and only the same repository's dev promotes to main", () => {
