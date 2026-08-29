@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/tronschell/emma/compare/v0.2.1...v0.2.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **release:** package the compatible macOS icon ([d5cccf6](https://github.com/tronschell/emma/commit/d5cccf6078ee4828748c8f5de0b6fa1bf5c7fd2f))
+
 ## [0.2.1](https://github.com/tronschell/emma/compare/v0.2.0...v0.2.1) (2026-08-29)
 
 
