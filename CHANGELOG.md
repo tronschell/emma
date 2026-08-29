@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/tronschell/emma/compare/v0.2.2...v0.2.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **release:** use supported macOS signing CLI ([#16](https://github.com/tronschell/emma/issues/16)) ([2a2e4c7](https://github.com/tronschell/emma/commit/2a2e4c75e4a7e7d11695387c735283947007d174))
+
 ## [0.2.2](https://github.com/tronschell/emma/compare/v0.2.1...v0.2.2) (2026-08-29)
 
 
