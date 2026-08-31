@@ -22,6 +22,12 @@ test("draft release validation has the permission GitHub requires to view drafts
   assert.match(plan, /^ {4}permissions:\n {6}contents: write$/m);
 });
 
+test("release signing uses the supported electron-osx-sign CLI", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(workflow, /^ {10}npx --no-install electron-osx-sign release\/Emma-darwin-arm64\/Emma\.app$/m);
+  assert.doesNotMatch(workflow, /electron-osx-sign.*--(?:platform|type|keychain)/);
+});
+
 test("feature PRs target dev and only the same repository's dev promotes to main", () => {
   const repository = "tronschell/emma";
   const pr = (base, head, repo = repository, title = "fix(release): verify the app") => ({ title, base: { ref: base }, head: { ref: head, repo: { full_name: repo } } });

@@ -9,10 +9,10 @@ version, changelog, release tag, remote branch or GitHub setting.
 
 The scoped release-hardening fixes pass the required local checks, packaging
 checks and real-app widget smoke test, and are ready for review into `dev`. An
-unqualified public-release recommendation is withheld: the background-agent context issue
-below was explicitly deferred, and production signing and delivery have not yet
-been exercised. Do not promote the old `dev` tree as though it contained these
-fixes.
+unqualified public-release recommendation is withheld: the background-agent
+context issue below was explicitly deferred, and production signing and delivery
+have not yet been exercised. Do not promote the old `dev` tree as though it
+contained these fixes.
 
 ## Changes
 
@@ -99,16 +99,20 @@ No child-context patch remains in the candidate.
 
 ## Publication and website gates
 
-1. Merge these reviewed fixes into `dev`, let release-please update its generated
-   release PR, and run the required checks on that final tree. The current
-   [release PR #7](https://github.com/tronschell/emma/pull/7) is open and blocked;
-   its generated run requires maintainer approval. Do not hand-bump its version.
-2. Merge the generated release PR and let preparation create the tag and draft.
-   Promote that exact `dev` tree to `main` using a merge commit. The
+After this snapshot, [release PR #7](https://github.com/tronschell/emma/pull/7)
+merged and prepared `v0.2.0` at `48ed848`. Its draft contains only GitHub's
+source archives because the prepared tree never reached the `main` packaging
+job, and it predates the hardening changes above. Keep that draft unpublished.
+
+1. Merge these reviewed fixes into `dev`, let release-please open or update its
+   generated release PR, and run the required checks on that final tree. Do not
+   hand-bump its version or changelog.
+2. Merge the generated release PR and let preparation create its exact tag and
+   draft. Promote that exact `dev` tree to `main` using a merge commit. The
    [release contract](releases.md) describes the signing and publication gates.
 3. Verify the first Developer ID signed, notarized, Gatekeeper-accepted build.
    All five Apple secret names exist, but their contents and validity were not
-   inspected or proven. GitHub currently has no draft or published release.
+   inspected or proven. The assetless `v0.2.0` draft is not that proof.
 4. Check the public feed after publication. The app is wired to
    `update.electronjs.org/tronschell/emma/darwin-arm64/<installed-version>`;
    release names and ZIP names match its contract. A later upgrade between two

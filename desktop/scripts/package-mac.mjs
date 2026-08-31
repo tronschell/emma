@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, globSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { packager } from "@electron/packager";
@@ -64,29 +65,36 @@ const resources = [
   notices,
 ];
 const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$)|node_modules(?:$|\/ws(?:\/|$)))/;
-await packager({
-  dir: desktop,
-  name: "Emma",
-  icon: path.join(desktop, "assets/emma.icns"),
-  platform: "darwin",
-  arch: "arm64",
-  out,
-  overwrite: true,
-  asar: true,
-  prune: false,
-  download: { checksums: electronChecksums },
-  appBundleId: "com.tronschell.emma",
-  appVersion: version,
-  buildVersion: version,
-  extendInfo: path.join(desktop, "native/Info.extra.plist"),
-  extraResource: resources,
-  ignore: (file) => file !== "" && !bundled.test(file),
-  afterCopy: [({ buildPath }) => {
-    const file = path.join(buildPath, "package.json");
-    const pkg = JSON.parse(readFileSync(file, "utf8"));
-    writeFileSync(file, `${JSON.stringify({ ...pkg, version }, null, 2)}\n`);
-  }],
-});
+const iconDirectory = mkdtempSync(path.join(tmpdir(), "emma-package-icon-"));
+const icon = path.join(iconDirectory, "emma.icns");
+cpSync(path.join(desktop, "assets/emma.icns"), icon);
+try {
+  await packager({
+    dir: desktop,
+    name: "Emma",
+    icon,
+    platform: "darwin",
+    arch: "arm64",
+    out,
+    overwrite: true,
+    asar: true,
+    prune: false,
+    download: { checksums: electronChecksums },
+    appBundleId: "com.tronschell.emma",
+    appVersion: version,
+    buildVersion: version,
+    extendInfo: path.join(desktop, "native/Info.extra.plist"),
+    extraResource: resources,
+    ignore: (file) => file !== "" && !bundled.test(file),
+    afterCopy: [({ buildPath }) => {
+      const file = path.join(buildPath, "package.json");
+      const pkg = JSON.parse(readFileSync(file, "utf8"));
+      writeFileSync(file, `${JSON.stringify({ ...pkg, version }, null, 2)}\n`);
+    }],
+  });
+} finally {
+  rmSync(iconDirectory, { recursive: true, force: true });
+}
 const app = path.join(out, "Emma-darwin-arm64/Emma.app");
 run(process.execPath, ["scripts/trim-packaged-locales.mjs", app]);
 const archive = path.join(app, "Contents/Resources/app.asar");
