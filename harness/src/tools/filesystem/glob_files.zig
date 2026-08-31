@@ -28,7 +28,6 @@ pub const Input = struct {
     }
 };
 
-/// Decodes glob_files JSON into an owned Input released by ToolInput.deinit.
 pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
     var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, args_json, .{}) catch {
         return .{ .failure = try ctx.allocator.dupe(u8, "glob_files arguments must be valid JSON") };
@@ -40,7 +39,7 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
     }
 
     const pattern_value = parsed.value.object.get("pattern") orelse {
-        return .{ .failure = try ctx.allocator.dupe(u8, "glob_files requires string field \"pattern\"") };
+        return .{ .failure = try ctx.allocator.dupe(u8, "glob_files requires string field \"pattern\", the glob itself, for example \"src/**/*.zig\". The optional \"path\" field only sets the directory the glob is anchored at and is never matched as a pattern.") };
     };
     if (pattern_value != .string) {
         return .{ .failure = try ctx.allocator.dupe(u8, "glob_files field \"pattern\" must be a string") };
@@ -457,6 +456,22 @@ fn validateStackInput(alloc: Allocator, input: *Input, workspace_root: []const u
     return validate(.{ .allocator = alloc, .workspace_root = workspace_root }, .{ .ptr = input, .deinit_fn = noopInputDeinit });
 }
 
+fn expectDecodeMissingPattern(args_json: []const u8) !void {
+    const alloc = std.testing.allocator;
+    const decoded = try decode(.{ .allocator = alloc }, args_json);
+    switch (decoded) {
+        .failure => |body| {
+            defer alloc.free(body);
+            try std.testing.expect(std.mem.startsWith(u8, body, "glob_files requires string field \"pattern\", the glob itself"));
+            try std.testing.expect(std.mem.find(u8, body, "\"path\" field only sets the directory") != null);
+        },
+        .input => |input| {
+            defer input.deinit(alloc);
+            try std.testing.expect(false);
+        },
+    }
+}
+
 fn expectDecodeFailure(args_json: []const u8, reason: []const u8) !void {
     const alloc = std.testing.allocator;
     const decoded = try decode(.{ .allocator = alloc }, args_json);
@@ -602,7 +617,8 @@ fn createNumberedFiles(tmp: *std.testing.TmpDir, count: usize) !void {
 test "glob_files decodes invalid argument shapes as failures" {
     try expectDecodeFailure("{", "glob_files arguments must be valid JSON");
     try expectDecodeFailure("[]", "glob_files arguments must be an object");
-    try expectDecodeFailure("{\"path\":\".\"}", "glob_files requires string field \"pattern\"");
+    try expectDecodeMissingPattern("{\"path\":\".\"}");
+    try expectDecodeMissingPattern("{\"path\":\"/tmp/x/**/*\"}");
     try expectDecodeFailure("{\"pattern\":1}", "glob_files field \"pattern\" must be a string");
 }
 

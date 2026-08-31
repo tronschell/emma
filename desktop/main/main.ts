@@ -14,6 +14,7 @@ import { loadUiPlugins } from "./plugins";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout, type NotchGeometry } from "./overlay";
 import { BoundedLines, HostResponses, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
 import { describeRun, packVariables, parseVariables, parseWorkflow, runWorkflow, type WorkflowNode } from "../shared/workflow";
+import { runWorkflowScript, workflowScriptPath } from "./workflow-script";
 import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
 import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "./invocations";
 import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
@@ -22,22 +23,24 @@ import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, art
 import { ComponentRequests, deleteComponent, listComponents, readComponent, readComponentShot, setComponentEnabled, setComponentExpands, writeComponent, writeComponentShot } from "./components";
 import { COMPONENT_MODULE_PATH, COMPONENT_SCHEME, COMPONENT_SHOT_PATH, COMPONENT_ZONE_LABEL } from "../shared/components";
 import { deletePlan, editPlan, listPlans, readPlan, writePlan } from "./plans";
+import { deleteTaskList, editTaskList, listTaskLists, readTaskList, writeTaskList } from "./task-lists";
 import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
+import { flattenTaskListTasks, mergeTaskList, parseTaskListTasks, renderTaskList, taskListProgress, taskListState, updateTaskListStatus, type TaskList } from "../shared/task-list";
 import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage } from "../shared/visualize";
 import { captureVisual, keepVisual, readVisual } from "./visuals";
 import { CredentialStore } from "./credentials";
 import { FolderStore } from "./folders";
 import { AttachmentStore, isImageAttachment, type Attachment } from "./attachments";
 import { defaultVaultRoot, vaultReady } from "./setup";
-import { applyNoteTags, detectObsidianVaults, keepNote, listNotes, obsidianInstallCommand, obsidianInstalled, readVault, saveVault } from "./vault";
+import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNoteFolders, listNotes, moveNote, obsidianInstallCommand, obsidianInstalled, readVault, renameNoteFolder, saveVault } from "./vault";
 import { tagNote } from "./vault-tags";
 import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, noteFolder, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
-import { CatalogCache, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
-import { validateGitArgs } from "../shared/git";
+import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
+import { branchPrefixName, validateGitArgs } from "../shared/git";
 import { installUpdate, readyUpdate, startUpdates } from "./update";
-import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, runGit, switchBranch, writeCommitMessage } from "./git";
+import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "./git";
 import { installedEditors, openInEditor } from "./editors";
 import { machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
@@ -45,21 +48,21 @@ import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, 
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
-import { MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { nameThread } from "./thread-namer";
 import { applied, validateImprovements, type Arm } from "../shared/improvement";
-import { frontApplicationNote, ScreenContextStore, type FrontApplication } from "../shared/screen-context";
+import { frontApplicationNote, ScreenContextStore, validScreenContextId, type FrontApplication } from "../shared/screen-context";
 import { AgentRuntime, benchReplay, benchThread, haltBench, inheritBench, lastAssistantMessage, ownBench, OWN_TOOLS, refuseBenchTurn, towardGoal, type TurnRequest } from "./agent-loop";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
 import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
-import { forceArm, setConnections, setImprovements, setPrompts, setSystemPrompt, verifierLessons, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
-import { detectConnections, isConnectionId, outdatedConnections, setUpConnection } from "./connections";
-import { Harness, escapesRoot, failedTurn, harnessKey, type HarnessMcpServer, type HarnessToolCall, type ThinkingRoute } from "./harness";
+import { forceArm, harnessPromptFile, setImprovements, setPrompts, setSystemPrompt, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
+import { Harness, escapesRoot, failedTurn, harnessKey, recoveredSessionTraces, type HarnessMcpServer, type HarnessToolCall, type StoredThreadTrace, type ThinkingRoute, type TurnUsage } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
 import { advise } from "./advisor";
-import { look } from "./vision";
+import { describeScreen, look } from "./vision";
 import { readSecret } from "./secret";
 import { listMemories, runMemoryCommand } from "./memory";
 import { browserArgv, BROWSER_NAVIGATIONS, describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolNeeds, type ToolArgs } from "./tools";
@@ -67,9 +70,9 @@ import { Browsers, type BrowserStatus } from "./browser";
 import { Terminals } from "./terminal";
 import { MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT } from "../shared/terminal";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type PermissionMode } from "../shared/permissions";
-import { agentName, editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
+import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
-import { MAX_ASK_MS, PROTOCOL_VERSION, relayOrigin, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
+import { isPin, MAX_ASK_MS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
@@ -277,6 +280,7 @@ function restartHarnesses() {
 const harnessText = new Map<string, string>();
 const harnessThought = new Map<string, string>();
 const harnessRouted = new Map<string, string>();
+const harnessUsage = new Map<string, TurnUsage>();
 const harnessChildren = new Map<string, { childId: string; title: string; startedAt: number; client: Harness }>();
 const stopThread = (threadId: string) => {
   goalStopped.add(threadId);
@@ -335,6 +339,7 @@ const componentsChanged = () => broadcast("emma:components-changed");
 const componentRequests = new ComponentRequests();
 
 const plansChanged = () => broadcast("emma:plans-changed");
+const taskListsChanged = () => broadcast("emma:task-lists-changed");
 let overlayPreferencesReady = false;
 let queuedOverlayToggle: { command?: string } | null = null;
 let overlayBusy = false;
@@ -414,6 +419,7 @@ function startQuickAskHotkey() {
 
 const registeredKeybinds = new Set<string>();
 let keybinds: Keybinds = {};
+const pendingShortcuts = new Map<string, { senderId: number; accelerator: string; timeout: ReturnType<typeof setTimeout>; resolve: (result: string) => void; reject: (error: Error) => void }>();
 
 function runKeybindAction(action: string) {
   if (!isKeybindAction(action)) return;
@@ -439,6 +445,26 @@ function applyKeybinds(next: Keybinds): KeybindAction[] {
     }
   }
   return refused;
+}
+
+function saveShortcutFromTool(args: Extract<ToolArgs, { name: "shortcut" }>): Promise<string> {
+  const window = [mainWindow, overlay].find((candidate) => candidate && !candidate.isDestroyed() && !candidate.webContents.isLoading());
+  if (!window) throw new Error("Open Emma's workspace or Quick Ask before creating a shortcut.");
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      if (!pendingShortcuts.delete(id)) return;
+      reject(new Error("Emma's settings page did not answer the shortcut request."));
+    }, 10_000);
+    pendingShortcuts.set(id, { senderId: window.webContents.id, accelerator: args.accelerator, timeout, resolve, reject });
+    try {
+      window.webContents.send("emma:shortcut-request", { id, accelerator: args.accelerator, label: args.label, prompt: args.prompt });
+    } catch (error) {
+      clearTimeout(timeout);
+      pendingShortcuts.delete(id);
+      reject(error instanceof Error ? error : new Error("Emma could not open shortcut settings."));
+    }
+  });
 }
 
 function sendHoldKeybinds() {
@@ -746,7 +772,7 @@ function openHotspot() {
       closeHotspot();
     } else {
       if (!hotspot) build();
-      const inside = near(point, 0);
+      const inside = nearBounds(layout.hot, point);
       if (inside !== hovering) {
         hovering = inside;
         if (hotspot && !hotspot.isDestroyed()) {
@@ -939,21 +965,6 @@ function cliSendRequest(value: unknown) {
   const id = boundedCapabilityId(candidate.id, "CLI run");
   if (typeof candidate.prompt !== "string" || !candidate.prompt.trim() || candidate.prompt.length > MAX_CLI_PROMPT_CHARS) throw new Error("CLI send request is invalid");
   return { id, prompt: candidate.prompt };
-}
-
-async function bestLearnedSkill(task: string) {
-  for (const word of task.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 8) ?? []) {
-    const [match] = await capabilities!.searchSkills(word, 1);
-    if (match) return capabilities!.selectSkill(match.id).catch(() => undefined);
-  }
-  return undefined;
-}
-
-async function skillParams(task: string): Promise<Record<string, string>> {
-  const skill = await bestLearnedSkill(task);
-  if (!skill) return {};
-  void recordUse(app.getPath("userData"), skillKey(skill.id));
-  return { skillContext: skill.instructions };
 }
 
 function goalIpc(value: unknown): Record<string, unknown> & { threadId: string } {
@@ -1183,6 +1194,33 @@ async function keep(request: KeepRequest, hideOverlay: boolean): Promise<KeptNot
   return note;
 }
 
+async function keepScreen(id: string): Promise<KeptNote> {
+  const vault = readVault(app.getPath("userData"));
+  if (!vault) throw new Error("Emma has nowhere to keep this yet. Choose an Obsidian vault or a folder on the Knowledge base page, then keep it again.");
+  const shot = annotationAttachment.claim(id);
+  let kept = false;
+  try {
+    const application = shot.source?.application ?? "";
+    const tab = application ? await frontmostTab(application).catch(() => undefined) : undefined;
+    const text = await describeScreen(toolSettings.vision, shot.image, { application, window: shot.source?.window ?? "", ...(tab ? { url: tab.url, title: tab.title } : {}) });
+    const note = await keepNote(vault, {
+      kind: "screenshot",
+      title: tab?.title || shot.source?.window || application || "Screen",
+      text,
+      image: shot.image,
+      ...(tab?.url ? { sourceUrl: tab.url } : {}),
+      ...(application ? { sourceApplication: application } : {}),
+    });
+    kept = true;
+    notesChanged();
+    void tagKeptNote(note, text);
+    return note;
+  } finally {
+    annotationAttachment.finish(id, kept);
+    sendScreenContext();
+  }
+}
+
 async function keepTool(args: Extract<ToolArgs, { name: "keep" }>): Promise<string> {
   const note = await keep({
     kind: args.kind,
@@ -1220,7 +1258,7 @@ function previewImage(file: string): string | null {
 }
 
 function folderImage(threadId: string, named: string | undefined, relative: string): string {
-  const grant = attachments!.holds(relative) ? undefined : grantFor(threadId, named);
+  const grant = path.isAbsolute(relative) || attachments!.holds(relative) ? undefined : grantFor(threadId, named);
   const frame = nativeImage.createFromPath(grant ? path.join(folders!.directory(grant), folders!.within(grant, relative)) : relative);
   if (frame.isEmpty()) throw new Error(`Emma could not read ${relative} as an image. PNG, JPEG, GIF and BMP work; a PDF, an SVG or a missing file does not.`);
   try {
@@ -1317,6 +1355,8 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       });
       return said;
     }
+    case "shortcut":
+      return await saveShortcutFromTool(args);
     case "browser": {
       if (args.action !== "close") broadcast("emma:browser-show", { threadId: turn.threadId });
       if (args.action === "open") return `Opened ${browserPage(await browsers.open(turn.threadId, args.url!))}. Snapshot it to see what is on it.`;
@@ -1371,6 +1411,8 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       const output = await runCommand(attached ? folders!.directory(attached) : homedir(), args.command);
       return await readSecret(toolSettings.secret, args.command, output, args.question);
     }
+    case "task_list":
+      return await taskListTool(args, turn);
     case "plan":
       return await planTool(args, turn);
     case "goal":
@@ -1380,9 +1422,8 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     case "keep":
       return await keepTool(args);
     case "web_search": {
-      const { credentialEnv } = toolSettings.webSearch;
-      const results = await webSearch(toolSettings.webSearch, args.query, args.limit, (credentialEnv && process.env[credentialEnv]) || "");
-      return renderResults(args.query, results);
+      const response = await webSearch(toolSettings.webSearch, args.query, args.limit, (credentialEnv) => process.env[credentialEnv] || "");
+      return renderResults(args.query, response);
     }
     case "install_mcp": {
       const { id } = await capabilities!.installMcpServer({ name: args.server, command: args.command, args: args.argv, env: args.env });
@@ -1434,6 +1475,52 @@ async function goalTool(args: Extract<ToolArgs, { name: "goal" }>, turn: TurnReq
     case "clear": {
       await goalRequest("clearGoal", { threadId });
       return goalResult("clear", threadId, undefined);
+    }
+  }
+}
+
+function describeTaskList(list: TaskList): string {
+  const { completed, total } = taskListProgress(list);
+  return `${list.id} — ${list.title} — ${completed}/${total} tasks — ${taskListState(list).replace("_", " ")}`;
+}
+
+async function taskListTool(args: Extract<ToolArgs, { name: "task_list" }>, turn: TurnRequest): Promise<string> {
+  const userData = app.getPath("userData");
+  switch (args.action) {
+    case "read": {
+      if (!args.id) {
+        const lists = await listTaskLists(userData);
+        if (!lists.length) return 'There are no task lists yet. Start complex work with task_list {"action":"write","title":"…","tasks":"[…]"}.';
+        return `Task lists:\n${lists.map(describeTaskList).join("\n")}`;
+      }
+      const list = await readTaskList(userData, args.id);
+      return `${describeTaskList(list)}\n\n${renderTaskList(list)}`;
+    }
+    case "write": {
+      const { tasks, errors } = parseTaskListTasks(args.tasks!);
+      if (errors.length) throw new Error(`Nothing was written. Fix these and send it again:\n${errors.join("\n")}`);
+      const previous = args.id ? await readTaskList(userData, args.id).catch(() => undefined) : undefined;
+      const owner = turn.parentThreadId ?? turn.threadId;
+      const merged = mergeTaskList(previous, { id: args.id ?? "", title: args.title!, goal: args.goal ?? previous?.goal ?? "", tasks, updatedAt: "", threadId: owner });
+      const saved = await writeTaskList(userData, { ...merged, id: previous?.id });
+      taskListsChanged();
+      return `${previous ? "Rewrote" : "Wrote"} the task list "${saved.title}" (${saved.id}) with ${flattenTaskListTasks(saved.tasks).length} tasks. Keep it current with task_list update; the user can watch it in this thread's Tasks widget.`;
+    }
+    case "update": {
+      const list = await editTaskList(userData, args.id!, (current) => {
+        const updated = updateTaskListStatus(current.tasks, args.task!, args.status!);
+        if (!updated.found) throw new Error(`There is no task called "${args.task}" in "${current.title}".`);
+        return { ...current, tasks: updated.tasks };
+      });
+      taskListsChanged();
+      const progress = taskListProgress(list);
+      return `${args.task} in "${list.title}" is ${args.status}; ${progress.completed}/${progress.total} tasks completed.`;
+    }
+    case "delete": {
+      const list = await readTaskList(userData, args.id!);
+      await deleteTaskList(userData, list.id);
+      taskListsChanged();
+      return `Deleted the task list "${list.title}".`;
     }
   }
 }
@@ -1653,12 +1740,14 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
   if (running) harnesses.delete(key);
   const binaryPath = binary("emma-cli");
   if (!existsSync(binaryPath)) throw new Error(`Emma could not find its agent at ${binaryPath}. The install is incomplete — reinstall Emma, or run npm run build:harness from the repo.`);
+  const home = path.join(app.getPath("userData"), "harness");
   const client = new Harness({
     binaryPath,
     cwd,
-    home: path.join(app.getPath("userData"), "harness"),
+    home,
     apiKey: route ? route.apiKey : process.env.OPENROUTER_API_KEY,
     chatUrl: route?.chatUrl,
+    promptFile: harnessPromptFile(home, key),
     onDelta: (threadId, delta) => {
       if (agents && !agents.noteDelta(threadId, delta)) return;
       harnessText.set(threadId, (harnessText.get(threadId) ?? "") + delta);
@@ -1671,10 +1760,11 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
     },
     onToolCall: (call) => {
       agents?.noteTool(call.threadId, call.toolCallId, call.title || call.kind, call);
-      void recordUse(app.getPath("userData"), mcpToolKey(call.title), `${call.threadId}:${call.toolCallId}`);
+      void recordUse(app.getPath("userData"), mcpToolKey(call.toolName ?? call.title), `${call.threadId}:${call.toolCallId}`);
       const wrote = noteHarnessChange(cwd, call);
       broadcast("emma:step", wrote ? { ...call, edit: editStat(wrote) } : call);
     },
+    onCompacted: (threadId, compacted) => broadcast("emma:compacted", { threadId, ...compacted }),
     onContextExperiment: (threadId, fired) => broadcast("emma:context-experiment", { threadId, ...fired }),
     onContextBreakdown: (threadId, parts) => broadcast("emma:context-breakdown", { threadId, ...parts }),
     onRoutedModel: (threadId, routed) => {
@@ -1682,6 +1772,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       broadcast("emma:routed-model", { threadId, ...routed });
     },
     onUsage: (threadId, usage) => {
+      harnessUsage.set(threadId, usage);
       agents?.noteUsage(threadId, usage);
       const goal = goals.get(threadId);
       if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) stopThread(threadId);
@@ -1693,6 +1784,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
       harnessText.set(threadId, "");
       harnessThought.set(threadId, "");
+      harnessUsage.delete(threadId);
       harnessChildren.set(threadId, { childId, title, startedAt: Date.now(), client });
       const parent = harnessTurns.get(parentThreadId);
       agents!.adopt({
@@ -1714,8 +1806,10 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       harnessChildren.delete(threadId);
       const spoken = (harnessText.get(threadId) ?? "").trim();
       const thinking = harnessThought.get(threadId);
+      const usage = harnessUsage.get(threadId);
       harnessText.delete(threadId);
       harnessThought.delete(threadId);
+      harnessUsage.delete(threadId);
       const spent = agents!.list().find((agent) => agent.threadId === threadId);
       agents!.finish(threadId, reason);
       void recordTurn({
@@ -1726,10 +1820,12 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         durationMilliseconds: String(Date.now() - child.startedAt),
         outputTokens: String(spent?.outputTokens ?? 0),
         inputTokens: String(spent?.inputTokens ?? 0),
+        ...recordedCacheUsage(usage),
         model: harnessRouted.get(threadId) ?? modelName(threadModel(threadId)),
       }).catch((error: unknown) => console.error("Emma: a subagent's transcript could not be recorded", error));
     },
     onPlan: () => {},
+    onPhase: (threadId, phase) => agents?.noteActivity(threadId, phase),
     onLifecycle: async (event, threadId, input) => {
       if (event === "Stop") input.last_assistant_message = harnessText.get(threadId)?.trim() || null;
       const failures = await runPluginHooks(app.getPath("userData"), event, input);
@@ -1766,7 +1862,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
   return client;
 }
 
-const MAX_HARNESSES = 4;
+const MAX_HARNESSES = 8;
 
 function reapHarnesses() {
   for (const [cwd, client] of [...harnesses]) {
@@ -1870,7 +1966,7 @@ function whyUnavailable(threadId: string, name: string, called = name): string |
 
 async function harnessMcpServers(_threadId: string): Promise<HarnessMcpServer[]> {
   try {
-    return await readHarnessMcpServers(app.getPath("userData"));
+    return await readHarnessMcpServers(app.getPath("userData"), toolSettings.disabledServers);
   } catch {
     return [];
   }
@@ -1957,6 +2053,13 @@ function answerRequest(method: string, params: Record<string, string> = {}): Pro
         if (typeof id === "string" && params.parentThreadId && inheritBench(id, params.parentThreadId)) stopThread(id);
         return created;
       });
+    case "saveScheduledJob":
+      return Promise.resolve().then(async () => {
+        const graph = parseWorkflow(params.nodes ?? "", params.prompt ?? "");
+        if (graph.errors.length) throw new Error(graph.errors.join("\n"));
+        await validateWorkflowScripts(graph.nodes);
+        return await host!.request({ method, params });
+      });
     case "setRouters":
       return Promise.resolve().then(() => {
         routers = validateRouters(JSON.parse(params.routers ?? "[]"));
@@ -1964,6 +2067,15 @@ function answerRequest(method: string, params: Record<string, string> = {}): Pro
       });
     default: return host!.request({ method, params });
   }
+}
+
+async function readThreadTraces(threadId: string): Promise<StoredThreadTrace[]> {
+  const result = await host!.request({ method: "readTrace", params: { threadId } });
+  const traces = Array.isArray(result) ? result.flatMap((trace): StoredThreadTrace[] => {
+    const value = trace && typeof trace === "object" ? trace as Record<string, unknown> : undefined;
+    return typeof value?.timestamp === "string" && typeof value.text === "string" ? [{ timestamp: value.timestamp, text: value.text }] : [];
+  }) : [];
+  return recoveredSessionTraces(path.join(app.getPath("userData"), "harness"), threadId, traces);
 }
 
 const compactNext = new Set<string>();
@@ -1980,6 +2092,15 @@ function harnessCwd(threadId: string) {
 function recordTurn(turn: RecordedTurn): Promise<unknown> {
   return host!.request({ method: "recordTurn", params: recordedTurn(turn) });
 }
+
+const recordedCacheUsage = (usage: TurnUsage | undefined) =>
+  usage === undefined
+    ? {}
+    : {
+      ...(usage.cacheInputTokens === undefined || usage.cacheReadTokens === undefined ? {} : { cacheInputTokens: String(usage.cacheInputTokens), cacheReadTokens: String(usage.cacheReadTokens) }),
+      ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: String(usage.cacheWriteTokens) }),
+      ...(usage.costMicroUsd === undefined ? {} : { costMicroUsd: String(usage.costMicroUsd) }),
+    };
 
 function attachedImagePaths(value: unknown): string[] {
   if (typeof value !== "string") return [];
@@ -2014,10 +2135,13 @@ async function resumeAfterSleep() {
 }
 
 async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key = cwd) {
+  const home = path.join(app.getPath("userData"), "harness");
+  writeHarnessPrompt(home, { model: turn.model, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools }, harnessPromptFile(home, key));
   computerRuntime?.end(turn.threadId);
   harnessText.set(turn.threadId, "");
   harnessThought.set(turn.threadId, "");
   harnessRouted.delete(turn.threadId);
+  harnessUsage.delete(turn.threadId);
   harnessTurns.set(turn.threadId, turn);
   harnessRuns.set(turn.threadId, client);
   const startedAt = Date.now();
@@ -2034,10 +2158,11 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
       continueRecovery: turn.continueRecovery,
     });
     agents!.noteUsage(turn.threadId, usage);
+    const cacheUsage = harnessUsage.get(turn.threadId);
     const spoken = (harnessText.get(turn.threadId) ?? "").trim();
     if (failedTurn(stopReason)) {
       pausedRecovery.add(turn.threadId);
-      throw new Error(spoken || "The run was refused.");
+      throw new Error(client.paused.get(turn.threadId) || "The run was refused.");
     }
     agents!.finish(turn.threadId);
     return await recordTurn({
@@ -2048,6 +2173,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
       durationMilliseconds: String(Date.now() - startedAt),
       outputTokens: String(usage.outputTokens),
       inputTokens: String(usage.inputTokens),
+      ...recordedCacheUsage(cacheUsage),
       model: harnessRouted.get(turn.threadId) ?? modelName(turn.model),
     });
   } catch (error) {
@@ -2083,10 +2209,11 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
         threadId: turn.threadId,
         prompt: turn.content,
         thinking: thought,
-        answer: `${spoken}\n\n_(this run stopped: ${detail})_`.trim(),
+        answer: `${spoken}\n\n_(this run stopped: ${client.paused.get(turn.threadId) ?? detail})_`.trim(),
         durationMilliseconds: String(Date.now() - startedAt),
         outputTokens: String(stoppedUsage.outputTokens),
         inputTokens: String(stoppedUsage.inputTokens),
+        ...recordedCacheUsage(harnessUsage.get(turn.threadId)),
         model: turn.model ?? "",
       });
     } catch {
@@ -2097,6 +2224,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     harnessText.delete(turn.threadId);
     harnessThought.delete(turn.threadId);
     harnessRouted.delete(turn.threadId);
+    harnessUsage.delete(turn.threadId);
     harnessTurns.delete(turn.threadId);
     harnessRuns.delete(turn.threadId);
     turnSpend.delete(turn.threadId);
@@ -2118,9 +2246,8 @@ async function runTurn(turn: TurnRequest) {
   const cwd = harnessCwd(turn.threadId);
   const nested = turn.nested ? turn.threadId : undefined;
   const route = providerRoute(turn.model);
-  const key = harnessKey(cwd, nested, route?.id);
+  const key = harnessKey(cwd, turn.threadId, route?.id);
   try {
-    writeHarnessPrompt(path.join(app.getPath("userData"), "harness"), { model: turn.model, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools });
     return await runOnHarness(harnessClient(cwd, key, route), cwd, withGoal(withTrialArm(turn), activeGoal(turn.threadId)), key);
   } finally {
     if (nested) {
@@ -2138,8 +2265,9 @@ async function runRequest(request: Request): Promise<unknown> {
   }
   const { threadId, content, ...extra } = request.params;
   const result = request.method === "sendMessage"
-    ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: { ...await skillParams(content), ...extra } })
+    ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: extra })
     : await answerRequest(request.method, request.params);
+  if (request.method === "sendMessage") void autoNameThread(threadId, sentByThread(content).body);
   if (request.method === "setResearchJobStatus") {
     if (request.params.status === "running") startResearchJob(request.params.jobId);
     else stopResearchJob(request.params.jobId);
@@ -2166,6 +2294,33 @@ function livePartial(): LiveState["partial"] {
 const MESSAGE_PAGE = 40;
 
 type StoredThreads = { threads: (Omit<ThreadSummary, "messages"> & { messages: Message[] })[]; warnings: string[] };
+
+const threadNamer: VerifierSettings = {
+  model: routerChain(modelCatalog?.ids(), FREE_ROUTER_MODELS),
+  endpoint: OPENROUTER_CHAT_ENDPOINT,
+  credentialEnv: "OPENROUTER_API_KEY",
+  system: "",
+};
+
+const namingThreads = new Set<string>();
+
+async function autoNameThread(threadId: string, asked: string) {
+  if (!asked.trim() || namingThreads.has(threadId) || benchThread(threadId)) return;
+  namingThreads.add(threadId);
+  try {
+    const snapshot = await host!.request({ method: "snapshot", params: {} }) as { threads?: { id: string; title?: string }[] };
+    const thread = snapshot.threads?.find((entry) => entry.id === threadId);
+    if (thread?.title !== DEFAULT_THREAD_TITLE) return;
+    const title = await nameThread(asked, threadNamer);
+    if (!title || title === DEFAULT_THREAD_TITLE) return;
+    await host!.request({ method: "renameThread", params: { threadId, title } });
+    changed();
+  } catch (error) {
+    console.error("Emma: this thread could not be named", error);
+  } finally {
+    namingThreads.delete(threadId);
+  }
+}
 
 async function threadStore(): Promise<StoredThreads> {
   const stored = await runRequest(validateRequest({ method: "snapshot", params: {} })) as Partial<StoredThreads>;
@@ -2260,8 +2415,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return { threadId, folderIds: context.folderIds, mode: context.mode, model: context.model };
     }
     case "threadTraces": {
-      const traces = await host!.request({ method: "readTrace", params: { threadId: boundedCapabilityId(params.threadId, "Thread") } });
-      return Array.isArray(traces) ? traces : [];
+      return await readThreadTraces(boundedCapabilityId(params.threadId, "Thread"));
     }
     case "listModels": {
       const catalog = await runRequest(validateRequest({ method: "listOpenRouterModels", params: params.force === true ? { force: "true" } : {} }));
@@ -2374,10 +2528,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
   }
 }
 
-function driveTurn(turn: TurnRequest) {
+async function driveTurn(turn: TurnRequest) {
   refuseBenchTurn(turn.threadId);
   turn.bench = benchThread(turn.threadId);
-  return runDrivenTurn(turn);
+  return await runDrivenTurn(turn);
 }
 
 async function runDrivenTurn(turn: TurnRequest) {
@@ -2440,6 +2594,21 @@ async function scheduledJobs(): Promise<StoredJob[]> {
   return snapshot.scheduledJobs ?? [];
 }
 
+function workflowScriptRoots(): string[] {
+  const roots: string[] = [];
+  for (const grant of folders!.list()) {
+    try { roots.push(folders!.directory(grant.id)); } catch { continue; }
+  }
+  return roots;
+}
+
+async function validateWorkflowScripts(nodes: WorkflowNode[]): Promise<void> {
+  const scripts = nodes.filter((node) => node.kind === "script");
+  if (!scripts.length) return;
+  const roots = workflowScriptRoots();
+  await Promise.all(scripts.map((node) => workflowScriptPath(node.text, roots)));
+}
+
 async function resolveMentions(prompt: string, threadId: string): Promise<string> {
   const named = mentions(prompt, "/");
   if (named.length) {
@@ -2488,7 +2657,11 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
     return;
   }
   const mode = asPermissionMode(job.permissionMode);
-  const run = await runWorkflow(nodes, parseVariables(job.variables), async (prompt) => {
+  const run = await runWorkflow(nodes, parseVariables(job.variables), async (prompt, node, input) => {
+    if (node.kind === "script") {
+      try { return await runWorkflowScript(prompt, input, workflowScriptRoots()); }
+      catch (error) { return `[script could not run: ${error instanceof Error ? error.message : String(error)}]`; }
+    }
     const content = await resolveMentions(prompt, job.threadId);
     const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel });
     return lastAssistantMessage(outcome) ?? "";
@@ -2546,7 +2719,8 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
       const existing = args.jobId ? named() : undefined;
       const { nodes, errors } = parseWorkflow(args.nodes ?? existing?.nodes ?? "", args.prompt ?? existing?.prompt ?? "");
       if (errors.length) return `That graph will not run:\n${errors.join("\n")}`;
-      const run = await runWorkflow(nodes, parseVariables(args.variables ?? existing?.outputs ?? ""), (prompt) => Promise.resolve(`(a turn would run: ${prompt.slice(0, 200)})`));
+      await validateWorkflowScripts(nodes);
+      const run = await runWorkflow(nodes, parseVariables(args.variables ?? existing?.outputs ?? ""), (text, node) => Promise.resolve(node.kind === "script" ? `(the script would run: ${text.slice(0, 200)})` : `(a turn would run: ${text.slice(0, 200)})`));
       return `Dry run — nothing was actually run:\n${describeRun(run.steps)}\n\nVariables afterwards: ${packVariables(run.variables)}`;
     }
     case "save": {
@@ -2556,8 +2730,10 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
       const prompt = args.prompt ?? existing?.prompt;
       if (!title || !trigger || !prompt) throw new Error("A new task needs a title, a trigger and a prompt. Send all three the first time you save it.");
       const nodes = args.nodes ?? existing?.nodes ?? "";
-      const errors = parseWorkflow(nodes, prompt).errors;
+      const graph = parseWorkflow(nodes, prompt);
+      const errors = graph.errors;
       if (errors.length) return `Not saved — the graph will not run:\n${errors.join("\n")}`;
+      await validateWorkflowScripts(graph.nodes);
       const saved = await host!.request({
         method: "saveScheduledJob",
         params: {
@@ -2866,10 +3042,7 @@ if (primaryInstance) app.whenReady().then(() => {
     stopped: (threadId) => {
       if (computerRuntime?.threadId === threadId) computerRuntime.abort();
     },
-    verify: (request, threadId) => {
-      const lessons = verifierLessons(threadId);
-      return review(lessons ? { ...verifier, system: `${verifier.system}\n\n${lessons}` } : verifier, request);
-    },
+    verify: (request) => review(request),
     advise: (transcript) => advise(toolSettings.advisor, transcript),
     spawnTurn: (turn, owner) => {
       const context = owner ? threadContexts.get(owner) : undefined;
@@ -3152,8 +3325,7 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:thread-traces", async (event, value: unknown) => {
     mainWindowSender(event);
     const threadId = boundedCapabilityId(value, "Trace thread");
-    const result = await host!.request({ method: "readTrace", params: { threadId } });
-    return Array.isArray(result) ? result : [];
+    return await readThreadTraces(threadId);
   });
   ipcMain.on("emma:answer-permission", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) return;
@@ -3245,9 +3417,10 @@ if (primaryInstance) app.whenReady().then(() => {
     event.sender.setZoomFactor(zoom);
     return zoom;
   });
-  ipcMain.handle("emma:set-tool-settings", (event, value: unknown) => {
+  ipcMain.handle("emma:set-tool-settings", async (event, value: unknown) => {
     mainWindowSender(event);
     toolSettings = validateToolSettings(value);
+    await toolsChanged();
     return toolSettings;
   });
   ipcMain.handle("emma:set-harness-experiments", (event, value: unknown) => {
@@ -3281,9 +3454,10 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!found) return null;
     const grant = folders!.list().find((folder) => found === folder.path || found.startsWith(folder.path + path.sep));
     const attached = !grant && attachments!.holds(found);
-    if (!grant && !attached) return { path: found, text: null };
+    const picture = isImageAttachment(found);
+    if (!grant && !attached && !picture) return { path: found, text: null };
     try {
-      if (isImageAttachment(found)) return { path: found, text: null, image: previewImage(found) };
+      if (picture) return { path: found, text: null, image: previewImage(found) };
       if (attached && statSync(found).size > MAX_FILE_BYTES) return { path: found, text: null };
       return { path: found, text: attached ? readFileSync(found, "utf8") : folders!.read(grant!.id, path.relative(grant!.path, found)).text };
     } catch {
@@ -3335,6 +3509,10 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:list-plans", (event) => {
     panelSender(event);
     return listPlans(app.getPath("userData"));
+  });
+  ipcMain.handle("emma:list-task-lists", (event) => {
+    panelSender(event);
+    return listTaskLists(app.getPath("userData"));
   });
   ipcMain.handle("emma:list-artifacts", (event) => {
     panelSender(event);
@@ -3556,7 +3734,8 @@ if (primaryInstance) app.whenReady().then(() => {
     const choice = await dialog.showOpenDialog(mainWindow!, { title: "Where should Emma keep your notes?", defaultPath: readVault(app.getPath("userData"))?.root ?? defaultVaultRoot(), buttonLabel: "Keep notes here", properties: ["openDirectory", "createDirectory"] });
     if (choice.canceled || !choice.filePaths[0]) return null;
     pickedVaultRoot = choice.filePaths[0];
-    return { root: pickedVaultRoot, folder: DEFAULT_VAULT_FOLDER, kind: "folder", name: path.basename(pickedVaultRoot) || pickedVaultRoot };
+    return obsidianVaults().find((found) => found.root === pickedVaultRoot)
+      ?? { root: pickedVaultRoot, folder: DEFAULT_VAULT_FOLDER, kind: "folder", name: path.basename(pickedVaultRoot) || pickedVaultRoot };
   });
   ipcMain.handle("emma:detect-vaults", (event) => {
     mainWindowSender(event);
@@ -3589,6 +3768,37 @@ if (primaryInstance) app.whenReady().then(() => {
     panelSender(event);
     const vault = readVault(app.getPath("userData"));
     return vault ? listNotes(vault) : [];
+  });
+  ipcMain.handle("emma:list-note-folders", (event) => {
+    panelSender(event);
+    const vault = readVault(app.getPath("userData"));
+    return vault ? listNoteFolders(vault) : [];
+  });
+  ipcMain.handle("emma:create-note-folder", (event, value: unknown) => {
+    mainWindowSender(event);
+    const vault = readVault(app.getPath("userData"));
+    if (!vault) throw new Error("No vault is connected.");
+    const folder = createNoteFolder(vault, value);
+    notesChanged();
+    return folder;
+  });
+  ipcMain.handle("emma:rename-note-folder", (event, value: unknown) => {
+    mainWindowSender(event);
+    const vault = readVault(app.getPath("userData"));
+    if (!vault) throw new Error("No vault is connected.");
+    const request = (value ?? {}) as Record<string, unknown>;
+    const renamed = renameNoteFolder(vault, request.folder, request.name);
+    notesChanged();
+    return renamed;
+  });
+  ipcMain.handle("emma:move-note", (event, value: unknown) => {
+    mainWindowSender(event);
+    const vault = readVault(app.getPath("userData"));
+    if (!vault) throw new Error("No vault is connected.");
+    const request = (value ?? {}) as Record<string, unknown>;
+    const moved = moveNote(vault, noteInVault(vault, request.path), request.folder);
+    notesChanged();
+    return moved;
   });
   ipcMain.handle("emma:read-note", (event, value: unknown) => {
     panelSender(event);
@@ -3675,18 +3885,17 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:mobile-pair", async (event, value: unknown) => {
     mainWindowSender(event);
-    const relay = relayOrigin(process.env.EMMA_RELAY_URL || value);
-    if (!relay) throw new Error("Set the address of your own relay in Settings → Mobile before pairing a phone.");
-    return await bridge!.pair(relay);
+    if (!isPin(value)) throw new Error("Choose a PIN of 4 to 12 digits before pairing a phone.");
+    return await bridge!.pair(value);
   });
   ipcMain.handle("emma:mobile-cancel-pair", (event) => {
     mainWindowSender(event);
     bridge!.cancelPair();
     return bridge!.status();
   });
-  ipcMain.handle("emma:mobile-unpair", (event) => {
+  ipcMain.handle("emma:mobile-unpair", (event, value: unknown) => {
     mainWindowSender(event);
-    bridge!.unpair();
+    bridge!.unpair(typeof value === "number" && Number.isFinite(value) ? value : undefined);
     return bridge!.status();
   });
   ipcMain.handle("emma:machine-sample", (event) => {
@@ -3735,6 +3944,34 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!grant) throw new Error("That folder could not be connected.");
     return { folders: list, folderId: grant.id };
   });
+  ipcMain.handle("emma:worktree-list", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return await listWorktrees(folders!.directory(boundedCapabilityId(value, "Folder")));
+  });
+  ipcMain.handle("emma:worktree-remove", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Worktree request is invalid");
+    const request = value as Record<string, unknown>;
+    const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
+    if (!Array.isArray(request.paths) || request.paths.some((item) => typeof item !== "string" || !item || item.length > 1024 || item.includes("\0"))) {
+      throw new Error("Worktree list is invalid");
+    }
+    await removeWorktrees(cwd, request.paths as string[]);
+    changed();
+  });
+  ipcMain.handle("emma:worktree-add", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Worktree request is invalid");
+    const request = value as Record<string, unknown>;
+    const cwd = folders!.directory(boundedCapabilityId(request.folderId, "Folder"));
+    const prefix = typeof request.prefix === "string" ? request.prefix.slice(0, 64) : "";
+    const branch = branchPrefixName(prefix, boundedCapabilityId(request.name, "Branch name"));
+    const target = realpathSync(await addWorktree(cwd, branch));
+    const list = folders!.add(target);
+    const grant = list.find((folder) => folder.path === target);
+    if (!grant) throw new Error("That folder could not be connected.");
+    return { folders: list, folderId: grant.id };
+  });
   ipcMain.handle("emma:list-folder-files", (event, value: unknown) => {
     mainWindowSender(event);
     return folders!.files(boundedCapabilityId(value, "Folder"));
@@ -3765,20 +4002,6 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:discover-agent-imports", (event) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Import discovery sender is not allowed");
     return discoverImports(homedir());
-  });
-  ipcMain.handle("emma:detect-connections", (event) => {
-    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Connection discovery sender is not allowed");
-    return detectConnections();
-  });
-  ipcMain.handle("emma:outdated-connections", (event) => {
-    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Connection discovery sender is not allowed");
-    return outdatedConnections();
-  });
-  ipcMain.handle("emma:set-up-connection", (event, value: unknown) => {
-    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents) throw new Error("Connection setup sender is not allowed");
-    const request = (value ?? {}) as Record<string, unknown>;
-    if (!isConnectionId(request.id) || (request.action !== "install" && request.action !== "upgrade")) throw new Error("Connection setup request is invalid");
-    return setUpConnection(request.id, request.action);
   });
   ipcMain.handle("emma:import-agent-sources", async (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents || !Array.isArray(value) || value.length > 8 || value.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
@@ -3849,6 +4072,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return fetchOpenRouterBalance(process.env.OPENROUTER_API_KEY ?? "");
   });
+  ipcMain.handle("emma:deepseek-balance", (event) => {
+    mainWindowSender(event);
+    return fetchDeepSeekBalance(process.env.DEEPSEEK_API_KEY ?? "");
+  });
   ipcMain.handle("emma:save-credential", (event, value: unknown) => {
     mainWindowSender(event);
     const slot = credentialSlot(value);
@@ -3907,6 +4134,12 @@ if (primaryInstance) app.whenReady().then(() => {
       capturing = false;
     }
   });
+  ipcMain.handle("emma:keep-screen", async (event, value: unknown) => {
+    const window = overlay;
+    if (!window || event.senderFrame !== event.sender.mainFrame || event.sender !== window.webContents) throw new Error("Keeping the screen is available only from the quick overlay");
+    if (!validScreenContextId(value)) throw new Error("Screen context is unavailable");
+    return await keepScreen(value);
+  });
   ipcMain.handle("emma:get-screen-annotation-frame", async (event) => {
     const window = annotation;
     if (!window || event.senderFrame !== event.sender.mainFrame || event.sender !== window.webContents || !annotationDisplay) throw new Error("Screen annotation frame is unavailable");
@@ -3947,7 +4180,6 @@ if (primaryInstance) app.whenReady().then(() => {
       overlayPreferencesReady = true;
       setSystemPrompt(overlayPreferences.systemPrompt ?? "");
       setPrompts(overlayPreferences.prompts ?? []);
-      setConnections(overlayPreferences.connections ?? []);
       if (queuedOverlayToggle) {
         const queued = queuedOverlayToggle;
         queuedOverlayToggle = null;
@@ -3959,6 +4191,31 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:set-keybinds", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) throw new Error("Keybind sender is not allowed");
     return applyKeybinds(validateKeybinds(value));
+  });
+  ipcMain.handle("emma:complete-shortcut-request", (event, value: unknown) => {
+    trustedFrame(event);
+    if (!value || typeof value !== "object") throw new Error("Shortcut result is invalid");
+    const result = value as { id?: unknown; keybinds?: unknown; message?: unknown; error?: unknown };
+    if (typeof result.id !== "string") throw new Error("Shortcut result is invalid");
+    const pending = pendingShortcuts.get(result.id);
+    if (!pending || pending.senderId !== event.sender.id) throw new Error("Shortcut request is no longer active");
+    pendingShortcuts.delete(result.id);
+    clearTimeout(pending.timeout);
+    try {
+      if (typeof result.error === "string" && result.error.trim()) throw new Error(result.error.slice(0, 512));
+      if (typeof result.message !== "string" || !result.message.trim() || result.message.length > 512) throw new Error("Shortcut result is invalid");
+      const next = validateKeybinds(result.keybinds);
+      const refused = applyKeybinds(next);
+      const accelerator = normalizeAccelerator(pending.accelerator);
+      const action = (Object.entries(next) as [KeybindAction, Keybind][]).find(([, keybind]) => normalizeAccelerator(keybind.accelerator) === accelerator)?.[0];
+      const message = action && refused.includes(action) ? `${result.message} Another app currently holds ${accelerator}, so it cannot fire until that combination is free.` : result.message;
+      pending.resolve(message);
+      return refused;
+    } catch (error) {
+      const reason = error instanceof Error ? error : new Error("Shortcut result is invalid");
+      pending.reject(reason);
+      throw reason;
+    }
   });
   ipcMain.on("emma:quick-command", (event, value: unknown) => {
     const window = radial;
@@ -4057,6 +4314,24 @@ if (primaryInstance) app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+let quitFlushing = false;
+let quitReady = false;
+app.on("before-quit", (event) => {
+  if (quitReady || harnessRuns.size === 0) return;
+  event.preventDefault();
+  if (quitFlushing) return;
+  quitFlushing = true;
+  stopEveryThread();
+  for (const client of harnesses.values()) client.close();
+  const finished = new Promise<void>((resolve) => {
+    const check = () => harnessRuns.size === 0 ? resolve() : setTimeout(check, 25);
+    check();
+  });
+  void Promise.race([finished, pause(10_000)]).finally(() => {
+    quitReady = true;
+    app.quit();
+  });
 });
 app.on("will-quit", () => {
   bridge?.stop();

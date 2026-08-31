@@ -1,20 +1,31 @@
 import { Buffer } from "node:buffer";
-import { HANDSHAKE_BYTES, HEARTBEAT_MS, isBridgeMethod, PAIRING_TTL_MS } from "../shared/mobile-protocol";
+import { timingSafeEqual } from "node:crypto";
+import { WebSocketServer, WebSocket as PhoneSocket } from "ws";
+import { BRIDGE_PORT, HANDSHAKE_BYTES, HEARTBEAT_MS, isBridgeMethod, MAX_FRAME_BYTES, PAIRING_TTL_MS, splitAddress } from "../shared/mobile-protocol";
 import type { BridgeEvent, BridgeFrame, BridgeMethod, DesktopIdentity, LiveState, PairingPayload, PermissionAsk } from "../shared/mobile-protocol";
 import { FrameCodec } from "./frames";
-import { clearPeer, loadPeer, mintPeer, pairingPayload, savePeer, type Peer } from "./pairing";
+import { checkPin, clearPeers, loadPeers, MAX_PEERS, mintPeer, pairingPayload, savePeers, type Peer } from "./pairing";
+import { hosts, preferredHost } from "./tailnet";
 
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
-const CLAIM_TIMEOUT_MS = 10_000;
 const GREET_LIVE_MS = 1_000;
+/** How often the bridge re-checks that the address it pairs on is still on this Mac. */
+const WATCH_MS = 15_000;
 const MAX_ID_CHARS = 128;
 const MAX_ERROR_CHARS = 200;
-const PEER_GONE = "-";
+/** A staged pairing dies after this many wrong PINs, so the QR window is not a brute-force window. */
+const MAX_PIN_TRIES = 5;
 const UNKNOWN_METHOD = "Emma does not answer that request.";
 const REQUEST_FAILED = "That request failed on the Mac.";
 const TOO_LARGE = "That answer is too large to send to the phone.";
-const NO_RELAY = "This Mac could not reach the pairing relay.";
+const NEEDS_PIN = "Enter this Mac's PIN on the phone to finish pairing.";
+const BAD_PIN = "That PIN is wrong.";
+const NO_ADDRESS = "This Mac has no Tailscale or local network address to pair on.";
+const NO_SAVE = "This Mac could not save the pairing.";
+const MOVED = "This Mac's address changed, so the phone can no longer reach it. Pair the phone again.";
+const TAKEN = `Another program on this Mac is using port ${BRIDGE_PORT}.`;
+const FULL = `Emma pairs ${MAX_PEERS} devices at a time. Remove one before pairing another.`;
 
 export type BridgeDeps = {
   userData: string;
@@ -24,7 +35,10 @@ export type BridgeDeps = {
   onStatus: (status: BridgeStatus) => void;
 };
 
-export type BridgeStatus = { paired: boolean; connected: boolean; name: string; lastSeen: number };
+/** One paired phone. `id` is its pairing time, which is also how the renderer revokes it. */
+export type BridgeDevice = { id: number; connected: boolean; lastSeen: number };
+
+export type BridgeStatus = { devices: BridgeDevice[]; listening: boolean; pairing: boolean; full: boolean; reason: string; name: string; addr: string };
 
 export type Bridge = {
   start(): void;
@@ -34,10 +48,13 @@ export type Bridge = {
   ask(ask: PermissionAsk): boolean;
   resolved(id: string, allowed: boolean): void;
   status(): BridgeStatus;
-  pair(relay: string): Promise<PairingPayload>;
+  pair(pin: string): Promise<PairingPayload>;
   cancelPair(): void;
-  unpair(): void;
+  unpair(id?: number): void;
 };
+
+/** Everything one connected phone owns. The codec is the peer's, not the socket's. */
+type Session = { ws: PhoneSocket; peer: Peer; codec: FrameCodec; live: boolean; announced: number; beat?: ReturnType<typeof setInterval> };
 
 function safeError(error: unknown): string {
   const raw = String((error as { message?: unknown } | null | undefined)?.message ?? error);
@@ -50,47 +67,117 @@ function requestParams(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
+/** Every address a phone could dial this Mac on right now. */
+function reachable(): string[] {
+  const found = hosts();
+  return [...found.tailnet, ...found.lan];
+}
+
+function why(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "EADDRINUSE") return TAKEN;
+  if (code === "EADDRNOTAVAIL") return MOVED;
+  return safeError(error);
+}
+
+/** Constant-time compare of the auth subprotocol the phone offered. */
+function sameToken(offered: string, expected: string): boolean {
+  const a = Buffer.from(offered);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function createBridge(deps: BridgeDeps): Bridge {
   const pending = new Map<string, PermissionAsk>();
-  const codecFor = (value: Peer) => new FrameCodec(Buffer.from(value.key, "base64url"), "mac");
+  const sessions = new Map<PhoneSocket, Session>();
+  // One codec per peer, not per connection: it remembers the handshakes it has
+  // already opened, which is what stops a recorded session being replayed.
+  const codecs = new Map<number, FrameCodec>();
+  const lastSeen = new Map<number, number>();
 
-  let saved = loadPeer(deps.userData);
+  let peers = loadPeers(deps.userData);
   let staged: Peer | undefined;
-  let peer = saved;
-  let codec = peer ? codecFor(peer) : undefined;
-  let socket: WebSocket | undefined;
-  let beat: ReturnType<typeof setInterval> | undefined;
+  let server: WebSocketServer | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  let guard: ReturnType<typeof setInterval> | undefined;
   let expiry: ReturnType<typeof setTimeout> | undefined;
-  let claim: { settle: (error?: Error) => void } | undefined;
   let backoff = BACKOFF_MIN_MS;
   let running = false;
-  let phone = false;
-  let announced = 0;
-  let lastSeen = 0;
-  let reported: BridgeStatus = { paired: false, connected: false, name: "", lastSeen: 0 };
+  let listening = false;
+  let bound: string | undefined;
+  let tries = 0;
+  let reason = "";
+  let reported = "";
 
-  const status = (): BridgeStatus => ({ paired: saved !== undefined, connected: phone, name: peer?.name ?? "", lastSeen });
+  const codecFor = (peer: Peer): FrameCodec => {
+    const held = codecs.get(peer.pairedAt);
+    if (held) return held;
+    const made = new FrameCodec(Buffer.from(peer.key, "base64url"), "mac");
+    codecs.set(peer.pairedAt, made);
+    return made;
+  };
+
+  /** Every key the door opens to right now: the paired phones, plus one being paired. */
+  const candidates = (): Peer[] => (staged ? [...peers, staged] : peers);
+
+  /** All phones share this Mac's one address, so the newest pairing sets the bind. */
+  const bindAddr = (): string | undefined => staged?.addr ?? peers[0]?.addr;
+
+  const sessionOf = (peer: Peer): [PhoneSocket, Session] | undefined => {
+    for (const entry of sessions) if (entry[1].peer.pairedAt === peer.pairedAt) return entry;
+    return undefined;
+  };
+
+  const devices = (): BridgeDevice[] => peers.map((peer) => ({
+    id: peer.pairedAt,
+    connected: sessionOf(peer)?.[1].live === true,
+    lastSeen: lastSeen.get(peer.pairedAt) ?? 0,
+  }));
+
+  const status = (): BridgeStatus => ({
+    devices: devices(),
+    listening,
+    pairing: staged !== undefined,
+    full: peers.length >= MAX_PEERS,
+    reason,
+    name: deps.identity.name,
+    addr: bindAddr() ?? "",
+  });
 
   const changed = () => {
     const next = status();
-    if (next.paired === reported.paired && next.connected === reported.connected && next.name === reported.name) return;
-    reported = next;
+    const stamp = JSON.stringify(next);
+    if (stamp === reported) return;
+    reported = stamp;
     deps.onStatus(next);
   };
 
-  const sending = (): boolean => phone && codec !== undefined && codec.ready && socket !== undefined && socket.readyState === WebSocket.OPEN;
-
-  const send = (frame: BridgeFrame): boolean => {
-    if (!codec || !codec.ready || !socket || socket.readyState !== WebSocket.OPEN) return false;
-    const sealed = codec.seal(frame);
+  const to = (session: Session, frame: BridgeFrame): boolean => {
+    // A phone that scanned the QR but has not proved the PIN gets answers to its
+    // own requests and nothing else — no live state, no permission asks.
+    if (frame.k === "evt" && !session.peer.verified) return false;
+    if (!session.codec.ready) return false;
+    // A session the socket map has moved on from must not seal on the peer's codec.
+    if (sessions.get(session.ws) !== session || session.ws.readyState !== PhoneSocket.OPEN) return false;
+    const sealed = session.codec.seal(frame);
     if (!sealed) return false;
     try {
-      socket.send(sealed as Uint8Array<ArrayBuffer>);
+      session.ws.send(sealed);
       return true;
     } catch {
       return false;
     }
+  };
+
+  const broadcast = (event: BridgeEvent): boolean => {
+    let sent = false;
+    for (const session of sessions.values()) if (to(session, event)) sent = true;
+    return sent;
+  };
+
+  const sending = (): boolean => {
+    for (const session of sessions.values()) if (session.peer.verified && session.codec.ready) return true;
+    return false;
   };
 
   const liveState = (): LiveState => {
@@ -104,42 +191,28 @@ export function createBridge(deps: BridgeDeps): Bridge {
     return { ...state, asks: [...asks.values()].filter((ask) => ask.expiresAt > now) };
   };
 
-  const answer = (id: string, run: Promise<unknown>) => {
+  const answer = (session: Session, id: string, run: Promise<unknown>) => {
     void run.then(
       (result) => {
-        if (!send({ k: "res", id, ok: true, result } as BridgeFrame)) send({ k: "res", id, ok: false, error: TOO_LARGE });
+        if (!to(session, { k: "res", id, ok: true, result } as BridgeFrame)) to(session, { k: "res", id, ok: false, error: TOO_LARGE });
       },
       (error: unknown) => {
-        send({ k: "res", id, ok: false, error: safeError(error) });
+        to(session, { k: "res", id, ok: false, error: safeError(error) });
       },
     ).catch(() => undefined);
   };
 
-  const drop = (ws: WebSocket, code: number) => {
+  const drop = (ws: PhoneSocket, code: number) => {
     try {
       ws.close(code, "");
     } catch {
       /* already closing */
     }
-    if (socket !== ws) return;
-    socket = undefined;
-    phone = false;
-    if (beat !== undefined) {
-      clearInterval(beat);
-      beat = undefined;
-    }
-    claim?.settle(new Error(NO_RELAY));
+    const session = sessions.get(ws);
+    if (!session) return;
+    sessions.delete(ws);
+    if (session.beat !== undefined) clearInterval(session.beat);
     changed();
-  };
-
-  const schedule = () => {
-    if (!running || !peer || socket || retry !== undefined) return;
-    const wait = backoff;
-    backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
-    retry = setTimeout(() => {
-      retry = undefined;
-      connect();
-    }, wait);
   };
 
   const unstage = () => {
@@ -148,59 +221,55 @@ export function createBridge(deps: BridgeDeps): Bridge {
     expiry = undefined;
   };
 
-  const commit = () => {
-    if (!staged) return;
+  const commit = (): boolean => {
+    if (!staged) return true;
+    const next = [...peers, staged];
     try {
-      savePeer(deps.userData, staged);
+      savePeers(deps.userData, next);
     } catch (error) {
       console.error("emma bridge: could not save the paired phone", error);
-      return;
+      return false;
     }
-    saved = staged;
+    peers = next;
     staged = undefined;
     unstage();
+    return true;
   };
 
   const cancelPair = () => {
     unstage();
     if (!staged) return;
+    const entry = sessionOf(staged);
+    codecs.delete(staged.pairedAt);
     staged = undefined;
-    peer = saved;
-    codec = peer ? codecFor(peer) : undefined;
-    phone = false;
-    changed();
-    reconnect();
+    tries = 0;
+    if (entry) drop(entry[0], 1000);
+    settle();
   };
 
-  const receive = (ws: WebSocket, data: unknown) => {
-    if (!codec || socket !== ws) return;
-    if (typeof data === "string") {
-      if (data === PEER_GONE && phone) {
-        phone = false;
-        changed();
-      }
-      return;
-    }
-    if (!(data instanceof ArrayBuffer) && !(data instanceof Uint8Array)) return;
+  const receive = (ws: PhoneSocket, data: Buffer, isBinary: boolean) => {
+    const session = sessions.get(ws);
+    if (!session) return;
+    if (!isBinary) return; // the phone's text heartbeat
     if (data.byteLength === HANDSHAKE_BYTES) {
-      if (!codec.greet(data)) return;
+      if (!session.codec.greet(data)) return;
       try {
-        ws.send(codec.hello as Uint8Array<ArrayBuffer>);
+        ws.send(session.codec.hello);
       } catch {
         return;
       }
       const now = Date.now();
-      if (now - announced < GREET_LIVE_MS) return;
-      announced = now;
-      send({ k: "evt", t: "live", state: liveState() });
+      if (!session.peer.verified || now - session.announced < GREET_LIVE_MS) return;
+      session.announced = now;
+      to(session, { k: "evt", t: "live", state: liveState() });
       return;
     }
-    const frame = codec.open(data);
+    const frame = session.codec.open(data);
     if (!frame) return;
-    lastSeen = Date.now();
-    if (!phone) {
-      phone = true;
-      commit();
+    lastSeen.set(session.peer.pairedAt, Date.now());
+    const verified = session.peer.verified;
+    if (verified && !session.live) {
+      session.live = true;
       changed();
     }
     if (frame.k !== "req") return;
@@ -208,79 +277,224 @@ export function createBridge(deps: BridgeDeps): Bridge {
     if (typeof id !== "string" || !id || id.length > MAX_ID_CHARS) return;
     const params = requestParams(frame.params);
     if (!params || !isBridgeMethod(frame.method)) {
-      send({ k: "res", id, ok: false, error: UNKNOWN_METHOD });
+      to(session, { k: "res", id, ok: false, error: UNKNOWN_METHOD });
+      return;
+    }
+    if (frame.method === "unlock") {
+      if (!checkPin(session.peer.pin, params.pin)) {
+        to(session, { k: "res", id, ok: false, error: BAD_PIN });
+        // Only a pairing in flight can be spent; a phone already paired just retries.
+        if (session.peer === staged && ++tries >= MAX_PIN_TRIES) {
+          cancelPair();
+          drop(ws, 1008);
+        }
+        return;
+      }
+      if (!session.peer.verified) {
+        session.peer.verified = true;
+        // A pairing that cannot reach the disk is not a pairing. Roll back rather
+        // than leave the phone authorised against a record nothing will restore.
+        if (!commit()) {
+          session.peer.verified = false;
+          to(session, { k: "res", id, ok: false, error: NO_SAVE });
+          return;
+        }
+        session.live = true;
+        changed();
+      }
+      tries = 0;
+      to(session, { k: "res", id, ok: true, result: { unlocked: true } });
+      to(session, { k: "evt", t: "live", state: liveState() });
+      return;
+    }
+    if (!verified) {
+      to(session, { k: "res", id, ok: false, error: NEEDS_PIN });
       return;
     }
     try {
-      answer(id, deps.dispatch(frame.method, params));
+      answer(session, id, deps.dispatch(frame.method, params));
     } catch (error) {
-      send({ k: "res", id, ok: false, error: safeError(error) });
+      to(session, { k: "res", id, ok: false, error: safeError(error) });
     }
   };
 
-  const connect = () => {
-    if (!running || !peer || !codec || socket) return;
-    const hello = codec.restart();
-    let ws: WebSocket;
+  const schedule = () => {
+    if (!running || !bindAddr() || server || retry !== undefined) return;
+    const wait = backoff;
+    backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+    retry = setTimeout(() => {
+      retry = undefined;
+      listen();
+    }, wait);
+    retry.unref();
+  };
+
+  const listen = () => {
+    const addr = bindAddr();
+    if (!running || !addr || server) return;
+    const where = splitAddress(addr);
+    if (!where) return;
+    // The address is frozen at pair time. Once it is gone from this Mac the phone
+    // cannot reach it either, so say so instead of retrying a bind that cannot work.
+    if (!reachable().includes(where.host)) {
+      reason = MOVED;
+      changed();
+      return;
+    }
+    // Read live, not pinned at bind time: pairing a phone must not kick the others
+    // off, and a revoked key has to stop opening the door the moment it is revoked.
+    const known = (offered: string) => candidates().some((peer) => sameToken(offered, codecFor(peer).auth));
+    let next: WebSocketServer;
     try {
-      ws = new WebSocket(`${peer.relay}/${peer.room}?role=mac`, [codec.auth]);
-    } catch {
+      // Bound to the pairing address only, so the port is never open on any other
+      // network this Mac joins.
+      next = new WebSocketServer({
+        host: where.host,
+        port: where.port,
+        maxPayload: MAX_FRAME_BYTES,
+        handleProtocols: (protocols) => {
+          for (const offered of protocols) if (known(offered)) return offered;
+          return false;
+        },
+        verifyClient: (info: { req: { headers: Record<string, string | string[] | undefined> } }) => {
+          const offered = String(info.req.headers["sec-websocket-protocol"] ?? "").split(",").map((value) => value.trim());
+          return offered.some(known);
+        },
+      });
+    } catch (error) {
+      reason = why(error);
+      changed();
       schedule();
       return;
     }
-    ws.binaryType = "arraybuffer";
-    socket = ws;
-    phone = false;
-    announced = 0;
-    ws.onopen = () => {
-      if (socket !== ws) return;
+    server = next;
+    bound = addr;
+    next.on("listening", () => {
+      if (server !== next) return;
       backoff = BACKOFF_MIN_MS;
-      claim?.settle();
+      listening = true;
+      reason = "";
+      changed();
+    });
+    next.on("error", (error) => {
+      if (server !== next) return;
+      console.error("emma bridge: could not listen on", addr, error);
+      listening = false;
+      server = undefined;
+      reason = why(error);
+      changed();
       try {
-        ws.send(hello as Uint8Array<ArrayBuffer>);
+        next.close();
       } catch {
-        drop(ws, 1000);
-        schedule();
+        /* already closing */
+      }
+      schedule();
+    });
+    next.on("connection", (ws) => {
+      // verifyClient already refused anything that did not offer a live key; this
+      // finds which phone it was, so the session speaks that phone's codec.
+      const peer = server === next ? candidates().find((held) => sameToken(ws.protocol, codecFor(held).auth)) : undefined;
+      if (!peer) {
+        ws.close(1011, "");
         return;
       }
-      beat = setInterval(() => {
-        if (socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+      // One socket per phone: a rejoin replaces the socket it is replacing, and
+      // leaves the other paired phones alone.
+      const held = sessionOf(peer);
+      if (held) drop(held[0], 1000);
+      const codec = codecFor(peer);
+      codec.restart();
+      const session: Session = { ws, peer, codec, live: false, announced: 0 };
+      sessions.set(ws, session);
+      ws.on("message", (data, isBinary) => receive(ws, data as Buffer, isBinary));
+      ws.on("error", () => drop(ws, 1000));
+      ws.on("close", () => drop(ws, 1000));
+      // A phone that goes out of range or is suspended leaves a half-open socket
+      // that never errors. Only an unanswered ping tells us it is gone; without it
+      // `connected` stays true for hours and asks routed to the phone hang.
+      let alive = true;
+      ws.on("pong", () => { alive = true; });
+      session.beat = setInterval(() => {
+        if (sessions.get(ws) !== session || ws.readyState !== PhoneSocket.OPEN) return;
+        if (!alive) {
+          ws.terminate();
+          drop(ws, 1000);
+          return;
+        }
+        alive = false;
         try {
+          ws.ping();
           ws.send("p");
         } catch {
           drop(ws, 1000);
         }
       }, HEARTBEAT_MS);
-    };
-    ws.onmessage = (message) => receive(ws, message.data);
-    ws.onerror = () => {
-      drop(ws, 1000);
-      schedule();
-    };
-    ws.onclose = () => {
-      drop(ws, 1000);
-      schedule();
-    };
+      session.beat.unref();
+      changed();
+    });
   };
 
-  const reconnect = () => {
+  const watch = () => {
+    if (guard !== undefined) return;
+    guard = setInterval(() => {
+      const addr = bindAddr();
+      if (!running || !addr) return;
+      const where = splitAddress(addr);
+      if (!where) return;
+      if (reachable().includes(where.host)) {
+        if (reason !== MOVED) return;
+        reason = "";
+        relisten();
+        return;
+      }
+      if (reason === MOVED && !server) return;
+      reason = MOVED;
+      shut();
+    }, WATCH_MS);
+    guard.unref();
+  };
+
+  /** Serve while any key is live; once the last one goes, close the port. */
+  const settle = () => {
+    if (!candidates().length) {
+      shut();
+      return;
+    }
+    if (bound !== bindAddr()) relisten();
+    else if (!server) listen();
+    changed();
+  };
+
+  const shut = () => {
     if (retry !== undefined) {
       clearTimeout(retry);
       retry = undefined;
     }
-    if (socket) drop(socket, 1000);
+    bound = undefined;
+    for (const ws of [...sessions.keys()]) drop(ws, 1000);
+    const closing = server;
+    server = undefined;
+    listening = false;
+    if (closing) {
+      try {
+        closing.close();
+      } catch {
+        /* already closing */
+      }
+    }
+    changed();
+  };
+
+  const relisten = () => {
+    shut();
     backoff = BACKOFF_MIN_MS;
-    connect();
+    listen();
   };
 
-  const farewell = (reason: "revoked" | "shutdown") => {
-    send({ k: "evt", t: "bye", reason });
+  const farewell = (why: "revoked" | "shutdown") => {
+    broadcast({ k: "evt", t: "bye", reason: why });
     unstage();
-    if (retry !== undefined) {
-      clearTimeout(retry);
-      retry = undefined;
-    }
-    if (socket) drop(socket, 1000);
+    shut();
   };
 
   return {
@@ -288,70 +502,85 @@ export function createBridge(deps: BridgeDeps): Bridge {
       if (running) return;
       running = true;
       changed();
-      connect();
+      listen();
+      watch();
     },
     stop() {
       running = false;
+      if (guard !== undefined) {
+        clearInterval(guard);
+        guard = undefined;
+      }
       farewell("shutdown");
     },
     sending,
     event(event) {
-      send(event);
+      broadcast(event);
     },
     ask(ask) {
-      if (peer) {
+      if (peers.length) {
         const now = Date.now();
         for (const [id, held] of pending) if (held.expiresAt <= now) pending.delete(id);
         pending.set(ask.id, ask);
       }
-      return send({ k: "evt", t: "permission-ask", ask }) && phone;
+      const sent = broadcast({ k: "evt", t: "permission-ask", ask });
+      return sent && devices().some((device) => device.connected);
     },
     resolved(id, allowed) {
       pending.delete(id);
-      send({ k: "evt", t: "permission-resolved", id, allowed });
+      broadcast({ k: "evt", t: "permission-resolved", id, allowed });
     },
     status,
-    async pair(relay) {
-      const next = mintPeer(deps.identity.name, relay);
+    async pair(pin) {
+      if (peers.length >= MAX_PEERS) throw new Error(FULL);
+      const host = preferredHost();
+      if (!host) throw new Error(NO_ADDRESS);
+      const next = mintPeer(deps.identity.name, `ws://${host}:${BRIDGE_PORT}`, pin);
       unstage();
       staged = next;
-      peer = next;
-      codec = codecFor(next);
+      tries = 0;
       running = true;
-      changed();
-      reconnect();
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => claim?.settle(new Error(NO_RELAY)), CLAIM_TIMEOUT_MS);
-          claim = {
-            settle: (error) => {
-              if (!claim) return;
-              claim = undefined;
-              clearTimeout(timer);
-              if (error) reject(error);
-              else resolve();
-            },
-          };
-        });
-      } catch (error) {
-        cancelPair();
-        throw error;
-      }
+      reason = "";
+      // Not a relisten: the phones already paired keep their sockets through this.
+      settle();
+      watch();
       expiry = setTimeout(cancelPair, PAIRING_TTL_MS);
       expiry.unref();
-      return pairingPayload(next);
+      return await Promise.resolve(pairingPayload(next));
     },
     cancelPair,
-    unpair() {
-      farewell("revoked");
-      clearPeer(deps.userData);
-      pending.clear();
-      saved = undefined;
-      staged = undefined;
-      peer = undefined;
-      codec = undefined;
-      lastSeen = 0;
-      changed();
+    unpair(id) {
+      const going = id === undefined ? [...peers] : peers.filter((peer) => peer.pairedAt === id);
+      if (!going.length && id !== undefined) return;
+      for (const peer of going) {
+        const entry = sessionOf(peer);
+        if (entry) {
+          to(entry[1], { k: "evt", t: "bye", reason: "revoked" });
+          // verifyClient only guards new sockets, so the one it is already holding
+          // has to be shut or a revoked phone keeps asking on it.
+          drop(entry[0], 1000);
+        }
+        codecs.delete(peer.pairedAt);
+        lastSeen.delete(peer.pairedAt);
+      }
+      const keep = peers.filter((peer) => !going.some((gone) => gone.pairedAt === peer.pairedAt));
+      try {
+        if (keep.length) savePeers(deps.userData, keep);
+        else clearPeers(deps.userData);
+      } catch (error) {
+        console.error("emma bridge: could not update the paired phones", error);
+      }
+      peers = keep;
+      if (id === undefined) {
+        unstage();
+        if (staged) codecs.delete(staged.pairedAt);
+        staged = undefined;
+        pending.clear();
+        tries = 0;
+      }
+      // verifyClient reads the live set, so the revoked key is already refused; the
+      // port only closes once nothing is paired.
+      settle();
     },
   };
 }

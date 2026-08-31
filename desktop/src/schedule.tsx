@@ -220,8 +220,8 @@ const GAP_X = 36;
 const GAP_Y = 64;
 const LANE = 40;
 const GRAPH_BOX = { width: NODE_WIDTH, height: NODE_HEIGHT, gapX: GAP_X, gapY: GAP_Y, lane: LANE };
-const KIND_HUE = { agent: "var(--blue)", set: "var(--text-3)", if: "var(--orange)" } as const;
-const GLYPHS = { agent: "◆", set: "◇", if: "◈" } as const;
+const KIND_HUE = { agent: "var(--blue)", script: "var(--teal)", set: "var(--text-3)", if: "var(--orange)" } as const;
+const GLYPHS = { agent: "◆", script: "▶", set: "◇", if: "◈" } as const;
 const END_ID = "end";
 
 type Placed = { node?: WorkflowNode; id: string; x: number; y: number };

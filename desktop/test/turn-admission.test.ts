@@ -63,3 +63,11 @@ test("turn admission preserves active same-thread ownership until its cleanup fi
   assert.deepEqual(forgotten, ["other", "active"]);
   assert.deepEqual(started, ["other", "active"]);
 });
+
+test("sendMessage keeps explicit context without automatically loading a learned skill", () => {
+  const source = readFileSync(path.join(__dirname, "../main/main.js"), "utf8");
+  assert.doesNotMatch(source, /bestLearnedSkill|skillParams/);
+  const runRequest = source.match(/async function runRequest\(request\) \{[\s\S]*?(?=\nconst desktopIdentity)/)?.[0];
+  assert.ok(runRequest);
+  assert.match(runRequest, /params: extra/);
+});

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { catalogSeed } from "./catalog-seed";
-import { MODEL_ID, providerChatUrl, providerModelsUrl, type KeyBalance } from "../shared/settings";
+import { DEEPSEEK_BALANCE_URL, MODEL_ID, providerChatUrl, providerModelsUrl, type KeyBalance } from "../shared/settings";
 
 export interface CatalogModel {
   id: string;
@@ -302,6 +302,34 @@ export async function fetchOpenRouterBalance(key: string, timeoutMs = 15_000): P
   } catch (reason) {
     return { ...blank, error: reason instanceof Error ? reason.message : String(reason) };
   }
+}
+
+export async function fetchDeepSeekBalance(key: string, timeoutMs = 15_000): Promise<KeyBalance> {
+  const blank: KeyBalance = { keyed: !!key, freeTier: false, remaining: null, usage: 0, error: "" };
+  if (!key) return blank;
+  try {
+    const response = await fetch(DEEPSEEK_BALANCE_URL, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(timeoutMs) });
+    if (response.status === 401 || response.status === 403) return { ...blank, error: "DeepSeek rejected that key." };
+    if (!response.ok) return { ...blank, error: `DeepSeek answered ${response.status} when asked about the key.` };
+    return readDeepSeekBalance(await response.json());
+  } catch (reason) {
+    return { ...blank, error: reason instanceof Error ? reason.message : String(reason) };
+  }
+}
+
+export function readDeepSeekBalance(body: unknown): KeyBalance {
+  const data = body as { is_available?: unknown; balance_infos?: unknown } | null;
+  const infos = Array.isArray(data?.balance_infos) ? data.balance_infos as Record<string, unknown>[] : [];
+  const info = infos.find((item) => item.currency === "USD") ?? infos[0];
+  const total = typeof info?.total_balance === "string" ? Number.parseFloat(info.total_balance) : null;
+  return {
+    keyed: true,
+    freeTier: false,
+    remaining: total !== null && Number.isFinite(total) ? total : null,
+    usage: 0,
+    error: data?.is_available === false && !total ? "DeepSeek reports this key cannot be used." : "",
+    currency: typeof info?.currency === "string" ? info.currency : undefined,
+  };
 }
 
 export async function probeProvider(baseUrl: string, key: string, model: string): Promise<ProviderProbe> {

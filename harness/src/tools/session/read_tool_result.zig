@@ -29,37 +29,63 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
     }
 
     const handle_value = parsed.value.object.get("handle") orelse {
-        return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result requires string field \"handle\"") };
+        return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result requires string field \"handle\": the exact handle string printed by the tool result you want to page through. \"query\" only filters inside one handle and cannot stand in for it.") };
     };
     if (handle_value != .string) {
         return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result field \"handle\" must be a string") };
     }
 
-    const input = try ctx.allocator.create(Input);
-    errdefer ctx.allocator.destroy(input);
-    input.* = .{ .handle = try ctx.allocator.dupe(u8, handle_value.string) };
-    errdefer input.deinit(ctx.allocator);
-
+    var start_byte: usize = 1;
+    var byte_count: usize = result_store.read_default_bytes;
+    var query: ?[]const u8 = null;
     if (parsed.value.object.get("start_byte")) |value| {
-        const start_byte = parsePositiveInteger(value) orelse {
-            return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result field \"start_byte\" must be a positive integer") };
+        const raw = parsePositiveInteger(value) orelse {
+            return .{ .failure = try positiveIntegerFailure(ctx.allocator, "start_byte", value) };
         };
-        input.start_byte = @intCast(start_byte);
+        start_byte = @intCast(raw);
     }
     if (parsed.value.object.get("byte_count")) |value| {
-        const byte_count = parsePositiveInteger(value) orelse {
-            return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result field \"byte_count\" must be a positive integer") };
+        const raw = parsePositiveInteger(value) orelse {
+            return .{ .failure = try positiveIntegerFailure(ctx.allocator, "byte_count", value) };
         };
-        input.byte_count = @intCast(@min(byte_count, result_store.read_max_bytes));
+        byte_count = @intCast(@min(raw, result_store.read_max_bytes));
+    }
+    if (parsed.value.object.get("end_byte")) |_| {
+        return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result has no \"end_byte\" field and ignored it. The range is \"start_byte\" plus \"byte_count\", so resend with \"byte_count\" set to end_byte - start_byte + 1.") };
     }
     if (parsed.value.object.get("query")) |value| {
         if (value != .string) {
             return .{ .failure = try ctx.allocator.dupe(u8, "read_tool_result field \"query\" must be a string") };
         }
-        input.query = try ctx.allocator.dupe(u8, value.string);
+        query = value.string;
     }
 
+    const input = try ctx.allocator.create(Input);
+    errdefer ctx.allocator.destroy(input);
+    input.* = .{
+        .handle = try ctx.allocator.dupe(u8, handle_value.string),
+        .start_byte = start_byte,
+        .byte_count = byte_count,
+    };
+    errdefer input.deinit(ctx.allocator);
+    if (query) |raw| input.query = try ctx.allocator.dupe(u8, raw);
+
     return .{ .input = .{ .ptr = input, .deinit_fn = inputDeinit } };
+}
+
+fn positiveIntegerFailure(alloc: Allocator, field: []const u8, value: std.json.Value) Allocator.Error![]u8 {
+    if (value == .string) {
+        return std.fmt.allocPrint(
+            alloc,
+            "read_tool_result field \"{s}\" must be a bare JSON number, not the quoted string \"{s}\". Resend it unquoted, for example \"{s}\": 1. Changing the value will not help while it stays a string.",
+            .{ field, value.string, field },
+        );
+    }
+    return std.fmt.allocPrint(
+        alloc,
+        "read_tool_result field \"{s}\" is 1-based and must be a positive integer; the first byte is 1, not 0",
+        .{field},
+    );
 }
 
 fn parsePositiveInteger(value: std.json.Value) ?i64 {
@@ -129,6 +155,32 @@ pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
 
 pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return false;
+}
+
+test "read_tool_result names a quoted range value as the fault" {
+    const alloc = std.testing.allocator;
+    const decoded = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":\"8193\"}");
+    const failure = decoded.failure;
+    defer alloc.free(failure);
+    try std.testing.expect(std.mem.find(u8, failure, "must be a bare JSON number") != null);
+    try std.testing.expect(std.mem.find(u8, failure, "\"8193\"") != null);
+    try std.testing.expect(std.mem.find(u8, failure, "\"start_byte\": 1") != null);
+
+    const zero = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"byte_count\":0}");
+    const zero_failure = zero.failure;
+    defer alloc.free(zero_failure);
+    try std.testing.expect(std.mem.find(u8, zero_failure, "must be a positive integer") != null);
+
+    const missing = try decode(.{ .allocator = alloc }, "{\"query\":\"maximum hit\"}");
+    const missing_failure = missing.failure;
+    defer alloc.free(missing_failure);
+    try std.testing.expect(std.mem.find(u8, missing_failure, "printed by the tool result") != null);
+
+    const end_byte = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":9,\"end_byte\":40}");
+    const end_byte_failure = end_byte.failure;
+    defer alloc.free(end_byte_failure);
+    try std.testing.expect(std.mem.find(u8, end_byte_failure, "no \"end_byte\" field") != null);
+    try std.testing.expect(std.mem.find(u8, end_byte_failure, "end_byte - start_byte + 1") != null);
 }
 
 test "read_tool_result decodes range and query inputs" {

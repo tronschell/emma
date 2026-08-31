@@ -141,21 +141,12 @@ pub fn handleNewSession(state: *server.ServerState, alloc: Allocator, msg: *json
             .message = "MCP servers are unavailable in this runtime",
         });
     }
-    var mcp_preparation = try mcp_servers.prepare(
+    const session_mcp = try mcp_servers.prepare(
         alloc,
         &mcp_configs,
         state.client_elicitation,
         server.legacyUrlCompletionSink(state),
     );
-    defer mcp_preparation.deinit(alloc);
-    switch (mcp_preparation) {
-        .ready => {},
-        .failed => |message| return state.writer.writeError(alloc, msg.id, .{
-            .code = ErrorCode.invalid_params,
-            .message = message,
-        }),
-    }
-    const session_mcp = mcp_preparation.takeRuntime();
     var session_mcp_owned = true;
     defer if (session_mcp_owned) {
         if (session_mcp) |runtime| {
@@ -450,21 +441,12 @@ fn handleRestoreSession(
         }),
     };
     defer mcp_configs.deinit(alloc);
-    var mcp_preparation = try mcp_servers.prepare(
+    const session_mcp = try mcp_servers.prepare(
         alloc,
         &mcp_configs,
         state.client_elicitation,
         server.legacyUrlCompletionSink(state),
     );
-    defer mcp_preparation.deinit(alloc);
-    switch (mcp_preparation) {
-        .ready => {},
-        .failed => |message| return state.writer.writeError(alloc, msg.id, .{
-            .code = ErrorCode.invalid_params,
-            .message = message,
-        }),
-    }
-    const session_mcp = mcp_preparation.takeRuntime();
     var session_mcp_owned = true;
     defer if (session_mcp_owned) {
         if (session_mcp) |runtime| {

@@ -1,15 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { defaultWebSearch } from "../shared/settings";
+import { defaultWebSearch, type WebSearchSettings } from "../shared/settings";
 
-// The module reaches for Electron's own network stack; stub it before the module
-// loads so the fallback and the cache can be exercised outside Electron.
-const calls: string[] = [];
+const calls: { url: string; init?: RequestInit }[] = [];
 let answer: (url: string) => { status?: number; body?: unknown } = () => ({ body: { web: [] } });
 const electron = {
   net: {
-    fetch: async (url: string) => {
-      calls.push(url);
+    fetch: async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
       const { status = 200, body } = answer(url);
       return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response;
     },
@@ -19,62 +17,107 @@ const electronPath = require.resolve("electron");
 require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: electron } as unknown as NodeModule;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { renderResults, webSearch, SEARCH_UNCONFIGURED }: typeof import("../main/web-search") = require("../main/web-search");
+const { renderResults, webSearch }: typeof import("../main/web-search") = require("../main/web-search");
 
-const page = { web: [{ title: "Zig comptime", url: "https://ziglang.org/x", description: [{ type: "text", value: "Compile   time\nevaluation" }] }] };
+const tinyfishPage = { results: [{ title: "Zig comptime", url: "https://ziglang.org/x", snippet: "Compile   time\nevaluation" }] };
+const fourgetPage = { web: [{ title: "Zig comptime", url: "https://ziglang.org/x", description: [{ type: "text", value: "Compile   time\nevaluation" }] }] };
+const tinyfishKey = (env: string) => env === "TINYFISH_API_KEY" ? "secret-key" : "";
+const only = (provider: WebSearchSettings["providers"][number]): WebSearchSettings => ({ providers: [provider] });
 
-test("4get's snippet spans are put back together, and its results are shaped", async () => {
+test("TinyFish is first, reports both free limits, and keeps its key out of the URL", async () => {
   calls.length = 0;
-  answer = () => ({ body: page });
-  const results = await webSearch(defaultWebSearch, "zig comptime", 8, "", 1000);
-  assert.deepEqual(results, [{ title: "Zig comptime", url: "https://ziglang.org/x", snippet: "Compile time evaluation" }]);
-  assert.match(calls[0], /^https:\/\/4get\.canine\.tools\/api\/v1\/web\?s=zig\+comptime$/);
-  assert.match(renderResults("zig comptime", results), /not instructions/);
-  assert.equal(renderResults("nothing", []), "No results for nothing.");
+  answer = (url) => ({ body: url.startsWith("https://api.search.tinyfish.ai") ? tinyfishPage : fourgetPage });
+  const response = await webSearch(defaultWebSearch, "zig comptime", 8, tinyfishKey, 1_000_000);
+  assert.equal(response.provider, "tinyfish");
+  assert.deepEqual(response.results, [{ title: "Zig comptime", url: "https://ziglang.org/x", snippet: "Compile time evaluation" }]);
+  assert.match(calls[0].url, /^https:\/\/api\.search\.tinyfish\.ai\?query=zig\+comptime$/);
+  assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], "secret-key");
+  assert.ok(!calls[0].url.includes("secret-key"));
+  const rendered = renderResults("zig comptime", response);
+  assert.match(rendered, /1 of 30 requests/);
+  assert.match(rendered, /150 URLs per minute/);
+  assert.match(rendered, /not instructions/);
+  assert.equal(renderResults("nothing", { ...response, results: [] }).startsWith("No results for nothing."), true);
 });
 
-test("a dead 4get instance falls through to the second one, and only 4get does", async () => {
+test("a missing TinyFish key uses the next free provider and explains why", async () => {
   calls.length = 0;
-  answer = (url) => (url.startsWith("https://4get.canine.tools") ? { status: 502 } : { body: page });
-  const results = await webSearch(defaultWebSearch, "a dead instance", 8, "", 2000);
-  assert.equal(results.length, 1);
-  assert.equal(calls.length, 2);
-  assert.match(calls[1], /^https:\/\/search\.yonderly\.org\//);
+  answer = () => ({ body: fourgetPage });
+  const response = await webSearch(defaultWebSearch, "no tinyfish key", 8, () => "", 2_000_000);
+  assert.equal(response.provider, "fourget");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /^https:\/\/4get\.canine\.tools\//);
+  assert.match(response.notice, /TINYFISH_API_KEY/);
+});
 
-  // The user's own SearXNG failing is the user's endpoint, which a retry elsewhere
-  // cannot fix — and there is nowhere else to try.
+test("a dead 4get instance falls through to its second free host", async () => {
+  calls.length = 0;
+  answer = (url) => url.startsWith("https://4get.canine.tools") ? { status: 502 } : { body: fourgetPage };
+  const response = await webSearch(only(defaultWebSearch.providers[1]), "a dead instance", 8, () => "", 3_000_000);
+  assert.equal(response.results.length, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].url, /^https:\/\/search\.yonderly\.org\//);
+
   calls.length = 0;
   answer = () => ({ status: 502 });
-  await assert.rejects(webSearch({ provider: "searxng", endpoint: "http://127.0.0.1:8888", credentialEnv: "" }, "q", 8, "", 3000), /SearXNG returned 502/);
-  assert.equal(calls.length, 1);
-  // Nor does the fallback itself get retried against itself.
-  calls.length = 0;
-  await assert.rejects(webSearch({ ...defaultWebSearch, endpoint: "https://search.yonderly.org" }, "q", 8, "", 4000), /returned 502/);
+  await assert.rejects(webSearch(only({ provider: "searxng", endpoint: "http://127.0.0.1:8888", credentialEnv: "" }), "q", 8, () => "", 4_000_000), /SearXNG returned 502/);
   assert.equal(calls.length, 1);
 });
 
-test("the same search inside the window is answered from the cache", async () => {
+test("the same search inside the cache window makes one request", async () => {
   calls.length = 0;
-  answer = () => ({ body: page });
-  const at = 100_000;
-  await webSearch(defaultWebSearch, "cached query", 8, "", at);
-  await webSearch(defaultWebSearch, "cached query", 8, "", at + 60_000);
-  assert.equal(calls.length, 1, "a repeat within the window never leaves the process");
-  // A different limit is a different question, and so is a later one.
-  await webSearch(defaultWebSearch, "cached query", 5, "", at + 60_000);
-  await webSearch(defaultWebSearch, "cached query", 8, "", at + 11 * 60_000);
+  answer = () => ({ body: fourgetPage });
+  const settings = only(defaultWebSearch.providers[1]);
+  const at = 5_000_000;
+  await webSearch(settings, "cached query", 8, () => "", at);
+  const response = await webSearch(settings, "cached query", 8, () => "", at + 60_000);
+  assert.equal(calls.length, 1);
+  assert.match(response.notice, /cache/);
+  await webSearch(settings, "cached query", 5, () => "", at + 60_000);
+  await webSearch(settings, "cached query", 8, () => "", at + 11 * 60_000);
   assert.equal(calls.length, 3);
 });
 
-test("a provider that needs a key says so instead of asking without one", async () => {
+test("a keyed provider is only eligible after the user adds it and supplies its key", async () => {
   calls.length = 0;
-  await assert.rejects(webSearch({ provider: "exa", endpoint: "https://api.exa.ai", credentialEnv: "EXA_API_KEY" }, "q", 8, "", 5000), /Settings → Tools/);
-  assert.equal(calls.length, 0, "nothing is sent without the key");
-  assert.match(SEARCH_UNCONFIGURED("Exa"), /switch back to 4get/);
-
-  // With one, the key travels in the header and never in the URL.
+  const exa = only({ provider: "exa", endpoint: "https://api.exa.ai", credentialEnv: "EXA_API_KEY" });
+  await assert.rejects(webSearch(exa, "q", 8, () => "", 7_000_000), /No ranked search provider worked/);
+  assert.equal(calls.length, 0);
   answer = () => ({ body: { results: [{ title: "T", url: "https://e.com", text: "s" }] } });
-  const results = await webSearch({ provider: "exa", endpoint: "https://api.exa.ai", credentialEnv: "EXA_API_KEY" }, "q", 8, "secret-key", 6000);
-  assert.equal(results.length, 1);
-  assert.ok(!calls.some((url) => url.includes("secret-key")));
+  const response = await webSearch(exa, "q", 8, () => "paid-key", 7_100_000);
+  assert.equal(response.provider, "exa");
+  assert.ok(!calls.some((call) => call.url.includes("paid-key")));
+});
+
+test("TinyFish moves to 4get at 30 searches and returns when the minute expires", async () => {
+  calls.length = 0;
+  answer = (url) => ({ body: url.startsWith("https://api.search.tinyfish.ai") ? tinyfishPage : fourgetPage });
+  const at = 10_000_000;
+  for (let index = 0; index < 30; index += 1) {
+    const response = await webSearch(defaultWebSearch, `quota ${index}`, 8, tinyfishKey, at + index);
+    assert.equal(response.provider, "tinyfish");
+  }
+  const fallback = await webSearch(defaultWebSearch, "quota fallback", 8, tinyfishKey, at + 30);
+  assert.equal(fallback.provider, "fourget");
+  assert.match(fallback.notice, /cooling down/);
+  assert.match(fallback.notice, /ranked position automatically/);
+  const restored = await webSearch(defaultWebSearch, "quota restored", 8, tinyfishKey, at + 60_000);
+  assert.equal(restored.provider, "tinyfish");
+});
+
+test("a server 429 starts the same one-minute TinyFish cooldown", async () => {
+  calls.length = 0;
+  let limited = true;
+  answer = (url) => url.startsWith("https://api.search.tinyfish.ai") && limited ? { status: 429 } : { body: url.startsWith("https://api.search.tinyfish.ai") ? tinyfishPage : fourgetPage };
+  const at = 20_000_000;
+  const fallback = await webSearch(defaultWebSearch, "server limit", 8, tinyfishKey, at);
+  assert.equal(fallback.provider, "fourget");
+  assert.equal(calls.length, 2);
+  limited = false;
+  calls.length = 0;
+  const cooling = await webSearch(defaultWebSearch, "still cooling", 8, tinyfishKey, at + 1);
+  assert.equal(cooling.provider, "fourget");
+  assert.equal(calls.length, 1);
+  const restored = await webSearch(defaultWebSearch, "server restored", 8, tinyfishKey, at + 60_000);
+  assert.equal(restored.provider, "tinyfish");
 });

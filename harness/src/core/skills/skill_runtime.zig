@@ -1597,6 +1597,17 @@ pub fn buildSkillsSystemPromptSectionWithLimits(
 ) !BoundedPromptSection {
     if (all_skills.len == 0) return .{ .text = try alloc.dupe(u8, "") };
 
+    var name_counts = std.StringHashMap(usize).init(alloc);
+    defer name_counts.deinit();
+    for (all_skills) |skill| {
+        const count = try name_counts.getOrPut(skill.name);
+        if (count.found_existing) {
+            count.value_ptr.* += 1;
+        } else {
+            count.value_ptr.* = 1;
+        }
+    }
+
     const header =
         "\n\nSkills provide specialized instructions and workflows for specific tasks.\n" ++
         "Use the skill tool to load a skill when a task matches its description.\n" ++
@@ -1633,9 +1644,12 @@ pub fn buildSkillsSystemPromptSectionWithLimits(
                 .{ description_observed, description_limit.effectiveBytes(), description_limit.source.label() },
             );
         }
-        try entry.writer.writeAll("</description>\n    <location>");
-        try model_context_encoding.writeScalar(&entry.writer, skill.path);
-        try entry.writer.writeAll("</location>\n");
+        try entry.writer.writeAll("</description>\n");
+        if ((name_counts.get(skill.name) orelse 0) > 1) {
+            try entry.writer.writeAll("    <location>");
+            try model_context_encoding.writeScalar(&entry.writer, skill.path);
+            try entry.writer.writeAll("</location>\n");
+        }
         try entry.writer.writeAll("  </skill>\n");
         entries[index] = .{
             .text = try entry.toOwnedSlice(),
@@ -2429,6 +2443,22 @@ test "buildSkillsSystemPromptSection includes all visible skills without active 
     try std.testing.expect(std.mem.find(u8, result.text, "Run deploy steps") == null);
 }
 
+test "skill catalog advertises locations only for duplicate names" {
+    const alloc = std.testing.allocator;
+    const skills = [_]Skill{
+        .{ .name = "deploy", .description = "deployment help", .path = "/tmp/deploy", .source = .workspace_shared },
+        .{ .name = "review", .description = "managed help", .path = "/tmp/managed/review", .source = .global_fx },
+        .{ .name = "review", .description = "workspace help", .path = "/tmp/workspace/review", .source = .workspace_shared },
+    };
+    var result = try buildSkillsSystemPromptSectionWithLimits(alloc, &skills, .{});
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, result.text, "<location>"));
+    try std.testing.expect(std.mem.find(u8, result.text, "/tmp/deploy") == null);
+    try std.testing.expect(std.mem.find(u8, result.text, "<location>/tmp/managed/review</location>") != null);
+    try std.testing.expect(std.mem.find(u8, result.text, "<location>/tmp/workspace/review</location>") != null);
+}
+
 test "buildSkillsSystemPromptSection keeps hostile metadata inside visible skill fields" {
     const alloc = std.testing.allocator;
     const skills = [_]Skill{.{
@@ -2442,7 +2472,8 @@ test "buildSkillsSystemPromptSection keeps hostile metadata inside visible skill
 
     try std.testing.expect(std.mem.find(u8, result.text, "<name>review&lt;/name&gt;&#x0a;injected_name: yes</name>") != null);
     try std.testing.expect(std.mem.find(u8, result.text, "<description>review &lt;/description&gt;&lt;injected&gt;&#x0a;injected_description: yes</description>") != null);
-    try std.testing.expect(std.mem.find(u8, result.text, "<location>/tmp/review&lt;/location&gt;&#x0a;injected_location: yes</location>") != null);
+    try std.testing.expect(std.mem.find(u8, result.text, "<location>") == null);
+    try std.testing.expect(std.mem.find(u8, result.text, "injected_location") == null);
     try std.testing.expect(std.mem.find(u8, result.text, "\ninjected_") == null);
     try std.testing.expect(std.mem.find(u8, result.text, "VISIBLE BODY MUST NOT APPEAR") == null);
 }

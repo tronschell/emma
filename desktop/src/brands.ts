@@ -58,12 +58,14 @@ const lobeIconUrls = {
   liquid: new URL("../assets/brands/liquid.svg", import.meta.url).href,
   poolside: new URL("../assets/brands/poolside.svg", import.meta.url).href,
   bytedance: new URL("../assets/brands/bytedance.svg", import.meta.url).href,
+  hunyuan: new URL("../assets/brands/hunyuan.svg", import.meta.url).href,
+  ernie: new URL("../assets/brands/ernie.svg", import.meta.url).href,
 } as const;
 
 /** lobehub/lobe-icons is MIT for the packaging; each mark stays its owner's. */
-const lobeIcon = (file: keyof typeof lobeIconUrls, owner: string): BrandAsset => ({
+const lobeIcon = (file: keyof typeof lobeIconUrls, owner: string, sourceUrl = `https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/${file}.svg`): BrandAsset => ({
   src: lobeIconUrls[file],
-  sourceUrl: `https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/${file}.svg`,
+  sourceUrl,
   retrievedAt: "2026-08-20",
   license: `Lobe Icons; MIT; ${owner} trademarks remain with ${owner}`,
 });
@@ -100,6 +102,20 @@ const assets = {
   liquid: lobeIcon("liquid", "Liquid AI"),
   poolside: lobeIcon("poolside", "poolside"),
   bytedance: lobeIcon("bytedance", "ByteDance"),
+  hunyuan: lobeIcon("hunyuan", "Tencent"),
+  ernie: lobeIcon("ernie", "Baidu", "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/wenxin.svg"),
+  sakana: {
+    src: new URL("../assets/brands/sakana.png", import.meta.url).href,
+    sourceUrl: "https://sakana.ai/sakana-logo-hero.png",
+    retrievedAt: "2026-08-20",
+    license: "Official Sakana AI site lockup; fish mark cropped from the lockup, brand red kept; Sakana AI trademarks remain with Sakana AI",
+  },
+  thinkingmachines: {
+    src: new URL("../assets/brands/thinkingmachines.svg", import.meta.url).href,
+    sourceUrl: "https://thinkingmachines.ai/images/apple-touch-icon.png",
+    retrievedAt: "2026-08-20",
+    license: "Redrawn from the Thinking Machines Lab site icon on the 24-unit grid, recoloured #fff; Thinking Machines trademarks remain with Thinking Machines Lab",
+  },
   antigravity: {
     src: new URL("../assets/brands/antigravity.png", import.meta.url).href,
     sourceUrl: "https://www.antigravity.google/press",
@@ -143,18 +159,7 @@ export const importerBrands = {
 
 export type ImporterBrandId = keyof typeof importerBrands;
 
-/** Keyed by connection id from main's catalog. */
-export const connectionBrands: Record<string, BrandDefinition> = {
-  obsidian: definition("obsidian", "Obsidian", "◈", assets.obsidian),
-  github: definition("github", "GitHub", "G", assets.github),
-  gitlab: definition("gitlab", "GitLab", "L", assets.gitlab),
-  jira: definition("jira", "Jira", "J", assets.jira),
-  todoist: definition("todoist", "Todoist", "T", assets.todoist),
-};
-
-export function brandForConnection(id: string): BrandDefinition | undefined {
-  return connectionBrands[id];
-}
+export const obsidianBrand = definition("obsidian", "Obsidian", "◈", assets.obsidian);
 
 export const providerBrands: readonly BrandDefinition[] = [
   definition("openai", "OpenAI", "◎", assets.openai, ["openai"], ["openai", "gpt", "o1", "o3", "o4"]),
@@ -172,11 +177,11 @@ export const providerBrands: readonly BrandDefinition[] = [
   definition("minimax", "MiniMax", "M", assets.minimax, ["minimax"], ["minimax"]),
   definition("bytedance", "ByteDance Seed", "B", assets.bytedance, ["bytedance", "bytedance-seed"], ["bytedance", "seed", "doubao"]),
   definition("xiaomi", "Xiaomi", "Mi", assets.xiaomi, ["xiaomi"], ["xiaomi", "mimo"]),
-  definition("thinkingmachines", "Thinking Machines", "T", undefined, ["thinkingmachines"], ["thinkingmachines", "inkling", "tinker"]),
-  definition("ernie", "ERNIE", "E", undefined, ["baidu"], ["ernie", "baidu"]),
-  definition("hunyuan", "Hunyuan", "H", undefined, ["tencent"], ["hunyuan", "tencent"]),
+  definition("thinkingmachines", "Thinking Machines", "T", assets.thinkingmachines, ["thinkingmachines"], ["thinkingmachines", "inkling", "tinker"]),
+  definition("ernie", "ERNIE", "E", assets.ernie, ["baidu"], ["ernie", "baidu"]),
+  definition("hunyuan", "Hunyuan", "H", assets.hunyuan, ["tencent"], ["hunyuan", "tencent"]),
   definition("naver", "HyperCLOVA", "N", assets.naver, ["naver"], ["naver", "hyperclova"]),
-  definition("sakana", "Sakana AI", "S", undefined, ["sakana"], ["sakana"]),
+  definition("sakana", "Sakana AI", "S", assets.sakana, ["sakana"], ["sakana"]),
   definition("nvidia", "NVIDIA", "N", assets.nvidia, ["nvidia"], ["nemotron", "nvidia"]),
   definition("poolside", "Poolside", "P", assets.poolside, ["poolside"], ["poolside", "malibu"]),
   definition("liquid", "Liquid AI", "L", assets.liquid, ["liquid"], ["lfm", "liquid"]),

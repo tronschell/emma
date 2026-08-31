@@ -36,6 +36,7 @@ const CLIP_SETTLE_MS = 150;
 const CLIP_KEYS = ["c", "x", "v"];
 const TRUNCATION_NOTICE = "\n[truncated — read less at a time: snapshot with interactive true, or narrow it with a selector]";
 
+export type Ran = { text: string; code: number | null; signal: NodeJS.Signals | null };
 type Tab = { id: string; view: WebContentsView; targetId?: string; favicon?: string };
 type Session = { name: string; threadId: string; tabs: Tab[]; activeId?: string; bounds?: BrowserBounds; shown: boolean; connected?: Promise<void>; pinned?: string };
 
@@ -178,7 +179,7 @@ export class Browsers {
     const session = this.session(threadId);
     const tab = this.active(session) ?? this.spawnTab(session);
     await this.pin(session, tab);
-    return bounded(await this.exec(session, argv));
+    return bounded((await this.exec(session, argv)).text);
   }
 
   stopAll() {
@@ -265,11 +266,16 @@ export class Browsers {
   private async pin(session: Session, tab: Tab) {
     const port = await this.cdpPort();
     if (port === null) throw new Error("Emma could not open a debugging port for its browser, so the agent cannot drive it.");
-    session.connected ??= this.exec(session, ["connect", String(port)]).then(() => undefined);
+    session.connected ??= this.exec(session, ["connect", String(port)])
+      .then((ran) => attached(ran, `connect to Emma's browser on port ${port}`))
+      .catch((error: unknown) => {
+        session.connected = undefined;
+        throw error;
+      });
     await session.connected;
     const targetId = (tab.targetId ??= await targetOf(tab));
     if (session.pinned === targetId) return;
-    await this.exec(session, ["tab", targetId, "--pin-tab"]);
+    attached(await this.exec(session, ["tab", targetId, "--pin-tab"]), "pin itself to the tab in Emma's browser pane");
     session.pinned = targetId;
   }
 
@@ -283,7 +289,7 @@ export class Browsers {
     return this.port;
   }
 
-  private async exec(session: Session, argv: readonly string[]): Promise<string> {
+  private async exec(session: Session, argv: readonly string[]): Promise<Ran> {
     const binary = await this.binary();
     if (!binary) throw new Error(`agent-browser is not installed on this Mac, so the agent cannot drive Emma's browser. The pane still works. Install it by running: ${INSTALL_COMMAND}`);
     return capture(binary, ["--session", session.name, ...argv], this.loginPath ?? process.env.PATH ?? "");
@@ -341,7 +347,12 @@ function bounded(value: string): string {
   return `${kept.replace(/�$/, "")}${TRUNCATION_NOTICE}`;
 }
 
-function capture(binary: string, argv: readonly string[], path: string): Promise<string> {
+export function attached(ran: Ran, what: string): void {
+  if (ran.code === 0 && !ran.signal) return;
+  throw new Error(`agent-browser could not ${what}, so nothing was driven and the browser pane shows nothing. Do not report what you cannot see. It said: ${ran.text.slice(0, 400) || "(nothing)"}`);
+}
+
+function capture(binary: string, argv: readonly string[], path: string): Promise<Ran> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, [...argv], { env: { ...process.env, PATH: path }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
@@ -356,8 +367,8 @@ function capture(binary: string, argv: readonly string[], path: string): Promise
       settled = true;
       clearTimeout(timer);
       const body = out.trim();
-      if (signal) return resolve(`${body}\n[agent-browser was killed after ${MAX_COMMAND_MS / 1000}s]`.trim());
-      resolve(body || (code === 0 ? "(no output)" : `${err.trim() || "(no output)"}\n[exit ${code}]`));
+      if (signal) return resolve({ text: `${body}\n[agent-browser was killed after ${MAX_COMMAND_MS / 1000}s]`.trim(), code, signal });
+      resolve({ text: body || (code === 0 ? "(no output)" : `${err.trim() || "(no output)"}\n[exit ${code}]`), code, signal });
     };
     child.once("error", (error) => {
       settled = true;

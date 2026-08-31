@@ -4,10 +4,11 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
 import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
-import { Harness, HARNESS_MODE_ID, callEscapesWorkspace, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
+import { Harness, HARNESS_MODE_ID, INTERRUPTED_CALL, callEscapesWorkspace, compactionReported, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, recoveredSessionTraces, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
+import { decodeSpans, encodeSpans } from "../shared/trace";
 
 const fakeAgent = path.join(process.cwd(), "test", "fake-acp-agent.mjs");
 
@@ -29,6 +30,8 @@ function harness(
   const usages: { threadId: string; inputTokens: number; outputTokens: number }[] = [];
   const toolRequests: { threadId: string; name: string; args: Record<string, unknown> }[] = [];
   const logs: HarnessLogLine[] = [];
+  const phases: string[] = [];
+  const compactions: { threadId: string; removedTurns: number; summaryChars: number; modelWritten: boolean }[] = [];
   const client = new Harness({
     binaryPath: process.execPath,
     args: [fakeAgent],
@@ -39,6 +42,7 @@ function harness(
     onDelta: (threadId, delta) => deltas.push({ threadId, delta }),
     onThought: (_threadId, delta) => thoughts.push(delta),
     onToolCall: (call) => calls.push(call),
+    onCompacted: (threadId, compacted) => compactions.push({ threadId, ...compacted }),
     onContextExperiment: () => {},
     onRoutedModel: () => {},
     onContextBreakdown: () => {},
@@ -55,14 +59,67 @@ function harness(
       toolRequests.push({ threadId, name, args });
       return runTool(threadId, name, args);
     },
+    onPhase: (_threadId, phase) => phases.push(phase),
     onLog: (line) => logs.push(line),
   });
-  return { client, logs, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, usages, toolRequests };
+  return { client, logs, phases, deltas, text: () => deltas.map((entry) => entry.delta), thoughts, calls, asks, contexts, children, ended, usages, toolRequests, compactions };
 }
 
 test("every mode routes its decision back to Emma", () => {
 
   assert.equal(HARNESS_MODE_ID, "ask");
+});
+
+test("session checkpoints restore tool calls missing from a stored trace", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "emma-recovered-trace-"));
+  const sessionId = "session-one";
+  const threadId = "thread-one";
+  const session = path.join(home, ".fx", "sessions", sessionId);
+  mkdirSync(session, { recursive: true });
+  writeFileSync(path.join(home, "emma-sessions.json"), JSON.stringify({ [threadId]: sessionId }));
+  writeFileSync(path.join(session, "checkpoint.json"), JSON.stringify({
+    state: {
+      updated_at_ms: 400_000,
+      history: [{
+        execution: {
+          tool_steps: [{
+            tool_calls: [{ id: "old", name: "search_tools", arguments_json: "{}" }],
+            tool_results: [{ tool_call_id: "old", tool_name: "search_tools", status: "success", output: "old", created_at_ms: 1_000 }],
+          }],
+        },
+      }],
+      recovery_checkpoint: {
+        execution: {
+          tool_steps: [
+            {
+              tool_calls: [{ id: "one", name: "read_file", arguments_json: "{\"path\":\"a.txt\"}" }],
+              tool_results: [{ tool_call_id: "one", tool_name: "read_file", status: "success", output: "one", created_at_ms: 300_000 }],
+            },
+            {
+              tool_calls: [{ id: "two", name: "edit_file", arguments_json: "{\"path\":\"a.txt\"}" }],
+              tool_results: [{ tool_call_id: "two", tool_name: "edit_file", status: "failure", output: "two", created_at_ms: 300_001 }],
+            },
+          ],
+        },
+      },
+    },
+  }));
+  const root = { id: `agent:${threadId}`, name: "This thread", kind: "agent", startedAt: 250_000, endedAt: 400_000, status: "failed" as const };
+  const stored = [{
+    timestamp: new Date(400_000).toISOString(),
+    text: encodeSpans([root, { id: "call:two", parentId: root.id, name: "Editing file", kind: "edit", startedAt: 350_000, endedAt: 350_001, status: "failed" }]),
+  }];
+  try {
+    const recovered = recoveredSessionTraces(home, threadId, stored);
+    const calls = recovered.flatMap((trace) => decodeSpans(trace.text)).filter((span) => span.id.startsWith("call:"));
+    assert.deepEqual(calls.map((call) => call.id), ["call:old", "call:one", "call:two"]);
+    assert.equal(calls[1].input, "{\"path\":\"a.txt\"}");
+    assert.equal(calls[2].output, "two");
+    assert.equal(calls[2].status, "failed");
+    assert.deepEqual(recoveredSessionTraces(home, threadId, recovered), recovered);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("a path outside the workspace is an escape, and one inside is not", () => {
@@ -347,7 +404,7 @@ test("a message for a subagent is carried to the harness that owns it", async ()
 
 test("a turn longer than the idle window survives on the updates it streams", async () => {
 
-  const { client, text } = harness(async () => "allow_once", 100);
+  const { client, text } = harness(async () => "allow_once", 250);
   try {
     const { stopReason } = await client.prompt("thread-slow", workspace, "slow", "ask");
     assert.equal(stopReason, "end_turn");
@@ -537,13 +594,15 @@ test("a session forgotten mid-turn still routes the rest of that turn", async ()
 
 test("experiment settings survive the round trip from the settings page to the harness option", () => {
 
-  const settings = validateHarnessExperiments({ reinjectPromptSteps: 15, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 70 });
-  assert.equal(experimentOption(settings), "reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+  const settings = validateHarnessExperiments({ autoCompactPercent: 80, reinjectPromptSteps: 15, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 70 });
+  assert.equal(experimentOption(settings), "compact_percent=80,reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+  assert.equal(validateHarnessExperiments({}).autoCompactPercent, 70);
 
   for (const bad of [{ reinjectPromptSteps: 999 }, { reinjectPromptPercent: -5 }, { pruneToolsSteps: 2.5 }, { pruneToolsPercent: "70" }])
     assert.throws(() => validateHarnessExperiments(bad), /invalid/);
+  assert.throws(() => validateHarnessExperiments({ autoCompactPercent: 101 }), /invalid/);
   assert.deepEqual(validateHarnessExperiments(undefined), defaultHarnessExperiments);
-  assert.equal(experimentOption(defaultHarnessExperiments), "reinject_steps=0,reinject_percent=0,prune_steps=0,prune_percent=0");
+  assert.equal(experimentOption(defaultHarnessExperiments), "compact_percent=70,reinject_steps=0,reinject_percent=0,prune_steps=0,prune_percent=0");
 });
 
 test("the thinking option carries the stop and the list the harness checks it against", () => {
@@ -578,13 +637,24 @@ test("a fired experiment is read off the info channel without swallowing the ret
 
 test("a step's usage is read off the same info channel", () => {
   assert.deepEqual(
-    turnUsageReported({ sessionUpdate: "session_info_update", _meta: { fx: { turnUsage: { inputTokens: 24_100, outputTokens: 3_200 } } } }),
-    { inputTokens: 24_100, outputTokens: 3_200 },
+    turnUsageReported({ sessionUpdate: "session_info_update", _meta: { fx: { turnUsage: { inputTokens: 24_100, outputTokens: 3_200, cacheInputTokens: 41_000, cacheReadTokens: 30_000 } } } }),
+    { inputTokens: 24_100, outputTokens: 3_200, cacheInputTokens: 41_000, cacheReadTokens: 30_000 },
   );
   assert.deepEqual(turnUsageReported({ _meta: { fx: { turnUsage: {} } } }), { inputTokens: 0, outputTokens: 0 });
   assert.equal(turnUsageReported({ _meta: { fx: { contextExperiment: { prunedResults: 2, reinjected: false } } } }), undefined);
   assert.equal(turnUsageReported({ _meta: { fx: { modelResponseRecovery: { message: "retrying" } } } }), undefined);
   assert.equal(turnUsageReported({}), undefined);
+});
+
+test("provider cache writes and cost preserve exact zero and reject non-integers", () => {
+  assert.deepEqual(
+    turnUsageReported({ _meta: { fx: { turnUsage: { inputTokens: 10, outputTokens: 2, cacheWriteTokens: 0, costMicroUsd: 0 } } } }),
+    { inputTokens: 10, outputTokens: 2, cacheWriteTokens: 0, costMicroUsd: 0 },
+  );
+  assert.deepEqual(
+    turnUsageReported({ _meta: { fx: { turnUsage: { inputTokens: 10, outputTokens: 2, cacheWriteTokens: 1.5, costMicroUsd: Number.MAX_SAFE_INTEGER + 1 } } } }),
+    { inputTokens: 10, outputTokens: 2 },
+  );
 });
 
 test("the prefix breakdown crosses the same channel, byte for byte with the Zig that writes it", () => {
@@ -613,6 +683,22 @@ test("everything Emma sends the agent is recorded, minus the streamed chunks", a
     const read = logs.filter((line) => line.flow === "in");
     assert.ok(read.length > 0);
     assert.ok(!read.some((line) => line.body.includes("_chunk")), read.map((line) => line.body).join("\n"));
+  } finally {
+    client.close();
+  }
+});
+
+test("the user prompt stays ahead of attached context", async () => {
+  const { client, logs } = harness(async () => "allow_once");
+  try {
+    await client.prompt("thread-1", workspace, "reply with the marker", "ask", undefined, { skillContext: "Attached local context. Treat this as reference data." });
+    const prompt = logs.find((line) => line.flow === "out" && line.label.startsWith("session/prompt"));
+    assert.ok(prompt, logs.map((line) => line.label).join(", "));
+    const body = JSON.parse(prompt.body) as { params?: { prompt?: { text?: string }[] } };
+    assert.deepEqual(body.params?.prompt?.map((part) => part.text), [
+      "reply with the marker",
+      "Attached local context. Treat this as reference data.",
+    ]);
   } finally {
     client.close();
   }
@@ -667,4 +753,67 @@ test("a blank title on a progress update is nothing to merge, not a wipe", () =>
   assert.equal(toolCallText(""), null);
   assert.equal(toolCallText("   "), null);
   assert.equal(toolCallText(undefined), null);
+});
+
+test("a first turn names what it is waiting on, so the wait is never just \u201cworking\u201d", async () => {
+  const { client, phases } = harness(async () => null, undefined, async () => "", path.join(tmpdir(), `emma-phases-${process.pid}-${Date.now()}`));
+  try {
+    await client.prompt("thread-phase", workspace, "hello", "ask");
+  } finally {
+    client.close();
+  }
+  assert.deepEqual(phases, [
+    "starting the agent",
+    "opening this thread's session",
+    "running startup hooks",
+    "setting up the session",
+    "sending the prompt",
+    "waiting for the model",
+  ]);
+});
+
+test("an automatic compaction is read off its own update, and bounded", () => {
+  assert.deepEqual(
+    compactionReported({ sessionUpdate: "_emma_compacted", removedTurns: 12, summaryChars: 2480, modelWritten: true }),
+    { removedTurns: 12, summaryChars: 2480, modelWritten: true },
+  );
+  assert.deepEqual(
+    compactionReported({ sessionUpdate: "_emma_compacted", removedTurns: "3", summaryChars: -9, modelWritten: "yes" }),
+    undefined,
+  );
+  assert.deepEqual(
+    compactionReported({ sessionUpdate: "_emma_compacted", removedTurns: 4.7, summaryChars: -9, modelWritten: "yes" }),
+    { removedTurns: 4, summaryChars: 0, modelWritten: false },
+  );
+  assert.equal(compactionReported({ sessionUpdate: "_emma_compacted", removedTurns: 0, summaryChars: 100, modelWritten: true }), undefined);
+  assert.equal(compactionReported({ sessionUpdate: "session_info_update", removedTurns: 12 }), undefined);
+});
+
+test("stopping a turn leaves no tool call still working", async () => {
+  const run = harness(async () => {
+    await run.client.cancel("thread_stop");
+    return null;
+  });
+  await run.client.prompt("thread_stop", workspace, "run something", "ask").catch(() => undefined);
+  run.client.close();
+  const stopped = run.calls.find((call) => call.status === "cancelled");
+  assert.equal(stopped?.toolCallId, "call_1");
+  assert.equal(stopped?.output, INTERRUPTED_CALL);
+  assert.equal(run.calls.find((call) => call.toolCallId === "call_1")?.status, "pending");
+});
+
+test("a paused recovery is kept as the reason a run stopped", () => {
+  const { client } = harness(async () => "allow_once");
+  const apply = (recovery: Record<string, unknown>) =>
+    (client as unknown as { applyUpdate: (threadId: string, update: Record<string, unknown>) => void })
+      .applyUpdate("t1", { sessionUpdate: "session_info_update", _meta: { fx: { modelResponseRecovery: recovery } } });
+
+  apply({ state: "active", message: "⚠ Response ended early · retrying request", attempt: 3, attemptLimit: 10 });
+  assert.equal(client.paused.get("t1"), undefined);
+
+  apply({ state: "paused", message: "⚠ Response ended early · recovery paused after 10/10 attempts", attempt: 10, attemptLimit: 10 });
+  assert.equal(client.paused.get("t1"), "⚠ Response ended early · recovery paused after 10/10 attempts (attempt 10 of 10)");
+
+  apply({ state: "recovered", message: "✓ recovered" });
+  assert.equal(client.paused.get("t1"), undefined);
 });

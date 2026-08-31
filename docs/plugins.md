@@ -38,9 +38,9 @@ JSON `mcpServers` / `mcp_servers` / `servers` / `mcp` shapes and the Codex-style
 is parsed and only stdio is passed on — there is no remote MCP transport.
 
 An imported skill is an inactive reference until a thread attaches it; its
-`SKILL.md` is loaded only on attachment. An imported MCP server is launched by
-the harness when it builds a session, but its tools stay behind
-`mcp_search_tools` until the model asks for one.
+`SKILL.md` is loaded only on attachment. An imported MCP server is registered
+when the harness builds a session, then launched only when the model first
+searches for or calls an MCP tool.
 
 Configs and environment values stay in the main process. The renderer receives
 bounded metadata, redacted arguments, and environment **key names** only.
@@ -64,7 +64,7 @@ Both capability files are synthesized into the manifest as an implicit `emma`
 source, so they need no import step. Enumeration re-reads them on every call and
 writing either calls `toolsChanged()`, which drops the harness's sessions — a
 skill or server installed mid-turn is usable on the next turn with nothing to
-relaunch. An MCP server connects when that session is built.
+relaunch. An MCP server connects on its first MCP use in that session.
 
 Writing an existing slug replaces it. That is how a wrong lesson, tool, or
 command gets fixed.

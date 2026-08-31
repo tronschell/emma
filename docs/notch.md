@@ -20,7 +20,7 @@ trusted app, so this is an event tap in a native helper —
 | Key | Left Option, keycode 58; the right one is not it |
 | Window | Second press within **0.35 s** of the first release |
 | Needs | Accessibility. Without it the helper says so on stderr and ⌥⌥ stays dead |
-| Also opens it | Any accelerator or hold bound in **Settings → Shortcuts** |
+| Also opens it | Any accelerator or hold bound in **Settings → Keybinds** |
 
 The helper does the holds too: bind an action to holding a modifier and Emma
 sends the helper a `{"holds":[…]}` line over stdin; it answers `hold <action>`
@@ -46,10 +46,11 @@ transparent band for the orbs.
 
 With the island closed, main polls the cursor every 120ms and, once it comes
 within 220px of the housing, builds a transparent hotspot window over it —
-the housing plus 14px each side and 44px of drop. It is click-through
-(`setIgnoreMouseEvents(true, { forward: true })`) until the cursor is actually
-inside, so the menu bar underneath keeps working; inside, it lights up and a
-click opens Quick Ask. Opening the island destroys it.
+the housing plus 14px each side and 44px of drop for the sliver to draw in. It
+is click-through (`setIgnoreMouseEvents(true, { forward: true })`) unless the
+cursor is inside the housing itself — the pad and the drop never take a click,
+so the menu bar and whatever sits under them keep working; inside, it lights up
+and a click opens Quick Ask. Opening the island destroys it.
 
 ## The island
 
@@ -88,7 +89,7 @@ one you cannot get back. Clicking it expands the same island beside it, with a
 ## The orb ring
 
 Two ways to the same commands, both off `settings.cursorOrbs` (up to
-`MAX_CURSOR_ORBS`, **8**; default ⌘1, ⌘2, ⌘3, ▣ Screen, ✎ Draw, ⧉ Save page):
+`MAX_CURSOR_ORBS`, **8**; default ⌘1, ⌘2, ⌘3, ▣ Screen, ✎ Draw, ⧉ Save screen):
 
 - **Under the island** — sweep the cursor down through the notch and the orbs
   drop out of it. Turned off by **Settings → Notch → notch commands**.
@@ -106,7 +107,7 @@ anything that is not on the list.
 | `0` `1` `2` | ⌘1 ⌘2 ⌘3 | Runs that quick action |
 | `screen` | ▣ | Captures the screen and attaches it to the next turn |
 | `draw` | ✎ | Opens the yellow pen over the screen — see [voice.md](voice.md) |
-| `page` | ⧉ | Keeps the page in front as a note — see [knowledge.md](knowledge.md) |
+| `page` | ⧉ | Keeps what you are looking at as a note — screenshot, then the vision model, then the app in front — see [knowledge.md](knowledge.md) |
 | `keep` | ◈ | Listed in the catalog, but the island has no handler for it — nothing happens |
 | `workspace` | ▤ | Opens the main window |
 
@@ -121,6 +122,12 @@ anything that is not on the list.
 | Notch commands | On/off — the orbs that drop under the island |
 | Quick actions | Three labels and prompts |
 | Shortcuts | Accelerator or modifier-hold per action |
+
+The user can create one conversationally, for example: “Make ⌘⌥K ask Emma to
+summarize what I am working on.” The `shortcut` tool fills the next unbound
+Quick Action, registers the global accelerator immediately, and shows its label
+and prompt on **Settings → Keybinds**. Reusing the same label or combination
+updates that slot; all three occupied means one must be cleared first.
 
 Everything above is validated by `validateOverlayPreferences` and
 `validateKeybinds` before main acts on it.

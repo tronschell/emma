@@ -101,6 +101,10 @@ export function MoreIcon() {
   return <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><circle cx="3.4" cy="8" r="1.2" fill="currentColor" /><circle cx="8" cy="8" r="1.2" fill="currentColor" /><circle cx="12.6" cy="8" r="1.2" fill="currentColor" /></svg>;
 }
 
+export function SearchIcon() {
+  return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.4" /><path d="M10.4 10.4 14 14" /></svg>;
+}
+
 export function TextIcon() {
   return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true"><path d="M2.6 3.6h10.8M2.6 6.8h10.8M2.6 10h7.6M2.6 13.2h5.4" /></svg>;
 }
@@ -119,4 +123,26 @@ export function PinIcon({ filled }: { filled?: boolean }) {
 
 export function ChevronIcon({ back }: { back?: boolean }) {
   return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={back ? "M10 3.5 5.5 8l4.5 4.5" : "M6 3.5 10.5 8 6 12.5"} /></svg>;
+}
+
+export function BookIcon() {
+  return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 4.1C6.9 3.1 5.5 2.6 3.6 2.6H2v9.6h1.6c1.9 0 3.3.5 4.4 1.5 1.1-1 2.5-1.5 4.4-1.5H14V2.6h-1.6c-1.9 0-3.3.5-4.4 1.5zM8 4.1v9.6" /></svg>;
+}
+
+export function GlassIcon() {
+  return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="4.2" cy="8" r="2.6" /><circle cx="11.8" cy="8" r="2.6" /><path d="M6.8 8h2.4M1.6 8V5.6M14.4 8V5.6" /></svg>;
+}
+
+
+
+export function TreeIcon() {
+  return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 12.8V3.2h4.3l1.5 1.8h6.6v7.8z" /></svg>;
+}
+
+export function MoveIcon() {
+  return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 5.4h9.2M8.6 2.8l2.6 2.6-2.6 2.6M14 10.6H4.8M7.4 8l-2.6 2.6 2.6 2.6" /></svg>;
+}
+
+export function SparkIcon() {
+  return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 1.8 9.5 6 13.7 7.5 9.5 9 8 13.2 6.5 9 2.3 7.5 6.5 6zM12.8 11.6l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z" /></svg>;
 }

@@ -75,6 +75,10 @@ enum Command {
         output_tokens: u64,
         duration_milliseconds: u64,
         input_tokens: u64,
+        cache_input_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        cost_micro_usd: Option<u64>,
         model: String,
         reply: Reply<Thread>,
     },
@@ -264,6 +268,10 @@ impl LiveClient {
         output_tokens: u64,
         duration_milliseconds: u64,
         input_tokens: u64,
+        cache_input_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        cost_micro_usd: Option<u64>,
         model: String,
     ) -> Result<Thread, LiveError> {
         let (reply, result) = mpsc::channel();
@@ -275,6 +283,10 @@ impl LiveClient {
                 output_tokens,
                 duration_milliseconds,
                 input_tokens,
+                cache_input_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_micro_usd,
                 model,
                 reply,
             })
@@ -719,6 +731,10 @@ impl Runtime {
                 output_tokens,
                 duration_milliseconds,
                 input_tokens,
+                cache_input_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_micro_usd,
                 model,
                 reply,
             } => {
@@ -729,6 +745,10 @@ impl Runtime {
                     output_tokens,
                     duration_milliseconds,
                     input_tokens,
+                    cache_input_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    cost_micro_usd,
                     model,
                 ));
             }
@@ -1353,6 +1373,10 @@ impl Runtime {
         output_tokens: u64,
         duration_milliseconds: u64,
         input_tokens: u64,
+        cache_input_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        cost_micro_usd: Option<u64>,
         model: String,
     ) -> Result<Thread, LiveError> {
         let prompt = elide_middle(&prompt, MAX_AGENT_MESSAGE_BYTES);
@@ -1381,6 +1405,14 @@ impl Runtime {
             input_tokens,
             model,
         )
+        .and_then(|generation| {
+            generation.with_provider_usage(
+                cache_read_tokens,
+                cache_input_tokens,
+                cache_write_tokens,
+                cost_micro_usd,
+            )
+        })
         .ok();
         thread
             .push(answer)
@@ -1585,6 +1617,10 @@ mod tests {
                 4,
                 200,
                 2,
+                None,
+                None,
+                None,
+                None,
                 "fake".into(),
             )
             .unwrap();
@@ -1691,6 +1727,10 @@ mod tests {
                 42,
                 1_500,
                 3_700,
+                Some(3_700),
+                Some(2_800),
+                Some(1_000),
+                Some(12_345),
                 "claude-opus-4".into(),
             )
             .unwrap();
@@ -1708,6 +1748,30 @@ mod tests {
             3_700
         );
         assert_eq!(
+            saved.messages[1]
+                .generation
+                .as_ref()
+                .unwrap()
+                .cache_read_tokens,
+            Some(2_800)
+        );
+        assert_eq!(
+            saved.messages[1]
+                .generation
+                .as_ref()
+                .unwrap()
+                .cache_write_tokens,
+            Some(1_000)
+        );
+        assert_eq!(
+            saved.messages[1]
+                .generation
+                .as_ref()
+                .unwrap()
+                .cost_micro_usd,
+            Some(12_345)
+        );
+        assert_eq!(
             saved.messages[1].generation.as_ref().unwrap().model,
             "claude-opus-4"
         );
@@ -1720,6 +1784,10 @@ mod tests {
                     0,
                     0,
                     0,
+                    None,
+                    None,
+                    None,
+                    None,
                     String::new()
                 )
                 .is_err()
@@ -1733,6 +1801,10 @@ mod tests {
                 0,
                 0,
                 0,
+                None,
+                None,
+                None,
+                None,
                 String::new(),
             )
             .unwrap();

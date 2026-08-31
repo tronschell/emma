@@ -2,12 +2,21 @@ import { CLEANUP_ENDPOINT, DEFAULT_HOLD_TO_TALK_MS, HOLD_TO_TALK_MS, SPEECH_ENDP
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, type PermissionMode } from "./permissions";
 import { defaultContextPages, validateContextPages, type ContextPage } from "./context-bar";
 import { DEFAULT_SYSTEM_PROMPT, validatePrompts, type PromptPreset } from "./prompts";
-import { relayOrigin } from "./mobile-protocol";
+import { validNoteFolder } from "./vault";
 
 export interface QuickAction {
   label: string;
   prompt: string;
   category: string;
+}
+
+export const MAX_QUICK_ACTION_LABEL_CHARS = 40;
+export const MAX_QUICK_ACTION_PROMPT_CHARS = 4096;
+
+export interface ShortcutRequest {
+  accelerator: string;
+  label: string;
+  prompt: string;
 }
 
 export interface ProviderProfile {
@@ -23,12 +32,131 @@ export interface ProviderProfile {
 export const PROVIDER_PRESETS = [
   { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", credentialEnv: "OPENROUTER_API_KEY", detail: "Every maker, one key" },
   { id: "zai", name: "Z.AI", baseUrl: "https://api.z.ai/api/paas/v4", credentialEnv: "ZAI_API_KEY", detail: "GLM, direct" },
-  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", credentialEnv: "DEEPSEEK_API_KEY", detail: "DeepSeek, direct" },
+  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", credentialEnv: "DEEPSEEK_API_KEY", detail: "DeepSeek, direct" },
+  { id: "opencode-zen", name: "OpenCode Zen", baseUrl: "https://opencode.ai/zen/v1", credentialEnv: "OPENCODE_API_KEY", detail: "Curated gateway, prepaid" },
+  { id: "opencode-go", name: "OpenCode Go", baseUrl: "https://opencode.ai/zen/go/v1", credentialEnv: "OPENCODE_API_KEY", detail: "Open models, flat monthly" },
   { id: "lmstudio", name: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "", detail: "On this Mac" },
   { id: "ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", credentialEnv: "", detail: "On this Mac" },
   { id: "llamacpp", name: "llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", credentialEnv: "", detail: "On this Mac" },
   { id: "custom", name: "", baseUrl: "", credentialEnv: "", detail: "Any OpenAI-compatible endpoint" },
 ] as const;
+
+export type ModelPlan = {
+  id: string;
+  label: string;
+  brand: string;
+  namespace: string;
+  detail: string;
+  baseUrl: string;
+  credentialEnv: string;
+  contextWindow: number;
+  keysUrl: string;
+  hint: string;
+  billing: "subscription" | "metered";
+  note: string;
+};
+
+export const MODEL_PLANS: readonly ModelPlan[] = [
+  { id: "openai", label: "OpenAI", brand: "openai", namespace: "openai", detail: "GPT, billed per token", baseUrl: "https://api.openai.com/v1", credentialEnv: "OPENAI_API_KEY", contextWindow: 0, keysUrl: "https://platform.openai.com/api-keys", hint: "sk-…", billing: "metered", note: "A ChatGPT subscription does not pay for this key. Requests here bill your OpenAI Platform account per token. To spend the subscription instead, sign in to Codex below." },
+  { id: "anthropic", label: "Anthropic", brand: "anthropic", namespace: "anthropic", detail: "Claude, billed per token", baseUrl: "https://api.anthropic.com/v1", credentialEnv: "ANTHROPIC_API_KEY", contextWindow: 0, keysUrl: "https://platform.claude.com/settings/keys", hint: "sk-ant-…", billing: "metered", note: "A Claude Pro or Max subscription does not pay for this key. Requests here bill your Anthropic Console account per token. To spend the subscription instead, sign in to Claude Code below." },
+  { id: "deepseek", label: "DeepSeek", brand: "deepseek", namespace: "deepseek", detail: "DeepSeek, billed per token", baseUrl: "https://api.deepseek.com", credentialEnv: "DEEPSEEK_API_KEY", contextWindow: 0, keysUrl: "https://platform.deepseek.com/api_keys", hint: "sk-…", billing: "metered", note: "DeepSeek sells prepaid balance, not a subscription. At a zero balance every request returns 402 until you top up." },
+  { id: "qwen", label: "Qwen Coding Plan", brand: "qwen", namespace: "qwen", detail: "Alibaba Model Studio, flat monthly", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1", credentialEnv: "BAILIAN_CODING_PLAN_API_KEY", contextWindow: 0, keysUrl: "https://www.alibabacloud.com/help/en/model-studio/coding-plan", hint: "sk-sp-…", billing: "subscription", note: "A Coding Plan key starts sk-sp- and works only on the coding hosts — an ordinary sk- Model Studio key is not rejected here, it is billed pay-as-you-go, so the wrong key spends money instead of plan quota. Keys are bound to the region that made them. The free Qwen OAuth tier was discontinued in April 2026." },
+  { id: "zai", label: "GLM Coding Plan", brand: "glm", namespace: "z-ai", detail: "Z.AI, flat monthly", baseUrl: "https://api.z.ai/api/coding/paas/v4", credentialEnv: "ZAI_API_KEY", contextWindow: 0, keysUrl: "https://z.ai/manage-apikey/apikey-list", hint: "Z.AI key", billing: "subscription", note: "At Z.AI the endpoint picks the billing pool, not the key: this is the coding host, so a plan key spends plan credits here and the same key on the general host draws no plan quota at all. Credits run on a 5-hour rolling window and a weekly reset. A mainland bigmodel.cn account is a separate system from this one." },
+  { id: "kimi", label: "Kimi Code", brand: "kimi", namespace: "moonshotai", detail: "Moonshot, flat monthly", baseUrl: "https://api.kimi.com/coding/v1", credentialEnv: "KIMI_CODE_API_KEY", contextWindow: 0, keysUrl: "https://www.kimi.com/code/console", hint: "Kimi Code key", billing: "subscription", note: "This takes a Kimi Code key, not a Moonshot open-platform key — they are different credentials on different hosts, and Moonshot's own CLI already claims KIMI_API_KEY for the open-platform one, so Emma keeps this under its own name. Roughly 300 to 1,200 requests per 5-hour window, 30 at once, drawn from the same pool as the rest of your Kimi membership." },
+  { id: "minimax", label: "MiniMax Token Plan", brand: "minimax", namespace: "minimax", detail: "MiniMax, flat monthly", baseUrl: "https://api.minimax.io/v1", credentialEnv: "MINIMAX_API_KEY", contextWindow: 0, keysUrl: "https://platform.minimax.io/user-center/payment/token-plan", hint: "Subscription key", billing: "subscription", note: "MiniMax issues a Subscription Key for the Token Plan and a separate pay-as-you-go key, and states the two are not interchangeable; take the one matching what you pay for. Quota runs on 5-hour rolling and weekly windows. A mainland key will not work on this host." },
+  { id: "gemini", label: "Gemini", brand: "gemini", namespace: "google", detail: "Gemini, billed per token", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", credentialEnv: "GEMINI_API_KEY", contextWindow: 0, keysUrl: "https://aistudio.google.com/apikey", hint: "AIza…", billing: "metered", note: "A Google AI Pro or Ultra subscription does not pay for this key. Google states plan benefits apply only inside the AI Studio web interface and that direct API use is billed separately, so requests here bill the project the key belongs to. To spend the subscription instead, sign in to Gemini CLI below. If your shell also exports GOOGLE_API_KEY, that name wins over this one." },
+  { id: "mistral", label: "Mistral", brand: "mistral", namespace: "mistralai", detail: "Mistral, plan credits then per token", baseUrl: "https://api.mistral.ai/v1", credentialEnv: "MISTRAL_API_KEY", contextWindow: 0, keysUrl: "https://console.mistral.ai/api-keys", hint: "Mistral key", billing: "metered", note: "A Mistral plan grants monthly API credits that this key spends; there is no separate coding plan to sign in to." },
+];
+
+export const planFor = (id: string) => MODEL_PLANS.find((plan) => plan.id === id);
+
+export function planForModel(key: string): ModelPlan | undefined {
+  const id = key.replace(/^openrouter:/, "").toLowerCase();
+  return MODEL_PLANS.find((plan) => id.startsWith(`${plan.namespace}/`));
+}
+
+export const planProfileId = (planId: string, index = 1) => `plan-${planId}${index > 1 ? `-${index}` : ""}`;
+
+export function planForProfile(profile: Pick<ProviderProfile, "id">): ModelPlan | undefined {
+  return MODEL_PLANS.find((plan) => {
+    const id = planProfileId(plan.id);
+    const suffix = profile.id.slice(id.length + 1);
+    return profile.id === id || (profile.id.startsWith(`${id}-`) && /^\d+$/.test(suffix));
+  });
+}
+
+export function planProfileFor(providers: readonly ProviderProfile[], plan: ModelPlan, modelId: string): ProviderProfile | undefined {
+  return providers.find((profile) => planForProfile(profile)?.id === plan.id && profile.modelId === modelId);
+}
+
+export function planModelId(plan: ModelPlan, key: string): string {
+  const id = key.replace(/^openrouter:/, "");
+  const prefix = `${plan.namespace}/`;
+  return (id.toLowerCase().startsWith(prefix) ? id.slice(prefix.length) : id).replace(/:free$/, "");
+}
+
+export function planProfile(plan: ModelPlan, modelId: string, index = 1): ProviderProfile {
+  return { id: planProfileId(plan.id, index), name: plan.label, modelId, baseUrl: plan.baseUrl, credentialEnv: plan.credentialEnv, contextWindow: plan.contextWindow, insecure: false };
+}
+
+export function withPlanProfile(settings: UserSettings, plan: ModelPlan, modelId: string): UserSettings {
+  if (planProfileFor(settings.providers, plan, modelId)) return settings;
+  let index = 1;
+  while (settings.providers.some((profile) => profile.id === planProfileId(plan.id, index))) index++;
+  return { ...settings, providers: [...settings.providers, planProfile(plan, modelId, index)] };
+}
+
+export function modelPlanRoute(settings: UserSettings, plan: ModelPlan, key: string): { settings: UserSettings; key: string } {
+  const modelId = planModelId(plan, key);
+  const next = withPlanProfile(settings, plan, modelId);
+  return { settings: next, key: `provider:${planProfileFor(next.providers, plan, modelId)!.id}` };
+}
+
+export const PLAN_WINDOW_MS = 5 * 60 * 60 * 1000;
+export const PLAN_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type PlanGeneration = { at: number; model: string; inputTokens: number; outputTokens: number };
+
+export type PlanSpend = { turns: number; inputTokens: number; outputTokens: number };
+
+export const emptySpend = (): PlanSpend => ({ turns: 0, inputTokens: 0, outputTokens: 0 });
+
+export function planForGeneration(model: string, providers: readonly ProviderProfile[]): string | undefined {
+  if (!model || model.includes("/")) return undefined;
+  const profile = providers.find((item) => planForProfile(item) && item.modelId === model);
+  return profile ? planForProfile(profile)?.id : undefined;
+}
+
+export function planSpend(generations: readonly PlanGeneration[], providers: readonly ProviderProfile[], since: number): Map<string, PlanSpend> {
+  const spend = new Map<string, PlanSpend>();
+  for (const generation of generations) {
+    if (!Number.isFinite(generation.at) || generation.at < since) continue;
+    const planId = planForGeneration(generation.model, providers);
+    if (!planId) continue;
+    const at = spend.get(planId) ?? emptySpend();
+    at.turns += 1;
+    at.inputTokens += Math.max(0, generation.inputTokens) || 0;
+    at.outputTokens += Math.max(0, generation.outputTokens) || 0;
+    spend.set(planId, at);
+  }
+  return spend;
+}
+
+export type CliPlan = {
+  id: string;
+  label: string;
+  brand: string;
+  plan: string;
+  signIn: string;
+  detail: string;
+  note: string;
+};
+
+export const CLI_PLANS: readonly CliPlan[] = [
+  { id: "claude", label: "Claude Code", brand: "anthropic", plan: "Claude Pro or Max", signIn: "claude", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified claude binary you signed in to yourself, which is the only route Anthropic sanctions for a subscription; Emma never sees, stores, or forwards that login. Turns draw on the usage limits your Claude chats already share, and Anthropic publishes no counts for them. Reaching for a key instead silently moves billing to that key." },
+  { id: "codex", label: "Codex", brand: "openai", plan: "ChatGPT Plus, Pro or Business", signIn: "codex login", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified codex binary you signed in to yourself; Emma never sees, stores, or forwards that login. Turns draw on your plan's five-hour message window, which your ChatGPT and Codex use share. Signing in with an API key instead bills the Platform account per token rather than the subscription." },
+  { id: "gemini", label: "Gemini CLI", brand: "gemini", plan: "Google AI Pro or Ultra", signIn: "gemini", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified gemini binary you signed in to yourself; Emma never sees, stores, or forwards that login. It is the only route Google sanctions for a subscription — the Gemini CLI terms forbid other software reaching Gemini Code Assist through this login, and the penalty falls on your account. A free sign-in allows 1,000 requests a day, AI Pro 1,500 and AI Ultra 2,000; Google AI Plus is not supported. Reaching for an API key instead bills per token." },
+];
 
 export const MAX_PROVIDERS = 24;
 export const MAX_CONTEXT_WINDOW = 100_000_000;
@@ -54,26 +182,33 @@ export type VisionSettings = VerifierSettings;
 
 export type SecretSettings = VerifierSettings;
 
+export const TINYFISH_SEARCH_LIMIT = 30;
+export const TINYFISH_FETCH_LIMIT = 150;
+
 export const WEB_SEARCH_PROVIDERS = [
-  { id: "fourget", label: "4get", endpoint: "https://4get.canine.tools", detail: "No key, no account. A metasearch front end that asks several engines and answers JSON.", keyless: true },
-  { id: "searxng", label: "SearXNG", endpoint: "http://127.0.0.1:8888", detail: "Your own metasearch instance. Needs `json` in its search.formats.", keyless: true },
-  { id: "brave", label: "Brave Search", endpoint: "https://api.search.brave.com", detail: "Independent index. Free credits at brave.com/search/api; needs a key.", keyless: false },
-  { id: "tavily", label: "Tavily", endpoint: "https://api.tavily.com", detail: "Search built for agents; returns extracted content. Needs a key.", keyless: false },
-  { id: "exa", label: "Exa", endpoint: "https://api.exa.ai", detail: "Neural search over pages by meaning rather than keywords. Needs a key.", keyless: false },
+  { id: "tinyfish", label: "TinyFish", endpoint: "https://api.search.tinyfish.ai", detail: `Free: ${TINYFISH_SEARCH_LIMIT} searches/minute and ${TINYFISH_FETCH_LIMIT} fetched URLs/minute. Needs a TinyFish API key.`, keyless: false, free: true },
+  { id: "fourget", label: "4get", endpoint: "https://4get.canine.tools", detail: "No key, no account. A metasearch front end that asks several engines and answers JSON.", keyless: true, free: true },
+  { id: "searxng", label: "SearXNG", endpoint: "http://127.0.0.1:8888", detail: "Your own metasearch instance. Needs `json` in its search.formats.", keyless: true, free: true },
+  { id: "brave", label: "Brave Search", endpoint: "https://api.search.brave.com", detail: "Independent index. Needs a key and may bill its account.", keyless: false, free: false },
+  { id: "tavily", label: "Tavily", endpoint: "https://api.tavily.com", detail: "Search built for agents; returns extracted content. Needs a key and may bill its account.", keyless: false, free: false },
+  { id: "exa", label: "Exa", endpoint: "https://api.exa.ai", detail: "Neural search over pages by meaning rather than keywords. Needs a key and may bill its account.", keyless: false, free: false },
 ] as const;
 export type WebSearchProvider = (typeof WEB_SEARCH_PROVIDERS)[number]["id"];
 
-export interface WebSearchSettings {
+export interface WebSearchSource {
   provider: WebSearchProvider;
   endpoint: string;
   credentialEnv: string;
 }
 
+export interface WebSearchSettings {
+  providers: WebSearchSource[];
+}
+
 export const webSearchProvider = (id: WebSearchProvider) => WEB_SEARCH_PROVIDERS.find((item) => item.id === id) ?? WEB_SEARCH_PROVIDERS[0];
 
-export const defaultWebSearch: WebSearchSettings = { provider: "fourget", endpoint: WEB_SEARCH_PROVIDERS[0].endpoint, credentialEnv: "" };
-
 export const webSearchCredentials: Record<WebSearchProvider, string> = {
+  tinyfish: "TINYFISH_API_KEY",
   fourget: "",
   searxng: "",
   brave: "BRAVE_SEARCH_API_KEY",
@@ -81,14 +216,19 @@ export const webSearchCredentials: Record<WebSearchProvider, string> = {
   exa: "EXA_API_KEY",
 };
 
+export const defaultWebSearch: WebSearchSettings = {
+  providers: (["tinyfish", "fourget"] as const).map((provider) => ({ provider, endpoint: webSearchProvider(provider).endpoint, credentialEnv: webSearchCredentials[provider] })),
+};
+
 export interface HarnessExperiments {
+  autoCompactPercent: number;
   reinjectPromptSteps: number;
   reinjectPromptPercent: number;
   pruneToolsSteps: number;
   pruneToolsPercent: number;
 }
 
-export const defaultHarnessExperiments: HarnessExperiments = { reinjectPromptSteps: 0, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 0 };
+export const defaultHarnessExperiments: HarnessExperiments = { autoCompactPercent: 70, reinjectPromptSteps: 0, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 0 };
 
 export const MAX_EXPERIMENT_STEPS = 120;
 
@@ -102,6 +242,7 @@ export function validateHarnessExperiments(value: unknown): HarnessExperiments {
     return number as number;
   };
   return {
+    autoCompactPercent: trigger(experiments.autoCompactPercent ?? defaultHarnessExperiments.autoCompactPercent, 100),
     reinjectPromptSteps: trigger(experiments.reinjectPromptSteps, MAX_EXPERIMENT_STEPS),
     reinjectPromptPercent: trigger(experiments.reinjectPromptPercent, 100),
     pruneToolsSteps: trigger(experiments.pruneToolsSteps, MAX_EXPERIMENT_STEPS),
@@ -145,15 +286,33 @@ export function validateToolSettings(value: unknown): ToolSettings {
 export function validateWebSearch(value: unknown): WebSearchSettings {
   if (value === undefined || value === null) return defaultWebSearch;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error("The web search provider is invalid");
-  const search = value as Partial<WebSearchSettings>;
-  const provider = WEB_SEARCH_PROVIDERS.find((item) => item.id === search.provider)?.id ?? defaultWebSearch.provider;
-  const credentialEnv = (search.credentialEnv ?? "").trim();
-  if (credentialEnv && !isEnvName(credentialEnv)) throw new Error("The search key must be an environment variable name");
-  const endpoint = (search.endpoint ?? "").trim() || webSearchProvider(provider).endpoint;
-  let url: URL;
-  try { url = new URL(endpoint); } catch { throw new Error("The search instance must be a URL"); }
-  if (url.protocol !== "https:" && !localEndpoint(endpoint)) throw new Error("The search instance must be https, or http on this Mac");
-  return { provider, endpoint, credentialEnv };
+  const source = (raw: unknown): WebSearchSource => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("The web search provider is invalid");
+    const input = raw as Partial<WebSearchSource>;
+    const provider = WEB_SEARCH_PROVIDERS.find((item) => item.id === input.provider)?.id;
+    if (!provider) throw new Error("The web search provider is invalid");
+    if (input.credentialEnv !== undefined && typeof input.credentialEnv !== "string") throw new Error("The search key must be an environment variable name");
+    const credentialEnv = (input.credentialEnv ?? webSearchCredentials[provider]).trim();
+    if (credentialEnv && !isEnvName(credentialEnv)) throw new Error("The search key must be an environment variable name");
+    if (input.endpoint !== undefined && typeof input.endpoint !== "string") throw new Error("The search instance must be a URL");
+    const endpoint = (input.endpoint ?? "").trim() || webSearchProvider(provider).endpoint;
+    let url: URL;
+    try { url = new URL(endpoint); } catch { throw new Error("The search instance must be a URL"); }
+    if (url.protocol !== "https:" && !localEndpoint(endpoint)) throw new Error("The search instance must be https, or http on this Mac");
+    return { provider, endpoint, credentialEnv };
+  };
+  const search = value as { providers?: unknown; provider?: unknown };
+  if (search.providers !== undefined) {
+    if (!Array.isArray(search.providers) || !search.providers.length || search.providers.length > WEB_SEARCH_PROVIDERS.length) throw new Error("The search fallback list is invalid");
+    const providers = search.providers.map(source);
+    if (new Set(providers.map((item) => item.provider)).size !== providers.length) throw new Error("A search provider can only appear once");
+    return { providers };
+  }
+  const provider = WEB_SEARCH_PROVIDERS.find((item) => item.id === search.provider)?.id;
+  if (!provider) return defaultWebSearch;
+  const first = source(value);
+  if (first.provider === "fourget" && first.endpoint === webSearchProvider("fourget").endpoint && !first.credentialEnv) return defaultWebSearch;
+  return { providers: [first, ...defaultWebSearch.providers.filter((item) => item.provider !== first.provider)] };
 }
 
 export const NOTCH_CONCURRENCY = ["separate", "continue"] as const;
@@ -194,11 +353,10 @@ export interface UserSettings {
   requireZeroRetention: boolean;
   systemPrompt: string;
   prompts: PromptPreset[];
-  connections: string[];
-  relayUrl: string;
   accent: AccentChoice;
   navIconColors: boolean;
   navHues: Record<string, AccentChoice>;
+  folderHues: Record<string, AccentChoice>;
   uiScale: number;
   conversationWidth: ConversationWidth;
   interfaceFont: FontChoice;
@@ -218,6 +376,8 @@ export const KEYBIND_ACTIONS = [
   { id: "action2", label: "Quick action 3", detail: "Runs the third quick action.", builtin: "⌘3 while the island is open" },
 ] as const;
 export type KeybindAction = (typeof KEYBIND_ACTIONS)[number]["id"];
+export const QUICK_ACTION_KEYBINDS = ["action0", "action1", "action2"] as const satisfies readonly KeybindAction[];
+export type QuickActionKeybind = (typeof QUICK_ACTION_KEYBINDS)[number];
 
 export interface Keybind {
   accelerator: string;
@@ -332,6 +492,18 @@ export function holdBindings(keybinds: Keybinds): { id: string; keyCode: number;
   return Object.entries(keybinds).flatMap(([id, keybind]) => keybind.hold && HOLD_KEYS[keybind.hold] ? [{ id, keyCode: HOLD_KEYS[keybind.hold].keyCode, ms: keybind.ms }] : []);
 }
 
+export function saveShortcut(settings: UserSettings, request: ShortcutRequest): { settings: UserSettings; action: QuickActionKeybind } {
+  const accelerator = normalizeAccelerator(request.accelerator.trim());
+  const label = request.label.trim();
+  const prompt = request.prompt.trim();
+  const action = QUICK_ACTION_KEYBINDS.find((id, index) => normalizeAccelerator(settings.keybinds[id]?.accelerator ?? "") === accelerator || settings.quickActions[index].label.toLowerCase() === label.toLowerCase())
+    ?? QUICK_ACTION_KEYBINDS.find((id) => !settings.keybinds[id]);
+  if (!action) throw new Error("All three Quick Action shortcuts are in use. Clear one in Settings → Keybinds first.");
+  const index = QUICK_ACTION_KEYBINDS.indexOf(action);
+  const quickActions = settings.quickActions.map((item, at) => at === index ? { ...item, label, prompt } : item) as UserSettings["quickActions"];
+  return { settings: validateSettings({ ...settings, quickActions, keybinds: { ...settings.keybinds, [action]: comboKeybind(accelerator) } }), action };
+}
+
 export const THINKING_LEVELS = ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -411,7 +583,7 @@ export const FREE_ROUTER_MODELS = [
   "cohere/north-mini-code:free",
   "nvidia/nemotron-3.5-lightning:free",
 ];
-export const MAX_SYSTEM_PROMPT_CHARS = 8192;
+export const MAX_SYSTEM_PROMPT_CHARS = 24576;
 
 export function systemPromptBlock(prompt: string): string {
   return prompt.trim().slice(0, MAX_SYSTEM_PROMPT_CHARS);
@@ -421,7 +593,7 @@ export const CURSOR_COMMANDS = ["0", "1", "2", "screen", "draw", "keep", "page",
 export type CursorCommand = (typeof CURSOR_COMMANDS)[number];
 export const MAX_CURSOR_ORBS = 8;
 export const cursorCommandGlyphs: Record<CursorCommand, string> = { "0": "⌘1", "1": "⌘2", "2": "⌘3", screen: "▣", draw: "✎", keep: "◈", page: "⧉", workspace: "▤" };
-export const cursorCommandNames: Record<CursorCommand, string> = { "0": "Action 1", "1": "Action 2", "2": "Action 3", screen: "Screen", draw: "Draw", keep: "Keep", page: "Save page", workspace: "Open app" };
+export const cursorCommandNames: Record<CursorCommand, string> = { "0": "Action 1", "1": "Action 2", "2": "Action 3", screen: "Screen", draw: "Draw", keep: "Keep", page: "Save screen", workspace: "Open app" };
 
 export function isCursorCommand(value: unknown): value is CursorCommand {
   return typeof value === "string" && (CURSOR_COMMANDS as readonly string[]).includes(value);
@@ -457,7 +629,8 @@ export const defaultVerifierSystem = [
   "",
   "Judge it against the user's request, not against how dangerous it sounds:",
   "- Destruction the user asked for is fine. If the request names the file, folder, branch, build output, container or table, and the action targets exactly that, allow it — deleting what someone asked you to delete is the job.",
-  "- Unrelated is blocked. If the action is not needed for the stated goal, block it even when it looks harmless, and say what it has to do with the request.",
+  "- Looking is never unrelated. An action that only reads or inspects — listing, searching, printing a file, git status, checking a version — is a step toward any goal, because the agent has to see the machine before it can act on it. Allow it, even when you cannot tell how it serves the request. The prohibited list still holds, so credentials and anything that leaves this Mac stay blocked however read-only they look.",
+  "- Unrelated is blocked. If an action that changes something is not needed for the stated goal, block it even when it looks harmless, and say what it has to do with the request.",
   "- Wider than asked is blocked. Same idea, bigger blast radius: the user named one thing and the command covers more.",
   "",
   "The reason is read by the agent that proposed the action, so write it as feedback: what was wrong, and what it should do instead.",
@@ -560,10 +733,6 @@ export const defaultTagger: TaggerSettings = {
   system: defaultTaggerSystem,
 };
 
-/* A router picked for a second model is stored the way the main model stores one:
-   the chain, best first, in the model field. What falls through to the next one is
-   OpenRouter, not us — a rate-limited free verifier is the whole reason to have a
-   second name in the list. */
 export function verifierFromKey(key: string, profiles: ProviderProfile[], system: string, routers: ModelRouter[] = []): VerifierSettings {
   if (key.startsWith("provider:")) {
     const profile = profiles.find((item) => item.id === key.slice("provider:".length));
@@ -634,7 +803,17 @@ export const providerCredentials = [
 export const OPENROUTER_KEYS_URL = "https://openrouter.ai/keys";
 export const OPENROUTER_CREDITS_URL = "https://openrouter.ai/settings/credits";
 
-export type KeyBalance = { keyed: boolean; freeTier: boolean; remaining: number | null; usage: number; error: string };
+export type KeyBalance = { keyed: boolean; freeTier: boolean; remaining: number | null; usage: number; error: string; currency?: string };
+
+export const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
+
+export function planBalanceLine(balance: KeyBalance | null | undefined): string {
+  if (!balance || !balance.keyed) return "";
+  if (balance.error) return balance.error;
+  if (balance.remaining === null) return "";
+  const symbol = balance.currency === "CNY" ? "\u00a5" : "$";
+  return balance.remaining <= 0 ? "Out of balance" : `${symbol}${balance.remaining.toFixed(2)} left`;
+}
 
 export function balanceLine(balance: KeyBalance | null | undefined): string {
   if (!balance) return "Asking OpenRouter what the key is worth…";
@@ -664,16 +843,7 @@ export function maskSecret(value: string): string {
   return secret.length < 12 ? "•".repeat(8) : `${secret.slice(0, 6)}${"•".repeat(10)}${secret.slice(-4)}`;
 }
 
-export const MAX_CONNECTIONS = 32;
-
-export function validateConnections(value: unknown): string[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length > MAX_CONNECTIONS) throw new Error("Connections are invalid");
-  for (const id of value) if (typeof id !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(id) || value.indexOf(id) !== value.lastIndexOf(id)) throw new Error("Connections are invalid");
-  return [...value as string[]];
-}
-
-export type OverlayPreferences = Pick<UserSettings, "notchGap" | "cursorOrbsEnabled" | "notchConcurrency"> & Partial<Pick<UserSettings, "systemPrompt" | "prompts" | "connections">>;
+export type OverlayPreferences = Pick<UserSettings, "notchGap" | "cursorOrbsEnabled" | "notchConcurrency"> & Partial<Pick<UserSettings, "systemPrompt" | "prompts">>;
 const action = (label: string, prompt: string): QuickAction => ({ label, prompt, category: "" });
 
 export const SETTINGS_KEY = "emma.settings.v1";
@@ -706,11 +876,10 @@ export const defaultSettings: UserSettings = {
   requireZeroRetention: false,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   prompts: [],
-  connections: [],
-  relayUrl: "",
   accent: "orange",
   navIconColors: true,
   navHues: {},
+  folderHues: {},
   uiScale: 100,
   conversationWidth: "default",
   interfaceFont: "departure",
@@ -731,6 +900,16 @@ function validateNavHues(value: unknown): Record<string, AccentChoice> {
   return hues;
 }
 
+function validateFolderHues(value: unknown): Record<string, AccentChoice> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Folder colours are invalid");
+  const hues: Record<string, AccentChoice> = {};
+  for (const [folder, hue] of Object.entries(value)) {
+    if (validNoteFolder(folder) && isAccentChoice(hue)) hues[folder] = hue;
+  }
+  return hues;
+}
+
 export function validateSettings(value: unknown): UserSettings {
   if (!value || typeof value !== "object") throw new Error("Settings are invalid");
   const settings = value as Partial<UserSettings>;
@@ -739,7 +918,7 @@ export function validateSettings(value: unknown): UserSettings {
     if (!item || typeof item !== "object") throw new Error("Quick action is invalid");
     const entry = item as Partial<QuickAction>;
     for (const key of ["label", "prompt", "category"] as const) if (typeof entry[key] !== "string") throw new Error("Quick action is invalid");
-    if (!entry.label!.trim() || entry.label!.length > 40 || !entry.prompt!.trim() || entry.prompt!.length > 4096 || entry.category!.length > 64 || (entry.category && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.category))) throw new Error("Quick action is invalid");
+    if (!entry.label!.trim() || entry.label!.length > MAX_QUICK_ACTION_LABEL_CHARS || !entry.prompt!.trim() || entry.prompt!.length > MAX_QUICK_ACTION_PROMPT_CHARS || entry.category!.length > 64 || (entry.category && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.category))) throw new Error("Quick action is invalid");
     return { label: entry.label!, prompt: entry.prompt!, category: entry.category! };
   }) as UserSettings["quickActions"];
   const cursorOrbs = settings.cursorOrbs ?? defaultSettings.cursorOrbs;
@@ -780,10 +959,10 @@ export function validateSettings(value: unknown): UserSettings {
   const systemPrompt = settings.systemPrompt || defaultSettings.systemPrompt;
   if (typeof systemPrompt !== "string" || systemPrompt.length > MAX_SYSTEM_PROMPT_CHARS) throw new Error(`Keep the system prompt under ${MAX_SYSTEM_PROMPT_CHARS} characters`);
   const prompts = validatePrompts(settings.prompts, MAX_SYSTEM_PROMPT_CHARS);
-  const connections = validateConnections(settings.connections);
   const accent = settings.accent ?? defaultSettings.accent;
   const navIconColors = settings.navIconColors ?? defaultSettings.navIconColors;
   const navHues = validateNavHues(settings.navHues);
+  const folderHues = validateFolderHues(settings.folderHues);
   const uiScale = settings.uiScale ?? defaultSettings.uiScale;
   const conversationWidth = settings.conversationWidth ?? defaultSettings.conversationWidth;
   if (!isAccentChoice(accent) || typeof navIconColors !== "boolean" || !CONVERSATION_WIDTHS.some((width) => width.id === conversationWidth) || !Number.isInteger(uiScale) || uiScale < MIN_UI_SCALE || uiScale > MAX_UI_SCALE) throw new Error("Appearance settings are invalid");
@@ -794,8 +973,7 @@ export function validateSettings(value: unknown): UserSettings {
   if (!isThinkingLevel(thinkingLevel)) throw new Error("The thinking level is invalid");
   const keybinds = validateKeybinds(settings.keybinds);
   const contextPages = validateContextPages(settings.contextPages);
-  const relayUrl = relayOrigin(settings.relayUrl);
-  return { accent, navIconColors, navHues, uiScale, conversationWidth, interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, providers, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, favoriteModels: favoriteModels.map(legacyModelKey), routers, requireZeroRetention, systemPrompt, prompts, connections, relayUrl };
+  return { accent, navIconColors, navHues, folderHues, uiScale, conversationWidth, interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, providers, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, favoriteModels: favoriteModels.map(legacyModelKey), routers, requireZeroRetention, systemPrompt, prompts };
 }
 
 export function toggleFavoriteModel(settings: UserSettings, key: string): UserSettings {
@@ -854,9 +1032,8 @@ export function validateOverlayPreferences(value: unknown): OverlayPreferences {
   const systemPrompt = preferences.systemPrompt ?? "";
   if (typeof systemPrompt !== "string" || systemPrompt.length > MAX_SYSTEM_PROMPT_CHARS) throw new Error("Overlay settings are invalid");
   const prompts = validatePrompts(preferences.prompts, MAX_SYSTEM_PROMPT_CHARS);
-  const connections = validateConnections(preferences.connections);
   const notchConcurrency = NOTCH_CONCURRENCY.includes(preferences.notchConcurrency!) ? preferences.notchConcurrency! : defaultSettings.notchConcurrency;
-  return { notchGap: preferences.notchGap!, cursorOrbsEnabled: preferences.cursorOrbsEnabled, notchConcurrency, ...(systemPrompt ? { systemPrompt } : {}), ...(prompts.length ? { prompts } : {}), ...(connections.length ? { connections } : {}) };
+  return { notchGap: preferences.notchGap!, cursorOrbsEnabled: preferences.cursorOrbsEnabled, notchConcurrency, ...(systemPrompt ? { systemPrompt } : {}), ...(prompts.length ? { prompts } : {}) };
 }
 
 export function localEndpoint(value: string): URL | null {

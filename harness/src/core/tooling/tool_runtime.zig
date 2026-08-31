@@ -1089,9 +1089,15 @@ fn visionPathFailure(alloc: Allocator, err: anyerror) Allocator.Error!ToolExecut
         .status_detail = @errorName(err),
         .model_output = try tool_result_errors.toolExecutionFailureJson(alloc, .{
             .tool_name = "vision",
-            .message = "Vision could not load an approved image path.",
+            .message = if (err == error.UnsupportedImageType)
+                "Vision was given a path that is not an image."
+            else
+                "Vision could not load an approved image path.",
             .details = &details,
-            .suggestion = "Use an existing supported image under 20 MiB, or choose another image.",
+            .suggestion = if (err == error.UnsupportedImageType)
+                "vision reads PNG, JPEG, GIF and WebP bytes only. Retrying the same path will fail again; read text, code or Markdown files with read_file instead."
+            else
+                "Use an existing supported image under 20 MiB, or choose another image.",
         }),
     };
 }
@@ -1135,6 +1141,13 @@ test "Vision path preparation reports semantic failure and preserves operational
     defer alloc.free(@constCast(too_large.model_output));
     try std.testing.expectEqualStrings("ImageTooLarge", too_large.status_detail.?);
     try expectContains(too_large.model_output, "under 20 MiB");
+
+    const not_an_image = try visionPathPreparationFailure(alloc, error.UnsupportedImageType);
+    defer alloc.free(@constCast(not_an_image.model_output));
+    try std.testing.expectEqualStrings("UnsupportedImageType", not_an_image.status_detail.?);
+    try expectContains(not_an_image.model_output, "Vision was given a path that is not an image.");
+    try expectContains(not_an_image.model_output, "PNG, JPEG, GIF and WebP bytes only");
+    try expectContains(not_an_image.model_output, "read_file instead");
 
     try std.testing.expectError(
         error.Cancelled,
@@ -1193,8 +1206,8 @@ fn toolRunCommand(
         .environment = request.environment,
         .scope = authority_scope,
     };
-    const timeout_started_ms = ctx.command_timeout_started_ms orelse
-        if (ctx.command_timeout_ms != null) io_mod.milliTimestamp() else null;
+    const effective_timeout_ms = tool_dispatch.resolveCommandTimeoutMs(ctx.command_timeout_ms);
+    const timeout_started_ms = ctx.command_timeout_started_ms orelse io_mod.milliTimestamp();
 
     if (comptime builtin.os.tag == .wasi or builtin.is_test) {
         if (ctx.workspace_executor) |executor| {
@@ -1204,7 +1217,7 @@ fn toolRunCommand(
                 command_ctx,
                 authority,
                 executor,
-                ctx.command_timeout_ms,
+                effective_timeout_ms,
             );
         }
     }
@@ -1322,7 +1335,7 @@ fn toolRunCommand(
         .callback_projection = if (ctx.interactive) .raw else .model_safe,
         .permissive = use_permissive,
         .allow_localhost_listen = true,
-        .timeout_ms = ctx.command_timeout_ms,
+        .timeout_ms = effective_timeout_ms,
         .timeout_started_ms = timeout_started_ms,
         .command_artifact_capability = ctx.session_child_capability,
         .command_artifact_dir = ctx.command_artifact_dir,
@@ -1337,7 +1350,7 @@ fn toolRunCommand(
                 arena,
                 command,
                 cwd,
-                ctx.command_timeout_ms,
+                effective_timeout_ms,
                 timeout_started_ms,
             ),
         );

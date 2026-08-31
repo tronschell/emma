@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const compaction_summarizer = @import("gateway/compaction_summarizer.zig");
 pub const permission_reviewer = @import("gateway/permission_reviewer.zig");
 
 const agent_stream_provider_contract = @import("../core/agent/stream_provider.zig");

@@ -44,13 +44,13 @@ test("activeYears runs back to the earliest day recorded", () => {
   assert.deepEqual(activeYears({ "2024-03-02": 1, "2026-01-01": 1 }, new Date(2026, 7, 27)), [2026, 2025, 2024]);
 });
 
-test("projectActivity groups by folder name and falls back to Unfiled", () => {
+test("projectActivity groups by folder name and falls back to Other", () => {
   const rows = projectActivity([
     thread("a", { messages: [{ role: "user", content: "", timestamp: "2026-08-20T10:00:00.000Z" }] }),
     thread("b", { messages: [{ role: "user", content: "", timestamp: "2026-08-20T10:00:00.000Z" }] }),
     thread("c"),
   ], (item) => item.id === "c" ? "" : "emma");
-  assert.deepEqual(rows.map((row) => row.name), ["emma", "Unfiled"]);
+  assert.deepEqual(rows.map((row) => row.name), ["emma", "Other"]);
   assert.equal(rows[0].threads, 2);
   assert.equal(rows[0].messages, 2);
   assert.equal(Object.values(rows[0].days)[0], 2);

@@ -367,7 +367,7 @@ the `HOME` Emma gives the child:
 | File | Is |
 | --- | --- |
 | `.fx/system-prompt.md` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. |
-| `.fx/AGENTS.md` | The connections block and any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
+| `.fx/AGENTS.md` | Any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
 
 Both are rewritten per turn, and only when they changed. The one thing that can
 live in neither is a per-turn A/B arm; that rides the turn's skill context.

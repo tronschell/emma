@@ -48,6 +48,15 @@ export const CLI_HARNESSES: readonly CliHarness[] = [
     unattended: ["--auto"],
   },
   {
+    id: "gemini",
+    label: "Gemini CLI",
+    bin: "gemini",
+    start: (prompt, _session, model) => [...pick(model), "--prompt", prompt],
+    resume: (prompt, _session, model) => ["--resume", "latest", ...pick(model), "--prompt", prompt],
+    ownsSession: false,
+    unattended: ["--approval-mode=yolo"],
+  },
+  {
     id: "cursor",
     label: "Cursor CLI",
     bin: "cursor-agent",

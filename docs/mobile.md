@@ -4,49 +4,42 @@ A paired iPhone drives the same threads this Mac does: it sends messages, reads
 the live run, answers the tool permission prompts Emma would otherwise put in
 front of you, and runs git. The phone app is a separate repository —
 [tronschell/emma-mobile](https://github.com/tronschell/emma-mobile) — and it
-talks to Emma through a relay **you deploy**, not one Emma ships.
+talks to Emma **directly**, over your own network. There is no relay, no
+Worker to deploy, no account to create, and no traffic through anyone else.
 
-Three things have to be true before a phone can pair, in this order:
+Two things have to be true before a phone can pair:
 
-1. A relay of your own is deployed, and its address is in **Settings → Mobile**.
-2. Emma Mobile is installed on the phone.
-3. Both devices are online. They never talk to each other directly.
+1. Emma Mobile is installed on the phone.
+2. Both devices are on a network that can reach each other — your
+   [Tailscale](https://tailscale.com) tailnet if you have one, the same Wi-Fi
+   if you do not.
 
-## The relay
+## The address
 
-Both ends dial out to a Cloudflare Worker, so neither device needs an open port,
-a VPN, a tunnel daemon, a domain, or a static address. The Worker is in
-[`relay/`](https://github.com/tronschell/emma-mobile/tree/main/relay) in the
-Emma Mobile repository, and deploying it is two commands:
+Emma listens on port **47823** and pairs on whichever of this Mac's addresses a
+phone can actually reach, chosen by [`tailnet.ts`](../desktop/main/tailnet.ts):
 
-```sh
-cd relay
-npx wrangler login
-npx wrangler deploy
-```
+1. A **Tailscale address** — anything in `100.64.0.0/10`, the CGNAT range
+   Tailscale hands its nodes. This is what makes the pairing work from anywhere:
+   install Tailscale on the Mac and the phone, sign both into the same account,
+   and the address stays valid on cellular, at a hotel, behind carrier NAT.
+   Tailscale does the NAT traversal; Emma never sees it and writes no code for
+   it.
+2. Otherwise **the LAN address**, which works while both devices are on the same
+   Wi-Fi and stops working when you leave.
 
-The last line of `wrangler deploy` prints
-`https://emma-relay.<your-subdomain>.workers.dev`. Emma wants the `wss://` form
-of the same host — **scheme and host only**, no trailing slash, path, or query.
-Paste it into **Settings → Mobile → Relay**. `EMMA_RELAY_URL` overrides the
-field when it is set, which is how you point a dev build at a staging relay.
+Loopback and internal interfaces are skipped — a phone cannot dial them. With no
+address at all, pairing fails with `This Mac has no Tailscale or local network
+address to pair on.`
 
-There is no shared relay. Emma has no default address baked in, and the field is
-empty on a fresh install: your phone traffic goes through your Cloudflare
-account and nobody else's.
+Nothing about Tailscale is required, configured, or automated by Emma. It is not
+bundled, not shelled out to, not detected beyond reading the interface list. If
+a `100.x` address is there Emma uses it; if it is not, Emma uses the LAN. **Do
+not use Tailscale Funnel** — it publishes the port to the open internet, which
+is exactly what this design avoids.
 
-**What the relay can see.** Ciphertext only. Every frame is sealed end to end by
-[`frames.ts`](../desktop/main/frames.ts) before it leaves the Mac, and the
-Worker holds no key that opens one. What it does see, and what you should treat
-as visible to Cloudflare: the room id in the request path, the SHA-256 auth
-token derived from the pairing key, and the size and timing of each frame.
-`observability` is off in `wrangler.jsonc` so none of that is sampled into
-Workers Logs.
-
-**What it costs.** Nothing, in practice. The Durable Object uses the WebSocket
-Hibernation API and answers keepalives without waking, so an idle pairing bills
-almost no duration. The free tier's 100,000 requests a day is far above what one
-phone generates — incoming WebSocket messages bill at 20:1.
+The socket is bound to that one address, not to `0.0.0.0`. Joining a coffee shop
+Wi-Fi does not open the port on it.
 
 ## Getting the app onto a phone
 
@@ -76,62 +69,76 @@ a TestFlight build would need.
 
 ## Pairing
 
-**Settings → Mobile → Pair a phone** on the Mac, then **Pair** in Emma Mobile
-and hold the camera over the code.
+Set a **PIN** in **Settings → Mobile**, hit **Pair a phone**, then **Pair** in
+Emma Mobile and hold the camera over the code. The phone asks for the PIN; type
+it and the pairing is done.
 
 What happens behind the sheet, in [`bridge.ts`](../desktop/main/bridge.ts):
 
-1. Emma mints a 16-byte room id and a 32-byte key, and stages them unsaved.
-2. Emma opens the relay socket and **claims the room** — the first connection to
-   reach a room owns it, so the QR is drawn only after the claim succeeds. A
-   room-id guesser is never first. If the claim does not land in ten seconds the
-   sheet fails with `This Mac could not reach the pairing relay.`
-3. The QR is drawn. It carries the relay address, the room, the key, this Mac's
-   name, and an expiry two minutes out.
-4. The phone scans it, connects as `?role=phone`, and sends its handshake.
-5. The first sealed frame from the phone is what commits the pairing to disk.
-   Until then nothing has been written, and walking away from the sheet leaves
-   no trace.
+1. Emma mints a 32-byte key, hashes the PIN with scrypt and a fresh salt, and
+   stages both **unsaved**.
+2. Emma binds the listener to `ws://<address>:47823`.
+3. The QR is drawn immediately. It carries the address, the key, this Mac's
+   name, and an expiry two minutes out. **It never carries the PIN.**
+4. The phone scans it and connects, offering
+   `sha256(key ‖ "emma-bridge-auth")` as the WebSocket subprotocol. A connection
+   that cannot name that token is rejected before a single byte of protocol is
+   read, in constant time.
+5. The phone sends `unlock` with the PIN. Only that request is answered before
+   the PIN is proved — everything else comes back
+   `Enter this Mac's PIN on the phone to finish pairing.`
+6. A correct PIN commits the pairing to disk. Until then nothing has been
+   written, and walking away from the sheet leaves no trace.
 
-The QR contains the raw key in the clear. It is on your screen for two minutes —
-treat it like a password, and pair only a phone you are holding.
+**Why the PIN.** The key rides the QR in the clear for two minutes. Without a
+PIN, a photograph of your screen — or someone standing behind you — is a working
+pairing. With one, it is not: the code is necessary and no longer sufficient.
+The PIN is asked once, at pairing. It is not a lock screen for the phone app, and
+it does not help if the paired phone itself is stolen, because that phone already
+holds the key.
+
+**Five wrong PINs kill the staged pairing.** `MAX_PIN_TRIES` is spent per
+pairing attempt, so the two-minute window is not a window to brute-force a
+four-digit space in. Start over from **Pair a phone**.
 
 The two minutes are enforced in the main process, not in the sheet that draws
 the code. `pair()` arms a timer for `PAIRING_TTL_MS` that calls `cancelPair()`
-itself, so a renderer that crashes or a window that is destroyed cannot leave
-the staged key live and the room claimed. The renderer's countdown is a
-courtesy on top of it. The timer is cleared when the first sealed frame commits
-the pairing, when the sheet is cancelled, and on quit, and it is unref'd so it
-never holds the process open.
+itself, so a renderer that crashes or a window that is destroyed cannot leave the
+staged key live and the port open. The renderer's countdown is a courtesy on top
+of it. The timer is cleared when the PIN commits the pairing, when the sheet is
+cancelled, and on quit, and it is unref'd so it never holds the process open.
 
 ## The handshake
 
 Both ends send a 16-byte hello and derive one session digest,
 `sha256(macHello ‖ phoneHello)`, which is the AES-GCM associated data for every
 frame of that connection and the point from which the replay counters run. The
-Mac re-randomises its hello on every socket it opens, which is what kills a
-frame captured on an earlier connection.
+Mac re-randomises its hello on every connection it accepts, which is what kills a
+frame captured on an earlier one.
 
 Within one connection the Mac still has to accept a second handshake: a phone
 that goes out of range or is backgrounded rejoins with a fresh hello while the
-Mac's socket is still open, and refusing it would leave the bridge dead until
-the Mac's own socket cycled. So the handshake is open to anything that can write
-into the relay room, and a handshake resets the replay counters.
+Mac's socket is still open, and refusing it would leave the bridge dead until the
+socket cycled. So the handshake is open to anything that got past the auth
+subprotocol, and a handshake resets the replay counters.
 
 `FrameCodec` therefore records the digest of every session under which a frame
 has actually been opened, and refuses any handshake that lands back on one of
 them. A genuine rejoin carries a hello the phone has just randomised, so its
 session is new and it is heard. A replay of a captured hello necessarily
 reproduces a session that already carried traffic, so it is refused and the
-frames captured under it stay shut — including the case where the attacker
-first sends junk to move the Mac off the session it is on. Only sessions that
-carried traffic are remembered, so greeting the bridge with junk costs no
-memory, and the set is cleared on every `restart()`.
+frames captured under it stay shut — including the case where the attacker first
+sends junk to move the Mac off the session it is on. Only sessions that carried
+traffic are remembered, so greeting the bridge with junk costs no memory, and the
+set is cleared on every `restart()`.
 
 Handshakes are otherwise unauthenticated work, so the Mac answers each one with
 its hello but pushes an unsolicited live state at most once a second. A phone
 that greets in a quiet moment still gets its snapshot; a flood of greetings
 cannot make the Mac serialise and seal the agent list over and over.
+
+One phone at a time. A new connection replaces the one before it, so a rejoining
+phone never has to wait for the old socket to time out.
 
 ## What a paired phone can do
 
@@ -148,16 +155,30 @@ first wins. Asks expire after ten minutes either way.
 
 ## Unpairing
 
-**Settings → Mobile → Unpair**, twice — the button asks for confirmation in
-place. Emma sends the phone a `bye` frame, deletes `mobile-peer.json`, and drops
-the socket. The old room is abandoned; the next pairing mints a fresh room and
-key, so a phone that was unpaired while offline can never reconnect.
+Each paired phone gets its own row in **Settings → Mobile**, listed by the day it
+was paired and whether it is connected. **Remove** it, twice — the button asks
+for confirmation in place. Emma sends that phone a `bye` frame, drops its socket,
+and rewrites `mobile-peers.json` without it. The other phones keep their sockets
+and carry on; the port only closes once nothing is paired.
+
+**Revoking a phone does not depend on reaching it.** It is the Mac that stops
+answering: the record is gone and the key no longer opens the door, so a phone
+that is off, off-network, lost, or stolen is locked out just as completely as one
+sitting on the desk. **Getting a new phone is the same two steps** — remove the
+old one, then pair the new one. Every pairing mints its own key, so the removed
+phone fails the auth handshake before it can say anything.
+
+What Emma cannot do is reach into the old phone and clear what it already
+cached. The `bye` frame is its cue to forget the pairing, and only a phone that
+is connected at that moment receives one.
 
 ## On disk
 
-`mobile-peer.json` in `userData` holds the room, the relay address, this Mac's
-name, and the pairing key **encrypted with the macOS keychain** through
-`safeStorage`. Emma refuses to pair at all when the keychain is unavailable
-rather than writing the key in plain text, and a record whose key does not
-decrypt, or whose relay is not a valid `wss://` origin, loads as no pairing at
-all.
+`mobile-peers.json` in `userData` holds one record per paired phone: the address,
+this Mac's name, the scrypt
+hash of the PIN, and the pairing key **encrypted with the macOS keychain**
+through `safeStorage`. The PIN itself is never stored and never sent to the
+phone. Emma refuses to pair at all when the keychain is unavailable rather than
+writing the key in plain text, and a record loads as no pairing at all when its
+key does not decrypt, its address is not a valid `ws://host:port`, its PIN hash
+is malformed, or its pairing was never proved with a PIN.

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
-import { FrameCodec, relayAuth } from "../main/frames";
+import { FrameCodec, bridgeAuth } from "../main/frames";
 import { HANDSHAKE_BYTES, KEY_BYTES, LABEL_PHONE_TO_MAC, MAX_FRAME_BYTES, NONCE_BYTES, TAG_BYTES } from "../shared/mobile-protocol";
 import type { BridgeFrame } from "../shared/mobile-protocol";
 
@@ -77,12 +77,12 @@ test("a Mac only ever accepts requests, and a phone never does", () => {
   assert.equal(phone.open(sealed(phone, request)), undefined);
 });
 
-test("both ends agree on one relay token, and it is a deterministic sha256 hex", () => {
+test("both ends agree on one bridge token, and it is a deterministic sha256 hex", () => {
   const { mac, phone } = link();
   assert.equal(mac.auth, phone.auth);
-  assert.equal(mac.auth, relayAuth(key));
+  assert.equal(mac.auth, bridgeAuth(key));
   assert.match(mac.auth, /^[0-9a-f]{64}$/);
-  assert.notEqual(relayAuth(randomBytes(KEY_BYTES)), mac.auth);
+  assert.notEqual(bridgeAuth(randomBytes(KEY_BYTES)), mac.auth);
 });
 
 test("a captured frame is accepted once, and a stale counter never reopens", () => {

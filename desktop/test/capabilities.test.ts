@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ImportedCapabilityRuntime, listEmmaTools, MAX_SKILL_RESULTS, parseMcpConfig, seedBuiltinSkills, SkillAttachmentStore, writeEmmaTool } from "../main/capabilities";
+import { harnessMcpServers, ImportedCapabilityRuntime, listEmmaTools, MAX_SKILL_RESULTS, parseMcpConfig, seedBuiltinSkills, SkillAttachmentStore, writeEmmaTool } from "../main/capabilities";
 import { shellQuoted } from "../main/tools";
 
 test("bundled skills are seeded into both skill roots and are searchable without an import", async () => {
@@ -109,6 +109,8 @@ test("an imported stdio server is listed with its arguments redacted and its env
     assert.deepEqual(servers[0].args, ["-e", "[argument 2 redacted]"]);
     assert.deepEqual(servers[0].environmentKeys, ["MCP_SECRET"]);
     assert.equal(JSON.stringify(servers).includes("do-not-render"), false);
+    assert.deepEqual((await harnessMcpServers(userData)).map((server) => server.name), ["fixture"]);
+    assert.deepEqual(await harnessMcpServers(userData, [servers[0].id]), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

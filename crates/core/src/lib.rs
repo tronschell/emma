@@ -167,7 +167,7 @@ mod tests {
         let older = Thread::new("older", Timestamp::from_unix_seconds(5)).unwrap();
         let legacy = older
             .to_markdown()
-            .replacen("emma-thread-format: 13", "emma-thread-format: 7", 1)
+            .replacen("emma-thread-format: 15", "emma-thread-format: 7", 1)
             .lines()
             .filter(|line| {
                 !line.starts_with("trace-count:")
@@ -194,7 +194,7 @@ mod tests {
 
         let legacy = child
             .to_markdown()
-            .replacen("emma-thread-format: 13", "emma-thread-format: 8", 1)
+            .replacen("emma-thread-format: 15", "emma-thread-format: 8", 1)
             .replace("kind: \"subagent\"\n", "")
             .replace("scheduled-job-id: \"\"\n", "");
         assert_eq!(Thread::from_markdown(&legacy).unwrap(), child);
@@ -219,7 +219,7 @@ mod tests {
         );
         let older = root
             .to_markdown()
-            .replacen("emma-thread-format: 13", "emma-thread-format: 5", 1)
+            .replacen("emma-thread-format: 15", "emma-thread-format: 5", 1)
             .lines()
             .filter(|line| {
                 !line.starts_with("parent-thread-id:")
@@ -346,18 +346,38 @@ mod tests {
             Timestamp::from_unix_seconds(12),
         )
         .unwrap();
-        assistant.generation = Some(GenerationTelemetry::new(24, 500).unwrap());
+        assistant.generation = Some(
+            GenerationTelemetry::new(24, 500)
+                .unwrap()
+                .with_provider_usage(Some(12), Some(24), Some(3), Some(456))
+                .unwrap(),
+        );
         old.push(assistant).unwrap();
+        let version_thirteen = old
+            .to_markdown()
+            .replacen("emma-thread-format: 15", "emma-thread-format: 13", 1)
+            .lines()
+            .filter(|line| !line.starts_with("Cache-") && !line.starts_with("Cost-Micro-Usd:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let legacy_generation = Thread::from_markdown(&version_thirteen).unwrap().messages[1]
+            .generation
+            .clone()
+            .unwrap();
+        assert_eq!(legacy_generation.cache_read_tokens, None);
+        assert_eq!(legacy_generation.cache_input_tokens, None);
+        assert_eq!(legacy_generation.cache_write_tokens, None);
+        assert_eq!(legacy_generation.cost_micro_usd, None);
         let version_three = old
             .to_markdown()
-            .replacen("emma-thread-format: 13", "emma-thread-format: 3", 1)
+            .replacen("emma-thread-format: 15", "emma-thread-format: 3", 1)
             .replace("archived-at: \"\"\n", "")
             .replace("parent-thread-id: \"\"\n", "")
             .replace("trace-count: 0\n", "")
             .replace("kind: \"main\"\n", "").replace("scheduled-job-id: \"\"\n", "")
             .replace("\nGeneration: none\n\n", "\n")
             .replace(
-                "\nGeneration: present\nOutput-Tokens: 24\nDuration-Milliseconds: 500\nInput-Tokens: 0\nModel: \"\"\n\n",
+                "\nGeneration: present\nOutput-Tokens: 24\nDuration-Milliseconds: 500\nInput-Tokens: 0\nCache-Read-Tokens: \"12\"\nCache-Input-Tokens: \"24\"\nCache-Write-Tokens: \"3\"\nCost-Micro-Usd: \"456\"\nModel: \"\"\n\n",
                 "\n",
             );
         assert!(
@@ -408,7 +428,7 @@ mod tests {
         assert!(Thread::from_markdown(&markdown).unwrap().goal.is_some());
 
         let older = markdown
-            .replacen("emma-thread-format: 13", "emma-thread-format: 12", 1)
+            .replacen("emma-thread-format: 15", "emma-thread-format: 12", 1)
             .lines()
             .filter(|line| !line.starts_with("goal-"))
             .collect::<Vec<_>>()

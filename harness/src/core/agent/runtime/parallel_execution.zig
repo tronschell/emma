@@ -97,6 +97,15 @@ const ParallelWorkerSlot = struct {
     owner_cancelled_at_error: bool = false,
 };
 
+const max_parallel_workers = 8;
+
+const ParallelWorkQueue = struct {
+    calls: []const ToolCall,
+    slots: []ParallelWorkerSlot,
+    options: ParallelRunOptions,
+    next_index: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+};
+
 pub fn runSequentialReadOnlyCalls(
     alloc: Allocator,
     calls: []const ToolCall,
@@ -157,20 +166,12 @@ pub fn runParallelReadOnlyCalls(
         }
     }
 
-    var started: usize = 0;
-    for (calls, 0..) |call, index| {
-        slots[index].thread = std.Thread.spawn(.{}, parallelWorkerMain, .{ &slots[index], options, call, index }) catch |err| {
-            for (slots[0..started]) |*slot| {
-                if (slot.thread) |thread| thread.join();
-                slot.thread = null;
-            }
-            return switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => error.OutOfMemory,
-            };
-        };
-        started += 1;
+    var queue = ParallelWorkQueue{ .calls = calls, .slots = slots, .options = options };
+    const helper_count = @max(1, @min(calls.len, max_parallel_workers)) - 1;
+    for (slots[0..helper_count]) |*slot| {
+        slot.thread = std.Thread.spawn(.{}, parallelWorkerMain, .{&queue}) catch break;
     }
+    parallelWorkerMain(&queue);
 
     for (slots) |*slot| {
         if (slot.thread) |thread| {
@@ -228,19 +229,25 @@ pub fn runParallelReadOnlyCalls(
     };
 }
 
-fn parallelWorkerMain(slot: *ParallelWorkerSlot, options: ParallelRunOptions, call: ToolCall, index: usize) void {
-    if (cancelRequested(options.cancel_flag)) {
-        slot.err = error.Cancelled;
-        slot.owner_cancelled_at_error = true;
-        return;
+fn parallelWorkerMain(queue: *ParallelWorkQueue) void {
+    const options = queue.options;
+    while (true) {
+        const index = queue.next_index.fetchAdd(1, .seq_cst);
+        if (index >= queue.calls.len) return;
+        const slot = &queue.slots[index];
+        if (cancelRequested(options.cancel_flag)) {
+            slot.err = error.Cancelled;
+            slot.owner_cancelled_at_error = true;
+            continue;
+        }
+        const worker_alloc = slot.arena_state.allocator();
+        slot.result = options.execute(options.exec_ctx, worker_alloc, queue.calls[index], index) catch |err| {
+            slot.err = err;
+            slot.owner_cancelled_at_error =
+                err == error.Cancelled and cancelRequested(options.cancel_flag);
+            continue;
+        };
     }
-    const worker_alloc = slot.arena_state.allocator();
-    slot.result = options.execute(options.exec_ctx, worker_alloc, call, index) catch |err| {
-        slot.err = err;
-        slot.owner_cancelled_at_error =
-            err == error.Cancelled and cancelRequested(options.cancel_flag);
-        return;
-    };
 }
 
 fn cancelRequested(cancel_flag: ?*std.atomic.Value(bool)) bool {
@@ -699,6 +706,49 @@ test "parallel read-only execution reports no active call when cancellation foll
     try std.testing.expect(run.first_cancelled_index == null);
     try std.testing.expect(run.attempts[0] == .completed);
     try std.testing.expect(run.attempts[1] == .completed);
+}
+
+test "parallel read-only execution bounds concurrent workers" {
+    const alloc = std.testing.allocator;
+    const call_count = max_parallel_workers * 3;
+    var calls: [call_count]ToolCall = undefined;
+    var plans: [call_count]ParallelTestPlan = undefined;
+    for (&calls, &plans) |*call, *plan| {
+        call.* = toolCall("read", "read_file", "{\"path\":\"a\"}");
+        plan.* = .{ .output = "read output", .delay_ms = 5 };
+    }
+    var fixture = ParallelTestFixture{ .plans = &plans };
+
+    var run = try runParallelReadOnlyCallsForTest(alloc, &calls, &fixture);
+    defer run.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, call_count), run.attempts.len);
+    for (run.attempts) |attempt| {
+        try std.testing.expectEqualStrings("read output", attempt.completed.execution.model_output);
+    }
+    try std.testing.expect(fixture.max_in_flight.load(.seq_cst) > 1);
+    try std.testing.expect(fixture.max_in_flight.load(.seq_cst) <= max_parallel_workers);
+    try std.testing.expectEqual(@as(usize, 0), fixture.in_flight.load(.seq_cst));
+}
+
+test "parallel read-only execution cancelled mid batch leaves no worker in flight" {
+    const alloc = std.testing.allocator;
+    const call_count = max_parallel_workers * 2;
+    var calls: [call_count]ToolCall = undefined;
+    var plans: [call_count]ParallelTestPlan = undefined;
+    for (&calls, &plans, 0..) |*call, *plan, index| {
+        call.* = toolCall("read", "read_file", "{\"path\":\"a\"}");
+        plan.* = .{ .output = "read output", .delay_ms = 1, .cancel = index == 0 };
+    }
+    var fixture = ParallelTestFixture{ .plans = &plans };
+
+    var run = try runParallelReadOnlyCallsForTest(alloc, &calls, &fixture);
+    defer run.deinit(alloc);
+
+    try std.testing.expect(fixture.cancel_flag.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, call_count), run.attempts.len);
+    try std.testing.expect(run.attempts[call_count - 1] == .cancelled);
+    try std.testing.expectEqual(@as(usize, 0), fixture.in_flight.load(.seq_cst));
 }
 
 fn checkParallelResultDuplicationAllocationFailures(alloc: Allocator) !void {

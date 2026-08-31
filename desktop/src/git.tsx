@@ -313,8 +313,12 @@ export function GitPage({ snapshot, folderId, brand }: { snapshot: GitSnapshot; 
               {!rows.length && <li className="git-commit-row">No commits yet</li>}
               {rows.map((row, index) => <li className="git-commit-row" key={row.commit.hash}>
                 <svg className="git-lanes" width={width} height={ROW_HEIGHT} viewBox={`0 0 ${width} ${ROW_HEIGHT}`} aria-hidden>
-                  {(index ? rows[index - 1].links : []).map((link) => <path key={`in-${link.to}`} className={`git-lane-${link.to % LANE_COLOURS}`} fill="none"
-                    d={`M ${laneX(link.to)} 0 L ${laneX(link.to)} ${ROW_HEIGHT / 2}`} />)}
+                  {(index ? rows[index - 1].links : []).map((link) => {
+                    const out = row.links.find((next) => next.to === link.to);
+                    const continues = out && out.from !== link.to;
+                    return <path key={`in-${link.to}`} className={`git-lane-${link.to % LANE_COLOURS}`} fill="none"
+                      d={`M ${laneX(link.to)} 0 L ${laneX(link.to)} ${continues ? ROW_HEIGHT : ROW_HEIGHT / 2}`} />;
+                  })}
                   {row.links.map((link, position) => <path key={position} className={`git-lane-${link.to % LANE_COLOURS}`} fill="none"
                     d={`M ${laneX(link.from)} ${ROW_HEIGHT / 2} C ${laneX(link.from)} ${ROW_HEIGHT} ${laneX(link.to)} ${ROW_HEIGHT / 2} ${laneX(link.to)} ${ROW_HEIGHT}`} />)}
                   <circle className={`git-lane-${row.lane % LANE_COLOURS}`} cx={laneX(row.lane)} cy={ROW_HEIGHT / 2} r={LANE_RADIUS} />

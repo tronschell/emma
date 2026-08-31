@@ -877,7 +877,99 @@ pub const ChatMessage = struct {
 pub const Usage = struct {
     input_tokens: ?u64 = null,
     output_tokens: ?u64 = null,
+    cache_read_tokens: ?u64 = null,
+    cache_write_tokens: ?u64 = null,
+    cost_micro_usd: ?u64 = null,
 };
+
+pub fn parseMicroDollars(text: []const u8) ?u64 {
+    if (text.len == 0) return null;
+
+    var index: usize = 0;
+    var coefficient: u128 = 0;
+    var fractional_digits: i64 = 0;
+    var mantissa_digits: usize = 0;
+    var has_decimal = false;
+    while (index < text.len) : (index += 1) {
+        const byte = text[index];
+        if (byte >= '0' and byte <= '9') {
+            const digit: u128 = byte - '0';
+            if (coefficient > (std.math.maxInt(u128) - digit) / 10) return null;
+            coefficient = coefficient * 10 + digit;
+            mantissa_digits += 1;
+            if (has_decimal) fractional_digits += 1;
+            continue;
+        }
+        if (byte == '.' and !has_decimal) {
+            has_decimal = true;
+            continue;
+        }
+        break;
+    }
+    if (mantissa_digits == 0) return null;
+
+    var exponent: i64 = 0;
+    if (index < text.len) {
+        if (text[index] != 'e' and text[index] != 'E') return null;
+        index += 1;
+        var exponent_negative = false;
+        if (index < text.len and (text[index] == '-' or text[index] == '+')) {
+            exponent_negative = text[index] == '-';
+            index += 1;
+        }
+        var exponent_digits: usize = 0;
+        var exponent_magnitude: i64 = 0;
+        while (index < text.len) : (index += 1) {
+            const byte = text[index];
+            if (byte < '0' or byte > '9') return null;
+            const digit: i64 = byte - '0';
+            if (exponent_magnitude > @divTrunc(std.math.maxInt(i64) - digit, 10)) return null;
+            exponent_magnitude = exponent_magnitude * 10 + digit;
+            exponent_digits += 1;
+        }
+        if (exponent_digits == 0) return null;
+        exponent = if (exponent_negative) -exponent_magnitude else exponent_magnitude;
+    }
+    if (index != text.len) return null;
+    if (coefficient == 0) return 0;
+
+    const decimal_places = fractional_digits - exponent;
+    if (decimal_places <= 6) {
+        const scale = @as(u64, @intCast(6 - decimal_places));
+        if (scale > 38) return null;
+        var factor: u128 = 1;
+        var i: u64 = 0;
+        while (i < scale) : (i += 1) factor *= 10;
+        const micros = std.math.mul(u128, coefficient, factor) catch return null;
+        if (micros > std.math.maxInt(u64)) return null;
+        return @intCast(micros);
+    }
+
+    const scale = @as(u64, @intCast(decimal_places - 6));
+    if (scale > 38) return null;
+    var divisor: u128 = 1;
+    var i: u64 = 0;
+    while (i < scale) : (i += 1) divisor *= 10;
+    const micros = coefficient / divisor;
+    if (coefficient % divisor != 0 or micros > std.math.maxInt(u64)) return null;
+    return @intCast(micros);
+}
+
+test "parseMicroDollars accepts exact decimal provider costs" {
+    try std.testing.expectEqual(@as(?u64, 0), parseMicroDollars("0"));
+    try std.testing.expectEqual(@as(?u64, 1), parseMicroDollars("0.000001"));
+    try std.testing.expectEqual(@as(?u64, 1234567), parseMicroDollars("1.234567"));
+    try std.testing.expectEqual(@as(?u64, 1234), parseMicroDollars("1.234e-3"));
+    try std.testing.expectEqual(@as(?u64, 1_000_000), parseMicroDollars("1000000e-6"));
+}
+
+test "parseMicroDollars rejects unavailable or inexact costs" {
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollars(""));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollars("-1"));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollars("0.0000001"));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollars("1e"));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollars("NaN"));
+}
 
 /// Exact usage metadata returned by a completed Gateway stream. `model` is
 /// owned by the completion carrying this value.
@@ -885,6 +977,7 @@ pub const GatewayBilling = struct {
     created_at_ms: i64,
     model: []const u8,
     total_cost: f64,
+    cost_micro_usd: ?u64 = null,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,

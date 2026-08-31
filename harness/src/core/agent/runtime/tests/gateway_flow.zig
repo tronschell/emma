@@ -266,10 +266,7 @@ fn expectGatewayPromptStringEntry(gateway: *const FakeGateway, index: usize, ent
     const prompt = parsed.value.object.get("messages").?.array.items;
     try std.testing.expect(entry_index < prompt.len);
     const entry = prompt[entry_index];
-    try std.testing.expect(entry == .object);
-    const content = entry.object.get("content") orelse return error.TestExpectedPromptMessageMissing;
-    try std.testing.expect(content == .string);
-    try std.testing.expectEqualStrings(expected, content.string);
+    try std.testing.expectEqual(@as(usize, 1), countPromptEntryText(entry, expected));
 }
 
 fn expectGatewayToolResultOutput(
@@ -473,29 +470,6 @@ fn runScriptedVision(
             .source = .command_line,
         },
     });
-}
-
-fn expectGatewayPromptEntryCacheControl(gateway: *const FakeGateway, index: usize, needle: []const u8, expected: bool) !void {
-    const alloc = std.testing.allocator;
-    try std.testing.expect(index < gateway.request_bodies.items.len);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, gateway.request_bodies.items[index], .{});
-    defer parsed.deinit();
-
-    const prompt = parsed.value.object.get("messages").?.array.items;
-    for (prompt) |entry| {
-        if (countPromptEntryText(entry, needle) == 0) continue;
-        try std.testing.expectEqual(expected, entry.object.get("providerOptions") != null);
-        return;
-    }
-    return error.TestExpectedPromptMessageMissing;
-}
-
-fn expectNoPromptCacheControlAfter(gateway: *const FakeGateway, index: usize, needle: []const u8) !void {
-    try std.testing.expect(index < gateway.request_bodies.items.len);
-    const body = gateway.request_bodies.items[index];
-    const start = std.mem.indexOf(u8, body, needle) orelse return error.TestExpectedBodyNeedleMissing;
-    try std.testing.expect(std.mem.find(u8, body[start..], "cacheControl") == null);
 }
 
 test "processQueuedPrompt gates text-only images through the real Vision runtime" {
@@ -3217,11 +3191,7 @@ test "processQueuedPrompt final summary counts submitted input once across Gatew
     try std.testing.expect(summary.turn_duration_ms >= summary.thinking_duration_ms);
 }
 
-test "processQueuedPrompt places transient overlay before history and current prompt" {
-    // Waiting on explicit prompt caching: the AI SDK marked cache breakpoints with
-    // a per-message `providerOptions.anthropic.cacheControl` that Emma's transport
-    // does not yet express.
-    if (true) return error.SkipZigTest;
+test "processQueuedPrompt places stable context history transient overlay and current prompt" {
     const alloc = std.testing.allocator;
     const completions = [_]FakeCompletion{.{ .content = "No" }};
     var gateway = FakeGateway.init(alloc, &completions);
@@ -3251,13 +3221,9 @@ test "processQueuedPrompt places transient overlay before history and current pr
     const current_idx = std.mem.indexOf(u8, body, "is it still running") orelse return error.TestExpectedEqual;
     const runtime_idx = std.mem.indexOf(u8, body, "runtime tail context unique") orelse return error.TestExpectedEqual;
     try std.testing.expect(system_idx < static_idx);
-    try std.testing.expect(static_idx < runtime_idx);
-    try std.testing.expect(runtime_idx < history_idx);
-    try std.testing.expect(history_idx < current_idx);
-    try expectGatewayPromptEntryCacheControl(&gateway, 0, "system", true);
-    try expectGatewayPromptEntryCacheControl(&gateway, 0, "static project context unique", true);
-    try expectGatewayPromptEntryCacheControl(&gateway, 0, "runtime tail context unique", false);
-    try expectNoPromptCacheControlAfter(&gateway, 0, "runtime tail context unique");
+    try std.testing.expect(static_idx < history_idx);
+    try std.testing.expect(history_idx < runtime_idx);
+    try std.testing.expect(runtime_idx < current_idx);
     try expectGatewayPromptFinalUserText(&gateway, 0, "is it still running");
     try std.testing.expectEqual(@as(usize, 0), hooks.executed_names.items.len);
 }
@@ -3291,8 +3257,8 @@ test "processQueuedPrompt keeps supplied system prompt components in stable orde
     try runFakePrompt(&gateway, &hooks, config, job);
 
     try std.testing.expectEqual(@as(usize, 2), gateway.request_bodies.items.len);
-    const first_roles = [_]types.ChatRole{ .system, .system, .system, .system, .system, .system, .user, .assistant, .user };
-    const second_roles = [_]types.ChatRole{ .system, .system, .system, .system, .system, .system, .user, .assistant, .user, .assistant, .tool };
+    const first_roles = [_]types.ChatRole{ .system, .system, .system, .system, .system, .user, .assistant, .system, .user };
+    const second_roles = [_]types.ChatRole{ .system, .system, .system, .system, .system, .user, .assistant, .system, .user, .assistant, .tool };
     try expectGatewayPromptRoles(&gateway, 0, &first_roles);
     try expectGatewayPromptRoles(&gateway, 1, &second_roles);
     inline for (&.{ @as(usize, 0), @as(usize, 1) }) |request_index| {
@@ -3308,8 +3274,8 @@ test "processQueuedPrompt keeps supplied system prompt components in stable orde
             "skills guidance-order section",
             "model guidance-order overlay",
             "static guidance-order context",
-            "transient guidance-order context",
             "past assistant guidance-order needle",
+            "transient guidance-order context",
             "user prompt",
         };
         try expectBodyContainsInOrder(&gateway, request_index, &order);
@@ -3623,7 +3589,7 @@ test "processQueuedPrompt keeps completed history before the final current user 
 
     try runFakePrompt(&gateway, &hooks, fixture.config(), job);
 
-    const expected_roles = [_]types.ChatRole{ .system, .system, .user, .assistant, .user };
+    const expected_roles = [_]types.ChatRole{ .system, .user, .assistant, .system, .user };
     try expectGatewayPromptRoles(&gateway, 0, &expected_roles);
     try expectGatewayPromptTextCount(&gateway, 0, "prior user structural needle", 1);
     try expectGatewayPromptTextCount(&gateway, 0, "prior assistant structural needle", 1);
@@ -3633,7 +3599,7 @@ test "processQueuedPrompt keeps completed history before the final current user 
     const history_idx = std.mem.indexOf(u8, body, "prior assistant structural needle") orelse return error.TestExpectedEqual;
     const runtime_idx = std.mem.indexOf(u8, body, "runtime context structural needle") orelse return error.TestExpectedEqual;
     const current_idx = std.mem.indexOf(u8, body, "current structural prompt needle") orelse return error.TestExpectedEqual;
-    try std.testing.expect(runtime_idx < history_idx);
+    try std.testing.expect(history_idx < runtime_idx);
     try std.testing.expect(history_idx < current_idx);
     try expectGatewayPromptFinalUserText(&gateway, 0, "current structural prompt needle");
     try expectGatewayPromptTextCount(&gateway, 0, "Earlier messages are session history from previous turns.", 0);
@@ -4209,6 +4175,48 @@ test "processQueuedPrompt retries replay-safe ReadFailed before success" {
     try std.testing.expect(std.mem.find(u8, trace, "err=ReadFailed") != null);
     try std.testing.expect(std.mem.find(u8, trace, "provider_attempts=1/3") != null);
     try std.testing.expect(std.mem.find(u8, trace, "replay_safe=true") != null);
+    try std.testing.expect(std.mem.find(u8, trace, "retry=true") != null);
+}
+
+test "processQueuedPrompt retries an unusable provider response before success" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(root);
+    const trace_path = try std.fs.path.join(alloc, &.{ root, "unusable-response-retry-trace.log" });
+    defer alloc.free(trace_path);
+
+    debug_trace.resetForTest();
+    defer debug_trace.resetForTest();
+    try debug_trace.configureForTestWithScopes(alloc, trace_path, "gateway");
+
+    const final_chunks = [_][]const u8{"Recovered"};
+    const completions = [_]FakeCompletion{
+        .{ .stream_error = error.InvalidProviderResponse },
+        .{ .chunks = &final_chunks, .content = "Recovered" },
+    };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var config = fixture.config();
+    config.gateway_retry_count = 3;
+    config.max_provider_attempts = 3;
+
+    try runFakePrompt(&gateway, &hooks, config, fixture.job());
+    debug_trace.shutdown();
+
+    try std.testing.expectEqual(@as(usize, 2), gateway.request_models.items.len);
+    try std.testing.expectEqual(@as(usize, 1), countText(&hooks, "Recovered"));
+    try std.testing.expectEqual(@as(usize, 2), hooks.route_recovery_statuses.items.len);
+    try std.testing.expectEqual(types.RouteRecoveryStatus.Kind.auto_retry, hooks.route_recovery_statuses.items[0].kind);
+    try std.testing.expectEqual(types.RouteRecoveryStatus.Kind.auto_recovered, hooks.route_recovery_statuses.items[1].kind);
+
+    const trace = try readTraceFile(alloc, trace_path, 65536);
+    defer alloc.free(trace);
+    try std.testing.expect(std.mem.find(u8, trace, "err=InvalidProviderResponse") != null);
     try std.testing.expect(std.mem.find(u8, trace, "retry=true") != null);
 }
 
@@ -5455,6 +5463,52 @@ test "processQueuedPrompt injects silent-tool continuation without synthetic ass
     try expectBodyNotContains(&gateway, 3, "Done.");
 }
 
+test "processQueuedPrompt re-asks for a tool call the provider lost in transit" {
+    const alloc = std.testing.allocator;
+    const residue_chunks = [_][]const u8{
+        "Consulting the advisor.",
+        "</arg_key><arg_value>review this</arg_value></tool_call>",
+    };
+    const calls = [_]ToolCall{toolCall("call_1", "read_file", "{\"path\":\"a\"}")};
+    const completions = [_]FakeCompletion{
+        .{ .chunks = &residue_chunks },
+        .{ .tool_calls = &calls },
+        .{ .content = "Final" },
+    };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+
+    try runFakePrompt(&gateway, &hooks, fixture.config(), fixture.job());
+
+    try std.testing.expectEqual(@as(usize, 3), gateway.request_bodies.items.len);
+    try expectBodyContains(&gateway, 1, "Re-issue exactly that same tool call now");
+    try expectBodyContains(&gateway, 1, "Consulting the advisor.");
+    try expectBodyNotContains(&gateway, 1, "</tool_call>");
+    try expectBodyNotContains(&gateway, 1, "arg_value");
+}
+
+test "processQueuedPrompt re-asks for a lost tool call at most once per turn" {
+    const alloc = std.testing.allocator;
+    const residue_chunks = [_][]const u8{"</arg_key><arg_value>review this</arg_value></tool_call>"};
+    const completions = [_]FakeCompletion{
+        .{ .chunks = &residue_chunks },
+        .{ .chunks = &residue_chunks },
+        .{ .content = "Final" },
+    };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+
+    try runFakePrompt(&gateway, &hooks, fixture.config(), fixture.job());
+
+    try std.testing.expectEqual(@as(usize, 2), gateway.request_bodies.items.len);
+}
+
 test "tool presentation groups span silent steps and split on visible assistant prose" {
     const alloc = std.testing.allocator;
     const call_one = [_]ToolCall{toolCall("call_1", "read_file", "{\"path\":\"a\"}")};
@@ -5594,7 +5648,7 @@ test "processQueuedPrompt non-ok gateway response records schema diagnostics" {
         "path=messages.0.content expected=string received=array",
         call.gatewaySchemaDiagnostic(),
     );
-    try std.testing.expect(std.mem.find(u8, call.gatewayRequestShape(), "messages.0 role=system content=string") != null);
+    try std.testing.expect(std.mem.find(u8, call.gatewayRequestShape(), "messages.0 role=system content=array") != null);
     try std.testing.expect(std.mem.find(u8, call.gatewayRequestShape(), "messages.1 role=user content=string") != null);
 }
 

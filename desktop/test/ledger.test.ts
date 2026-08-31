@@ -111,3 +111,18 @@ test("a subagent's work stays out of the manager's own window", () => {
   assert.equal(delegating.total, alone.total, "the subagent's context is its own, not carried here");
   assert.equal(delegating.calls, alone.calls, "nor are its tool calls this turn's");
 });
+
+test("the total is the provider's count for the newest request, not the sum of two", () => {
+  const landed = buildLedger(thread(1), [], 200_000, [], NO_EXPERIMENTS, 0, BREAKDOWN);
+  assert.equal(landed.carriedTokens, 3_000, "a settled thread carries exactly what the last turn billed");
+  const running = buildLedger(thread(1), [], 200_000, [working(7)], NO_EXPERIMENTS, 4, BREAKDOWN);
+  assert.equal(running.carriedTokens, 9_000, "the turn in flight replaces the landed count rather than adding to it");
+  assert.equal(running.rows.find((row) => row.source === "turn")?.chars, 9_000 * 4 - 9_000, "this turn's row is what the provider read beyond the measured segments");
+});
+
+test("measured segments never claim more than the provider read", () => {
+  const pruned: Thread = { ...thread(4), messages: thread(4).messages.map((message) => ({ ...message, content: "x".repeat(40_000) })) };
+  const ledger = buildLedger(pruned, [], 200_000, [], NO_EXPERIMENTS, 0, BREAKDOWN);
+  assert.equal(ledger.carriedTokens, 3_000, "history this side still holds but the harness dropped is scaled onto the real count");
+  assert.equal(ledger.rows.some((row) => row.chars < 0), false);
+});

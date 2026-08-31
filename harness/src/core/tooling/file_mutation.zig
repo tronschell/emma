@@ -1434,53 +1434,214 @@ fn derivePostimage(
             .content = try alloc.dupe(u8, write.content),
         },
         .edit => |edit| blk: {
-            if (std.mem.eql(u8, edit.old_string, edit.new_string)) {
-                break :blk .{ .semantic_failure = "edit_file failed: old_string and new_string are identical" };
-            }
             const before = switch (preimage) {
                 .absent => break :blk .{ .semantic_failure = identity_changed_message },
                 .present => |present| present.content,
             };
-            const occurrence_count = countOccurrences(before, edit.old_string);
-            if (occurrence_count == 0) {
-                break :blk .{ .semantic_failure = "edit_file failed: old_string not found in file" };
-            }
-            if (occurrence_count > 1) {
-                break :blk .{ .semantic_failure = try std.fmt.allocPrint(
-                    alloc,
-                    "edit_file failed: old_string is not unique (found {d} occurrences), provide more context",
-                    .{occurrence_count},
-                ) };
+
+            const ranges = try alloc.alloc(MatchRange, edit.edits.len);
+            defer alloc.free(ranges);
+            for (edit.edits, 0..) |item, index| {
+                if (std.mem.eql(u8, item.old_string, item.new_string)) {
+                    break :blk .{ .semantic_failure = "edit_file failed: old_string and new_string are identical" };
+                }
+                switch (try locateEdit(alloc, before, item.old_string)) {
+                    .none => break :blk .{ .semantic_failure = "edit_file failed: old_string not found in file" },
+                    .ambiguous => |count| break :blk .{ .semantic_failure = try std.fmt.allocPrint(
+                        alloc,
+                        "edit_file failed: old_string is not unique (found {d} occurrences), provide more context",
+                        .{count},
+                    ) },
+                    .found => |range| ranges[index] = .{
+                        .start = range.start,
+                        .end = range.end,
+                        .index = index,
+                    },
+                }
             }
 
-            const match_start = std.mem.find(
-                u8,
-                before,
-                edit.old_string,
-            ).?;
-            const prefix_len = match_start;
-            const suffix_start = match_start + edit.old_string.len;
-            var after_len = std.math.add(
-                usize,
-                prefix_len,
-                edit.new_string.len,
-            ) catch break :blk .{ .semantic_failure = "edit_file failed: postimage exceeds the 4 MiB preparation limit" };
-            after_len = std.math.add(
-                usize,
-                after_len,
-                before.len - suffix_start,
-            ) catch break :blk .{ .semantic_failure = "edit_file failed: postimage exceeds the 4 MiB preparation limit" };
+            std.mem.sort(MatchRange, ranges, {}, matchRangeLessThan);
+            for (1..ranges.len) |position| {
+                const previous = ranges[position - 1];
+                const current = ranges[position];
+                if (current.start < previous.end) {
+                    break :blk .{ .semantic_failure = try std.fmt.allocPrint(
+                        alloc,
+                        "edit_file failed: edits[{d}] and edits[{d}] match overlapping text, merge them into one edit",
+                        .{
+                            @min(previous.index, current.index),
+                            @max(previous.index, current.index),
+                        },
+                    ) };
+                }
+            }
+
+            var after_len = before.len;
+            for (ranges) |range| {
+                after_len = std.math.add(
+                    usize,
+                    after_len,
+                    edit.edits[range.index].new_string.len,
+                ) catch break :blk .{ .semantic_failure = "edit_file failed: postimage exceeds the 4 MiB preparation limit" };
+                after_len -= range.end - range.start;
+            }
             if (after_len > max_content_bytes) {
                 break :blk .{ .semantic_failure = "edit_file failed: postimage exceeds the 4 MiB preparation limit" };
             }
 
             const after = try alloc.alloc(u8, after_len);
-            @memcpy(after[0..prefix_len], before[0..prefix_len]);
-            const replacement_end = prefix_len + edit.new_string.len;
-            @memcpy(after[prefix_len..replacement_end], edit.new_string);
-            @memcpy(after[replacement_end..], before[suffix_start..]);
+            var written: usize = 0;
+            var cursor: usize = 0;
+            for (ranges) |range| {
+                const prefix = before[cursor..range.start];
+                @memcpy(after[written..][0..prefix.len], prefix);
+                written += prefix.len;
+                const replacement = edit.edits[range.index].new_string;
+                @memcpy(after[written..][0..replacement.len], replacement);
+                written += replacement.len;
+                cursor = range.end;
+            }
+            @memcpy(after[written..], before[cursor..]);
             break :blk .{ .content = after };
         },
+    };
+}
+
+const MatchRange = struct {
+    start: usize,
+    end: usize,
+    index: usize,
+};
+
+fn matchRangeLessThan(_: void, a: MatchRange, b: MatchRange) bool {
+    return a.start < b.start;
+}
+
+const LocatedEdit = union(enum) {
+    found: struct { start: usize, end: usize },
+    none,
+    ambiguous: usize,
+};
+
+const MatchRung = enum { trailing, leading_trailing, punctuation };
+
+fn locateEdit(
+    alloc: Allocator,
+    before: []const u8,
+    old_string: []const u8,
+) error{OutOfMemory}!LocatedEdit {
+    const exact_count = countOccurrences(before, old_string);
+    if (exact_count == 1) {
+        const start = std.mem.find(u8, before, old_string).?;
+        return .{ .found = .{ .start = start, .end = start + old_string.len } };
+    }
+    if (exact_count > 1) return .{ .ambiguous = exact_count };
+
+    for ([_]MatchRung{ .trailing, .leading_trailing, .punctuation }) |rung| {
+        var haystack = try normalizeAlloc(alloc, before, rung);
+        defer haystack.deinit(alloc);
+        var needle = try normalizeAlloc(alloc, old_string, rung);
+        defer needle.deinit(alloc);
+        if (needle.text.len == 0) continue;
+        if (countOccurrences(haystack.text, needle.text) != 1) continue;
+        const start = std.mem.find(u8, haystack.text, needle.text).?;
+        return .{ .found = .{
+            .start = haystack.map[start],
+            .end = haystack.map[start + needle.text.len],
+        } };
+    }
+    return .none;
+}
+
+const NormalizedText = struct {
+    text: []u8,
+    map: []usize,
+
+    fn deinit(self: *NormalizedText, alloc: Allocator) void {
+        alloc.free(self.text);
+        alloc.free(self.map);
+        self.* = undefined;
+    }
+};
+
+fn normalizeAlloc(
+    alloc: Allocator,
+    source: []const u8,
+    rung: MatchRung,
+) error{OutOfMemory}!NormalizedText {
+    var text: std.ArrayList(u8) = .empty;
+    errdefer text.deinit(alloc);
+    var map: std.ArrayList(usize) = .empty;
+    errdefer map.deinit(alloc);
+
+    switch (rung) {
+        .trailing, .leading_trailing => {
+            var pending_start: usize = 0;
+            var pending_len: usize = 0;
+            var at_line_start = true;
+            for (source, 0..) |byte, index| {
+                if (byte == '\n') {
+                    pending_len = 0;
+                    try text.append(alloc, byte);
+                    try map.append(alloc, index);
+                    at_line_start = true;
+                    continue;
+                }
+                if (byte == ' ' or byte == '\t' or byte == '\r' or byte == 0x0b or byte == 0x0c) {
+                    if (pending_len == 0) pending_start = index;
+                    pending_len += 1;
+                    continue;
+                }
+                if (pending_len > 0 and !(rung == .leading_trailing and at_line_start)) {
+                    for (source[pending_start..][0..pending_len], pending_start..) |space, space_index| {
+                        try text.append(alloc, space);
+                        try map.append(alloc, space_index);
+                    }
+                }
+                pending_len = 0;
+                try text.append(alloc, byte);
+                try map.append(alloc, index);
+                at_line_start = false;
+            }
+        },
+        .punctuation => {
+            var index: usize = 0;
+            while (index < source.len) {
+                const length = std.unicode.utf8ByteSequenceLength(source[index]) catch 1;
+                if (length > 1 and index + length <= source.len) {
+                    if (std.unicode.utf8Decode(source[index..][0..length])) |codepoint| {
+                        if (normalizedPunctuation(codepoint)) |replacement| {
+                            try text.append(alloc, replacement);
+                            try map.append(alloc, index);
+                            index += length;
+                            continue;
+                        }
+                    } else |_| {}
+                }
+                const step = @min(if (length > 1) @as(usize, length) else 1, source.len - index);
+                for (source[index..][0..step], index..) |byte, byte_index| {
+                    try text.append(alloc, byte);
+                    try map.append(alloc, byte_index);
+                }
+                index += step;
+            }
+        },
+    }
+
+    try map.append(alloc, source.len);
+    return .{
+        .text = try text.toOwnedSlice(alloc),
+        .map = try map.toOwnedSlice(alloc),
+    };
+}
+
+fn normalizedPunctuation(codepoint: u21) ?u8 {
+    return switch (codepoint) {
+        0x2010...0x2015, 0x2212 => '-',
+        0x2018, 0x2019, 0x201a, 0x201b => '\'',
+        0x201c...0x201f => '"',
+        0x00a0, 0x2002...0x200a, 0x202f, 0x205f, 0x3000 => ' ',
+        else => null,
     };
 }
 
@@ -1644,6 +1805,29 @@ fn editArgumentsJson(
     try out.writer.writeAll(",\"new_string\":");
     try std.json.Stringify.value(new_string, .{}, &out.writer);
     try out.writer.writeByte('}');
+    return out.toOwnedSlice();
+}
+
+fn editsArgumentsJson(
+    alloc: Allocator,
+    path: []const u8,
+    edits: []const [2][]const u8,
+) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+
+    try out.writer.writeAll("{\"path\":");
+    try std.json.Stringify.value(path, .{}, &out.writer);
+    try out.writer.writeAll(",\"edits\":[");
+    for (edits, 0..) |item, index| {
+        if (index > 0) try out.writer.writeByte(',');
+        try out.writer.writeAll("{\"old_string\":");
+        try std.json.Stringify.value(item[0], .{}, &out.writer);
+        try out.writer.writeAll(",\"new_string\":");
+        try std.json.Stringify.value(item[1], .{}, &out.writer);
+        try out.writer.writeByte('}');
+    }
+    try out.writer.writeAll("]}");
     return out.toOwnedSlice();
 }
 
@@ -1970,6 +2154,123 @@ test "prepare preserves exact edit semantic failures" {
         "edit_file failed: old_string is not unique (found 2 occurrences), provide more context",
         try expectSemanticFailure(arena, duplicate_call, duplicate_policy),
     );
+}
+
+test "prepare applies disjoint edits against the original content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(&tmp, "note.txt", "alpha\nbeta\ngamma\n");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const root = try workspaceRoot(arena, tmp);
+    const call: types.ToolCall = .{
+        .id = "edit-multi",
+        .name = "edit_file",
+        .arguments_json = try editsArgumentsJson(arena, "note.txt", &.{
+            .{ "alpha", "beta" },
+            .{ "beta", "zeta" },
+        }),
+    };
+    const policy = try evaluatePolicy(arena, root, call);
+
+    const prepared = try expectPrepared(arena, call, policy);
+    try std.testing.expectEqualStrings("beta\nzeta\ngamma\n", prepared.after_content);
+}
+
+test "prepare rejects overlapping edits" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(&tmp, "note.txt", "alpha beta\n");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const root = try workspaceRoot(arena, tmp);
+    const call: types.ToolCall = .{
+        .id = "edit-overlap",
+        .name = "edit_file",
+        .arguments_json = try editsArgumentsJson(arena, "note.txt", &.{
+            .{ "alpha b", "X" },
+            .{ "beta", "Y" },
+        }),
+    };
+    const policy = try evaluatePolicy(arena, root, call);
+
+    try std.testing.expectEqualStrings(
+        "edit_file failed: edits[0] and edits[1] match overlapping text, merge them into one edit",
+        try expectSemanticFailure(arena, call, policy),
+    );
+}
+
+test "prepare rejects a non-unique old_string inside an edits array" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(&tmp, "note.txt", "same twice same\n");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const root = try workspaceRoot(arena, tmp);
+    const call: types.ToolCall = .{
+        .id = "edit-multi-duplicate",
+        .name = "edit_file",
+        .arguments_json = try editsArgumentsJson(arena, "note.txt", &.{
+            .{ "twice", "once" },
+            .{ "same", "other" },
+        }),
+    };
+    const policy = try evaluatePolicy(arena, root, call);
+
+    try std.testing.expectEqualStrings(
+        "edit_file failed: old_string is not unique (found 2 occurrences), provide more context",
+        try expectSemanticFailure(arena, call, policy),
+    );
+}
+
+test "prepare matches each loosened edit rung and preserves surrounding bytes" {
+    const cases = [_]struct {
+        name: []const u8,
+        before: []const u8,
+        old_string: []const u8,
+        after: []const u8,
+    }{
+        .{
+            .name = "trailing.txt",
+            .before = "alpha   \nbeta\ngamma\n",
+            .old_string = "alpha\nbeta",
+            .after = "X\ngamma\n",
+        },
+        .{
+            .name = "leading.txt",
+            .before = "  foo\n  bar\ntail\n",
+            .old_string = "foo\nbar",
+            .after = "  X\ntail\n",
+        },
+        .{
+            .name = "punctuation.txt",
+            .before = "say \u{2018}hi\u{2019} \u{2014} now\n",
+            .old_string = "say 'hi' - now",
+            .after = "X\n",
+        },
+    };
+
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try createFile(&tmp, case.name, case.before);
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const root = try workspaceRoot(arena, tmp);
+        const call: types.ToolCall = .{
+            .id = "edit-fuzzy",
+            .name = "edit_file",
+            .arguments_json = try editArgumentsJson(arena, case.name, case.old_string, "X"),
+        };
+        const policy = try evaluatePolicy(arena, root, call);
+
+        const prepared = try expectPrepared(arena, call, policy);
+        try std.testing.expectEqualStrings(case.after, prepared.after_content);
+    }
 }
 
 test "prepare emits explicit empty and no-change notices" {

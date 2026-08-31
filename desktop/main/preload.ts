@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { ThreadStep } from "../shared/agents";
 import type { KeepRequest, VaultKind } from "../shared/vault";
 import type { GoalStatus } from "../shared/goal";
+import type { ShortcutRequest } from "../shared/settings";
 
 let nextListener = 1;
 const listeners = new Map<number, () => void>();
@@ -12,6 +13,15 @@ contextBridge.exposeInMainWorld("emma", {
   setOverlayPreferences: (value: unknown) => ipcRenderer.send("emma:set-overlay-preferences", value),
   setOverlayBusy: (value: boolean) => ipcRenderer.send("emma:set-overlay-busy", value),
   setKeybinds: (value: unknown) => ipcRenderer.invoke("emma:set-keybinds", value),
+  onShortcutRequest: (listener: (value: ShortcutRequest & { id: string }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const request = value as Partial<ShortcutRequest> & { id?: unknown };
+      if (typeof request.id === "string" && typeof request.accelerator === "string" && typeof request.label === "string" && typeof request.prompt === "string") listener(request as ShortcutRequest & { id: string });
+    };
+    ipcRenderer.on("emma:shortcut-request", wrapped);
+    return () => ipcRenderer.removeListener("emma:shortcut-request", wrapped);
+  },
+  completeShortcutRequest: (value: unknown) => ipcRenderer.invoke("emma:complete-shortcut-request", value),
   openOverlay: () => ipcRenderer.send("emma:open-overlay"),
   setOverlayHeight: (value: number) => ipcRenderer.send("emma:set-overlay-height", value),
   onOverlaySurface: (listener: (value: "notch" | "pill" | "popout") => void) => {
@@ -69,6 +79,14 @@ contextBridge.exposeInMainWorld("emma", {
     };
     ipcRenderer.on("emma:step", wrapped);
     return () => ipcRenderer.removeListener("emma:step", wrapped);
+  },
+  onCompacted: (listener: (value: { threadId: string; removedTurns: number; summaryChars: number; modelWritten: boolean }) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => {
+      const compacted = value as { threadId?: unknown; removedTurns?: unknown; summaryChars?: unknown; modelWritten?: unknown };
+      if (typeof compacted?.threadId === "string") listener({ threadId: compacted.threadId, removedTurns: Number(compacted.removedTurns) || 0, summaryChars: Number(compacted.summaryChars) || 0, modelWritten: compacted.modelWritten === true });
+    };
+    ipcRenderer.on("emma:compacted", wrapped);
+    return () => ipcRenderer.removeListener("emma:compacted", wrapped);
   },
   onContextExperiment: (listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
@@ -134,6 +152,7 @@ contextBridge.exposeInMainWorld("emma", {
   readVisual: (id: string) => ipcRenderer.invoke("emma:read-visual", id),
   exportVisual: (id: string, width: number) => ipcRenderer.invoke("emma:export-visual", { id, width }),
   listPlans: () => ipcRenderer.invoke("emma:list-plans"),
+  listTaskLists: () => ipcRenderer.invoke("emma:list-task-lists"),
   setGoal: (value: { threadId: string; objective: string; tokenBudget?: number }) => ipcRenderer.invoke("emma:set-goal", value),
   updateGoal: (value: { threadId: string; status?: GoalStatus; evidence?: string; reason?: string; extraTokens?: number }) => ipcRenderer.invoke("emma:update-goal", value),
   clearGoal: (threadId: string) => ipcRenderer.invoke("emma:clear-goal", threadId),
@@ -141,6 +160,11 @@ contextBridge.exposeInMainWorld("emma", {
     const wrapped = () => listener();
     ipcRenderer.on("emma:plans-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:plans-changed", wrapped);
+  },
+  onTaskListsChanged: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:task-lists-changed", wrapped);
+    return () => ipcRenderer.removeListener("emma:task-lists-changed", wrapped);
   },
   exportThreadStats: (value: { folder: string; files: { name: string; text: string }[] }) => ipcRenderer.invoke("emma:export-thread-stats", value),
   listFolders: () => ipcRenderer.invoke("emma:list-folders"),
@@ -169,8 +193,13 @@ contextBridge.exposeInMainWorld("emma", {
   vaultStatus: () => ipcRenderer.invoke("emma:vault-status"),
   installObsidian: () => ipcRenderer.invoke("emma:install-obsidian"),
   keep: (value: KeepRequest) => ipcRenderer.invoke("emma:keep", value),
+  keepScreen: (id: string) => ipcRenderer.invoke("emma:keep-screen", id),
   listNotes: () => ipcRenderer.invoke("emma:list-notes"),
   readNote: (value: string) => ipcRenderer.invoke("emma:read-note", value),
+  listNoteFolders: () => ipcRenderer.invoke("emma:list-note-folders"),
+  createNoteFolder: (name: string) => ipcRenderer.invoke("emma:create-note-folder", name),
+  renameNoteFolder: (value: { folder: string; name: string }) => ipcRenderer.invoke("emma:rename-note-folder", value),
+  moveNote: (value: { path: string; folder: string }) => ipcRenderer.invoke("emma:move-note", value),
   openInObsidian: (relative: string) => ipcRenderer.invoke("emma:open-in-obsidian", relative),
   onNotesChanged: (listener: () => void) => {
     const wrapped = () => listener();
@@ -190,9 +219,9 @@ contextBridge.exposeInMainWorld("emma", {
   gitRun: (value: { folderId: string; args: string[] }) => ipcRenderer.invoke("emma:git-run", value),
   gitMessage: (value: { folderId: string }) => ipcRenderer.invoke("emma:git-message", value),
   mobileStatus: () => ipcRenderer.invoke("emma:mobile-status"),
-  mobilePair: (relay: string) => ipcRenderer.invoke("emma:mobile-pair", relay),
+  mobilePair: (pin: string) => ipcRenderer.invoke("emma:mobile-pair", pin),
   mobileCancelPair: () => ipcRenderer.invoke("emma:mobile-cancel-pair"),
-  mobileUnpair: () => ipcRenderer.invoke("emma:mobile-unpair"),
+  mobileUnpair: (id?: number) => ipcRenderer.invoke("emma:mobile-unpair", id),
   onMobileStatus: (listener: (value: { paired: boolean; connected: boolean; name: string }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object") listener(value as { paired: boolean; connected: boolean; name: string }); };
     ipcRenderer.on("emma:mobile-status", wrapped);
@@ -202,6 +231,9 @@ contextBridge.exposeInMainWorld("emma", {
   listEditors: () => ipcRenderer.invoke("emma:list-editors"),
   openInEditor: (value: { folderId?: string; path: string; editorId: string }) => ipcRenderer.invoke("emma:open-in-editor", value),
   setWorktree: (value: { folderId: string; name: string; on: boolean }) => ipcRenderer.invoke("emma:set-worktree", value),
+  worktreeList: (folderId: string) => ipcRenderer.invoke("emma:worktree-list", folderId),
+  worktreeAdd: (value: { folderId: string; prefix: string; name: string }) => ipcRenderer.invoke("emma:worktree-add", value),
+  worktreeRemove: (value: { folderId: string; paths: string[] }) => ipcRenderer.invoke("emma:worktree-remove", value),
   setBranch: (value: { folderId: string; branch: string; create: boolean; from?: string }) => ipcRenderer.invoke("emma:set-branch", value),
   readFolderFile: (value: { folderId: string; path: string }) => ipcRenderer.invoke("emma:read-folder-file", value),
   attachFiles: () => ipcRenderer.invoke("emma:attach-files"),
@@ -209,9 +241,6 @@ contextBridge.exposeInMainWorld("emma", {
   readAttachment: (id: string) => ipcRenderer.invoke("emma:read-attachment", id),
   clearThreadContext: (threadId: string) => ipcRenderer.invoke("emma:clear-thread-context", threadId),
   discoverAgentImports: () => ipcRenderer.invoke("emma:discover-agent-imports"),
-  detectConnections: () => ipcRenderer.invoke("emma:detect-connections"),
-  outdatedConnections: () => ipcRenderer.invoke("emma:outdated-connections"),
-  setUpConnection: (value: { id: string; action: "install" | "upgrade" }) => ipcRenderer.invoke("emma:set-up-connection", value),
   importAgentSources: (ids: string[]) => ipcRenderer.invoke("emma:import-agent-sources", ids),
   searchImportedSkills: (value: { query: string; limit?: number }) => ipcRenderer.invoke("emma:search-imported-skills", value),
   selectImportedSkill: (value: { id: string; threadId: string }) => ipcRenderer.invoke("emma:select-imported-skill", value),
@@ -354,6 +383,7 @@ contextBridge.exposeInMainWorld("emma", {
   setZeroRetention: (value: boolean) => ipcRenderer.invoke("emma:set-zero-retention", value),
   listCredentials: () => ipcRenderer.invoke("emma:list-credentials"),
   openRouterBalance: () => ipcRenderer.invoke("emma:openrouter-balance"),
+  deepseekBalance: () => ipcRenderer.invoke("emma:deepseek-balance"),
   saveCredential: (value: { env: string; secret?: string }) => ipcRenderer.invoke("emma:save-credential", value),
   fetchUrl: (url: string) => ipcRenderer.invoke("emma:fetch-url", url),
   clipPage: () => ipcRenderer.invoke("emma:clip-page"),

@@ -25,7 +25,7 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 - **A coding agent with the usual verbs.** Files, grep, shell, browser, screen, MCP tools, skills installed mid-turn, work fanned out to subagents.
 - **It drives the CLI you already use.** Claude Code, Codex, Pi, OpenCode, and Cursor run as workers in your working tree.
 - **Every turn is instrumented.** A span tree per run — model requests, tool calls, wall clock, token deltas — appended to the thread's Markdown.
-- **Plain Markdown records.** Threads and plans stay on disk; kept notes go into the vault folder you picked.
+- **Plain Markdown records.** Threads, task lists, and plans stay on disk; kept notes go into the vault folder you picked.
 
 ## Quickstart
 

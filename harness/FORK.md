@@ -29,9 +29,11 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
 - **Model transport.** Upstream talks to Vercel AI Gateway over the AI SDK
   language-model v3 protocol (`prompt`/`toolChoice` at `/v3/ai/language-model`).
   Emma talks to any OpenAI-compatible Chat Completions endpoint, which is the
-  provider seam the rest of Emma already uses. Replies are buffered rather than
-  streamed token by token. Malformed tool-call replies and allocation failures
-  release partially parsed calls and completion fields exactly once.
+  provider seam the rest of Emma already uses. Replies stream as
+  `text/event-stream` chat-completion chunks, and an endpoint that answers with
+  anything else falls back to the buffered body path. Malformed tool-call
+  replies and allocation failures release partially parsed calls and completion
+  fields exactly once.
 - **Authentication.** Upstream's Vercel device OAuth, ChatGPT Codex OAuth, team
   selection, and credit balance are removed. Emma supplies a base URL, a model,
   and the *name* of an environment variable holding the credential; there is no
@@ -47,6 +49,48 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   field they mean, and names what is wrong when it still cannot run the call.
   Each action's branch requires only its own required fields instead of every
   field it allows, so a command no longer costs two dozen explicit nulls.
+  Three further shapes were measured in real traces and now recover: a
+  `request` whose value is a JSON-carrying string rather than an object, a
+  repeated field where the copies agree or one is null, and an invalid `\|`
+  escape, which models write constantly because grep and sed alternation is
+  spelled that way in a shell. The escape repair only runs when the original
+  failed to parse and the repaired text parses, so it can never rewrite a
+  payload that was already valid. A repeat whose copies genuinely conflict
+  still fails: last-wins would run a command the model did not ask for.
+- **Tool call titles.** Upstream titles an ACP tool call with the tool's bare
+  action label, so every shell call reads `Using terminal` and every read reads
+  `Reading` with no path — a column of identical rows that hides what the turn
+  actually did. Emma titles each call with the same formatter the CLI already
+  used for its own activity lines, so the title carries the command, the path or
+  the pattern, capped and with secrets masked.
+- **`cwd` instead of `cd`.** The `terminal` schema said only that `cwd` is the
+  working directory, so models moved by prefixing `cd` to the command. Thirty-one
+  measured calls did that: ten to the exact workspace root, which the default
+  already was, and nine set `cwd` and prefixed `cd` anyway — one of them with
+  `cwd` at the root and `cd /tmp` in the command. Both descriptions now say to
+  set `cwd` rather than prefix `cd`, and that any absolute path is accepted
+  subject to permission policy. The default and the policy are unchanged; the
+  wording was the whole bug.
+- **`grep_files` searches by pattern.** Upstream's is a literal substring
+  search and says so in its own description, sending the model to `rg` through
+  `terminal` for anything more; measured traces took that route, with
+  forty-nine of seventy-nine shell `grep`/`rg` calls carrying a regular
+  expression, almost all of them plain alternation. Emma compiles the pattern
+  once and hands `git grep` `-E` instead of `-F` whenever it is not a literal,
+  so the tracked-file path stays the one process it always was. The paths git
+  grep never covers walk in Zig — untracked files always, single-file roots, a
+  root git ignores, a workspace that is not a repository, and a machine with no
+  git installed — so `src/core/shared/regex.zig` gives that walk the same POSIX
+  ERE rather than letting a pattern quietly match as a literal. The two engines
+  agree by refusing rather than guessing: every construct where a hand-written
+  parser would diverge from glibc is a named compile error, and a pattern that
+  slips past anyway and that git grep rejects falls to the Zig walk, which
+  answers it. A pattern with no metacharacters keeps the old literal path and
+  `-F`, byte for byte. Three ceilings stop a pattern costing the turn: five
+  million backtracking steps and two thousand match frames per line, both
+  reported by name rather than hung, and sixty-four levels of group nesting,
+  refused at compile time because the parser recurses and the pattern is
+  written by a model.
 - **Subagent advertisement.** Upstream hides the `subagent` tool behind
   `search_tools` (`.advertisement = .on_select`); Emma advertises it whenever
   the session supports children. Delegation is a first-class Emma feature — the
@@ -61,6 +105,9 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   workspace and reads files one at a time instead — hundreds of calls to answer
   what one grep answers. The other eighteen searchable tools are unchanged, and
   they are where the deferral was ever worth its round trip.
+- **Lazy MCP startup.** Emma validates and retains ACP MCP configs at session
+  creation but defers process startup and discovery until the first MCP search,
+  selection, or call. A turn that does not use MCP never starts those servers.
 - **Attached pictures.** Upstream's ACP server rejects every `image` prompt
   block, because fx only ever attaches a picture through its own TUI. Emma is an
   ACP client with a composer of its own, so a block naming a local `file://`
@@ -80,7 +127,7 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   the catalogue the user themselves attached, so Emma admits it without a
   prompt. A call naming `paths` is the model choosing a file, and keeps its
   per-path gate.
-- **Native Emma tools.** The twenty-three tools Emma owns are appended to fx's
+- **Native Emma tools.** The twenty-eight tools Emma owns are appended to fx's
   registry as `++ emma_tools.all` — specs in `src/builtins/emma_tools.zig` and
   `src/builtins/emma/`, one shared implementation in
   `src/tools/emma/bridge.zig`, and a new `ExecutorKind.emma`. The harness
@@ -115,9 +162,116 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   at 1024 `workflow` and `autoresearch` lost their last commands with nothing to
   show for it. A test in `src/builtins/emma_tools.zig` fails the build if a
   description outgrows the cap.
+- **System prompt per process.** `builtins/context.zig` replaces the built-in
+  prompt sections with the file named by `EMMA_SYSTEM_PROMPT`, falling back to
+  `$HOME/.fx/system-prompt.md`; the tool contract section is kept either way.
+  Emma runs one emma-cli per thread out of a single `HOME`, so each process is
+  given its own file rather than racing the shared name.
+
 - **Cancelling one child.** `session/cancel_child` is added beside upstream's
   `session/steer_child`, so Emma can stop a single subagent without cancelling
   the parent turn that spawned it.
+
+- **Multiple edits per `edit_file` call.** Upstream's `edit_file` takes one
+  `old_string`/`new_string` pair, so five changes to one file cost five calls,
+  five approvals, and five chances for the model to re-read stale content it
+  just rewrote. Emma's takes an `edits` array applied against a single
+  preimage: every match is located first, overlapping edits are refused by
+  name, and the survivors are spliced into one fresh buffer. The flat shape
+  still decodes, into a one-element array, because models trained on the old
+  one keep sending it. `tool_admission`'s mutation-identity hash folds every
+  entry rather than the first pair, or an approved multi-edit call could be
+  swapped for a different one.
+- **Tool search ranking.** Upstream ranks `search_tools` by keyword overlap,
+  which cannot tell a name match from a body match and gives a rare term no
+  more weight than a common one. Emma ranks by BM25 over two fields, name
+  weighted eight to one against description-plus-schema, with the tokenizer
+  splitting on every non-alphanumeric byte so `grep_files` is found by `grep`.
+  The index is rebuilt per call; twenty-odd tools do not earn a cache.
+  Advertised tools are excluded from the index, which upstream leaves as an
+  empty result the model cannot learn from. Emma answers a query that is
+  plainly reaching for one with `already_advertised` and a note to call it
+  directly. The match is deliberately dumb — every token of at least three
+  characters in the tool's name must appear in the query — because a false
+  positive here teaches exactly the habit the field exists to break.
+- **Bounded parallelism.** Upstream spawns one thread per read-only call in a
+  batch and unwinds the whole batch if any spawn fails. Emma runs a fixed pool
+  of eight against a work queue that hands out indices atomically, and the
+  calling thread works the queue too, so a batch of thirty is thirty tasks over
+  eight threads rather than thirty threads.
+- **Command timeout default.** Upstream leaves `terminal exec` unbounded.
+  Emma defaults to ten minutes — this is the path a real build or test suite
+  takes, so a ten-second ceiling would fail honest work — and the timeout
+  message names `terminal action:"start"` with a `wait_ceiling_ms` as the way
+  to run longer than that.
+- **Foreground output drain ceiling.** Upstream's post-signal drain loop bounds
+  each read but not the loop. A descendant that escapes the process group with
+  `setsid` holds the inherited pipes open, every read times out, and the loop
+  spins forever with the agent wedged behind it. Emma stops draining two
+  seconds after the signal was sent.
+- **Step limit default.** `max_agent_steps` defaults to 1000 rather than
+  upstream's 0. The enforcement and its notice already existed; only the
+  default was unbounded, which meant a model in a tool loop had nothing to stop
+  it. Zero still means unbounded for anyone who wants it.
+- **Repeated-call containment.** Upstream stops an agent on a repeating tool
+  call cycle and on consecutive all-error steps; the migration dropped both,
+  leaving the step cap as the only brake, and observed threads spent whole
+  steps re-reading a file already in context. Emma blocks the third identical
+  read-only call in a turn — same tool, byte-identical arguments — and returns
+  a tool result saying so rather than stopping the agent. Any write between the
+  repeats clears the count, so read, edit, re-read is untouched.
+- **Streamed response ceiling counts generated bytes.** The 4 MB response cap
+  summed whole SSE frames, so per-chunk `id`, `model`, and `created` framing
+  counted against it. On OpenRouter that framing is most of the stream, and a
+  turn died with `ResponseTooLarge` at roughly sixteen thousand reasoning
+  tokens, discarding every tool result it had earned. The cap now counts only
+  content, reasoning, and tool-argument bytes.
+- **Both selection doors agree.** `select_tool` on an already-advertised tool
+  answers "is already available; call it directly." `mcp_select_tool` did not:
+  the same name came back as "not found or not allowed", which reads as an
+  error to fix rather than a step to skip, so the model searched again. Both
+  doors now give the same answer, and a name beginning with `mcp_` sent to the
+  native door is pointed at the MCP one instead of failing as unknown, which
+  cost three consecutive retries of one name in the traces.
+
+- **Failure messages name the cause, not the gate.** Upstream reports a
+  permission target that cannot be resolved as `Permission target resolution
+  failed for <tool>: <error>`, so a path that simply does not exist is
+  indistinguishable from one the user denied, and the model retries rather
+  than adapting. Emma splits the five cases apart, states that a missing or
+  out-of-workspace path is not a permission denial, and names the next tool to
+  reach for. The same reasoning was applied to the other measured retry loops:
+  a range field that arrived as a quoted string says so rather than talking
+  about the value's sign, a glob passed as `path` is named as that mistake,
+  and `vision` given a text file is told to use `read_file`. A field the tool
+  does not have is refused rather than dropped in silence: `read_tool_result`
+  answers an `end_byte` with the arithmetic for the `byte_count` it wants,
+  because a range the model believes it set and did not is a loop it cannot
+  see. The terminal action correction carries the same instruction to act on,
+  telling the model to drop the fields that belong to another action rather
+  than keep resending them with different values.
+
+- **Model-written compaction.** Upstream compacts history by deterministic
+  extraction. Emma asks the model for a structured handoff note — goal,
+  constraints, progress, decisions, next steps — and updates that note
+  iteratively as the session grows, carrying read and modified file lists
+  across compactions. The call is bounded at thirty seconds against the turn's
+  own cancel flag, and *any* failure — unconfigured, transport, timeout,
+  cancel, empty, or unstructured output — falls back to upstream's
+  deterministic summary. Only the ACP path is wired; `main.zig` and `cli_ask`
+  stay deterministic.
+
+- **History invariant repair.** Every provider request assembles through
+  `buildGatewayMessages`, which now inserts a synthetic result for any tool call
+  the history leaves unanswered. Upstream holds the invariant at construction
+  time and mostly succeeds — unpaired calls are dropped before they persist, and
+  an interrupted turn's in-flight call already projects with an `aborted by
+  user` result — but a session persisted with unpaired calls decodes without
+  complaint, and a cancelled parallel batch leaves a dangling call that only a
+  re-read of the cancel flag catches. The repair is idempotent and a well-formed
+  history comes out byte-identical. No derived id is needed: a tool message is
+  identified solely by `tool_call_id`, so the synthetic message is a pure
+  function of the call it answers.
 
 ### De-Vercel pass (removals)
 

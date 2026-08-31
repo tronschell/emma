@@ -1,6 +1,7 @@
 const std = @import("std");
 const std_builtin = @import("builtin");
 const app_runtime_setup = @import("../core/app/app_runtime_setup.zig");
+const compaction_summarizer = @import("../builtins/gateway/compaction_summarizer.zig");
 const command_admission = @import("../core/permissions/command_admission.zig");
 const auth_runtime = @import("../core/auth/auth_runtime.zig");
 const credentials = @import("../core/auth/credentials.zig");
@@ -109,6 +110,8 @@ const AcpContext = struct {
     captured_permission_mode: ?PermissionMode = null,
     captured_sandbox_backend: ?sandbox.BackendKind = null,
     turn_usage: acp_types.TurnUsage = .{},
+    cache_write_usage_complete: bool = true,
+    cost_usage_complete: bool = true,
     context_breakdown: acp_types.ContextBreakdown = .{},
     context_breakdown_sent: bool = false,
 
@@ -124,6 +127,26 @@ const AcpContext = struct {
     fn noteTurnUsage(self: *AcpContext, usage: types.Usage) void {
         if (usage.input_tokens) |input| self.turn_usage.input_tokens = input;
         self.turn_usage.output_tokens +|= usage.output_tokens orelse 0;
+        if (usage.cache_read_tokens) |read| {
+            self.turn_usage.cache_read_tokens = (self.turn_usage.cache_read_tokens orelse 0) +| read;
+            if (usage.input_tokens) |input| self.turn_usage.cache_input_tokens = (self.turn_usage.cache_input_tokens orelse 0) +| input;
+        }
+        if (self.cache_write_usage_complete) {
+            if (usage.cache_write_tokens) |write| {
+                self.turn_usage.cache_write_tokens = (self.turn_usage.cache_write_tokens orelse 0) +| write;
+            } else {
+                self.cache_write_usage_complete = false;
+                self.turn_usage.cache_write_tokens = null;
+            }
+        }
+        if (self.cost_usage_complete) {
+            if (usage.cost_micro_usd) |cost_micro_usd| {
+                self.turn_usage.cost_micro_usd = (self.turn_usage.cost_micro_usd orelse 0) +| cost_micro_usd;
+            } else {
+                self.cost_usage_complete = false;
+                self.turn_usage.cost_micro_usd = null;
+            }
+        }
     }
 
     fn deinitPublishedToolCalls(self: *AcpContext) void {
@@ -145,6 +168,16 @@ const AcpContext = struct {
         defer tagged.deinit();
         try acp_types.writeChildTaggedUpdate(&tagged.writer, update_json, child.id, child.title, child.ended);
         try self.sendRawUpdate(tagged.writer.buffered());
+    }
+
+    fn sendCompacted(self: *AcpContext, event: session_runtime.CompactionEvent) void {
+        var out: std.Io.Writer.Allocating = .init(self.alloc);
+        defer out.deinit();
+        out.writer.print(
+            "{{\"sessionUpdate\":\"_emma_compacted\",\"removedTurns\":{d},\"summaryChars\":{d},\"modelWritten\":{s}}}",
+            .{ event.removed_turns, event.summary_chars, if (event.model_written) "true" else "false" },
+        ) catch return;
+        self.sendRawUpdate(out.writer.buffered()) catch {};
     }
 
     fn sendChildEnded(self: *AcpContext) !void {
@@ -202,7 +235,7 @@ const AcpContext = struct {
         errdefer self.alloc.free(owned_id);
         var out: std.Io.Writer.Allocating = .init(self.alloc);
         defer out.deinit();
-        try acp_types.writeToolCallWithPath(&out.writer, owned_id, title, kind, .pending, boundedArguments(call.arguments_json), editFilePath(arena, call));
+        try acp_types.writeToolCallWithPath(&out.writer, owned_id, title, kind, .pending, boundedArguments(call.arguments_json), editFilePath(arena, call), call.name);
         try self.sendUpdate(out.writer.buffered());
         try self.published_tool_calls.put(self.alloc, owned_id, {});
         return owned_id;
@@ -389,7 +422,7 @@ test "edit metadata survives bounded arguments and preserves complete paths" {
         const call = ToolCall{ .id = "edit", .name = name, .arguments_json = args };
         var out: std.Io.Writer.Allocating = .init(alloc);
         defer out.deinit();
-        try acp_types.writeToolCallWithPath(&out.writer, call.id, name, .edit, .pending, boundedArguments(args), editFilePath(alloc, call));
+        try acp_types.writeToolCallWithPath(&out.writer, call.id, name, .edit, .pending, boundedArguments(args), editFilePath(alloc, call), call.name);
         const wire = try std.json.parseFromSliceLeaky(std.json.Value, alloc, out.writer.buffered(), .{});
         try std.testing.expectEqualStrings(file_path, wire.object.get("_emma_filePath").?.string);
         try std.testing.expect(wire.object.get("rawInput").?.string.len <= max_raw_input_bytes);
@@ -804,6 +837,20 @@ pub fn handlePrompt(
     if (explicit_skills.diagnostic_notice) |notice| try pushContextNotice(@ptrCast(&ctx), notice);
 
     session.session_rt.setConversationLanguageFromUserMessage(owned_prompt);
+    var summarizer_config = compaction_summarizer.Config{
+        .api_key = session.api_key,
+        .chat_url = state.cfg.gateway_chat_url,
+        .model = session.model,
+        .cancel_flag = &session.cancel_flag,
+    };
+    session.session_rt.summarizer = compaction_summarizer.summarizer(&summarizer_config);
+    defer session.session_rt.summarizer = null;
+    session.session_rt.compaction_observer = .{ .context = @ptrCast(&ctx), .notify_fn = notifyCompacted };
+    defer session.session_rt.compaction_observer = null;
+    session.session_rt.projection_compaction_percent = 0;
+    if (!prompt_input.continue_recovery and session.session_rt.shouldAutoCompact(session.context_experiments.auto_compact_percent)) {
+        _ = try compactAcpSession(alloc, session);
+    }
     const context_history = try session.session_rt.snapshotContextHistory(alloc);
     defer types.freeHistoryTurnSlice(alloc, context_history);
     var context_snapshot = try state.context_snapshot.dupe(alloc);
@@ -1334,13 +1381,15 @@ fn reportTurnUsage(raw_ctx: *anyopaque, usage: types.Usage) void {
     ctx.sendContextBreakdown();
 }
 
-test "noteTurnUsage sums output but reports the last step's input" {
+test "noteTurnUsage sums output and cache but reports the last step's input" {
     var state: server.ServerState = undefined;
     var ctx = AcpContext{ .alloc = std.testing.allocator, .state = &state, .session_id = "sess" };
-    ctx.noteTurnUsage(.{ .input_tokens = 1000, .output_tokens = 3 });
-    ctx.noteTurnUsage(.{ .input_tokens = 2000, .output_tokens = 4 });
+    ctx.noteTurnUsage(.{ .input_tokens = 1000, .output_tokens = 3, .cache_read_tokens = 600 });
+    ctx.noteTurnUsage(.{ .input_tokens = 2000, .output_tokens = 4, .cache_read_tokens = 1600 });
     try std.testing.expectEqual(@as(u64, 2000), ctx.turn_usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 7), ctx.turn_usage.output_tokens);
+    try std.testing.expectEqual(@as(?u64, 3000), ctx.turn_usage.cache_input_tokens);
+    try std.testing.expectEqual(@as(?u64, 2200), ctx.turn_usage.cache_read_tokens);
 }
 
 test "noteTurnUsage keeps the last known input when a step omits it" {
@@ -1350,6 +1399,15 @@ test "noteTurnUsage keeps the last known input when a step omits it" {
     ctx.noteTurnUsage(.{ .input_tokens = null, .output_tokens = 5 });
     try std.testing.expectEqual(@as(u64, 7), ctx.turn_usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 8), ctx.turn_usage.output_tokens);
+}
+
+test "noteTurnUsage sums provider cache writes and costs while preserving zero" {
+    var state: server.ServerState = undefined;
+    var ctx = AcpContext{ .alloc = std.testing.allocator, .state = &state, .session_id = "sess" };
+    ctx.noteTurnUsage(.{ .input_tokens = 10, .output_tokens = 2, .cache_write_tokens = 0, .cost_micro_usd = 0 });
+    ctx.noteTurnUsage(.{ .input_tokens = 20, .output_tokens = 3, .cache_write_tokens = 4, .cost_micro_usd = 1_200 });
+    try std.testing.expectEqual(@as(?u64, 4), ctx.turn_usage.cache_write_tokens);
+    try std.testing.expectEqual(@as(?u64, 1_200), ctx.turn_usage.cost_micro_usd);
 }
 
 fn persistUsageCheckpoint(
@@ -1558,7 +1616,7 @@ fn appendStaticContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.Arr
     const active_session = if (ctx.state.active_session) |*session| session else null;
     var snapshot = if (active_session) |session|
         if (session.mcp) |mcp|
-            try mcp.snapshotModelCatalog(arena, session.permission_rules, false)
+            try mcp.snapshotModelCatalog(arena, session.permission_rules, true)
         else
             try mcp_model_catalog.Snapshot.empty(arena)
     else
@@ -2170,16 +2228,20 @@ test "ACP degraded history repair commits the finished turn once" {
     );
     try std.testing.expect(session.writable.?.degradedTail() != null);
 
+    try session.session_rt.appendAssistantHistoryTurn(alloc, "old one", "reply one");
+    try session.session_rt.appendAssistantHistoryTurn(alloc, "old two", "reply two");
+    session.session_rt.forceCompaction();
     const turn = try session_runtime.makeAssistantTurn(alloc, "hello", "done");
     defer types.freeHistoryTurn(alloc, turn);
     try persistAcpHistoryTurn(alloc, &session, turn);
 
     try std.testing.expect(session.writable.?.degradedTail() == null);
-    try std.testing.expectEqual(@as(usize, 1), session.session_rt.history.items.len);
-    try std.testing.expectEqual(@as(usize, 1), session.writable.?.state.history.len);
+    try std.testing.expectEqual(@as(usize, 3), session.session_rt.history.items.len);
+    try std.testing.expectEqual(@as(usize, 3), session.writable.?.state.history.len);
+    try std.testing.expectEqual(@as(usize, 1), session.writable.?.state.context_history_start);
     try std.testing.expectEqualStrings(
         "done",
-        session.writable.?.state.history[0].assistant.assistant,
+        session.writable.?.state.history[2].assistant.assistant,
     );
 }
 
@@ -2228,6 +2290,7 @@ fn currentAcpState(
     const history = try session.session_rt.snapshotHistory(alloc);
     types.freeHistoryTurnSlice(alloc, state.history);
     state.history = history;
+    state.context_history_start = session.session_rt.contextHistoryStart();
     const permission_state = try session.session_rt.snapshotPermissionState(alloc);
     state.permission_state.deinit(alloc);
     state.permission_state = permission_state;
@@ -2264,6 +2327,16 @@ fn commitAcpStateReplacement(
     }
 }
 
+fn compactAcpSession(alloc: Allocator, session: *server.ActiveSessionState) !bool {
+    const before = session.session_rt.contextHistoryStart();
+    session.session_rt.forceCompaction();
+    const compacted = session.session_rt.contextHistoryStart() != before;
+    if (compacted) {
+        if (session.writable) |*writable| try commitAcpStateReplacement(alloc, session, writable, false);
+    }
+    return compacted;
+}
+
 pub fn handleCompact(
     state: *server.ServerState,
     alloc: Allocator,
@@ -2272,13 +2345,8 @@ pub fn handleCompact(
     const session = if (state.active_session) |*active| active else {
         return state.writer.writeError(alloc, msg.id, no_active_session_rpc_error);
     };
-    const before = session.session_rt.contextHistoryStart();
-    session.session_rt.forceCompaction();
+    const compacted = try compactAcpSession(alloc, session);
     const start = session.session_rt.contextHistoryStart();
-    const compacted = start != before;
-    if (compacted) {
-        if (session.writable) |*writable| try commitAcpStateReplacement(alloc, session, writable, false);
-    }
     const total = session.session_rt.historyLen();
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
@@ -2389,6 +2457,11 @@ test "a child is named after the first line of its brief, never mid-character" {
 fn pushSystemNotice(raw_ctx: *anyopaque, text: []const u8) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     ctx.sendAgentText(text) catch {};
+}
+
+fn notifyCompacted(context: *anyopaque, event: session_runtime.CompactionEvent) void {
+    const ctx: *AcpContext = @ptrCast(@alignCast(context));
+    ctx.sendCompacted(event);
 }
 
 fn pushContextNotice(raw_ctx: *anyopaque, text: []const u8) !void {
@@ -2854,13 +2927,16 @@ fn finishAcpUrlElicitations(
 
 fn mcpHasTool(raw_ctx: *anyopaque, name: []const u8, access: tool_mcp_runtime.Access) bool {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    const mcp = activeMcp(ctx) orelse return false;
+    const mcp = activateMcp(ctx) catch return false;
     return mcp.hasToolWithAccess(name, access);
 }
 
 fn mcpValidateTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, access: tool_mcp_runtime.Access) anyerror!tool_mcp_runtime.ValidationResult {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    const runtime = activeMcp(ctx) orelse return .not_available;
+    const runtime = activateMcp(ctx) catch |err| {
+        if (err == error.McpRuntimeUnavailable) return .not_available;
+        return err;
+    };
     return runtime.validateToolArgumentsByNameWithAccess(
         arena,
         name,
@@ -2871,7 +2947,10 @@ fn mcpValidateTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, argu
 
 fn mcpCallTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, max_tool_result_bytes: usize, options: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    const mcp = activeMcp(ctx) orelse return null;
+    const mcp = activateMcp(ctx) catch |err| {
+        if (err == error.McpRuntimeUnavailable) return null;
+        return err;
+    };
     return mcp.callToolByNameWithOptions(
         arena,
         name,
@@ -2883,13 +2962,19 @@ fn mcpCallTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, argument
 
 fn mcpSearchTools(raw_ctx: *anyopaque, arena: Allocator, query: []const u8, limit: usize, permission_rules: types.PermissionRuleSet, limits: config_runtime.context_limits.Values, access: tool_mcp_runtime.Access) anyerror!tool_mcp_runtime.SearchResult {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    const mcp = activeMcp(ctx) orelse return error.McpServerNotFound;
+    const mcp = activateMcp(ctx) catch |err| {
+        if (err == error.McpRuntimeUnavailable) return error.McpServerNotFound;
+        return err;
+    };
     return mcp.searchTools(arena, query, limit, permission_rules, limits, access);
 }
 
 fn mcpToolSchemaJson(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, permission_rules: types.PermissionRuleSet, limits: config_runtime.context_limits.Values, access: tool_mcp_runtime.Access) anyerror!?tool_mcp_runtime.ToolSchemaResult {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    const mcp = activeMcp(ctx) orelse return null;
+    const mcp = activateMcp(ctx) catch |err| {
+        if (err == error.McpRuntimeUnavailable) return null;
+        return err;
+    };
     return mcp.toolSchemaJsonByNameWithAccess(
         arena,
         name,
@@ -2906,8 +2991,14 @@ fn mcpCallFeature(
     options: tool_mcp_runtime.FeatureCallOptions,
 ) anyerror!tool_mcp_runtime.FeatureResult {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    const mcp = activeMcp(ctx) orelse return error.McpRuntimeUnavailable;
+    const mcp = try activateMcp(ctx);
     return mcp.callFeatureForModel(arena, request, options);
+}
+
+fn activateMcp(ctx: *AcpContext) anyerror!*mcp_runtime.McpRuntime {
+    const runtime = activeMcp(ctx) orelse return error.McpRuntimeUnavailable;
+    try runtime.connectDeferredForAsk(ctx.toolRegistry());
+    return runtime;
 }
 
 fn activeMcp(ctx: *AcpContext) ?*mcp_runtime.McpRuntime {
@@ -2941,10 +3032,28 @@ pub fn mapToolKind(tool_name: []const u8) acp_types.ToolCallKind {
 }
 
 fn describeToolTitle(registry: tool_dispatch.Registry, arena: Allocator, call: ToolCall) ![]const u8 {
-    if (registry.lookup(call.name)) |tool| {
-        return std.fmt.allocPrint(arena, "{s}", .{tool.action_label});
+    return tool_presentation.formatPlainAction(arena, .{
+        .tool_registry = registry,
+        .call = call,
+    });
+}
+
+test "ACP tool call titles name the work, not the tool" {
+    const cases = [_]struct { name: []const u8, arguments_json: []const u8, expected: []const u8 }{
+        .{ .name = "terminal", .arguments_json = "{\"action\":\"exec\",\"command\":\"npm test\"}", .expected = "Running npm test" },
+        .{ .name = "terminal", .arguments_json = "{\"action\":\"read\",\"session_id\":\"s1\"}", .expected = "Using terminal read" },
+        .{ .name = "read_file", .arguments_json = "{\"path\":\"src/main.zig\"}", .expected = "Reading src/main.zig" },
+    };
+    for (cases) |case| {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const title = try describeToolTitle(builtin_tools.registry, arena_state.allocator(), .{
+            .id = "call_1",
+            .name = case.name,
+            .arguments_json = case.arguments_json,
+        });
+        try std.testing.expectEqualStrings(case.expected, title);
     }
-    return std.fmt.allocPrint(arena, "{s}", .{call.name});
 }
 
 test "ACP lifecycle action preserves dynamic MCP availability boundaries" {
@@ -3002,6 +3111,8 @@ test "ACP lifecycle resolves dynamic MCP availability through session context" {
         .input_schema_json = try alloc.dupe(u8, "{\"type\":\"object\"}"),
         .tags = &.{},
     });
+    runtime.discovery_state.store(.complete, .release);
+    runtime.deferred_discovery_state.store(.complete, .release);
     state.active_session.?.mcp = runtime;
     runtime_owned = false;
 

@@ -37,6 +37,8 @@ export const KIND_LABELS: Record<SlashKind, string> = {
 export const SLASH_HUES = 5;
 /** The one hue past the rotation, reserved for every "@" file mention. */
 export const FILE_HUE = SLASH_HUES;
+/** And the one past that, for a pasted link. */
+export const LINK_HUE = FILE_HUE + 1;
 /** Rows a menu draws: a connected folder can list hundreds of files.
     ponytail: a flat cap, not virtualisation — narrow the query instead. */
 export const MENU_MAX = 20;
@@ -57,7 +59,9 @@ const NAME = "[A-Za-z0-9][A-Za-z0-9._:-]*";
 const PATH = "[A-Za-z0-9][A-Za-z0-9._:/-]*";
 const GRAMMAR: [Sigil, string][] = [["/", NAME], ["@", PATH]];
 const TYPING = GRAMMAR.map(([sigil, name]) => [sigil, new RegExp(`(?:^|\\s)[${sigil}](${name}|)$`)] as const);
-const TOKEN = new RegExp(`(^|\\s)(/${NAME}|@${PATH})`, "g");
+/* A link ends before the punctuation a sentence puts after it, so "see https://a.dev." keeps its full stop as prose. */
+const LINK = "https?://[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"]";
+const TOKEN = new RegExp(`(^|\\s)(${LINK}|/${NAME}|@${PATH})`, "g");
 
 /** Turn a file path into an "@" name: the path, in the grammar's alphabet. */
 export function pathName(path: string): string {
@@ -121,11 +125,13 @@ export function highlightSegments(text: string, names: string[], paths: string[]
   for (const match of text.matchAll(TOKEN)) {
     const token = match[2];
     const sigil = token[0] as Sigil;
+    const link = sigil !== "/" && sigil !== "@";
     const name = token.slice(1).toLocaleLowerCase();
-    if (!known[sigil].has(name)) continue;
+    if (!link && !known[sigil].has(name)) continue;
     const start = match.index + match[1].length;
     if (start > index) segments.push({ text: text.slice(index, start) });
-    if (sigil === "@") segments.push({ text: token, hue: FILE_HUE });
+    if (link) segments.push({ text: token, hue: LINK_HUE });
+    else if (sigil === "@") segments.push({ text: token, hue: FILE_HUE });
     else {
       if (!order.includes(name)) order.push(name);
       segments.push({ text: token, hue: order.indexOf(name) % SLASH_HUES });

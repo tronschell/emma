@@ -621,8 +621,9 @@ export async function listImportedMcpServers(userData: string) {
  * the harness fails the whole `session/new` on one bad entry and taking the
  * thread down over a stale config is worse than losing that one server.
  */
-export async function harnessMcpServers(userData: string) {
-  const servers = await enumerateMcpServers(await loadManifest(userData));
+export async function harnessMcpServers(userData: string, disabled: readonly string[] = []) {
+  const blocked = new Set(disabled);
+  const servers = (await enumerateMcpServers(await loadManifest(userData))).filter((server) => !blocked.has(server.id));
   const resolved = await Promise.all(servers.map(async (server) => {
     const command = await absoluteCommand(server.command);
     if (!command) return undefined;

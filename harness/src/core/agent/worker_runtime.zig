@@ -1948,10 +1948,9 @@ fn appendHistoryTurnProjection(
         combined,
         0,
         max_history_turns,
-        // This propagation path has no model selected, so the context window is
-        // unknown and only the turn-count rule applies — as it did before the
-        // token trigger existed.
         0,
+        null,
+        null,
     );
 }
 

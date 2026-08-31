@@ -4,24 +4,37 @@ import type { SlashCommand } from "./slash";
 export const PROTOCOL_VERSION = 1;
 
 export const KEY_BYTES = 32;
-export const ROOM_BYTES = 16;
 export const NONCE_BYTES = 12;
 export const HANDSHAKE_BYTES = 16;
 export const TAG_BYTES = 16;
 
 export const LABEL_MAC_TO_PHONE = "mac->phone";
 export const LABEL_PHONE_TO_MAC = "phone->mac";
-export const LABEL_RELAY_AUTH = "emma-relay-auth";
+export const LABEL_BRIDGE_AUTH = "emma-bridge-auth";
 
-export const MAX_RELAY_CHARS = 200;
+export const MAX_ADDR_CHARS = 200;
 
-export function relayOrigin(value: unknown): string {
+export const BRIDGE_PORT = 47823;
+
+export function bridgeAddress(value: unknown): string {
   if (typeof value !== "string") return "";
   const trimmed = value.trim().replace(/\/+$/, "");
-  if (!trimmed || trimmed.length > MAX_RELAY_CHARS) return "";
-  if (/^wss:\/\/[a-z0-9.-]+(?::\d{1,5})?$/i.test(trimmed)) return trimmed;
-  if (/^ws:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$/i.test(trimmed)) return trimmed;
-  return "";
+  if (!trimmed || trimmed.length > MAX_ADDR_CHARS) return "";
+  return /^wss?:\/\/[a-z0-9.-]+:\d{1,5}$/i.test(trimmed) ? trimmed : "";
+}
+
+export function splitAddress(addr: string): { host: string; port: number } | undefined {
+  const match = /^wss?:\/\/([a-z0-9.-]+):(\d{1,5})$/i.exec(addr);
+  if (!match) return undefined;
+  const port = Number(match[2]);
+  return port > 0 && port <= 65535 ? { host: match[1], port } : undefined;
+}
+
+export const PIN_MIN_DIGITS = 4;
+export const PIN_MAX_DIGITS = 12;
+
+export function isPin(value: unknown): value is string {
+  return typeof value === "string" && new RegExp(`^\\d{${PIN_MIN_DIGITS},${PIN_MAX_DIGITS}}$`).test(value);
 }
 
 export const MAX_FRAME_BYTES = 1024 * 1024;
@@ -32,8 +45,7 @@ export const MAX_ASK_MS = 600_000;
 
 export type PairingPayload = {
   v: 1;
-  relay: string;
-  room: string;
+  addr: string;
   key: string;
   name: string;
   exp: number;
@@ -46,6 +58,10 @@ export type GenerationTelemetry = {
   outputTokens: number;
   durationMilliseconds: number;
   inputTokens: number;
+  cacheInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costMicroUsd?: number;
   model: string;
 };
 
@@ -96,7 +112,7 @@ export type Snapshot = {
 };
 
 export type StepKind = "read" | "edit" | "execute" | "search" | "fetch" | "other" | "verifier";
-export type StepStatus = "pending" | "in_progress" | "completed" | "failed";
+export type StepStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
 
 export type ThreadStep = {
   threadId: string;
@@ -141,7 +157,7 @@ export type TraceSpan = {
   kind: string;
   startedAt: number;
   endedAt?: number;
-  status: "running" | "ok" | "failed";
+  status: "running" | "ok" | "failed" | "cancelled";
   input?: string;
   output?: string;
   tokens?: number;
@@ -235,6 +251,7 @@ export type LiveState = {
 };
 
 export type BridgeMethods = {
+  unlock: { params: { pin: string }; result: { unlocked: true } };
   snapshot: { params: Record<string, never>; result: Snapshot };
   live: { params: Record<string, never>; result: LiveState };
   threadMessages: { params: { threadId: string; before?: number; limit?: number }; result: MessagePage };
@@ -363,6 +380,7 @@ export function isBridgeMethod(value: unknown): value is BridgeMethod {
 }
 
 const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
+  unlock: true,
   snapshot: true,
   live: true,
   threadMessages: true,

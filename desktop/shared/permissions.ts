@@ -29,6 +29,7 @@ export const AGENT_TOOLS = [
   "cli",
   "cli_runs",
   "computer",
+  "shortcut",
   "write_skill",
   "write_tool",
   "write_plugin",
@@ -38,6 +39,7 @@ export const AGENT_TOOLS = [
   "vision",
   "secret",
   "web_search",
+  "task_list",
   "plan",
   "goal",
   "threads",
@@ -59,6 +61,7 @@ export type ToolGate = "hidden" | "ask" | "auto";
 type GatedMode = Exclude<PermissionMode, "auto">;
 
 const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
+  task_list: { ask: "auto", acceptEdits: "auto", full: "auto" },
   plan: { ask: "auto", acceptEdits: "auto", full: "auto" },
   goal: { ask: "auto", acceptEdits: "auto", full: "auto" },
   read_trace: { ask: "auto", acceptEdits: "auto", full: "auto" },
@@ -77,6 +80,7 @@ const GATES: Record<AgentToolName, Record<GatedMode, ToolGate>> = {
   cli: { ask: "ask", acceptEdits: "ask", full: "auto" },
   cli_runs: { ask: "auto", acceptEdits: "auto", full: "auto" },
   computer: { ask: "ask", acceptEdits: "ask", full: "ask" },
+  shortcut: { ask: "auto", acceptEdits: "auto", full: "auto" },
   browser: { ask: "ask", acceptEdits: "ask", full: "auto" },
   agents: { ask: "auto", acceptEdits: "auto", full: "auto" },
   install_mcp: { ask: "ask", acceptEdits: "ask", full: "auto" },
@@ -99,6 +103,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "keep", label: "Keep", blurb: "Saves a page, a highlight or a note into your knowledge base as Markdown.", group: "Web" },
   { name: "browser", label: "Browser", blurb: "Drives a real Chrome browser, mirrored in the browser pane so you can watch it and take the wheel.", group: "Web" },
   { name: "computer", label: "Computer use", blurb: "Reads and controls a running app in the background, only after you allow that app for the turn.", group: "This Mac" },
+  { name: "shortcut", label: "Shortcuts", blurb: "Turns a natural-language request into a global Quick Action shortcut on this Mac.", group: "This Mac" },
   { name: "cli", label: "Run another CLI", blurb: "Runs Claude Code, Codex, Pi, OpenCode or Cursor in a folder.", group: "This Mac" },
   { name: "cli_runs", label: "CLI runs", blurb: "Lists the installed CLIs and watches the runs already going.", group: "This Mac" },
   { name: "advisor", label: "Advisor", blurb: "Consults a stronger model with this thread's transcript for a plan.", group: "Thinking" },
@@ -108,6 +113,7 @@ export const TOOL_CATALOG: { name: AgentToolName; label: string; blurb: string; 
   { name: "write_skill", label: "Write skill", blurb: "Records a durable lesson so later runs do not repeat a mistake.", group: "Thinking" },
   { name: "read_trace", label: "Read trace", blurb: "Reads what past turns in this thread actually did, call by call.", group: "Thinking" },
   { name: "context", label: "Context window", blurb: "Reads how full this thread's context window is, and folds its older turns into one summary.", group: "Thinking" },
+  { name: "task_list", label: "Task list", blurb: "Tracks one complex job as a durable Markdown tree of tasks and subtasks.", group: "Threads" },
   { name: "plan", label: "Plan", blurb: "Breaks a job into steps in a markdown file, then runs the ones that can go at once as parallel subagents.", group: "Threads" },
   { name: "goal", label: "Goal", blurb: "Gives a thread an objective it keeps working at across turns, inside a token budget you set.", group: "Threads" },
   { name: "threads", label: "Threads", blurb: "Starts, lists, reads, renames and messages the threads in your sidebar.", group: "Threads" },

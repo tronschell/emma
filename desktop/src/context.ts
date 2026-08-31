@@ -3,7 +3,7 @@ import { contextBlock, pickKey, slashName, type ContextPick, type FolderFile, ty
 import { pathName, type SlashCommand } from "../shared/slash";
 import { ARTIFACT_LABELS, type ArtifactMeta } from "../shared/artifacts";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
-import { allocateCells, CHARS_PER_TOKEN, mergeUses, rateByContext, systemChars, usageKey, type ContextUse } from "../shared/usage";
+import { allocateCells, CHARS_PER_TOKEN, mergeUses, rateByContext, usageKey, type ContextUse } from "../shared/usage";
 import { SETTINGS_KEY, tagName, validateSettings } from "../shared/settings";
 import { keepKindLabel, type KeptNote } from "../shared/vault";
 import { COMPONENT_ZONE_LABEL } from "../shared/components";
@@ -318,11 +318,6 @@ export function lastInputTokens(thread: Thread): number {
   return 0;
 }
 
-export function systemUse(thread: Thread, measuredChars: number): Omit<ContextUse, "turns"> | undefined {
-  const chars = systemChars(lastInputTokens(thread), measuredChars);
-  return chars > 0 ? { kind: "messages", label: "Tool results & retries", chars } : undefined;
-}
-
 const USAGE_CELLS = 48;
 
 export type SegmentSource = "messages" | "turn" | "attachment" | "residual" | "prompt" | "tools" | "mcp" | "skills" | "memory";
@@ -417,17 +412,34 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
   /* Only this thread's own agent. A subagent is delegated work that never lands
      in the manager's window — its tokens and calls belong to its own ledger. */
   const liveTurns = inFlight.filter((agent) => agent.threadId === thread?.id);
-  const running = liveTurns.reduce((sum, agent) => sum + agent.inputTokens, 0) * CHARS_PER_TOKEN;
   const liveCalls = liveTurns.reduce((sum, agent) => sum + agent.toolCalls, 0);
+  /* The one number here that is not an estimate: what the provider says it read
+     for the most recent request. A turn in flight has already sent the whole
+     window, so its count replaces the last landed one rather than adding to it —
+     summing the two counted the history twice and doubled the bar for as long as
+     a run lasted. */
+  const anchor = thread ? Math.max(lastInputTokens(thread), ...liveTurns.map((agent) => agent.inputTokens)) : 0;
+  const anchorChars = anchor * CHARS_PER_TOKEN;
   const measured: LedgerRow[] = thread ? [
     { ...historyUse(thread), turns: messages.filter((message) => message.role === "user").length, source: "messages" },
-    ...(running > 0 ? [{ kind: "messages" as const, label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: running, turns: 1, source: "turn" as const }] : []),
     ...uses.map((use) => ({ ...use, source: "attachment" as const })),
   ] : [];
   const prefix = thread ? prefixUses(breakdown, replies) : [];
-  const named = measured.reduce((sum, row) => sum + row.chars, 0) - running + prefix.reduce((sum, row) => sum + row.chars, 0);
-  const system = thread ? systemUse(thread, named) : undefined;
-  const rows: LedgerRow[] = [...measured, ...(system ? [{ ...system, turns: replies, source: "residual" as const }] : []), ...prefix].sort((a, b) => b.chars - a.chars);
+  const counted = [...measured, ...prefix];
+  const named = counted.reduce((sum, row) => sum + row.chars, 0);
+  /* Characters over-count what a request actually carried once history is pruned
+     or compacted — this side still holds every message the harness dropped. Scale
+     the rows onto the provider's count rather than claiming the model was sent
+     more than it was. */
+  const scale = anchorChars && named > anchorChars ? anchorChars / named : 1;
+  const scaled = scale === 1 ? counted : counted.map((row) => ({ ...row, chars: Math.round(row.chars * scale) }));
+  const residual = anchorChars - scaled.reduce((sum, row) => sum + row.chars, 0);
+  const system: LedgerRow[] = residual > 0
+    ? [liveTurns.length
+      ? { kind: "messages", label: `This turn · ${liveCalls} tool ${plural(liveCalls, "call")}`, chars: residual, turns: 1, source: "turn" }
+      : { kind: "messages", label: "Tool results & retries", chars: residual, turns: replies, source: "residual" }]
+    : [];
+  const rows: LedgerRow[] = [...scaled, ...system].sort((a, b) => b.chars - a.chars);
   const total = rows.reduce((sum, row) => sum + row.chars, 0);
   const capacity = contextTokens * CHARS_PER_TOKEN;
   const free = Math.max(0, capacity - total);
@@ -481,17 +493,33 @@ export function setThreadTag(threadId: string, tag: string, auto = false): void 
 
 const PINS_KEY = "emma.threadPins.v1";
 
-export function pinnedThreads(): string[] {
+function storedThreadIds(key: string): string[] {
   try {
-    const stored = JSON.parse(localStorage.getItem(PINS_KEY) ?? "[]") as unknown;
+    const stored = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
     return Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string") : [];
   } catch { return []; }
+}
+
+export function pinnedThreads(): string[] {
+  return storedThreadIds(PINS_KEY);
 }
 
 export function setThreadPinned(threadId: string, pinned: boolean): void {
   const kept = pinnedThreads().filter((id) => id !== threadId);
   localStorage.setItem(PINS_KEY, JSON.stringify(pinned ? [threadId, ...kept] : kept));
   dispatchEvent(new Event("emma-thread-pins-changed"));
+}
+
+const UNREAD_KEY = "emma.threadUnread.v1";
+
+export function unreadThreads(): string[] {
+  return storedThreadIds(UNREAD_KEY);
+}
+
+export function setThreadUnread(threadId: string, unread: boolean): void {
+  const kept = unreadThreads().filter((id) => id !== threadId);
+  localStorage.setItem(UNREAD_KEY, JSON.stringify(unread ? [threadId, ...kept] : kept));
+  dispatchEvent(new Event("emma-thread-unread-changed"));
 }
 
 export function handTags(): string[] {
@@ -644,6 +672,7 @@ export interface ModelSwitch {
   at: number;
   label: string;
   brand: string;
+  after?: string;
 }
 
 function allModelSwitches(): Record<string, ModelSwitch[]> {

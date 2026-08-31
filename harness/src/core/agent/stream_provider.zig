@@ -48,6 +48,7 @@ pub const ProviderAttemptOwner = enum {
 pub const NetworkFailureCause = enum {
     transport_interrupted,
     system_resumed,
+    response_interrupted,
 };
 
 /// Stable native transport evidence consumed by model recovery policy.
@@ -61,6 +62,14 @@ pub const AttemptEvidence = struct {
     provider_admitted: bool = false,
     network_failure: ?NetworkFailureEvidence = null,
 };
+
+pub fn responseFailureEvidence(
+    err: anyerror,
+    delivery: DeliveryCertainty.State,
+) ?NetworkFailureEvidence {
+    if (err != error.InvalidProviderResponse) return null;
+    return .{ .cause = .response_interrupted, .delivery = delivery };
+}
 
 /// Gives a cooperative single-threaded host a chance to publish UI and runtime
 /// state while provider transport remains pending.

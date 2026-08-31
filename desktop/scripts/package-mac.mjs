@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { cpSync, globSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,12 +19,21 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const out = path.resolve(process.argv[2] ?? path.join(desktop, "release"));
 const env = { ...process.env, MACOSX_DEPLOYMENT_TARGET: "12.0" };
 const run = (command, args, cwd = desktop) => execFileSync(command, args, { cwd, env, stdio: "inherit" });
+const runAsync = (command, args, cwd = desktop) => new Promise((resolve, reject) => {
+  const child = spawn(command, args, { cwd, env, stdio: "inherit" });
+  child.once("error", reject);
+  child.once("exit", (code, signal) => code === 0 ? resolve() : reject(new Error(`${command} exited with ${code ?? signal}`)));
+});
 const output = (command, args, cwd = desktop) => execFileSync(command, args, { cwd, env, encoding: "utf8" });
 const version = stableVersion(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version);
+const electronChecksums = JSON.parse(readFileSync(path.join(desktop, "node_modules/electron/checksums.json"), "utf8"));
+const zigOptimize = process.env.EMMA_FAST_BUILD === "1" ? "Debug" : "ReleaseSafe";
 
-run("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root);
-run("zig", ["build", "-Doptimize=ReleaseSafe", "-Dtarget=aarch64-macos.12.0"], path.join(root, "harness"));
-for (const script of ["build:native", "vendor:ripgrep", "build"]) run("npm", ["run", script]);
+await Promise.all([
+  runAsync("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root),
+  runAsync("zig", ["build", `-Doptimize=${zigOptimize}`, "-Dtarget=aarch64-macos.12.0"], path.join(root, "harness")),
+  ...["build:native", "vendor:ripgrep", "build:main", "build:renderer"].map((script) => runAsync("npm", ["run", script])),
+]);
 
 const notices = path.join(out, "notices");
 mkdirSync(notices, { recursive: true });
@@ -54,7 +63,7 @@ const resources = [
   path.join(desktop, "skills"),
   notices,
 ];
-const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$))/;
+const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$)|node_modules(?:$|\/ws(?:\/|$)))/;
 await packager({
   dir: desktop,
   name: "Emma",
@@ -64,6 +73,8 @@ await packager({
   out,
   overwrite: true,
   asar: true,
+  prune: false,
+  download: { checksums: electronChecksums },
   appBundleId: "com.tronschell.emma",
   appVersion: version,
   buildVersion: version,

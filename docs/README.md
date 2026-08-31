@@ -25,14 +25,14 @@ is the tour; this is the reference.
 | [Notch surfaces](notch.md) | The Option double-tap, Quick Ask, the island, quick actions, the radial ring |
 | [Terminal](terminal.md) | The shell panel under a thread: the pty helper, output as context, ⌘-click links |
 | [Browser](browser.md) | The per-thread Chromium view: the docked pane, the PIP, and clipboard history |
-| [Mobile](mobile.md) | Pairing a phone: the relay you deploy, building the app, and what the phone can drive |
+| [Mobile](mobile.md) | Pairing a phone over your tailnet or LAN: the address, the PIN, building the app, and what the phone can drive |
 | [Voice](voice.md) | Dictation's two engines, the local-only rule, and drawing |
 | [Computer use](computer-use.md) | Emma driving the Mac, and every safety rail as implemented |
 | [Goals](goals.md) | One objective a thread keeps working at: the ledger, the continuation loop, evidence, the blocked audit |
 | [Agents](agents.md) | Self-improvement: friction, trials, the replay bench, and how a change is proved |
 | [Jobs](jobs.md) | Scheduled workflows: triggers, node graphs, validation, execution |
 | [Autoresearch](autoresearch.md) | The experiment loop, the immutable metric, budgets |
-| [CLI](cli.md) | Driving the user's other coding CLIs, and Settings → Connections |
+| [CLI](cli.md) | Driving the user's other coding CLIs and using `emma-cli` directly |
 
 ## Building on Emma
 

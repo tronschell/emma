@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FILE_HUE, highlightSegments, insertCommand, KIND_LABELS, matchCommands, mentions, pathName, slashQuery, type SlashCommand } from "../shared/slash";
+import { FILE_HUE, LINK_HUE, highlightSegments, insertCommand, KIND_LABELS, matchCommands, mentions, pathName, slashQuery, type SlashCommand } from "../shared/slash";
 import { atCommands, fileCommands, toolCommands } from "../src/context";
 import { pickKey } from "../shared/folders";
 import type { ArtifactMeta } from "../shared/artifacts";
@@ -100,4 +100,11 @@ test("a saved message still names its skills and files, for a run to resolve lat
   const text = "Use /code-review on @src/App.tsx and @notes/road-map.md, not me@host or a/b";
   assert.deepEqual(mentions(text, "/"), ["code-review"]);
   assert.deepEqual(mentions(text, "@"), ["src/App.tsx", "notes/road-map.md"]);
+});
+
+test("a pasted link paints blue, and a sentence keeps its punctuation", () => {
+  const segments = highlightSegments("see https://emma.dev/a_b?q=1, and me@host", []);
+  assert.deepEqual(segments.filter((item) => item.hue !== undefined), [{ text: "https://emma.dev/a_b?q=1", hue: LINK_HUE }]);
+  assert.equal(segments.map((item) => item.text).join(""), "see https://emma.dev/a_b?q=1, and me@host");
+  assert.deepEqual(mentions("https://a.dev/x and /skill", "/"), ["skill"]);
 });

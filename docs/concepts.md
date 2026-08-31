@@ -142,9 +142,9 @@ filesystem at all. In the composer `/` names a capability and `@` names a file
 files, attachments and artifacts into one bounded block. Emma's own standing
 text goes to two files under the `HOME` she hands the harness: the resolved
 Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
-the agent's own built-in prompt, and the connections block to
-`<userData>/harness/.fx/AGENTS.md` under it. A notch capture travels as an image plus a note naming the app and
-window that were in front.
+the agent's own built-in prompt, and kept Agent-page improvements to
+`<userData>/harness/.fx/AGENTS.md` under it. A notch capture travels as an image
+plus a note naming the app and window that were in front.
 
 ## Inspector
 
@@ -191,6 +191,13 @@ hand-edited file. `MAX_PLAN_STEPS` 24, `MAX_STEP_TASKS` 100, `MAX_PLANS` 64,
 `MAX_PLAN_BYTES` 128 KiB. There is no `plan` permission mode — the modes are
 `ask`, `acceptEdits`, `auto`, `full` (see [Mode](#mode)).
 
+## Task list
+
+`task_list` is the durable checklist for complex work one agent is doing itself.
+Its Markdown record lives at `<userData>/task-lists/<id>.md`; every task has a
+stable id, status, and any number of nested subtasks. Rewriting the tree keeps
+the status of ids that remain. Use `plan` when the point is parallel subagents.
+
 ## Goal
 
 **One objective a thread keeps working at on its own.** Set one and Emma re-drives
@@ -220,8 +227,9 @@ it. Full matrix in [permissions.md](permissions.md).
 
 ## Workflow
 
-**A scheduled job's body: a graph of nodes, not a single prompt.** Three kinds —
-`agent` runs a turn, `set` computes a value, `if` branches — passing `{{name}}`
+**A scheduled job's body: a graph of nodes, not a single prompt.** Four kinds —
+`agent` runs a turn, `script` runs a fixed local file, `set` computes a value,
+`if` branches — passing `{{name}}`
 variables between them. The trigger is a five-field UTC cron expression,
 `manual`, `after <job-id>`, or `on <event>`. One implementation in
 [`shared/workflow.ts`](../desktop/shared/workflow.ts) serves three callers: main

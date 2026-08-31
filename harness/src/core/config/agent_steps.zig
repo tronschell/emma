@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const default_max_agent_steps: usize = 0;
+pub const default_max_agent_steps: usize = 1000;
 
 pub fn resolveMaxAgentSteps(configured: ?usize, default_value: usize) usize {
     return configured orelse default_value;
@@ -51,7 +51,7 @@ test "parse max agent steps accepts zero and rejects invalid input" {
 }
 
 test "process overrides resolve with configured and compiled defaults" {
-    try std.testing.expectEqual(@as(usize, 0), resolveMaxAgentStepsWithOverride(null, default_max_agent_steps, null));
+    try std.testing.expectEqual(default_max_agent_steps, resolveMaxAgentStepsWithOverride(null, default_max_agent_steps, null));
     try std.testing.expectEqual(@as(usize, 0), resolveMaxAgentStepsWithOverride(0, 24, null));
     try std.testing.expectEqual(@as(usize, 24), resolveMaxAgentStepsWithOverride(null, 0, "24"));
     try std.testing.expectEqual(@as(usize, 0), resolveMaxAgentStepsWithOverride(24, 8, "0"));
@@ -81,4 +81,10 @@ test "agent runtime override parses seconds and falls back on anything else" {
     try std.testing.expectEqual(default_ms, resolveRuntimeMs(default_ms, "abc"));
     try std.testing.expectEqual(@as(i64, 20_000), resolveRuntimeMs(default_ms, "20"));
     try std.testing.expectEqual(@as(i64, 0), resolveRuntimeMs(default_ms, "0"));
+}
+
+test "compiled default agent step limit is a real cap" {
+    try std.testing.expect(default_max_agent_steps > 0);
+    try std.testing.expect(allowsStep(default_max_agent_steps, default_max_agent_steps - 1));
+    try std.testing.expect(!allowsStep(default_max_agent_steps, default_max_agent_steps));
 }

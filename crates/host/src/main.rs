@@ -46,6 +46,10 @@ struct RecordTurnParams {
     output_tokens: Option<String>,
     duration_milliseconds: Option<String>,
     input_tokens: Option<String>,
+    cache_input_tokens: Option<String>,
+    cache_read_tokens: Option<String>,
+    cache_write_tokens: Option<String>,
+    cost_micro_usd: Option<String>,
     model: Option<String>,
 }
 
@@ -419,6 +423,12 @@ fn valid_request_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
+fn optional_u64(value: Option<String>, name: &str) -> Result<Option<u64>, String> {
+    value
+        .map(|raw| raw.parse::<u64>().map_err(|_| format!("{name} is invalid")))
+        .transpose()
+}
+
 fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (String, String)> {
     let result = (|| -> Result<Value, String> {
         match request.method.as_str() {
@@ -461,26 +471,33 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
             }
             "recordTurn" => {
                 let params: RecordTurnParams = params(request)?;
-                encode(call(
-                    live.record_turn(
-                        ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                        params.prompt,
-                        params.response,
-                        params
-                            .output_tokens
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or_default(),
-                        params
-                            .duration_milliseconds
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or_default(),
-                        params
-                            .input_tokens
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or_default(),
-                        params.model.unwrap_or_default(),
-                    ),
-                )?)
+                let output_tokens =
+                    optional_u64(params.output_tokens, "output tokens")?.unwrap_or_default();
+                let duration_milliseconds =
+                    optional_u64(params.duration_milliseconds, "duration milliseconds")?
+                        .unwrap_or_default();
+                let input_tokens =
+                    optional_u64(params.input_tokens, "input tokens")?.unwrap_or_default();
+                let cache_input_tokens =
+                    optional_u64(params.cache_input_tokens, "cache input tokens")?;
+                let cache_read_tokens =
+                    optional_u64(params.cache_read_tokens, "cache read tokens")?;
+                let cache_write_tokens =
+                    optional_u64(params.cache_write_tokens, "cache write tokens")?;
+                let cost_micro_usd = optional_u64(params.cost_micro_usd, "cost micro-USD")?;
+                encode(call(live.record_turn(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                    params.prompt,
+                    params.response,
+                    output_tokens,
+                    duration_milliseconds,
+                    input_tokens,
+                    cache_input_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    cost_micro_usd,
+                    params.model.unwrap_or_default(),
+                ))?)
             }
             "setGoal" => {
                 let params: SetGoalParams = params(request)?;

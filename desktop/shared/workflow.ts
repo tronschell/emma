@@ -1,47 +1,27 @@
-/* The little language a scheduled task is written in. A task is a graph of nodes:
-   agent steps that run a turn, set steps that compute a value, and if steps that
-   branch. Between them they pass variables, which is how one step reads what the
-   last one produced and how a task reads what the task upstream of it produced.
-
-   One implementation, three callers: main runs it for real, the workflow tool
-   dry-runs it, and the workspace parses it to draw the graph and to refuse a bad
-   edit before it is saved. Core stores the JSON and never looks inside it. */
-
-/** Nodes in one task. Past this a workflow is a program, and should be a skill. */
 export const MAX_WORKFLOW_NODES = 24;
-/** Node visits in one run, so a branch that points backwards cannot spin forever. */
 export const MAX_WORKFLOW_STEPS = 32;
-/** How much of a step's output is kept as a variable. Enough for a digest, not a corpus. */
 export const MAX_VARIABLE_CHARS = 8192;
 
-export type WorkflowKind = "agent" | "set" | "if";
+export type WorkflowKind = "agent" | "script" | "set" | "if";
 
 export type WorkflowNode = {
   id: string;
   kind: WorkflowKind;
-  /** An agent's prompt, a set's value, or an if's condition — all templates. */
   text: string;
-  /** Variable this node's result is stored in. Not for `if`, which produces no value. */
+  input?: string;
   saveAs?: string;
-  /** Where to go next; for `if`, the branch taken when the condition holds. */
   next?: string;
-  /** The branch an `if` takes when its condition does not hold. */
   otherwise?: string;
 };
 
 export type WorkflowStep = { nodeId: string; kind: WorkflowKind; detail: string; output?: string };
 
-/** The one reserved target: a step that goes here finishes the run. */
 export const END = "end";
 const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const VARIABLE = /^[a-z][a-z0-9_]{0,31}$/;
-const KINDS: WorkflowKind[] = ["agent", "set", "if"];
+const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/])/;
+const KINDS: WorkflowKind[] = ["agent", "script", "set", "if"];
 
-/**
- * The graph as stored, or the one-step graph every job saved before workflows
- * existed still means. Errors are written for whoever is fixing them — the model
- * reads them back as a tool result and the user reads them under the editor.
- */
 export function parseWorkflow(nodes: string, prompt = ""): { nodes: WorkflowNode[]; errors: string[] } {
   if (!nodes.trim()) return { nodes: prompt.trim() ? [{ id: "step-1", kind: "agent", text: prompt }] : [], errors: [] };
   let value: unknown;
@@ -59,10 +39,15 @@ export function parseWorkflow(nodes: string, prompt = ""): { nodes: WorkflowNode
     if (!ID.test(id)) { errors.push(`${at} needs an id of lowercase letters, digits and dashes.`); continue; }
     if (parsed.some((item) => item.id === id)) { errors.push(`${at} repeats the id "${id}".`); continue; }
     const kind = KINDS.find((candidate) => candidate === node.kind);
-    if (!kind) { errors.push(`Node "${id}" needs a kind of agent, set or if.`); continue; }
+    if (!kind) { errors.push(`Node "${id}" needs a kind of agent, script, set or if.`); continue; }
     const text = typeof node.text === "string" ? node.text.trim() : "";
-    if (!text) errors.push(`Node "${id}" needs text: a prompt, a value, or a condition.`);
+    if (!text) errors.push(`Node "${id}" needs text: a prompt, script path, value, or condition.`);
     if (text.length > MAX_VARIABLE_CHARS) errors.push(`Node "${id}" is longer than ${MAX_VARIABLE_CHARS} characters.`);
+    const input = typeof node.input === "string" ? node.input : undefined;
+    if (node.input !== undefined && input === undefined) errors.push(`Node "${id}" has input that is not text.`);
+    if (input !== undefined && input.length > MAX_VARIABLE_CHARS) errors.push(`Node "${id}" has input longer than ${MAX_VARIABLE_CHARS} characters.`);
+    if (kind === "script" && (!ABSOLUTE_PATH.test(text) || text.includes("{{"))) errors.push(`Node "${id}" needs a fixed absolute script path.`);
+    if (kind !== "script" && input !== undefined) errors.push(`Node "${id}" is not a script, so it has no input.`);
     const saveAs = typeof node.saveAs === "string" ? node.saveAs : undefined;
     if (saveAs !== undefined && !VARIABLE.test(saveAs)) errors.push(`Node "${id}" saves into "${saveAs}", which is not a variable name.`);
     if (kind === "if") {
@@ -75,6 +60,7 @@ export function parseWorkflow(nodes: string, prompt = ""): { nodes: WorkflowNode
       id,
       kind,
       text,
+      ...(input !== undefined ? { input } : {}),
       ...(saveAs ? { saveAs } : {}),
       ...(typeof node.next === "string" ? { next: node.next } : {}),
       ...(typeof node.otherwise === "string" ? { otherwise: node.otherwise } : {}),
@@ -88,14 +74,12 @@ export function parseWorkflow(nodes: string, prompt = ""): { nodes: WorkflowNode
   return { nodes: parsed, errors };
 }
 
-/** `{{name}}` becomes that variable, or nothing when it was never set. */
 export function expand(text: string, variables: Record<string, string>): string {
   return text.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (_, name: string) => variables[name] ?? "");
 }
 
 type Condition = { left: string; operator: string; right: string };
 
-/** Longest first, so "is not empty" is never read as "is". */
 const OPERATORS = ["is not empty", "is empty", "does not contain", "contains", "is not", "is", ">=", "<=", ">", "<"];
 
 export function parseCondition(text: string): Condition | null {
@@ -112,7 +96,6 @@ export function parseCondition(text: string): Condition | null {
   return null;
 }
 
-/** False on anything it cannot make sense of: a branch never guesses. */
 export function evaluate(text: string, variables: Record<string, string>): boolean {
   const condition = parseCondition(text);
   if (!condition) return false;
@@ -135,15 +118,10 @@ export function evaluate(text: string, variables: Record<string, string>): boole
   }
 }
 
-/**
- * Walks the graph from its first node. `run` is what actually performs an agent
- * step — a real turn in main, a stand-in when Emma is testing the task — which is
- * the only difference between a test run and a live one.
- */
 export async function runWorkflow(
   nodes: WorkflowNode[],
   variables: Record<string, string>,
-  run: (prompt: string, node: WorkflowNode) => Promise<string>,
+  run: (text: string, node: WorkflowNode, input: string) => Promise<string>,
 ): Promise<{ variables: Record<string, string>; steps: WorkflowStep[] }> {
   const state = { ...variables };
   const steps: WorkflowStep[] = [];
@@ -153,30 +131,24 @@ export async function runWorkflow(
     if (node.kind === "if") {
       const taken = evaluate(node.text, state);
       steps.push({ nodeId: node.id, kind: node.kind, detail: `${expand(node.text, state)} → ${taken}` });
-      // A branch says where it goes; a branch that says nothing ends the run,
-      // because falling into whatever was written next is never what was meant.
       index = jump(nodes, taken ? node.next : node.otherwise, -1);
       continue;
     }
     const text = expand(node.text, state);
-    const output = (node.kind === "agent" ? await run(text, node) : text).slice(0, MAX_VARIABLE_CHARS);
+    const output = (node.kind === "agent" || node.kind === "script" ? await run(text, node, expand(node.input ?? "", state)) : text).slice(0, MAX_VARIABLE_CHARS);
     if (node.saveAs) state[node.saveAs] = output;
     if (node.kind === "agent") state.last = output;
     steps.push({ nodeId: node.id, kind: node.kind, detail: text, output });
-    // A plain step falls through to the next node written, so a task that is just
-    // a list of steps needs no wiring at all.
     index = jump(nodes, node.next, index + 1);
   }
   return { variables: state, steps };
 }
 
-/** Where a target sends the walk: a node, the end of the run, or the default. */
 function jump(nodes: WorkflowNode[], target: string | undefined, fallthrough: number): number {
   if (!target) return fallthrough;
   return target === END ? -1 : nodes.findIndex((item) => item.id === target);
 }
 
-/** The variables a run starts with, as the host stores them: a JSON object of strings. */
 export function parseVariables(value: string): Record<string, string> {
   if (!value.trim()) return {};
   try {
@@ -188,11 +160,6 @@ export function parseVariables(value: string): Record<string, string> {
   }
 }
 
-/**
- * What a trigger has to look like, checked before the store sees it. The shape is
- * mirrored from core's `validate_schedule`; core still owns whether the cron
- * fields themselves mean anything, and says so when they do not.
- */
 export function triggerProblem(trigger: string): string | null {
   const value = trigger.trim();
   if (!value) return "A task needs a trigger.";
@@ -200,13 +167,6 @@ export function triggerProblem(trigger: string): string | null {
   if (value.split(/\s+/).length === 5) return null;
   return 'A trigger is five cron fields in UTC ("0 9 * * 1"), "manual", "after <task-id>", or "on <event>".';
 }
-
-/* ---------- The graph, as it is drawn ----------
-
-   Where a step goes next is decided in `runWorkflow` above; these two mirror
-   that walk for the eye. An edge is exactly the jump the runner would take,
-   including the ones nobody wrote down: a plain step falls through to the step
-   below it, and a branch with nothing to take ends the run. */
 
 export type WorkflowEdge = { from: string; to: string; label?: "yes" | "no" };
 
@@ -216,11 +176,6 @@ export function workflowEdges(nodes: WorkflowNode[]): WorkflowEdge[] {
     : [{ from: node.id, to: node.next ?? nodes[index + 1]?.id ?? END }]);
 }
 
-/**
- * Rows of node ids, top to bottom: every step sits one row below the earliest
- * step that can reach it, so the run reads downwards. A step nothing reaches —
- * written but never wired in — lands in the last row rather than vanishing.
- */
 export function workflowRows(nodes: WorkflowNode[], edges: WorkflowEdge[]): string[][] {
   const level = new Map<string, number>();
   if (nodes.length) level.set(nodes[0].id, 0);
@@ -246,28 +201,16 @@ export function workflowRows(nodes: WorkflowNode[], edges: WorkflowEdge[]): stri
   return rows.map((row) => row ?? []);
 }
 
-/* ---------- Triggers, as the picker holds them ----------
-
-   A trigger is stored as the five cron fields core understands, in UTC. The
-   picker never invents a second format: it reads a cron line into the shape
-   below, and writes that shape back out as cron. Anything it cannot model —
-   a hand-written expression, `after`, `on` — round-trips verbatim as `cron`. */
-
 export type TriggerKind = "minutes" | "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "manual" | "cron";
 
 export type Trigger = {
   kind: TriggerKind;
-  /** Every N minutes, hours or days, for the kinds that repeat on a step. */
   every: number;
   minute: number;
   hour: number;
-  /** 0 (Sunday) through 6, for the weekly kind. Empty means every day. */
   weekdays: number[];
-  /** Day of the month, for monthly and yearly. */
   day: number;
-  /** 1 (January) through 12, for yearly. */
   month: number;
-  /** The expression itself, kept verbatim for `cron` and for anything unmodelled. */
   cron: string;
 };
 
@@ -279,12 +222,10 @@ const whole = (value: string, min: number, max: number): number | null => {
   const parsed = Number(value);
   return /^\d+$/.test(value) && parsed >= min && parsed <= max ? parsed : null;
 };
-/** A star on its own, or a star-slash step — the only two forms the picker writes. */
 const stepOf = (field: string): number | null => field === "*" ? 1 : /^\*\/\d+$/.test(field) ? Number(field.slice(2)) || null : null;
 const step = (count: number) => count > 1 ? `*/${count}` : "*";
 const two = (value: number) => String(value).padStart(2, "0");
 
-/** The cron line a picked trigger means. Never called for `manual`-shaped triggers. */
 export function buildTrigger(trigger: Trigger): string {
   const every = Math.max(1, Math.round(trigger.every) || 1);
   const minute = Math.min(59, Math.max(0, Math.round(trigger.minute) || 0));
@@ -296,16 +237,12 @@ export function buildTrigger(trigger: Trigger): string {
     case "minutes": return `${step(every)} * * * *`;
     case "hourly": return `${minute} ${step(every)} * * *`;
     case "daily": return `${minute} ${hour} ${step(every)} * *`;
-    // No weekday picked is every weekday: a weekly trigger that can never fire
-    // would be saved as one that silently never runs.
     case "weekly": return `${minute} ${hour} * * ${trigger.weekdays.length ? [...new Set(trigger.weekdays)].sort((left, right) => left - right).join(",") : "*"}`;
     case "monthly": return `${minute} ${hour} ${day} * *`;
     case "yearly": return `${minute} ${hour} ${day} ${Math.min(12, Math.max(1, Math.round(trigger.month) || 1))} *`;
   }
 }
 
-/** A stored trigger read back into the picker. The round trip is exact for
-    everything the picker writes, and lands on `cron` for everything else. */
 export function parseTrigger(value: string): Trigger {
   const text = value.trim();
   const raw = { ...DEFAULT_TRIGGER, cron: text };
@@ -327,7 +264,6 @@ export function parseTrigger(value: string): Trigger {
   const dayStep = stepOf(dayField);
   if (dayStep !== null && monthField === "*" && weekdayField === "*") return { ...raw, kind: "daily", every: dayStep, minute, hour };
   if (dayField === "*" && monthField === "*" && /^[0-7](,[0-7])*$/.test(weekdayField)) {
-    // Cron says both 0 and 7 are Sunday; the picker only ever shows 0.
     const weekdays = [...new Set(weekdayField.split(",").map((item) => Number(item) % 7))].sort((left, right) => left - right);
     return { ...raw, kind: "weekly", minute, hour, weekdays };
   }
@@ -336,7 +272,6 @@ export function parseTrigger(value: string): Trigger {
   return { ...raw, kind: "cron" };
 }
 
-/** The trigger in words, for the task rail and the graph header. */
 export function describeTrigger(value: string): string {
   const text = value.trim();
   if (text === "manual") return "Only when you run it";
@@ -356,14 +291,8 @@ export function describeTrigger(value: string): string {
   }
 }
 
-/** Mirrors core's ceiling on a job's stored outputs. */
 export const MAX_VARIABLES_BYTES = 16 * 1024;
 
-/**
- * Variables on their way back to the store, trimmed to fit. A run that produced
- * more than the ceiling keeps every name and loses the tail of the longest
- * values, because which variables exist is what the next task branches on.
- */
 export function packVariables(variables: Record<string, string>): string {
   const kept = { ...variables };
   let json = JSON.stringify(kept);
@@ -377,7 +306,6 @@ export function packVariables(variables: Record<string, string>): string {
   return json;
 }
 
-/** One line per step, for a tool result and for the run's trace. */
 export function describeRun(steps: WorkflowStep[]): string {
   if (!steps.length) return "The task has no steps to run.";
   return steps.map((step) => `${step.nodeId} · ${step.kind} · ${(step.output ?? step.detail).replace(/\s+/g, " ").slice(0, 160)}`).join("\n");

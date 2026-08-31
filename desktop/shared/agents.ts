@@ -150,30 +150,17 @@ export function tokensPerSecond(agent: Pick<LiveAgent, "outputTokens" | "generat
   return agent.generationMs > 0 ? agent.outputTokens / (agent.generationMs / 1000) : 0;
 }
 
-/**
- * One tool call, live. The coding harness reports these as it works; the
- * transcript shows them so a turn is not silent between the prompt and the answer.
- */
 export type ThreadStep = {
   threadId: string;
   toolCallId: string;
   title: string;
-  /** ACP's tool kind — `read`, `edit`, `execute`, `search`, `fetch`, `other`. */
   kind: string;
-  status: "pending" | "in_progress" | "completed" | "failed";
-  /** The call's arguments, as JSON. ACP sends these once, on the opening `tool_call`. */
+  toolName?: string;
+  status: "pending" | "in_progress" | "completed" | "failed" | "cancelled";
   input?: string;
   output?: string;
-  /** When this status was observed, so a run can be laid out on a timeline. */
   at: number;
-  /**
-   * What the call did to a file, when it wrote one. Stamped where the change is
-   * seen — both loops already build the before/after pair for the Changes tab —
-   * so the transcript can read `Edited knowledge.rs +145 −1` off the step rather
-   * than re-deriving it from a tool name and a JSON argument blob it does not
-   * own the shape of.
-   */
-  edit?: { path: string; added: number; removed: number };
+  edit?: { path: string; added: number; removed: number; hunks?: DiffHunkLine[] };
 };
 
 /**
@@ -251,10 +238,34 @@ export function diffLines(before: string, after: string): { kind: " " | "+" | "-
   return out;
 }
 
+export type DiffHunkLine = { kind: " " | "+" | "-"; text: string; line: number };
+
+const HUNK_CONTEXT = 2;
+/* ponytail: a long rewrite is cut here rather than paged — the step row shows the
+   whole count, and the changes tab still has the full diff. */
+const HUNK_LINES = 200;
+
+/** Changed lines plus a little context, numbered, so a step can show its edit inline. */
+export function diffHunks(before: string, after: string, context = HUNK_CONTEXT): DiffHunkLine[] {
+  const lines = diffLines(before, after);
+  const keep = new Set<number>();
+  lines.forEach((line, index) => {
+    if (line.kind === " ") return;
+    for (let near = Math.max(0, index - context); near <= Math.min(lines.length - 1, index + context); near += 1) keep.add(near);
+  });
+  const out: DiffHunkLine[] = [];
+  let at = 0;
+  for (const [index, line] of lines.entries()) {
+    if (line.kind !== "-") at += 1;
+    if (keep.has(index) && out.length < HUNK_LINES) out.push({ ...line, line: line.kind === "-" ? at + 1 : at });
+  }
+  return out;
+}
+
 /** One write, as the step that made it reports it. */
 export function editStat(change: FileChange): NonNullable<ThreadStep["edit"]> {
   const { added, removed } = diffStat([change]);
-  return { path: change.path, added, removed };
+  return { path: change.path, added, removed, hunks: diffHunks(change.before ?? "", change.after) };
 }
 
 export function diffStat(changes: FileChange[]): DiffStat {

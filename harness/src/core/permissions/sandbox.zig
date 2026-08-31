@@ -179,6 +179,7 @@ const foreground_session_release_byte: u8 = 0x06;
 const foreground_session_setup_timeout_ms: i64 = 5000;
 const foreground_target_termination_grace_ms: i64 = 700;
 const foreground_target_cleanup_wait_ms: i64 = 250;
+const foreground_output_drain_timeout_ms: i64 = 2000;
 const foreground_session_replace_failure_exit_code: u8 = 125;
 const foreground_session_failure_nonce_bytes: usize = 16;
 const foreground_session_failure_nonce_hex_bytes: usize = foreground_session_failure_nonce_bytes * 2;
@@ -2385,6 +2386,8 @@ fn collectOutput(
             }
         }
 
+        if (outputDrainExpired(signal_started_ms, io_mod.milliTimestamp())) break;
+
         if (streams_finished) {
             if (source.* == .natural or
                 signal_started_ms == null or
@@ -2534,6 +2537,11 @@ fn mapTerminationError(
     };
 }
 
+fn outputDrainExpired(signal_started_ms: ?i64, now_ms: i64) bool {
+    const sent_ms = signal_started_ms orelse return false;
+    return now_ms - sent_ms >= foreground_output_drain_timeout_ms;
+}
+
 fn updateTerminationSignal(
     child: *std.process.Child,
     process_group_id: ?std.posix.pid_t,
@@ -2554,8 +2562,6 @@ fn updateTerminationSignal(
         if (signal_started_ms.* == null) {
             if (cfg.timeout_ms) |timeout_ms| {
                 if (now_ms - started_ms >= @as(i64, @intCast(timeout_ms))) {
-                    // Timeout uses the same signal path as cancellation but
-                    // records a distinct source for the post-wait mapping.
                     source.* = .timed_out;
                     try signalChild(child, process_group_id, false);
                     debug_trace.logf("core", "command termination requested source=timeout", .{});
@@ -4832,4 +4838,10 @@ test "just_bash JSON parser handles success and parse failure" {
     try std.testing.expect(std.mem.find(u8, result.output, "exit_code=3\n") != null);
     try std.testing.expect(std.mem.find(u8, result.output, "<stdout>\nout\n</stdout>\n") != null);
     try std.testing.expectError(error.JustBashParseError, parseJustBashJson(std.testing.allocator, std.testing.allocator, cfg, "not-json", "", .{ .exited = 0 }, "cmd", "/tmp", null));
+}
+
+test "output drain is unbounded before termination and bounded after it" {
+    try std.testing.expect(!outputDrainExpired(null, 1_000_000));
+    try std.testing.expect(!outputDrainExpired(1_000, 1_000 + foreground_output_drain_timeout_ms - 1));
+    try std.testing.expect(outputDrainExpired(1_000, 1_000 + foreground_output_drain_timeout_ms));
 }

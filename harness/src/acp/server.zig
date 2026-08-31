@@ -1611,10 +1611,6 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
     try state.writer.writeResponse(alloc, msg.id, out.writer.buffered());
 }
 
-/// `reinject_steps=15,prune_percent=70` and friends. One option rather than four
-/// because the client sets them together, before every prompt, over a pipe that
-/// answers one call at a time. An unknown key is ignored so an older harness
-/// answers a newer client instead of failing its turn; a missing key is off.
 fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
     var settings: context_experiments.Settings = .{};
     var pairs = std.mem.splitScalar(u8, value, ',');
@@ -1624,7 +1620,10 @@ fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
         const split = std.mem.indexOfScalar(u8, pair, '=') orelse return error.InvalidValue;
         const key = pair[0..split];
         const number = try std.fmt.parseInt(usize, pair[split + 1 ..], 10);
-        if (std.mem.eql(u8, key, "reinject_steps")) {
+        if (std.mem.eql(u8, key, "compact_percent")) {
+            if (number > 100) return error.InvalidValue;
+            settings.auto_compact_percent = number;
+        } else if (std.mem.eql(u8, key, "reinject_steps")) {
             settings.reinject_prompt_steps = number;
         } else if (std.mem.eql(u8, key, "reinject_percent")) {
             settings.reinject_prompt_percent = number;
@@ -1638,7 +1637,8 @@ fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
 }
 
 test "context experiment options parse into the settings the loop reads" {
-    const parsed = try parseContextExperiments("reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+    const parsed = try parseContextExperiments("compact_percent=80,reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+    try std.testing.expectEqual(@as(usize, 80), parsed.auto_compact_percent);
     try std.testing.expectEqual(@as(usize, 15), parsed.reinject_prompt_steps);
     try std.testing.expectEqual(@as(usize, 0), parsed.reinject_prompt_percent);
     try std.testing.expectEqual(@as(usize, 0), parsed.prune_tools_steps);
@@ -1650,6 +1650,7 @@ test "context experiment options parse into the settings the loop reads" {
     try std.testing.expect(!unknown.enabled());
     try std.testing.expectError(error.InvalidValue, parseContextExperiments("reinject_steps"));
     try std.testing.expectError(error.InvalidCharacter, parseContextExperiments("reinject_steps=often"));
+    try std.testing.expectError(error.InvalidValue, parseContextExperiments("compact_percent=101"));
 }
 
 /// `high;none,low,medium,high` — the stop the client's picker is on, then every stop

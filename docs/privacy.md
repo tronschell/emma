@@ -25,7 +25,7 @@ to a file in this repo.
 | Annotated screen context | A compressed JPEG | Stays in Electron's main process |
 | Notes you keep | Markdown and attachments | Written into the vault folder **you** chose; the note tagger may also send text to its configured model |
 | Threads and jobs | Markdown | The Rust data root, moved by `EMMA_DATA_DIR` |
-| Traces, plans, memories, artifacts and settings | Markdown and JSON | Electron's `userData` directory; see [data.md](data.md) for the separate roots |
+| Traces, task lists, plans, memories, artifacts and settings | Markdown and JSON | Electron's `userData` directory; see [data.md](data.md) for the separate roots |
 | Component `fetch` | The widget's request, with approved `{{NAME}}` placeholders filled in from saved variables | The fixed public HTTPS destination shown in the credential-request approval; keyless widgets can fetch without credential approval |
 | Provider keys | Your API keys | Keychain-encrypted on disk, child-process environments, and the configured service as authentication |
 | Browser, MCP servers and coding CLIs | Pages, prompts, tool arguments and credentials used by those integrations | Their configured services; they are not covered by Private routing |
@@ -158,7 +158,8 @@ bar and its system commands are excluded. Other image paths are unchanged:
 
 - **The `vision` tool** — the deliberate exception. It posts one image to the
   configured vision endpoint and hands back words. A `url` argument goes through
-  `publicUrl`; a `path` argument must be inside a connected folder. Advertised to
+  `publicUrl`; a `path` argument is a file in a connected folder, or any absolute
+  path on this Mac — including one a tool wrote outside a grant. Advertised to
   the model as `look_at_image`.
 - **The yellow pen's annotated capture** — compressed into `ScreenContextStore`
   and put on `request.params.screenContext`, but `runOnHarness` reads only

@@ -20,19 +20,6 @@ export const MAX_USES = 32;
    round. Swap in a tokenizer if the estimate ever misleads. */
 export const CHARS_PER_TOKEN = 4;
 
-/**
- * The mass of a turn that the renderer never wrote and cannot measure: the
- * system prompt, the tool schemas, skills injected by the harness, knowledge the
- * host retrieved, an attached screen capture.
- *
- * It is a residual, not an estimate — the provider's own input count for the
- * turn, minus the segments this side did measure. Zero when no usage was
- * reported, or when the measured segments already account for the whole input.
- */
-export function systemChars(inputTokens: number, measuredChars: number): number {
-  return Math.max(0, inputTokens * CHARS_PER_TOKEN - measuredChars);
-}
-
 export function usageKey(use: { kind: UsageKind; label: string }): string {
   return `${use.kind}:${use.label}`;
 }

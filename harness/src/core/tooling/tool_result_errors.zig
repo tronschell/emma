@@ -40,6 +40,8 @@ pub const TerminalActionFieldCorrectionView = struct {
 
 const terminal_action_field_error_code = "invalid_action_fields";
 
+const terminal_action_field_retry = "Resend the same action carrying only allowed_fields. Every name in invalid_fields belongs to a different terminal action and is never accepted on this one, so drop them rather than changing their values.";
+
 pub fn terminalActionFieldCorrectionJson(
     alloc: Allocator,
     correction: TerminalActionFieldCorrection,
@@ -53,6 +55,7 @@ pub fn terminalActionFieldCorrectionJson(
         .missing_fields = correction.missing_fields,
         .allowed_fields = correction.allowed_fields,
         .conflicts = correction.conflicts,
+        .retry = terminal_action_field_retry,
     } }, .{}, &out.writer) catch return error.OutOfMemory;
     return try out.toOwnedSlice();
 }
@@ -412,6 +415,21 @@ fn writeMaskedJsonString(alloc: Allocator, writer: *std.Io.Writer, value: []cons
     const masked = try text_utils.maskSecrets(alloc, value);
     defer if (masked.ptr != value.ptr) alloc.free(masked);
     try std.json.Stringify.value(masked, .{}, writer);
+}
+
+test "terminal action field correction tells the model to drop the stray fields" {
+    const alloc = std.testing.allocator;
+    const json = try terminalActionFieldCorrectionJson(alloc, .{
+        .action = "exec",
+        .invalid_fields = &.{ "backend", "wait_ceiling_ms" },
+        .missing_fields = &.{},
+        .allowed_fields = &.{ "action", "command", "cwd" },
+        .conflicts = &.{},
+    });
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"retry\"") != null);
+    try std.testing.expect(std.mem.find(u8, json, "only allowed_fields") != null);
+    try std.testing.expect(std.mem.find(u8, json, "drop them rather than changing their values") != null);
 }
 
 test "tool permission denied JSON carries stable fields only" {

@@ -242,6 +242,176 @@ The one shipped slot (`providerCredentials`):
 Web search keys use the same store: `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`,
 `EXA_API_KEY`.
 
+## Plans and subscriptions
+
+**Settings → Models → Subscriptions** points the whole agent loop at a maker's
+own endpoint instead of OpenRouter. It is not a new mechanism. `withPlanProfile`
+([settings.ts](../desktop/shared/settings.ts)) writes a `ProviderProfile` with id
+`plan-<planId>` into `settings.providers`, adding a numbered suffix when another
+model already uses that plan. The existing `provider:` key carries it from there:
+`providerRoute` in [main.ts](../desktop/main/main.ts), `EMMA_PROVIDER_CHAT_URL`
+at spawn, one harness per provider. The harness, the IPC surface and main
+learned nothing new. Delete the profile and the plan is gone.
+
+`MODEL_PLANS` is the whole table:
+
+| Plan | Label | Base URL | Key | Billing |
+| --- | --- | --- | --- | --- |
+| `openai` | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | metered |
+| `anthropic` | Anthropic | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | metered |
+| `deepseek` | DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | metered |
+| `qwen` | Qwen Coding Plan | `https://coding-intl.dashscope.aliyuncs.com/v1` | `BAILIAN_CODING_PLAN_API_KEY` | subscription |
+| `zai` | GLM Coding Plan | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` | subscription |
+| `kimi` | Kimi Code | `https://api.kimi.com/coding/v1` | `KIMI_CODE_API_KEY` | subscription |
+| `minimax` | MiniMax Token Plan | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | subscription |
+| `gemini` | Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | metered |
+| `mistral` | Mistral | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | metered |
+
+Every base URL is https and every key slot is an environment variable name that
+`credentials.ts` will take, so a plan key is stored exactly like the OpenRouter
+one. Kimi Code sits under `KIMI_CODE_API_KEY` rather than `KIMI_API_KEY` because
+Moonshot's own CLI already claims the latter for its open-platform key, which is
+a different credential on a different host and would 401 here. `contextWindow` is 0 on all nine, and a plan model id is a vendor slug the
+OpenRouter catalog does not carry, so nothing fills the window in — set it on the
+profile under **Providers** for anything you run at length.
+
+### Choosing the route
+
+Pick the model, then choose who bills for it under the selected row. The provider
+control appears only for the current model when its id sits under a plan's
+`namespace`: **OpenRouter · API** or the plan's name and billing kind. The same
+control appears in the workspace, Quick Ask, scheduled tasks, conditional prompts,
+verifier, advisor, vision and secrets. Rows no plan covers keep their existing route.
+
+The model id is derived, never typed. `planForModel` matches the namespace,
+`planModelId` strips it along with any `:free` suffix, and
+`openrouter:z-ai/glm-5.2:free` becomes `glm-5.2` at
+`https://api.z.ai/api/coding/paas/v4`. Choosing the plan route reuses that model's
+profile or adds `plan-<planId>-2`, `plan-<planId>-3` and so on. A scheduled task
+on one GLM model therefore does not change when the workspace chooses another.
+The Subscriptions row lists the models currently routed through each plan and
+holds no model id field of its own.
+
+**Vendor slugs and OpenRouter slugs do not always match.** OpenRouter names a
+model what OpenRouter names it, and the stripped id is a guess at what the vendor
+calls the same weights. When the guess is wrong, or when a plan serves a model the
+OpenRouter catalog does not list at all, the **Providers** panel below takes an
+endpoint and a model id by hand.
+
+### What a plan has cost you
+
+Every plan row carries its own spend, on the two windows the vendors actually
+meter against: the last five hours and the last seven days. There is no new
+store behind it. `recordTurn` already writes `inputTokens`, `outputTokens` and
+`model` into the durable thread record, so `planSpend`
+([settings.ts](../desktop/shared/settings.ts)) folds the snapshot the renderer
+already holds and no Rust, Zig or IPC surface changed.
+
+Attribution rests on one invariant: **an OpenRouter turn always records a
+namespaced id (`z-ai/glm-5.2`) and a plan turn always records the bare vendor
+slug (`glm-5.2`)**, because `planModelId` strips the namespace on the way to the
+profile. `planForGeneration` therefore refuses any model containing a `/`, and
+otherwise matches the bare slug against the plan profiles. A hand-typed provider
+profile whose `modelId` collides with a plan profile's will be counted against
+the plan.
+
+**Tokens, not dollars.** The harness computes a real per-request cost and a
+resolved `canonicalSlug` ([client.zig](../harness/src/gateway/client.zig)), but
+the ACP bridge narrows usage to two integers
+([types.zig](../harness/src/acp/types.zig)) and drops both. Widening that wire
+shape is what a money column would cost.
+
+**DeepSeek is the only plan that can report its own balance.** `/user/balance`
+is documented, returns its money as strings, and is fetched by
+`fetchDeepSeekBalance` into the same `KeyBalance` the OpenRouter row already
+uses. Nothing else is available: Qwen and Mistral publish no endpoint at all;
+OpenAI and Anthropic gate usage behind an Admin key that by design cannot also
+run inference; Z.AI's and Kimi Code's quota endpoints exist but appear in no
+vendor documentation — two independent third-party clients disagree over whether
+Z.AI even wants a `Bearer` prefix — so Emma does not call them. The five-hour
+windows on the GLM and Kimi plans are therefore counted locally or not at all.
+
+### Gateways are not plans
+
+A plan claims one vendor `namespace`, which is what lets a catalog row offer a
+second route button. A gateway carries every vendor's models under its own ids,
+so it claims no namespace and gets no button — it belongs beside OpenRouter, not
+in `MODEL_PLANS`. OpenCode ships two, both OpenAI-compatible and both reached
+with the same `sk-` key from [the OpenCode console](https://opencode.ai/auth),
+so both are `PROVIDER_PRESETS` chips rather than plan rows:
+
+| Chip | Base URL | Key | Billing |
+| --- | --- | --- | --- |
+| OpenCode Zen | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` | prepaid credits, auto-reloading |
+| OpenCode Go | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` | $10 a month, open-weight models only |
+
+**Only part of each catalog answers on `/chat/completions`.** OpenCode binds each
+model id to one protocol: GPT, Grok and Muse are on `/responses`, Claude, Qwen and
+MiniMax are on `/messages`, and Gemini is on `/models/<id>`. Emma speaks
+chat-completions, so the usable set is the rest — GLM, Kimi, DeepSeek, MiniMax on
+Zen, LongCat and MiMo on Go, plus the free tier. Pick the model with **Test**
+before trusting a row: a wrong protocol answers 500, not 404.
+
+### OpenAI, Anthropic and Google are different in kind
+
+None of the three sells an HTTP endpoint that a subscription can pay for.
+`https://api.openai.com/v1` bills your OpenAI Platform account per token and
+`https://api.anthropic.com/v1` bills your Anthropic Console account per token,
+whatever ChatGPT Plus or Pro, or Claude Pro or Max, you also hold. Google is the
+same: its own docs say Google AI plan benefits "apply only within the Google AI
+Studio web interface" and that direct API use is "billed and managed separately",
+so `https://generativelanguage.googleapis.com/v1beta/openai` bills the key's
+project no matter which AI Pro or Ultra plan you hold. That is why all three rows
+are `billing: "metered"` and why each note says the subscription does not pay for
+the key. Paste a key there if you want the metered route; it is not the plan you
+are already buying.
+
+The subscription path for those three is their **own CLI**, which Emma already
+spawns through the `cli` tool ([cli.ts](../desktop/main/cli.ts),
+[cli.md](cli.md)). `CLI_PLANS` holds three rows, shown under the key rows:
+
+| Row | Plan | Sign in with | Turns draw on |
+| --- | --- | --- | --- |
+| Claude Code | Claude Pro or Max | `claude` | [the same limits your Claude chats share](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan) |
+| Codex | ChatGPT Plus, Pro or Business | `codex login` | [the plan's five-hour message window, shared with other ChatGPT use](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan) |
+| Gemini CLI | Google AI Pro or Ultra | `gemini` | [1,000 requests a day free, 1,500 on AI Pro, 2,000 on AI Ultra](https://ai.google.dev/gemini-api/docs/google-ai-plans) |
+
+**Emma spawns the binary and never touches the login.** Anthropic's
+[legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance)
+permits an end user signing in to the **unmodified** Claude Code binary with
+their own subscription, and explicitly forbids a third-party application routing
+Pro or Max credentials through itself or storing or intermediating Claude session
+tokens. Emma spawns the unmodified binary you signed in to yourself and never
+sees, stores or forwards that login. Codex is the same shape. Google is stricter
+still: the Gemini CLI terms forbid third-party software reaching Gemini Code
+Assist through that OAuth login, and the sanction falls on the user's account —
+so the binary spawns as itself or not at all. Google AI Plus is not supported.
+
+**A CLI run is a delegated side channel, not the thread model.** The call goes
+out through the `cli` tool and comes back as one tool result;
+[harness.ts](../desktop/main/harness.ts) only ever speaks ACP to `emma-cli`, so
+no plan and no CLI changes which process runs the loop. This is not "use Claude
+as your model" and should not be read as one.
+
+**Emma detects installed, not signed in.** `installedClis` resolves each binary
+with `command -v` in a login shell, and the row reads **Installed** with the
+resolved path or **Not found**. Whether that binary has a session is between you
+and the vendor.
+
+### What bites, per plan
+
+Each row's `note`, which the panel shows behind its (i):
+
+| Plan | Gotcha |
+| --- | --- |
+| GLM Coding Plan | The endpoint picks the billing pool, not the key. This is the coding host; the same key on the general host silently bills pay-as-you-go. A mainland `bigmodel.cn` key will not work here. |
+| Kimi Code | Wants a Kimi Code key from the Kimi Code console — a different credential, on a different host, from a Moonshot open-platform key. |
+| MiniMax Token Plan | The Token Plan issues its own Subscription Key, separate from the pay-as-you-go key; MiniMax states the two are not interchangeable. |
+| Qwen Coding Plan | A Coding Plan key starts `sk-sp-` and works only on the coding hosts; an ordinary `sk-` Model Studio key is metered. Keys are bound to the region that made them. |
+| DeepSeek | Prepaid balance, no subscription at all. At a zero balance every request is a 402 until you top up. |
+| Mistral | No coding plan. The subscription grants monthly API credits that this key spends, per token. |
+| OpenAI, Anthropic | Metered credit only — above. |
+
 ## Environment variables
 
 Read by `emma-cli`, the process that runs your turn:
@@ -265,13 +435,14 @@ child, holds no credential and makes no network request.
 [App.tsx](../desktop/src/App.tsx) renders, in order: **ModelCatalog** (the full
 list, a "Free only" filter persisted under `emma.freeModelsOnly.v1`, a `Free`/`Paid`
 badge, a reload that names what was added and removed, `CATALOG_PAGE` 15 rows at
-a time) · **ProviderSettings** · **VerifierPanel** · **AdvisorPanel** ·
+a time, and the shared provider control under the selected row when a plan covers it) ·
+**ModelPlans** (Subscriptions, above — keys only) · **ProviderSettings** · **VerifierPanel** · **AdvisorPanel** ·
 **VisionPanel** · **SecretPanel** · **ProviderKeys** · **Private routing** · **Automatic fallback**
 · **Local deterministic profile** · **Speech to text**.
 
 **Provider profiles.** `PROVIDER_PRESETS` fills the form's chips — OpenRouter,
-Z.AI, DeepSeek, LM Studio, Ollama, llama.cpp, Custom — with a base URL and a key
-variable name; a chip is prefill and nothing more. **Test** hits
+Z.AI, DeepSeek, OpenCode Zen, OpenCode Go, LM Studio, Ollama, llama.cpp, Custom —
+with a base URL and a key variable name; a chip is prefill and nothing more. **Test** hits
 `GET <baseUrl>/models` and then posts one throwaway completion with a single tool
 advertised, and reports two things: how many models the endpoint lists, and
 whether the model you named actually came back with a `tool_calls` array. Emma

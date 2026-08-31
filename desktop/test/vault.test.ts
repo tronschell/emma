@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyNoteTags, keepNote, listNotes, readVault, saveVault } from "../main/vault";
+import { applyNoteTags, createNoteFolder, keepNote, listNoteFolders, listNotes, moveNote, readVault, renameNoteFolder, saveVault } from "../main/vault";
 import { readTagReply, tagNote } from "../main/vault-tags";
 import { noteFolder, type KeptNote, type VaultChoice } from "../shared/vault";
 import { defaultTagger } from "../shared/settings";
@@ -14,6 +14,8 @@ function workspace(folder = "knowledge-base"): VaultChoice {
 }
 
 const body = (note: KeptNote) => readFileSync(note.path, "utf8");
+
+const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 test("the chosen vault survives a restart, and a relative root is refused", () => {
   const userData = mkdtempSync(path.join(tmpdir(), "emma-userdata-"));
@@ -110,6 +112,63 @@ test("newest first, and a note whose frontmatter lies about its date falls back 
   const notes = listNotes(vault);
   assert.equal(notes.length, 2);
   assert.ok(notes[0].savedAt >= notes[1].savedAt);
+});
+
+test("a card reads its own excerpt and picture out of the note, and refuses a picture outside the vault", async () => {
+  const vault = workspace();
+  const shot = await keepNote(vault, { kind: "screenshot", title: "Login", text: "The focus ring is gone", image: PIXEL });
+  const quote = await keepNote(vault, { kind: "selection", title: "Masonry", text: "Columns get you\nmost of the way" });
+  const folder = noteFolder(vault);
+  writeFileSync(path.join(folder, "escaped.md"), '---\ntitle: "Escaped"\nkind: "note"\nsaved: "2026-01-01T00:00:00.000Z"\n---\n\n![[../../etc/passwd.png]]\n![](https://example.com/remote.png)\n\nbody text\n');
+  const notes = listNotes(vault);
+  const found = (relative: string) => notes.find((note) => note.relative === relative)!;
+  assert.equal(found(shot.relative).excerpt, "The focus ring is gone");
+  assert.equal(found(shot.relative).image, path.join(folder, "attachments", shot.relative.replace(/\.md$/, ".png")));
+  assert.equal(found(quote.relative).excerpt, "Columns get you most of the way");
+  assert.equal(found("escaped.md").image, undefined);
+  assert.equal(found("escaped.md").excerpt, "body text");
+});
+
+test("a folder is a directory, and a save filed into it keeps its picture and comes back under that folder", async () => {
+  const vault = workspace();
+  const shot = await keepNote(vault, { kind: "screenshot", title: "Login", text: "focus ring", image: PIXEL });
+  const made = createNoteFolder(vault, "  Design  ");
+  assert.equal(made.name, "Design");
+  assert.deepEqual(listNoteFolders(vault).map((folder) => folder.name), ["Design"]);
+  assert.equal(moveNote(vault, shot.relative, "Design"), path.join("Design", shot.relative));
+  const notes = listNotes(vault);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].folder, "Design");
+  assert.equal(notes[0].image, path.join(noteFolder(vault), "attachments", shot.relative.replace(/\.md$/, ".png")));
+  assert.equal(moveNote(vault, notes[0].relative, ""), shot.relative);
+  assert.equal(listNotes(vault)[0].folder, undefined);
+});
+
+test("renaming a folder carries its saves and refuses a name that escapes or collides", async () => {
+  const vault = workspace();
+  const note = await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
+  createNoteFolder(vault, "Design");
+  createNoteFolder(vault, "Taken");
+  moveNote(vault, note.relative, "Design");
+  assert.equal(renameNoteFolder(vault, "Design", "  Sketches  ").name, "Sketches");
+  assert.deepEqual(listNoteFolders(vault).map((folder) => folder.name), ["Sketches", "Taken"]);
+  assert.equal(listNotes(vault)[0].folder, "Sketches");
+  for (const name of ["../escape", "nested/deep", "attachments", "", "  ", "Taken"]) {
+    assert.throws(() => renameNoteFolder(vault, "Sketches", name), Error, `accepted ${JSON.stringify(name)}`);
+  }
+  assert.throws(() => renameNoteFolder(vault, "Missing", "Sketches"), Error);
+});
+
+test("a folder name that would escape the vault, collide, or hide the attachments is refused", async () => {
+  const vault = workspace();
+  const note = await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
+  createNoteFolder(vault, "Design");
+  for (const name of ["../escape", "nested/deep", "attachments", ".hidden", "", "  ", "Design"]) {
+    assert.throws(() => createNoteFolder(vault, name), Error, `accepted ${JSON.stringify(name)}`);
+  }
+  assert.throws(() => moveNote(vault, note.relative, "../escape"));
+  assert.throws(() => moveNote(vault, note.relative, "Missing"));
+  assert.deepEqual(listNoteFolders(vault).map((folder) => folder.name), ["Design"]);
 });
 
 test("a garbage reply from the tagger leaves the note alone", async () => {

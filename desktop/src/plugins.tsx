@@ -391,7 +391,7 @@ function PluginDetailDialog({ plugin, marketplace, installed, busy, close, insta
           {!!face?.capabilities.length && <div><dt>Capabilities</dt><dd>{face.capabilities.join(", ")}</dd></div>}
           {!!face?.defaultPrompt.length && <div><dt>Prompts</dt><dd><ul className="plugin-prompts">{face.defaultPrompt.map((prompt) => <li key={prompt}>{prompt}</li>)}</ul></dd></div>}
           {!!links.length && <div><dt>Links</dt><dd className="plugin-links">{links.map(([label, url]) => <a key={label} href={url} target="_blank" rel="noreferrer">{label} ↗</a>)}</dd></div>}
-          {!!detail?.apps.length && <div><dt>Connections</dt><dd>{detail.apps.map((hosted) => <span key={hosted.id} className="plugin-hosted">Carries a ChatGPT-hosted connection Emma cannot run · {hosted.id}</span>)}</dd></div>}
+          {!!detail?.apps.length && <div><dt>Hosted apps</dt><dd>{detail.apps.map((hosted) => <span key={hosted.id} className="plugin-hosted">Carries a ChatGPT-hosted app Emma cannot run · {hosted.id}</span>)}</dd></div>}
         </dl>
       </div>
       <div className="plugin-dialog-actions">

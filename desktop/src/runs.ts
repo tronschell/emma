@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
-import { decodeSpans, type TraceSpan } from "../shared/trace";
+import { decodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
 import { visualDrawn } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
@@ -173,7 +173,7 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
           toolCallId: span.id.slice("call:".length),
           title: span.name,
           kind: span.kind,
-          status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : "in_progress",
+          status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : span.status === "cancelled" ? "cancelled" : "in_progress",
           input: span.input,
           output: span.output,
           at: span.startedAt,
@@ -194,10 +194,11 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
 }
 
 const TRACE_OF_TURN_MS = 60_000;
+const RECOVERED_TRACE_OF_TURN_MS = 2 * TRACE_OF_TURN_MS;
 
 export function tracedBlocks(threadId: string, messages: Message[], traces: readonly { timestamp: string; text: string }[]): Record<string, Block[]> {
   const recorded = traces
-    .map((trace) => ({ at: Date.parse(trace.timestamp), spans: decodeSpans(trace.text) }))
+    .map((trace) => ({ at: Date.parse(trace.timestamp), spans: decodeSpans(trace.text), within: traceHeader(trace.text).recovered === "session" ? RECOVERED_TRACE_OF_TURN_MS : TRACE_OF_TURN_MS }))
     .filter((trace) => Number.isFinite(trace.at) && trace.spans.some((span) => span.id.startsWith("call:")))
     .sort((left, right) => left.at - right.at);
   const turns: Record<string, Block[]> = {};
@@ -208,7 +209,7 @@ export function tracedBlocks(threadId: string, messages: Message[], traces: read
     if (!Number.isFinite(when)) continue;
     while (at + 1 < recorded.length && Math.abs(recorded[at + 1].at - when) <= Math.abs(recorded[at].at - when)) at += 1;
     const trace = recorded[at];
-    if (!trace || Math.abs(trace.at - when) > TRACE_OF_TURN_MS) continue;
+    if (!trace || Math.abs(trace.at - when) > trace.within) continue;
     at += 1;
     const { answer, thinking } = splitThinking(message.content);
     const blocks = restoreBlocks(threadId, trace.spans, { text: answer, thinking });
@@ -277,6 +278,10 @@ export function wire() {
     if (!read(step.threadId).sending) adoptForeign(step.threadId);
     write(step.threadId, (run) => ({ blocks: mergeStep(run.blocks, step), activeAt: Date.now() }));
   });
+  window.emma.onCompacted(({ threadId, removedTurns, modelWritten }) => {
+    if (!read(threadId).sending) adoptForeign(threadId);
+    write(threadId, (run) => ({ blocks: [...run.blocks, { kind: "notice" as const, text: compactionNotice(removedTurns, modelWritten), plain: true }] }));
+  });
   window.emma.onContextExperiment((fired) => {
     const { threadId, prunedResults, reinjected, savedTokens, addedTokens } = fired;
     if (!read(threadId).sending) adoptForeign(threadId);
@@ -292,6 +297,11 @@ export function wire() {
     });
   });
   window.emma.onContextBreakdown(({ threadId, ...parts }) => recordBreakdown(threadId, parts));
+}
+
+export function compactionNotice(removedTurns: number, modelWritten: boolean): string {
+  const summary = modelWritten ? "a summary" : "a rough summary the model did not write";
+  return `Context compacted — ${removedTurns} ${removedTurns === 1 ? "turn" : "turns"} became ${summary}`;
 }
 
 export function experimentNotice(prunedResults: number, reinjected: boolean, savedTokens = 0, addedTokens = 0): string {
@@ -329,6 +339,19 @@ export function queuedTurns(run: Run) {
 
 export function dropQueued(threadId: string, index: number) {
   write(threadId, (run) => ({ queue: run.queue.filter((_, at) => at !== index + inFlight(run)) }));
+}
+
+export function interruptQueued(threadId: string, index: number) {
+  const run = read(threadId);
+  const at = index + inFlight(run);
+  const turn = run.queue[at];
+  if (!turn) return;
+  if (run.pending?.prepare) run.pending.cancelled = true;
+  const queue = [...run.queue];
+  const [picked] = queue.splice(at, 1);
+  queue.splice(inFlight(run), 0, picked);
+  write(threadId, { queue });
+  window.emma.stopAgent(threadId);
 }
 
 export function stopTurn(threadId: string, turn?: QueuedTurn, reload: () => unknown = refresh) {

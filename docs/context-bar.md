@@ -1,7 +1,7 @@
 # The context bar
 
 The thread inspector: the column down the right of a thread, built from
-components you arrange. Emma ships **ten**
+components you arrange. Emma ships **eleven**
 ([`desktop/shared/context-bar.ts`](../desktop/shared/context-bar.ts) —
 `CONTEXT_WIDGETS`), drawn by
 [`desktop/src/context-bar.tsx`](../desktop/src/context-bar.tsx).
@@ -13,6 +13,7 @@ components you arrange. Emma ships **ten**
 | ▦ | Thread stats | Whichever metrics you picked, as tiles or rows. Six by default: messages, replies, attachments, tool calls, avg tok/s with a rate-by-context curve, output tokens | both |
 | ▤ | Context window | What the last turn carried, by kind, against the model's stated window; ⤢ opens the full ledger as a table | both |
 | ⌇ | Timeline | Every turn as a waterfall — model requests, tool calls, subagents | down only |
+| ☷ | Tasks | The durable nested checklist for complex work this agent is doing itself | down only |
 | ◰ | Plan | This thread's plan as a graph of subagents; pressing a node lights its wave | down only |
 | ⌸ | Subagents | One row per live subagent, into the transcript it is writing | both |
 | ⑃ | Sub threads | Threads this one started, working or idle — they outlive their runs, so the rows stay | both |
@@ -70,8 +71,8 @@ Up to `MAX_CONTEXT_PAGES` (**4**) arrangements, each named in
 header becomes a `role="tablist"` row of page tabs; the chosen page id is
 remembered in `localStorage` under `emma.contextPage.v1`.
 
-Ships with three: **Context** (stats horizontal, then context, timeline, plan,
-subagents, sub threads), **Run** (timeline, plan, subagents, sub threads, git)
+Ships with three: **Context** (stats horizontal, then context, timeline, tasks,
+plan, subagents, sub threads), **Run** (timeline, tasks, plan, subagents, sub threads, git)
 and **Machine** (meters, graph, numbers). A component appears at most once per page — its type is the key the
 drag-and-drop sorts by, so there are no instance ids to mint.
 

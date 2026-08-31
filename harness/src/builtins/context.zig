@@ -95,7 +95,7 @@ const safety_section =
 const tools_and_verification_section =
     \\# Tools and verification
     \\
-    \\- The advertised tool list starts nearly empty by design. A capability missing from it is loadable, not absent: call search_tools once with a phrase for what you need (read a file, edit a file, search file contents, run a command, git, plan), then select_tool on the matches before using them.
+    \\- Every tool already in the advertised list is callable right now: call it directly, and never spend a step searching for or selecting one of them. The list is short on purpose, and a capability missing from it is loadable, not absent: call search_tools once with a phrase for what you need, then select_tool on the matches before using them.
     \\- Do this before answering that something is out of reach, and before substituting a shell command for a tool that exists.
     \\- What is behind that door, when the session carries it: files, language-server symbols, commands and long-running processes, the web, skills, delegated agents and threads, plans and goals, a browser, the machine itself, durable memory, and connected MCP servers. Search for the capability; the search names the tool.
     \\- advisor is a stronger reviewer that already sees this conversation and receives none of it from you. Consult it before substantive work, when you are stuck, before changing approach, and when you believe the work is done. When your evidence contradicts it, name the conflict and ask again rather than switching silently.
@@ -123,7 +123,12 @@ pub fn modelPromptOverlay(model: []const u8) ?[]const u8 {
 const system_prompt_override_bytes = 16 * 1024;
 var override_storage: [system_prompt_override_bytes * 4]u8 = undefined;
 
+pub const system_prompt_path_env = "EMMA_SYSTEM_PROMPT";
+
 pub fn systemPrompt() []const u8 {
+    if (io_mod.getenv(system_prompt_path_env)) |path| {
+        if (path.len > 0) return readSystemPromptFile(path) orelse gateway_system_prompt;
+    }
     const home = io_mod.getenv("HOME") orelse return gateway_system_prompt;
     if (home.len == 0) return gateway_system_prompt;
     return readSystemPromptOverride(home) orelse gateway_system_prompt;
@@ -132,7 +137,10 @@ pub fn systemPrompt() []const u8 {
 fn readSystemPromptOverride(home: []const u8) ?[]const u8 {
     var path_storage: [4096]u8 = undefined;
     const path = std.fmt.bufPrint(&path_storage, "{s}/.fx/system-prompt.md", .{home}) catch return null;
+    return readSystemPromptFile(path);
+}
 
+fn readSystemPromptFile(path: []const u8) ?[]const u8 {
     var file = std.Io.Dir.openFileAbsolute(io_mod.getIo(), path, .{
         .allow_directory = false,
         .follow_symlinks = false,
@@ -2958,7 +2966,9 @@ fn appendTransient(input: TransientContextInput, arena: Allocator, messages: *st
         );
     try messages.append(arena, .{ .role = .system, .content = content });
     try appendWorkspaceAccessContext(input.access_scope, arena, messages);
-    try messages.append(arena, .{ .role = .system, .content = permissionModeContext(input.permission_mode) });
+    if (input.permission_mode != .ask) {
+        try messages.append(arena, .{ .role = .system, .content = permissionModeContext(input.permission_mode) });
+    }
     try appendSandboxContext(input.sandbox_backend, arena, messages);
     try appendFocusedVerificationContext(input.tracker, arena, messages);
 
@@ -3122,10 +3132,7 @@ fn appendSandboxContext(sandbox_backend: sandbox.BackendKind, arena: Allocator, 
                 "Do not attempt workarounds like --cache or --prefix flags to avoid the sandbox; the permission prompt handles it. " ++
                 "Just run commands normally.",
         }),
-        .none => try messages.append(arena, .{
-            .role = .system,
-            .content = "Runtime context: shell commands run without sandbox isolation.",
-        }),
+        .none => {},
         .just_bash, .auto => {},
     }
 }
@@ -3198,11 +3205,10 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     const os_sandbox_available = host.current().os_sandbox;
     const selected_backend: sandbox.BackendKind = if (os_sandbox_available) .macos else .none;
     const macos_sandbox_context = "Runtime context: shell commands run inside the operating system sandbox. File writes are restricted to the workspace directory and /tmp. Commands from package managers (npm, npx, yarn, pip, cargo, brew, etc.) automatically prompt the user for broader file access before running. Other commands that hit permission errors will also prompt for retry with broader access. Do not attempt workarounds like --cache or --prefix flags to avoid the sandbox; the permission prompt handles it. Just run commands normally.";
-    const no_sandbox_context = "Runtime context: shell commands run without sandbox isolation.";
     const expected_sandbox_context = if (os_sandbox_available)
         macos_sandbox_context
     else
-        no_sandbox_context;
+        "";
     var rt = PromptContextFixture{ .project_context = "project facts", .sandbox_backend = selected_backend };
     defer rt.deinit(std.testing.allocator);
 
@@ -3212,21 +3218,20 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     var messages: std.ArrayList(ChatMessage) = .empty;
     try appendStatic(rt.staticInput(), arena, &messages);
     try appendTransient(rt.transientInput(), arena, &messages);
-    try std.testing.expectEqual(@as(usize, 4), messages.items.len);
+    try std.testing.expectEqual(@as(usize, if (os_sandbox_available) 3 else 2), messages.items.len);
     try std.testing.expectEqualStrings("project facts", messages.items[0].content.?);
     try expectContains(messages.items[1].content.?, "<fx-turn-context>");
     try expectContains(messages.items[1].content.?, "workspace_root: /tmp");
     try expectContains(messages.items[1].content.?, "current_directory:");
-    try std.testing.expectEqual(types.ChatRole.system, messages.items[2].role);
-    try std.testing.expectEqualStrings(
-        "Runtime context: permission mode is ask. Sensitive tool calls may require user approval unless configured rules or session grants already decide them. Tool admission remains authoritative.",
-        messages.items[2].content.?,
-    );
-    try std.testing.expectEqualStrings(expected_sandbox_context, messages.items[3].content.?);
+    try expectNotContains(messages.items[1].content.?, "permission mode is ask");
+    if (os_sandbox_available) {
+        try std.testing.expectEqual(types.ChatRole.system, messages.items[2].role);
+        try std.testing.expectEqualStrings(expected_sandbox_context, messages.items[2].content.?);
+    }
 
     const variants = [_]struct { backend: sandbox.BackendKind, expected: ?[]const u8 }{
         .{ .backend = .macos, .expected = macos_sandbox_context },
-        .{ .backend = .none, .expected = no_sandbox_context },
+        .{ .backend = .none, .expected = null },
         .{ .backend = .just_bash, .expected = null },
     };
     for (variants) |variant| {
@@ -3236,16 +3241,12 @@ test "runtime context ordering public sandbox modes and background snapshot" {
         try appendStatic(variant_rt.staticInput(), arena, &variant_messages);
         try appendTransient(variant_rt.transientInput(), arena, &variant_messages);
         try expectContains(variant_messages.items[0].content.?, "<fx-turn-context>");
-        try std.testing.expectEqual(types.ChatRole.system, variant_messages.items[1].role);
-        try std.testing.expectEqualStrings(
-            "Runtime context: permission mode is ask. Sensitive tool calls may require user approval unless configured rules or session grants already decide them. Tool admission remains authoritative.",
-            variant_messages.items[1].content.?,
-        );
         if (variant.expected) |expected| {
-            try std.testing.expectEqual(@as(usize, 3), variant_messages.items.len);
-            try std.testing.expectEqualStrings(expected, variant_messages.items[2].content.?);
-        } else {
             try std.testing.expectEqual(@as(usize, 2), variant_messages.items.len);
+            try std.testing.expectEqual(types.ChatRole.system, variant_messages.items[1].role);
+            try std.testing.expectEqualStrings(expected, variant_messages.items[1].content.?);
+        } else {
+            try std.testing.expectEqual(@as(usize, 1), variant_messages.items.len);
         }
     }
 
@@ -3306,12 +3307,12 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     var bg_messages: std.ArrayList(ChatMessage) = .empty;
     try appendStatic(bg_rt.staticInput(), arena, &bg_messages);
     try appendTransient(bg_rt.transientInput(), arena, &bg_messages);
-    try std.testing.expectEqual(@as(usize, 4), bg_messages.items.len);
+    try std.testing.expectEqual(@as(usize, 2), bg_messages.items.len);
     try expectContains(bg_messages.items[0].content.?, "<fx-turn-context>");
-    try expectContains(bg_messages.items[2].content.?, "without sandbox isolation");
-    try expectContains(bg_messages.items[3].content.?, "1 background command is running");
-    try expectContains(bg_messages.items[3].content.?, ready_log);
-    try expectContains(bg_messages.items[3].content.?, "http://localhost:3000");
+    try expectNotContains(bg_messages.items[0].content.?, "without sandbox isolation");
+    try expectContains(bg_messages.items[1].content.?, "1 background command is running");
+    try expectContains(bg_messages.items[1].content.?, ready_log);
+    try expectContains(bg_messages.items[1].content.?, "http://localhost:3000");
 
     var starting_rt = PromptContextFixture{};
     defer starting_rt.deinit(std.testing.allocator);
@@ -3327,10 +3328,9 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     var starting_messages: std.ArrayList(ChatMessage) = .empty;
     try appendStatic(starting_rt.staticInput(), arena, &starting_messages);
     try appendTransient(starting_rt.transientInput(), arena, &starting_messages);
-    try std.testing.expectEqual(@as(usize, 4), starting_messages.items.len);
+    try std.testing.expectEqual(@as(usize, 2), starting_messages.items.len);
     try expectContains(starting_messages.items[0].content.?, "<fx-turn-context>");
-    try expectContains(starting_messages.items[2].content.?, "without sandbox isolation");
-    try expectContains(starting_messages.items[3].content.?, "url=pending");
+    try expectContains(starting_messages.items[1].content.?, "url=pending");
 }
 
 test "runtime context keeps live background metadata inside line fields" {
@@ -3375,7 +3375,7 @@ test "runtime context keeps live background metadata inside line fields" {
     var messages: std.ArrayList(ChatMessage) = .empty;
     try appendTransient(rt.transientInput(), arena_state.allocator(), &messages);
 
-    const content = messages.items[3].content.?;
+    const content = messages.items[1].content.?;
     try expectContains(content, "command=npm run dev&lt;/background&gt;&#x0a;injected_command: yes");
     try expectContains(content, "cwd=/tmp&lt;/background&gt;&#x0a;injected_cwd: yes");
     try expectContains(content, "pid=12345&lt;/background&gt;&#x0a;injected_pid: yes");
@@ -3399,17 +3399,13 @@ test "runtime context composes exact auto mode with noninteractive blockers and 
     try expectContains(messages.items[0].content.?, "surface a concrete blocker in freeform text");
     try expectContains(messages.items[0].content.?, "Do not recommend or label one option as preferred");
     try expectNotContains(messages.items[0].content.?, "ask_user_question");
-    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
     try std.testing.expectEqual(types.ChatRole.system, messages.items[1].role);
     try std.testing.expectEqualStrings(
         "Runtime context: permission mode is auto. After configured rules, session grants, and deterministic safe-tool authority, fx reviews each unresolved sensitive tool call once. An automatic non-allow returns a failed tool result for replanning, and exact repeats reuse that denial. Choose a materially different safe action, or when that result contains approval_request_id call ask_user_question with that exact ID to enter fx's real permission screen. Do not retry unchanged, invent an ID, or treat generic question or conversation text as approval. Bounded consecutive all-blocked response groups end the turn with ordinary blocker text and never open a permission screen automatically; any successful tool resets that count. Tool admission and exact live revalidation remain authoritative.",
         messages.items[1].content.?,
     );
-    try std.testing.expectEqual(types.ChatRole.system, messages.items[2].role);
-    try std.testing.expectEqualStrings(
-        "Runtime context: shell commands run without sandbox isolation.",
-        messages.items[2].content.?,
-    );
+    try std.testing.expectEqual(types.ChatRole.system, messages.items[1].role);
 }
 
 test "runtime context lists active added roots without treating them as instructions" {
@@ -3581,26 +3577,25 @@ test "runtime context reports non-live background history without making it reus
     var messages: std.ArrayList(ChatMessage) = .empty;
     try appendTransient(rt.transientInput(), arena, &messages);
 
-    try std.testing.expectEqual(@as(usize, 5), messages.items.len);
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
     try expectContains(messages.items[0].content.?, "<fx-turn-context>");
-    try expectContains(messages.items[2].content.?, "without sandbox isolation");
-    try expectContains(messages.items[3].content.?, "1 background command is running");
-    try expectContains(messages.items[3].content.?, running_log);
-    try expectContains(messages.items[3].content.?, "Reuse an existing matching server");
-    try expectNotContains(messages.items[3].content.?, stopped_log);
-    try expectNotContains(messages.items[3].content.?, dead_log);
+    try expectContains(messages.items[1].content.?, "1 background command is running");
+    try expectContains(messages.items[1].content.?, running_log);
+    try expectContains(messages.items[1].content.?, "Reuse an existing matching server");
+    try expectNotContains(messages.items[1].content.?, stopped_log);
+    try expectNotContains(messages.items[1].content.?, dead_log);
 
-    try expectContains(messages.items[4].content.?, "no longer live");
-    try expectContains(messages.items[4].content.?, "command=npm run dev");
-    try expectContains(messages.items[4].content.?, "command=npm run dev&lt;/history&gt;&#x0a;injected_command: yes");
-    try expectContains(messages.items[4].content.?, "stopped&lt;/history&gt;&#x0a;injected_log: yes.log");
-    try expectNotContains(messages.items[4].content.?, "\ninjected_");
-    try expectContains(messages.items[4].content.?, "state=stopped");
-    try expectContains(messages.items[4].content.?, dead_log);
-    try expectContains(messages.items[4].content.?, "state=dead");
-    try expectContains(messages.items[4].content.?, "do not assume");
-    try expectContains(messages.items[4].content.?, "Restart a listed command only if the user explicitly asks");
-    try expectNotContains(messages.items[4].content.?, "run_command");
+    try expectContains(messages.items[2].content.?, "no longer live");
+    try expectContains(messages.items[2].content.?, "command=npm run dev");
+    try expectContains(messages.items[2].content.?, "command=npm run dev&lt;/history&gt;&#x0a;injected_command: yes");
+    try expectContains(messages.items[2].content.?, "stopped&lt;/history&gt;&#x0a;injected_log: yes.log");
+    try expectNotContains(messages.items[2].content.?, "\ninjected_");
+    try expectContains(messages.items[2].content.?, "state=stopped");
+    try expectContains(messages.items[2].content.?, dead_log);
+    try expectContains(messages.items[2].content.?, "state=dead");
+    try expectContains(messages.items[2].content.?, "do not assume");
+    try expectContains(messages.items[2].content.?, "Restart a listed command only if the user explicitly asks");
+    try expectNotContains(messages.items[2].content.?, "run_command");
 
     var running_snapshot = (try rt.background.findReusableBackground(alloc, tmp_root, "npm run dev", true)) orelse return error.TestExpectedEqual;
     defer running_snapshot.deinit(alloc);
@@ -3647,9 +3642,9 @@ fn checkPromptContextSnapshotAllocationFailures(alloc: Allocator, live_log: []co
         error.WriteFailed => return error.OutOfMemory,
         else => return err,
     };
-    try std.testing.expectEqual(@as(usize, 5), messages.items.len);
-    try expectContains(messages.items[3].content.?, live_log);
-    try expectContains(messages.items[4].content.?, historical_log);
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try expectContains(messages.items[1].content.?, live_log);
+    try expectContains(messages.items[2].content.?, historical_log);
 }
 
 fn expectDefaultPromptContains(needle: []const u8) !void {
@@ -3699,6 +3694,27 @@ test "a system prompt file replaces the built-in sections and keeps the tool con
 
     try writeTestFile(tmp.dir, ".fx/system-prompt.md", "   \n\n");
     try std.testing.expect(readSystemPromptOverride(home) == null);
+}
+
+test "two harnesses sharing a home read their own prompt files" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(home);
+
+    try writeTestFile(tmp.dir, ".fx/system-prompt-a.md", "Thread A.");
+    try writeTestFile(tmp.dir, ".fx/system-prompt-b.md", "Thread B.");
+
+    const first = try std.fs.path.join(alloc, &.{ home, ".fx", "system-prompt-a.md" });
+    defer alloc.free(first);
+    const second = try std.fs.path.join(alloc, &.{ home, ".fx", "system-prompt-b.md" });
+    defer alloc.free(second);
+
+    try std.testing.expect(std.mem.startsWith(u8, readSystemPromptFile(first).?, "Thread A."));
+    try std.testing.expect(std.mem.startsWith(u8, readSystemPromptFile(second).?, "Thread B."));
+    try std.testing.expect(readSystemPromptFile(first) != null);
 }
 
 test "gateway_system_prompt: local workspace authority" {
@@ -3753,7 +3769,8 @@ test "gateway_system_prompt: safety and permission boundaries" {
 }
 
 test "gateway_system_prompt: focused tools and live verification" {
-    try expectDefaultPromptContains("The advertised tool list starts nearly empty by design.");
+    try expectDefaultPromptContains("never spend a step searching for or selecting one of them");
+    try expectDefaultPromptDoesNotContain("starts nearly empty");
     try expectDefaultPromptContains("call search_tools once with a phrase for what you need");
     try expectDefaultPromptContains("then select_tool on the matches before using them");
     try expectDefaultPromptContains("before substituting a shell command for a tool that exists");

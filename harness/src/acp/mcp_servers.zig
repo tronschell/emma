@@ -39,37 +39,6 @@ pub const OwnedServerConfigs = struct {
     }
 };
 
-pub const Preparation = union(enum) {
-    ready: ?*mcp_runtime.McpRuntime,
-    failed: []u8,
-
-    pub fn deinit(self: *Preparation, alloc: Allocator) void {
-        switch (self.*) {
-            .ready => |maybe_runtime| {
-                if (maybe_runtime) |runtime| {
-                    runtime.deinit();
-                    alloc.destroy(runtime);
-                }
-            },
-            .failed => |message| alloc.free(message),
-        }
-        self.* = undefined;
-    }
-
-    pub fn takeRuntime(self: *Preparation) ?*mcp_runtime.McpRuntime {
-        return switch (self.*) {
-            .ready => |runtime| blk: {
-                self.* = .{ .ready = null };
-                break :blk runtime;
-            },
-            .failed => unreachable,
-        };
-    }
-};
-
-/// Parses the authoritative ACP `mcpServers` list into owned core configs.
-/// An omitted list is authoritative empty. The returned configs must be
-/// deinitialized or moved into `prepare`.
 pub fn parse(alloc: Allocator, params_raw: ?[]const u8) ParseError!OwnedServerConfigs {
     const params = params_raw orelse return error.MissingParams;
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, params, .{}) catch |err| switch (err) {
@@ -92,29 +61,23 @@ pub fn parse(alloc: Allocator, params_raw: ?[]const u8) ParseError!OwnedServerCo
     return configs;
 }
 
-/// Parses the authoritative ACP `session/resume` MCP server list.
 pub fn parseResume(alloc: Allocator, params_raw: ?[]const u8) ParseError!OwnedServerConfigs {
     return parse(alloc, params_raw);
 }
 
-/// Moves parsed configs into an existing MCP runtime and performs required
-/// server startup. A failed result owns its rendered diagnostic.
 pub fn prepare(
     alloc: Allocator,
     configs: *OwnedServerConfigs,
     elicitation_capabilities: elicitation.Capabilities,
     legacy_url_completion_sink: ?tool_mcp_runtime.LegacyUrlCompletionSink,
-) Allocator.Error!Preparation {
-    if (configs.items.items.len == 0) return .{ .ready = null };
+) Allocator.Error!?*mcp_runtime.McpRuntime {
+    if (configs.items.items.len == 0) return null;
 
     const runtime = try alloc.create(mcp_runtime.McpRuntime);
+    errdefer alloc.destroy(runtime);
     runtime.* = mcp_runtime.McpRuntime.initWithElicitation(alloc, elicitation_capabilities);
+    errdefer runtime.deinit();
     runtime.setLegacyUrlCompletionSink(legacy_url_completion_sink);
-    var runtime_owned = true;
-    defer if (runtime_owned) {
-        runtime.deinit();
-        alloc.destroy(runtime);
-    };
 
     while (configs.items.items.len > 0) {
         var config = configs.items.orderedRemove(0);
@@ -126,28 +89,8 @@ pub fn prepare(
             };
         };
     }
-    runtime.connectAll(builtin_tools.registry);
-
-    for (runtime.servers.items) |server_state| {
-        if (server_state.state == .ready) continue;
-        const reason = server_state.last_error orelse @tagName(server_state.state);
-        const acp_reason = if (std.mem.startsWith(
-            u8,
-            reason,
-            "Authentication required.",
-        ))
-            "Authentication required; supply an Authorization header in the ACP MCP server configuration."
-        else
-            reason;
-        return .{ .failed = try std.fmt.allocPrint(
-            alloc,
-            "Required MCP server '{s}' failed to start: {s}",
-            .{ server_state.config.name, acp_reason },
-        ) };
-    }
-
-    runtime_owned = false;
-    return .{ .ready = runtime };
+    runtime.connectRequiredForAsk(builtin_tools.registry);
+    return runtime;
 }
 
 pub fn parseErrorMessage(err: ParseError) []const u8 {
@@ -217,7 +160,6 @@ fn parseServer(alloc: Allocator, server_value: std.json.Value) ParseError!mcp_co
         .name = owned_name,
         .source = .acp,
         .scope = .acp_session,
-        .required = true,
         .command = owned_command,
         .args = owned_args,
         .env = owned_env,
@@ -246,7 +188,6 @@ fn parseRemoteServer(
         .name = owned_name,
         .source = .acp,
         .scope = .acp_session,
-        .required = true,
         .transport = transport,
         .url = owned_url,
         .headers = headers,
@@ -453,32 +394,48 @@ test "ACP MCP parser rejects invalid remote transports" {
     );
 }
 
-fn checkPreparationOwnershipAllocFailures(alloc: Allocator) !void {
-    const runtime = try alloc.create(mcp_runtime.McpRuntime);
-    runtime.* = mcp_runtime.McpRuntime.init(alloc);
-    var preparation = Preparation{ .ready = runtime };
-    defer preparation.deinit(alloc);
-
-    var config = mcp_contract.McpServerConfig{
-        .name = try alloc.dupe(u8, "fixture"),
-        .enabled = false,
-    };
-    var config_owned = true;
-    defer if (config_owned) config.deinit(alloc);
-    try runtime.addServer(config);
-    config_owned = false;
-
-    const taken = preparation.takeRuntime().?;
-    taken.deinit();
-    alloc.destroy(taken);
+fn checkDeferredPreparationAllocFailures(alloc: Allocator) !void {
+    var configs = try parse(
+        alloc,
+        "{\"mcpServers\":[{\"name\":\"fixture\",\"command\":\"/does/not/exist\",\"args\":[],\"env\":[]}]}",
+    );
+    defer configs.deinit(alloc);
+    const runtime = (try prepare(alloc, &configs, .{}, null)).?;
+    defer {
+        runtime.deinit();
+        alloc.destroy(runtime);
+    }
+    try std.testing.expectEqual(mcp_runtime.ServerState.disconnected, runtime.servers.items[0].state);
 }
 
-test "ACP MCP preparation releases heap runtime ownership on allocation failure" {
+test "ACP MCP preparation remains leak-free on allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
-        checkPreparationOwnershipAllocFailures,
+        checkDeferredPreparationAllocFailures,
         .{},
     );
+}
+
+test "ACP MCP preparation defers startup until activation" {
+    const alloc = std.testing.allocator;
+    var configs = try parse(
+        alloc,
+        "{\"mcpServers\":[{\"name\":\"fixture\",\"command\":\"/does/not/exist\",\"args\":[],\"env\":[]}]}",
+    );
+    defer configs.deinit(alloc);
+    const runtime = (try prepare(alloc, &configs, .{}, null)).?;
+    defer {
+        runtime.deinit();
+        alloc.destroy(runtime);
+    }
+
+    try std.testing.expectEqual(mcp_runtime.ServerState.disconnected, runtime.servers.items[0].state);
+    var snapshot = try runtime.snapshotModelCatalog(alloc, .{}, true);
+    defer snapshot.deinit(alloc);
+    try std.testing.expectEqualStrings("available_on_demand", @tagName(snapshot.servers[0].availability));
+
+    try runtime.connectDeferredForAsk(builtin_tools.registry);
+    try std.testing.expectEqual(mcp_runtime.ServerState.failed, runtime.servers.items[0].state);
 }
 
 fn fuzzParse(_: void, smith: *std.testing.Smith) !void {

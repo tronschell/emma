@@ -3,7 +3,7 @@ import type { Artifact, ArtifactMeta } from "../shared/artifacts";
 import type { BuiltComponent, ComponentMeta, ComponentRequest } from "../shared/components";
 import type { CliModels, CliRun } from "../shared/cli";
 import type { EditorApp, FolderFile, FolderGrant } from "../shared/folders";
-import type { GitCommandResult, GitHistory, GitReady, GitSnapshot } from "../shared/git";
+import type { GitCommandResult, GitHistory, GitReady, GitSnapshot, WorktreeEntry } from "../shared/git";
 import type { MachineSample } from "../shared/machine";
 import type { HarnessLogLine, HarnessReport } from "../shared/harness-log";
 import type { Goal, GoalStatus } from "../shared/goal";
@@ -11,6 +11,7 @@ import type { Visual } from "../shared/visualize";
 import type { Arm, Improvements } from "../shared/improvement";
 import type { PermissionMode } from "../shared/permissions";
 import type { Plan } from "../shared/plan";
+import type { TaskList } from "../shared/task-list";
 import type { PluginCatalog, PluginDetail } from "../shared/plugins";
 import type { UsageRow } from "../shared/invocations";
 import type { FrontApplication } from "../shared/screen-context";
@@ -18,8 +19,8 @@ import type { LinkedPermission, SetupStatus } from "../shared/setup";
 import type { TerminalTab } from "../shared/terminal";
 import type { TraceSpan } from "../shared/trace";
 import type { VoiceStatus } from "../shared/voice";
-import type { HarnessExperiments, KeyBalance, ProviderProfile, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
-import type { KeepRequest, KeptNote, VaultChoice } from "../shared/vault";
+import type { HarnessExperiments, KeyBalance, ProviderProfile, ShortcutRequest, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
+import type { KeepRequest, KeptNote, NoteFolder, VaultChoice } from "../shared/vault";
 
 export interface MemoryNote {
   path: string;
@@ -38,7 +39,7 @@ export interface Message {
   role: ThreadRole;
   content: string;
   timestamp: string;
-  generation?: { outputTokens: number; durationMilliseconds: number; inputTokens: number; model: string } | null;
+  generation?: { outputTokens: number; durationMilliseconds: number; inputTokens: number; cacheInputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costMicroUsd?: number; model: string } | null;
 }
 
 export interface Thread {
@@ -138,14 +139,6 @@ export interface AgentImportSource {
   locations: string[];
 }
 
-export interface Connection {
-  id: string;
-  label: string;
-  detail: string;
-  formula: string;
-  binary: string;
-}
-
 export interface ImportedSkill {
   id: string;
   source: string;
@@ -210,6 +203,8 @@ declare global {
       setOverlayPreferences(value: unknown): void;
       setOverlayBusy(value: boolean): void;
       setKeybinds(value: unknown): Promise<string[]>;
+      onShortcutRequest(listener: (value: ShortcutRequest & { id: string }) => void): () => void;
+      completeShortcutRequest(value: { id: string; keybinds?: unknown; message?: string; error?: string }): Promise<string[]>;
       openOverlay(): void;
       setOverlayHeight(value: number): void;
       onOverlaySurface(listener: (value: OverlaySurface) => void): () => void;
@@ -230,6 +225,7 @@ declare global {
       onUpdateReady(listener: (value: string) => void): () => void;
       onDelta(listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void): () => void;
       onStep(listener: (value: ThreadStep) => void): () => void;
+      onCompacted(listener: (value: { threadId: string; removedTurns: number; summaryChars: number; modelWritten: boolean }) => void): () => void;
       onContextExperiment(listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void): () => void;
       onRoutedModel(listener: (value: { threadId: string; model: string; fellBack: boolean }) => void): () => void;
       onContextBreakdown(listener: (value: { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }) => void): () => void;
@@ -262,6 +258,8 @@ declare global {
       onArtifactsChanged(listener: () => void): () => void;
       listPlans(): Promise<Plan[]>;
       onPlansChanged(listener: () => void): () => void;
+      listTaskLists(): Promise<TaskList[]>;
+      onTaskListsChanged(listener: () => void): () => void;
       setGoal(value: { threadId: string; objective: string; tokenBudget?: number }): Promise<Thread>;
       updateGoal(value: { threadId: string; status?: GoalStatus; evidence?: string; reason?: string; extraTokens?: number }): Promise<Thread>;
       clearGoal(threadId: string): Promise<Thread>;
@@ -274,8 +272,13 @@ declare global {
       vaultStatus(): Promise<VaultChoice | null>;
       installObsidian(): Promise<{ installed: boolean; command: string }>;
       keep(request: KeepRequest): Promise<KeptNote>;
+      keepScreen(id: string): Promise<KeptNote>;
       listNotes(): Promise<KeptNote[]>;
       readNote(path: string): Promise<string>;
+      listNoteFolders(): Promise<NoteFolder[]>;
+      createNoteFolder(name: string): Promise<NoteFolder>;
+      renameNoteFolder(value: { folder: string; name: string }): Promise<NoteFolder>;
+      moveNote(value: { path: string; folder: string }): Promise<string>;
       openInObsidian(path: string): Promise<void>;
       onNotesChanged(listener: () => void): () => void;
       resetData(): Promise<void>;
@@ -305,6 +308,9 @@ declare global {
       listEditors(): Promise<EditorApp[]>;
       openInEditor(value: { folderId?: string; path: string; editorId: string }): Promise<void>;
       setWorktree(value: { folderId: string; name: string; on: boolean }): Promise<{ folders: FolderGrant[]; folderId: string }>;
+      worktreeList(folderId: string): Promise<WorktreeEntry[]>;
+      worktreeAdd(value: { folderId: string; prefix: string; name: string }): Promise<{ folders: FolderGrant[]; folderId: string }>;
+      worktreeRemove(value: { folderId: string; paths: string[] }): Promise<void>;
       setBranch(value: { folderId: string; branch: string; create: boolean; from?: string }): Promise<void>;
       readFolderFile(value: { folderId: string; path: string }): Promise<{ path: string; text: string }>;
       attachFiles(): Promise<HeldAttachment[]>;
@@ -312,9 +318,6 @@ declare global {
       readAttachment(id: string): Promise<HeldAttachment & { text?: string }>;
       clearThreadContext(threadId: string): Promise<void>;
       discoverAgentImports(): Promise<AgentImportSource[]>;
-      detectConnections(): Promise<Connection[]>;
-      outdatedConnections(): Promise<string[]>;
-      setUpConnection(value: { id: string; action: "install" | "upgrade" }): Promise<{ ok: boolean; message: string }>;
       importAgentSources(ids: string[]): Promise<string[]>;
       searchImportedSkills(value: { query: string; limit?: number }): Promise<ImportedSkill[]>;
       selectImportedSkill(value: { id: string; threadId: string }): Promise<ImportedSkill>;
@@ -389,6 +392,7 @@ declare global {
       setZeroRetention(value: boolean): Promise<void>;
       listCredentials(): Promise<CredentialSummary[]>;
       openRouterBalance(): Promise<KeyBalance>;
+      deepseekBalance(): Promise<KeyBalance>;
       saveCredential(value: { env: string; secret?: string }): Promise<CredentialSummary[]>;
       fetchUrl(url: string): Promise<{ title: string; text: string }>;
       loadUiPlugins(): Promise<UiPlugin[]>;

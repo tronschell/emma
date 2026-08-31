@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { chatCompletion, type ChatMessage } from "./verifier";
 import { defaultTagger, type TaggerSettings } from "../shared/settings";
-import { fileState, parseHistory, parseStatus, validateGitArgs, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot } from "../shared/git";
+import { fileState, parseHistory, parseStatus, parseWorktrees, validateGitArgs, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot, type WorktreeEntry } from "../shared/git";
 
 const MAX_DIFF_BYTES = 512 * 1024;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -236,4 +236,33 @@ export async function addWorktree(cwd: string, name: string): Promise<string> {
   await git(top, ["worktree", "add", "-b", name, dir]).catch(() => git(top, ["worktree", "add", dir, name]));
   if (!existsSync(dir)) throw new Error(`git could not create a worktree at ${dir}.`);
   return dir;
+}
+
+export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
+  const [primary, text] = await Promise.all([
+    mainCheckout(cwd),
+    git(cwd, ["worktree", "list", "--porcelain", "-z"]),
+  ]);
+  const rows = parseWorktrees(text, primary);
+  const checked = await Promise.all(rows.map(async (row) => {
+    if (row.bare) return row;
+    const { stdout } = await exec(row.path, ["status", "--porcelain", "--untracked-files=normal"]);
+    return { ...row, dirty: row.dirty || !!stdout.trim() };
+  }));
+  return checked;
+}
+
+export async function removeWorktrees(cwd: string, targets: string[]): Promise<void> {
+  if (!Array.isArray(targets) || !targets.length || targets.length > 32) throw new Error("Pick the worktrees to delete.");
+  const primary = await mainCheckout(cwd);
+  const text = await git(cwd, ["worktree", "list", "--porcelain", "-z"]);
+  const known = new Map(parseWorktrees(text, primary).map((row) => [row.path, row]));
+  for (const target of targets) {
+    const row = known.get(target);
+    if (!row) throw new Error("That worktree is no longer on this repository's list. Refresh and try again.");
+    if (row.primary) throw new Error("The main checkout cannot be deleted from here.");
+    if (row.bare) throw new Error("A bare repository cannot be deleted from here.");
+    if (row.locked) throw new Error(`Unlock “${path.basename(row.path)}” with git worktree unlock first.`);
+    await git(cwd, ["worktree", "remove", row.path]);
+  }
 }

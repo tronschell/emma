@@ -84,7 +84,22 @@ pub fn writeRoutedModelInfoUpdate(writer: *std.Io.Writer, model: []const u8, fel
 pub fn writeTurnUsageInfoUpdate(writer: *std.Io.Writer, usage: TurnUsage) !void {
     try writer.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":");
     try writer.print("{d},\"outputTokens\":{d}", .{ usage.input_tokens, usage.output_tokens });
+    try writeTurnUsageFields(writer, usage);
     try writer.writeAll("}}}}");
+}
+
+pub fn writeTurnUsageFields(writer: *std.Io.Writer, usage: TurnUsage) !void {
+    if (usage.cache_input_tokens) |input| {
+        if (usage.cache_read_tokens) |read| {
+            try writer.print(",\"cacheInputTokens\":{d},\"cacheReadTokens\":{d}", .{ input, read });
+        }
+    }
+    if (usage.cache_write_tokens) |write| {
+        try writer.print(",\"cacheWriteTokens\":{d}", .{write});
+    }
+    if (usage.cost_micro_usd) |cost_micro_usd| {
+        try writer.print(",\"costMicroUsd\":{d}", .{cost_micro_usd});
+    }
 }
 
 pub const ContextBreakdown = struct {
@@ -184,6 +199,7 @@ pub fn writeChildTurnUsageInfoUpdate(
 ) !void {
     try w.writeAll("{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":");
     try w.print("{d},\"outputTokens\":{d}", .{ usage.input_tokens, usage.output_tokens });
+    try writeTurnUsageFields(w, usage);
     try w.writeAll("},\"child\":{\"id\":");
     try writeJsonStr(child_id, w);
     try w.writeAll(",\"title\":");
@@ -283,7 +299,7 @@ pub fn writeToolCall(
     status: ToolCallStatus,
     raw_input_json: ?[]const u8,
 ) !void {
-    try writeToolCallWithPath(w, tool_call_id, title, kind, status, raw_input_json, null);
+    try writeToolCallWithPath(w, tool_call_id, title, kind, status, raw_input_json, null, null);
 }
 
 pub fn writeToolCallWithPath(
@@ -294,6 +310,7 @@ pub fn writeToolCallWithPath(
     status: ToolCallStatus,
     raw_input_json: ?[]const u8,
     file_path: ?[]const u8,
+    tool_name: ?[]const u8,
 ) !void {
     try w.writeAll("{\"sessionUpdate\":\"tool_call\",\"toolCallId\":");
     try writeJsonStr(tool_call_id, w);
@@ -305,6 +322,10 @@ pub fn writeToolCallWithPath(
     try writeJsonStr(status.jsonString(), w);
     if (file_path) |value| {
         try w.writeAll(",\"_emma_filePath\":");
+        try writeJsonStr(value, w);
+    }
+    if (tool_name) |value| {
+        try w.writeAll(",\"_emma_toolName\":");
         try writeJsonStr(value, w);
     }
     if (raw_input_json) |json| {
@@ -358,15 +379,21 @@ pub fn writeInitializeResponse(w: *std.Io.Writer) !void {
 pub const TurnUsage = struct {
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
+    cache_input_tokens: ?u64 = null,
+    cache_read_tokens: ?u64 = null,
+    cache_write_tokens: ?u64 = null,
+    cost_micro_usd: ?u64 = null,
 };
 
 pub fn writePromptResponse(w: *std.Io.Writer, reason: StopReason, usage: TurnUsage) !void {
     try w.writeAll("{\"stopReason\":");
     try writeJsonStr(reason.jsonString(), w);
-    try w.print(
-        ",\"usage\":{{\"inputTokens\":{d},\"outputTokens\":{d}}}}}",
-        .{ usage.input_tokens, usage.output_tokens },
-    );
+    try w.writeAll(",\"usage\":{\"inputTokens\":");
+    try w.print("{d}", .{usage.input_tokens});
+    try w.writeAll(",\"outputTokens\":");
+    try w.print("{d}", .{usage.output_tokens});
+    try writeTurnUsageFields(w, usage);
+    try w.writeAll("}}");
 }
 
 pub fn writeAvailableCommandsUpdate(w: *std.Io.Writer, commands_json: []const u8) !void {
@@ -423,6 +450,21 @@ test "writePromptResponse produces valid json" {
     try writePromptResponse(&out.writer, .end_turn, .{ .input_tokens = 12, .output_tokens = 34 });
     try std.testing.expectEqualStrings(
         "{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":12,\"outputTokens\":34}}",
+        out.writer.buffered(),
+    );
+}
+
+test "usage updates carry exact provider economics without inventing absent fields" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeTurnUsageInfoUpdate(&out.writer, .{
+        .input_tokens = 12,
+        .output_tokens = 34,
+        .cache_write_tokens = 0,
+        .cost_micro_usd = 4_567,
+    });
+    try std.testing.expectEqualStrings(
+        "{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":12,\"outputTokens\":34,\"cacheWriteTokens\":0,\"costMicroUsd\":4567}}}}",
         out.writer.buffered(),
     );
 }
@@ -610,13 +652,13 @@ test "context breakdown info update names every prefix section" {
     );
 }
 
-test "turn usage info update carries both sides" {
+test "turn usage info update carries cache data" {
     const alloc = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
-    try writeTurnUsageInfoUpdate(&out.writer, .{ .input_tokens = 24_100, .output_tokens = 3_200 });
+    try writeTurnUsageInfoUpdate(&out.writer, .{ .input_tokens = 24_100, .output_tokens = 3_200, .cache_input_tokens = 41_000, .cache_read_tokens = 30_000 });
     try std.testing.expectEqualStrings(
-        "{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":24100,\"outputTokens\":3200}}}}",
+        "{\"sessionUpdate\":\"session_info_update\",\"_meta\":{\"fx\":{\"turnUsage\":{\"inputTokens\":24100,\"outputTokens\":3200,\"cacheInputTokens\":41000,\"cacheReadTokens\":30000}}}}",
         out.writer.buffered(),
     );
 }

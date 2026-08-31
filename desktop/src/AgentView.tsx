@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import WorktreesView from "./WorktreesView";
 import { compare, draftProposal, frictionOf, heldBack, leverNames, lineageOf, metricNames, readTurn, retryDraft, revertLine, room, startTrial, MAX_ADDITION_CHARS, MAX_IMPROVEMENTS, MAX_KEPT, MIN_ARM_TURNS, type Comparison, type Draft as Proposal, type Friction, type Improvement, type Stat, type Turn } from "../shared/improvement";
 import { readImprovements, saveImprovements } from "./improvements";
 import BenchPanel from "./BenchPanel";
@@ -55,7 +56,7 @@ function useTurns(snapshot: Snapshot) {
 }
 
 export default function AgentView({ snapshot, act, busy, openThread, projectName, mode, model }: { snapshot: Snapshot; act: Act; busy: boolean; openThread: (id: string) => void; projectName: (thread: Thread) => string; mode: string; model: string }) {
-  const [tab, setTab] = useState<"activity" | "improvement">("activity");
+  const [tab, setTab] = useState<"activity" | "improvement" | "worktrees">("activity");
   const [memories, setMemories] = useState(false);
   const [store, setStore] = useState(readImprovements);
   const [draft, setDraft] = useState<Draft | null>(pending);
@@ -105,19 +106,22 @@ export default function AgentView({ snapshot, act, busy, openThread, projectName
   return <section className="agent-view">
     <header>
       <div className="agent-head">
-        <h2>{tab === "activity" ? "Agent activity" : "What keeps going wrong"}</h2>
+        <h2>{tab === "activity" ? "Agent activity" : tab === "worktrees" ? "Worktrees" : "What keeps going wrong"}</h2>
         {tab === "improvement" && <InfoDot>Emma stores a trace of every turn it finishes: each tool call, how long it took, and whether it failed. This page groups the failures from the last {WINDOW_DAYS} days, drafts a change about the ones that repeat, and — once you approve it — runs the next turns half with the change and half without. That live split is a hint, not a measurement: it has no fixed size and it moves with every turn, so it can only tell you whether the change is worth a bench run. Keeping a change takes a finished run on the bench below, against cases and a metric declared before the numbers arrive. Reverting takes nothing — dropping a change never needs proof. Nothing here is applied without you, and nothing leaves this Mac.</InfoDot>}
         {tab === "activity" && <InfoDot>Everything on this tab is counted from the threads already on this Mac: when they ran, which project they belong to, and which of them spawned subagents. Nothing is uploaded and nothing is asked of a model to draw it.</InfoDot>}
       </div>
     </header>
 
-    <div className="plugins-tabs agent-tabs" role="tablist" aria-label="Agent activity and self improvement">
+    <div className="plugins-tabs agent-tabs" role="tablist" aria-label="Agent activity, self improvement and worktrees">
       <button type="button" role="tab" aria-selected={tab === "activity"} className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Agent activity</button>
       <button type="button" role="tab" aria-selected={tab === "improvement"} className={tab === "improvement" ? "on" : ""} onClick={() => setTab("improvement")}>Self improvement</button>
+      <button type="button" role="tab" aria-selected={tab === "worktrees"} className={tab === "worktrees" ? "on" : ""} onClick={() => setTab("worktrees")}>Worktrees</button>
       <button type="button" className="agent-memories-open" aria-haspopup="dialog" onClick={() => setMemories(true)}>Memories</button>
     </div>
 
     {memories && <MemoriesDialog close={() => setMemories(false)} />}
+
+    {tab === "worktrees" && <WorktreesView />}
 
     {tab === "activity" && <ActivityView snapshot={snapshot} projectName={projectName} openThread={openThread} />}
 

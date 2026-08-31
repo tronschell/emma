@@ -27,7 +27,6 @@ The vault is outside both and is never deleted.
 | `EMMA_PROVIDER_API_KEY` | `emma-cli` | The harness's **only** credential source — no OAuth, no login ([credentials.zig:9](../harness/src/core/auth/credentials.zig#L9)). Whitespace-only counts as absent. Electron sets it at spawn from the stored `OPENROUTER_API_KEY`. | unset → public catalog only |
 | `EMMA_PROVIDER_CHAT_URL` | `emma-cli` | Chat-completions URL override ([emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41)). Empty is treated as unset. | OpenRouter |
 | `EMMA_OPENROUTER_ZDR` | `emma-cli` | Demands zero-data-retention routing for OpenRouter harness requests. A selected model with no qualifying endpoint fails. Settings → Models toggles it and closes idle harnesses so the next spawn sees it. | unset → off |
-| `EMMA_RELAY_URL` | Electron main | The pairing relay for Emma Mobile, overriding **Settings → Mobile → Relay**. Origin only — scheme and host, no path or query — or it is discarded ([mobile-protocol.ts](../desktop/shared/mobile-protocol.ts)). | unset → the address in Settings, and no pairing until one is set |
 | `EMMA_UPDATE_URL` | Electron main | Origin of the Squirrel.Mac update server, replacing `https://update.electronjs.org`. Origin only — scheme and host, no path or query — and `http://` only on loopback, or it is discarded ([shared/update.ts](../desktop/shared/update.ts)). The feed is that origin plus `/tronschell/emma/darwin-arm64/<version>` | unset → `https://update.electronjs.org` |
 | `EMMA_UPGRADE_BASE_URL` | `emma-cli` | Self-update CDN base. Discarded unless it is loopback HTTP with an explicit port and no path, query or fragment — so self-update is off in practice, and Emma ships `emma-cli` in the bundle anyway. | unset → disabled |
 
@@ -51,7 +50,7 @@ a running Emma over CDP. Default `9222`.
 | Variable | Role |
 | --- | --- |
 | `OPENROUTER_API_KEY` | Emma's one shipped remote route, and the default `credentialEnv` for the verifier, tagger, advisor and vision models. Decrypted from `credentials.json` into `process.env` on every host start ([credentials.ts](../desktop/main/credentials.ts)) |
-| `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY` | The names Settings pre-fills for the `web_search` tool's Brave / Tavily / Exa providers. `fourget` and `searxng` are keyless; `fourget` is the default ([settings.ts](../desktop/shared/settings.ts)) |
+| `TINYFISH_API_KEY`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY` | The names Settings pre-fills for ranked `web_search` providers. New settings try free TinyFish first and keyless 4get second; SearXNG and keyed providers are added explicitly ([settings.ts](../desktop/shared/settings.ts)) |
 | `AI_GATEWAY_API_KEY` | **Dead write.** [harness.ts:316](../desktop/main/harness.ts#L316) sets it beside `EMMA_PROVIDER_API_KEY`; nothing in `harness/src` reads it |
 | `HOME` | The base for nearly every path. Electron **overrides it for the harness** — `emma-cli` is spawned with `HOME=<userData>/harness`, so it never touches your real `~/.fx` |
 | `PATH` | MCP command resolution (the harness refuses a bare name) and every CLI child. [cli.ts](../desktop/main/cli.ts) reads the *login shell's* `$PATH` via `bash -lc` first, so `~/.local/bin` is found |
@@ -186,13 +185,14 @@ Scheduled jobs are `emma-scheduled-job-format: 4`, research records
 | `imports.json` | | What was imported from Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf and Devin at first launch. Paths only, and only ones that existed |
 | `installed-plugins.json` | | Plugins installed from the Plugins page: id, marketplace, version, contributed skill and MCP paths |
 | `plugin-hooks.json` | | Hash of each plugin lifecycle hook you reviewed. Nothing runs without a match, so editing a hook on disk turns it off |
-| `mobile-peer.json` | `0600` in `0700` | `{room, key, name, relay, pairedAt}` for the one paired phone. `key` is base64 `safeStorage` ciphertext; pairing is refused outright when the keychain is unavailable. A record that fails to decrypt, or whose `relay` is not a `wss://` origin, loads as no pairing ([pairing.ts](../desktop/main/pairing.ts)) |
+| `mobile-peers.json` | `0600` in `0700` | A list of up to three `{key, name, addr, pin, verified, pairedAt}` records, one per paired phone, where `pairedAt` doubles as the device's id. A single-object `mobile-peer.json` written by an older Emma is read once and retired. `key` is base64 `safeStorage` ciphertext and `pin` is a scrypt hash, never the PIN; pairing is refused outright when the keychain is unavailable. A record that fails to decrypt, whose `addr` is not a `ws://host:port`, or that was never proved with a PIN, loads as no pairing ([pairing.ts](../desktop/main/pairing.ts)) |
 | `openrouter-catalog.json` | `0600` | `{fetchedAt, models[]}`. Prices are micro-dollars per million tokens so the math stays integer. The offline first-launch list is compiled into [catalog-seed.ts](../desktop/main/catalog-seed.ts); `npm run seed:catalog` refreshes it |
 | `artifacts/<id>/meta.json` | `0600` in `0700` | `{id, title, kind, language, createdAt, updatedAt, version, surface?, sourceThreadId?, sourceJobId?}` |
 | `artifacts/<id>/content.<ext>` | `0600` | `markdown`→`md`, `code`→`txt`, `html`/`app`→`html`, `svg`→`svg`, `mermaid`→`mmd`, `react`→`jsx`. An `app` artifact may also hold `data.sqlite` |
 | `components/<id>/meta.json` | `0600` in `0700` | `{id, title, createdAt, updatedAt, version, expands?, variables?, disabled?, sourceThreadId?}` |
 | `components/<id>/module.js` | `0600` | The module served at `emma-component://<id>/module.js?v=<version>`. `shot.png` beside it is the picture Settings → Built by Emma shows |
 | `plans/<id>.md` | | One plan. The Markdown **is** the record — `parsePlan(renderPlan(p))` round-trips |
+| `task-lists/<id>.md` | `0600` in `0700` | One nested task list. The Markdown is the record and remains hand-editable |
 | `skills/<slug>/SKILL.md` | `0600` in `0700` | The seven bundled skills plus anything written or imported |
 | `tools/<slug>/run` | `0700` | An Emma-authored tool. Must start with `#!` |
 | `tools/<slug>/about.txt` | `0600` | That tool's description |
@@ -239,8 +239,8 @@ Inside `Local Storage/`, not a file of Emma's own.
 `validateSettings` ([settings.ts](../desktop/shared/settings.ts)) validates on
 both read and write. Ceilings: exactly 3 `quickActions` (label ≤ 40 chars,
 prompt ≤ 4096); `favoriteModels` ≤ 6; `cursorOrbs` 1–8; `notchGap` 120–260;
-`systemPrompt` and each saved prompt ≤ 8192 chars; secrets ≤ 512 chars;
-`connections` ≤ 32; `uiScale` 80–150; disabled tool/skill lists ≤ 256 entries.
+`systemPrompt` and each saved prompt ≤ 24576 chars; secrets ≤ 512 chars;
+`uiScale` 80–150; disabled tool/skill lists ≤ 256 entries.
 
 ### The harness home — `<userData>/harness`
 

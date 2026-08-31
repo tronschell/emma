@@ -2,9 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { NAV_VIEWS, ordered, validatePaneLayout } from "../src/layout";
 
-/// A stored order is a preference over a list that moves under it: sections ship in
-/// releases, folders are granted and forgotten. Anything the order does not name
-/// still has to be drawn, or dragging one row hides every row minted after it.
 test("a saved order arranges what it names and keeps what it does not", () => {
   const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
   assert.deepEqual(ordered(items, ["c", "a", "b"]).map((item) => item.id), ["c", "a", "b"]);
