@@ -7,7 +7,10 @@ import type { ShortcutRequest } from "../shared/settings";
 let nextListener = 1;
 const listeners = new Map<number, () => void>();
 
+const platform = typeof process === "object" && typeof process.platform === "string" ? process.platform : typeof navigator === "object" && /Windows/i.test(navigator.userAgent) ? "win32" : "darwin";
+
 contextBridge.exposeInMainWorld("emma", {
+  platform,
   request: (method: string, params: Record<string, string> = {}) =>
     ipcRenderer.invoke("emma:request", { method, params }),
   setOverlayPreferences: (value: unknown) => ipcRenderer.send("emma:set-overlay-preferences", value),

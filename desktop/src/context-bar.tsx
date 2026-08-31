@@ -151,7 +151,7 @@ function ContextLedger({ ledger, messages: history, threadId, orientation }: { l
             <b>{tokenLabel(total)}</b>
             <span>{capacity ? `of ${tokenLabel(capacity)} tokens carried` : `tokens carried · no stated window`}</span>
             {capacity > 0 && <em>{shareLabel(total, whole)} used</em>}
-            <small>{total.toLocaleString()} characters measured on this Mac</small>
+            <small>{total.toLocaleString()} characters measured on this computer</small>
           </p>
           {grid}
           <dl>
@@ -189,7 +189,7 @@ function ContextLedger({ ledger, messages: history, threadId, orientation }: { l
             </tbody>
           </table>
         </div>
-        <p>The total is the provider's own count for the last request it read. How that total splits across the rows is estimated: each segment is measured in characters on this Mac and divided by {CHARS_PER_TOKEN}, and whatever the split does not reach lands in the last row.</p>
+        <p>The total is the provider's own count for the last request it read. How that total splits across the rows is estimated: each segment is measured in characters on this computer and divided by {CHARS_PER_TOKEN}, and whatever the split does not reach lands in the last row.</p>
       </section>
     </dialog>}
   </section>;

@@ -16,8 +16,8 @@ Emma found, or any folder.
 | Stored at | `<userData>/vault.json`, mode `0600`, written to `.tmp` then renamed |
 | Notes | `<root>/<folder>` — `folder` defaults to `knowledge-base` (`DEFAULT_VAULT_FOLDER`) |
 | Attachments | `<root>/<folder>/attachments` (`ATTACHMENT_FOLDER`) |
-| Obsidian vaults | read from `~/Library/Application Support/obsidian/obsidian.json` |
-| Folder picker starts at | `~/Documents` (`defaultVaultRoot`, [`desktop/main/setup.ts`](../desktop/main/setup.ts)) |
+| Obsidian vaults | read from `%APPDATA%/obsidian/obsidian.json` on Windows or `~/Library/Application Support/obsidian/obsidian.json` on macOS |
+| Folder picker starts at | `%USERPROFILE%/Documents` on Windows or `~/Documents` on macOS (`defaultVaultRoot`, [`desktop/main/setup.ts`](../desktop/main/setup.ts)) |
 
 `validVaultFolder` accepts a relative path of at most 128 characters with no
 `..`, no `\`, and no segment that is empty, `.`, or dot-leading. Every note and
@@ -27,9 +27,9 @@ Choosing a vault also grants its root to Emma's file tools as a connected
 folder. That grant is hidden from the folder list and **Forget folder** refuses
 it — *"Your vault stays connected; change it from Settings."*
 
-`vaultWritable` probes by writing and removing `.emma-write-check`, because
-macOS Files & Folders has no query; a failed probe is what setup reports as not
-yet granted.
+`vaultWritable` probes by writing and removing `.emma-write-check`; on macOS
+this is also the practical check because Files & Folders has no query. A failed
+probe is what setup reports as not yet granted.
 
 ## What a save writes
 
@@ -137,13 +137,15 @@ by [`harness/src/builtins/emma/knowledge.zig`](../harness/src/builtins/emma/know
 herself."* With no vault chosen, the call fails telling the user to pick one.
 
 With a `page` and no text, Emma clips it first
-([`desktop/main/clip.ts`](../desktop/main/clip.ts)): AppleScript asks the front
-browser for the tab's URL and title, then Emma fetches the page herself and runs
-its own readability pass — at most 5 redirects, a 20 s timeout, and 32 KiB of
-text (`MAX_CLIP_TEXT_BYTES`). Browsers it can ask: Google Chrome (+ Beta,
-Canary), Chromium, Brave (+ Beta), Microsoft Edge, Arc, Dia, Vivaldi, Opera,
-Comet, Safari and Safari Technology Preview. Anything else fails by name.
-Reading the front tab needs Automation; the fetch does not.
+([`desktop/main/clip.ts`](../desktop/main/clip.ts)): on macOS, AppleScript asks
+the front browser for the tab's URL and title; on Windows, UI Automation inspects
+the front browser window. Emma then fetches the page itself and runs its own
+readability pass — at most 5 redirects, a 20 s timeout, and 32 KiB of text
+(`MAX_CLIP_TEXT_BYTES`). Browsers it can ask: Google Chrome (+ Beta, Canary),
+Chromium, Brave (+ Beta), Microsoft Edge, Arc, Dia, Vivaldi, Opera, Comet,
+Safari and Safari Technology Preview. Anything else fails by name. Reading the
+front tab needs macOS Automation or the Windows UI Automation path; the fetch
+does not.
 
 Asked from the island, Emma hides the overlay for 150 ms first so the browser is
 frontmost, then shows it again.
@@ -177,12 +179,13 @@ vault root is a connected folder.
 They are your files — edit, move or delete them in place. `[[attachments/…]]`
 is Obsidian's wiki-link syntax and renders there; other readers show the link.
 Obsidian is [obsidian.md](https://obsidian.md), and setup offers
-`brew install --cask obsidian` when Homebrew is installed.
+`brew install --cask obsidian` on macOS when Homebrew is installed or
+`winget install --id Obsidian.Obsidian --exact` on Windows.
 
 ## See also
 
 - [tools.md](tools.md) — every tool a turn can call
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 - [notch.md](notch.md) — the island and its quick commands
 - [data.md](data.md) — every file on disk and every environment variable
 - [models.md](models.md) — providers, credentials, the categorizer model

@@ -17,14 +17,14 @@ const MAX_ERROR_CHARS = 200;
 /** A staged pairing dies after this many wrong PINs, so the QR window is not a brute-force window. */
 const MAX_PIN_TRIES = 5;
 const UNKNOWN_METHOD = "Emma does not answer that request.";
-const REQUEST_FAILED = "That request failed on the Mac.";
+const REQUEST_FAILED = "That request failed on this computer.";
 const TOO_LARGE = "That answer is too large to send to the phone.";
-const NEEDS_PIN = "Enter this Mac's PIN on the phone to finish pairing.";
+const NEEDS_PIN = "Enter this computer's PIN on the phone to finish pairing.";
 const BAD_PIN = "That PIN is wrong.";
-const NO_ADDRESS = "This Mac has no Tailscale or local network address to pair on.";
-const NO_SAVE = "This Mac could not save the pairing.";
-const MOVED = "This Mac's address changed, so the phone can no longer reach it. Pair the phone again.";
-const TAKEN = `Another program on this Mac is using port ${BRIDGE_PORT}.`;
+const NO_ADDRESS = "This computer has no Tailscale or local network address to pair on.";
+const NO_SAVE = "This computer could not save the pairing.";
+const MOVED = "This computer's address changed, so the phone can no longer reach it. Pair the phone again.";
+const TAKEN = `Another program on this computer is using port ${BRIDGE_PORT}.`;
 const FULL = `Emma pairs ${MAX_PEERS} devices at a time. Remove one before pairing another.`;
 
 export type BridgeDeps = {
@@ -205,8 +205,8 @@ export function createBridge(deps: BridgeDeps): Bridge {
   const drop = (ws: PhoneSocket, code: number) => {
     try {
       ws.close(code, "");
-    } catch {
-      /* already closing */
+    } catch (error) {
+      console.error("emma bridge: peer close failed", error);
     }
     const session = sessions.get(ws);
     if (!session) return;

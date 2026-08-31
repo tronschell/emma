@@ -240,7 +240,7 @@ open. See [jobs.md](jobs.md).
 
 ## Autoresearch
 
-**A long experiment loop against a git project on this Mac.** The agent proposes
+**A long experiment loop against a git project on this computer.** The agent proposes
 one change, Emma runs the eval command (`MAX_EVAL_MS` 15 minutes), reads the
 metric out of its output, and keeps or reverts the commit — until a time, token
 or spend budget stops it. The metric's name, kind and direction are immutable for
@@ -252,10 +252,10 @@ never runs one; the loop is in
 
 ## Computer use
 
-**Emma driving this Mac: the real pointer, the real keyboard, the screen.** The
-agent loop asks; Electron main executes, because it is the process that owns the
-screen. `computer` is an ordinary tool, so the thread's permission mode is the
-only gate — no separate approval flow. Every ceiling applies in *every* mode:
+**Emma operating an approved app on this computer.** The agent loop asks;
+Electron main executes, because it is the process that owns the screen. The
+`computer` tool requires a separate approval for the named running app in every
+permission mode. Every ceiling applies in *every* mode:
 `MAX_RUN_STEPS` 20, `MAX_RUN_ACTIONS` 400, `MIN_ACTION_INTERVAL_MS` 40,
 `MAX_RUN_MS` 10 minutes, `MAX_TYPED_CHARACTERS` 4096, `MAX_WAIT_SECONDS` 300,
 `MAX_KEY_REPEAT` 32, `HELPER_TIMEOUT_MS` 5000 — plus the always-on-top banner,

@@ -14,4 +14,4 @@ run:
     npm --prefix desktop run dev
 
 package:
-    npm --prefix desktop run package:mac
+    npm --prefix desktop run {{ if os() == "windows" { "package:win" } else { "package:mac" } }}

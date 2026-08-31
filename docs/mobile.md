@@ -1,6 +1,6 @@
 # Mobile
 
-A paired iPhone drives the same threads this Mac does: it sends messages, reads
+A paired iPhone drives the same threads this computer does: it sends messages, reads
 the live run, answers the tool permission prompts Emma would otherwise put in
 front of you, and runs git. The phone app is a separate repository —
 [tronschell/emma-mobile](https://github.com/tronschell/emma-mobile) — and it
@@ -116,7 +116,7 @@ frame of that connection and the point from which the replay counters run. The
 Mac re-randomises its hello on every connection it accepts, which is what kills a
 frame captured on an earlier one.
 
-Within one connection the Mac still has to accept a second handshake: a phone
+Within one connection the desktop side still has to accept a second handshake: a phone
 that goes out of range or is backgrounded rejoins with a fresh hello while the
 Mac's socket is still open, and refusing it would leave the bridge dead until the
 socket cycled. So the handshake is open to anything that got past the auth
@@ -132,10 +132,10 @@ sends junk to move the Mac off the session it is on. Only sessions that carried
 traffic are remembered, so greeting the bridge with junk costs no memory, and the
 set is cleared on every `restart()`.
 
-Handshakes are otherwise unauthenticated work, so the Mac answers each one with
+Handshakes are otherwise unauthenticated work, so the desktop side answers each one with
 its hello but pushes an unsolicited live state at most once a second. A phone
 that greets in a quiet moment still gets its snapshot; a flood of greetings
-cannot make the Mac serialise and seal the agent list over and over.
+cannot make the desktop side serialise and seal the agent list over and over.
 
 One phone at a time. A new connection replaces the one before it, so a rejoining
 phone never has to wait for the old socket to time out.
@@ -146,11 +146,11 @@ phone never has to wait for the old socket to time out.
 |---|---|
 | Threads | Read, create, rename, archive, send a message, steer or stop a run |
 | Live | The running agents, their steps, token counts and traces, streamed |
-| Permissions | Every ask Emma would show on the Mac, answerable from the phone |
+| Permissions | Every ask Emma would show on the computer, answerable from the phone |
 | Git | Status, stage, commit, push, pull in your attached folders |
 | Models | List and switch the model or permission mode for a thread |
 
-An ask sent to the phone is still shown on the Mac, and whichever end answers
+An ask sent to the phone is still shown on the computer, and whichever end answers
 first wins. Asks expire after ten minutes either way.
 
 ## Unpairing

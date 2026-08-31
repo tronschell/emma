@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const runtime_profile = @import("../hosts/runtime_profile.zig");
 const app_permission_runtime = @import("app_permission_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
@@ -49,6 +50,51 @@ else
     struct {};
 const TranscriptEntry = transcript_runtime.TranscriptEntry;
 
+const windows_memory = if (builtin.os.tag == .windows) struct {
+    const windows = std.os.windows;
+    const ProcessMemoryCounters = extern struct {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+        private_usage: usize,
+    };
+
+    extern "kernel32" fn K32GetProcessMemoryInfo(
+        process: windows.HANDLE,
+        counters: *ProcessMemoryCounters,
+        size: u32,
+    ) callconv(.winapi) windows.BOOL;
+
+    fn snapshot(alloc: std.mem.Allocator, pid: u64) ![]u8 {
+        if (pid != windows.GetCurrentProcessId()) return error.ProcessSnapshotUnavailable;
+        var counters = std.mem.zeroes(ProcessMemoryCounters);
+        counters.cb = @sizeOf(ProcessMemoryCounters);
+        if (!K32GetProcessMemoryInfo(
+            windows.GetCurrentProcess(),
+            &counters,
+            @sizeOf(ProcessMemoryCounters),
+        ).toBool()) return error.ProcessSnapshotUnavailable;
+        return std.fmt.allocPrint(
+            alloc,
+            "working_set_bytes={d} peak_working_set_bytes={d} private_bytes={d} pagefile_bytes={d} page_faults={d}\n",
+            .{
+                counters.working_set_size,
+                counters.peak_working_set_size,
+                counters.private_usage,
+                counters.pagefile_usage,
+                counters.page_fault_count,
+            },
+        );
+    }
+} else struct {};
+
 fn finish_trace_notice(app: anytype, entry_id: u32, tone: types.NoticeTone, body: []const u8) !void {
     const notice: types.SemanticNotice = .{
         .topic = "",
@@ -68,7 +114,6 @@ const TraceReportDisposition = union(enum) {
     unavailable,
 };
 
-/// Returns an owned trace notice whose bytes belong to the caller.
 fn format_trace_notice(
     alloc: std.mem.Allocator,
     disposition: TraceReportDisposition,
@@ -542,7 +587,6 @@ pub fn Handlers(comptime App: type) type {
             };
             defer app.alloc.free(report);
 
-            const builtin = @import("builtin");
             const report_path: ?[]u8 = writeTraceReportFile(app.alloc, report) catch null;
             defer if (report_path) |path| app.alloc.free(path);
             const disposition: TraceReportDisposition = if (report_path) |path| blk: {
@@ -1749,16 +1793,15 @@ pub fn Handlers(comptime App: type) type {
 const trace_transcript_max_line_bytes: usize = 300;
 
 fn traceFilePermissions() std.Io.File.Permissions {
-    const builtin = @import("builtin");
     return switch (builtin.os.tag) {
         .windows => .default_file,
-        else => std.Io.File.Permissions.fromMode(0o600),
+        else => io_mod.permissionsFromMode(0o600),
     };
 }
 
 fn writeTraceReportFile(alloc: std.mem.Allocator, contents: []const u8) ![]u8 {
-    const tmp_dir = io_mod.getenv("TMPDIR") orelse "/tmp";
-    const trimmed = std.mem.trimEnd(u8, tmp_dir, "/");
+    const tmp_dir = try io_mod.runtimeTempPathAlloc(alloc);
+    defer alloc.free(tmp_dir);
     const now_ms = io_mod.milliTimestamp();
     const now_secs: i64 = @max(@divFloor(now_ms, 1000), 0);
     const epoch_secs: std.time.epoch.EpochSeconds = .{ .secs = @intCast(now_secs) };
@@ -1770,8 +1813,7 @@ fn writeTraceReportFile(alloc: std.mem.Allocator, contents: []const u8) ![]u8 {
         var random_bytes: [6]u8 = undefined;
         io_mod.getIo().random(&random_bytes);
         const random_hex = std.fmt.bytesToHex(random_bytes, .lower);
-        const path = try std.fmt.allocPrint(alloc, "{s}/fx-trace-{d}-{d:0>2}-{d:0>2}-{d:0>2}{d:0>2}{d:0>2}-{s}.md", .{
-            trimmed,
+        const filename = try std.fmt.allocPrint(alloc, "fx-trace-{d}-{d:0>2}-{d:0>2}-{d:0>2}{d:0>2}{d:0>2}-{s}.md", .{
             year_day.year,
             month_day.month.numeric(),
             month_day.day_index + 1,
@@ -1780,6 +1822,8 @@ fn writeTraceReportFile(alloc: std.mem.Allocator, contents: []const u8) ![]u8 {
             day_seconds.getSecondsIntoMinute(),
             random_hex,
         });
+        defer alloc.free(filename);
+        const path = try std.fs.path.join(alloc, &.{ tmp_dir, filename });
         errdefer alloc.free(path);
 
         var file = std.Io.Dir.createFileAbsolute(io_mod.getIo(), path, .{
@@ -1804,7 +1848,6 @@ fn writeTraceReportFile(alloc: std.mem.Allocator, contents: []const u8) ![]u8 {
 
 fn buildTraceReport(app: anytype) ![]u8 {
     const App = @TypeOf(app.*);
-    const builtin = @import("builtin");
 
     var out: std.Io.Writer.Allocating = .init(app.alloc);
     defer out.deinit();
@@ -1983,7 +2026,7 @@ fn writeCurrentStateSummary(writer: *std.Io.Writer, app: anytype, alloc: std.mem
 }
 
 fn writeProcessSummary(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
-    const pid = std.c.getpid();
+    const pid = io_mod.currentProcessId();
     try writer.print("process: pid={d}", .{pid});
     if (countOpenFileDescriptors()) |fd_count| try writer.print(" open_fds={d}", .{fd_count});
     try writer.writeByte('\n');
@@ -2005,7 +2048,6 @@ fn writeProcessSummary(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
 }
 
 fn countOpenFileDescriptors() ?usize {
-    const builtin = @import("builtin");
     const fd_dir = switch (builtin.os.tag) {
         .linux => "/proc/self/fd",
         .macos => "/dev/fd",
@@ -2023,7 +2065,8 @@ fn countOpenFileDescriptors() ?usize {
     return count;
 }
 
-fn processMemorySnapshot(alloc: std.mem.Allocator, pid: std.c.pid_t) ![]u8 {
+fn processMemorySnapshot(alloc: std.mem.Allocator, pid: u64) ![]u8 {
+    if (comptime builtin.os.tag == .windows) return windows_memory.snapshot(alloc, pid);
     const pid_text = try std.fmt.allocPrint(alloc, "{d}", .{pid});
     defer alloc.free(pid_text);
     const result = try std.process.run(alloc, io_mod.getIo(), .{
@@ -2909,7 +2952,6 @@ fn stripAnsiEscapes(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
         if (c == 0x1b and i + 1 < input.len) {
             const next = input[i + 1];
             if (next == '[') {
-                // CSI: ESC '[' params... final-byte (0x40-0x7E)
                 i += 2;
                 while (i < input.len) {
                     const b = input[i];
@@ -2919,7 +2961,6 @@ fn stripAnsiEscapes(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
                 continue;
             }
             if (next == ']') {
-                // OSC: ESC ']' ... BEL (0x07) or ESC '\'
                 i += 2;
                 while (i < input.len) {
                     const b = input[i];
@@ -2935,7 +2976,6 @@ fn stripAnsiEscapes(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
                 }
                 continue;
             }
-            // Other ESC sequences: skip ESC + one byte
             i += 2;
             continue;
         }
@@ -3282,7 +3322,6 @@ fn parseSoundLevel(value: []const u8) ?SoundLevel {
 fn handleNotificationsCommand(app: anytype, rest: []const u8) !void {
     const current = app.notificationPreferences();
     const level: SoundLevel = switch (parseSoundCommand(rest)) {
-        // Bare /sound toggles sound on/off; max is only ever explicit.
         .toggle => if (current.turn_end) .off else .on,
         .set => |value| value,
         .invalid => {
@@ -3317,8 +3356,6 @@ fn handleNotificationsCommand(app: anytype, rest: []const u8) !void {
             failure.cleanup,
             runtime_changed,
         ),
-        // announce_commit=false drops the routine "saved" line (the state
-        // notice below covers it, matching /fast) but keeps warnings.
         .outcome => |outcome| _ = try session_commands.reportUserSettingsCommit(
             app,
             "sound",
@@ -4102,7 +4139,7 @@ test "trace report file uses private randomized markdown path" {
     const stat = try file.stat(std.testing.io);
     try std.testing.expectEqual(@as(u64, 6), stat.size);
     if (@import("builtin").os.tag != .windows) {
-        try std.testing.expectEqual(@as(std.posix.mode_t, 0), stat.permissions.toMode() & 0o077);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0), io_mod.permissionsMode(stat.permissions) & 0o077);
     }
 }
 

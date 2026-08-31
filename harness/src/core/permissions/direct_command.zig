@@ -198,7 +198,7 @@ fn executeDirectReadOnlyWithLimitAndTestControls(
     if (backend != .none and backend != .macos) {
         return error.UnsupportedDirectBackend;
     }
-    if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux and builtin.os.tag != .windows) {
         return error.UnsupportedDirectPlatform;
     }
     if (backend == .macos and builtin.os.tag != .macos) {
@@ -306,7 +306,7 @@ fn executeDirectReadOnlyWithLimitAndTestControls(
             .{&workers[started_workers]},
         ) catch |err| {
             shared.commit(.output_failure, err);
-            signalGroup(group_id, true);
+            signalChildren(children[0..child_count], group_id, true);
             for (workers[started_workers..]) |*worker| worker.closeUnstarted();
             for (workers[0..started_workers]) |*worker| worker.thread.?.join();
             waitChildren(children[0..child_count]);
@@ -341,10 +341,10 @@ fn executeDirectReadOnlyWithLimitAndTestControls(
         if (shared.isStopping()) {
             const now = io_mod.milliTimestamp();
             if (termination_started_ms == null) {
-                signalGroup(group_id, false);
+                signalChildren(children[0..child_count], group_id, false);
                 termination_started_ms = now;
             } else if (!force_kill_sent and now - termination_started_ms.? >= 800) {
-                signalGroup(group_id, true);
+                signalChildren(children[0..child_count], group_id, true);
                 force_kill_sent = true;
             }
         }
@@ -424,18 +424,37 @@ fn environmentForProfile(
     errdefer environment.deinit();
     switch (profile) {
         .basic_read_only, .git_read_only => {
-            try environment.put("PATH", "/usr/bin:/bin");
-            try environment.put("LC_ALL", "C");
-            try environment.put("LANG", "C");
+            if (comptime builtin.os.tag == .windows) {
+                try environment.put("PATH", io_mod.getenv("PATH") orelse
+                    "C:\\Windows\\System32;C:\\Windows");
+                if (io_mod.getenv("SYSTEMROOT")) |value| try environment.put("SYSTEMROOT", value);
+                if (io_mod.getenv("WINDIR")) |value| try environment.put("WINDIR", value);
+                if (io_mod.getenv("COMSPEC")) |value| try environment.put("COMSPEC", value);
+                if (io_mod.getenv("TEMP")) |value| try environment.put("TEMP", value);
+                if (io_mod.getenv("TMP")) |value| try environment.put("TMP", value);
+            } else {
+                try environment.put("PATH", "/usr/bin:/bin");
+                try environment.put("LC_ALL", "C");
+                try environment.put("LANG", "C");
+            }
         },
     }
     if (profile == .git_read_only) {
         try environment.put("GIT_CONFIG_NOSYSTEM", "1");
-        try environment.put("GIT_CONFIG_GLOBAL", "/dev/null");
+        try environment.put(
+            "GIT_CONFIG_GLOBAL",
+            if (comptime builtin.os.tag == .windows) "NUL" else "/dev/null",
+        );
         try environment.put("GIT_OPTIONAL_LOCKS", "0");
         try environment.put("GIT_TERMINAL_PROMPT", "0");
-        try environment.put("GIT_PAGER", "cat");
-        try environment.put("PAGER", "cat");
+        try environment.put(
+            "GIT_PAGER",
+            if (comptime builtin.os.tag == .windows) "off" else "cat",
+        );
+        try environment.put(
+            "PAGER",
+            if (comptime builtin.os.tag == .windows) "off" else "cat",
+        );
     }
     return environment;
 }
@@ -745,6 +764,20 @@ fn signalGroup(group_id: ?std.posix.pid_t, force: bool) void {
     };
 }
 
+fn signalChildren(
+    children: []std.process.Child,
+    group_id: ?std.posix.pid_t,
+    force: bool,
+) void {
+    if (comptime builtin.os.tag == .windows) {
+        for (children) |*child| {
+            if (child.id != null) child.kill(io_mod.getIo());
+        }
+        return;
+    }
+    signalGroup(group_id, force);
+}
+
 fn closeChildPipes(child: *std.process.Child) void {
     if (child.stdin) |file| file.close(io_mod.getIo());
     if (child.stdout) |file| file.close(io_mod.getIo());
@@ -755,7 +788,7 @@ fn closeChildPipes(child: *std.process.Child) void {
 }
 
 fn cleanupChildren(children: []std.process.Child, group_id: ?std.posix.pid_t) void {
-    signalGroup(group_id, true);
+    signalChildren(children, group_id, true);
     for (children) |*child| closeChildPipes(child);
     waitChildren(children);
 }

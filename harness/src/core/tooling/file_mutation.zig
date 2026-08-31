@@ -188,9 +188,6 @@ pub fn prepare(
     return prepareInternal(call_alloc, call, input, policy_targets, true);
 }
 
-/// Prepares a mutation whose decoded input and canonical target proof were
-/// produced together by tool admission. Identity, proof, preimage, and diff
-/// validation remain unchanged; only duplicate canonical resolution is skipped.
 pub fn prepareResolvedTarget(
     call_alloc: std.mem.Allocator,
     call: types.ToolCall,
@@ -241,7 +238,6 @@ fn prepareInternal(
         return .{ .semantic_failure = total_content_too_large_message };
     }
 
-    // External anchors show the resolved target so a symlink redirect cannot look local.
     const approval_path = switch (policy_targets.anchor.scope) {
         .external => policy_targets.canonical_target_path,
         .workspace => input.path(),
@@ -612,9 +608,6 @@ fn applyWithTestControls(
         return error.ResultContractViolation;
     }
 
-    // The fresh descriptor binds the final entry checks and rename to the
-    // revalidated parent. The platform cannot freeze its namespace after
-    // these checks, so a competing move can still win the remaining window.
     commit_parent.rename(
         temp_name,
         commit_parent,
@@ -1001,9 +994,9 @@ fn validatePreimage(
             const expected_identity = prepared.policy_targets.items[0].expected_identity orelse
                 break :blk .stale;
             if (!identityEql(actual_identity, expected_identity)) break :blk .stale;
-            if (stat.permissions.toMode() & 0o222 == 0) break :blk .io_failure;
+            if (!io_mod.permissionsWritable(stat.permissions)) break :blk .io_failure;
             if (expected_permissions) |permissions| {
-                if (stat.permissions.toMode() != permissions.toMode()) break :blk .stale;
+                if (!io_mod.permissionsMatch(stat.permissions, io_mod.permissionsMode(permissions))) break :blk .stale;
             }
 
             var hasher = std.crypto.hash.sha2.Sha256.init(.{});
@@ -3559,7 +3552,7 @@ test "apply preserves the existing destination mode" {
         defer file.close(std.testing.io);
         try file.setPermissions(
             std.testing.io,
-            std.Io.File.Permissions.fromMode(0o640),
+            io_mod.permissionsFromMode(0o640),
         );
     }
     var call_arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3592,7 +3585,7 @@ test "apply preserves the existing destination mode" {
     );
     try std.testing.expectEqual(
         @as(std.posix.mode_t, 0o640),
-        stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(stat.permissions) & 0o777,
     );
 }
 

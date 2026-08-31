@@ -40,7 +40,6 @@ pub const Isolation = union(enum) {
 };
 
 pub const OutputCapability = struct {
-    /// Opaque, borrowed output authority supplied by the host composition.
     context: *const anyopaque,
 };
 
@@ -60,13 +59,11 @@ pub const OwnedProcess = struct {
     wait_fn: *const fn (*anyopaque) void,
     forget_fn: *const fn (*anyopaque) void,
 
-    /// Consumes the handle after the provider-owned child has exited.
     pub fn wait(self: *OwnedProcess) void {
         self.wait_fn(self.context);
         self.* = undefined;
     }
 
-    /// Consumes the handle without changing the child process lifecycle.
     pub fn forget(self: *OwnedProcess) void {
         self.forget_fn(self.context);
         self.* = undefined;
@@ -75,8 +72,8 @@ pub const OwnedProcess = struct {
 
 pub const PreparedProcess = struct {
     context: *anyopaque,
-    /// Borrowed from `context` and valid until a consuming method succeeds.
     pid: []const u8,
+    process_token: ?process_supervisor.ProcessInstanceToken = null,
     close_and_wait_fn: *const fn (
         *anyopaque,
         ?process_supervisor.ProcessInstanceToken,
@@ -90,7 +87,6 @@ pub const PreparedProcess = struct {
     detach_reaper_fn: *const fn (*anyopaque) bool,
     release_fn: *const fn (*anyopaque, []const u8) ProviderError!OwnedProcess,
 
-    /// Consumes the handle only when cleanup is confirmed.
     pub fn closeAndWaitUnreleased(
         self: *PreparedProcess,
         process_token: ?process_supervisor.ProcessInstanceToken,
@@ -105,7 +101,6 @@ pub const PreparedProcess = struct {
         return status;
     }
 
-    /// Consumes the handle only when process exit is confirmed.
     pub fn waitForUnreleasedExit(
         self: *PreparedProcess,
         process_token: ?process_supervisor.ProcessInstanceToken,
@@ -120,14 +115,12 @@ pub const PreparedProcess = struct {
         return exited;
     }
 
-    /// Consumes the handle only when the provider retains cleanup ownership.
     pub fn detachUnreleasedReaper(self: *PreparedProcess) bool {
         const detached = self.detach_reaper_fn(self.context);
         if (detached) self.* = undefined;
         return detached;
     }
 
-    /// Releases the blocked command and consumes the prepared handle.
     pub fn release(
         self: *PreparedProcess,
         original_command: []const u8,
@@ -139,7 +132,6 @@ pub const PreparedProcess = struct {
 };
 
 pub const Provider = struct {
-    /// Provider implementations own `context`; callers borrow it.
     context: ?*anyopaque = null,
     spawn_prepared_fn: *const fn (
         ?*anyopaque,

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
@@ -262,7 +263,20 @@ fn writeTempFileWithMtime(alloc: Allocator, tmp: *std.testing.TmpDir, sub_path: 
 }
 
 fn setMode(path: []const u8, mode: std.posix.mode_t) !void {
-    try std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), path, std.Io.File.Permissions.fromMode(mode), .{});
+    if (comptime builtin.os.tag == .windows) {
+        var file = try io_mod.openExistingRegularFile(
+            std.Io.Dir.cwd(),
+            path,
+            .read_write,
+        );
+        defer file.close(io_mod.getIo());
+        const permissions = io_mod.permissionsFromMode(mode);
+        return file.setPermissions(
+            io_mod.getIo(),
+            permissions.setReadOnly(mode & 0o222 == 0),
+        );
+    }
+    try std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), path, io_mod.permissionsFromMode(mode), .{});
 }
 
 fn expectNoExtension(body: []const u8) !void {

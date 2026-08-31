@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const session = @import("session.zig");
 const session_replay = @import("session_replay.zig");
@@ -53,8 +54,8 @@ pub const deferred_cache_dir = "deferred";
 pub const relationship_migration_candidate_limit: usize = 16;
 const relationship_migration_read_bytes: usize = 64 * 1024;
 const relationship_migration_overlap_bytes: u64 = 512;
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
-const private_dir_permissions = std.Io.File.Permissions.fromMode(0o700);
+const private_file_permissions = io_mod.permissionsFromMode(0o600);
+const private_dir_permissions = io_mod.permissionsFromMode(0o700);
 
 const DeferredCachePositionJson = struct {
     log_generation: []const u8,
@@ -205,9 +206,10 @@ fn openDeferredCacheDirectory(
 
 fn requirePrivateCacheDirectory(dir: std.Io.Dir) !void {
     const stat = try dir.stat(io_mod.getIo());
-    if (stat.kind != .directory or
-        stat.permissions.toMode() & 0o777 != private_dir_permissions.toMode())
-    {
+    if (stat.kind != .directory) return error.InvalidSessionIndex;
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateDirectoryAclMatches(dir))) return error.InvalidSessionIndex;
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.InvalidSessionIndex;
     }
 }
@@ -279,9 +281,13 @@ fn readDeferredCacheTokenFromDirectory(
     defer file.close(io_mod.getIo());
     const stat = try file.stat(io_mod.getIo());
     if (stat.kind != .file or stat.nlink != 1 or
-        stat.permissions.toMode() & 0o777 != private_file_permissions.toMode() or
         stat.size == 0 or stat.size > max_deferred_cache_token_bytes)
     {
+        return error.InvalidSessionIndex;
+    }
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateFileAclMatches(file))) return error.InvalidSessionIndex;
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.InvalidSessionIndex;
     }
     const bytes = io_mod.readFileToEnd(
@@ -332,9 +338,6 @@ fn readOptionalCacheFile(alloc: Allocator, path: []const u8, max_bytes: usize) !
     return try io_mod.readFileToEnd(alloc, &file, max_bytes);
 }
 
-/// Reads the aggregate summary cache at `path`, trying a stack-buffer fast
-/// read then the fast parser, falling back to a heap read + scanner parse.
-/// `error.SessionIndexNotFound` if absent. Caller owns the result.
 pub fn readSessionStateSummary(alloc: Allocator, path: []const u8) !StateSummary {
     var prefix_buf: [4096]u8 = undefined;
     if (try readCachePrefix(path, &prefix_buf)) |prefix| {
@@ -372,8 +375,6 @@ fn readCachePrefix(path: []const u8, buffer: []u8) !?[]const u8 {
     return buffer[0..count];
 }
 
-/// Reads the latest session id for `target_workspace` from the summary cache,
-/// fast path then scanner fallback. Returns null if the workspace has no entry.
 fn readLatestWorkspaceSessionId(alloc: Allocator, path: []const u8, target_workspace: []const u8) !?[]u8 {
     var stack_buf: [64 * 1024]u8 = undefined;
     switch (try readSmallCacheFile(path, &stack_buf)) {
@@ -418,8 +419,6 @@ fn readSmallCacheFile(path: []const u8, buf: []u8) !SmallCacheRead {
     return if (n == 0) .{ .bytes = buf[0..total] } else .oversized;
 }
 
-/// Best-effort byte scan for one workspace entry. Returns null to defer to the
-/// scanner path; only allocation can fail.
 fn parseLatestWorkspaceSessionIdFast(alloc: Allocator, bytes: []const u8, target_workspace: []const u8) Allocator.Error!?[]u8 {
     if (!isSimpleJsonStringContent(target_workspace)) return null;
 
@@ -445,8 +444,6 @@ fn parseLatestWorkspaceSessionIdFast(alloc: Allocator, bytes: []const u8, target
     return try alloc.dupe(u8, id);
 }
 
-/// True if `text` contains no characters needing JSON escaping, so it is safe
-/// to match literally in the fast scan.
 fn isSimpleJsonStringContent(text: []const u8) bool {
     for (text) |byte| {
         if (byte < 0x20 or byte == '"' or byte == '\\') return false;
@@ -454,9 +451,6 @@ fn isSimpleJsonStringContent(text: []const u8) bool {
     return true;
 }
 
-/// Best-effort byte scan of the summary cache. Returns the parsed summary, or
-/// null to signal "fall back to the scanner" (it never reports a hard parse
-/// error); only allocation can fail.
 fn parseSessionStateSummaryFast(alloc: Allocator, bytes: []const u8) Allocator.Error!?StateSummary {
     const schema_key = "\"schema_version\":1";
     if (std.mem.find(u8, bytes, schema_key) == null) return null;
@@ -495,8 +489,6 @@ fn countNumberEnd(bytes: []const u8) usize {
     return end;
 }
 
-/// Authoritative `std.json.Scanner` parse of the summary cache. Strict:
-/// malformed input is `error.InvalidSessionIndex`.
 fn parseSessionStateSummary(alloc: Allocator, bytes: []const u8) !StateSummary {
     var scanner = std.json.Scanner.initCompleteInput(alloc, bytes);
     defer scanner.deinit();
@@ -538,7 +530,6 @@ fn parseSessionStateSummary(alloc: Allocator, bytes: []const u8) !StateSummary {
     return .{ .count = count orelse return error.InvalidSessionIndex, .latest_id = latest_id };
 }
 
-/// Authoritative scanner parse returning the matched workspace id, or null.
 fn parseLatestWorkspaceSessionId(alloc: Allocator, bytes: []const u8, target_workspace: []const u8) !?[]u8 {
     var scanner = std.json.Scanner.initCompleteInput(alloc, bytes);
     defer scanner.deinit();
@@ -741,8 +732,6 @@ fn appendLatestWorkspaceSummary(alloc: Allocator, latest: *std.ArrayList(Workspa
     });
 }
 
-/// Parses the session index document into newest-first summaries, validating
-/// the schema version and each id. Caller owns and frees the list.
 fn parseSessionIndex(alloc: Allocator, json_text: []const u8) !std.ArrayList(SessionSummary) {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_text, .{}) catch return error.InvalidSessionIndex;
     defer parsed.deinit();
@@ -1353,9 +1342,6 @@ pub fn readSessionIndexPage(
     };
 }
 
-/// Reads workspace candidates from the latest complete index snapshot without
-/// materializing unrelated session metadata. This intentionally ignores an
-/// in-progress index marker; callers must validate the managed child payload.
 pub fn readSessionIndexWorkspaceCandidates(
     alloc: Allocator,
     sessions: *const io_mod.VerifiedDir,
@@ -1376,9 +1362,6 @@ pub fn readSessionIndexWorkspaceCandidates(
     return parseSessionIndexForWorkspace(alloc, bytes, workspace_root);
 }
 
-/// Streams a fixed window of the frozen ordinary-session candidate snapshot.
-/// The returned IDs are candidates only; callers must re-read canonical
-/// control records before projecting any edge.
 pub fn readRelationshipMigrationCandidatePage(
     alloc: Allocator,
     sessions: *const io_mod.VerifiedDir,
@@ -1521,16 +1504,20 @@ pub fn refreshRelationshipMigrationSnapshot(
     }) catch return error.InvalidSessionIndex;
     temp_exists = true;
     defer target.close(io_mod.getIo());
-    target.setPermissions(
-        io_mod.getIo(),
-        private_file_permissions,
-    ) catch return error.InvalidSessionIndex;
+    if (comptime builtin.os.tag == .windows) {
+        io_mod.enforcePrivateFileAcl(target) catch return error.InvalidSessionIndex;
+    } else {
+        target.setPermissions(
+            io_mod.getIo(),
+            private_file_permissions,
+        ) catch return error.InvalidSessionIndex;
+    }
     const target_stat = target.stat(io_mod.getIo()) catch
         return error.InvalidSessionIndex;
-    if (target_stat.kind != .file or
-        target_stat.nlink != 1 or
-        target_stat.permissions.toMode() & 0o777 != 0o600)
-    {
+    if (target_stat.kind != .file or target_stat.nlink != 1) return error.InvalidSessionIndex;
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateFileAclMatches(target))) return error.InvalidSessionIndex;
+    } else if (!io_mod.permissionsMatch(target_stat.permissions, 0o600)) {
         return error.InvalidSessionIndex;
     }
 
@@ -1644,7 +1631,10 @@ fn openVerifiedSessionIndexFile(
     };
     errdefer file.close(io_mod.getIo());
     const stat = try file.stat(io_mod.getIo());
-    if (stat.kind != .file or stat.nlink != 1 or stat.permissions.toMode() & 0o777 != 0o600) {
+    if (stat.kind != .file or stat.nlink != 1) return error.InvalidSessionIndex;
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateFileAclMatches(file))) return error.InvalidSessionIndex;
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.InvalidSessionIndex;
     }
     return file;
@@ -1696,7 +1686,6 @@ fn writeIndexedSummaryJson(writer: *std.Io.Writer, summary: SessionSummary) !voi
     try writer.writeByte('}');
 }
 
-/// Frees every summary and the backing list.
 pub fn freeSummaries(alloc: Allocator, sessions: *std.ArrayList(SessionSummary)) void {
     for (sessions.items) |*summary| summary.deinit(alloc);
     sessions.deinit(alloc);
@@ -1728,9 +1717,6 @@ pub fn cloneSessionSummary(alloc: Allocator, source: SessionSummary) !SessionSum
     };
 }
 
-/// Display metadata freezes at first derivation: when the indexed row for
-/// the same session already carries a title, the replacement keeps it
-/// instead of a value re-derived from possibly compacted history.
 pub fn preserveIndexedDisplayMetadata(
     alloc: Allocator,
     index: []const SessionSummary,
@@ -1848,7 +1834,6 @@ fn summaryFollowsContinuation(
     return std.mem.order(u8, summary.id, continuation.id) == .lt;
 }
 
-/// Sorts summaries by descending `updated_at_ms`, ties broken by descending id.
 pub fn sortSummariesNewestFirst(items: []SessionSummary) void {
     sort_utils.sort(SessionSummary, items, {}, lessSummaryNewerFirst);
 }
@@ -2264,6 +2249,7 @@ test "deferred cache token rejects malformed and noncanonical input" {
 }
 
 test "deferred cache token reader rejects non-private files" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2309,7 +2295,7 @@ test "deferred cache token reader rejects non-private files" {
     });
     try file.setPermissions(
         std.testing.io,
-        std.Io.File.Permissions.fromMode(0o644),
+        io_mod.permissionsFromMode(0o644),
     );
     file.close(std.testing.io);
 

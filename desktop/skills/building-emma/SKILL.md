@@ -45,8 +45,7 @@ Take the cheapest thing that actually works. Most requests do not need a rebuild
    hot reload, whole-region stakes; the `artifact` skill has the contract. A
    source change is for what neither can reach: main-process behaviour, IPC or
    windows.
-4. **A UI plugin** — a directory under
-   `~/Library/Application Support/Emma/plugins/<id>` holding `plugin.json`
+4. **A UI plugin** — a directory under `<userData>/plugins/<id>` holding `plugin.json`
    (`id`, `name`, `version`, `uiStylesheet`) and one CSS file. The directory name
    must equal `id`; `@import` and `url(...)` are rejected; 128 KiB ceiling. CSS
    can restyle and rearrange the whole workspace with no code change. See
@@ -91,7 +90,7 @@ they all exit on their own.
 | `desktop/main`, `desktop/shared` | `npm --prefix desktop run build:main` | **relaunch Electron** |
 | `crates/` | `npm --prefix desktop run build:host` | relaunch |
 | `harness/` | `npm --prefix desktop run build:harness` | relaunch |
-| `desktop/native/*.m` | `npm --prefix desktop run build:native` | relaunch |
+| `desktop/native/` | `npm --prefix desktop run build:native` | relaunch |
 
 A cold checkout needs all of it once:
 
@@ -176,7 +175,7 @@ or reload (renderer only) → re-run `drive.mjs` / `shot.mjs` → re-run
 ## Finishing
 
 - Report exactly what you verified and what you did not. Unverified privacy
-  permissions, VoiceOver behaviour, display geometry, signing and non-macOS paths
+  permissions, VoiceOver behaviour, display geometry, signing and Windows paths
   are called out, not implied.
 - If a run went badly, `read_trace` it, find the wasted part, and `write_skill`
   so the next one starts smarter.

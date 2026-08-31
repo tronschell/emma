@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoundedLines } from "./ndjson";
+import { pathInside, samePath, terminateProcessTree } from "./platform";
 export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
@@ -449,7 +450,19 @@ export class Harness {
     const child = spawn(this.deps.binaryPath, this.deps.args ?? ["acp"], {
       cwd: this.deps.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, HOME: this.deps.home, ...key, ...route, ...prompt },
+      windowsHide: process.platform === "win32",
+      env: {
+        ...process.env,
+        HOME: this.deps.home,
+        ...(process.platform === "win32" ? {
+          USERPROFILE: this.deps.home,
+          APPDATA: path.join(this.deps.home, "AppData", "Roaming"),
+          LOCALAPPDATA: path.join(this.deps.home, "AppData", "Local"),
+        } : {}),
+        ...key,
+        ...route,
+        ...prompt,
+      },
     });
     this.child = child;
     child.stdout.on("data", (data: Uint8Array) => {
@@ -476,7 +489,7 @@ export class Harness {
       });
     } catch (error) {
       this.fail(error as Error);
-      this.close();
+      await this.close();
       throw error;
     }
   }
@@ -612,13 +625,16 @@ export class Harness {
     return `emma-cli ${how}${detail ? `: ${detail}` : ""}`;
   }
 
-  close() {
+  async close() {
     this.fail(new Error("Harness closed"));
     if (this.deps.promptFile) rmSync(this.deps.promptFile, { force: true });
     const child = this.child;
     this.child = undefined;
     if (!child) return;
     if (!child.stdin.destroyed) child.stdin.end();
+    if (process.platform === "win32" && child.pid !== undefined) {
+      if (await terminateProcessTree(child.pid, "SIGKILL")) return;
+    }
     if (!child.killed) child.kill();
   }
 
@@ -983,14 +999,14 @@ export function escapesRoot(root: string, value: string): boolean {
   let real: string;
   try { real = realpathSync(root); } catch { return true; }
   const target = path.isAbsolute(value) ? path.resolve(value) : path.resolve(real, value);
-  if (target !== real && !target.startsWith(real + path.sep)) return true;
+  if (!pathInside(real, target)) return true;
   let existing = target;
-  while (existing !== real && existing.startsWith(real + path.sep) && !exists(existing)) {
+  while (!samePath(existing, real) && pathInside(real, existing) && !exists(existing)) {
     existing = path.dirname(existing);
   }
   try {
     const resolved = realpathSync(existing);
-    return resolved !== real && !resolved.startsWith(real + path.sep);
+    return !pathInside(real, resolved);
   } catch { return true; }
 }
 

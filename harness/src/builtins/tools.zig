@@ -96,12 +96,12 @@ const terminal_exec_only_cwd_description =
 const terminal_exec_only_command_description =
     "Command to run.";
 const terminal_exec_only_profile_description =
-    "Profile for exec; omission defaults to user, while clean skips user initialization files. User execution supports the configured Bash or zsh login shell. Bash login execution reads login initialization files; .bashrc is available only when sourced by the login profile.";
+    "Profile for exec; omission defaults to user, while clean skips user initialization files. User execution uses the configured login shell; startup files depend on that shell and platform.";
 
 const terminal_shell_schema = gateway_schema.ObjectSchema{
     .properties = &.{
         .{ .name = "kind", .json_type = .string, .shape = &.{ .enum_values = &.{ "user_login", "executable" } } },
-        .{ .name = "path", .json_type = .string, .description = "Required for kind=executable; use an absolute path to Bash or zsh." },
+        .{ .name = "path", .json_type = .string, .description = "Required for kind=executable; use an absolute path to the requested shell." },
         .{ .name = "clean_start", .json_type = .boolean },
     },
     .additional_properties = false,
@@ -199,7 +199,7 @@ const terminal_properties = [_]gateway_schema.Property{
     .{ .name = "session_id", .json_type = .string, .description = "Required for session-targeted actions. Omit for start and list; owner-catalog authority is private." },
     .{ .name = "cwd", .json_type = .string, .description = "Working directory for exec or start; defaults to the workspace. Set it instead of prefixing the command with `cd`; any absolute path is accepted, subject to permission policy." },
     .{ .name = "command", .json_type = .string, .max_length = terminal_contracts.max_command_bytes, .description = "Command for exec, or optional command for start; omit on start for an interactive shell." },
-    .{ .name = "profile", .json_type = .string, .shape = &.{ .enum_values = &.{ "clean", "user" } }, .description = "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution supports the configured Bash or zsh login shell. Bash login execution reads login startup files; .bashrc is available only when sourced by the login profile. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile." },
+    .{ .name = "profile", .json_type = .string, .shape = &.{ .enum_values = &.{ "clean", "user" } }, .description = "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution uses the configured login shell; startup files depend on that shell and platform. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile." },
     .{ .name = "shell", .json_type = .object, .shape = &.{ .object = &terminal_shell_schema } },
     .{ .name = "backend", .json_type = .string, .shape = &.{ .enum_values = &.{ "native", "tmux" } }, .description = "Start backend or optional list filter." },
     .{ .name = "return_when", .json_type = .object, .shape = &.{ .object = &terminal_return_schema }, .description = "Only for start or wait; required for every wait. After a signal intended to stop the session, use kind exit. For output matching, use kind match with pattern; output_contains is monitor-only." },
@@ -1423,8 +1423,6 @@ pub const vision = ToolSpec{
             .max_properties = 2,
         },
     },
-    // Routed to by the provider rather than advertised, so its schema never
-    // enters the prompt. This replaces a name check in `writeBuiltinTool`.
     .advertisement = .never,
     .executor_kind = .vision,
     .activity_kind = .read,
@@ -1475,26 +1473,6 @@ pub const read_tool_result = ToolSpec{
     .irreversible_fn = read_tool_result_impl.isIrreversible,
 };
 
-/// Every tool the model can reach, and the only thing `Registry.lookup` walks.
-///
-/// `memory` and `web_search` are deliberately absent: Emma ships its own under
-/// those names in `emma_tools.all`, and `lookup` returns the first match, so
-/// listing both would make which one runs an accident of order. The specs above
-/// stay because forty-odd tests use them as fixtures, but nothing in a real run
-/// reaches them.
-///
-/// `vision` is the exception that proves it, and it is here rather than Emma's.
-/// It is not really a tool the model chooses — it is the far end of the gateway's
-/// image route: when the model cannot see images and the user attached some,
-/// `emma_openai.advertisedToolsJson` looks it up *by this name* and forces it as
-/// the only tool on offer, and `runtime_vision_contracts` then reads back
-/// `image_ids` and verifies the bytes against the authorized catalog. Emma's own
-/// image tool answers a written question about one file, which is a different
-/// thing entirely, so it is `look_at_image` and this keeps `vision`.
-///
-/// Only `search_tools` and `select_tool` are `.always`. Everything here is
-/// registered but unadvertised, so the model finds a tool by searching for it
-/// and its schema costs the prompt nothing until it does.
 pub const all = [_]tool_dispatch.Tool{
     list_files,
     glob_files,
@@ -1637,7 +1615,7 @@ test "terminal tool schema derives one closed branch per terminal action" {
         schemaProperty(write_schema, "lease").?.description,
     );
     try std.testing.expectEqualStrings(
-        "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution supports the configured Bash or zsh login shell. Bash login execution reads login startup files; .bashrc is available only when sourced by the login profile. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile.",
+        "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution uses the configured login shell; startup files depend on that shell and platform. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile.",
         schemaProperty(start_schema, "profile").?.description,
     );
     try std.testing.expectEqualStrings(
@@ -1762,7 +1740,7 @@ test "terminal gateway advertisement projects a provider-compatible object schem
     const shell_alternatives = start_branch_properties.get("shell").?.object.get("anyOf").?.array.items;
     const shell_properties = shell_alternatives[0].object.get("properties").?.object;
     try std.testing.expectEqualStrings(
-        "Required for kind=executable; use an absolute path to Bash or zsh.",
+        "Required for kind=executable; use an absolute path to the requested shell.",
         shell_properties.get("path").?.object.get("description").?.string,
     );
     const required = input_schema.get("required").?.array.items;
@@ -1802,7 +1780,7 @@ test "terminal dispatch is permission gated and fails closed when unavailable" {
     try tmp.dir.createDir(
         test_io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        test_io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(test_io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2025,23 +2003,12 @@ pub const advertisement_order = [_][]const u8{
     "web_fetch",
 };
 
-/// What plan mode may reach. This is a gate, not a filter: `Registry.toolAllowed`
-/// refuses anything outside it at dispatch, so a tool `select_tool` pulled back
-/// into the projection is still blocked here.
-///
-/// Emma's own tools had to be added when they stopped being MCP servers and
-/// became registry entries — `toolAllowed` waves through anything the registry
-/// does not know, so bridging used to make this list irrelevant to them. The set
-/// mirrors the `plan: "auto"` rows of `GATES` in desktop/shared/permissions.ts,
-/// which Emma re-checks in `runEmmaTool` before it runs any of them.
 pub const read_only_tool_names = [_][]const u8{
     "read_file",
     "glob_files",
     "grep_files",
     "list_files",
     "web_fetch",
-    // The door itself, or plan mode advertises nothing at all now that every
-    // other tool waits behind a search.
     "search_tools",
     "select_tool",
     "advisor",
@@ -2054,9 +2021,6 @@ pub const read_only_tool_names = [_][]const u8{
     "visualize",
     "look_at_image",
     "web_search",
-    // The gateway forces this one when the model cannot see an image the user
-    // attached; refusing it in plan mode would leave that turn unable to read
-    // the picture it was asked about. It only ever reads.
     "vision",
 };
 
@@ -2122,13 +2086,9 @@ test "built-in tools register exact active local order" {
         "read_tool_result",
         "search_tools",
         "select_tool",
-        // Last of fx's, and registered rather than advertised: the gateway looks
-        // it up by name to force the image route. See `all`.
         "vision",
     };
 
-    // fx's own tools come first and in this order; Emma's are appended after and
-    // pinned by their own test, so adding one never edits this list.
     try std.testing.expectEqual(expected_names.len + emma_tools.all.len, all.len);
     for (expected_names, all[0..expected_names.len]) |expected, tool| {
         try std.testing.expectEqualStrings(expected, tool.name);
@@ -2529,8 +2489,6 @@ test "built-in memory owns product metadata schema and callbacks" {
         .name = "memory",
         .arguments_json = "{\"action\":\"clear\"}",
     };
-    // Against a registry of its own: `memory` is Emma's name in the product
-    // registry, so looking it up there answers about a different tool.
     const memory_registry = tool_dispatch.Registry{ .tools = &.{memory} };
     try std.testing.expectEqual(
         types.ToolActivityKind.read,
@@ -2628,28 +2586,16 @@ test "built-in web_search is registered in default production tools" {
 }
 
 test "the names Emma took resolve to Emma's tool, and the one it left alone does not" {
-    // `lookup` returns the first match, so a stray re-entry in `all` would shadow
-    // Emma's silently: the model would keep seeing the name and the call would
-    // land somewhere else entirely. fx's own native web search is off on every
-    // surface this fork ships, and its memory is a single JSON file rather than
-    // Emma's directory.
     inline for (.{ "memory", "web_search", "look_at_image" }) |name| {
         const found = registry.lookup(name) orelse return error.TestExpectedEqual;
         try std.testing.expectEqual(tool_dispatch.ExecutorKind.emma, found.executor_kind);
     }
-    // And the other way for `vision`, which Emma must NOT take: the gateway
-    // forces a tool of this name when the model cannot see an attached image,
-    // and then reads `image_ids` back off the call. Emma's image tool answers a
-    // written question instead, so pointing this name at it would break the
-    // route with no error — the model would be handed the wrong schema and told
-    // it had to use it.
     const forced = registry.lookup("vision") orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(tool_dispatch.ExecutorKind.vision, forced.executor_kind);
     try std.testing.expect(schemaProperty(forced.gateway_schema.input_schema, "image_ids") != null);
 }
 
 test "built-in web_search owns its Gateway provider advertisement" {
-    // The spec, not the registry: Emma answers to `web_search` there.
     const write_advertisement = web_search.write_gateway_advertisement_fn orelse return error.TestExpectedEqual;
 
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -3119,14 +3065,10 @@ test "built-in read-only tool set matches plan inspection tools" {
     for (expected_names, read_only_tool_names) |expected, name| {
         try std.testing.expectEqualStrings(expected, name);
         try std.testing.expect(isReadOnlyToolName(name));
-        // A name nothing answers to is a silent hole in plan mode: `toolAllowed`
-        // waves through anything the registry does not know.
         try std.testing.expect(registry.lookup(name) != null);
     }
     try std.testing.expect(!isReadOnlyToolName("write_file"));
     try std.testing.expect(!isReadOnlyToolName("run_command"));
-    // The tools that change the Mac or the user's library, named so a careless
-    // addition to the list above fails here rather than in plan mode.
     inline for (.{ "terminal", "edit_file", "delete_file", "cli", "computer", "memory", "keep", "workflow", "write_skill", "write_tool", "write_plugin" }) |name| {
         try std.testing.expect(!isReadOnlyToolName(name));
     }

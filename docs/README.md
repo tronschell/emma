@@ -7,7 +7,7 @@ is the tour; this is the reference.
 
 | | |
 |---|---|
-| [Getting started](getting-started.md) | Prerequisites, install, run, first launch, the macOS permissions Emma asks for and why |
+| [Getting started](getting-started.md) | Prerequisites, install, run, first launch, and the platform permissions Emma asks for and why |
 | [Concepts](concepts.md) | The vocabulary — thread, run, queue/steer/stop, subagent, sub-thread, artifact, context, inspector |
 | [Troubleshooting](troubleshooting.md) | Problem → cause → fix, for the failures the code can actually produce |
 
@@ -20,14 +20,14 @@ is the tour; this is the reference.
 | [Permissions](permissions.md) | The four modes, the full gate matrix, the verifier, and what survives every mode |
 | [Tools](tools.md) | Every tool a turn can call: Emma's own, and the harness's builtins |
 | [Models](models.md) | OpenAI-compatible endpoints, credentials, the OpenRouter catalog, private routing |
-| [Privacy](privacy.md) | What leaves this Mac and what doesn't, subsystem by subsystem |
+| [Privacy](privacy.md) | What leaves this computer and what doesn't, subsystem by subsystem |
 | [Knowledge](knowledge.md) | The vault you pick, `keep`, tagging, and the note format on disk |
-| [Notch surfaces](notch.md) | The Option double-tap, Quick Ask, the island, quick actions, the radial ring |
-| [Terminal](terminal.md) | The shell panel under a thread: the pty helper, output as context, ⌘-click links |
+| [Notch surfaces](notch.md) | The macOS Option or Windows Alt double-tap, Quick Ask, the island, quick actions, the radial ring |
+| [Terminal](terminal.md) | The shell panel under a thread: the pty helper, output as context, shortcut-click links |
 | [Browser](browser.md) | The per-thread Chromium view: the docked pane, the PIP, and clipboard history |
 | [Mobile](mobile.md) | Pairing a phone over your tailnet or LAN: the address, the PIN, building the app, and what the phone can drive |
 | [Voice](voice.md) | Dictation's two engines, the local-only rule, and drawing |
-| [Computer use](computer-use.md) | Emma driving the Mac, and every safety rail as implemented |
+| [Computer use](computer-use.md) | Emma driving approved apps on macOS or Windows, and every safety rail as implemented |
 | [Goals](goals.md) | One objective a thread keeps working at: the ledger, the continuation loop, evidence, the blocked audit |
 | [Agents](agents.md) | Self-improvement: friction, trials, the replay bench, and how a change is proved |
 | [Jobs](jobs.md) | Scheduled workflows: triggers, node graphs, validation, execution |

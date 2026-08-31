@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CLI_MODELS_STALE_MS, MAX_CLI_MODELS, type CliModels } from "../shared/cli";
+import { spawnCommand, terminateProcessTree } from "./platform";
 
 const CACHE_FILE = "cli-models.json";
 const LIST_MS = 30_000;
@@ -23,10 +23,10 @@ async function json(path: string): Promise<unknown> {
 
 function run(binary: string, args: string[], path: string): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn(binary, args, { env: { ...process.env, PATH: path }, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawnCommand(binary, args, { env: { ...process.env, PATH: path }, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     let out = "";
-    child.stdout.on("data", (data: Buffer) => { if (out.length < MAX_LIST_BYTES) out += String(data); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), LIST_MS);
+    child.stdout?.on("data", (data: Buffer) => { if (out.length < MAX_LIST_BYTES) out += String(data); });
+    const timer = setTimeout(() => { if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false); }, LIST_MS);
     timer.unref();
     child.once("error", () => { clearTimeout(timer); resolve(""); });
     child.once("close", () => { clearTimeout(timer); resolve(out); });

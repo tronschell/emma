@@ -90,6 +90,8 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   type ReadyEvent = { sender: ReturnType<typeof makeWindow>["webContents"]; senderFrame: object };
   let ready: (event: ReadyEvent) => void = () => assert.fail("Missing readiness listener");
   const context = {
+    isMac: false,
+    platform_1: { isMac: false },
     computerCursorWindow: null,
     computerCursorReady: false,
     computerCursorTimer: undefined,
@@ -116,6 +118,7 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   };
   const functions = [
     extract(/function reportRunProgress\(progress\) \{[\s\S]*?(?=\nconst BRIDGE_EVENTS)/),
+    extract(/function pinWindow\(window\) \{[\s\S]*?(?=\nconst floating)/),
     extract(/function openRunBanner\(threadId, task\) \{[\s\S]*?(?=\nfunction startAnnotation\()/),
     extract(/electron_1\.ipcMain\.on\("emma:computer-run-ready",[\s\S]*?(?=\n\s*electron_1\.ipcMain\.handle)/),
   ].join("\n");

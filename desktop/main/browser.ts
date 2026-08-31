@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { recentClips, rememberClip, restoreClip } from "./clip";
 import { externalUrl } from "./ipc";
+import { findExecutable, isWindows, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
 import { MAX_TOOL_OUTPUT_BYTES } from "./tools";
 
 export const INSTALL_COMMAND = "npm install -g agent-browser && agent-browser install";
@@ -213,7 +214,9 @@ export class Browsers {
       return { action: "deny" };
     });
     contents.on("before-input-event", (_event, input) => {
-      if (input.type !== "keyUp" || !input.meta || input.control || input.alt) return;
+      const modifier = isWindows ? input.control : input.meta;
+      const otherModifier = isWindows ? input.meta : input.control;
+      if (input.type !== "keyUp" || !modifier || otherModifier || input.alt) return;
       if (!CLIP_KEYS.includes(input.key.toLowerCase())) return;
       setTimeout(rememberClip, CLIP_SETTLE_MS).unref();
     });
@@ -239,8 +242,8 @@ export class Browsers {
     session.pinned = undefined;
     try {
       this.window?.contentView.removeChildView(tab.view);
-    } catch {
-      /* the window is already gone */
+    } catch (error) {
+      if (this.window && !this.window.isDestroyed()) throw error;
     }
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
   }
@@ -250,7 +253,7 @@ export class Browsers {
     session.pinned = undefined;
     session.activeId = undefined;
     this.sessions.delete(session.name);
-    if (this.path) spawn(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore" }).on("error", () => undefined).unref();
+    if (this.path) spawnCommand(this.path, ["--session", session.name, "close"], { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => undefined).unref();
   }
 
   private layout(session: Session) {
@@ -291,7 +294,7 @@ export class Browsers {
 
   private async exec(session: Session, argv: readonly string[]): Promise<Ran> {
     const binary = await this.binary();
-    if (!binary) throw new Error(`agent-browser is not installed on this Mac, so the agent cannot drive Emma's browser. The pane still works. Install it by running: ${INSTALL_COMMAND}`);
+    if (!binary) throw new Error(`agent-browser is not installed, so the agent cannot drive Emma's browser. The pane still works. Install it by running: ${INSTALL_COMMAND}`);
     return capture(binary, ["--session", session.name, ...argv], this.loginPath ?? process.env.PATH ?? "");
   }
 
@@ -306,9 +309,8 @@ export class Browsers {
   }
 
   private async find(): Promise<string | null> {
-    this.loginPath ??= (await shell('printf %s "$PATH"')) || process.env.PATH || "";
-    const found = await shell("command -v agent-browser");
-    this.path = found.startsWith("/") ? found : null;
+    this.loginPath ??= isWindows ? process.env.PATH || "" : (await shell('printf %s "$PATH"')) || process.env.PATH || "";
+    this.path = await findExecutable("agent-browser", this.loginPath);
     return this.path;
   }
 }
@@ -354,13 +356,13 @@ export function attached(ran: Ran, what: string): void {
 
 function capture(binary: string, argv: readonly string[], path: string): Promise<Ran> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, [...argv], { env: { ...process.env, PATH: path }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnCommand(binary, [...argv], { env: { ...process.env, PATH: path }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let out = "";
     let err = "";
     let settled = false;
-    child.stdout.on("data", (data: Buffer) => { if (out.length < MAX_TOOL_OUTPUT_BYTES) out += String(data); });
-    child.stderr.on("data", (data: Buffer) => { if (err.length < MAX_STDERR) err += String(data); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), MAX_COMMAND_MS);
+    child.stdout?.on("data", (data: Buffer) => { if (out.length < MAX_TOOL_OUTPUT_BYTES) out += String(data); });
+    child.stderr?.on("data", (data: Buffer) => { if (err.length < MAX_STDERR) err += String(data); });
+    const timer = setTimeout(() => { if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false); }, MAX_COMMAND_MS);
     timer.unref();
     const finish = (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
@@ -382,10 +384,10 @@ function capture(binary: string, argv: readonly string[], path: string): Promise
 
 function shell(command: string): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-lc", command], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(shellBinary(), shellArguments(command, false), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     let out = "";
     child.stdout.on("data", (data: Buffer) => { if (out.length < 8192) out += String(data); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), RESOLVE_MS);
+    const timer = setTimeout(() => { if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false); }, RESOLVE_MS);
     timer.unref();
     child.once("error", () => { clearTimeout(timer); resolve(""); });
     child.once("close", () => { clearTimeout(timer); resolve(out.trim().split("\n")[0] ?? ""); });

@@ -12,6 +12,19 @@ const host = @import("../../core/hosts/host.zig");
 const process_supervisor = @import(
     "../../core/background/process_supervisor.zig",
 );
+const windows_process = if (builtin.os.tag == .windows)
+    @import("../../core/shared/windows_process.zig")
+else
+    struct {};
+const windows_process_tree = if (builtin.os.tag == .windows)
+    @import("../../core/shared/windows_process_tree.zig")
+else
+    struct {};
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../../core/shared/windows_paths.zig")
+else
+    struct {};
+const windows_job = @import("../../core/permissions/windows_job.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -35,6 +48,28 @@ const blocked_background_wrapper_command = std.fmt.comptimePrint(
         "exit \"$status\"",
     .{ background_ready_byte, background_exit_marker },
 );
+const windows_background_wrapper_command =
+    "[Console]::Error.Write('R');" ++
+    "$reader=[IO.StreamReader]::new([Console]::OpenStandardInput());" ++
+    "$release=$reader.ReadLine();" ++
+    "if($release.Length -ne 1 -or [int][char]$release[0] -ne 6){exit 125};" ++
+    "$script=$reader.ReadToEnd();" ++
+    "$nested=\"`$ErrorActionPreference='Stop';`n\"+$script+\"`n`$__fx_last_exit=`$LASTEXITCODE;if(`$null -eq `$__fx_last_exit){`$__fx_last_exit=0};exit [int]`$__fx_last_exit\";" ++
+    "$process=$null;try{" ++
+    "$psi=[Diagnostics.ProcessStartInfo]::new();" ++
+    "$psi.FileName=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell\\v1.0\\powershell.exe');" ++
+    "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;" ++
+    "$psi.RedirectStandardInput=$true;" ++
+    "$psi.RedirectStandardOutput=$false;$psi.RedirectStandardError=$true;" ++
+    "$psi.StandardInputEncoding=[Text.Encoding]::UTF8;" ++
+    "$psi.Arguments='-NoLogo -NoProfile -NonInteractive -Command -';" ++
+    "$process=[Diagnostics.Process]::new();$process.StartInfo=$psi;$status=1;" ++
+    "[void]$process.Start();$process.StandardInput.Write($nested);$process.StandardInput.Close();$stderr_reader=$process.StandardError;$buffer=New-Object char[] 4096;" ++
+    "while($true){$count=$stderr_reader.Read($buffer,0,$buffer.Length);if($count -gt 0){[Console]::Out.Write($buffer,0,$count);[Console]::Out.Flush()}elseif($process.HasExited){break}};" ++
+    "$process.WaitForExit();$status=$process.ExitCode;" ++
+    "}catch{try{if($process -and !$process.HasExited){$process.Kill();$process.WaitForExit()}}catch{};[Console]::Out.Write([string]$_);$status=1}" ++
+    "finally{if($process){$process.Dispose()}};" ++
+    "[Console]::Out.Write(\"`n__FX_EXIT_CODE__=$status`n\");exit $status";
 
 pub const provider = background_process_provider.Provider{
     .spawn_prepared_fn = spawnPrepared,
@@ -46,11 +81,18 @@ pub const provider = background_process_provider.Provider{
 const PreparedState = struct {
     alloc: Allocator,
     handshake: SpawnedBackgroundHandshake,
+    job: ?windows_job.Job = null,
+
+    fn deinit(self: *PreparedState) void {
+        if (self.job) |*job| job.deinit();
+        self.* = undefined;
+    }
 };
 
 const OwnedState = struct {
     alloc: Allocator,
     child: std.process.Child,
+    job: ?windows_job.Job = null,
 };
 
 fn spawnPrepared(
@@ -66,9 +108,25 @@ fn spawnPrepared(
         blocked_background_wrapper_command,
         "fx-background",
     };
+    var windows_shell_path: [32768]u8 = undefined;
+    var windows_argv: [6][]const u8 = undefined;
     var sandbox_argv: [7][]const u8 = undefined;
     const argv: []const []const u8 = switch (request.isolation) {
-        .none => &direct_argv,
+        .none => if (comptime builtin.os.tag == .windows) blk: {
+            const path = windows_paths.system32ExecutableInto(
+                &windows_shell_path,
+                "WindowsPowerShell\\v1.0\\powershell.exe",
+            ) catch return error.SpawnFailed;
+            windows_argv = .{
+                path,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                windows_background_wrapper_command,
+            };
+            break :blk &windows_argv;
+        } else &direct_argv,
         .macos_profile => |profile_path| blk: {
             if (builtin.os.tag != .macos) return error.Unsupported;
             sandbox_argv = .{
@@ -90,18 +148,45 @@ fn spawnPrepared(
         .stdout = .{ .file = background_launch_output.Output
             .childStdioFileForProvider(request.output) },
         .stderr = .pipe,
+        .start_suspended = builtin.os.tag == .windows,
     });
     var child_owned = true;
     errdefer if (child_owned) {
-        if (child.stdin) |stdin| stdin.close(io_mod.getIo());
-        if (child.stderr) |stderr| stderr.close(io_mod.getIo());
-        child.stdin = null;
-        child.stderr = null;
-        _ = child.wait(io_mod.getIo()) catch {};
+        if (comptime builtin.os.tag == .windows) {
+            child.kill(io_mod.getIo());
+        } else {
+            if (child.stdin) |stdin| stdin.close(io_mod.getIo());
+            if (child.stderr) |stderr| stderr.close(io_mod.getIo());
+            child.stdin = null;
+            child.stderr = null;
+            _ = child.wait(io_mod.getIo()) catch {};
+        }
     };
 
     const child_id = child.id orelse return error.SpawnFailed;
-    const pid = try std.fmt.allocPrint(alloc, "{d}", .{child_id});
+    var job: ?windows_job.Job = if (comptime builtin.os.tag == .windows)
+        windows_job.Job.init(child_id, false) catch |err| {
+            return switch (err) {
+                error.UnsupportedPlatform => error.Unsupported,
+                else => error.SpawnFailed,
+            };
+        }
+    else
+        null;
+    errdefer if (job) |*owned_job| {
+        owned_job.terminate();
+        owned_job.deinit();
+    };
+    if (comptime builtin.os.tag == .windows) {
+        windows_job.Job.resumeThread(child.thread_handle) catch return error.SpawnFailed;
+    }
+    const process_token = if (comptime builtin.os.tag == .windows) blk: {
+        const creation = windows_process.creationTime(child_id) catch
+            return error.ProcessIdentityUnavailable;
+        break :blk process_supervisor.ProcessInstanceToken.fromWindowsCreationTime(creation) catch
+            return error.ProcessIdentityUnavailable;
+    } else null;
+    const pid = try formatChildId(alloc, child_id);
     var pid_owned = true;
     errdefer if (pid_owned) alloc.free(pid);
 
@@ -145,10 +230,12 @@ fn spawnPrepared(
             error.OutOfMemory,
         );
     };
-    state.* = .{ .alloc = alloc, .handshake = handshake };
+    state.* = .{ .alloc = alloc, .handshake = handshake, .job = job };
+    job = null;
     return .{
         .context = state,
         .pid = state.handshake.pid,
+        .process_token = process_token,
         .close_and_wait_fn = closeAndWaitPrepared,
         .wait_for_exit_fn = waitForPreparedExit,
         .detach_reaper_fn = detachPreparedReaper,
@@ -181,7 +268,10 @@ fn closeAndWaitPrepared(
         token,
         timeout_ms,
     );
-    if (status == .confirmed) state.alloc.destroy(state);
+    if (status == .confirmed) {
+        state.deinit();
+        state.alloc.destroy(state);
+    }
     return switch (status) {
         .confirmed => .confirmed,
         .timed_out => .timed_out,
@@ -199,13 +289,18 @@ fn waitForPreparedExit(
         token,
         timeout_ms,
     );
-    if (exited) state.alloc.destroy(state);
+    if (exited) {
+        state.deinit();
+        state.alloc.destroy(state);
+    }
     return exited;
 }
 
 fn detachPreparedReaper(raw: *anyopaque) bool {
     const state: *PreparedState = @ptrCast(@alignCast(raw));
+    if (state.job) |*job| job.terminate();
     if (!state.handshake.detachUnreleasedReaper(state.alloc)) return false;
+    state.deinit();
     state.alloc.destroy(state);
     return true;
 }
@@ -231,8 +326,10 @@ fn releasePrepared(
     state.handshake.child.stdin = null;
     state.handshake.child.stderr = null;
 
-    owned.* = .{ .alloc = state.alloc, .child = state.handshake.child };
+    owned.* = .{ .alloc = state.alloc, .child = state.handshake.child, .job = state.job };
+    state.job = null;
     state.alloc.free(state.handshake.pid);
+    state.handshake = undefined;
     state.alloc.destroy(state);
     return .{
         .context = owned,
@@ -244,11 +341,13 @@ fn releasePrepared(
 fn waitOwned(raw: *anyopaque) void {
     const state: *OwnedState = @ptrCast(@alignCast(raw));
     _ = state.child.wait(io_mod.getIo()) catch {};
+    if (state.job) |*job| job.deinit();
     state.alloc.destroy(state);
 }
 
 fn forgetOwned(raw: *anyopaque) void {
     const state: *OwnedState = @ptrCast(@alignCast(raw));
+    if (state.job) |*job| job.detach();
     state.alloc.destroy(state);
 }
 
@@ -261,8 +360,17 @@ fn captureToken(
     alloc: Allocator,
     pid_text: []const u8,
 ) background_process_provider.ProviderError!process_supervisor.ProcessInstanceToken {
-    const pid = std.fmt.parseInt(std.posix.pid_t, pid_text, 10) catch
-        return error.InvalidPid;
+    if (comptime builtin.os.tag == .windows) {
+        const process_id = io_mod.parseWindowsProcessId(pid_text) catch return error.InvalidPid;
+        const creation = windows_process_tree.creationTimeForId(alloc, process_id) catch |err| return switch (err) {
+            error.ProcessNotFound => error.ProcessNotFound,
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.ProcessIdentityUnavailable,
+        };
+        return process_supervisor.ProcessInstanceToken.fromWindowsCreationTime(creation) catch
+            error.ProcessIdentityUnavailable;
+    }
+    const pid = parsePid(pid_text) catch return error.InvalidPid;
     return switch (builtin.os.tag) {
         .linux => captureLinuxToken(alloc, pid) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
@@ -292,9 +400,6 @@ fn matchToken(
 fn readLinuxProcStat(file: std.Io.File, buffer: []u8) !usize {
     if (builtin.os.tag != .linux) return error.ProcessIdentityUnsupported;
     while (true) {
-        // A process can disappear after open, and procfs reports that read as
-        // ESRCH. Read directly so the expected race does not reach Zig's
-        // unexpected-errno reporter before classification.
         const rc = std.posix.system.read(file.handle, buffer.ptr, buffer.len);
         switch (std.posix.errno(rc)) {
             .SUCCESS => {
@@ -498,12 +603,36 @@ fn signalProcess(
         },
     }
     if (!host.current().background_processes) return error.Unsupported;
-    const pid = std.fmt.parseInt(std.posix.pid_t, pid_text, 10) catch
-        return error.InvalidPid;
+    if (comptime builtin.os.tag == .windows) {
+        const process_id = io_mod.parseWindowsProcessId(pid_text) catch return error.InvalidPid;
+        const creation_time = expected.windowsCreationTime() catch
+            return error.BackgroundProcessIdentityMismatch;
+        if (!windows_job.Job.terminateForProcess(process_id, creation_time)) {
+            return error.BackgroundProcessIdentityIndeterminate;
+        }
+        return;
+    }
+    const pid = parsePid(pid_text) catch return error.InvalidPid;
     try signalPidTree(pid);
 }
 
+fn parsePid(pid_text: []const u8) !std.posix.pid_t {
+    return io_mod.parseProcessId(pid_text);
+}
+
+fn formatChildId(alloc: Allocator, child_id: anytype) ![]u8 {
+    return switch (builtin.os.tag) {
+        .windows => std.fmt.allocPrint(alloc, "{d}", .{windows_process.id(child_id)}),
+        else => std.fmt.allocPrint(alloc, "{d}", .{child_id}),
+    };
+}
+
 fn signalPidTree(root_pid: std.posix.pid_t) std.posix.KillError!void {
+    if (comptime builtin.os.tag == .windows) return error.PermissionDenied;
+    return signalPidTreePosix(root_pid);
+}
+
+fn signalPidTreePosix(root_pid: std.posix.pid_t) std.posix.KillError!void {
     const descendants = collectDescendantPids(
         std.heap.page_allocator,
         root_pid,
@@ -620,16 +749,8 @@ fn collectDescendantPids(
         var fields = std.mem.tokenizeAny(u8, line, " \t\r");
         const pid_text = fields.next() orelse continue;
         const ppid_text = fields.next() orelse continue;
-        const pid = std.fmt.parseInt(
-            std.posix.pid_t,
-            pid_text,
-            10,
-        ) catch continue;
-        const ppid = std.fmt.parseInt(
-            std.posix.pid_t,
-            ppid_text,
-            10,
-        ) catch continue;
+        const pid = parsePid(pid_text) catch continue;
+        const ppid = parsePid(ppid_text) catch continue;
         try pairs.append(alloc, .{ .pid = pid, .ppid = ppid });
     }
 
@@ -745,6 +866,15 @@ const SpawnedBackgroundHandshake = struct {
         timeout_ms: i64,
     ) bool {
         if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+            if (comptime builtin.os.tag == .windows) {
+                const handle = self.child.id orelse return true;
+                const exited = windows_process.waitForExit(handle, timeout_ms) catch return false;
+                if (!exited) return false;
+                _ = self.child.wait(io_mod.getIo()) catch return false;
+                alloc.free(self.pid);
+                self.* = undefined;
+                return true;
+            }
             return waitForProcessExit(
                 alloc,
                 self.pid,
@@ -771,7 +901,6 @@ const SpawnedBackgroundHandshake = struct {
             else => {},
         }
         const pid = self.child.id orelse return true;
-        // PID liveness includes zombies, so reap the child we directly own.
         if (std.c.waitpid(pid, null, std.c.W.NOHANG) != pid) return false;
         self.child.id = null;
         alloc.free(self.pid);
@@ -925,6 +1054,18 @@ test "blocked background wrapper rejects eof and invalid release without executi
         log_path,
         0x7f,
     );
+}
+
+test "Windows background wrapper preserves nested exit status and output" {
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "RedirectStandardInput=$true") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "-Command -") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "RedirectStandardOutput=$false") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "ReadToEndAsync") == null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "ExitCode") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "ErrorActionPreference='Stop'") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "SystemDirectory") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "__FX_EXIT_CODE__") != null);
+    try std.testing.expect(std.mem.find(u8, windows_background_wrapper_command, "scriptblock]::Create") == null);
 }
 
 test "blocked background wrapper executes only after valid release" {

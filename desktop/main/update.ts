@@ -26,7 +26,7 @@ export function startUpdates(announce: (version: string) => void) {
     setTimeout(() => { ready = fake; announce(fake); }, FAKE_ANNOUNCE_MS).unref();
     return;
   }
-  if (process.platform !== "darwin") return;
+  if (process.platform !== "darwin" && process.platform !== "win32") return;
   const origin = process.env.EMMA_UPDATE_URL ? updateOrigin(process.env.EMMA_UPDATE_URL) : DEFAULT_UPDATE_ORIGIN;
   if (!origin) {
     console.error("Emma: EMMA_UPDATE_URL is not an https origin; update checks are off");

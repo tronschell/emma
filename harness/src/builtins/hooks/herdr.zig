@@ -1,31 +1,43 @@
-//! Best-effort lifecycle reporter for the herdr agent multiplexer.
-//!
-//! Each report uses a short-lived Unix socket. Failures and reply timeouts are
-//! ignored so the integration cannot block or terminate an fx session.
-
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../../core/shared/io.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
 const host_target = @import("../../core/hosts/target.zig");
 const jsonrpc = @import("../../acp/jsonrpc.zig");
 
+const windows_response = if (builtin.os.tag == .windows) struct {
+    const windows = std.os.windows;
+    const PollFd = extern struct {
+        fd: usize,
+        events: i16,
+        revents: i16,
+    };
+
+    extern "ws2_32" fn setsockopt(
+        socket: usize,
+        level: c_int,
+        option_name: c_int,
+        option_value: [*]const u8,
+        option_length: c_int,
+    ) callconv(.winapi) c_int;
+    extern "ws2_32" fn WSAPoll(
+        fds: *PollFd,
+        count: u32,
+        timeout_ms: i32,
+    ) callconv(.winapi) c_int;
+} else struct {};
+
 pub const State = enum { idle, working, blocked };
 
-// herdr protocol limits custom status to 32 bytes.
 const custom_status_max = 32;
-/// Maximum wait for herdr's one-line reply.
-const response_timeout = std.posix.timeval{ .sec = 0, .usec = 250_000 };
 
-// Third-party reporters use the `custom:` source prefix.
 const source = "custom:fx";
 const agent_name = "fx";
 
 const Request = union(enum) {
     report: struct { state: State, custom_status: ?[]const u8 },
     session: []const u8,
-    /// null clears the pane label.
     pane_rename: ?[]const u8,
-    /// null clears the agent name.
     agent_rename: ?[]const u8,
     clear_authority,
 };
@@ -77,8 +89,6 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
-        // Clear herdr's pane before freeing paths so exit does not leave a
-        // stale idle "fx" label behind.
         self.release();
         const io = io_mod.getIo();
         self.mutex.lockUncancelable(io);
@@ -93,21 +103,15 @@ pub const Client = struct {
         self.enabled = false;
     }
 
-    /// Report a semantic lifecycle state. `custom_status` is a short (<=32 byte)
-    /// activity label shown in herdr's UI; pass null to omit it.
     pub fn reportState(self: *Client, state: State, custom_status: ?[]const u8) void {
         self.send(.{ .report = .{ .state = state, .custom_status = clampStatus(custom_status) } });
     }
 
-    /// Report fx's session id so herdr can associate the pane with a resumable
-    /// session. Does not affect herdr's semantic state.
     pub fn reportSession(self: *Client, session_id: []const u8) void {
         if (session_id.len == 0) return;
         self.send(.{ .session = session_id });
     }
 
-    /// Name the pane/agent so herdr lists fx even while idle. Best-effort;
-    /// called once at startup after the first state report.
     pub fn announce(self: *Client) void {
         self.sendAll(&.{
             .{ .pane_rename = agent_name },
@@ -115,8 +119,6 @@ pub const Client = struct {
         });
     }
 
-    /// Remove fx from the pane on exit: drop the reported agent and clear the
-    /// label/name. Without this the pane keeps showing "fx" after fx is gone.
     pub fn release(self: *Client) void {
         self.sendAll(&.{
             .{ .agent_rename = null },
@@ -181,6 +183,11 @@ pub const Client = struct {
 };
 
 fn applyResponseTimeout(stream: std.Io.net.Stream) void {
+    if (comptime builtin.os.tag == .windows) {
+        setWindowsResponseTimeout(stream, response_timeout_ms);
+        return;
+    }
+    const response_timeout = std.posix.timeval{ .sec = 0, .usec = 250_000 };
     std.posix.setsockopt(
         stream.socket.handle,
         std.posix.SOL.SOCKET,
@@ -189,23 +196,82 @@ fn applyResponseTimeout(stream: std.Io.net.Stream) void {
     ) catch {};
 }
 
+fn setWindowsResponseTimeout(stream: std.Io.net.Stream, timeout_ms: i32) void {
+    var value: c_int = timeout_ms;
+    _ = windows_response.setsockopt(
+        @intFromPtr(stream.socket.handle),
+        @intCast(std.os.windows.ws2_32.SOL.SOCKET),
+        @intCast(std.os.windows.ws2_32.SO.RCVTIMEO),
+        @ptrCast(&value),
+        @sizeOf(c_int),
+    );
+}
+
 fn clampStatus(custom_status: ?[]const u8) ?[]const u8 {
     const status = custom_status orelse return null;
     if (status.len == 0) return null;
     return status[0..@min(status.len, custom_status_max)];
 }
 
-/// Wait briefly for herdr's single-line response before closing. herdr applies
-/// each request as it reads it; waiting serializes rapid-fire reports so a
-/// later one cannot race ahead of an earlier one. Bounded by SO_RCVTIMEO so a
-/// hung peer cannot block forever.
+const response_timeout_ms: i32 = 250;
+
 fn drainResponse(stream: std.Io.net.Stream) void {
+    if (comptime builtin.os.tag == .windows) {
+        drainResponseWindows(stream);
+        return;
+    }
     var buffer: [512]u8 = undefined;
     var stream_reader = stream.reader(io_mod.getIo(), &buffer);
     _ = stream_reader.interface.takeDelimiterInclusive('\n') catch {};
 }
 
-/// herdr's JSON-RPC requires the request id to be a string, not a number.
+fn drainResponseWindows(stream: std.Io.net.Stream) void {
+    const io = io_mod.getIo();
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+        .clock = .awake,
+        .raw = .fromMilliseconds(response_timeout_ms),
+    });
+    const poll_in: i16 = 0x0100;
+    const poll_err: i16 = 0x0001;
+    const poll_hup: i16 = 0x0002;
+    var buffer: [512]u8 = undefined;
+    var stream_reader = stream.reader(io_mod.getIo(), &buffer);
+    var byte: [1]u8 = undefined;
+    var read_count: usize = 0;
+    while (read_count < buffer.len) {
+        if (stream_reader.interface.buffered().len == 0) {
+            const timeout_ms = responseRemainingMs(io, deadline);
+            if (timeout_ms <= 0) return;
+            setWindowsResponseTimeout(stream, timeout_ms);
+            var fd = windows_response.PollFd{
+                .fd = @intFromPtr(stream.socket.handle),
+                .events = poll_in,
+                .revents = 0,
+            };
+            const poll_result = windows_response.WSAPoll(&fd, 1, timeout_ms);
+            if (poll_result <= 0 or fd.revents & (poll_in | poll_err | poll_hup) == 0) return;
+        }
+        const count = stream_reader.interface.readSliceShort(&byte) catch return;
+        if (count == 0 or byte[0] == '\n') return;
+        read_count += count;
+    }
+}
+
+fn responseRemainingMs(io: std.Io, deadline: std.Io.Clock.Timestamp) i32 {
+    if (!std.Io.Clock.Timestamp.compare(
+        std.Io.Clock.Timestamp.now(io, .awake),
+        .lt,
+        deadline,
+    )) return 0;
+    const remaining = deadline.durationFromNow(io).raw.nanoseconds;
+    const nanoseconds_per_millisecond: i96 = std.time.ns_per_ms;
+    const milliseconds = @divFloor(
+        remaining + nanoseconds_per_millisecond - 1,
+        nanoseconds_per_millisecond,
+    );
+    return @intCast(@min(milliseconds, @as(i96, response_timeout_ms)));
+}
+
 fn writeId(w: *std.Io.Writer, id: u64) !void {
     try w.writeAll("{\"id\":\"");
     try w.print("{d}", .{id});
@@ -391,4 +457,8 @@ test "clampStatus caps to 32 bytes and normalizes empty" {
     const long = "0123456789012345678901234567890123456789";
     const clamped = clampStatus(long).?;
     try std.testing.expectEqual(@as(usize, custom_status_max), clamped.len);
+}
+
+test "herdr response wait is bounded" {
+    try std.testing.expectEqual(@as(i32, 250), response_timeout_ms);
 }

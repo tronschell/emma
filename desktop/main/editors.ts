@@ -1,15 +1,10 @@
-/* Which code editors this Mac has, and handing one of them a file. Detection is a
-   bundle-exists check per known app, and the mark beside each is the app's own icon
-   read out of that bundle — no second brand asset to ship, licence, and keep current. */
-
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { nativeImage } from "electron";
+import { app, nativeImage } from "electron";
 import type { EditorApp } from "../shared/folders";
+import { findExecutable, isWindows, spawnCommand, windowsSystemExecutable } from "./platform";
 
-/** Bundle names, in the order the row draws them. */
 const EDITORS: readonly (readonly [string, string])[] = [
   ["vscode", "Visual Studio Code"],
   ["vscode-insiders", "Visual Studio Code - Insiders"],
@@ -45,17 +40,144 @@ const EDITORS: readonly (readonly [string, string])[] = [
   ["xcode", "Xcode"],
 ];
 
+const WINDOWS_COMMANDS: Record<string, string[]> = {
+  vscode: ["code.cmd", "code.exe"],
+  "vscode-insiders": ["code-insiders.cmd", "code-insiders.exe"],
+  cursor: ["cursor.exe"],
+  windsurf: ["windsurf.exe"],
+  zed: ["zed.exe"],
+  antigravity: ["antigravity.exe"],
+  trae: ["trae.exe"],
+  kiro: ["kiro.exe"],
+  void: ["void.exe"],
+  positron: ["positron.exe"],
+  sublime: ["subl.exe"],
+  atom: ["atom.exe"],
+  emacs: ["emacs.exe"],
+  webstorm: ["webstorm64.exe", "webstorm.exe"],
+  intellij: ["idea64.exe", "idea.exe"],
+  "intellij-ce": ["idea64.exe", "idea.exe"],
+  pycharm: ["pycharm64.exe", "pycharm.exe"],
+  "pycharm-ce": ["pycharm64.exe", "pycharm.exe"],
+  goland: ["goland64.exe", "goland.exe"],
+  rustrover: ["rustrover64.exe", "rustrover.exe"],
+  clion: ["clion64.exe", "clion.exe"],
+  phpstorm: ["phpstorm64.exe", "phpstorm.exe"],
+  rubymine: ["rubymine64.exe", "rubymine.exe"],
+  rider: ["rider64.exe", "rider.exe"],
+  datagrip: ["datagrip64.exe", "datagrip.exe"],
+  fleet: ["fleet.exe"],
+  eclipse: ["eclipse.exe"],
+  "android-studio": ["studio64.exe", "studio.exe"],
+};
+
+const WINDOWS_INSTALLS: Record<string, string[]> = {
+  vscode: ["Programs/Microsoft VS Code/Code.exe", "Microsoft VS Code/Code.exe"],
+  "vscode-insiders": ["Programs/Microsoft VS Code Insiders/Code - Insiders.exe", "Microsoft VS Code Insiders/Code - Insiders.exe"],
+  cursor: ["Programs/Cursor/Cursor.exe", "Cursor/Cursor.exe"],
+  windsurf: ["Programs/Windsurf/Windsurf.exe", "Windsurf/Windsurf.exe"],
+  zed: ["Programs/Zed/Zed.exe", "Zed/Zed.exe"],
+  antigravity: ["Programs/Antigravity/Antigravity.exe", "Antigravity/Antigravity.exe"],
+  trae: ["Programs/Trae/Trae.exe", "Trae/Trae.exe"],
+  kiro: ["Programs/Kiro/Kiro.exe", "Kiro/Kiro.exe"],
+  void: ["Programs/Void/Void.exe", "Void/Void.exe"],
+  positron: ["Programs/Positron/Positron.exe", "Positron/Positron.exe"],
+  sublime: ["Sublime Text/sublime_text.exe"],
+  atom: ["Atom/atom.exe"],
+  webstorm: ["JetBrains/WebStorm/bin/webstorm64.exe", "JetBrains/WebStorm/bin/webstorm.exe"],
+  intellij: ["JetBrains/IntelliJ IDEA/bin/idea64.exe", "JetBrains/IntelliJ IDEA/bin/idea.exe"],
+  "intellij-ce": ["JetBrains/IntelliJ IDEA Community Edition/bin/idea64.exe", "JetBrains/IntelliJ IDEA Community Edition/bin/idea.exe"],
+  pycharm: ["JetBrains/PyCharm/bin/pycharm64.exe", "JetBrains/PyCharm/bin/pycharm.exe"],
+  "pycharm-ce": ["JetBrains/PyCharm Community Edition/bin/pycharm64.exe", "JetBrains/PyCharm Community Edition/bin/pycharm.exe"],
+  goland: ["JetBrains/GoLand/bin/goland64.exe", "JetBrains/GoLand/bin/goland.exe"],
+  rustrover: ["JetBrains/RustRover/bin/rustrover64.exe", "JetBrains/RustRover/bin/rustrover.exe"],
+  clion: ["JetBrains/CLion/bin/clion64.exe", "JetBrains/CLion/bin/clion.exe"],
+  phpstorm: ["JetBrains/PhpStorm/bin/phpstorm64.exe", "JetBrains/PhpStorm/bin/phpstorm.exe"],
+  rubymine: ["JetBrains/RubyMine/bin/rubymine64.exe", "JetBrains/RubyMine/bin/rubymine.exe"],
+  rider: ["JetBrains/Rider/bin/rider64.exe", "JetBrains/Rider/bin/rider.exe"],
+  datagrip: ["JetBrains/DataGrip/bin/datagrip64.exe", "JetBrains/DataGrip/bin/datagrip.exe"],
+  fleet: ["JetBrains/Fleet/fleet.exe"],
+  eclipse: ["Eclipse/eclipse.exe"],
+  "android-studio": ["Android/Android Studio/bin/studio64.exe", "Android/Android Studio/bin/studio.exe"],
+};
+
+const WINDOWS_REGISTRY: Record<string, string[]> = Object.fromEntries(Object.entries(WINDOWS_COMMANDS).map(([id, names]) => [id, names.map((name) => name.replace(/\.cmd$/i, ""))]));
+
 const DIRECTORIES = ["/Applications", path.join(homedir(), "Applications")];
 
-function bundle(id: string): string | undefined {
+function toolboxRoots(): string[] {
+  const local = process.env.LOCALAPPDATA?.trim() || path.join(homedir(), "AppData", "Local");
+  return [path.join(local, "JetBrains", "Toolbox", "apps"), path.join(local, "JetBrains", "Installations")];
+}
+
+function toolboxExecutable(id: string): string | undefined {
+  const names = new Set((WINDOWS_COMMANDS[id] ?? []).map((name) => name.toLowerCase().replace(/\.cmd$/, "")));
+  let visited = 0;
+  for (const root of toolboxRoots()) {
+    const pending: { directory: string; depth: number }[] = [{ directory: root, depth: 0 }];
+    while (pending.length && visited < 4096) {
+      const current = pending.shift()!;
+      let entries: import("node:fs").Dirent[];
+      try { entries = readdirSync(current.directory, { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        visited += 1;
+        const candidate = path.join(current.directory, entry.name);
+        if (entry.isFile() && names.has(entry.name.toLowerCase())) return candidate;
+        if (entry.isDirectory() && current.depth < 7) pending.push({ directory: candidate, depth: current.depth + 1 });
+        if (visited >= 4096) break;
+      }
+    }
+  }
+  return undefined;
+}
+
+async function windowsCommand(id: string): Promise<string | undefined> {
+  const commands = WINDOWS_COMMANDS[id] ?? [];
+  const fromPath = await Promise.all(commands.map((command) => findExecutable(command))).then((found) => found.find((value): value is string => Boolean(value)));
+  if (fromPath) return fromPath;
+  const roots = [...new Set([process.env.LOCALAPPDATA, process.env.ProgramFiles, process.env.ProgramW6432, process.env["ProgramFiles(x86)"]].filter((value): value is string => Boolean(value?.trim())))];
+  for (const root of roots) for (const relative of WINDOWS_INSTALLS[id] ?? []) {
+    const found = await findExecutable(relative, root);
+    if (found) return found;
+  }
+  const toolbox = toolboxExecutable(id);
+  if (toolbox) {
+    const found = await findExecutable(toolbox);
+    if (found) return found;
+  }
+  for (const name of WINDOWS_REGISTRY[id] ?? []) {
+    for (const base of [
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+      "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+    ]) {
+      const key = `${base}\\${name}`;
+      const value = await new Promise<string | undefined>((resolve) => {
+        const child = spawnCommand(windowsSystemExecutable("reg.exe"), ["query", key, "/ve"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+        let output = "";
+        child.stdout?.on("data", (chunk: Buffer) => { output = `${output}${chunk}`.slice(0, 4096); });
+        child.once("error", () => resolve(undefined));
+        child.once("close", (code) => {
+          if (code !== 0) return resolve(undefined);
+          const raw = /REG_SZ\s+(.+?)(?:\r?\n|$)/i.exec(output)?.[1]?.trim();
+          if (!raw) return resolve(undefined);
+          resolve(/^"([^"]+)"/.exec(raw)?.[1] ?? raw.split(/\s+/)[0]);
+        });
+      });
+      if (value) {
+        const found = await findExecutable(value);
+        if (found) return found;
+      }
+    }
+  }
+  return undefined;
+}
+
+function macBundle(id: string): string | undefined {
   const name = EDITORS.find(([key]) => key === id)?.[1];
   return name ? DIRECTORIES.map((directory) => path.join(directory, `${name}.app`)).find(existsSync) : undefined;
 }
 
-/** The `.icns` a bundle names, or the only one it ships. `app.getFileIcon` is the
-    obvious API for this and it is the reason every mark used to be the same blank
-    square: on macOS it answers with the generic bundle placeholder for third-party
-    apps, so Zed, Cursor and Ghostty all came back byte-identical. */
 export function iconFile(at: string): string | undefined {
   const resources = path.join(at, "Contents/Resources");
   if (!existsSync(resources)) return undefined;
@@ -69,13 +191,8 @@ export function iconFile(at: string): string | undefined {
   return any && path.join(resources, any);
 }
 
-/** Source pixels per mark: clear of 2x the 18px `.open-in img` with room for it to grow,
-    and the threshold the icns chunk is picked against. */
 const MARK = 40;
 
-/** An `.icns` is a flat run of typed chunks and the modern ones hold a PNG outright,
-    so the smallest chunk at or above the mark's own pixel size is the whole decode —
-    no encoder, no subprocess, and nothing read from the 1024px chunk some apps lead with. */
 export function embeddedPng(file: string): Buffer | undefined {
   const raw = readFileSync(file);
   let at = 8;
@@ -91,14 +208,9 @@ export function embeddedPng(file: string): Buffer | undefined {
     if (side >= MARK && (!best || side < best.side)) best = { side, body };
     if (!biggest || side > biggest.side) biggest = { side, body };
   }
-  // An app that ships nothing above 40px gets its largest chunk scaled up: soft beats
-  // falling through to the letter initial.
   return (best ?? biggest)?.body;
 }
 
-/** macOS bakes a transparent margin into every app tile so the squircle can breathe on
-    a desktop. At 20px that margin is a third of the area, and the row is not a desktop —
-    cropping to the opaque bounds is ~1.23x more mark in the same box. */
 function trimmed(image: Electron.NativeImage): Electron.NativeImage {
   const { width, height } = image.getSize();
   const pixels = image.toBitmap();
@@ -115,29 +227,34 @@ function trimmed(image: Electron.NativeImage): Electron.NativeImage {
 
 let cached: Promise<EditorApp[]> | undefined;
 
-/** Read once per launch: installing an editor mid-session is rarer than this re-rendering. */
 export function installedEditors(): Promise<EditorApp[]> {
-  cached ??= Promise.resolve(EDITORS.map(([id, label]) => {
-    const at = bundle(id);
+  cached ??= Promise.all(EDITORS.map(async ([id, label]) => {
+    const at = isWindows ? await windowsCommand(id) : macBundle(id);
     if (!at) return undefined;
     let icon = "";
     try {
-      const file = iconFile(at);
-      const png = file && embeddedPng(file);
-      if (png) icon = trimmed(nativeImage.createFromBuffer(png))
-        .resize({ width: MARK, height: MARK, quality: "best" }).toDataURL();
-    } catch { /* an unreadable bundle falls back to the initial, same as one with no icns */ }
+      let source: Electron.NativeImage;
+      if (isWindows) source = await app.getFileIcon(at, { size: "normal" });
+      else {
+        const file = iconFile(at);
+        const png = file ? embeddedPng(file) : undefined;
+        source = nativeImage.createFromBuffer(png ?? Buffer.alloc(0));
+      }
+      if (!source.isEmpty()) icon = trimmed(source).resize({ width: MARK, height: MARK, quality: "best" }).toDataURL();
+    } catch {
+      icon = "";
+    }
     return { id, label, icon };
-  }).filter((item): item is EditorApp => !!item));
+  })).then((items) => items.filter((item): item is EditorApp => !!item));
   return cached;
 }
 
-/** `open -a` on the bundle that was detected, so no editor's command-line shim has to
-    be installed for its app to take the file. The path is already contained by the grant. */
-export function openInEditor(id: string, file: string): Promise<void> {
-  const at = bundle(id);
+export async function openInEditor(id: string, file: string): Promise<void> {
+  const at = isWindows ? await windowsCommand(id) : macBundle(id);
   if (!at) throw new Error("That editor is not installed.");
-  return new Promise((resolve, reject) => {
-    execFile("open", ["-a", at, file], (error) => error ? reject(error) : resolve());
+  await new Promise<void>((resolve, reject) => {
+    const child = spawnCommand(isWindows ? at : "open", isWindows ? [file] : ["-a", at, file], { windowsHide: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`The editor exited with code ${code ?? "?"}.`)));
   });
 }

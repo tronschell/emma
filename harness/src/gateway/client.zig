@@ -5528,16 +5528,18 @@ const LoopbackGatewayFixture = struct {
 
         switch (self.mode) {
             .reset_on_accept => {
-                const reset_on_close: std.posix.linger = .{
-                    .onoff = 1,
-                    .linger = 0,
-                };
-                try std.posix.setsockopt(
-                    stream.socket.handle,
-                    std.posix.SOL.SOCKET,
-                    std.posix.SO.LINGER,
-                    std.mem.asBytes(&reset_on_close),
-                );
+                if (comptime builtin.os.tag != .windows) {
+                    const reset_on_close: std.posix.linger = .{
+                        .onoff = 1,
+                        .linger = 0,
+                    };
+                    try std.posix.setsockopt(
+                        stream.socket.handle,
+                        std.posix.SOL.SOCKET,
+                        std.posix.SO.LINGER,
+                        std.mem.asBytes(&reset_on_close),
+                    );
+                }
                 self.markStage();
             },
             .tls_handshake_stall => {
@@ -5545,13 +5547,15 @@ const LoopbackGatewayFixture = struct {
                 self.hold();
             },
             .request_send_stall => {
-                const receive_buffer: c_int = 1024;
-                std.posix.setsockopt(
-                    stream.socket.handle,
-                    std.posix.SOL.SOCKET,
-                    std.posix.SO.RCVBUF,
-                    std.mem.asBytes(&receive_buffer),
-                ) catch {};
+                if (comptime builtin.os.tag != .windows) {
+                    const receive_buffer: c_int = 1024;
+                    std.posix.setsockopt(
+                        stream.socket.handle,
+                        std.posix.SOL.SOCKET,
+                        std.posix.SO.RCVBUF,
+                        std.mem.asBytes(&receive_buffer),
+                    ) catch {};
+                }
                 self.markStage();
                 self.hold();
             },
@@ -6298,6 +6302,7 @@ test "TLS setup does not retry after delivery when no certainty sink is provided
 }
 
 test "direct gateway cancellation before admission opens no connection" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try LoopbackGatewayFixture.init(.success, 0);
     defer fixture.deinit();
     try fixture.start();
@@ -6506,6 +6511,7 @@ fn writeLoopbackGatewayBytes(zio: std.Io, stream: std.Io.net.Stream, bytes: []co
 }
 
 test "loopback gateway fixture cleanup joins without a client" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try LoopbackGatewayFixture.init(.success, 0);
     defer fixture.deinit();
     try fixture.start();
@@ -6868,6 +6874,7 @@ test "delivery certainty stays definitely unsent when request setup fails" {
 }
 
 test "chat transport returns once a stalled model call is cancelled" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const emma_openai = @import("emma_openai.zig");
     const zio = io_mod.getIo();
     var fixture = try LoopbackGatewayFixture.init(.response_body_stall, 5000);
@@ -6930,6 +6937,7 @@ test "chat transport returns once a stalled model call is cancelled" {
 }
 
 test "delivery certainty becomes possibly sent before response head" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try LoopbackGatewayFixture.init(.response_head_stall, 500);
     defer fixture.deinit();
     try fixture.start();

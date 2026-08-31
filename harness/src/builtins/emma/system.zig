@@ -1,14 +1,27 @@
+const builtin = @import("builtin");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const bridge = @import("../../tools/emma/bridge.zig");
 
 const ToolSpec = tool_dispatch.Tool;
 
+const host_platform = switch (builtin.os.tag) {
+    .windows => "Windows",
+    .macos => "macOS",
+    .linux => "Linux",
+    else => "this computer",
+};
+
+const secret_command_examples = if (builtin.os.tag == .windows)
+    "Get-ChildItem Env:, Get-Content .env, op read op://vault/item/field, vault kv get secret/app."
+else
+    "printenv, cat .env, op read op://vault/item/field, vault kv get secret/app.";
+
 const cli_description =
-    "Run another coding CLI on this Mac — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n" ++
+    "Run another coding CLI on " ++ host_platform ++ " — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n" ++
     "action \"run\" starts a conversation with a CLI and returns its run id once the first turn finishes; \"send\" gives an existing run the next prompt, continuing the same session with everything it already knows.\n" ++
     "Check first with cli_runs {} which CLIs are installed — running one that is not there is the common failure.\n" ++
     "Say everything the CLI needs in prompt: it does not see this conversation, only the folder. Prefer it over doing the work yourself when the user names a CLI, when they want a second agent's answer on the same code, or when that CLI is set up for this project and Emma is not.\n" ++
-    "unattended passes that CLI's own skip-approvals flag, so it edits and runs commands without stopping. It is the difference between a real run and one that stalls on a question nobody sees — but it is the user's Mac, so leave it off unless they asked for a hands-off run.";
+    "unattended passes that CLI's own skip-approvals flag, so it edits and runs commands without stopping. It is the user's computer, so leave it off unless they asked for a hands-off run.";
 
 pub const cli = ToolSpec{
     .name = "cli",
@@ -67,7 +80,7 @@ pub const cli = ToolSpec{
 };
 
 const cli_runs_description =
-    "Look after the CLI runs started with cli: call it with no arguments to see which CLIs are installed on this Mac and list every run and its state, with an id to read that run's terminal output, or with stop to kill the turn it is working on. A run stays readable between turns — that is how you check whether one has finished before sending it more.";
+    "Look after the CLI runs started with cli: call it with no arguments to see which CLIs are installed on this computer and list every run and its state, with an id to read that run's terminal output, or with stop to kill the turn it is working on. A run stays readable between turns — that is how you check whether one has finished before sending it more.";
 
 pub const cli_runs = ToolSpec{
     .name = "cli_runs",
@@ -141,7 +154,7 @@ pub const advisor = ToolSpec{
 };
 
 const install_mcp_description =
-    "Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, a binary on this Mac). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.";
+    "Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, or a binary on this computer). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.";
 
 pub const install_mcp = ToolSpec{
     .name = "install_mcp",
@@ -164,13 +177,13 @@ pub const install_mcp = ToolSpec{
                 .{
                     .name = "args",
                     .json_type = .array,
-                    .description = "Its arguments, e.g. [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/Users/me/notes\"].",
+                    .description = "Its arguments, e.g. [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"notes\"].",
                     .shape = &.{ .array_values = .{ .json_type = .string } },
                 },
                 .{
                     .name = "env",
                     .json_type = .object,
-                    .description = "Environment variables the server needs. Values are stored on this Mac and appear in this transcript, so ask the user before putting a secret here.",
+                    .description = "Environment variables the server needs. Values are stored on this computer and appear in this transcript, so ask the user before putting a secret here.",
                 },
             },
             .required = &.{ "name", "command" },
@@ -191,7 +204,7 @@ pub const install_mcp = ToolSpec{
 };
 
 const computer_description =
-    "Use a macOS app in the background through app-scoped accessibility controls. Prefer dedicated tools for files, code and structured integrations.\n" ++
+    "Use a desktop app in the background through app-scoped accessibility controls. Prefer dedicated tools for files, code and structured integrations.\n" ++
     "list_apps returns running apps and their bundle identifiers and process IDs. get_app_state reads an app's accessibility text and returns a snapshot token with element_index values. Supply app as a bundle identifier; supply pid to distinguish multiple running instances. If the app is not running, ask the user to open it.\n" ++
     "Emma asks the user before reading or controlling the exact running app. Approval lasts only for the current parent turn; full and auto modes never bypass it. Child agents cannot use computer and must ask the parent to perform app actions. A denial means do not use that app again this turn.\n" ++
     "App approval is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those. Never use this to approve Emma's own dialogs.\n" ++
@@ -348,7 +361,7 @@ test "computer schema exposes only app-scoped background controls" {
 
 const secret_description =
     "Read something secret through the model the user picked for their secrets, without any of it entering this conversation. Keys, tokens, passwords, .env files, vault entries, whatever the user keeps private.\n" ++
-    "command runs on this Mac in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github.\n" ++
+    "command runs on this computer in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: " ++ secret_command_examples ++ "\n" ++
     "Use it whenever the work touches a secret — which keys are set, why a request comes back unauthorised, whether two tokens differ, what is in a credentials file. Do it here rather than reading the file yourself: whatever you read has been sent to the model running you and stays in this thread, and that model is not the one the user chose for this.\n" ++
     "Ask one specific question: \"which of these are empty\" beats \"what is in here\". Never ask for a value in full — ask only what you need to know to carry on.";
 

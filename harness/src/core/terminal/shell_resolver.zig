@@ -2,8 +2,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 const contracts = @import("contracts.zig");
 const command_environment = @import("../execution/command_environment.zig");
+const io_mod = @import("../shared/io.zig");
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../shared/windows_paths.zig")
+else
+    struct {};
 
 const Allocator = std.mem.Allocator;
+const windows_cmd_path = "C:\\Windows\\System32\\cmd.exe";
+const windows_powershell_path = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
 pub const ResolveError = error{
     MissingLoginShell,
@@ -14,17 +21,36 @@ pub const ResolveError = error{
 pub const Profile = command_environment.Profile;
 pub const Environment = command_environment.Environment;
 
-const ShellKind = enum { bash, zsh };
+const ShellKind = enum { bash, zsh, cmd, powershell };
+
+fn shellBasename(path: []const u8) []const u8 {
+    var index = path.len;
+    while (index > 0) {
+        index -= 1;
+        if (path[index] == '/' or path[index] == '\\') return path[index + 1 ..];
+    }
+    return path;
+}
+
+fn shellNameIs(path: []const u8, name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(shellBasename(path), name);
+}
 
 fn shellKind(path: []const u8) ?ShellKind {
-    const basename = std.fs.path.basename(path);
-    if (std.mem.eql(u8, basename, "bash")) return .bash;
-    if (std.mem.eql(u8, basename, "zsh")) return .zsh;
+    if (shellNameIs(path, "bash")) return .bash;
+    if (shellNameIs(path, "zsh")) return .zsh;
+    if (shellNameIs(path, "cmd") or shellNameIs(path, "cmd.exe")) return .cmd;
+    if (shellNameIs(path, "powershell") or shellNameIs(path, "powershell.exe") or
+        shellNameIs(path, "pwsh") or shellNameIs(path, "pwsh.exe")) return .powershell;
     return null;
 }
 
 fn fallbackLoginShell() []const u8 {
-    return if (builtin.os.tag == .macos) "/bin/zsh" else "/bin/bash";
+    return switch (builtin.os.tag) {
+        .macos => "/bin/zsh",
+        .windows => windows_cmd_path,
+        else => "/bin/bash",
+    };
 }
 
 fn supportedLoginShell(configured_login_shell: ?[]const u8) ResolveError![]const u8 {
@@ -49,7 +75,8 @@ pub const Invocation = struct {
     }
 
     pub fn setCommand(self: *Invocation, command: []const u8) void {
-        self.append("-c");
+        const kind = shellKind(self.path) orelse .bash;
+        self.append(if (kind == .cmd) "/c" else if (kind == .powershell) "-Command" else "-c");
         self.append(command);
     }
 };
@@ -98,19 +125,48 @@ pub fn resolve(
             }
             result.append("-i");
         },
+        .cmd => {
+            result.append("/d");
+            result.append("/q");
+        },
+        .powershell => {
+            result.append("-NoLogo");
+            if (selection.clean_start) result.append("-NoProfile");
+        },
     }
     return result;
 }
 
 pub fn configuredLoginShellInto(buffer: []u8) ?[]const u8 {
-    if (comptime !builtin.link_libc or builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+    if (comptime builtin.os.tag == .windows) {
+        var trusted_path: [32768]u8 = undefined;
+        const trusted = windows_paths.system32ExecutableInto(
+            &trusted_path,
+            "cmd.exe",
+        ) catch null;
+        if (trusted) |path| {
+            if (path.len <= buffer.len) {
+                @memcpy(buffer[0..path.len], path);
+                return buffer[0..path.len];
+            }
+        }
+        const configured = io_mod.getenv("COMSPEC") orelse return fallbackLoginShell();
+        if (std.ascii.eqlIgnoreCase(shellBasename(configured), "cmd.exe") and
+            std.fs.path.isAbsolute(configured) and configured.len <= buffer.len)
+        {
+            @memcpy(buffer[0..configured.len], configured);
+            return buffer[0..configured.len];
+        }
+        return fallbackLoginShell();
+    }
+    if (comptime !builtin.link_libc or builtin.os.tag == .wasi) {
         return null;
     }
     var entry: std.c.passwd = undefined;
     var scratch: [4096]u8 = undefined;
     var found: ?*std.c.passwd = null;
     if (std.c.getpwuid_r(
-        std.c.getuid(),
+        io_mod.currentUserId(),
         &entry,
         &scratch,
         scratch.len,
@@ -175,16 +231,18 @@ pub fn capturedInvocation(environment_value: Environment, command: []const u8) R
                 .path = path,
                 .clean_start = true,
             } });
-            removeInteractiveFlag(&invocation);
+            if (comptime builtin.os.tag != .windows) removeInteractiveFlag(&invocation);
             invocation.setCommand(command);
             return invocation;
         },
         .user => |path| {
             var invocation = try resolve(path, .user_login);
-            if (std.mem.eql(u8, std.fs.path.basename(path), "bash")) {
-                removeInteractiveFlag(&invocation);
-                invocation.append("-O");
-                invocation.append("expand_aliases");
+            if (comptime builtin.os.tag != .windows) {
+                if (shellNameIs(path, "bash")) {
+                    removeInteractiveFlag(&invocation);
+                    invocation.append("-O");
+                    invocation.append("expand_aliases");
+                }
             }
             invocation.setCommand(command);
             return invocation;
@@ -218,6 +276,34 @@ pub fn buildBootstrap(
     nonce: []const u8,
     command_path: ?[]const u8,
 ) Allocator.Error![]u8 {
+    return buildBootstrapForShell(
+        alloc,
+        if (comptime builtin.os.tag == .windows) fallbackLoginShell() else "/bin/sh",
+        executable,
+        control_path,
+        nonce,
+        command_path,
+    );
+}
+
+pub fn buildBootstrapForShell(
+    alloc: Allocator,
+    shell_path: []const u8,
+    executable: []const u8,
+    control_path: []const u8,
+    nonce: []const u8,
+    command_path: ?[]const u8,
+) Allocator.Error![]u8 {
+    if (comptime builtin.os.tag == .windows) {
+        return buildWindowsBootstrap(
+            alloc,
+            shellKind(shell_path) orelse .cmd,
+            executable,
+            control_path,
+            nonce,
+            command_path,
+        );
+    }
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(alloc);
 
@@ -253,12 +339,151 @@ pub fn buildSourceCommand(
     alloc: Allocator,
     bootstrap_path: []const u8,
 ) Allocator.Error![]u8 {
+    return buildSourceCommandForShell(
+        alloc,
+        if (comptime builtin.os.tag == .windows) fallbackLoginShell() else "/bin/sh",
+        bootstrap_path,
+    );
+}
+
+pub fn buildSourceCommandForShell(
+    alloc: Allocator,
+    shell_path: []const u8,
+    bootstrap_path: []const u8,
+) Allocator.Error![]u8 {
+    if (comptime builtin.os.tag == .windows) {
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(alloc);
+        const kind = shellKind(shell_path) orelse .cmd;
+        if (kind == .powershell) {
+            try output.appendSlice(alloc, "& ");
+            try appendPowerShellWord(&output, alloc, bootstrap_path);
+        } else {
+            try output.appendSlice(alloc, "call ");
+            try appendCmdWord(&output, alloc, bootstrap_path);
+        }
+        try output.appendSlice(alloc, "\r\n");
+        return output.toOwnedSlice(alloc);
+    }
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(alloc);
     try output.appendSlice(alloc, ". ");
     try appendShellWord(&output, alloc, bootstrap_path);
     try output.append(alloc, '\n');
     return output.toOwnedSlice(alloc);
+}
+
+fn buildWindowsBootstrap(
+    alloc: Allocator,
+    kind: ShellKind,
+    executable: []const u8,
+    control_path: []const u8,
+    nonce: []const u8,
+    command_path: ?[]const u8,
+) Allocator.Error![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(alloc);
+    switch (kind) {
+        .cmd => {
+            try output.appendSlice(
+                alloc,
+                "@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\n",
+            );
+            try appendWindowsMarker(&output, alloc, kind, executable, control_path, nonce, "shell-ready");
+            try output.appendSlice(alloc, "\r\nif errorlevel 1 exit /b 125\r\n");
+            if (command_path) |path| {
+                try output.appendSlice(alloc, "set /p fx_terminal_command=<");
+                try appendCmdWord(&output, alloc, path);
+                try output.appendSlice(alloc, "\r\nif errorlevel 1 exit /b 125\r\n");
+                try appendWindowsMarker(&output, alloc, kind, executable, control_path, nonce, "command-started");
+                try output.appendSlice(
+                    alloc,
+                    "\r\nif errorlevel 1 exit /b 125\r\ncall %fx_terminal_command%\r\n" ++
+                        "set fx_terminal_status=%errorlevel%\r\nexit /b %fx_terminal_status%\r\n",
+                );
+            }
+        },
+        .powershell => {
+            try output.appendSlice(alloc, "$ErrorActionPreference = 'Stop'\r\n");
+            try appendWindowsMarker(&output, alloc, kind, executable, control_path, nonce, "shell-ready");
+            try output.appendSlice(alloc, "\r\nif ($LASTEXITCODE -ne 0) { exit 125 }\r\n");
+            if (command_path) |path| {
+                try output.appendSlice(alloc, "$fx_terminal_command = Get-Content -Raw -LiteralPath ");
+                try appendPowerShellWord(&output, alloc, path);
+                try output.appendSlice(
+                    alloc,
+                    "\r\nif ($LASTEXITCODE -ne 0) { exit 125 }\r\n",
+                );
+                try appendWindowsMarker(&output, alloc, kind, executable, control_path, nonce, "command-started");
+                try output.appendSlice(
+                    alloc,
+                    "\r\nif ($LASTEXITCODE -ne 0) { exit 125 }\r\n" ++
+                        "& ([scriptblock]::Create($fx_terminal_command))\r\n" ++
+                        "$fx_terminal_status = $LASTEXITCODE\r\nexit $fx_terminal_status\r\n",
+                );
+            }
+        },
+        .bash, .zsh => unreachable,
+    }
+    return output.toOwnedSlice(alloc);
+}
+
+fn appendWindowsMarker(
+    output: *std.ArrayList(u8),
+    alloc: Allocator,
+    kind: ShellKind,
+    executable: []const u8,
+    control_path: []const u8,
+    nonce: []const u8,
+    event: []const u8,
+) Allocator.Error!void {
+    if (kind == .powershell) {
+        try appendPowerShellWord(output, alloc, executable);
+        inline for (.{
+            "--fx-internal-terminal-control",
+            control_path,
+            nonce,
+            event,
+        }) |word| {
+            try output.append(alloc, ' ');
+            try appendPowerShellWord(output, alloc, word);
+        }
+        return;
+    }
+    try appendCmdWord(output, alloc, executable);
+    inline for (.{
+        "--fx-internal-terminal-control",
+        control_path,
+        nonce,
+        event,
+    }) |word| {
+        try output.append(alloc, ' ');
+        try appendCmdWord(output, alloc, word);
+    }
+}
+
+fn appendCmdWord(
+    output: *std.ArrayList(u8),
+    alloc: Allocator,
+    word: []const u8,
+) Allocator.Error!void {
+    try output.append(alloc, '"');
+    for (word) |byte| {
+        if (byte == '"') try output.appendSlice(alloc, "^^\"") else try output.append(alloc, byte);
+    }
+    try output.append(alloc, '"');
+}
+
+fn appendPowerShellWord(
+    output: *std.ArrayList(u8),
+    alloc: Allocator,
+    word: []const u8,
+) Allocator.Error!void {
+    try output.append(alloc, '\'');
+    for (word) |byte| {
+        if (byte == '\'') try output.appendSlice(alloc, "''") else try output.append(alloc, byte);
+    }
+    try output.append(alloc, '\'');
 }
 
 fn appendMarker(

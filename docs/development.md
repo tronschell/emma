@@ -20,7 +20,7 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`desktop/src/styles/`](../desktop/src/styles) | Stylesheets; `tokens.css` holds the design tokens |
 | [`desktop/shared/`](../desktop/shared) | Types and validation both processes agree on — permissions, settings, vault, artifacts, plans, workflows, context bar, traces and usage. Nothing here may import Electron |
 | [`desktop/test/`](../desktop/test) | `node --test` suites and the fake ACP agent |
-| [`desktop/native/`](../desktop/native) | `quick_ask.m` → `emma-option-tap`, `computer.m` → `emma-computer`, `transcribe.m` → `emma-transcribe`, `pty.c` → `emma-pty`, and `Info.extra.plist` |
+| [`desktop/native/`](../desktop/native) | macOS Objective-C/C helpers and Windows native equivalents: `quick_ask.m`/`quick_ask_win.cpp`, `computer.m`/`computer_win.cpp`, `transcribe.m`/`transcribe_win.cpp`, `pty.c`/`pty_win.c`, plus `Info.extra.plist` |
 | [`desktop/scripts/`](../desktop/scripts) | Development, packaging and release checks, vendoring, catalog generation, and the CDP drivers `drive.mjs`, `shot.mjs`, `dismiss.mjs` |
 | [`desktop/skills/`](../desktop/skills) | Seven bundled skills: `artifact`, `autoresearch`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
 | `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here |
@@ -37,12 +37,14 @@ that is a rule, and Apache-2.0 §4 keeps `LICENSE` and
 | | Version | Pinned in |
 | --- | --- | --- |
 | macOS | 12 or later, Apple silicon | `desktop/native/Info.extra.plist` and `desktop/scripts/package-mac.mjs` |
+| Windows | Windows 10 version 1809 or later, x64 supported distributable/public target; ARM64 CI compile/package validation target | `desktop/scripts/package-windows.mjs` and the Windows CI runners |
 | Node | 24+ | no `engines` field |
 | Rust | 1.97.1 | [`rust-toolchain.toml`](../rust-toolchain.toml) |
 | Zig | 0.16.0 | [`harness/build.zig.zon`](../harness/build.zig.zon) and CI |
 | Electron | 43.4.0 | [`desktop/package.json`](../desktop/package.json) |
 | TypeScript · React · Vite · Tailwind · ESLint | 6.0.3 · 19.2.8 · 8.2.2 · 4.3.3 · 10.0.1 | same |
-| Xcode | `clang` for native helpers, full Xcode for packaging | `actool` is required by Electron Packager |
+| Xcode | `clang` for macOS native helpers, full Xcode for packaging | `actool` is required by Electron Packager |
+| Windows SDK | LLVM `clang`/`clang++` and UI Automation import libraries | Windows native helpers and unsigned packaging rehearsal |
 
 ```sh
 npm install --prefix desktop
@@ -81,13 +83,14 @@ All in [`desktop/package.json`](../desktop/package.json).
 | `build:renderer` | `vite build` → `dist-renderer/` |
 | `build` | `build:main` then `build:renderer` |
 | `build:host` | `cargo build --locked -p emma-host`, then `build:harness` |
-| `build:harness` | `(cd ../harness && zig build)` → `harness/zig-out/bin/emma-cli`. **Nothing else builds the harness** |
-| `build:native` | `clang` four times, all `-mmacosx-version-min=12.0`: `quick_ask.m` → `emma-option-tap`, `computer.m` → `emma-computer`, `transcribe.m` → `emma-transcribe`, `pty.c` → `emma-pty`. All except transcription have `--self-test` checks |
-| `vendor:ripgrep` | Downloads [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 and its license files into `desktop/vendor/`, checked against a pinned SHA-256, stamped in `vendor/rg.version`. A no-op once all files are present and stamped; warns and skips off darwin |
+| `build:harness` | `(cd ../harness && zig build)` → `harness/zig-out/bin/emma-cli` (`.exe` on Windows). **Nothing else builds the harness** |
+| `build:native` | Builds the four platform-specific helpers and runs their self-tests where supported: macOS uses `clang` and the `.m`/`.c` sources; Windows uses the SDK toolchain and the `_win` sources |
+| `vendor:ripgrep` | Downloads [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 and its license files into `desktop/vendor/`, checked against a pinned SHA-256, stamped in `vendor/rg.version`. A no-op once all files are present and stamped; warns when no pinned platform/architecture archive exists |
 | `seed:catalog` | Refetches OpenRouter's tool-capable model list into `main/catalog-seed.ts`. Needs no key |
 | `dev` | `node scripts/dev.mjs` |
 | `start` | `build:host` + `build:native` + `vendor:ripgrep` + `build`, then `electron .`. No Vite server; the built bundle |
 | `package:mac` | See [Packaging](#packaging) |
+| `package:win` | See [Packaging](#packaging) |
 
 ## The dev loop
 
@@ -95,7 +98,7 @@ All in [`desktop/package.json`](../desktop/package.json).
 must exit zero:
 
 1. `build:host` — `cargo build -p emma-host`, then `zig build` for `emma-cli`.
-2. `build:native` — the four clang helpers.
+2. `build:native` — the four platform-native helpers.
 3. `build:main` — `tsc -p tsconfig.main.json`.
 4. `npm exec vite -- --host 127.0.0.1`, left running.
 5. After 800 ms, `npm exec electron .` with `EMMA_DEV_SERVER_URL=http://127.0.0.1:5173`.
@@ -156,6 +159,19 @@ To avoid replacing a running bundle, pass a separate output directory:
 npm --prefix desktop run package:mac -- /tmp/emma-release-check
 ```
 
+On a native Windows x64 or ARM64 host, use the Squirrel packaging path:
+
+```powershell
+npm --prefix desktop run package:win
+```
+
+It builds the release Rust host, Zig harness, Windows native helpers, ripgrep,
+and Electron code, then writes the current native-architecture app and Squirrel
+assets under `desktop/release/squirrel`. Local packaging omits signing
+credentials and produces an unsigned structure rehearsal. The current release
+workflow does not sign or upload Windows artifacts; public signed Windows x64
+publication is pending release-workflow authorization.
+
 ### Continuous integration
 
 Feature PRs into `dev` run only branch/title validation and release-rule tests
@@ -163,9 +179,12 @@ on Ubuntu, with no app dependency installation, compilation, or packaging.
 Pushes to `dev` only prepare the generated release PR.
 
 Promotion PRs into `main` and release pushes to `main` run the six checks and
-native self-tests on `macos-15`. Promotion PRs also exercise unsigned packaging
-without secrets. Main's release workflow calls the shared checks before the
-signing job can run.
+native self-tests on `macos-15`, `windows-2025` (x64), and
+`windows-11-vs2026-arm` (ARM64). Both Windows lanes run the unsigned
+`package:win` rehearsal; x64 remains the supported distributable/public target,
+while ARM64 is compile/package validation only. Main's release workflow remains
+macOS-only for signing, notarization, and publication. Public signed Windows x64
+publication is pending release-workflow authorization.
 
 Features start from and squash-merge into `dev`. A generated release PR on
 `dev` prepares a version, tag, and draft release. Promote the exact candidate
@@ -177,13 +196,17 @@ to `main` with a merge commit to build and publish it. See the
 
 The five Apple secret names were configured when inspected on August 28, 2026;
 the first signed and notarized GitHub build must still prove their validity.
-Unsigned local bundles cannot prove Gatekeeper acceptance or update installation.
+Unsigned local bundles cannot prove Gatekeeper acceptance, Authenticode trust,
+Squirrel installation, or update installation.
 A local update rehearsal needs two signed bundles and a compatible feed; it does
 not prove the public GitHub feed or Developer ID/notarization path. Verify an
 upgrade between published signed versions before claiming that distribution path
 works end to end. Also verify privacy prompts, shortcuts, VoiceOver, display geometry,
-and the minimum supported macOS on real hardware. Windows and Intel Mac
-packages are not part of this release path.
+and the minimum supported macOS on real hardware. A Windows x64 host must still
+verify Setup.exe installation, SmartScreen behavior, native helpers, and an
+update between signed versions once a Windows release workflow is authorized;
+ARM64 Windows is CI compile/package-validated but is not a public installer or
+auto-update target.
 
 ## Licensing
 

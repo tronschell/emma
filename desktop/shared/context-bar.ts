@@ -6,7 +6,7 @@ export const CONTEXT_WIDGETS = [
   { type: "plan", label: "Plan", glyph: "◰", blurb: "The plan this thread is working through, drawn as a graph of subagents. Press a node to light its wave.", orientable: false },
   { type: "subagents", label: "Subagents", glyph: "⌸", blurb: "One row per subagent, into the transcript it is writing.", orientable: true },
   { type: "subthreads", label: "Sub threads", glyph: "⑃", blurb: "Threads this one started, working or idle. They outlive their runs, so the rows stay.", orientable: true },
-  { type: "machine", label: "Machine", glyph: "◫", blurb: "This Mac while the thread runs: CPU, memory, GPU and network, as numbers.", orientable: true },
+  { type: "machine", label: "Machine", glyph: "◫", blurb: "This computer while the thread runs: CPU, memory, GPU and network, as numbers.", orientable: true },
   { type: "machinegraph", label: "Machine graph", glyph: "∿", blurb: "The last minute of CPU, memory, GPU and network, each as a sparkline.", orientable: true },
   { type: "machinemeters", label: "Machine meters", glyph: "▥", blurb: "The same four readings as segmented gauges — the shape you read across the room.", orientable: true },
   { type: "git", label: "Git", glyph: "⑂", blurb: "Branch, working tree, and the diff behind it. Empty outside a repo.", orientable: false },

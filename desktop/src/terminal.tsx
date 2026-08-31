@@ -86,7 +86,7 @@ export function TerminalSurface({ tab, active, onSelect, onLink }: {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon((event: MouseEvent, uri: string) => {
-      if (!event.metaKey) return;
+      if (!event.metaKey && !event.ctrlKey) return;
       event.preventDefault();
       held.current.onLink({ url: uri, x: Math.min(event.clientX, innerWidth - LINK_MENU_WIDTH), y: event.clientY });
     }));
@@ -223,7 +223,7 @@ export function TerminalPanel({ threadId, popped, onPop, onSelect, onHide, onOpe
     {link && <section className="source-popover terminal-link" role="menu" aria-label="Open this link" style={{ left: `${link.x}px`, bottom: `${innerHeight - link.y + 8}px` }} onPointerDown={(event) => event.stopPropagation()}>
       <span className="terminal-link-url">{link.url}</span>
       <button type="button" role="menuitem" autoFocus onClick={() => openLink("emma")}><strong>Emma's browser</strong><small>The pane beside this thread, where the agent looks too</small></button>
-      <button type="button" role="menuitem" onClick={() => openLink("system")}><strong>Default browser</strong><small>Hands it to macOS</small></button>
+      <button type="button" role="menuitem" onClick={() => openLink("system")}><strong>Default browser</strong><small>Hands it to your system browser</small></button>
     </section>}
   </section>;
 }

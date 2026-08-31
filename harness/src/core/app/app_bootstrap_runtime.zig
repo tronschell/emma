@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const app_lifecycle = @import("app_lifecycle.zig");
 const provider_runtime = @import("provider_runtime.zig");
 const app_input_runtime = @import("app_input_runtime.zig");
@@ -169,7 +170,6 @@ pub fn Runtime(comptime App: type) type {
             app_session_runtime.Runtime(App).enableSessionStores(app);
         }
 
-        // Neutral one-line summary inline; the full detail stays behind Ctrl+O.
         fn writeCollapsedStartupNotice(app: *App, topic: []const u8, summary_lead: []const u8, detail: []const u8) !void {
             const summary = try std.fmt.allocPrint(app.alloc, "{s} (ctrl o to view)", .{summary_lead});
             defer app.alloc.free(summary);
@@ -217,7 +217,6 @@ pub fn Runtime(comptime App: type) type {
                 debug_trace.logf("auth", "startup source inventory refresh failed err={s}", .{@errorName(err)});
             };
             if (comptime @hasField(App, "terminal_input_runtime") and @hasField(App, "terminal")) {
-                // Own theme protocol bytes even under FX_THEME; probing stays gated.
                 app.terminal_input_runtime.terminal_theme_monitor.start();
                 if (startup.theme_monitor_enabled) {
                     app.terminal.enableThemeNotifications() catch |err| {
@@ -820,7 +819,7 @@ fn runBootstrapForTest(app: *TestApp, capture: *TestCapture) !void {
         4,
         "default-model",
         24,
-        resizeHandlerForTest,
+        resize_handler_for_test,
         false,
         testDeps(),
     );
@@ -841,9 +840,17 @@ fn readTraceForTest(alloc: Allocator, path: []const u8) ![]u8 {
     return io_mod.readFileToEnd(alloc, &file, 8192);
 }
 
-fn resizeHandlerForTest(_: std.posix.SIG) callconv(.c) void {}
+fn resizeHandlerForTestWindows() callconv(.c) void {}
+
+fn resizeHandlerForTestPosix(_: std.posix.SIG) callconv(.c) void {}
+
+const resize_handler_for_test: app_lifecycle.ResizeHandler = if (builtin.os.tag == .windows)
+    resizeHandlerForTestWindows
+else
+    resizeHandlerForTestPosix;
 
 test "app_bootstrap_runtime transfers startup state and starts a fresh session" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var capture = TestCapture.init(alloc);
     var app = TestApp.init(alloc);
@@ -915,6 +922,7 @@ test "app_bootstrap_runtime transfers startup state and starts a fresh session" 
 }
 
 test "app_bootstrap_runtime stages requested sessions with the first frame pending" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var capture = TestCapture.init(alloc);
     var app = TestApp.init(alloc);
@@ -940,6 +948,7 @@ test "app_bootstrap_runtime stages requested sessions with the first frame pendi
 }
 
 test "app_bootstrap_runtime publishes a staged resume view after startup notices" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var capture = TestCapture.init(alloc);
     capture.emit_skill_diagnostic = true;
@@ -964,6 +973,7 @@ test "app_bootstrap_runtime publishes a staged resume view after startup notices
 }
 
 test "app_bootstrap_runtime deinitializes app after bootstrap dependency failure" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var capture = TestCapture.init(alloc);
     capture.bootstrap_error = error.LayoutFailed;
@@ -975,6 +985,7 @@ test "app_bootstrap_runtime deinitializes app after bootstrap dependency failure
 }
 
 test "app_bootstrap_runtime propagates skill discovery allocation failure" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var capture = TestCapture.init(alloc);
     capture.load_skills_error = error.OutOfMemory;

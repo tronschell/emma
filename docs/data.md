@@ -6,14 +6,15 @@ Every path Emma reads or writes, and every environment variable it reads.
 
 | Root | Default | Written by | Holds |
 | --- | --- | --- | --- |
-| Rust data root | `~/Library/Application Support/Emma` | `emma-host` | `threads/`, `scheduled/`, `research/` |
-| Electron `userData` | `~/Library/Application Support/emma-desktop` | Electron main | everything else Emma owns |
+| Rust data root | Electron's `userData` root by default: `%APPDATA%/Emma` on Windows, `~/Library/Application Support/Emma` on macOS | `emma-host` | `threads/`, `scheduled/`, `research/` |
+| Electron `userData` | `app.getPath("userData")`, normally `%APPDATA%/Emma` on Windows or `~/Library/Application Support/Emma` on macOS | Electron main | everything else Emma owns |
 | Your vault | wherever you picked | Electron main | your Markdown notes — **yours, not Emma's** |
 
 `EMMA_DATA_DIR` moves the Rust root ([runtime.rs:6](../crates/host/src/runtime.rs#L6)).
-`userData` comes from `app.getPath("userData")`, named after `"name":
-"emma-desktop"` in [desktop/package.json](../desktop/package.json) — no override.
-Settings → Reset all data `rm -rf`s both ([main.ts:2545](../desktop/main/main.ts#L2545)).
+When it is unset, the host follows the platform defaults; in a packaged app
+those normally coincide with Electron's `userData` (`%APPDATA%/Emma` on
+Windows). Settings → Reset all data removes both
+([main.ts:2545](../desktop/main/main.ts#L2545)).
 The vault is outside both and is never deleted.
 
 ## Environment variables
@@ -22,7 +23,7 @@ The vault is outside both and is never deleted.
 
 | Variable | Read by | What it does | Default |
 | --- | --- | --- | --- |
-| `EMMA_DATA_DIR` | `emma-host`, Electron main | Root for `threads/`, `scheduled/`, `research/`. | `$HOME/Library/Application Support/Emma`. With `HOME` also unset the host errors `HOME is unset; set EMMA_DATA_DIR to a writable folder` |
+| `EMMA_DATA_DIR` | `emma-host`, Electron main | Root for `threads/`, `scheduled/`, `research/`. | `%APPDATA%/Emma` on Windows; `$HOME/Library/Application Support/Emma` on macOS. A standalone host errors when its platform home variables are unset |
 | `EMMA_DEV_SERVER_URL` | Electron main | Windows `loadURL` the dev server instead of `loadFile`, **and** that origin joins the trusted-sender set gating every privileged IPC handler ([ipc.ts:240](../desktop/main/ipc.ts#L240)). Set by `scripts/dev.mjs`. | unset → `file://` only |
 | `EMMA_PROVIDER_API_KEY` | `emma-cli` | The harness's **only** credential source — no OAuth, no login ([credentials.zig:9](../harness/src/core/auth/credentials.zig#L9)). Whitespace-only counts as absent. Electron sets it at spawn from the stored `OPENROUTER_API_KEY`. | unset → public catalog only |
 | `EMMA_PROVIDER_CHAT_URL` | `emma-cli` | Chat-completions URL override ([emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41)). Empty is treated as unset. | OpenRouter |
@@ -53,8 +54,8 @@ a running Emma over CDP. Default `9222`.
 | `TINYFISH_API_KEY`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY` | The names Settings pre-fills for ranked `web_search` providers. New settings try free TinyFish first and keyless 4get second; SearXNG and keyed providers are added explicitly ([settings.ts](../desktop/shared/settings.ts)) |
 | `AI_GATEWAY_API_KEY` | **Dead write.** [harness.ts:316](../desktop/main/harness.ts#L316) sets it beside `EMMA_PROVIDER_API_KEY`; nothing in `harness/src` reads it |
 | `HOME` | The base for nearly every path. Electron **overrides it for the harness** — `emma-cli` is spawned with `HOME=<userData>/harness`, so it never touches your real `~/.fx` |
-| `PATH` | MCP command resolution (the harness refuses a bare name) and every CLI child. [cli.ts](../desktop/main/cli.ts) reads the *login shell's* `$PATH` via `bash -lc` first, so `~/.local/bin` is found |
-| `TMPDIR`, `SHELL`, `USER`, `LANG`, `TERM`, `TERM_PROGRAM`, `COLORTERM`, `COLORFGBG`, `COLUMNS`, `NO_COLOR`, `TMUX`, `TMUX_PANE` | Read by `emma-cli` for scratch paths, the project context block, the Keychain account name, and terminal capability detection |
+| `PATH` | MCP command resolution (the harness refuses a bare name) and every CLI child. On macOS, [cli.ts](../desktop/main/cli.ts) reads the login shell's `$PATH` via `bash -lc` first, so `~/.local/bin` is found; Windows uses the inherited `PATH` |
+| `TMPDIR`, `SHELL`, `USER`, `LANG`, `TERM`, `TERM_PROGRAM`, `COLORTERM`, `COLORFGBG`, `COLUMNS`, `NO_COLOR`, `TMUX`, `TMUX_PANE` | Read by `emma-cli` for scratch paths, the project context block, the secure credential-store account name, and terminal capability detection |
 
 There are no `XDG_*` variables and `NODE_ENV` is never read.
 
@@ -72,7 +73,7 @@ These are the ones a shipped binary reads:
 | `FX_GATEWAY_BASE_URL` | Gateway base. The base carries the bearer token, so a non-loopback-HTTP override is logged and discarded | OpenRouter |
 | `FX_WEB_SEARCH_BACKEND` | `perplexity_search` or `parallel_search`. Any other non-empty value is an error, not a fallback | first of the default order |
 | `FX_AUTO_UPGRADE` | Off-switch only: `0`/`false` disables ([main.zig:626](../harness/src/main.zig#L626)) | on |
-| `FX_DISABLE_KEYCHAIN` | `1`/`true` turns off macOS Keychain storage for MCP OAuth credentials | unset |
+| `FX_DISABLE_KEYCHAIN` | `1`/`true` turns off OS secure storage for MCP OAuth credentials (macOS Keychain or Windows credential protection) | unset |
 | `FX_SKILL_SYMLINK_AUTHORITIES` | Colon-separated absolute roots trusted as skill symlink targets. Relative entries and anything with `..` are skipped | empty |
 | `FX_TRACE`, `FX_TRACE_LOG`, `FX_TRACE_STDERR`, `FX_TRACE_SCOPES` | Tracing. A relative `FX_TRACE_LOG` joins the workspace root; empty is an error. Scopes in use: `input`, `permission`, `stream`, `herdr`, `keychain`, `ui_observer` | off |
 | `FX_THEME`, `FX_SOUND`, `FX_SYNC_UPDATES` | TUI theme, sound, and DECSET 2026 synchronized updates. Only reachable when you run `emma-cli` yourself | unset |
@@ -255,7 +256,7 @@ inside Emma's data. Names from
 | `.fx/sessions/<id>/` | One harness session: `session.json`, `events.jsonl`, `checkpoint.json`, `authority.json`, `usage-v2.json`, lock files, `artifacts/`, `subagent/` |
 | `.fx/settings.json`, `.fx/mcp.json` | The harness's own settings and MCP config |
 | `.fx/auth.json`, `.fx/chatgpt-auth.json`, `.fx/api-key` | Credential files the fork still supports. Emma uses `EMMA_PROVIDER_API_KEY` instead |
-| `.fx/mcp-credentials/credentials.json` | MCP OAuth credentials, when the Keychain is disabled |
+| `.fx/mcp-credentials/credentials.json` | MCP OAuth credentials, when OS secure credential storage is disabled |
 | `.fx/usage.jsonl`, `.fx/usage.lock`, `.fx/usage-recovery/` | Append-only usage log and its crash recovery |
 | `.fx/history.jsonl` | Prompt history |
 | `.fx/logs/trace.log`, `.fx/recordings/`, `.fx/backups/` | Trace log, `.fxtape` recordings, backups |
@@ -266,23 +267,25 @@ them and copies nothing here.
 
 ## Inside the app bundle
 
-`Emma.app/Contents/Resources/` — bundled helpers, skills, notices, and the asar:
+On macOS, `Emma.app/Contents/Resources/` contains bundled helpers, skills,
+notices, and the asar. A Windows package keeps the same resources under its
+Electron `resources/` directory:
 
 | Resource | What it is |
 | --- | --- |
 | `emma-host` | The Rust NDJSON host |
 | `emma-cli` | The Zig harness, the agent behind every turn |
 | `rg` | [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0, SHA-256 pinned at download, no Homebrew dependency |
-| `emma-option-tap` | The ⌥⌥ listener and pointer driver |
-| `emma-computer` | App-scoped accessibility controls |
-| `emma-transcribe` | The Speech.framework dictation helper |
+| `emma-option-tap` / `emma-option-tap.exe` | The macOS ⌥⌥ or Windows left-Alt listener and pointer driver |
+| `emma-computer` / `emma-computer.exe` | App-scoped accessibility or UI Automation controls |
+| `emma-transcribe` / `emma-transcribe.exe` | The macOS Speech.framework or Windows speech dictation helper |
 | `emma-pty` | The terminal helper |
 | `skills/` | The seven bundled skills |
 | `notices/` | Emma, harness, renderer, Rust, ripgrep, font, and brand license notices |
 | `app.asar` | `dist-main/main`, `dist-main/shared`, `dist-renderer` |
 
-`Contents/Info.plist` carries the macOS 12 minimum, microphone usage, and
-`NSSpeechRecognitionUsageDescription`, merged at
+On macOS, `Contents/Info.plist` carries the macOS 12 minimum, microphone usage,
+and `NSSpeechRecognitionUsageDescription`, merged at
 package time from [native/Info.extra.plist](../desktop/native/Info.extra.plist).
 It has to be on `Emma.app` rather than the helper, because TCC reads the
 *responsible* process's plist.
@@ -292,7 +295,7 @@ It has to be on `Emma.app` rather than the helper, because TCC reads the
 - [getting-started.md](getting-started.md) — install and first run
 - [troubleshooting.md](troubleshooting.md) — the errors these paths produce
 - [architecture.md](architecture.md) — how the three processes fit together
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 - [permissions.md](permissions.md) — the four modes and the gate table
 - [models.md](models.md) — providers, routing, the catalog
 - [harness.md](harness.md) — `emma-cli`, Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx)

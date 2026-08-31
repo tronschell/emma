@@ -12,6 +12,8 @@ import { plural } from "./plural";
 
 const MARKS = import.meta.glob<string>("../assets/filetypes/*.svg", { eager: true, query: "?url", import: "default" });
 const mark = (name: string): string | undefined => MARKS[`../assets/filetypes/${name}.svg`];
+const IS_WINDOWS = typeof window !== "undefined" && window.emma?.platform === "win32";
+const GIT_INSTALL_COMMAND = IS_WINDOWS ? "winget install --id Git.Git --exact" : "xcode-select --install";
 
 const GROUPS: Record<string, string> = {
   rust: "rs", js: "mjs cjs", ts: "mts cts", react: "jsx tsx", py: "pyi pyw ipynb", md: "markdown mdx",
@@ -76,7 +78,7 @@ export function GitSetup({ ready, folderId }: { ready: GitReady; folderId: strin
     <div className="git-setup-card">
       <span className="git-setup-mark" aria-hidden>⑂</span>
       {ready === "no-git"
-        ? <><h2>Git is not installed</h2><code>xcode-select --install</code></>
+        ? <><h2>Git is not installed</h2><code>{GIT_INSTALL_COMMAND}</code></>
         : <><h2>No repository here yet</h2><button type="button" className="git-do" disabled={busy} onClick={init}>{busy ? "Starting…" : "git init"}</button></>}
       {error && <p className="git-commit-error" role="alert">{error}</p>}
     </div>

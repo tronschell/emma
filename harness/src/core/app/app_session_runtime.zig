@@ -328,7 +328,6 @@ test "resume handoff policy requires requested durable non-pristine state" {
     }
 }
 
-/// Owns `session_id`; callers must release it with `deinit`.
 pub const ResumeHandoff = struct {
     session_id: []u8,
 
@@ -444,8 +443,6 @@ pub const SessionPicker = struct {
         self.selection_failure = null;
         const count = self.navigationItemCount();
         if (count == 0) return true;
-        // Clamp at both ends instead of wrapping: at the top the selection
-        // stays on the first session, at the bottom on the last row.
         const current: i32 = @intCast(self.selected % count);
         var next = current + delta;
         if (next < 0) next = 0;
@@ -932,9 +929,6 @@ const SessionPickerLoad = struct {
 };
 
 fn resumePageLimitForRows(rows: u16) usize {
-    // Fill the resume screen: terminal rows minus the composer/divider/hint
-    // chrome (4), the menu header (1), the top gap (1), and a trailing
-    // "Load more" row (1). Floored so short terminals still page usefully.
     return @max(@as(usize, rows -| 7), session_store.default_resume_page_limit);
 }
 
@@ -1105,8 +1099,6 @@ const PendingCancelledCommand = struct {
 };
 
 pub const Persistence = struct {
-    // Serializes event-log mutations with worker usage callbacks. Usage takes
-    // its checkpoint mutex first, so callers must not checkpoint while held.
     write_mutex: std.Io.Mutex = .init,
     store: ?session_store.Store = null,
     writable: ?session_store.LoadedWritableSession = null,
@@ -1649,7 +1641,6 @@ pub fn Runtime(comptime App: type) type {
             defer target.deinit(app.alloc);
 
             const resume_target: session_store.ResumeTarget = switch (target) {
-                // Nothing to load yet: the picker asks which session to open.
                 .pick => return openSessionPicker(app),
                 .last => .last,
                 .id => |session_id| .{ .id = session_id },
@@ -2302,9 +2293,6 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
-        // Prefetch the next page as the selection reaches the last loaded
-        // session (or the load-more slot), so scrolling down fills the list in
-        // without stopping to activate "Load more".
         fn maybePrefetchMoreSessions(app: *App) void {
             const picker = &app.session_persistence.session_picker;
             if (!picker.active or picker.load_state != .ready) return;
@@ -2728,8 +2716,6 @@ pub fn Runtime(comptime App: type) type {
             };
             inserted = true;
             if (snapshot_file_ownership) |ownership| ownership.transfer();
-            // The footer title freezes at the first usable prompt, matching the
-            // sidecar derivation the resume picker shows.
             ensureCachedSessionTitle(app) catch {};
             commitJsHostSnapshot(app, "history_turn");
             if (comptime !@hasField(App, "session_persistence")) return .committed;
@@ -2924,8 +2910,6 @@ pub fn Runtime(comptime App: type) type {
             return null;
         }
 
-        /// Replaces the cached footer title. App owns the copy. Keeps the
-        /// terminal title in step because both surfaces read this cache.
         pub fn setCachedSessionTitle(app: *App, title: []const u8) !void {
             if (comptime !@hasField(App, "session_title")) return;
             app.session_title.clearRetainingCapacity();
@@ -2939,12 +2923,6 @@ pub fn Runtime(comptime App: type) type {
             syncTerminalTitle(app);
         }
 
-        /// Drops C0 and DEL bytes. The cached title feeds the statusline and
-        /// the OSC 2 terminal title, where a stray BEL or ESC would close the
-        /// escape sequence early and hand the remaining bytes to the terminal
-        /// as commands. Derived titles come from prompt text and from the
-        /// display sidecar, so neither source is trusted here; `/rename` input
-        /// is already rejected by `validateSessionTitle`.
         fn appendTitleWithoutControlBytes(app: *App, title: []const u8) !void {
             var start: usize = 0;
             for (title, 0..) |byte, index| {
@@ -2991,9 +2969,6 @@ pub fn Runtime(comptime App: type) type {
             try writer.writeAll(marker);
         }
 
-        /// Terminal tabs prefer the session name and otherwise use the
-        /// workspace basename. The active model remains visible as secondary
-        /// context, including after a model switch.
         pub fn syncTerminalTitle(app: *App) void {
             if (comptime !provider_runtime.supported(App)) return;
             syncTerminalTitleWith(app, terminalTitle(app));
@@ -3029,9 +3004,6 @@ pub fn Runtime(comptime App: type) type {
             return if (app.session_title.items.len == 0) null else app.session_title.items;
         }
 
-        /// Derives and caches the title on the first turn of a fresh session.
-        /// Derivation freezes at the first usable prompt, so this is a no-op
-        /// once a title is cached.
         pub fn ensureCachedSessionTitle(app: *App) !void {
             if (comptime !@hasField(App, "session_title")) return;
             if (app.session_title.items.len > 0) return;
@@ -3054,8 +3026,6 @@ pub fn Runtime(comptime App: type) type {
             NoActiveSession,
         };
 
-        /// Validates a user-supplied session title. Returns the trimmed slice,
-        /// which borrows from `raw`.
         pub fn validateSessionTitle(raw: []const u8) RenameError![]const u8 {
             const trimmed = std.mem.trim(u8, raw, " \t\r\n");
             if (trimmed.len == 0) return error.EmptyTitle;
@@ -3067,9 +3037,6 @@ pub fn Runtime(comptime App: type) type {
             return trimmed;
         }
 
-        /// Renames the active session: caches the title for the footer and
-        /// persists it to the display sidecar and the session index so the
-        /// resume picker does not keep serving the derived title.
         pub fn renameActiveSession(app: *App, raw: []const u8) !void {
             const title = try validateSessionTitle(raw);
             if (comptime !@hasField(App, "session_persistence")) return error.NoActiveSession;
@@ -3282,8 +3249,6 @@ pub fn Runtime(comptime App: type) type {
             return app.worker.tryHoldTurnStart();
         }
 
-        /// Tear down a parked writable without converging or checkpointing.
-        /// Background authority must already be detached (or is detached here).
         fn abandonParkedWritableSession(app: *App) void {
             discardAnyPendingCancelledCommand(app, "writable_session_abandon");
             app.session_persistence.disabled_cancelled_command_capture = null;
@@ -3639,9 +3604,6 @@ pub fn Runtime(comptime App: type) type {
             app: *App,
             session: *session_store.LoadedWritableSession,
         ) !session_display_metadata.DisplayMetadata {
-            // The sidecar title is frozen at first derivation; prefer it so the
-            // notice matches the picker row the user selected. The notice is
-            // cosmetic, so read failures fall back instead of failing the resume.
             var display = session_display_metadata.readSidecarOrFallback(app.alloc, &session.log.dir) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => blk: {
@@ -3805,9 +3767,6 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
-        /// Replay canonical session turns into a detached presentation using
-        /// the exact same tool, message, markdown, diff, and command-output
-        /// adapters as ordinary session resume.
         pub fn appendHistoryToDetachedProjection(
             app: *App,
             projection: anytype,
@@ -4002,9 +3961,6 @@ pub fn Runtime(comptime App: type) type {
                 ) or
                 try writeStoredCommandOutput(app, sink, result) or
                 try writeSavedCommandOutput(sink, result.output);
-            // Attach terminal detail after historical command chunks so typed
-            // process presentation joins the existing block instead of
-            // synthesizing a second, empty command-output block.
             if (wrote_command_output) {
                 try sink.attachHistoricalToolDetailAfterCommandOutput(
                     entry_id,
@@ -7364,7 +7320,7 @@ test "resume view persistence waits for main frame and retries failed writes" {
     try loaded.log.dir.dir.createDir(
         std.testing.io,
         "resume-view.bin",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     Runtime(TestApp).persistResumeViewAfterFrame(&app);
     try std.testing.expect(loaded.resume_view_stale);
@@ -9337,11 +9293,9 @@ test "session picker navigation clamps at both ends instead of wrapping" {
         try picker.appendSummary(alloc, &summary);
     }
 
-    // At the top, moving up stays on the first item (no wrap to the last).
     try std.testing.expect(picker.moveVisibleItems(-1, 2));
     try std.testing.expectEqual(@as(usize, 0), picker.selected);
 
-    // At the bottom, moving down stays on the last item (no wrap to the first).
     picker.selected = 1;
     try std.testing.expect(picker.moveVisibleItems(1, 2));
     try std.testing.expectEqual(@as(usize, 1), picker.selected);
@@ -9808,16 +9762,13 @@ test "renameActiveSession persists the title to the sidecar and session index" {
 
     try Runtime(TestApp).renameActiveSession(&app, "  deploy pipeline fix  ");
 
-    // Cached for the footer without re-reading the sidecar.
     try std.testing.expectEqualStrings(
         "deploy pipeline fix",
         Runtime(TestApp).cachedSessionTitle(&app).?,
     );
 
-    // And carried to the terminal tab.
     try std.testing.expectEqualStrings("deploy pipeline fix", app.terminalTitleLabelText());
 
-    // Durable in the sidecar.
     const loaded = &app.session_persistence.writable.?;
     var display = try session_display_metadata.readSidecarOrFallback(alloc, &loaded.log.dir);
     defer display.deinit(alloc);
@@ -9869,7 +9820,6 @@ test "ensureCachedSessionTitle derives from the first prompt and then freezes" {
     var app = try TestApp.init(alloc, paths.workspace);
     defer app.deinit();
 
-    // No history yet: nothing to derive.
     try Runtime(TestApp).ensureCachedSessionTitle(&app);
     try std.testing.expect(Runtime(TestApp).cachedSessionTitle(&app) == null);
 
@@ -9884,7 +9834,6 @@ test "ensureCachedSessionTitle derives from the first prompt and then freezes" {
         Runtime(TestApp).cachedSessionTitle(&app).?,
     );
 
-    // A later turn must not move the frozen title.
     try app.session.appendHistoryEntry(alloc, .{ .assistant = .{
         .user = .{ .text = @constCast("a totally different second prompt") },
         .assistant = @constCast("ok"),
@@ -9896,7 +9845,6 @@ test "ensureCachedSessionTitle derives from the first prompt and then freezes" {
         Runtime(TestApp).cachedSessionTitle(&app).?,
     );
 
-    // A fresh session clears it.
     Runtime(TestApp).clearCachedSessionTitle(&app);
     try std.testing.expect(Runtime(TestApp).cachedSessionTitle(&app) == null);
 }
@@ -9916,7 +9864,6 @@ test "terminal title combines session or workspace with the active model" {
 
     try app.selected_model.appendSlice(alloc, "zai/glm-5.2");
 
-    // Before the first turn names the session, tabs show workspace and model.
     Runtime(TestApp).syncTerminalTitle(&app);
     try std.testing.expectEqualStrings("workspace · zai/glm-5.2", app.terminalTitleLabelText());
 
@@ -9931,8 +9878,6 @@ test "terminal title combines session or workspace with the active model" {
         app.terminalTitleLabelText(),
     );
 
-    // A model switch preserves the session discriminator and updates the
-    // secondary model context.
     app.selected_model.clearRetainingCapacity();
     try app.selected_model.appendSlice(alloc, "anthropic/claude-opus-5");
     Runtime(TestApp).syncTerminalTitle(&app);
@@ -9941,7 +9886,6 @@ test "terminal title combines session or workspace with the active model" {
         app.terminalTitleLabelText(),
     );
 
-    // Starting over hands the primary discriminator back to the workspace.
     Runtime(TestApp).clearCachedSessionTitle(&app);
     try std.testing.expectEqualStrings(
         "workspace · anthropic/claude-opus-5",
@@ -9962,9 +9906,6 @@ test "cached session title drops control bytes before they reach the terminal" {
     var app = try TestApp.init(alloc, paths.workspace);
     defer app.deinit();
 
-    // Derived titles come from prompt text and from the display sidecar, so a
-    // BEL could otherwise close the OSC 2 sequence and hand the rest of the
-    // title to the terminal as commands.
     try Runtime(TestApp).setCachedSessionTitle(&app, "safe\x07\x1b]2;owned\x7ftail");
     try std.testing.expectEqualStrings(
         "safe]2;ownedtail",

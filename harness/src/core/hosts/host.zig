@@ -29,9 +29,6 @@ pub const UrlOpener = struct {
         []const u8,
     ) UrlOpenError!bool,
 
-    /// Borrows `url` for this call. The caller retains ownership. Returns
-    /// `false` when the host cannot launch the URL so callers can keep a
-    /// manual fallback available.
     pub fn open(
         self: UrlOpener,
         alloc: std.mem.Allocator,
@@ -58,9 +55,6 @@ pub const TerminalTitle = struct {
     set_fn: *const fn (?*anyopaque, []const u8) void,
     clear_fn: *const fn (?*anyopaque) void,
 
-    /// Borrows `label` for this call. Callers resolve what the label says; the
-    /// provider only renders it. Terminal write failures are intentionally
-    /// non-fatal because the title is presentation metadata.
     pub fn set(self: TerminalTitle, label: []const u8) void {
         self.set_fn(self.context, label);
     }
@@ -105,8 +99,6 @@ pub const Clipboard = struct {
         []const u8,
     ) ClipboardError!bool = copy_file_unavailable,
 
-    /// Borrows `text` for this call. The caller retains ownership. Returns
-    /// `false` when the host has no clipboard implementation.
     pub fn copy(
         self: Clipboard,
         text: []const u8,
@@ -114,8 +106,6 @@ pub const Clipboard = struct {
         return self.copy_fn(self.context, text);
     }
 
-    /// Borrows `path` for this call. The caller retains ownership. Returns
-    /// `false` when the host cannot publish file references to its clipboard.
     pub fn copy_file(
         self: Clipboard,
         alloc: std.mem.Allocator,
@@ -146,7 +136,7 @@ fn capabilitiesForTarget(
 }
 
 pub fn terminalSupportForOs(os_tag: std.Target.Os.Tag) TerminalSupport {
-    return if (os_tag == .macos or os_tag == .linux)
+    return if (os_tag == .macos or os_tag == .linux or os_tag == .windows)
         .supported
     else
         .unsupported;
@@ -155,15 +145,13 @@ pub fn terminalSupportForOs(os_tag: std.Target.Os.Tag) TerminalSupport {
 pub fn nativeForOs(os_tag: std.Target.Os.Tag) Capabilities {
     return .{
         .os_sandbox = os_tag == .macos,
-        .background_processes = os_tag != .windows and os_tag != .wasi,
-        .url_open = os_tag == .macos or os_tag == .linux,
-        .native_url_open = os_tag == .macos,
+        .background_processes = os_tag != .wasi,
+        .url_open = os_tag == .macos or os_tag == .linux or os_tag == .windows,
+        .native_url_open = os_tag == .macos or os_tag == .windows,
         .terminal = terminalSupportForOs(os_tag),
     };
 }
 
-/// Returns an owned description of the current operating system. The caller
-/// owns the returned slice and must free it with `alloc`.
 pub fn operatingSystemText(alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
     if (comptime wasm.isTarget(builtin.cpu.arch)) {
         return wasm.operatingSystemText(alloc, builtin.os.tag);
@@ -236,10 +224,11 @@ test "native host capabilities expose sandbox and background process support" {
     try std.testing.expectEqual(TerminalSupport.supported, linux.terminal);
 
     const windows = nativeForOs(.windows);
-    try std.testing.expect(!windows.background_processes);
-    try std.testing.expect(!windows.url_open);
-    try std.testing.expect(!windows.native_url_open);
-    try std.testing.expectEqual(TerminalSupport.unsupported, windows.terminal);
+    try std.testing.expect(!windows.os_sandbox);
+    try std.testing.expect(windows.background_processes);
+    try std.testing.expect(windows.url_open);
+    try std.testing.expect(windows.native_url_open);
+    try std.testing.expectEqual(TerminalSupport.supported, windows.terminal);
 
     const wasi = nativeForOs(.wasi);
     try std.testing.expect(!wasi.background_processes);

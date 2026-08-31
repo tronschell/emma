@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { isWindows, pathInside, samePath } from "./platform";
 import {
   ATTACHMENT_FOLDER,
   DEFAULT_VAULT_FOLDER,
@@ -29,8 +30,26 @@ const EMBED = /!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]|!\[[^\]]*\]\(([^)\s]+)\)/;
 const IMAGE_FILE = /\.(png|jpe?g|gif|bmp)$/i;
 const MAX_EXCERPT = 280;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
-const OBSIDIAN_CONFIG = ["Library", "Application Support", "obsidian", "obsidian.json"];
-const OBSIDIAN_APPS = ["/Applications/Obsidian.app", path.join(homedir(), "Applications", "Obsidian.app")];
+const OBSIDIAN_CONFIG = isWindows
+  ? path.join(process.env.APPDATA || path.join(homedir(), "AppData", "Roaming"), "obsidian", "obsidian.json")
+  : path.join(homedir(), "Library", "Application Support", "obsidian", "obsidian.json");
+const OBSIDIAN_APPS = isWindows ? (() => {
+  const local = process.env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local");
+  const programRoots = [process.env.ProgramFiles, process.env.ProgramW6432, process.env["ProgramFiles(x86)"], "C:\\Program Files"]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const candidates = [
+    path.join(local, "Programs", "Obsidian", "Obsidian.exe"),
+    path.join(local, "Obsidian", "Obsidian.exe"),
+    path.join(local, "Microsoft", "WindowsApps", "Obsidian.exe"),
+    ...programRoots.flatMap((root) => [path.join(root, "Obsidian", "Obsidian.exe"), path.join(root, "WindowsApps", "Obsidian.exe")]),
+  ];
+  for (const root of programRoots.map((value) => path.join(value, "WindowsApps"))) {
+    try {
+      for (const entry of readdirSync(root)) if (/^Obsidian\.Obsidian(?:_|$)/i.test(entry)) candidates.push(path.join(root, entry, "Obsidian.exe"));
+    } catch { continue; }
+  }
+  return [...new Set(candidates)];
+})() : ["/Applications/Obsidian.app", path.join(homedir(), "Applications", "Obsidian.app")];
 const BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 
 type Frontmatter = Record<string, string | string[]>;
@@ -67,15 +86,13 @@ function writeAtomic(file: string, data: string | Buffer, mode?: number): void {
 }
 
 function contains(folder: string, target: string): boolean {
-  const base = path.resolve(folder);
-  const resolved = path.resolve(target);
-  return resolved.startsWith(`${base}${path.sep}`);
+  return pathInside(folder, target);
 }
 
 function normalizeVault(value: unknown): VaultChoice {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pick the folder Emma should keep your notes in.");
   const choice = value as Partial<VaultChoice>;
-  const root = typeof choice.root === "string" ? choice.root.replace(/\/+$/, "") : "";
+  const root = typeof choice.root === "string" ? choice.root.trim() : "";
   if (!root || !path.isAbsolute(root)) throw new Error("Name your vault with a full path.");
   const folder = validVaultFolder(choice.folder) ? choice.folder : DEFAULT_VAULT_FOLDER;
   const kind = choice.kind === "obsidian" ? "obsidian" : "folder";
@@ -119,7 +136,7 @@ export function vaultWritable(vault: VaultChoice): boolean {
 export function detectObsidianVaults(): { name: string; path: string }[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path.join(homedir(), ...OBSIDIAN_CONFIG), "utf8"));
+    parsed = JSON.parse(readFileSync(OBSIDIAN_CONFIG, "utf8"));
   } catch {
     return [];
   }
@@ -129,8 +146,8 @@ export function detectObsidianVaults(): { name: string; path: string }[] {
   for (const entry of Object.values(vaults as Record<string, unknown>)) {
     const root = (entry as { path?: unknown } | null)?.path;
     if (typeof root !== "string" || !path.isAbsolute(root)) continue;
-    const cleaned = root.replace(/\/+$/, "");
-    if (!isDirectory(cleaned) || found.some((item) => item.path === cleaned)) continue;
+    const cleaned = path.resolve(root);
+    if (!isDirectory(cleaned) || found.some((item) => samePath(item.path, cleaned))) continue;
     found.push({ name: path.basename(cleaned), path: cleaned });
   }
   return found;
@@ -141,6 +158,7 @@ export function obsidianInstalled(): boolean {
 }
 
 export function obsidianInstallCommand(): string {
+  if (isWindows) return "winget install --id Obsidian.Obsidian --exact";
   return BREW.some((brew) => existsSync(brew)) ? "brew install --cask obsidian" : "";
 }
 

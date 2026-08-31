@@ -18,7 +18,7 @@ components you arrange. Emma ships **eleven**
 | ⌸ | Subagents | One row per live subagent, into the transcript it is writing | both |
 | ⑃ | Sub threads | Threads this one started, working or idle — they outlive their runs, so the rows stay | both |
 | ⑂ | Git | Branch, working tree, and the diff behind it. Renders nothing outside a repo. Highlighting inside one file's diff attaches that excerpt to the next turn | down only |
-| ◫ | Machine | CPU, memory, GPU and network on this Mac, as numbers | both |
+| ◫ | Machine | CPU, memory, GPU and network on this computer, as numbers | both |
 | ∿ | Machine graph | The same four as sparklines over the last minute | both |
 | ▥ | Machine meters | The same four as 16-cell segmented gauges | both |
 
@@ -30,14 +30,14 @@ forced vertical however the settings file was written.
 
 Three readings of one sampler, so a number and the gauge beside it cannot
 disagree: CPU across every core, memory that is actually held (active, wired and
-compressed — not the free page count, which on macOS reads as 97% used on an idle
-Mac), GPU device utilisation, and network throughput either way.
+compressed on macOS, or the Windows physical-memory counters), GPU device
+utilisation, and network throughput either way.
 
 They differ only in how they draw it — tiles of numbers, a sparkline a minute
 long, or a row of 16 cells. CPU, memory and GPU are shares of a real ceiling;
 network has none, so its sparkline and its cells are scaled against the loudest
-second in the window on screen. A Mac that reports no GPU utilisation draws `—`
-rather than a zero.
+second in the window on screen. A computer that reports no GPU utilisation draws
+`—` rather than a zero.
 
 `useMachine` in [`desktop/src/machine.tsx`](../desktop/src/machine.tsx) holds one
 minute of samples and one timer for the whole renderer however many of the three
@@ -147,9 +147,9 @@ See [plugins.md](plugins.md).
 | Sub thread rows | `snapshot.threads` from the host — not the agent list, which is why an idle sub thread still has a row |
 | Timeline spans | `listSpans()` and `onSpans` for the live turn, `threadTraces(threadId)` for the rest |
 | Git | `gitStatus(folderId)` |
-| CPU, memory, GPU, network | `machineSample()` — `os.cpus()` deltas in the main process, and one `/bin/sh` per second over `netstat -ib`, `ioreg -c IOAccelerator` and `vm_stat` ([`desktop/main/machine.ts`](../desktop/main/machine.ts)). macOS only |
+| CPU, memory, GPU, network | `machineSample()` — `os.cpus()` deltas in the main process, plus platform probes: macOS uses `/bin/sh` with `netstat`, `ioreg` and `vm_stat`; Windows uses PowerShell network, memory and GPU counters ([`desktop/main/machine.ts`](../desktop/main/machine.ts)) |
 
-Characters are counted on this Mac and divided by `CHARS_PER_TOKEN` (**4**) to
+Characters are counted on this computer and divided by `CHARS_PER_TOKEN` (**4**) to
 read as tokens, so every ledger figure is an estimate.
 
 `useContextLedger` builds the ledger once, in the thread pane, and hands the same

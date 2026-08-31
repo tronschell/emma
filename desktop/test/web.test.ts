@@ -50,7 +50,7 @@ test("the search provider round-trips, and picks up its own default endpoint", (
   assert.equal(validateWebSearch({ provider: "searxng", endpoint: "" }).providers[0].endpoint, "http://127.0.0.1:8888");
   assert.equal(validateWebSearch({ provider: "exa", credentialEnv: "EXA_API_KEY" }).providers[0].credentialEnv, "EXA_API_KEY");
   assert.deepEqual(validateWebSearch({ provider: "askjeeves" }), defaultWebSearch);
-  assert.throws(() => validateWebSearch({ providers: [{ provider: "searxng", endpoint: "http://searx.example.com" }] }), /https, or http on this Mac/);
+  assert.throws(() => validateWebSearch({ providers: [{ provider: "searxng", endpoint: "http://searx.example.com" }] }), /https, or http on this computer/);
   assert.throws(() => validateWebSearch({ providers: [{ provider: "tinyfish", endpoint: "not a url" }] }), /must be a URL/);
   assert.throws(() => validateWebSearch({ providers: [{ provider: "tinyfish", credentialEnv: "not a name" }] }), /environment variable name/);
   assert.throws(() => validateWebSearch({ providers: [] }), /fallback list/);

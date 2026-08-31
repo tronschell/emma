@@ -1,12 +1,6 @@
-/* Handing something to a real editor. Main owns the detection and the `open`; this
-   is the row of app marks, drawn wherever the UI names a code file — or the project
-   the thread is working in. */
-
 import { useEffect, useState } from "react";
 import type { EditorApp } from "../shared/folders";
 
-/* Asked for once per launch and shared by every row that draws it: main caches the
-   answer anyway, and a file list would otherwise ask the same question per file. */
 let asked: Promise<EditorApp[]> | undefined;
 
 function useEditors(): EditorApp[] {
@@ -20,9 +14,6 @@ function useEditors(): EditorApp[] {
   return editors;
 }
 
-/* The chosen editor is one preference shared by every row on screen, so it lives
-   beside them rather than inside one of them — picking a default in a diff row
-   moves the marks in the preview header with it. */
 const DEFAULT_KEY = "emma.default-editor";
 let preferred = localStorage.getItem(DEFAULT_KEY) ?? "";
 const watching = new Set<(id: string) => void>();
@@ -37,15 +28,6 @@ function usePreferred(): [string, (id: string) => void] {
   }];
 }
 
-/** One chip per place a file or folder can be handed off, wearing the icons of the
-    editors this Mac has. With no `path` it hands over the granted folder itself,
-    which is what an editor wants for a project; with one, that file. With no
-    `folderId` the path stands on its own — the preview names a file without knowing
-    which folder, if any, holds it, and main decides whether it is one Emma may open.
-    Draws nothing when no known editor is installed, so the bar it sits on is
-    unchanged for someone who has none. With several, the marks overlap into one
-    stack and the choice moves into a menu; once an editor is the default the stack
-    opens it outright and the caret still reaches the others. */
 export function OpenIn({ folderId, path, label }: { folderId?: string; path?: string; label?: boolean }) {
   const editors = useEditors();
   const [chosenId, choose] = usePreferred();
@@ -62,8 +44,6 @@ export function OpenIn({ folderId, path, label }: { folderId?: string; path?: st
     const [only] = editors;
     return <span className={`open-in${label ? " boxed" : ""}`}>
       <button type="button" title={`Open ${named} in ${only.label}`} aria-label={`Open ${named} in ${only.label}`} onClick={(event) => { event.preventDefault(); send(only); }}>
-        {/* The words belong to the button rather than the row, so the whole chip is
-            the target and the mark inside it is not a second one. */}
         {label && <small>Open in</small>}
         {mark(only)}
       </button>
@@ -81,8 +61,6 @@ export function OpenIn({ folderId, path, label }: { folderId?: string; path?: st
       aria-haspopup={chosen ? undefined : "menu"} aria-expanded={chosen ? undefined : open}
       onClick={(event) => { event.preventDefault(); if (chosen) send(chosen); else setOpen((was) => !was); }}>
       {label && <small>Open in</small>}
-      {/* Front to back: each mark sits behind the one before it, so the stack nests
-          rather than the last drawn winning. */}
       {stacked.map((editor, index) => <span className="open-in-mark" key={editor.id} style={{ zIndex: stacked.length - index }}>{mark(editor)}</span>)}
     </button>
     {chosen && <button type="button" className="open-in-more" title={`Open ${named} in another editor`} aria-label={`Open ${named} in another editor`}

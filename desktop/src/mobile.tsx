@@ -86,7 +86,7 @@ export function MobileSettings({ busy }: { busy: boolean }) {
     const target = canvas.current;
     if (!pairing || !target) return;
     void toCanvas(target, JSON.stringify(pairing), { width: QR_PIXELS, margin: 2, color: { dark: tone("--bg"), light: tone("--text") } })
-      .catch(() => { setPairing(null); setError("This Mac could not draw the pairing code."); });
+      .catch(() => { setPairing(null); setError("This computer could not draw the pairing code."); });
   }, [pairing]);
 
   const pair = async () => {
@@ -129,7 +129,7 @@ export function MobileSettings({ busy }: { busy: boolean }) {
     {(error || status.reason) && <div className="local-model-error" role="alert">{error || status.reason}</div>}
     <section>
       <div>
-        <div className="settings-head"><h3>PIN</h3><InfoDot>The pairing code carries the key that opens this Mac, and it is on screen for two minutes. The PIN never appears in it, so a code read over your shoulder is not enough on its own. The phone is asked for it once, while pairing.</InfoDot></div>
+        <div className="settings-head"><h3>PIN</h3><InfoDot>The pairing code carries the key that opens this computer, and it is on screen for two minutes. The PIN never appears in it, so a code read over your shoulder is not enough on its own. The phone is asked for it once, while pairing.</InfoDot></div>
         <p>4 to 12 digits. Choose one before pairing, and type it on the phone when it asks.</p>
         <label>PIN<input
           value={pin}
@@ -158,7 +158,7 @@ export function MobileSettings({ busy }: { busy: boolean }) {
         {status.devices.length > 0 && status.addr && <p>Reachable at <code>{status.addr}</code>{status.listening || status.reason ? "" : " — not listening yet"}.</p>}
         {status.full && <p>Three devices are paired, which is the most Emma keeps. Remove one to pair another.</p>}
         {!ready && !status.full && <p>Choose a PIN above first.</p>}
-        <p>Both devices must be on the same Tailscale network, or the same Wi-Fi. A paired phone sends messages to your threads, answers the tool permission prompts this Mac would otherwise ask you, and runs git — staging, commits, push and pull. Pair only a phone you are holding.</p>
+        <p>Both devices must be on the same Tailscale network, or the same Wi-Fi. A paired phone sends messages to your threads, answers the tool permission prompts this computer would otherwise ask you, and runs git — staging, commits, push and pull. Pair only a phone you are holding.</p>
       </div>
       {pairing
         ? <canvas ref={canvas} role="img" aria-label="Pairing code for Emma Mobile" style={{ justifySelf: "start" }} />
