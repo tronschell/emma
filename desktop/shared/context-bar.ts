@@ -1,16 +1,3 @@
-/* What the thread inspector shows, and in what order.
-
-   The bar used to be a fixed stack — stats, ledger, timeline, subagents — which
-   is the right default and the wrong ceiling: reading a long research thread and
-   watching a coding run want different panels, and the column is only ~288px
-   wide, so anything you are not reading is pushing what you are below the fold.
-
-   So the stack is data. Settings reorders it, drops what a given kind of work
-   never looks at, and keeps up to four arrangements; the bar itself switches
-   between them. The components are unchanged — this file only says which ones,
-   in what order, and laid out which way. */
-
-/** Every component the bar can hold. `orientable` ones lay out two ways; the rest have one shape. */
 export const CONTEXT_WIDGETS = [
   { type: "stats", label: "Thread stats", glyph: "▦", blurb: "Any six — or any number — of the numbers this thread has: counts, speed, tokens, context, pruning.", orientable: true },
   { type: "context", label: "Context window", glyph: "▤", blurb: "What the last turn carried, by kind, against the model's stated window.", orientable: true },
@@ -18,7 +5,7 @@ export const CONTEXT_WIDGETS = [
   { type: "plan", label: "Plan", glyph: "◰", blurb: "The plan this thread is working through, drawn as a graph of subagents. Press a node to light its wave.", orientable: false },
   { type: "subagents", label: "Subagents", glyph: "⌸", blurb: "One row per subagent, into the transcript it is writing.", orientable: true },
   { type: "subthreads", label: "Sub threads", glyph: "⑃", blurb: "Threads this one started, working or idle. They outlive their runs, so the rows stay.", orientable: true },
-  { type: "machine", label: "Machine", glyph: "◫", blurb: "This Mac while the thread runs: CPU, memory, GPU and network, as numbers.", orientable: true },
+  { type: "machine", label: "Machine", glyph: "◫", blurb: "This computer while the thread runs: CPU, memory, GPU and network, as numbers.", orientable: true },
   { type: "machinegraph", label: "Machine graph", glyph: "∿", blurb: "The last minute of CPU, memory, GPU and network, each as a sparkline.", orientable: true },
   { type: "machinemeters", label: "Machine meters", glyph: "▥", blurb: "The same four readings as segmented gauges — the shape you read across the room.", orientable: true },
   { type: "git", label: "Git", glyph: "⑂", blurb: "Branch, working tree, and the diff behind it. Empty outside a repo.", orientable: false },
@@ -54,14 +41,6 @@ export const DEFAULT_METRICS: ContextMetric[] = ["messages", "replies", "attachm
 export const metricDefinition = (id: ContextMetric) => CONTEXT_METRICS.find((metric) => metric.id === id)!;
 const isMetric = (value: unknown): value is ContextMetric => CONTEXT_METRICS.some((metric) => metric.id === value);
 
-/**
- * How a widget lays its own contents out.
- *
- * `vertical` is one item per line — the shape that survives a narrow column.
- * `horizontal` flows across and wraps, which fits more in less height at the
- * cost of the labels going small. Neither is a rotation of the other; they are
- * the two readings each component already had.
- */
 export type WidgetOrientation = "vertical" | "horizontal";
 
 export interface ContextWidget {
@@ -76,15 +55,12 @@ export interface ContextPage {
   widgets: ContextWidget[];
 }
 
-/* Four is the ceiling because the switcher is a row of tabs in a 288px column:
-   a fifth tab either truncates every name to three characters or wraps the row. */
 export const MAX_CONTEXT_PAGES = 4;
 export const MAX_PAGE_NAME = 20;
 
 export const widgetDefinition = (type: ContextWidgetType) => CONTEXT_WIDGETS.find((item) => item.type === type)!;
 const isWidgetType = (value: unknown): value is ContextWidgetType => CONTEXT_WIDGETS.some((item) => item.type === value);
 
-/** Page 1 is the bar exactly as it was before it was configurable; page 2 is a run being watched. */
 export const defaultContextPages: ContextPage[] = [
   {
     id: "p1",
@@ -120,7 +96,6 @@ export const defaultContextPages: ContextPage[] = [
   },
 ];
 
-/** The lowest `p<n>` no page is using, so a new page's id never collides with a removed one's. */
 export function nextPageId(pages: readonly ContextPage[]): string {
   for (let index = 1; index <= MAX_CONTEXT_PAGES; index += 1) {
     const id = `p${index}`;
@@ -129,9 +104,6 @@ export function nextPageId(pages: readonly ContextPage[]): string {
   return `p${MAX_CONTEXT_PAGES}`;
 }
 
-/* A page holds each component at most once. Two copies of one ledger in a column
-   this narrow is noise, and the constraint is what lets the type be the key the
-   drag-and-drop sorts by — no instance ids to mint, none to keep unique. */
 export function validateContextPages(value: unknown): ContextPage[] {
   if (value === undefined || value === null) return structuredClone(defaultContextPages);
   if (!Array.isArray(value) || !value.length || value.length > MAX_CONTEXT_PAGES) throw new Error(`Keep 1 to ${MAX_CONTEXT_PAGES} context bar pages`);

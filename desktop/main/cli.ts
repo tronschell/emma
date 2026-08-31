@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { CLI_HARNESSES, cliHarness, terminalText, type CliRun } from "../shared/cli";
+import { findExecutable, isWindows, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
 
 const MAX_OUTPUT = 256 * 1024;
 const MAX_RUNS = 12;
@@ -16,6 +17,7 @@ type Entry = CliRun & {
 
 export class CliRuns {
   private runs = new Map<string, Entry>();
+  private stopping = new Map<string, Promise<void>>();
   private counter = 0;
   private notifyAt = 0;
   private pending?: NodeJS.Timeout;
@@ -52,7 +54,7 @@ export class CliRuns {
     const harness = cliHarness(options.cli);
     if (!harness) throw new Error(`Emma does not know a CLI called ${options.cli.slice(0, 32)}.`);
     const binary = await this.resolve(harness.bin);
-    if (!binary) throw new Error(`${harness.label} is not installed on this Mac — \`${harness.bin}\` is not on the PATH.`);
+    if (!binary) throw new Error(`${harness.label} is not installed — \`${harness.bin}\` is not on the PATH.`);
     const now = Date.now();
     const id = `cli${++this.counter}`;
     const entry: Entry = {
@@ -109,13 +111,12 @@ export class CliRuns {
     const entry = this.runs.get(id);
     const pid = entry?.child?.pid;
     if (!entry || entry.status !== "running" || pid === undefined) return false;
-    kill(pid, "SIGTERM");
-    setTimeout(() => { if (entry.status === "running") kill(pid, "SIGKILL"); }, SIGKILL_AFTER_MS).unref();
+    void this.stopEntry(entry);
     return true;
   }
 
-  stopAll() {
-    for (const entry of this.runs.values()) this.stop(entry.id);
+  stopAll(): Promise<void> {
+    return Promise.all([...this.runs.values()].map((entry) => this.stopEntry(entry))).then(() => undefined);
   }
 
   private turn(entry: Entry, binary: string, args: string[], unattended: string[]): Promise<void> {
@@ -125,13 +126,14 @@ export class CliRuns {
     entry.exitCode = null;
     entry.turnStartedAt = Date.now();
     entry.endedAt = undefined;
-    this.append(entry, `\n$ ${[binary.split("/").pop(), ...argv].join(" ")}\n`);
+    this.append(entry, `\n$ ${[binary.split(/[\\/]/).pop(), ...argv].join(" ")}\n`);
     return new Promise((resolve) => {
-      const child = spawn(binary, argv, {
+      const child = spawnCommand(binary, argv, {
         cwd: entry.cwd,
         env: { ...process.env, PATH: this.cachedPath ?? process.env.PATH ?? "" },
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        windowsHide: true,
       });
       entry.child = child;
       const collect = (data: Buffer) => this.append(entry, String(data));
@@ -182,40 +184,49 @@ export class CliRuns {
     for (const entry of done.slice(0, Math.max(0, this.runs.size - MAX_RUNS))) this.runs.delete(entry.id);
   }
 
+  private stopEntry(entry: Entry): Promise<void> {
+    const existing = this.stopping.get(entry.id);
+    if (existing) return existing;
+    const pid = entry.child?.pid;
+    if (entry.status !== "running" || pid === undefined) return Promise.resolve();
+    const stopping = terminateProcessTree(pid).then(async () => {
+      if (entry.status !== "running") return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, SIGKILL_AFTER_MS);
+        if (!isWindows) timer.unref();
+      });
+      if (entry.status === "running") await terminateProcessTree(pid, "SIGKILL");
+    });
+    this.stopping.set(entry.id, stopping);
+    void stopping.then(() => this.stopping.delete(entry.id), () => this.stopping.delete(entry.id));
+    return stopping;
+  }
+
   private async resolve(bin: string): Promise<string | null> {
     const known = this.paths.get(bin);
     if (known !== undefined) return known;
     this.cachedPath ??= await this.path();
-    const found = await shell(`command -v ${bin}`);
-    const resolved = found && found.startsWith("/") ? found : null;
+    const resolved = await findExecutable(bin, this.cachedPath);
     this.paths.set(bin, resolved);
     return resolved;
   }
 
   private path(): Promise<string> {
-    this.loginPath ??= shell("printf %s \"$PATH\"").then((value) => value || process.env.PATH || "");
+    this.loginPath ??= isWindows ? Promise.resolve(process.env.PATH || "") : shell("printf %s \"$PATH\"").then((value) => value || process.env.PATH || "");
     return this.loginPath;
   }
 }
 
 function shell(command: string): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-lc", command], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(shellBinary(), shellArguments(command, false), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     let out = "";
     child.stdout.on("data", (data: Buffer) => { if (out.length < 8192) out += String(data); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    const timer = setTimeout(() => { if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false); }, 5000);
     timer.unref();
     child.once("error", () => { clearTimeout(timer); resolve(""); });
     child.once("close", () => { clearTimeout(timer); resolve(out.trim().split("\n")[0] ?? ""); });
   });
-}
-
-function kill(pid: number, signal: NodeJS.Signals) {
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    return;
-  }
 }
 
 function snapshot(entry: Entry): CliRun {

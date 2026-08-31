@@ -209,7 +209,7 @@ export function PromptField({ value, onChange, commands, atItems, disabled, rows
       {matches.map((item, index) => <button type="button" role="option" aria-selected={index === active} className={`slash-row ${index === active ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setPick(index)} onClick={() => choose(item)}>
         <strong>{slash.sigil}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{SLASH_KINDS[item.kind]}</em><small>{item.detail}</small>
       </button>)}
-      {!matches.length && <p className="slash-empty">Nothing matches “{slash.query}”. {slash.sigil === "@" ? "Artifacts, saved notes and the files of granted folders appear here." : "Built-in tools and imported skills appear here — use /import in a thread to scan this Mac."}</p>}
+      {!matches.length && <p className="slash-empty">Nothing matches “{slash.query}”. {slash.sigil === "@" ? "Artifacts, saved notes and the files of granted folders appear here." : "Built-in tools and imported skills appear here — use /import in a thread to scan this computer."}</p>}
     </section>}
   </div>;
 }

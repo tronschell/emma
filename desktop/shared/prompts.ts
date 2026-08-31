@@ -33,7 +33,7 @@ export const PROMPT_VARIABLES = [
   { name: "model", detail: "The model answering the turn." },
   { name: "model_family", detail: "Its family — Opus, Sonnet, DeepSeek — or the maker when there is no family." },
   { name: "workspace", detail: "The folder the turn runs in." },
-  { name: "os", detail: "Platform and release of this Mac." },
+  { name: "os", detail: "Platform and release of this computer." },
   { name: "date", detail: "Today, as ISO." },
   { name: "mode", detail: "The permission mode the composer is on." },
   { name: "connections", detail: "Third-party CLI tools switched on and installed." },

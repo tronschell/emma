@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const output_contracts = @import("../output/output_contracts.zig");
 const helpers = @import("upgrade_helpers.zig");
@@ -192,7 +193,12 @@ fn upgradeWorkerInner(
     progress.markUpdateFound();
     if (show_progress) io_mod.sleep(found_hold_ns);
 
-    const tmp_base: []const u8 = io_mod.getenv("TMPDIR") orelse "/tmp";
+    const tmp_base_owned: ?[]u8 = if (comptime builtin.os.tag == .windows)
+        try io_mod.runtimeTempPathAlloc(alloc)
+    else
+        null;
+    defer if (tmp_base_owned) |value| alloc.free(value);
+    const tmp_base: []const u8 = tmp_base_owned orelse (io_mod.getenv("TMPDIR") orelse "/tmp");
     var rand_buf: [8]u8 = undefined;
     io_mod.getIo().random(&rand_buf);
     const rand_hex = std.fmt.bytesToHex(rand_buf, .lower);
@@ -240,7 +246,7 @@ fn upgradeWorkerInner(
         return;
     };
 
-    const extracted_bin = try std.fmt.allocPrint(alloc, "{s}/fx", .{tmp_dir});
+    const extracted_bin = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ tmp_dir, helpers.extractedExecutableName() });
     defer alloc.free(extracted_bin);
 
     var self_exe_buf: [std.fs.max_path_bytes]u8 = undefined;

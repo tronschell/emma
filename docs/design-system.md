@@ -191,6 +191,9 @@ this list without re-measuring.
 | Real glyph | `⌥ ⌘ ↑ ← → ↓ · — – … × │ ─ ▪` |
 | Falls back to the system font | `⌄ ⌃ ⇧ ＋ ◇ ◆ ▣ ⌁ ⌕ ▸ ▾ ▴ ✓ ● ○ ◦ ◈ ⊞ ⎋ ⏎ ⇥ ⌫` |
 
+Shortcut copy uses `Option` and `Command` on macOS and `Alt` and `Ctrl` on
+Windows; the Windows Quick Ask gesture is the physical left `Alt` key.
+
 A fallback glyph has a different advance (9.6px vs 10.2px), so it breaks a
 monospace column. In an aligned column prefer the first list or plain ASCII;
 standalone and decorative, either is fine. `⌕` renders as a soft blob at chrome

@@ -212,8 +212,9 @@ Nothing here consults the table, and `full` does not switch any of it off.
   check.
 - **Argument validation.** `parseToolArgs` runs on every call.
 - **Accessibility.** Computer use cannot read or act on controls without the
-  macOS grant. Screen Recording is separate and required for annotation capture,
-  not for app-scoped computer use.
+  macOS Accessibility grant or the Windows UI Automation path. Screen Recording
+  is separate and required for annotation capture, not for app-scoped computer
+  use.
 - **The action log.** Every call, and every verifier review, lands in the durable
   trace.
 
@@ -238,7 +239,7 @@ saves tokens and gates nothing.
 
 - [tools.md](tools.md) — what each tool does, and the harness's own builtins
 - [computer-use.md](computer-use.md) — app grants, background controls and Escape
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 - [harness.md](harness.md) — `emma-cli`, ACP, and the permission channel
 - [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md) — unattended runs
 - [models.md](models.md) — configuring the verifier and advisor routes

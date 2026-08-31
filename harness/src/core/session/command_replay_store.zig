@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const command_output_content = @import("../tooling/command_output_content.zig");
 const io_mod = @import("../shared/io.zig");
 const types = @import("../shared/types.zig");
@@ -59,8 +60,6 @@ const CaptureState = union(enum) {
     consumed,
 };
 
-/// Arena-lived single-owner handoff. The pointer may be copied with a tool
-/// result, but state transitions consume storage at most once.
 pub const Capture = struct {
     inline_limit: usize,
     comparison_limit: usize,
@@ -85,8 +84,6 @@ pub const Capture = struct {
         return capture;
     }
 
-    /// Records bytes only after the downstream callback accepted them.
-    /// Storage failures degrade replay without changing command execution.
     pub fn appendAccepted(
         self: *Capture,
         alloc: Allocator,
@@ -186,7 +183,6 @@ pub const Capture = struct {
         transferred = true;
     }
 
-    /// Closes and synchronizes any spool before the capture leaves tool runtime.
     pub fn seal(self: *Capture, alloc: Allocator) void {
         if (self.sealed) return;
         self.sealed = true;
@@ -230,10 +226,6 @@ pub const Capture = struct {
         return self.comparison_limit;
     }
 
-    /// Returns a canonical comparison view only when accepted payload stays
-    /// within the route's bounded ordinary-result limit. Inline capture still
-    /// never exceeds `inline_limit`; a route may compare a larger private spool
-    /// when its executor can return more bytes in an ordinary exact result.
     pub fn canonicalizeForComparison(
         self: *Capture,
         alloc: Allocator,
@@ -326,8 +318,6 @@ pub const Capture = struct {
         return output;
     }
 
-    /// Stages a durable descriptor in result memory. The capture remains the
-    /// cleanup owner until the caller publishes that memory successfully.
     pub fn retain(
         self: *Capture,
         alloc: Allocator,
@@ -425,7 +415,6 @@ pub const Capture = struct {
         spool.handle = target_handle;
     }
 
-    /// Deletes a capture before result memory is staged. Safe to invoke repeatedly.
     pub fn abort(self: *Capture, alloc: Allocator) void {
         switch (self.state) {
             .buffered => |*buffered| buffered.deinit(alloc),
@@ -445,8 +434,6 @@ pub const Capture = struct {
         self.state = .consumed;
     }
 
-    /// Deletes a capture even when `retain` already staged its descriptor.
-    /// Callers use this to roll back a failed result-memory publication.
     pub fn discard(self: *Capture, alloc: Allocator) void {
         switch (self.state) {
             .retained => |descriptor| {
@@ -460,8 +447,6 @@ pub const Capture = struct {
         }
     }
 
-    /// Releases retained descriptor storage after publication or external
-    /// rollback without deleting the session-owned sidecar.
     pub fn releaseRetained(self: *Capture, alloc: Allocator) void {
         switch (self.state) {
             .retained => |descriptor| {
@@ -512,11 +497,15 @@ fn createSpool(
     capability: *session_child_store.SessionChildCapability,
 ) !OpenSpool {
     var attempt: usize = 0;
+    const process_id = switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        else => @as(u64, @intCast(std.c.getpid())),
+    };
     while (attempt < 8) : (attempt += 1) {
         const handle = try std.fmt.allocPrint(
             alloc,
             "fx-command-replay-{d}-{d}-{d}.bin",
-            .{ std.c.getpid(), io_mod.nanoTimestamp(), attempt },
+            .{ process_id, io_mod.nanoTimestamp(), attempt },
         );
         const file = capability.createExclusiveFile(
             alloc,
@@ -597,9 +586,6 @@ pub const Reader = struct {
         return reader;
     }
 
-    // noinline keeps the comptime-known error returns behind a call
-    // boundary; inlined into a `!Reader` result location they each
-    // materialize a Reader-sized (~8KB) error-union constant.
     noinline fn openInto(
         reader: *Reader,
         alloc: Allocator,
@@ -632,7 +618,6 @@ pub const Reader = struct {
         self.* = undefined;
     }
 
-    /// Returns one owned callback frame; caller frees `payload`.
     pub fn next(self: *Reader, alloc: Allocator) !?Frame {
         if (self.byte_buffer_index != self.byte_buffer_len or self.frame_remaining != 0) {
             return error.ReplayReaderModeConflict;
@@ -666,9 +651,6 @@ pub const Reader = struct {
         return .{ .stream = decoded.stream, .payload = payload };
     }
 
-    /// Returns one validated callback byte without allocating frame payloads.
-    /// The fixed internal page keeps full-transcript replay memory independent
-    /// of callback count and frame size.
     pub fn nextByte(self: *Reader) !?Byte {
         while (true) {
             if (self.byte_buffer_index < self.byte_buffer_len) {
@@ -748,7 +730,7 @@ test "command replay capture spills without losing callback order" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -790,7 +772,7 @@ test "command replay capture spills without losing callback order" {
     );
     try std.testing.expectEqual(
         @as(u32, 0o600),
-        replay_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(replay_stat.permissions) & 0o777,
     );
     var reader = try Reader.open(alloc, &capability, descriptor);
     defer reader.deinit();
@@ -833,7 +815,7 @@ test "command replay reader rejects descriptor and frame corruption" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -919,7 +901,7 @@ test "command replay cleanup removes tentative and retained spools exactly once"
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,

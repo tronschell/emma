@@ -304,7 +304,6 @@ pub const PromptRunResult = struct {
     }
 };
 
-/// Resume selector parsed from emma-cli ask --resume.
 const ResumeTarget = session_store.ResumeTarget;
 
 const AskOptions = struct {
@@ -1235,7 +1234,6 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
 
     var effective_cfg = cfg;
     if (options.system_prompt_override) |sp| {
-        // `--system` outranks the prompt file the resolver would otherwise read.
         effective_cfg.prompt_policy.system_prompt = sp;
         effective_cfg.prompt_policy.system_prompt_fn = null;
     }
@@ -1658,8 +1656,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .history = context_history,
         .root_user_intent_context = root_user_intent_context,
         .grants = &.{},
-        // process_queued_prompt is synchronous here; AskContext keeps the
-        // immutable snapshot allocations alive for the whole call.
         .context_snapshot = ctx.context_snapshot,
         .recovery_checkpoint = recovery_checkpoint,
     };
@@ -1921,9 +1917,6 @@ fn persistUsageCheckpoint(
     );
 }
 
-/// Overwrite session totals with the latest completion usage (same semantics as
-/// interactive `agentReportUsage`). Gateway `input_tokens` is full-prompt
-/// occupancy, not a delta, so overwrite rather than accumulate.
 fn reportUsage(raw_ctx: *anyopaque, usage: types.Usage) void {
     const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx));
     ctx.session_write_mutex.lockUncancelable(io_mod.getIo());
@@ -7425,7 +7418,7 @@ test "saved ask ignores existing legacy task files" {
         tasks_path,
         .{
             .truncate = true,
-            .permissions = std.Io.File.Permissions.fromMode(0o600),
+            .permissions = io_mod.permissionsFromMode(0o600),
         },
     );
     tasks_file.close(io_mod.getIo());

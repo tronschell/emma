@@ -80,7 +80,7 @@ export function MobileSettings({ relay, onRelay, busy }: { relay: string; onRela
     const target = canvas.current;
     if (!pairing || !target) return;
     void toCanvas(target, JSON.stringify(pairing), { width: QR_PIXELS, margin: 2, color: { dark: tone("--bg"), light: tone("--text") } })
-      .catch(() => { setPairing(null); setError("This Mac could not draw the pairing code."); });
+      .catch(() => { setPairing(null); setError("This computer could not draw the pairing code."); });
   }, [pairing]);
 
   const pair = async () => {
@@ -143,7 +143,7 @@ export function MobileSettings({ relay, onRelay, busy }: { relay: string; onRela
         {pairing && <strong className="status-live"><i /> Expires in {left}s</strong>}
         {pairing && <p>Scan this with Emma Mobile.</p>}
         {!ready && !status.paired && <p>Set a relay address above first.</p>}
-        <p>A paired phone sends messages to your threads, answers the tool permission prompts this Mac would otherwise ask you, and runs git — staging, commits, push and pull. Pair only a phone you are holding.</p>
+        <p>A paired phone sends messages to your threads, answers the tool permission prompts this computer would otherwise ask you, and runs git — staging, commits, push and pull. Pair only a phone you are holding.</p>
       </div>
       {pairing
         ? <canvas ref={canvas} role="img" aria-label="Pairing code for Emma Mobile" style={{ justifySelf: "start" }} />

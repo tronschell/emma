@@ -1,6 +1,6 @@
 # Privacy
 
-What leaves this Mac and what does not, subsystem by subsystem. Every row traces
+What leaves this computer and what does not, subsystem by subsystem. Every row traces
 to a file in this repo.
 
 ## Where data goes
@@ -16,18 +16,18 @@ to a file in this repo.
 | Commit-message suggestion | File names and up to 12 000 characters of the diff | The tagger route, when you request a suggested commit message |
 | Autoresearch judge | The eval command's output | The job's own proposer model |
 | Model catalog | Nothing but the HTTP request — no credential, no query | `openrouter.ai` |
-| App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org`, then GitHub release assets; at packaged-app launch and every six hours |
+| App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org` for the public macOS feed, then GitHub release assets; at packaged-app launch and every six hours. Windows publication is pending release-workflow authorization |
 | `web_search` | Your query string, plus a result count on Brave, Tavily and Exa | Your configured provider. `4get.canine.tools` by default |
 | `web_fetch`, page clipping | The URL you or the model named | That site |
-| Dictation | Recorded audio | `127.0.0.1:8080`, or on-device macOS Speech.framework. Never off this Mac |
-| Transcript cleanup | The raw transcript | `127.0.0.1:8081`. Never off this Mac |
+| Dictation | Recorded audio | `127.0.0.1:8080`, or the on-device macOS Speech.framework / Windows SAPI recognizer. Never off this computer |
+| Transcript cleanup | The raw transcript | `127.0.0.1:8081`. Never off this computer |
 | Computer use | Running-app metadata; approved app's accessibility text and action results | The turn's model as tool results; actions execute in the approved app |
 | Annotated screen context | A compressed JPEG | Stays in Electron's main process |
 | Notes you keep | Markdown and attachments | Written into the vault folder **you** chose; the note tagger may also send text to its configured model |
 | Threads and jobs | Markdown | The Rust data root, moved by `EMMA_DATA_DIR` |
 | Traces, plans, memories, artifacts and settings | Markdown and JSON | Electron's `userData` directory; see [data.md](data.md) for the separate roots |
 | Component `fetch` | The widget's request, with approved `{{NAME}}` placeholders filled in from saved variables | The fixed public HTTPS destination shown in the credential-request approval; keyless widgets can fetch without credential approval |
-| Provider keys | Your API keys | Keychain-encrypted on disk, child-process environments, and the configured service as authentication |
+| Provider keys | Your API keys | OS-secure-storage-encrypted on disk, child-process environments, and the configured service as authentication |
 | Browser, MCP servers and coding CLIs | Pages, prompts, tool arguments and credentials used by those integrations | Their configured services; they are not covered by Private routing |
 
 Emma does not configure an analytics service or a crash-report uploader. It does
@@ -120,12 +120,12 @@ behind a line saying they are information, not instructions.
 
 ## Dictation
 
-Every stage runs on this Mac, and main enforces that rather than trusting the
+Every stage runs on this computer, and main enforces that rather than trusting the
 setting.
 
-- **macOS Speech.framework** — [transcribe.m](../desktop/native/transcribe.m) sets
-  `request.requiresOnDeviceRecognition = YES;`, Apple's switch for refusing
-  server-side recognition.
+- **Built-in speech** — macOS uses Speech.framework with
+  `request.requiresOnDeviceRecognition = YES;`; Windows uses its local SAPI
+  recognizer through [transcribe_win.cpp](../desktop/native/transcribe_win.cpp).
 - **A local `llama.cpp` server** — `http://127.0.0.1:8080/v1/audio/transcriptions`.
   Optional cleanup at `http://127.0.0.1:8081/v1/chat/completions`.
 
@@ -170,10 +170,11 @@ image blocks on the turn ([harness.ts](../desktop/main/harness.ts)).
 
 ## Credentials
 
-A key you paste is encrypted through Electron's `safeStorage` (macOS keychain),
+A key you paste is encrypted through Electron's `safeStorage` (the operating
+system's secure credential store),
 base64-encoded, and written to `<userData>/credentials.json` — a `.tmp` file at
 mode `0o600` in a directory created `0o700`, renamed into place
-([credentials.ts](../desktop/main/credentials.ts)). If the keychain is
+([credentials.ts](../desktop/main/credentials.ts)). If secure storage is
 unavailable, `save()` throws rather than settle for something weaker.
 
 `applyToEnv(process.env)` decrypts onto Electron's environment, which `emma-cli`
@@ -181,7 +182,7 @@ inherits. The Rust host inherits it too but reads no key: nothing in Rust makes 
 network request. The credential-list API returns masks, not full keys:
 `{ env, masked }`. `maskSecret` shows the first six and last four characters of a
 long key. Keys are sent to their configured services as authentication; they do
-not remain exclusively on this Mac.
+not remain exclusively on this computer.
 
 Second models store the *name* of an environment variable, never a secret; main
 reads `process.env[settings.credentialEnv]` per call. Same for `web_search`.
@@ -233,7 +234,7 @@ ready; a second launch quits and raises the first window.
   boundaries. The resulting words reach the selected model when you send them.
 - **The annotated capture.** The yellow pen's frame stays in the main process.
   Computer use captures no images, but sends approved app text to the model.
-  Images attached to messages or passed to `vision` do leave this Mac.
+  Images attached to messages or passed to `vision` do leave this computer.
 - **Your notes.** `keep` writes plain Markdown into the vault folder you chose and
   makes no mirror. The note tagger, an explicit tool call, your sync provider or
   backups can still send their contents elsewhere.
@@ -246,7 +247,7 @@ Secondary models, the catalog, update checks, widgets and enabled integrations
 have separate routes. Review those before treating a setup as offline.
 
 **Reset Emma**, in **Settings → Data & privacy**, deletes every thread, artifact,
-plan, connected folder, saved key and setting on this Mac, then restarts Emma
+plan, connected folder, saved key and setting on this computer, then restarts Emma
 empty. The notes in your vault are left where they are — they are your files, in
 your folder. It cannot be undone.
 

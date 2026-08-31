@@ -4,6 +4,10 @@ const debug_trace = @import("../../core/shared/debug_trace.zig");
 const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../../core/shared/windows_paths.zig")
+else
+    struct {};
 
 const Allocator = std.mem.Allocator;
 
@@ -110,9 +114,16 @@ fn displayPath(arena: Allocator, workspace_root: []const u8, absolute_path: []co
 
 fn launch_file(alloc: Allocator, display_path: []const u8, target: []const u8, os_tag: std.Target.Os.Tag, launcher: Launcher) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     var argv: [2][]const u8 = undefined;
+    var windows_path: [32768]u8 = undefined;
     switch (os_tag) {
         .macos => argv = .{ "open", target },
         .linux => argv = .{ "xdg-open", target },
+        .windows => argv = .{ if (comptime builtin.os.tag == .windows)
+            (windows_paths.system32ExecutableInto(&windows_path, "explorer.exe") catch {
+                return .{ .failure = try alloc.dupe(u8, "open_file not supported on this OS") };
+            })
+        else
+            "C:\\Windows\\System32\\explorer.exe", target },
         else => return .{ .failure = try alloc.dupe(u8, "open_file not supported on this OS") },
     }
 
@@ -340,7 +351,7 @@ test "open_file accepts external absolute paths through active workspace resolve
     try std.testing.expectEqualStrings(target, launcher.argv.items[1]);
 }
 
-test "open_file unsupported os does not launch" {
+test "open_file launches Windows Explorer with an argv path" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -354,9 +365,11 @@ test "open_file unsupported os does not launch" {
     var result = try callPathWithMock(alloc, workspace, "notes.txt", .windows, &launcher);
     defer result.deinit(alloc);
 
-    try expectFailureBody(result, "open_file not supported on this OS");
-    try std.testing.expectEqual(@as(usize, 0), launcher.calls);
-    try std.testing.expectEqual(@as(usize, 0), launcher.argv.items.len);
+    try expectSuccessBody(result, "opened notes.txt");
+    try std.testing.expectEqual(@as(usize, 1), launcher.calls);
+    try std.testing.expectEqual(@as(usize, 2), launcher.argv.items.len);
+    try std.testing.expectEqualStrings("C:\\Windows\\System32\\explorer.exe", launcher.argv.items[0]);
+    try std.testing.expectEqualStrings(target, launcher.argv.items[1]);
 }
 
 test "open_file returns failure body for nonzero exit" {

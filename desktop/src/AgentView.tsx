@@ -106,8 +106,8 @@ export default function AgentView({ snapshot, act, busy, openThread, projectName
     <header>
       <div className="agent-head">
         <h2>{tab === "activity" ? "Agent activity" : "What keeps going wrong"}</h2>
-        {tab === "improvement" && <InfoDot>Emma stores a trace of every turn it finishes: each tool call, how long it took, and whether it failed. This page groups the failures from the last {WINDOW_DAYS} days, drafts a change about the ones that repeat, and — once you approve it — runs the next turns half with the change and half without. That live split is a hint, not a measurement: it has no fixed size and it moves with every turn, so it can only tell you whether the change is worth a bench run. Keeping a change takes a finished run on the bench below, against cases and a metric declared before the numbers arrive. Reverting takes nothing — dropping a change never needs proof. Nothing here is applied without you, and nothing leaves this Mac.</InfoDot>}
-        {tab === "activity" && <InfoDot>Everything on this tab is counted from the threads already on this Mac: when they ran, which project they belong to, and which of them spawned subagents. Nothing is uploaded and nothing is asked of a model to draw it.</InfoDot>}
+        {tab === "improvement" && <InfoDot>Emma stores a trace of every turn it finishes: each tool call, how long it took, and whether it failed. This page groups the failures from the last {WINDOW_DAYS} days, drafts a change about the ones that repeat, and — once you approve it — runs the next turns half with the change and half without. That live split is a hint, not a measurement: it has no fixed size and it moves with every turn, so it can only tell you whether the change is worth a bench run. Keeping a change takes a finished run on the bench below, against cases and a metric declared before the numbers arrive. Reverting takes nothing — dropping a change never needs proof. Nothing here is applied without you, and nothing leaves this computer.</InfoDot>}
+        {tab === "activity" && <InfoDot>Everything on this tab is counted from the threads already on this computer: when they ran, which project they belong to, and which of them spawned subagents. Nothing is uploaded and nothing is asked of a model to draw it.</InfoDot>}
       </div>
     </header>
 
@@ -211,7 +211,7 @@ function MemoriesDialog({ close }: { close: () => void }) {
       <header>
         <div>
           <span>{notes ? `${notes.length} ${plural(notes.length, "file")}` : "Reading…"}</span>
-          <h2 id="memories-title">Memories<InfoDot>Emma writes these itself, between conversations, into its own notes directory on this Mac. Every turn is handed what is in them. Nothing else reads them and nothing leaves this Mac.</InfoDot></h2>
+          <h2 id="memories-title">Memories<InfoDot>Emma writes these itself, between conversations, into its own notes directory on this computer. Every turn is handed what is in them. Nothing else reads them and nothing leaves this computer.</InfoDot></h2>
         </div>
         <button type="button" onClick={close} aria-label="Close memories">×</button>
       </header>

@@ -70,9 +70,13 @@ import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type
 import { agentName, editStat, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
 import { MAX_ASK_MS, PROTOCOL_VERSION, relayOrigin, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
+import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
+const WINDOWS_SHUTDOWN_TIMEOUT_MS = 8000;
+
+if (isWindows) app.setName("Emma");
 
 class Host {
   private child: ChildProcessWithoutNullStreams;
@@ -85,7 +89,7 @@ class Host {
   private snapshot: { writes: number; at: number; value: Promise<unknown> } | undefined;
 
   constructor(binary: string) {
-    this.child = spawn(binary, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(binary, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.child.stdout.on("data", (data: Buffer) => {
       try { for (const line of this.lines.push(data)) { if (this.failure) break; this.receive(line); } }
       catch (error) { this.abort(error instanceof Error ? error : new Error("Emma host protocol error")); }
@@ -241,7 +245,7 @@ function namedPath(value: unknown): string | undefined {
 
 function attachProject(threadId: string, directory: string) {
   const resolved = realpathSync(directory);
-  const grant = folders!.add(resolved).find((folder) => folder.path === resolved);
+  const grant = folders!.add(resolved).find((folder) => samePath(folder.path, resolved));
   if (!grant) throw new Error(`Emma could not open ${directory} as a folder`);
   attachFolder(threadId, grant.id);
 }
@@ -255,6 +259,7 @@ function attachFolder(threadId: string, folderId: string) {
 const skillAttachment = new SkillAttachmentStore();
 const harnesses = new Map<string, Harness>();
 const harnessLog: HarnessLogLine[] = [];
+let windowsQuitShutdown: Promise<void> | undefined;
 
 function noteHarnessLog(line: HarnessLogLine) {
   harnessLog.push(line);
@@ -362,15 +367,17 @@ const DEV_BINARIES: Record<string, string> = {
 };
 
 function binary(name: string) {
+  const file = isWindows && !path.extname(name) ? `${name}.exe` : name;
   return app.isPackaged
-    ? path.join(process.resourcesPath, name)
-    : path.join(app.getAppPath(), "..", DEV_BINARIES[name] ?? name);
+    ? path.join(process.resourcesPath, file)
+    : path.join(app.getAppPath(), "..", DEV_BINARIES[name] ? `${DEV_BINARIES[name]}${isWindows ? ".exe" : ""}` : file);
 }
 
 function nativeHelper(name = "emma-option-tap") {
+  const file = isWindows && !path.extname(name) ? `${name}.exe` : name;
   return app.isPackaged
-    ? path.join(process.resourcesPath, name)
-    : path.join(app.getAppPath(), `dist-native/${name}`);
+    ? path.join(process.resourcesPath, file)
+    : path.join(app.getAppPath(), `dist-native/${file}`);
 }
 
 function builtinSkills() {
@@ -389,8 +396,8 @@ function readNotchGeometry() {
 }
 
 function startQuickAskHotkey() {
-  if (process.platform !== "darwin") return;
-  const child = spawn(nativeHelper(), [], { stdio: ["pipe", "pipe", "pipe"] });
+  if (!isMac && !isWindows) return;
+  const child = spawn(nativeHelper(), [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   const lines = new BoundedLines(64);
   hotkeyHelper = child;
   sendHoldKeybinds();
@@ -429,12 +436,13 @@ function applyKeybinds(next: Keybinds): KeybindAction[] {
   const refused: KeybindAction[] = [];
   for (const [action, keybind] of Object.entries(next) as [KeybindAction, Keybind][]) {
     if (!keybind.accelerator) continue;
+    const accelerator = isWindows ? keybind.accelerator.replace(/\bCommand\b/g, "Control") : keybind.accelerator;
     try {
-      const taken = globalShortcut.register(keybind.accelerator, () => runKeybindAction(action));
+      const taken = globalShortcut.register(accelerator, () => runKeybindAction(action));
       if (!taken) throw new Error("already registered");
-      registeredKeybinds.add(keybind.accelerator);
+      registeredKeybinds.add(accelerator);
     } catch (error) {
-      console.error(`Emma: ${keybind.accelerator} is unavailable`, error);
+      console.error(`Emma: ${accelerator} is unavailable`, error);
       refused.push(action);
     }
   }
@@ -442,7 +450,7 @@ function applyKeybinds(next: Keybinds): KeybindAction[] {
 }
 
 function sendHoldKeybinds() {
-  try { hotkeyHelper?.stdin?.write(`${JSON.stringify({ holds: holdBindings(keybinds) })}\n`); }
+  try { hotkeyHelper?.stdin?.write(`${JSON.stringify({ holds: holdBindings(keybinds, process.platform) })}\n`); }
   catch (error) { console.error("Emma: could not send the hold shortcuts to the listener", error); }
 }
 
@@ -454,6 +462,15 @@ function runOverlayCommand(command: string) {
     return;
   }
   toggleOverlay(command);
+}
+
+function pinWindow(window: BrowserWindow) {
+  if (isMac) {
+    window.setAlwaysOnTop(true, "screen-saver");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  } else {
+    window.setAlwaysOnTop(true);
+  }
 }
 
 const floating: Electron.BrowserWindowConstructorOptions = process.platform === "darwin" ? { type: "panel" } : {};
@@ -517,8 +534,7 @@ function openMain() {
     height: 860,
     minWidth: 1040,
     minHeight: 680,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 18, y: 17 },
+    ...(isMac ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 18, y: 17 } } : {}),
     ...(process.platform === "darwin" ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const, backgroundColor: "#00000000" } : {}),
   });
   mainWindow.on("closed", () => (mainWindow = null));
@@ -621,11 +637,13 @@ function toggleOverlay(command?: string) {
   }
   overlayBusy = false;
   closeOverlayWhenIdle = false;
-  overlaySurface = "notch";
+  overlaySurface = isWindows ? "pill" : "notch";
   overlayGrow = 0;
   overlayFront = frontContextNote().catch(() => "");
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  const layout = overlayLayout(display, overlayPreferences, notches.find((item) => item.id === display.id));
+  const pill = isWindows ? pillLayout(display, pillSpot) : undefined;
+  if (pill) pillSpot = { x: pill.x, y: pill.y };
+  const layout = pill ? { bounds: pill, notch: { left: 0, width: 0, height: 0 } } : overlayLayout(display, overlayPreferences, notches.find((item) => item.id === display.id));
   const window = secureWindow({
     ...layout.bounds,
     ...floating,
@@ -642,8 +660,7 @@ function toggleOverlay(command?: string) {
   });
   overlay = window;
   overlayBaseHeight = layout.bounds.height;
-  window.setAlwaysOnTop(true, "screen-saver");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  pinWindow(window);
   window.on("blur", () => { if (!annotating && !capturing) leaveOverlay(window); });
   window.on("closed", () => {
     if (overlay === window) overlay = null;
@@ -652,7 +669,7 @@ function toggleOverlay(command?: string) {
     overlayBusy = false;
     overlayFront = Promise.resolve("");
     closeOverlayWhenIdle = false;
-    overlaySurface = "notch";
+    overlaySurface = isWindows ? "pill" : "notch";
     overlayGrow = 0;
   });
   window.webContents.on("before-input-event", (event, input) => {
@@ -662,7 +679,7 @@ function toggleOverlay(command?: string) {
     }
   });
   closeHotspot();
-  void load(window, "overlay", { notchLeft: String(layout.notch.left), notchWidth: String(layout.notch.width), notchHeight: String(layout.notch.height), ...(command ? { command } : {}) });
+  void load(window, "overlay", { surface: overlaySurface, notchLeft: String(layout.notch.left), notchWidth: String(layout.notch.width), notchHeight: String(layout.notch.height), ...(command ? { command } : {}) });
   if (overlayPreferences.cursorOrbsEnabled && !command) openRadial(display);
 }
 
@@ -684,8 +701,7 @@ function openRadial(display: Electron.Display) {
     roundedCorners: false,
   });
   radial = window;
-  window.setAlwaysOnTop(true, "screen-saver");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  pinWindow(window);
   window.on("closed", () => { if (radial === window) radial = null; });
   void load(window, "radial");
 }
@@ -727,8 +743,7 @@ function openHotspot() {
       roundedCorners: false,
     });
     hotspot = window;
-    window.setAlwaysOnTop(true, "screen-saver");
-    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    pinWindow(window);
     window.setIgnoreMouseEvents(true, { forward: true });
     window.on("closed", () => { if (hotspot === window) hotspot = null; });
     window.webContents.once("did-finish-load", () => {
@@ -781,7 +796,7 @@ function sendScreenContext() {
 }
 
 async function frontApplication(): Promise<FrontApplication | undefined> {
-  if (process.platform !== "darwin") return undefined;
+  if (!isMac && !isWindows) return undefined;
   const source = await frontmostApplication().catch(() => undefined);
   return source?.application && ![app.getName(), "Electron"].includes(source.application) ? source : undefined;
 }
@@ -821,14 +836,21 @@ function pageMayAsk(contents: Electron.WebContents | null, permission: string, k
 const memoryRoot = () => path.join(app.getPath("userData"), "memories");
 
 function setupStatus(): SetupStatus {
-  const mac = process.platform === "darwin";
+  const mac = isMac;
+  const mediaGranted = (type: "microphone" | "screen") => {
+    try {
+      const status = systemPreferences.getMediaAccessStatus(type);
+      return status === "granted" ? true : status === "denied" || status === "restricted" ? false : null;
+    }
+    catch { return null; }
+  };
   const vault = readVault(app.getPath("userData"));
   return {
-    accessibility: !mac || systemPreferences.isTrustedAccessibilityClient(false),
-    screen: !mac || systemPreferences.getMediaAccessStatus("screen") === "granted",
-    microphone: !mac || systemPreferences.getMediaAccessStatus("microphone") === "granted",
-    speech: mac ? null : true,
-    automation: mac ? null : true,
+    accessibility: mac ? systemPreferences.isTrustedAccessibilityClient(false) : isWindows ? null : true,
+    screen: mac ? mediaGranted("screen") : isWindows ? mediaGranted("screen") : null,
+    microphone: mac ? mediaGranted("microphone") : isWindows ? mediaGranted("microphone") : null,
+    speech: isWindows || mac ? null : true,
+    automation: isWindows || mac ? null : true,
     notifications: Notification.isSupported() ? (mac ? null : true) : false,
     files: vaultReady(vault),
     vault,
@@ -1124,7 +1146,7 @@ let pickedVaultRoot: string | undefined;
 function connectVault(vault: VaultChoice) {
   try {
     const root = realpathSync(vault.root);
-    vaultFolderId = folders!.add(root).find((grant) => grant.path === root)?.id;
+    vaultFolderId = folders!.add(root).find((grant) => samePath(grant.path, root))?.id;
   } catch (error) {
     console.error("Emma: could not connect the vault folder", error);
   }
@@ -1140,7 +1162,7 @@ const obsidianVaults = (): VaultChoice[] =>
 function noteInVault(vault: VaultChoice, value: unknown): string {
   const root = noteFolder(vault);
   const full = path.resolve(root, boundedCapabilityId(value, "Note"));
-  if (full !== root && !full.startsWith(root + path.sep)) throw new Error("That note is not in your vault.");
+  if (!pathInside(root, full)) throw new Error("That note is not in your vault.");
   return path.relative(root, full);
 }
 
@@ -1290,7 +1312,7 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
         const installed = await clis.installed();
         const available = installed.length
           ? installed.map((item) => `${item.id} — ${item.label} at ${item.path}`).join("\n")
-          : "None of the CLIs Emma knows are installed on this Mac.";
+          : "None of the CLIs Emma knows are installed on this computer.";
         return `Installed CLIs:\n${available}\n\nRuns:\n${describeRuns(clis.list())}`;
       }
       if (args.stop) {
@@ -1357,13 +1379,13 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       if (!match) throw new Error(`There is no tool called "${args.tool}". ${listing}`);
       const attached = threadFolder(turn.threadId);
       const cwd = attached ? folders!.directory(attached) : path.dirname(match.run);
-      return await runCommand(cwd, `${shellQuoted(match.run)} ${shellQuoted(args.input ?? "")}`);
+      return await runWrittenTool(cwd, match.run, args.input ?? "");
     }
     case "memory":
       return await runMemoryCommand(memoryRoot(), args.command);
     case "vision": {
       const image = args.url ? publicUrl(args.url)?.href : folderImage(turn.threadId, args.folder, args.path!);
-      if (!image) throw new Error("That is not a public image URL. Use a path in a connected folder for a file on this Mac.");
+      if (!image) throw new Error("That is not a public image URL. Use a path in a connected folder for a file on this computer.");
       return await look(toolSettings.vision, image, args.question);
     }
     case "secret": {
@@ -1623,18 +1645,65 @@ async function componentTool(args: Extract<ToolArgs, { name: "component" }>, thr
 
 function runCommand(cwd: string, command: string, timeoutMs = MAX_COMMAND_MS): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-lc", command], { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: true, windowsHide: true });
     let output = "";
     const collect = (data: Buffer) => { if (output.length < MAX_COMMAND_OUTPUT) output += String(data); };
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const timer = setTimeout(() => { if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL"); }, timeoutMs);
     child.once("error", (error) => { clearTimeout(timer); resolve(`That command could not start: ${error.message}`); });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       const body = output.slice(0, MAX_COMMAND_OUTPUT).trim() || "(no output)";
       if (signal) return resolve(`${body}\n[killed after ${timeoutMs / 1000}s]`);
       resolve(code === 0 ? body : `${body}\n[exit ${code}]`);
+    });
+  });
+}
+
+async function runWrittenTool(cwd: string, file: string, input: string): Promise<string> {
+  if (!isWindows) return runCommand(cwd, `${shellQuoted(file)} ${shellQuoted(input)}`);
+  const first = readFileSync(file, "utf8").split(/\r?\n/, 1)[0] ?? "";
+  const interpreter = /^#!\s*(?:\/usr\/bin\/env\s+)?([^\s]+)/.exec(first)?.[1]?.toLowerCase().replace(/\.exe$/, "");
+  if (!interpreter) throw new Error("That tool has no supported interpreter.");
+  const choices = interpreter === "node" ? ["node.exe", "node"]
+    : interpreter === "python" || interpreter === "python3" ? ["py.exe", "python.exe", "python"]
+    : interpreter === "powershell" || interpreter === "pwsh" ? ["pwsh.exe", "powershell.exe"]
+    : interpreter === "bash" || interpreter === "sh" ? ["bash.exe", "sh.exe"]
+    : [];
+  if (!choices.length) throw new Error(`Windows cannot run tools written for ${interpreter}. Use node, python, powershell, or bash.`);
+  let binary: string | null = null;
+  for (const choice of choices) {
+    binary = await findExecutable(choice);
+    if (binary) break;
+  }
+  if (!binary) throw new Error(`Windows cannot find the ${interpreter} interpreter for that tool.`);
+  const args = interpreter === "python" || interpreter === "python3"
+    ? [path.basename(binary).toLowerCase() === "py.exe" ? "-3" : "", file, input].filter(Boolean)
+    : interpreter === "powershell" || interpreter === "pwsh"
+      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file, input]
+      : [file, input];
+  return runDirectCommand(cwd, binary, args);
+}
+
+function runDirectCommand(cwd: string, binary: string, args: string[], timeoutMs = MAX_COMMAND_MS, raw = false, commandEnv: NodeJS.ProcessEnv = process.env): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawnCommand(binary, args, { cwd, env: commandEnv, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let output = "";
+    let stopped = false;
+    const collect = (data: Buffer) => { if (output.length < MAX_COMMAND_OUTPUT) output += String(data); };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    const timer = setTimeout(() => {
+      stopped = true;
+      if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false);
+    }, timeoutMs);
+    timer.unref();
+    child.once("error", (error) => { clearTimeout(timer); resolve(`That tool could not start: ${error.message}`); });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      const body = output.slice(0, MAX_COMMAND_OUTPUT).trim() || "(no output)";
+      resolve(raw ? output.slice(0, MAX_COMMAND_OUTPUT).trim() : stopped ? `${body}\n[killed after ${timeoutMs / 1000}s]` : code === 0 ? body : `${body}\n[exit ${code}]`);
     });
   });
 }
@@ -1791,10 +1860,10 @@ function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | und
   if (call.kind !== "edit") return;
   const relative = call.filePath;
   if (typeof relative !== "string" || !relative || relative.includes("\0") || escapesRoot(cwd, relative)) return;
-  const grant = folders!.list().find((folder) => folder.path === cwd);
+  const grant = folders!.list().find((folder) => samePath(folder.path, cwd));
   if (!grant) return;
   const absolute = path.resolve(cwd, relative);
-  if (absolute !== cwd && !absolute.startsWith(cwd + path.sep)) return;
+  if (!pathInside(cwd, absolute)) return;
   const read = () => { try { return readFileSync(absolute, "utf8"); } catch { return null; } };
 
   const key = `${call.threadId}:${call.toolCallId}`;
@@ -1861,9 +1930,6 @@ function whyUnavailable(threadId: string, name: string, called = name): string |
   const needs = toolNeeds(name);
   if (needs === "folders" && threadFolderIds(threadId).length === 0) {
     return `${called} needs a connected folder. Ask the user to connect one — the folder button in Emma's sidebar opens the picker.`;
-  }
-  if (needs === "computer" && process.platform !== "darwin") {
-    return `${called} controls this Mac, and this is not a Mac.`;
   }
   return undefined;
 }
@@ -1997,7 +2063,7 @@ function attachedImagePaths(value: unknown): string[] {
 const WAKE_GRACE_MS = 45_000;
 const harnessRuns = new Map<string, Harness>();
 const sleepWedged = new Set<string>();
-const SLEEP_CONTINUATION = "This Mac went to sleep mid-turn and the connection to the model was lost. Carry on from the last step you finished.";
+const SLEEP_CONTINUATION = "This computer went to sleep mid-turn and the connection to the model was lost. Carry on from the last step you finished.";
 const pausedRecovery = new Set<string>();
 const CRASH_CONTINUATION = "The harness process died mid-turn and has been restarted. Carry on from the last step you finished, and check what is already on disk before redoing any of it.";
 
@@ -2690,8 +2756,7 @@ function openRunBanner(threadId: string, task: string) {
     skipTaskbar: true,
   });
   runBanner = window;
-  window.setAlwaysOnTop(true, "screen-saver");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  pinWindow(window);
   window.on("closed", () => { if (runBanner === window) runBanner = null; });
   void load(window, "run", { threadId, task: task.slice(0, 200), maxSteps: String(MAX_RUN_STEPS) });
   const cursor = secureWindow({
@@ -2751,8 +2816,7 @@ function startAnnotation() {
     skipTaskbar: true,
   });
   annotation = window;
-  window.setAlwaysOnTop(true, "screen-saver");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  pinWindow(window);
   window.on("closed", () => {
     if (annotation === window) annotation = null;
     annotating = false;
@@ -2780,8 +2844,22 @@ protocol.registerSchemesAsPrivileged([
 
 app.commandLine.appendSwitch("remote-debugging-port", "0");
 
-const primaryInstance = app.requestSingleInstanceLock();
-if (!primaryInstance) app.quit();
+if (isWindows) app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+
+function handleSquirrelEvent(): boolean {
+  if (!isWindows) return false;
+  const event = readSquirrelEvent();
+  if (!event) return false;
+  const update = path.resolve(path.dirname(process.execPath), "..", "Update.exe");
+  if (event === "install" || event === "updated") spawn(update, ["--createShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  if (event === "uninstall") spawn(update, ["--removeShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  app.quit();
+  return true;
+}
+
+const squirrelHandled = handleSquirrelEvent();
+const primaryInstance = squirrelHandled ? false : app.requestSingleInstanceLock();
+if (!primaryInstance && !squirrelHandled) app.quit();
 else app.on("second-instance", () => { void app.whenReady().then(openMain); });
 
 if (primaryInstance) app.whenReady().then(() => {
@@ -2892,6 +2970,11 @@ if (primaryInstance) app.whenReady().then(() => {
     turn: (request) => driveTurn(request),
     stopTurn: (threadId) => agents!.stop(threadId),
     run: runCommand,
+    runGit: async (cwd, args) => {
+      const result = await runGit(cwd, args);
+      if (!result.ok) throw new Error(result.output || "git failed");
+      return result.output;
+    },
     attachProject,
     resolve: resolveMentions,
     usage: (threadId) => {
@@ -3279,7 +3362,7 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     const found = namedPath(value);
     if (!found) return null;
-    const grant = folders!.list().find((folder) => found === folder.path || found.startsWith(folder.path + path.sep));
+    const grant = folders!.list().find((folder) => pathInside(folder.path, found));
     const attached = !grant && attachments!.holds(found);
     if (!grant && !attached) return { path: found, text: null };
     try {
@@ -3537,16 +3620,27 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:reset-data", (event) => {
     mainWindowSender(event);
+    const candidates = resetDataRoots(app.getPath("userData"), process.env.EMMA_DATA_DIR, process.platform, homedir(), process.env);
+    const roots = candidates.map((root) => {
+      const resolved = canonicalResetPath(root);
+      if (!samePath(root, resolved)) throw new Error(`Reset blocked: refusing to delete unsafe Emma data path "${root}".`);
+      try {
+        if (!statSync(resolved).isDirectory()) throw new Error(`Reset blocked: refusing to delete unsafe Emma data path "${root}".`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      return resolved;
+    });
     host?.close();
     host = undefined;
-    for (const root of [process.env.EMMA_DATA_DIR || path.join(homedir(), "Library/Application Support/Emma"), app.getPath("userData")]) rmSync(root, { recursive: true, force: true });
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
     app.relaunch();
     app.exit(0);
   });
   ipcMain.handle("emma:open-privacy-settings", async (event, value: unknown) => {
     mainWindowSender(event);
-    const url = privacySettingsUrl(value);
-    const mac = process.platform === "darwin";
+    const url = privacySettingsUrl(value, process.platform);
+    const mac = isMac;
     if (value === "microphone" && mac && await systemPreferences.askForMediaAccess("microphone")) return;
     if (value === "accessibility" && mac) systemPreferences.isTrustedAccessibilityClient(true);
     void shell.openExternal(url);
@@ -3704,7 +3798,7 @@ if (primaryInstance) app.whenReady().then(() => {
     const editorId = boundedCapabilityId(request.editorId, "Editor");
     if (request.folderId === undefined) {
       const file = namedPath(request.path);
-      const grant = file && folders!.list().some((folder) => file === folder.path || file.startsWith(folder.path + path.sep));
+      const grant = file && folders!.list().some((folder) => pathInside(folder.path, file));
       if (!file || (!grant && !attachments!.holds(file))) throw new Error("That file is not open to Emma.");
       await openInEditor(editorId, file);
       return;
@@ -3731,7 +3825,7 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error("Worktree name is invalid");
     const target = realpathSync(request.on === true ? await addWorktree(cwd, name) : await mainCheckout(cwd));
     const list = folders!.add(target);
-    const grant = list.find((folder) => folder.path === target);
+    const grant = list.find((folder) => samePath(folder.path, target));
     if (!grant) throw new Error("That folder could not be connected.");
     return { folders: list, folderId: grant.id };
   });
@@ -3958,7 +4052,7 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:set-keybinds", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || !trustedSender(event.senderFrame.url, app.getAppPath(), process.env.EMMA_DEV_SERVER_URL)) throw new Error("Keybind sender is not allowed");
-    return applyKeybinds(validateKeybinds(value));
+    return applyKeybinds(validateKeybinds(value, process.platform));
   });
   ipcMain.on("emma:quick-command", (event, value: unknown) => {
     const window = radial;
@@ -4058,18 +4152,24 @@ if (primaryInstance) app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
-app.on("will-quit", () => {
+app.on("will-quit", (event) => {
   bridge?.stop();
   globalShortcut.unregisterAll();
   clearTimeout(hotspotTimer);
   hotkeyHelper?.kill();
   computerRuntime?.abort("app quit");
-  background.stopAll();
-  clis.stopAll();
+  const processShutdown = [background.stopAll(), clis.stopAll(), terminals.stopAll()];
   browsers.stopAll();
-  terminals.stopAll();
   skillAttachment.clearAll();
-  for (const client of harnesses.values()) client.close();
+  const harnessShutdown = [...harnesses.values()].map((client) => client.close());
   harnesses.clear();
   host?.close();
+  if (isWindows) {
+    event.preventDefault();
+    if (!windowsQuitShutdown) {
+      const shutdown = Promise.allSettled([...processShutdown, ...harnessShutdown]);
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, WINDOWS_SHUTDOWN_TIMEOUT_MS));
+      windowsQuitShutdown = Promise.race([shutdown, timeout]).then(() => app.exit(0));
+    }
+  }
 });

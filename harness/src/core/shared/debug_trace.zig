@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("io.zig");
 const profile_paths = @import("profile_paths.zig");
 
@@ -81,8 +82,6 @@ pub fn eventf(scope: []const u8, event: []const u8, ctx: TraceContext, comptime 
     line.end();
 }
 
-// Keep generic trace wrappers small by centralizing line assembly here.
-// Failed lines accept remaining writes but emit nothing.
 const TraceLine = struct {
     out: std.Io.Writer.Allocating,
     failed: bool,
@@ -451,6 +450,11 @@ fn defaultLogPathForHome(alloc: Allocator, home: []const u8) ![]u8 {
 }
 
 fn fallbackLogPathForMillis(alloc: Allocator, millis: i64) ![]u8 {
+    if (comptime builtin.os.tag == .windows) {
+        const root = try io_mod.runtimeTempPathAlloc(alloc);
+        defer alloc.free(root);
+        return std.fmt.allocPrint(alloc, "{s}\\fx-trace-{d}.log", .{ root, millis });
+    }
     return std.fmt.allocPrint(alloc, "/tmp/fx-trace-{d}.log", .{millis});
 }
 
@@ -511,7 +515,11 @@ test "fallback default log path uses tmp trace path" {
     const alloc = std.testing.allocator;
     const path = try fallbackLogPathForMillis(alloc, 12345);
     defer alloc.free(path);
-    try std.testing.expectEqualStrings("/tmp/fx-trace-12345.log", path);
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expect(std.mem.endsWith(u8, path, "\\fx-trace-12345.log"));
+    } else {
+        try std.testing.expectEqualStrings("/tmp/fx-trace-12345.log", path);
+    }
 }
 
 test "trace logger writes configured file" {

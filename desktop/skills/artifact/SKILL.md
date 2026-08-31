@@ -115,8 +115,7 @@ Which means, concretely:
   `<link>` stylesheet. They fail silently and the page renders unstyled.
   Everything is inline: one `<style>`, one `<script>`.
 - **No webfonts.** `font-src data:` — Geist, Inter and the rest are not there.
-  Use the system stack; on this machine that is SF, which is the right
-  neutral anyway.
+  Use the system UI font stack.
 - **No images off the network.** `img-src data:` only. Draw with inline SVG
   instead of reaching for an image.
 - **No fetch, no storage.** Opaque origin: `localStorage` throws. For an `html`

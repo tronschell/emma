@@ -1,6 +1,6 @@
 # Mobile
 
-A paired iPhone drives the same threads this Mac does: it sends messages, reads
+A paired iPhone drives the same threads this computer does: it sends messages, reads
 the live run, answers the tool permission prompts Emma would otherwise put in
 front of you, and runs git. The phone app is a separate repository —
 [tronschell/emma-mobile](https://github.com/tronschell/emma-mobile) — and it
@@ -36,7 +36,7 @@ empty on a fresh install: your phone traffic goes through your Cloudflare
 account and nobody else's.
 
 **What the relay can see.** Ciphertext only. Every frame is sealed end to end by
-[`frames.ts`](../desktop/main/frames.ts) before it leaves the Mac, and the
+[`frames.ts`](../desktop/main/frames.ts) before it leaves the computer, and the
 Worker holds no key that opens one. What it does see, and what you should treat
 as visible to Cloudflare: the room id in the request path, the SHA-256 auth
 token derived from the pairing key, and the size and timing of each frame.
@@ -76,7 +76,7 @@ a TestFlight build would need.
 
 ## Pairing
 
-**Settings → Mobile → Pair a phone** on the Mac, then **Pair** in Emma Mobile
+**Settings → Mobile → Pair a phone** on the computer, then **Pair** in Emma Mobile
 and hold the camera over the code.
 
 What happens behind the sheet, in [`bridge.ts`](../desktop/main/bridge.ts):
@@ -85,8 +85,8 @@ What happens behind the sheet, in [`bridge.ts`](../desktop/main/bridge.ts):
 2. Emma opens the relay socket and **claims the room** — the first connection to
    reach a room owns it, so the QR is drawn only after the claim succeeds. A
    room-id guesser is never first. If the claim does not land in ten seconds the
-   sheet fails with `This Mac could not reach the pairing relay.`
-3. The QR is drawn. It carries the relay address, the room, the key, this Mac's
+   sheet fails with `This computer could not reach the pairing relay.`
+3. The QR is drawn. It carries the relay address, the room, the key, this computer's
    name, and an expiry two minutes out.
 4. The phone scans it, connects as `?role=phone`, and sends its handshake.
 5. The first sealed frame from the phone is what commits the pairing to disk.
@@ -109,13 +109,13 @@ never holds the process open.
 Both ends send a 16-byte hello and derive one session digest,
 `sha256(macHello ‖ phoneHello)`, which is the AES-GCM associated data for every
 frame of that connection and the point from which the replay counters run. The
-Mac re-randomises its hello on every socket it opens, which is what kills a
+desktop side re-randomises its hello on every socket it opens, which is what kills a
 frame captured on an earlier connection.
 
-Within one connection the Mac still has to accept a second handshake: a phone
+Within one connection the desktop side still has to accept a second handshake: a phone
 that goes out of range or is backgrounded rejoins with a fresh hello while the
-Mac's socket is still open, and refusing it would leave the bridge dead until
-the Mac's own socket cycled. So the handshake is open to anything that can write
+desktop socket is still open, and refusing it would leave the bridge dead until
+the desktop's own socket cycled. So the handshake is open to anything that can write
 into the relay room, and a handshake resets the replay counters.
 
 `FrameCodec` therefore records the digest of every session under which a frame
@@ -124,14 +124,14 @@ them. A genuine rejoin carries a hello the phone has just randomised, so its
 session is new and it is heard. A replay of a captured hello necessarily
 reproduces a session that already carried traffic, so it is refused and the
 frames captured under it stay shut — including the case where the attacker
-first sends junk to move the Mac off the session it is on. Only sessions that
+first sends junk to move the desktop side off the session it is on. Only sessions that
 carried traffic are remembered, so greeting the bridge with junk costs no
 memory, and the set is cleared on every `restart()`.
 
-Handshakes are otherwise unauthenticated work, so the Mac answers each one with
+Handshakes are otherwise unauthenticated work, so the desktop side answers each one with
 its hello but pushes an unsolicited live state at most once a second. A phone
 that greets in a quiet moment still gets its snapshot; a flood of greetings
-cannot make the Mac serialise and seal the agent list over and over.
+cannot make the desktop side serialise and seal the agent list over and over.
 
 ## What a paired phone can do
 
@@ -139,11 +139,11 @@ cannot make the Mac serialise and seal the agent list over and over.
 |---|---|
 | Threads | Read, create, rename, archive, send a message, steer or stop a run |
 | Live | The running agents, their steps, token counts and traces, streamed |
-| Permissions | Every ask Emma would show on the Mac, answerable from the phone |
+| Permissions | Every ask Emma would show on the computer, answerable from the phone |
 | Git | Status, stage, commit, push, pull in your attached folders |
 | Models | List and switch the model or permission mode for a thread |
 
-An ask sent to the phone is still shown on the Mac, and whichever end answers
+An ask sent to the phone is still shown on the computer, and whichever end answers
 first wins. Asks expire after ten minutes either way.
 
 ## Unpairing
@@ -155,9 +155,10 @@ key, so a phone that was unpaired while offline can never reconnect.
 
 ## On disk
 
-`mobile-peer.json` in `userData` holds the room, the relay address, this Mac's
-name, and the pairing key **encrypted with the macOS keychain** through
-`safeStorage`. Emma refuses to pair at all when the keychain is unavailable
+`mobile-peer.json` in `userData` holds the room, the relay address, this
+computer's name, and the pairing key **encrypted with the operating system's
+secure credential store** through
+`safeStorage`. Emma refuses to pair at all when secure storage is unavailable
 rather than writing the key in plain text, and a record whose key does not
 decrypt, or whose relay is not a valid `wss://` origin, loads as no pairing at
 all.

@@ -146,7 +146,8 @@ tokens the way the composer would, then runs an ordinary turn. At the end,
 `after` this job.
 
 **Jobs run only while Emma is open.** The tick is a thread inside the running
-app: nothing is installed in `launchd`, nothing wakes the Mac. Miss four Mondays
+app: nothing is installed in the operating system scheduler, nothing wakes the
+computer. Miss four Mondays
 and you get **one** run when Emma next starts — a past-due `nextRunAt` fires once
 and is rebooked from now.
 
@@ -159,7 +160,7 @@ is special about it except the `scheduledJobId` tag.
 - On `ask` and `acceptEdits` a gated tool (`run_tool`, `cli`, `computer`,
   `browser`, `install_mcp`, `workflow`, `autoresearch`, plus the harness's own
   file mutations, which `acceptEdits` lets through) still raises the dialog in
-  the main window. Answer it if you are at the Mac. Unanswered it times out after
+  the main window. Answer it if you are at the computer. Unanswered it times out after
   `MAX_ASK_MS` (10 minutes) and counts as a refusal, and the job sits on that
   step until then.
 - A harness tool call that reaches outside the connected folder is refused in
@@ -228,7 +229,7 @@ On disk each job is one Markdown file with front matter
 
 - [permissions.md](permissions.md) — the four modes; a job may be saved as three of them
 - [tools.md](tools.md) — the `workflow` tool and everything else a job can call
-- [computer-use.md](computer-use.md) — what an unattended run can do to the Mac
+- [computer-use.md](computer-use.md) — what an unattended run can do to the computer
 - [autoresearch.md](autoresearch.md) — the other automation loop, no clock involved
 - [data.md](data.md) — where jobs, threads and outputs live
 - [troubleshooting.md](troubleshooting.md) — when a job did not fire

@@ -3,16 +3,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { installedCapabilitySources } from "./marketplace";
+import { findExecutable, isWindows, pathInside } from "./platform";
 
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_SKILL_BYTES = 64 * 1024;
 const MAX_SKILL_ROOTS = 16;
 const MAX_SKILLS_PER_ROOT = 128;
-/* Every caller asks for 64 — the skills page, the schedule form, the tool-target
-   list and mention resolution. This was 32, and main's IPC guard spelled the
-   same ceiling as a literal, so all four threw instead of returning a short
-   list. Exported now, so the guard reads the bound rather than a copy of it. */
 export const MAX_SKILL_RESULTS = 64;
 const MAX_TOOL_BYTES = 64 * 1024;
 const MAX_TOOL_DESCRIPTION_BYTES = 1024;
@@ -101,14 +98,10 @@ export function learnedSkillRoot(userData: string) {
   return path.join(userData, "skills");
 }
 
-/** The one MCP config file Emma owns and writes, alongside the ones she only reads. */
 export function learnedMcpFile(userData: string) {
   return path.join(userData, "mcp.json");
 }
 
-/// Emma's own skills and MCP servers are always readable. The source is implicit
-/// because `saveImportManifest` rewrites imports.json from the selection alone, so
-/// a persisted entry would be dropped on the next re-import.
 function withEmmaSource(userData: string, manifest: ImportManifest): ImportManifest {
   return {
     version: 1,
@@ -127,8 +120,6 @@ async function loadManifest(userData: string) {
     return await withPluginSources(userData, withEmmaSource(userData, parseManifest(JSON.parse(text))));
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return await withPluginSources(userData, withEmmaSource(userData, { version: 1, sources: [] }));
-    // Every skill and every / entry disappears when this file cannot be read, so the
-    // message has to say which file and how to rebuild it.
     throw new Error("Emma's imported-skill list (imports.json) could not be read — run /import again to rebuild it.", { cause: error });
   }
 }
@@ -138,16 +129,14 @@ export function learnedSkillSlug(value: unknown) {
   return value;
 }
 
-/// Writes one learned skill as `<userData>/skills/<slug>/SKILL.md`. Rewriting an
-/// existing slug is how the agent corrects a lesson it got wrong.
 export async function writeLearnedSkill(userData: string, name: unknown, instructions: unknown) {
   const slug = learnedSkillSlug(name);
   const content = boundedString(instructions, MAX_SKILL_BYTES, "Skill content");
   if (!content.trim()) throw new Error("Skill content is invalid");
   const root = learnedSkillRoot(userData);
   const directory = path.join(root, slug);
-  let existing: string[] = [];
-  try { existing = (await readdir(root)).slice(0, MAX_SKILLS_PER_ROOT + 1); } catch { /* first skill creates the root */ }
+  let existing: string[];
+  try { existing = (await readdir(root)).slice(0, MAX_SKILLS_PER_ROOT + 1); } catch { existing = []; }
   if (!existing.includes(slug) && existing.length >= MAX_SKILLS_PER_ROOT) throw new Error("Emma already holds the maximum number of learned skills");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = path.join(directory, `.SKILL.md.${randomUUID()}.tmp`);
@@ -163,35 +152,24 @@ export async function writeLearnedSkill(userData: string, name: unknown, instruc
 
 export type EmmaTool = { name: string; description: string; run: string };
 
-/// The tools Emma writes for herself, one directory each beside the skills she
-/// writes: `run` is the executable, `about.txt` is the line she reads when she
-/// lists them. A skill is a lesson and an MCP server is someone else's program;
-/// this is the third case — a script of her own, kept between threads.
 export function emmaToolRoot(userData: string) {
   return path.join(userData, "tools");
 }
 
-/// Writes one tool. Rewriting an existing slug replaces it, which is how a tool
-/// that turned out wrong gets fixed — the same as re-writing a skill.
 export async function writeEmmaTool(userData: string, name: unknown, description: unknown, code: unknown): Promise<EmmaTool> {
   const slug = learnedSkillSlug(name);
   const about = boundedString(description, MAX_TOOL_DESCRIPTION_BYTES, "Tool description");
   const body = boundedString(code, MAX_TOOL_BYTES, "Tool code");
-  // Emma's own loop runs this file directly rather than through a shell, so the
-  // interpreter has to be in the file. Refused here, where the message still
-  // reaches the model, rather than as an exec failure later.
   if (!body.startsWith("#!")) throw new Error("Tool code must start with a #! line naming its interpreter");
   const root = emmaToolRoot(userData);
-  let existing: string[] = [];
-  try { existing = (await readdir(root)).slice(0, MAX_EMMA_TOOLS + 1); } catch { /* the first tool creates the root */ }
+  let existing: string[];
+  try { existing = (await readdir(root)).slice(0, MAX_EMMA_TOOLS + 1); } catch { existing = []; }
   if (!existing.includes(slug) && existing.length >= MAX_EMMA_TOOLS) throw new Error("Emma already holds the maximum number of tools");
   const directory = path.join(root, slug);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = path.join(directory, `.run.${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, body, { encoding: "utf8", mode: 0o700 });
-    // Rename rather than write in place: a tool being rewritten while an earlier
-    // call still has it open must not become half a script mid-run.
     await rename(temporary, path.join(directory, "run"));
   } catch (error) {
     await rm(temporary, { force: true });
@@ -201,8 +179,6 @@ export async function writeEmmaTool(userData: string, name: unknown, description
   return { name: slug, description: about, run: path.join(directory, "run") };
 }
 
-/// Every tool Emma has written, with the description she gave it. A directory
-/// missing its `about.txt` is half-written, not an error worth failing the list.
 export async function listEmmaTools(userData: string): Promise<EmmaTool[]> {
   const root = emmaToolRoot(userData);
   let entries: string[];
@@ -212,18 +188,11 @@ export async function listEmmaTools(userData: string): Promise<EmmaTool[]> {
     try {
       const description = await readBounded(path.join(root, name, "about.txt"), MAX_TOOL_DESCRIPTION_BYTES);
       tools.push({ name, description, run: path.join(root, name, "run") });
-    } catch { /* not a tool directory */ }
+    } catch { continue; }
   }
   return tools;
 }
 
-/// The skills Emma ships with, copied into her own root at every launch so they
-/// are there before any import and always say what this build says. Rewritten
-/// rather than merged: a bundled skill is the app's, not a lesson to preserve.
-/// The harness reads its own `$HOME/.fx/skills`, so it gets a copy too.
-///
-/// A name in `preserve` is the exception — one the user is meant to tailor — so
-/// their copy stands and the harness is mirrored from theirs, not from the bundle.
 export async function seedBuiltinSkills(builtinRoot: string, userData: string, harnessHome: string, preserve: readonly string[] = []) {
   let names: string[];
   try { names = (await readdir(builtinRoot)).slice(0, MAX_SKILLS_PER_ROOT); } catch { return []; }
@@ -350,7 +319,7 @@ export async function loadImportedSkill(userData: string, id: string) {
   if (!skill) throw new Error("That skill is no longer installed — run /import again to bring it back.");
   const root = await realpath(skill.root);
   const directory = await realpath(path.join(skill.root, skill.name));
-  if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Selected skill is outside its imported root");
+  if (!pathInside(root, directory)) throw new Error("Selected skill is outside its imported root");
   const instructions = await readBounded(path.join(directory, "SKILL.md"), MAX_SKILL_BYTES);
   if (!instructions.trim()) throw new Error("Selected skill is empty");
   return { ...toSkillMetadata(skill), instructions };
@@ -533,22 +502,13 @@ export function parseMcpConfig(text: string, fileName = "config.json", source = 
 
 export type McpServerDefinition = { name: string; command: string; args: string[]; env: Record<string, string> };
 
-/**
- * Writes one server into `<userData>/mcp.json`, the only MCP config Emma owns.
- * `enumerateMcpServers` re-reads every config on each call, so an entry written
- * here is listable immediately — no relaunch, and no import step.
- *
- * Rewriting an existing name replaces it, which is how a wrong command gets
- * fixed. The file is parsed back before it lands, so an entry the enumerator
- * would reject can never be written and leave an invisible server behind.
- */
 export async function writeLearnedMcpServer(userData: string, server: McpServerDefinition) {
   const file = learnedMcpFile(userData);
   let servers: Record<string, unknown> = {};
   try {
     const existing: unknown = JSON.parse(await readBounded(file, MAX_CONFIG_BYTES));
     if (existing && typeof existing === "object" && !Array.isArray(existing)) servers = { ...configRoots(existing as Record<string, unknown>) };
-  } catch { /* a missing or corrupt file is replaced by the one being written */ }
+  } catch { servers = {}; }
   servers[server.name] = { command: server.command, args: server.args, env: server.env };
   const text = `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
   const written = parseMcpConfig(text, "mcp.json", "emma", 0).find((candidate) => candidate.name === server.name);
@@ -572,7 +532,7 @@ async function enumerateMcpServers(manifest: ImportManifest) {
       try {
         const parsed = parseMcpConfig(await readBounded(file, MAX_CONFIG_BYTES), path.basename(file), source.id, fileIndex);
         servers.push(...parsed);
-      } catch { /* invalid imported config stays invisible and never reaches the renderer */ }
+      } catch { continue; }
       if (servers.length > MAX_MCP_SERVERS) return servers.slice(0, MAX_MCP_SERVERS);
     }
   }
@@ -603,31 +563,23 @@ export async function listImportedMcpServers(userData: string) {
   return (await enumerateMcpServers(await loadManifest(userData))).map(serverMetadata);
 }
 
-/**
- * The same servers, in the shape the harness's `session/new` wants them.
- *
- * Three differences from Emma's own record, all of which the harness enforces:
- * a stdio server carries no `type` at all — the field means `http` or `sse` and
- * nothing else, so sending `"stdio"` failed every `session/new` that had a
- * server in it — the command must be absolute, and the environment is a list of
- * pairs rather than an object.
- *
- * `PATH` and `HOME` ride along whenever the server sets anything of its own,
- * because the harness hands a non-empty list to the child as its whole
- * environment rather than merging it: a server with one API key configured
- * would otherwise spawn with no `PATH` and fail to find its own interpreter.
- *
- * A server whose command cannot be resolved is dropped rather than sent, since
- * the harness fails the whole `session/new` on one bad entry and taking the
- * thread down over a stale config is worse than losing that one server.
- */
 export async function harnessMcpServers(userData: string) {
   const servers = await enumerateMcpServers(await loadManifest(userData));
   const resolved = await Promise.all(servers.map(async (server) => {
     const command = await absoluteCommand(server.command);
     if (!command) return undefined;
     const env = Object.entries(server.env);
-    const inherited = env.length === 0 ? [] : Object.entries({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" });
+    const inherited = env.length === 0 ? [] : Object.entries({
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      ...(isWindows ? {
+        USERPROFILE: process.env.USERPROFILE ?? "",
+        APPDATA: process.env.APPDATA ?? "",
+        LOCALAPPDATA: process.env.LOCALAPPDATA ?? "",
+        ComSpec: process.env.ComSpec ?? "",
+        PATHEXT: process.env.PATHEXT ?? "",
+      } : {}),
+    });
     return {
       name: server.name,
       command,
@@ -638,18 +590,9 @@ export async function harnessMcpServers(userData: string) {
   return resolved.filter((server): server is NonNullable<typeof server> => server !== undefined);
 }
 
-/** Resolves a command against PATH, because the harness will not take a bare name. */
 async function absoluteCommand(command: string) {
   if (path.isAbsolute(command)) return command;
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-    if (!directory) continue;
-    const candidate = path.join(directory, command);
-    try {
-      await realpath(candidate);
-      return candidate;
-    } catch { /* not on this leg of PATH */ }
-  }
-  return undefined;
+  return await findExecutable(command, process.env.PATH ?? "");
 }
 
 export class ImportedCapabilityRuntime {
@@ -679,14 +622,12 @@ export class SkillAttachmentStore {
 
   put(attachment: SkillAttachment, threadId: string) {
     if (!/^skill:[a-z0-9-]{1,64}:\d+:[a-zA-Z0-9._-]{1,96}$/.test(attachment.id)) throw new Error("Skill attachment ID is invalid");
-    // Core's shape, not a `thread-` prefix — see `ThreadId::parse` in crates/core/src/thread.rs.
     if (!/^[a-z0-9][a-z0-9-]{0,95}$/.test(threadId)) throw new Error("Skill attachment thread is invalid");
     this.attachment = { ...attachment, threadId };
     this.claimedId = undefined;
   }
 
   status() {
-    // chars is what the instructions weigh in the turn — the inspector's context ledger reads it.
     return this.attachment ? { id: this.attachment.id, source: this.attachment.source, name: this.attachment.name, threadId: this.attachment.threadId, chars: this.attachment.instructions.length } : null;
   }
 

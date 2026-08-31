@@ -7,8 +7,8 @@ import { plural } from "./plural";
 import { ColorPicker } from "./color-picker";
 import { zoned } from "./dates";
 import { nested, newest, spawnedAgents, spawnedByTurn, threadAt, threadDepth, threadLabel, type Spawned } from "./threads";
-import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
-import { THINKING_LABELS, ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_KEYS_URL, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetProvider, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, providerCredentials, providerReach, toggleFavoriteModel, validateSettings, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
+import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keybindLabel, keybindProblem, KEYBIND_ACTIONS, keyboardAccelerator, normalizeAccelerator, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
+import { THINKING_LABELS, ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_KEYS_URL, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultSettings, forgetProvider, freeModels, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
 import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { defaultPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, WIDE_BROWSER_WIDTH, type PaneLayout } from "./layout";
@@ -67,6 +67,15 @@ import { GOAL_LABELS, markedGoal, usageLimitedFailure } from "../shared/goal";
 
 const empty: Snapshot = { threads: [], scheduledJobs: [], researchJobs: [], warnings: [] };
 const SNAPSHOT_REFRESH_MS = 60_000;
+const RUNTIME_PLATFORM = typeof window !== "undefined" && window.emma?.platform === "win32" ? "win32" : "darwin";
+const IS_WINDOWS = RUNTIME_PLATFORM === "win32";
+const HARNESS_CLI = IS_WINDOWS ? "./harness/zig-out/bin/emma-cli.exe acp" : "./harness/zig-out/bin/emma-cli acp";
+const LOCAL_DEVICE = IS_WINDOWS ? "PC" : "Mac";
+const PLATFORM_NAME = IS_WINDOWS ? "Windows" : "macOS";
+const MODIFIER_LABEL = IS_WINDOWS ? "Ctrl" : "⌘";
+const ALT_LABEL = IS_WINDOWS ? "Alt" : "⌥";
+const OVERLAY_LABEL = IS_WINDOWS ? "Quick Ask" : "island";
+const validateSettings = (value: unknown) => validateSettingsForPlatform(value, RUNTIME_PLATFORM);
 const AgentView = lazy(() => import("./AgentView"));
 const ResearchView = lazy(() => import("./research"));
 const dateFormat = zoned({ month: "short", day: "numeric", year: "numeric" });
@@ -257,7 +266,7 @@ function Stalled({ since, working, onSwap }: { since: number; working: boolean; 
 }
 
 function stepLabel(step: ThreadStep): string {
-  if (step.edit) return `Edited ${step.edit.path.split("/").pop() ?? step.edit.path}`;
+  if (step.edit) return `Edited ${step.edit.path.split(/[\\/]+/).pop() ?? step.edit.path}`;
   return step.title.trim() || step.kind.trim() || "tool call";
 }
 
@@ -1372,7 +1381,7 @@ function PickTray({ picks, folders, locked, drop }: { picks: ContextPick[]; fold
   })}</div>;
 }
 
-const home = (path: string) => path.replace(/^\/Users\/[^/]+/, "~");
+const home = (path: string) => IS_WINDOWS ? path.replace(/^[A-Za-z]:[\\/][^\\/]+/, "~") : path.replace(/^\/Users\/[^/]+/, "~");
 
 function ProjectBar({ folders, ids, setFolders, setIds, git, name, busy }: { folders: FolderGrant[]; ids: string[]; setFolders: (folders: FolderGrant[]) => void; setIds: (ids: string[]) => void; git: GitSnapshot | null; name: string; busy: boolean }) {
   const [error, setError] = useState("");
@@ -2109,7 +2118,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
           ? (message.trim()
             ? <button className="composer-send" disabled={locked} aria-label="Queue message" title="Queue — sent when this turn ends. Steer it from the queue to cut in">↑</button>
             : <button type="button" className="composer-send stopping" onClick={interrupt} aria-label="Stop this turn" title="Stop this turn — Esc Esc">■</button>)
-          : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={(next) => { onModelChanged(next); if (next.selectedModel === modelKey) return; if (stallSwap) { void swapStalledModel(next); return; } if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: modelKeyLabel(next, next.selectedModel), brand: modelKeyBrand(next, next.selectedModel)?.id ?? "" }); }} onManage={onManageModels} />}{steered && <div className="composer-attachment queued-turn"><span>Steered · {steered}</span><button type="button" onClick={() => setSteered("")} aria-label="Dismiss the steered message">×</button></div>}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping anywhere in the window or pasting works too</small></div></button><span className="add-section">Files</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search the files of this thread's folders</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length && <p className="project-empty">Pick a folder in the project chip to list its files here.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this Mac.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>⌘</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or see the MCP servers every turn is handed</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent runtime</strong><small>Inspect Emma's Zig harness and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div></>}</section>}</form>
+          : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={(next) => { onModelChanged(next); if (next.selectedModel === modelKey) return; if (stallSwap) { void swapStalledModel(next); return; } if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: modelKeyLabel(next, next.selectedModel), brand: modelKeyBrand(next, next.selectedModel)?.id ?? "" }); }} onManage={onManageModels} />}{steered && <div className="composer-attachment queued-turn"><span>Steered · {steered}</span><button type="button" onClick={() => setSteered("")} aria-label="Dismiss the steered message">×</button></div>}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping anywhere in the window or pasting works too</small></div></button><span className="add-section">Files</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search the files of this thread's folders</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length && <p className="project-empty">Pick a folder in the project chip to list its files here.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this computer.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>{MODIFIER_LABEL}</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or see the MCP servers every turn is handed</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent runtime</strong><small>Inspect Emma's Zig harness and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>{ALT_LABEL}</b><div><strong>Draw on screen</strong><small>Double-tap left {IS_WINDOWS ? "Alt" : "Option"}, then choose the yellow pen</small></div></div></>}</section>}</form>
     </section></Region></div>
       </div>
     </div>
@@ -2176,7 +2185,7 @@ function AgentDialog({ thread, contextTokens, close }: { thread: Thread; context
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
   const dismiss = () => dialog.current?.close();
-  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="agent-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}><section className="agent-dialog"><header><div><span>Thread agent</span><h2 id="agent-title">Emma harness</h2></div><button type="button" onClick={dismiss} aria-label="Close agent details">×</button></header><dl><div><dt>Thread</dt><dd className="copyable"><span>{thread.id}</span><CopyTurn text={thread.id} label="Copy thread ID" /></dd></div><div><dt>Created</dt><dd>{date(thread.createdAt)} · {time(thread.createdAt)}</dd></div><div><dt>Modified</dt><dd>{date(thread.updatedAt)} · {time(thread.updatedAt)}</dd></div><div><dt>Runtime</dt><dd><i /> emma-cli · ACP</dd></div><div><dt>Context</dt><dd>{thread.messages.length} durable {plural(thread.messages.length, "message")}</dd></div><div><dt>Tools</dt><dd>Lazy MCP search; schemas load only after selection</dd></div><div><dt>Stats</dt><dd className="stats-export"><ThreadStatsExport thread={thread} contextTokens={contextTokens} /></dd></div></dl><div className="agent-cli"><span>Headless entry point</span><code>./harness/zig-out/bin/emma-cli acp</code><p>Run coding or automation threads without Electron. See harness/README.md for the protocol.</p></div></section></dialog>;
+  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="agent-title" onClose={close} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}><section className="agent-dialog"><header><div><span>Thread agent</span><h2 id="agent-title">Emma harness</h2></div><button type="button" onClick={dismiss} aria-label="Close agent details">×</button></header><dl><div><dt>Thread</dt><dd className="copyable"><span>{thread.id}</span><CopyTurn text={thread.id} label="Copy thread ID" /></dd></div><div><dt>Created</dt><dd>{date(thread.createdAt)} · {time(thread.createdAt)}</dd></div><div><dt>Modified</dt><dd>{date(thread.updatedAt)} · {time(thread.updatedAt)}</dd></div><div><dt>Runtime</dt><dd><i /> emma-cli · ACP</dd></div><div><dt>Context</dt><dd>{thread.messages.length} durable {plural(thread.messages.length, "message")}</dd></div><div><dt>Tools</dt><dd>Lazy MCP search; schemas load only after selection</dd></div><div><dt>Stats</dt><dd className="stats-export"><ThreadStatsExport thread={thread} contextTokens={contextTokens} /></dd></div></dl><div className="agent-cli"><span>Headless entry point</span><code>{HARNESS_CLI}</code><p>Run coding or automation threads without Electron. See harness/README.md for the protocol.</p></div></section></dialog>;
 }
 
 const NO_MESSAGES: Message[] = [];
@@ -2331,23 +2340,23 @@ const credits: { title: string; body: string; href?: string; link?: string }[] =
   { title: "Departure Mono", body: "The interface face is Departure Mono by Helena Zhang, bundled as a woff2 rather than loaded from a font CDN. SIL Open Font License 1.1; the license text ships beside the file." },
   { title: "xterm.js", body: "The terminal panel is a real login shell, drawn by xterm.js. Its pty is a small clang-built helper rather than node-pty, which would need a rebuild for every Electron release. MIT.", href: "https://github.com/xtermjs/xterm.js", link: "xtermjs/xterm.js ↗" },
   { title: "karpathy/autoresearch", body: "Autoresearch jobs are that loop generalised: propose one change, measure the metric, commit it if the metric improved and hard-reset the project if it did not.", href: "https://github.com/karpathy/autoresearch", link: "karpathy/autoresearch ↗" },
-  { title: "Electron + React", body: "The renderer is sandboxed and reaches main only through a narrow preload API. Electron owns the windows; clang-built helpers own the ⌥⌥ Quick Ask gesture and macOS dictation. React 19, TypeScript, and Vite build it; Recharts draws the charts and Mermaid the diagrams." },
-  { title: "Rust + Markdown", body: "Threads and knowledge are Markdown on this Mac: emma-core owns their records, their validation, and the atomic writes, and the Rust host is an NDJSON server onto it that talks to no model. Rust 1.97, and Zig 0.16 builds the harness." },
+  { title: "Electron + React", body: `The renderer is sandboxed and reaches main only through a narrow preload API. Electron owns the windows; clang-built helpers own the ${ALT_LABEL}${ALT_LABEL} Quick Ask gesture and built-in dictation. React 19, TypeScript, and Vite build it; Recharts draws the charts and Mermaid the diagrams.` },
+  { title: "Rust + Markdown", body: `Threads and knowledge are Markdown on this ${LOCAL_DEVICE}: emma-core owns their records, their validation, and the atomic writes, and the Rust host is an NDJSON server onto it that talks to no model. Rust 1.97, and Zig 0.16 builds the harness.` },
   { title: "Model Context Protocol", body: "Emma speaks no MCP herself: configured servers are handed to the harness, which starts them and holds their tools behind a search until the model asks for one. Servers and skills already set up for another agent are referenced where they sit, not copied, and every call still stops at Emma's permission gate." },
-  { title: "OpenAI-compatible providers", body: "Every remote route is a Chat Completions endpoint — OpenRouter by default, any compatible local or hosted server otherwise. A setting names an environment variable and never holds a key; a pasted key is encrypted with the macOS keychain and reaches the agent only through its spawn environment." },
+  { title: "OpenAI-compatible providers", body: `Every remote route is a Chat Completions endpoint — OpenRouter by default, any compatible local or hosted server otherwise. A setting names an environment variable and never holds a key; a pasted key is encrypted with the ${PLATFORM_NAME} credential store and reaches the agent only through its spawn environment.` },
 ];
 
 type SettingsPage = "keybinds" | "notch" | "voice" | "appearance" | "contextbar" | "models" | "prompts" | "tools" | "permissions" | "harness" | "imports" | "connections" | "mobile" | "built" | "privacy" | "about";
 const settingsPages: { id: SettingsPage; label: string; copy: string; group: string }[] = [
   { id: "keybinds", label: "Keybinds", copy: "Shortcuts, actions, orbs", group: "Personal" },
-  { id: "notch", label: "Notch", copy: "Quick Ask model and tasks", group: "Personal" },
+  { id: "notch", label: IS_WINDOWS ? "Quick Ask" : "Notch", copy: "Quick Ask model and tasks", group: "Personal" },
   { id: "voice", label: "Voice", copy: "Dictation and cleanup", group: "Personal" },
   { id: "appearance", label: "Appearance", copy: "Accent colour, section marks, fonts", group: "Personal" },
   { id: "contextbar", label: "Context bar", copy: "Arrange the thread inspector", group: "Personal" },
   { id: "models", label: "Models", copy: "Picker, keys, and routes", group: "Personal" },
   { id: "prompts", label: "System prompt", copy: "Global, and per model", group: "Coding" },
   { id: "tools", label: "Tools", copy: "What the agent may call", group: "Integrations" },
-  { id: "permissions", label: "Permissions", copy: "What macOS lets Emma do", group: "Integrations" },
+  { id: "permissions", label: "Permissions", copy: `What ${PLATFORM_NAME} lets Emma do`, group: "Integrations" },
   { id: "harness", label: "Harness", copy: "Experimental context hooks", group: "Coding" },
   { id: "imports", label: "Imports & plugins", copy: "Skills and MCP sources", group: "Integrations" },
   { id: "connections", label: "Connections", copy: "Third-party CLI tools", group: "Integrations" },
@@ -2369,20 +2378,13 @@ function SettingsNavigation({ page, onSelect, busy }: { page: SettingsPage; onSe
   return <nav className="settings-sidebar" aria-label="Settings sections"><h1>Settings</h1>{[...new Set(settingsPages.map((item) => item.group))].map((group) => <div className="settings-group" key={group}><span className="settings-group-label">{group}</span>{settingsPages.filter((item) => item.group === group).map((item) => <button key={item.id} disabled={busy} className={page === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><strong>{item.label}</strong><span>{item.copy}</span></button>)}</div>)}</nav>;
 }
 
-const KEY_CODES: Record<string, string> = {
-  Space: "Space", Enter: "Return", NumpadEnter: "Return", Tab: "Tab", Backspace: "Backspace", Delete: "Delete",
-  ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
-  Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`",
-};
+const KEYBIND_GLYPHS: Record<KeybindAction, string> = { toggle: "▭", voice: "●", draw: "✎", keep: "⧉", action0: `${MODIFIER_LABEL}1`, action1: `${MODIFIER_LABEL}2`, action2: `${MODIFIER_LABEL}3` };
 
-function acceleratorFromEvent(event: KeyboardEvent): string | null {
-  const key = /^Key([A-Z])$/.exec(event.code)?.[1] ?? /^Digit(\d)$/.exec(event.code)?.[1] ?? (/^F([1-9]|1\d|2[0-4])$/.test(event.code) ? event.code : KEY_CODES[event.code]);
-  if (!key) return null;
-  const modifiers = [event.metaKey && "Command", event.ctrlKey && "Control", event.altKey && "Alt", event.shiftKey && "Shift"].filter(Boolean) as string[];
-  return [...modifiers, key].join("+");
+function keybindBuiltin(action: (typeof KEYBIND_ACTIONS)[number]) {
+  if (action.id === "toggle") return `${ALT_LABEL}${ALT_LABEL} double-tap left ${IS_WINDOWS ? "Alt" : "Option"}`;
+  if (action.id === "action0" || action.id === "action1" || action.id === "action2") return `${MODIFIER_LABEL}${Number(action.id.slice(-1)) + 1} while the ${OVERLAY_LABEL} is open`;
+  return action.builtin;
 }
-
-const KEYBIND_GLYPHS: Record<KeybindAction, string> = { toggle: "▭", voice: "●", draw: "✎", keep: "⧉", action0: "⌘1", action1: "⌘2", action2: "⌘3" };
 
 function KeybindSettings({ settings, save }: { settings: UserSettings; save: (keybinds: Keybinds) => Promise<string[]> }) {
   const [recording, setRecording] = useState<KeybindAction | "">("");
@@ -2391,10 +2393,10 @@ function KeybindSettings({ settings, save }: { settings: UserSettings; save: (ke
   const holding = useRef("");
   const bind = async (keybinds: Keybinds) => setRefused(await save(keybinds));
   const commit = (action: KeybindAction, keybind: Keybind) => {
-    const clash = Object.entries(settings.keybinds).find(([other, value]) => other !== action && keybindLabel(value) === keybindLabel(keybind));
-    if (clash) { setProblem(`${keybindLabel(keybind)} already runs “${KEYBIND_ACTIONS.find((item) => item.id === clash[0])?.label}”.`); return; }
+    const clash = Object.entries(settings.keybinds).find(([other, value]) => other !== action && keybindLabel(value, RUNTIME_PLATFORM) === keybindLabel(keybind, RUNTIME_PLATFORM));
+    if (clash) { setProblem(`${keybindLabel(keybind, RUNTIME_PLATFORM)} already runs “${KEYBIND_ACTIONS.find((item) => item.id === clash[0])?.label}”.`); return; }
     if (!keybind.hold) {
-      const trouble = keybindProblem(keybind.accelerator);
+      const trouble = keybindProblem(keybind.accelerator, RUNTIME_PLATFORM);
       if (trouble) { setProblem(trouble); return; }
     }
     setProblem("");
@@ -2407,9 +2409,10 @@ function KeybindSettings({ settings, save }: { settings: UserSettings; save: (ke
       event.preventDefault();
       event.stopPropagation();
       if (event.key === "Escape") { holding.current = ""; setRecording(""); setProblem(""); return; }
-      if (HOLD_KEYS[event.code] && !acceleratorFromEvent(event)) { holding.current = event.code; return; }
+      const accelerator = keyboardAccelerator(event, RUNTIME_PLATFORM);
+      const holdAllowed = !IS_WINDOWS || !event.metaKey || /^Meta(?:Left|Right)$/.test(event.code);
+      if (HOLD_KEYS[event.code] && holdAllowed && !accelerator) { holding.current = event.code; return; }
       holding.current = "";
-      const accelerator = acceleratorFromEvent(event);
       if (accelerator) commit(recording, comboKeybind(normalizeAccelerator(accelerator)));
     };
     const up = (event: KeyboardEvent) => {
@@ -2434,13 +2437,13 @@ function KeybindSettings({ settings, save }: { settings: UserSettings; save: (ke
     return <section className="keybind-row" key={action.id}>
       <span className="orb" aria-hidden="true"><kbd>{KEYBIND_GLYPHS[action.id]}</kbd></span>
       <div><h3>{action.label}</h3><p>{action.detail}</p>
-        {action.builtin && <small className="keybind-builtin">Built in, always on · {action.builtin}</small>}
+        {keybindBuiltin(action) && <small className="keybind-builtin">Built in, always on · {keybindBuiltin(action)}</small>}
         {listening && problem && <small className="keybind-problem">{problem}</small>}
-        {!listening && keybind && refused.includes(action.id) && <small className="keybind-problem">Another app holds {keybindLabel(keybind)}. Pick a different one.</small>}
+        {!listening && keybind && refused.includes(action.id) && <small className="keybind-problem">Another app holds {keybindLabel(keybind, RUNTIME_PLATFORM)}. Pick a different one.</small>}
       </div>
       <div className="keybind-controls">
         <button type="button" className={`keybind-capture ${listening ? "recording" : ""}`} aria-label={`${listening ? "Recording shortcut for" : "Record shortcut for"} ${action.label}`} onClick={() => { setProblem(""); holding.current = ""; setRecording(listening ? "" : action.id); }}>
-          {listening ? "Press a combination, or hold one modifier… (Esc cancels)" : keybind ? <kbd>{keybindLabel(keybind)}</kbd> : "Add a shortcut"}
+          {listening ? "Press a combination, or hold one modifier… (Esc cancels)" : keybind ? <kbd>{keybindLabel(keybind, RUNTIME_PLATFORM)}</kbd> : "Add a shortcut"}
         </button>
         {keybind?.hold && <label className="keybind-duration">Hold for<select value={keybind.ms} onChange={(event) => void bind({ ...settings.keybinds, [action.id]: holdKeybind(keybind.hold, Number(event.target.value)) })}>{HOLD_DURATIONS.map((ms) => <option key={ms} value={ms}>{ms}ms</option>)}</select></label>}
         <button type="button" disabled={!keybind} onClick={() => { setProblem(""); setRecording(""); void bind({ ...settings.keybinds, [action.id]: comboKeybind("") }); }}>Clear</button>
@@ -2451,8 +2454,8 @@ function KeybindSettings({ settings, save }: { settings: UserSettings; save: (ke
 
 const microphoneCopy: Record<string, string> = {
   granted: "Granted",
-  denied: "Refused — macOS is blocking it",
-  restricted: "Blocked by this Mac's policy",
+  denied: `Refused — ${PLATFORM_NAME} is blocking it`,
+  restricted: `Blocked by this ${LOCAL_DEVICE}'s policy`,
   "not-determined": "Not asked yet",
   unknown: "Checking…",
 };
@@ -2488,7 +2491,7 @@ function VoiceSettings({ settings, onChange, busy }: { settings: UserSettings; o
     <section>
       <div>
         <h3>1 · Microphone</h3>
-        <p>macOS asks the first time Emma records, and only you can answer. Nothing is captured until you hold the key or press the button below, and the recording goes to a server on this Mac and nowhere else.</p>
+        <p>{PLATFORM_NAME} asks the first time Emma records, and only you can answer. Nothing is captured until you hold the key or press the button below, and the recording goes to a server on this {LOCAL_DEVICE} and nowhere else.</p>
         {problem && <small className="keybind-problem">{problem}</small>}
       </div>
       <div className="voice-values">
@@ -2497,7 +2500,7 @@ function VoiceSettings({ settings, onChange, busy }: { settings: UserSettings; o
           ? <button type="button" disabled={busy} onClick={() => void dictation.refresh()}>Re-check</button>
           : status.microphone === "not-determined" || status.microphone === "unknown"
             ? <button type="button" disabled={busy} onClick={() => void grant()}>Ask for the microphone</button>
-            : <button type="button" disabled={busy} onClick={() => void window.emma.openPrivacySettings("microphone")}>Open System Settings ↗</button>}
+            : <button type="button" disabled={busy} onClick={() => void window.emma.openPrivacySettings("microphone")}>Open {IS_WINDOWS ? "Windows Settings" : "System Settings"} ↗</button>}
       </div>
     </section>
     <section>
@@ -2505,20 +2508,20 @@ function VoiceSettings({ settings, onChange, busy }: { settings: UserSettings; o
         <h3>2 · Speech to text</h3>
         {settings.transcriptionEngine === "apple"
           ? <>
-              <p>macOS already has a speech recognizer — the one system dictation uses — and Emma can just ask it. Nothing to install, nothing to keep running. Emma pins it to on-device recognition, so the recording never leaves this Mac; it needs Dictation switched on under <b>System Settings → Keyboard</b>, which is what downloads the model.</p>
+              <p>{IS_WINDOWS ? `Windows includes the SAPI speech recognizer, so Emma can ask it directly. Nothing to install, nothing to keep running. Recognition stays on this PC, and the recording never leaves it.` : "macOS already has a speech recognizer — the one system dictation uses — and Emma can just ask it. Nothing to install, nothing to keep running. Emma pins it to on-device recognition, so the recording never leaves this computer; it needs Dictation switched on under System Settings → Keyboard, which is what downloads the model."}</p>
               <p><small>The llama.cpp route hears more accurately, especially names and technical words. Switch engines here if you would rather run a server.</small></p>
             </>
           : <>
-              <p>Both halves of voice run on <a href={LLAMA_SITE_URL} target="_blank" rel="noreferrer">llama.cpp</a> — Metal-accelerated, multimodal through libmtmd, and its server speaks the two OpenAI routes this needs. Install it once, then start the speech server on <a href={SPEECH_MODEL_URL} target="_blank" rel="noreferrer">{SPEECH_MODEL}</a>; the first run downloads the weights.</p>
+              <p>Both halves of voice run on <a href={LLAMA_SITE_URL} target="_blank" rel="noreferrer">llama.cpp</a> — using the native acceleration available on your computer, and its server speaks the two OpenAI routes this needs. Install it once, then start the speech server on <a href={SPEECH_MODEL_URL} target="_blank" rel="noreferrer">{SPEECH_MODEL}</a>; the first run downloads the weights.</p>
               <pre className="voice-command">{LLAMA_INSTALL}</pre>
               <pre className="voice-command">{SPEECH_INSTALL}</pre>
             </>}
-        <label className="check"><input type="checkbox" checked={settings.transcriptionEnabled} disabled={busy} onChange={(event) => save({ transcriptionEnabled: event.target.checked })} /> Voice input on — hold space in the island to dictate</label>
+        <label className="check"><input type="checkbox" checked={settings.transcriptionEnabled} disabled={busy} onChange={(event) => save({ transcriptionEnabled: event.target.checked })} /> Voice input on — hold space in the {OVERLAY_LABEL} to dictate</label>
       </div>
       <div className="voice-values">
         <strong className={status.speech ? "status-live" : "status-idle"}><i /> {status.speech ? (settings.transcriptionEngine === "apple" ? "Ready" : "Answering") : "Not running"}</strong>
         <label>Engine<select value={settings.transcriptionEngine} disabled={busy} onChange={(event) => save({ transcriptionEngine: event.target.value as TranscriptionEngine })}>
-          <option value="apple">macOS · built in</option>
+          <option value="apple">{PLATFORM_NAME} · built in</option>
           <option value="server">llama.cpp server</option>
         </select></label>
         {settings.transcriptionEngine === "server" && field("transcriptionEndpoint", "Endpoint")}
@@ -2526,7 +2529,7 @@ function VoiceSettings({ settings, onChange, busy }: { settings: UserSettings; o
         {!status.speech && !!status.speechError && <small className="keybind-problem">{status.speechError}</small>}
         <button type="button" disabled={busy} onClick={() => void dictation.refresh()}>Check again</button>
         {settings.transcriptionEngine === "apple"
-          ? <button type="button" disabled={busy} onClick={() => void window.emma.openPrivacySettings("speech")}>Speech Recognition ↗</button>
+          ? <button type="button" disabled={busy} onClick={() => void window.emma.openPrivacySettings("speech")}>{IS_WINDOWS ? "Speech settings ↗" : "Speech Recognition ↗"}</button>
           : <small>Localhost only</small>}
       </div>
     </section>
@@ -2549,7 +2552,7 @@ function VoiceSettings({ settings, onChange, busy }: { settings: UserSettings; o
     <section>
       <div>
         <h3>4 · Hold to talk</h3>
-        <p>In the island, hold the space bar while the box is empty, say your piece, and let go — Emma types what you said. A tap is still just a tap. The same is on the ● button, and on the <b>Quick Ask with voice</b> keybind.</p>
+        <p>In the {OVERLAY_LABEL}, hold the space bar while the box is empty, say your piece, and let go — Emma types what you said. A tap is still just a tap. The same is on the ● button, and on the <b>Quick Ask with voice</b> keybind.</p>
       </div>
       <div className="voice-values">
         <label>Hold for<select value={settings.voiceHoldMs} disabled={busy} onChange={(event) => save({ voiceHoldMs: Number(event.target.value) })}>{HOLD_TO_TALK_MS.map((ms) => <option key={ms} value={ms}>{ms}ms</option>)}</select></label>
@@ -2558,7 +2561,7 @@ function VoiceSettings({ settings, onChange, busy }: { settings: UserSettings; o
     <section>
       <div>
         <h3>5 · Try it</h3>
-        <p>Press and hold, say something, and let go. This is the whole path the island uses, so what comes back here is what it would have typed.</p>
+        <p>Press and hold, say something, and let go. This is the whole path the {OVERLAY_LABEL} uses, so what comes back here is what it would have typed.</p>
         {dictation.error && <small className="keybind-problem">{dictation.error}</small>}
         {heard && <p className="voice-heard">“{heard}”</p>}
       </div>
@@ -2683,7 +2686,7 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   const accentHex = settings.accent.startsWith("#") ? settings.accent : getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
   const saveContextPages = (contextPages: ContextPage[]) => { try { setSettings(persistSettings({ ...settings, contextPages })); } catch { setSettings((current) => ({ ...current, contextPages })); } };
   const resetData = () => {
-    if (!confirm("Delete all Emma data and start fresh?\n\nEvery thread, artifact, connected folder, saved key, and setting on this Mac goes, and Emma restarts empty. This cannot be undone.")) return;
+    if (!confirm(`Delete all Emma data and start fresh?\n\nEvery thread, artifact, connected folder, saved key, and setting on this ${LOCAL_DEVICE} goes, and Emma restarts empty. This cannot be undone.`)) return;
     localStorage.clear();
     void window.emma.resetData();
   };
@@ -2691,45 +2694,45 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   if (page === "contextbar") return <section className="settings-view settings-wide"><header><span>Settings / thread inspector</span><h2>Context bar</h2></header><ContextBarSettings pages={settings.contextPages} onChange={saveContextPages} busy={busy} /></section>;
   if (page === "appearance") return <section className="settings-view"><header><span>Settings / appearance</span><h2>Appearance</h2></header><div className="settings-lines"><section><div><h3>Accent</h3><p>The one hue that means action: primary buttons, the focus ring, a checked control, and any figure meant to read as data.</p></div><div className="accent-values">{ACCENT_CHOICES.map((hue) => <button key={hue} type="button" className={`accent-swatch ${settings.accent === hue ? "active" : ""}`} style={{ "--swatch": `var(--${hue})` } as CSSProperties} title={hue} aria-label={hue} aria-pressed={settings.accent === hue} disabled={busy} onPointerEnter={() => !busy && previewAccent(hue)} onPointerLeave={() => previewAccent(settings.accent)} onFocus={() => !busy && previewAccent(hue)} onBlur={() => previewAccent(settings.accent)} onClick={() => saveAppearance({ accent: hue })} />)}<ColorPicker className={`accent-swatch accent-custom ${settings.accent.startsWith("#") ? "active" : ""}`} label="Any colour" value={accentHex} disabled={busy} onChange={(hex) => saveAppearance({ accent: hex as AccentChoice })} /><small>{accentHex}</small></div></section><section><div><h3>Interface scale</h3><p>Zooms the whole window the way a browser does, from {MIN_UI_SCALE}% to {MAX_UI_SCALE}%. Everything scales together — type, rules, and spacing.</p></div><div className="font-values"><label>Scale · {settings.uiScale}%<input type="range" min={MIN_UI_SCALE} max={MAX_UI_SCALE} step={5} value={settings.uiScale} disabled={busy} onChange={(event) => saveAppearance({ uiScale: Number(event.target.value) })} /></label></div></section><section><div><h3>Conversation width</h3><p>How wide a thread reads. Wider pays off with the sidebar and the context bar closed; the composer keeps its own width.</p></div><div className="font-values"><label>Column<select value={settings.conversationWidth} disabled={busy} onChange={(event) => saveAppearance({ conversationWidth: event.target.value as ConversationWidth })}>{CONVERSATION_WIDTHS.map((width) => <option key={width.id} value={width.id}>{width.label} · {width.detail}</option>)}</select></label></div></section><section><div><h3>Section marks</h3><p>A hue each for the sidebar’s section marks. Off, they all draw in the same grey as their labels.</p><label className="check"><input type="checkbox" checked={settings.navIconColors} disabled={busy} onChange={(event) => saveAppearance({ navIconColors: event.target.checked })} /> Colour the section marks</label></div><div className="nav-hues">{NAV_VIEWS.map((view) => <ColorPicker key={view} className="nav-hue" label={navLabels[view]} value={navHueHex(settings, view)} disabled={busy || !settings.navIconColors} onChange={(hex) => saveAppearance({ navHues: { ...settings.navHues, [view]: hex as AccentChoice } })}><NavIcon view={view} /></ColorPicker>)}<button type="button" className="hue-reset" disabled={busy || !Object.keys(settings.navHues).length} onClick={() => saveAppearance({ navHues: {} })}>Reset</button></div></section><section><div><h3>Interface font</h3><p>Everything on the grid: the sidebar, tabs, buttons, model picker, and every label in Settings.</p></div><div className="font-values"><label>Face<select value={settings.interfaceFont} disabled={busy} onChange={(event) => saveAppearance({ interfaceFont: event.target.value as FontChoice })}>{FONT_CHOICES.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}</select></label><p className="font-sample" style={{ fontFamily: fontStack(settings.interfaceFont) }}>Threads · Knowledge · Agent 0123</p></div></section><section><div><h3>Agent font</h3><p>What the agent writes in a thread, plus the composer you answer it in.</p></div><div className="font-values"><label>Face<select value={settings.agentFont} disabled={busy} onChange={(event) => saveAppearance({ agentFont: event.target.value as FontChoice })}>{FONT_CHOICES.map((font) => <option key={font.id} value={font.id}>{font.label}</option>)}</select></label><p className="font-sample" style={{ fontFamily: fontStack(settings.agentFont) }}>The quick brown fox jumps over the lazy dog.</p></div></section></div></section>;
   if (page === "models") return <section className="settings-view"><header><span>Settings / models &amp; providers</span><h2>Models</h2></header><ModelCatalog settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><ProviderSettings settings={settings} onChange={saveModelSettings} act={act} busy={busy} /><VerifierPanel settings={settings} onSave={saveVerifier} busy={busy} /><AdvisorPanel settings={settings} onSave={(advisor) => saveTools({ ...settings.tools, advisor })} busy={busy} /><VisionPanel settings={settings} onSave={(vision) => saveTools({ ...settings.tools, vision })} busy={busy} /><SecretPanel settings={settings} onSave={(secret) => saveTools({ ...settings.tools, secret })} busy={busy} /><ProviderKeys settings={settings} act={act} busy={busy} /><div className="settings-lines"><section><div><h3>Private routing</h3><p>Requests no-training, zero-retention endpoints for the main agent loop on OpenRouter. If no eligible endpoint exists, the request fails. This does not cover secondary models, tools or account logging. Changes apply to newly started agent processes.</p><label className="check"><input type="checkbox" checked={settings.requireZeroRetention} disabled={busy} onChange={(event) => void saveZeroRetention(event.target.checked)} /> Require no-training, zero-retention OpenRouter endpoints</label></div></section><section><div><div className="settings-head"><h3>When no model is chosen</h3><InfoDot>Emma sends no model with the turn, so the agent uses its default hosted OpenRouter route. That default needs network access and an OpenRouter key. Pick a local provider for local inference; other routes and tools have their own network behavior.</InfoDot></div><p>Emma leaves the choice to the agent, which answers on its free OpenRouter route. Pick a model above to route every turn yourself.</p></div><strong className="status-idle"><i /> No model sent</strong></section><section><div><h3>Speech to text</h3><p>Dictation runs against local OpenAI-compatible servers and is set up on its own page — the microphone grant, the speech server, and the S1-mini cleanup pass all live in <b>Settings → Voice</b>.</p></div><div className="voice-values"><strong className={settings.transcriptionEnabled ? "status-live" : "status-idle"}><i /> {settings.transcriptionEnabled ? "On" : "Off"}</strong><small>Localhost only</small></div></section></div></section>;
-  if (page === "notch") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Notch</h2></header><NotchSettings settings={settings} onChange={saveNotch} busy={busy} /></section>;
-  if (page === "voice") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Voice</h2></header><VoiceSettings settings={settings} onChange={saveModelSettings} busy={busy} /></section>;
+  if (page === "notch") return <section className="settings-view"><header><span>Settings / local to this {LOCAL_DEVICE}</span><h2>{IS_WINDOWS ? "Quick Ask" : "Notch"}</h2></header><NotchSettings settings={settings} onChange={saveNotch} busy={busy} /></section>;
+  if (page === "voice") return <section className="settings-view"><header><span>Settings / local to this {LOCAL_DEVICE}</span><h2>Voice</h2></header><VoiceSettings settings={settings} onChange={saveModelSettings} busy={busy} /></section>;
   if (page === "prompts") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>System prompt</h2></header><PromptSettings settings={settings} onChange={savePrompts} busy={busy} /></section>;
   if (page === "tools") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Tools</h2></header><ToolSettingsPanel settings={settings} onChange={saveTools} onDefaultMode={(defaultPermissionMode) => saveModelSettings({ ...settings, defaultPermissionMode })} busy={busy} /></section>;
-  if (page === "permissions") return <section className="settings-view"><header><span>Settings / local to this Mac</span><h2>Permissions</h2></header><PermissionSettings busy={busy} /></section>;
+  if (page === "permissions") return <section className="settings-view"><header><span>Settings / local to this {LOCAL_DEVICE}</span><h2>Permissions</h2></header><PermissionSettings busy={busy} /></section>;
   if (page === "harness") return <section className="settings-view"><header><span>Settings / coding harness</span><h2>Harness <b className="tag-experimental">Experimental</b></h2></header><HarnessExperimentsPanel settings={settings} onChange={saveHarnessExperiments} busy={busy} /></section>;
   if (page === "imports") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Imports & plugins</h2></header><AgentImports /></section>;
   if (page === "connections") return <section className="settings-view"><header><span>Settings / extensions</span><h2>Connections</h2></header><ConnectionSettings settings={settings} onChange={saveConnections} busy={busy} /></section>;
   if (page === "mobile") return <section className="settings-view"><header><span>Settings / paired devices</span><h2>Mobile</h2></header><MobileSettings relay={settings.relayUrl} onRelay={saveRelay} busy={busy} /></section>;
-  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><div className="settings-head"><h3>Start fresh</h3><InfoDot>Threads, artifacts, plans, connected folders, saved keys, and every setting go. The notes in your vault are left where they are — they are your files, in your folder.</InfoDot></div><p>Deletes everything Emma keeps on this Mac, then restarts her empty. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><div className="settings-head"><h3>OpenRouter account settings are separate</h3><InfoDot>Private input/output logging and using prompts to improve OpenRouter are separate opt-ins. A free or paid model is not a privacy guarantee. <b>Private routing</b> does not change your account settings.</InfoDot></div><p>Emma cannot read or change your account’s logging settings. Review your provider’s current data policy and your account settings before sending private material.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><div className="settings-head"><h3>Zero-retention routing is opt-in</h3><InfoDot>The flag covers the main agent loop at an <code>openrouter.ai</code> endpoint. Verifier, vision, advisor, secrets and note-tagger calls do not carry it. It also does not cover tools, widgets, browsers or external CLIs. A model without a qualifying endpoint fails; eligibility can change.</InfoDot></div><p>Emma’s switch is off by default. <b>Private routing</b> in <b>Settings → Models</b> requests no-training, zero-retention endpoints for OpenRouter agent turns. It is not an app-wide offline or privacy switch.</p></div></section><section><div><div className="settings-head"><h3>Threads and notes are stored locally</h3><InfoDot>Thread records live in <code>~/Library/Application Support/Emma</code>, moved by <code>EMMA_DATA_DIR</code>. Notes are written into your chosen vault. Relevant thread history and tool results reach the selected model; the note tagger may send note text to its own model.</InfoDot></div><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><div className="settings-head"><h3>Audio is transcribed locally</h3><InfoDot>Checked at two boundaries: a non-local speech or cleanup endpoint is refused when you save it, and refused again before every use. The utterance goes to a temporary file, is read once, and is deleted — no audio is kept.</InfoDot></div><p>Transcription and cleanup use loopback servers or on-device macOS speech. When you send the dictated words, they reach your selected thread model.</p></div></section><section><div><div className="settings-head"><h3>Computer use shares approved app text</h3><InfoDot>App titles, labels and values may reach your turn’s model after you approve the app. Computer use takes no screenshots and reads no clipboard. Images you attach, or pass to <code>vision</code>, still reach their configured model.</InfoDot></div><p>The <code>computer</code> tool returns running-app metadata, then accessibility text only from apps you approve for this turn. The yellow pen’s separate capture stays in Emma’s process; the turn goes out without it.</p></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. A note is only ever written into your vault when you ask for one.</p></div></section><section><div><div className="settings-head"><h3>App access always needs your approval</h3><InfoDot>A grant is for the named running app and active parent turn only. It is not shared with delegated work. Stop, Escape, screen lock, sleep, turn completion and quitting Emma revoke it. There is no always-allow setting.</InfoDot></div><p>Computer use controls supported accessibility elements in the background. Every app asks before access — even in <em>Auto</em> or <em>Full access</em>. Declining blocks that app for the rest of the turn; other apps need their own approval.</p></div></section><section><div><h3>No analytics or crash uploader</h3><p>Emma records local usage and execution traces but does not configure analytics or crash-report uploads. Providers, update checks, the catalog and enabled integrations still make network requests and receive ordinary request metadata.</p></div></section></div></section>;
+  if (page === "privacy") return <section className="settings-view"><header><span>Settings / data boundaries</span><h2>Data &amp; privacy</h2></header><div className="settings-lines"><section><div><div className="settings-head"><h3>Start fresh</h3><InfoDot>Threads, artifacts, plans, connected folders, saved keys, and every setting go. The notes in your vault are left where they are — they are your files, in your folder.</InfoDot></div><p>Deletes everything Emma keeps on this computer, then restarts her empty. This cannot be undone.</p></div><button type="button" className="reset-data" disabled={busy} onClick={resetData}>Reset Emma</button></section></div><div className="settings-lines prose-lines"><section><div><div className="settings-head"><h3>OpenRouter account settings are separate</h3><InfoDot>Private input/output logging and using prompts to improve OpenRouter are separate opt-ins. A free or paid model is not a privacy guarantee. <b>Private routing</b> does not change your account settings.</InfoDot></div><p>Emma cannot read or change your account’s logging settings. Review your provider’s current data policy and your account settings before sending private material.</p><a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noreferrer">Review OpenRouter privacy settings ↗</a></div></section><section><div><div className="settings-head"><h3>Zero-retention routing is opt-in</h3><InfoDot>The flag covers the main agent loop at an <code>openrouter.ai</code> endpoint. Verifier, vision, advisor, secrets and note-tagger calls do not carry it. It also does not cover tools, widgets, browsers or external CLIs. A model without a qualifying endpoint fails; eligibility can change.</InfoDot></div><p>Emma’s switch is off by default. <b>Private routing</b> in <b>Settings → Models</b> requests no-training, zero-retention endpoints for OpenRouter agent turns. It is not an app-wide offline or privacy switch.</p></div></section><section><div><div className="settings-head"><h3>Threads and notes are stored locally</h3><InfoDot>Thread records live in <code>Emma's local application data folder</code>, moved by <code>EMMA_DATA_DIR</code>. Notes are written into your chosen vault. Relevant thread history and tool results reach the selected model; the note tagger may send note text to its own model.</InfoDot></div><p>Emma stores durable Markdown through the Rust host. Pane layout, quick-action preferences, and an unsent overlay draft stay in Electron’s local application storage.</p></div></section><section><div><div className="settings-head"><h3>Audio is transcribed locally</h3><InfoDot>Checked at two boundaries: a non-local speech or cleanup endpoint is refused when you save it, and refused again before every use. The utterance goes to a temporary file, is read once, and is deleted — no audio is kept.</InfoDot></div><p>Transcription and cleanup use loopback servers or on-device speech. When you send the dictated words, they reach your selected thread model.</p></div></section><section><div><div className="settings-head"><h3>Computer use shares approved app text</h3><InfoDot>App titles, labels and values may reach your turn’s model after you approve the app. Computer use takes no screenshots and reads no clipboard. Images you attach, or pass to <code>vision</code>, still reach their configured model.</InfoDot></div><p>The <code>computer</code> tool returns running-app metadata, then accessibility text only from apps you approve for this turn. The yellow pen’s separate capture stays in Emma’s process; the turn goes out without it.</p></div></section><section><div><h3>Nothing saves silently</h3><p>Normal agent requests remain in their thread. A note is only ever written into your vault when you ask for one.</p></div></section><section><div><div className="settings-head"><h3>App access always needs your approval</h3><InfoDot>A grant is for the named running app and active parent turn only. It is not shared with delegated work. Stop, Escape, screen lock, sleep, turn completion and quitting Emma revoke it. There is no always-allow setting.</InfoDot></div><p>Computer use controls supported accessibility elements in the background. Every app asks before access — even in <em>Auto</em> or <em>Full access</em>. Declining blocks that app for the rest of the turn; other apps need their own approval.</p></div></section><section><div><h3>No analytics or crash uploader</h3><p>Emma records local usage and execution traces but does not configure analytics or crash-report uploads. Providers, update checks, the catalog and enabled integrations still make network requests and receive ordinary request metadata.</p></div></section></div></section>;
   if (page === "about") return <section className="settings-view"><header><span>Settings / about</span><h2>Emma</h2></header><div className="settings-lines prose-lines">{credits.map((credit) => <section key={credit.title}><div><h3>{credit.title}</h3><p>{credit.body}</p>{credit.href ? <a href={credit.href} target="_blank" rel="noreferrer">{credit.link}</a> : null}</div></section>)}</div></section>;
-  return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this Mac</span><h2>Keybinds</h2></header>
+  return <form className="settings-view" onSubmit={save}><header><span>Settings / local to this {LOCAL_DEVICE}</span><h2>Keybinds</h2></header>
     <KeybindSettings settings={settings} save={saveKeybinds} />
     <div className="settings-lines">
       <header>
         <div className="settings-head"><h3>In the workspace</h3><InfoDot>These live in the window, not system wide, so they only reach Emma while she is in front and no other app loses them.</InfoDot></div>
         <strong>Built in</strong>
       </header>
-      <section className="workspace-key"><div><h3>New thread</h3><p>Filed under the project the open thread belongs to.</p></div><kbd>⌘N</kbd></section>
-      <section className="workspace-key"><div><h3>Jump to a thread</h3><p>The first nine threads in that project, in the order the sidebar lists them.</p></div><kbd>⌘1 – ⌘9</kbd></section>
+      <section className="workspace-key"><div><h3>New thread</h3><p>Filed under the project the open thread belongs to.</p></div><kbd>{MODIFIER_LABEL}N</kbd></section>
+      <section className="workspace-key"><div><h3>Jump to a thread</h3><p>The first nine threads in that project, in the order the sidebar lists them.</p></div><kbd>{MODIFIER_LABEL}1 – {MODIFIER_LABEL}9</kbd></section>
     </div>
     <div className="settings-lines">
       <header>
-        <div className="settings-head"><h3>Quick actions</h3><InfoDot>Each one is a prompt the island runs against whatever you hand it — a capture, the page your browser has in front, or nothing at all. Destination and category decide where the answer is filed when <b>Save analyzed result</b> is on.</InfoDot></div>
-        <strong>⌘1 – ⌘3</strong>
+        <div className="settings-head"><h3>Quick actions</h3><InfoDot>Each one is a prompt the {OVERLAY_LABEL} runs against whatever you hand it — a capture, the page your browser has in front, or nothing at all. Destination and category decide where the answer is filed when <b>Save analyzed result</b> is on.</InfoDot></div>
+        <strong>{MODIFIER_LABEL}1 – {MODIFIER_LABEL}3</strong>
       </header>
       {settings.quickActions.map((action, index) => <section className="quick-action-row" key={index}>
-        <span className="orb" aria-hidden="true"><kbd>⌘{index + 1}</kbd></span>
+        <span className="orb" aria-hidden="true"><kbd>{MODIFIER_LABEL}{index + 1}</kbd></span>
         <div className="quick-fields"><label>Label<input value={action.label} maxLength={40} onChange={(event) => updateAction(index, "label", event.target.value)} /></label><label className="prompt-field">Prompt<textarea value={action.prompt} maxLength={4096} rows={2} onChange={(event) => updateAction(index, "prompt", event.target.value)} /></label></div>
       </section>)}
     </div>
-    <section className="orb-settings"><div><div className="settings-head"><h3>Orbs you can rearrange</h3><InfoDot>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the island when the pointer swipes below it. <b>Save page</b> keeps the page your browser has in front — its text, its favicon, and the pictures it leads with. Each save lands as one Markdown note in your vault.</InfoDot></div><p>Pick an orb to change what it runs or where it sits.</p>
+    <section className="orb-settings"><div><div className="settings-head"><h3>Orbs you can rearrange</h3><InfoDot>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the {OVERLAY_LABEL} when the pointer swipes below it. <b>Save page</b> keeps the page your browser has in front — its text, its favicon, and the pictures it leads with. Each save lands as one Markdown note in your vault.</InfoDot></div><p>Pick an orb to change what it runs or where it sits.</p>
       <label className="check"><input type="checkbox" checked={settings.cursorOrbsEnabled} onChange={(event) => setSettings((current) => ({ ...current, cursorOrbsEnabled: event.target.checked }))} /> Ring the cursor when Quick Ask opens</label>
-      <label className="check"><input type="checkbox" checked={settings.notchCommandsEnabled} onChange={(event) => setSettings((current) => ({ ...current, notchCommandsEnabled: event.target.checked }))} /> Reveal commands under the island on a swipe</label>
+      <label className="check"><input type="checkbox" checked={settings.notchCommandsEnabled} onChange={(event) => setSettings((current) => ({ ...current, notchCommandsEnabled: event.target.checked }))} /> Reveal commands under the {OVERLAY_LABEL} on a swipe</label>
       <div className="orb-fields"><label>Orbs · 1–{MAX_CURSOR_ORBS}<input type="number" min={1} max={MAX_CURSOR_ORBS} value={settings.cursorOrbs.length} onChange={(event) => resizeOrbs(event.currentTarget.valueAsNumber)} /></label>
       <label>Orb {orb + 1} runs<select value={settings.cursorOrbs[orb]} onChange={(event) => setOrbs(settings.cursorOrbs.map((command, index) => index === orb ? event.target.value as CursorCommand : command))}>{CURSOR_COMMANDS.map((command) => <option key={command} value={command}>{orbLabel(command, settings)}</option>)}</select></label>
       <div className="orb-order"><span>Position</span><button type="button" onClick={() => moveOrb(-1)} aria-label="Move orb counter-clockwise">↺</button><button type="button" onClick={() => moveOrb(1)} aria-label="Move orb clockwise">↻</button></div></div></div>
       <div className="orb-preview"><OrbRing commands={settings.cursorOrbs} settings={settings} selected={orb} onPick={setOrb} radius={108} /></div></section>
-    <section className="notch-settings"><div><div className="settings-head"><h3>Where the island hangs</h3><InfoDot>Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing.</InfoDot></div><p>Quick Ask hangs off the camera housing.</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section>
+    <section className="notch-settings"><div><div className="settings-head"><h3>{IS_WINDOWS ? "Where Quick Ask appears" : "Where the island hangs"}</h3><InfoDot>{IS_WINDOWS ? "Quick Ask appears as a small pill near the top of the display. Move it if the default position does not suit your taskbar or windows." : "Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing."}</InfoDot></div><p>{IS_WINDOWS ? "Quick Ask appears near the top of the display." : "Quick Ask hangs off the camera housing."}</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section>
     <button className="save-settings">{saved ? "Saved ✓" : "Save settings"}</button></form>;
 }
 
@@ -2756,7 +2759,7 @@ const priceBadge = (free: boolean) => free
 const localBrand: BrandDefinition = { id: "local", label: "Local models", fallback: "L" };
 const allBrand: BrandDefinition = { id: "all", label: "All models", fallback: "∗" };
 
-const catalogMarks = [["local", "Local models", "Mac"], ...providerMarks, ["other", "Other providers", "Various"]] as const;
+const catalogMarks = [["local", "Local models", LOCAL_DEVICE], ...providerMarks, ["other", "Other providers", "Various"]] as const;
 
 function modelEntries(providers: ProviderProfile[], models: OpenRouterCatalog["models"]): CatalogEntry[] {
   const entries: CatalogEntry[] = [
@@ -3064,7 +3067,7 @@ function RouterEditor({ chain, catalog, onChange }: { chain: string[]; catalog: 
 
 const emptyDraft = { name: "", modelId: "", baseUrl: "", credentialEnv: "", contextWindow: "", insecure: false };
 
-const reachLabel: Record<string, string> = { "this-mac": "On this Mac", network: "Your network", internet: "Over the internet" };
+const reachLabel: Record<string, string> = { "this-mac": `On this ${LOCAL_DEVICE}`, network: "Your network", internet: "Over the internet" };
 
 function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void | Promise<void>; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
   const [draft, setDraft] = useState(emptyDraft);
@@ -3127,7 +3130,7 @@ function ProviderSettings({ settings, onChange, act, busy }: { settings: UserSet
     </header>
     <div className="provider-presets">{PROVIDER_PRESETS.map((item) => <button type="button" key={item.id} disabled={busy || saving} title={item.detail} onClick={() => preset(item)}>{item.name || "Custom"}</button>)}</div>
     <form className="local-model-form" onSubmit={add}>
-      <label>Name<input required maxLength={64} value={draft.name} onChange={(event) => update("name", event.target.value)} placeholder="Mac Studio" /></label>
+      <label>Name<input required maxLength={64} value={draft.name} onChange={(event) => update("name", event.target.value)} placeholder={IS_WINDOWS ? "Windows PC" : "Mac Studio"} /></label>
       <label>Base URL<input required maxLength={2048} value={draft.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} placeholder="http://127.0.0.1:1234/v1" /></label>
       <label>Model ID<input required maxLength={128} list="provider-model-ids" value={draft.modelId} onChange={(event) => update("modelId", event.target.value)} placeholder="qwen3-8b" /></label>
       <datalist id="provider-model-ids">{(probe?.models ?? []).map((id) => <option key={id} value={id} />)}</datalist>
@@ -3393,7 +3396,7 @@ function ProviderKeys({ settings, act, busy }: { settings: UserSettings; act: (m
     setCustom("");
   };
   return <section className="provider-keys">
-    <header><div><span>API keys</span><h3>Keys stay in the keychain</h3><p>A key reaches the agent only through its process environment. Changing one restarts the local agent, so save it between turns.</p></div><strong>{stored.filter((item) => item.masked).length} stored</strong></header>
+    <header><div><span>API keys</span><h3>Keys stay in the secure store</h3><p>A key reaches the agent only through its process environment. Changing one restarts the local agent, so save it between turns.</p></div><strong>{stored.filter((item) => item.masked).length} stored</strong></header>
     {(error || status) && <p className={error ? "local-model-error" : "local-model-status"} role="status">{error || status}</p>}
     <div className="provider-key-list">{slots.map((slot) => {
       const saved = stored.find((item) => item.env === slot.env && item.masked);
@@ -3591,8 +3594,8 @@ function SecretPanel({ settings, onSave, busy }: { settings: UserSettings; onSav
       .catch((reason: unknown) => setNote({ text: reasonText(reason), bad: true }));
   };
   return <section className="local-model-settings">
-    <header><div><div className="settings-head"><h3>Secrets · the only model your keys reach</h3><InfoDot>The <code>secret</code> tool runs a command — <code>printenv</code>, <code>cat .env</code>, <code>op read</code>, <code>vault kv get</code> — and sends its output to this model and nothing else. The model you run threads on gets the answer, never the output. Pick a local profile to keep every key on this Mac.</InfoDot></div><p>Where the agent sends keys, tokens and vault entries. Nothing else sees them.</p></div><strong>{settings.tools.secret.model ? "Configured" : "Not set up"}</strong></header>
-    {!draft.model && <p className="local-model-error">No secrets model is set, so the tool refuses and tells the agent to come back here. A local model keeps every value on this Mac.</p>}
+    <header><div><div className="settings-head"><h3>Secrets · the only model your keys reach</h3><InfoDot>The <code>secret</code> tool runs a command — <code>printenv</code>, <code>cat .env</code>, <code>op read</code>, <code>vault kv get</code> — and sends its output to this model and nothing else. The model you run threads on gets the answer, never the output. Pick a local profile to keep every key on this {LOCAL_DEVICE}.</InfoDot></div><p>Where the agent sends keys, tokens and vault entries. Nothing else sees them.</p></div><strong>{settings.tools.secret.model ? "Configured" : "Not set up"}</strong></header>
+    {!draft.model && <p className="local-model-error">No secrets model is set, so the tool refuses and tells the agent to come back here. A local model keeps every value on this {LOCAL_DEVICE}.</p>}
     <form className="local-model-form" onSubmit={submit}>
       <SecondModelPicker label="Secrets model" off="No secrets model · the tool refuses" draft={draft} providers={settings.providers} routers={settings.routers} busy={busy} onChange={(next) => { setDraft(next); setNote({ text: "" }); }} />
       <label className="verifier-rules">What it is asked to do<textarea rows={6} maxLength={MAX_VERIFIER_SYSTEM_CHARS} value={draft.system} disabled={busy} onChange={(event) => setDraft({ ...draft, system: event.target.value })} /></label>
@@ -3681,7 +3684,7 @@ function ConnectionSettings({ settings, onChange, busy }: { settings: UserSettin
         <BrandIcon brand={brandForConnection(connection.id)} className={`integration-mark ${connection.id}`} />
         <div><strong>{connection.label}</strong><small>{connection.detail}</small></div>
       </label>
-      <code>{connection.binary || `brew install ${connection.formula}`}</code>
+      <code>{connection.binary || (IS_WINDOWS ? "Install the Windows CLI" : `brew install ${connection.formula}`)}</code>
       {action
         ? <button type="button" disabled={busy || Boolean(working)} onClick={() => void setUp(connection.id, action)}>{working === connection.id ? "…" : action === "install" ? "Install" : "Update"}</button>
         : <em>{connection.binary ? "Current" : ""}</em>}
@@ -3692,9 +3695,9 @@ function ConnectionSettings({ settings, onChange, busy }: { settings: UserSettin
 const SETUP_STEPS = ["Emma", "Model", "Quick Ask", "Permissions", "Knowledge", "Agents"] as const;
 
 const SETUP_PROMISES = [
-  { key: "⌥⌥", line: "Ask from anywhere, over whatever app you are in." },
+  { key: `${ALT_LABEL}${ALT_LABEL}`, line: "Ask from anywhere, over whatever app you are in." },
   { key: "Explicit", line: "Nothing is filed, written, or run until you say so." },
-  { key: "Local", line: "Threads, knowledge, and every key stay on this Mac." },
+  { key: "Local", line: `Threads, knowledge, and every key stay on this ${LOCAL_DEVICE}.` },
 ] as const;
 
 const NOTCH_LESSONS = [
@@ -3708,7 +3711,7 @@ const DOUBLE_TAP_MS = 350;
 const NOTCH_ORBS = [{ glyph: "▣", name: "Screen" }, { glyph: "✎", name: "Draw" }, { glyph: "⧉", name: "Save page" }] as const;
 
 function vaultTree(vault: VaultChoice | null, folder: string): string {
-  const name = vault ? (vault.root.split("/").filter(Boolean).pop() ?? vault.name) : "Your vault";
+  const name = vault ? (vault.root.split(/[\\/]+/).filter(Boolean).pop() ?? vault.name) : "Your vault";
   return [
     `${name}/`,
     `└─ ${folder || DEFAULT_VAULT_FOLDER}/`,
@@ -3718,11 +3721,40 @@ function vaultTree(vault: VaultChoice | null, folder: string): string {
   ].join("\n");
 }
 
-const GRANT_STATES = { on: { mark: "[ok]", title: "Granted" }, off: { mark: "[  ]", title: "Not granted" }, unknown: { mark: "[--]", title: "macOS does not report this one" } };
+const GRANT_STATES = { on: { mark: "[ok]", title: "Granted" }, off: { mark: "[  ]", title: "Not granted" }, unknown: { mark: "[--]", title: `${PLATFORM_NAME} does not report this one` } };
 
 function SetupMark({ on }: { on: boolean | null | undefined }) {
   const state = on === true ? "on" : on === false ? "off" : "unknown";
   return <i className={`setup-mark ${state}`} title={GRANT_STATES[state].title} role="img" aria-label={GRANT_STATES[state].title}>{GRANT_STATES[state].mark}</i>;
+}
+
+function setupPermissionUnavailable(id: SetupPermission): boolean {
+  return IS_WINDOWS && (id === "accessibility" || id === "speech" || id === "automation");
+}
+
+function setupPermissionTitle(permission: (typeof SETUP_PERMISSIONS)[number]): string {
+  if (!IS_WINDOWS) return permission.title;
+  if (permission.id === "screen") return "Screen capture";
+  if (permission.id === "files") return "Files";
+  if (permission.id === "accessibility") return "App control";
+  return permission.title;
+}
+
+function setupPermissionWhat(permission: (typeof SETUP_PERMISSIONS)[number]): string {
+  if (IS_WINDOWS && permission.id === "accessibility") return "Opens Quick Ask on the built-in shortcut and controls apps you approve.";
+  return permission.what;
+}
+
+function setupPermissionTasks(permission: (typeof SETUP_PERMISSIONS)[number]): readonly string[] {
+  if (IS_WINDOWS && permission.id === "accessibility") return ["Control approved apps", "Quick Ask on Alt+Alt", "Bound shortcuts"];
+  return permission.tasks;
+}
+
+function setupPermissionWhy(permission: (typeof SETUP_PERMISSIONS)[number]): string {
+  if (IS_WINDOWS && permission.id === "accessibility") return "Windows does not use a separate accessibility grant for Emma's approved app actions. Emma asks before each app run and limits access to that turn.";
+  if (IS_WINDOWS && permission.id === "speech") return "Windows SAPI does not use a separate Emma speech grant. Emma checks the local speech helper before dictation.";
+  if (IS_WINDOWS && permission.id === "automation") return "Windows does not use a separate automation grant for supported browser metadata. Emma reads only the foreground browser details needed for the action you ask for.";
+  return permission.why;
 }
 
 function PermissionSettings({ busy }: { busy: boolean }) {
@@ -3731,23 +3763,25 @@ function PermissionSettings({ busy }: { busy: boolean }) {
   const refresh = useCallback(() => { void window.emma.setupStatus().then(setStatus).catch(() => undefined); }, []);
   useEffect(() => { refresh(); window.addEventListener("focus", refresh); return () => window.removeEventListener("focus", refresh); }, [refresh]);
   const open = (permission: SetupPermission) => void window.emma.openPrivacySettings(permission).catch((reason: unknown) => setError(reasonText(reason)));
-  const granted = SETUP_PERMISSIONS.filter((permission) => status?.[permission.id] === true).length;
+  const requiredPermissions = SETUP_PERMISSIONS.filter((permission) => !setupPermissionUnavailable(permission.id));
+  const granted = requiredPermissions.filter((permission) => status?.[permission.id] === true).length;
   return <>
     <div className="settings-lines permission-lines">
       <header>
-        <div className="settings-head"><h3>What this Mac lets Emma do</h3><InfoDot>Every grant here belongs to macOS, not to Emma: she can only send you to the pane that flips it. Nothing on this list is asked for until a task needs it, and a refused grant stops that task rather than the app.</InfoDot></div>
-        <strong>{granted} of {SETUP_PERMISSIONS.length}</strong>
+        <div className="settings-head"><h3>What this computer lets Emma do</h3><InfoDot>Every grant here belongs to the operating system, not to Emma: she can only send you to the setting that flips it. Nothing on this list is asked for until a task needs it, and a refused grant stops that task rather than the app.</InfoDot></div>
+        <strong>{granted} of {requiredPermissions.length}</strong>
       </header>
       {SETUP_PERMISSIONS.map((permission) => {
         const ok = status?.[permission.id];
+        const unavailable = setupPermissionUnavailable(permission.id);
         return <section key={permission.id}>
           <div>
-            <div className="settings-head"><h3><SetupMark on={ok} />{permission.title}</h3><InfoDot>{permission.why}</InfoDot></div>
-            <p>{permission.what}</p>
-            <ul className="permission-tasks">{permission.tasks.map((task) => <li key={task}>{task}</li>)}</ul>
-            {permission.relaunch && ok !== true && <small className="keybind-builtin">Relaunch Emma once you have granted it.</small>}
+            <div className="settings-head"><h3><SetupMark on={ok} />{setupPermissionTitle(permission)}</h3><InfoDot>{setupPermissionWhy(permission)}</InfoDot></div>
+            <p>{setupPermissionWhat(permission)}</p>
+            <ul className="permission-tasks">{setupPermissionTasks(permission).map((task) => <li key={task}>{task}</li>)}</ul>
+            {permission.relaunch && !unavailable && ok !== true && <small className="keybind-builtin">Relaunch Emma once you have granted it.</small>}
           </div>
-          <button type="button" disabled={busy} onClick={() => open(permission.id)}>{ok === true ? "Review ↗" : "Grant ↗"}</button>
+          <button type="button" disabled={busy || unavailable} onClick={() => open(permission.id)}>{unavailable ? "Not required" : ok === true ? "Review ↗" : "Grant ↗"}</button>
         </section>;
       })}
     </div>
@@ -3780,9 +3814,9 @@ function ControlLesson({ done, onDone }: { done: boolean; onDone: () => void }) 
   }, [onDone]);
   return <div className={`key-lesson ${done ? "done" : ""}`}>
     <div className="keycaps" aria-hidden="true">
-      {[0, 1].map((index) => <kbd key={index} className={taps > index || done ? "lit" : ""}>⌥<span>option</span></kbd>)}
+      {[0, 1].map((index) => <kbd key={index} className={taps > index || done ? "lit" : ""}>{ALT_LABEL}<span>{IS_WINDOWS ? "alt" : "option"}</span></kbd>)}
     </div>
-    <p role="status">{done ? "That is it — Emma is up." : taps ? "Again, quickly…" : "Tap the left Option key twice."}</p>
+    <p role="status">{done ? "That is it — Emma is up." : taps ? "Again, quickly…" : `Tap the left ${IS_WINDOWS ? "Alt" : "Option"} key twice.`}</p>
   </div>;
 }
 
@@ -3838,7 +3872,7 @@ function SetupModelStep({ onManageModels }: { onManageModels: () => void }) {
   };
   return <div className="setup-grants setup-model-step">
     <section>
-      <h3><SetupMark on={saved ? (balance ? !balance.error : null) : false} />OpenRouter key<InfoDot>One key covers every maker in the catalog, and Emma reaches no model without one. It is encrypted with this Mac's keychain and handed to the agent through its environment — no setting ever holds the key itself, and changing it restarts the local agent.</InfoDot></h3>
+      <h3><SetupMark on={saved ? (balance ? !balance.error : null) : false} />OpenRouter key<InfoDot>One key covers every maker in the catalog, and Emma reaches no model without one. It is encrypted with this {LOCAL_DEVICE}'s credential store and handed to the agent through its environment — no setting ever holds the key itself, and changing it restarts the local agent.</InfoDot></h3>
       <a href={OPENROUTER_KEYS_URL} target="_blank" rel="noreferrer">openrouter.ai/keys ↗</a>
       <div>
         <p>Make a key there — a free one is enough. The models the catalog marks <b>FREE</b> cost nothing to run; a paid model needs credit on the same key.</p>
@@ -3906,7 +3940,8 @@ function SetupDialog({ close, onManageModels }: { close: () => void; onManageMod
       .then((picked) => { if (picked) apply({ ...picked, folder: validVaultFolder(folder) ? folder : DEFAULT_VAULT_FOLDER }); })
       .catch((reason: unknown) => setError(reasonText(reason)));
   };
-  const granted = SETUP_PERMISSIONS.filter((permission) => status?.[permission.id] === true).length;
+  const requiredPermissions = SETUP_PERMISSIONS.filter((permission) => !setupPermissionUnavailable(permission.id));
+  const granted = requiredPermissions.filter((permission) => status?.[permission.id] === true).length;
   const last = step === SETUP_STEPS.length - 1;
   return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="setup-title" onCancel={(event) => { event.preventDefault(); close(); }}>
     <section className="import-dialog setup-dialog">
@@ -3926,15 +3961,16 @@ function SetupDialog({ close, onManageModels }: { close: () => void; onManageMod
         <dl>{SETUP_PROMISES.map((promise) => <div key={promise.key}><dt>{promise.key}</dt><dd>{promise.line}</dd></div>)}</dl>
       </div>}
       {step === 3 && <div className="setup-grants">
-        <p className="setup-meter"><span aria-hidden="true">[{"#".repeat(granted)}{".".repeat(SETUP_PERMISSIONS.length - granted)}]</span> {granted} of {SETUP_PERMISSIONS.length} granted · macOS asks one at a time</p>
+        <p className="setup-meter"><span aria-hidden="true">[{"#".repeat(granted)}{".".repeat(requiredPermissions.length - granted)}]</span> {granted} of {requiredPermissions.length} granted · {PLATFORM_NAME} asks one at a time</p>
         {SETUP_PERMISSIONS.map((permission) => {
           const ok = status?.[permission.id];
+          const unavailable = setupPermissionUnavailable(permission.id);
           return <section key={permission.id}>
-            <h3><SetupMark on={ok} />{permission.title}<InfoDot>{permission.why}</InfoDot></h3>
-            <button type="button" onClick={() => open(permission.id)}>{ok === true ? "Review ↗" : "Grant ↗"}</button>
+            <h3><SetupMark on={ok} />{setupPermissionTitle(permission)}<InfoDot>{setupPermissionWhy(permission)}</InfoDot></h3>
+            <button type="button" disabled={unavailable} onClick={() => open(permission.id)}>{unavailable ? "Not required" : ok === true ? "Review ↗" : "Grant ↗"}</button>
             <div>
-              <p>{permission.what}</p>
-              {permission.relaunch && ok !== true && <small>Relaunch Emma once you have granted it.</small>}
+              <p>{setupPermissionWhat(permission)}</p>
+              {permission.relaunch && !unavailable && ok !== true && <small>Relaunch Emma once you have granted it.</small>}
             </div>
           </section>;
         })}
@@ -3946,12 +3982,12 @@ function SetupDialog({ close, onManageModels }: { close: () => void; onManageMod
         <dl>{NOTCH_LESSONS.map((lesson) => <div key={lesson.key}><dt>{lesson.key}</dt><dd>{lesson.line}</dd></div>)}</dl>
         <div className="setup-choices">
           <button type="button" onClick={() => void window.emma.demoQuickAsk().catch((reason: unknown) => setError(reasonText(reason)))}>Show me ↗</button>
-          {status?.accessibility !== true && <small>Outside Emma, ⌥⌥ stays dead until Accessibility is granted — next step.</small>}
+          {status?.accessibility !== true && !IS_WINDOWS && <small>Outside Emma, {ALT_LABEL}{ALT_LABEL} stays dead until app control is granted — next step.</small>}
         </div>
       </div>}
       {step === 4 && <div className="setup-grants">
         <section>
-          <h3><SetupMark on={!!status?.vault} />Where notes are saved<InfoDot>Every save is one Markdown note in a folder you already own — an Obsidian vault, an iCloud Drive folder, anywhere. Obsidian, or whatever you read Markdown with, is the reader; Emma keeps no second copy. Writing there is what makes macOS ask about Files &amp; Folders.</InfoDot></h3>
+          <h3><SetupMark on={!!status?.vault} />Where notes are saved<InfoDot>Every save is one Markdown note in a folder you already own — an Obsidian vault, a synced folder, anywhere. Obsidian, or whatever you read Markdown with, is the reader; Emma keeps no second copy. Writing there is what makes {PLATFORM_NAME} ask about file access.</InfoDot></h3>
           <button type="button" onClick={pickFolder}>Any folder…</button>
           <div>
             <code>{status?.vault ? noteFolder(status.vault) : "No vault yet"}</code>
@@ -3964,7 +4000,7 @@ function SetupDialog({ close, onManageModels }: { close: () => void; onManageMod
             <input id="vault-folder" value={folder} maxLength={128} spellCheck={false} placeholder={DEFAULT_VAULT_FOLDER}
               onChange={(event) => setTypedFolder(event.target.value)}
               onBlur={() => { if (status?.vault && validVaultFolder(folder) && folder !== status.vault.folder) apply({ ...status.vault, folder }); }} />
-            {status?.files !== true && <small>macOS has not let Emma write there yet. <button type="button" className="setup-skip" onClick={() => open("files")}>Open Settings ↗</button></small>}
+            {status?.files !== true && <small>{PLATFORM_NAME} has not let Emma write there yet. <button type="button" className="setup-skip" onClick={() => open("files")}>Open Settings ↗</button></small>}
           </div>
         </section>
       </div>}
@@ -3982,7 +4018,7 @@ function SetupDialog({ close, onManageModels }: { close: () => void; onManageMod
 function ImportDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
-  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="import-title" onCancel={(event) => { event.preventDefault(); close(); }}><section className="import-dialog"><header><div><span>First launch / optional</span><h2 id="import-title">Bring your agent setup</h2><p>Emma can find Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf, and Devin defaults on this Mac.</p></div><button type="button" onClick={close} aria-label="Skip agent imports">×</button></header><AgentImports done={close} /><button className="import-later" type="button" onClick={close}>Not now</button></section></dialog>;
+  return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="import-title" onCancel={(event) => { event.preventDefault(); close(); }}><section className="import-dialog"><header><div><span>First launch / optional</span><h2 id="import-title">Bring your agent setup</h2><p>Emma can find Codex, Claude, Antigravity, Pi, OpenCode, Cursor, Windsurf, and Devin defaults on this {LOCAL_DEVICE}.</p></div><button type="button" onClick={close} aria-label="Skip agent imports">×</button></header><AgentImports done={close} /><button className="import-later" type="button" onClick={close}>Not now</button></section></dialog>;
 }
 
 function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned }: { ref: RefObject<HTMLElement | null>; close: () => void; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean; onSettingsChanged: (settings: UserSettings) => void; onManage: () => void; pinned?: { key: string; onPick: (key: string) => void } }) {
@@ -4100,7 +4136,8 @@ function OrbRing({ commands, settings, selected, onPick, radius = 88 }: { comman
       const angle = (index / commands.length) * 2 * Math.PI - Math.PI / 2;
       const style = { left: `calc(50% + ${Math.round(Math.cos(angle) * radius)}px)`, top: `calc(50% + ${Math.round(Math.sin(angle) * radius)}px)` } as CSSProperties;
       const label = orbLabel(command, settings);
-      return <button type="button" key={index} role="menuitem" className={selected === index ? "selected" : ""} style={style} title={label} onClick={() => onPick(index)}><span className="orb" aria-hidden="true"><kbd>{cursorCommandGlyphs[command]}</kbd></span>{label}</button>;
+      const glyph = /^[012]$/.test(command) ? `${MODIFIER_LABEL}${Number(command) + 1}` : cursorCommandGlyphs[command];
+      return <button type="button" key={index} role="menuitem" className={selected === index ? "selected" : ""} style={style} title={label} onClick={() => onPick(index)}><span className="orb" aria-hidden="true"><kbd>{glyph}</kbd></span>{label}</button>;
     })}
   </div>;
 }
@@ -4203,7 +4240,7 @@ function Overlay() {
   const [modeBand, setModeBand] = useState(0);
   const [thread, setThread] = useState<Thread>();
   const [turns, setTurns] = useState<QuickTurn[]>([]);
-  const [surface, setSurface] = useState<OverlaySurface>("notch");
+  const [surface, setSurface] = useState<OverlaySurface>(() => new URLSearchParams(location.search).get("surface") === "pill" ? "pill" : "notch");
   const notch = useMemo(() => readNotchQuery(settings.notchGap), [settings.notchGap]);
   const [grow, setGrow] = useState(0);
   const transcript = useRef<HTMLDivElement>(null);
@@ -4498,7 +4535,7 @@ function Overlay() {
       </footer>
     </div>
     </Region>
-    <div className={`command-orbs ${orbs ? "open" : ""}`}>{settings.quickActions.map((action, index) => <button key={index} onClick={() => void runAction(index)} disabled={busy} title={action.prompt}><span className="orb" aria-hidden="true"><kbd>⌘{index + 1}</kbd></span>{action.label}</button>)}</div>
+    <div className={`command-orbs ${orbs ? "open" : ""}`}>{settings.quickActions.map((action, index) => <button key={index} onClick={() => void runAction(index)} disabled={busy} title={action.prompt}><span className="orb" aria-hidden="true"><kbd>{MODIFIER_LABEL}{index + 1}</kbd></span>{action.label}</button>)}</div>
   </main>;
 }
 

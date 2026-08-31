@@ -1,6 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const command_lex = @import("command_lex.zig");
 const sandbox = @import("../permissions/sandbox.zig");
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../shared/windows_paths.zig")
+else
+    struct {};
 
 const max_command_bytes = 8 * 1024;
 const max_ls_operands = 64;
@@ -8,11 +13,11 @@ const max_git_pathspecs = 64;
 const max_line_count = 10_000;
 const max_git_log_count = 1_000;
 pub const max_direct_pipeline_stages = 8;
+const windows_cmd_path = "C:\\Windows\\System32\\cmd.exe";
+const windows_powershell_path = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const windows_git_path = "C:\\Program Files\\Git\\cmd\\git.exe";
+const windows_powershell_utf8_prelude = "$fx_utf8=[Text.UTF8Encoding]::new($false);[Console]::InputEncoding=$fx_utf8;[Console]::OutputEncoding=$fx_utf8;$OutputEncoding=$fx_utf8;";
 
-/// Returns true only for a small parsed set of ordinary development commands
-/// whose effects are expected and recoverable in auto mode. Unknown syntax,
-/// dynamic shell expansion, publication, deletion, and wrappers remain on the
-/// normal review path.
 pub fn knownReversibleAutoCommand(
     alloc: std.mem.Allocator,
     command: []const u8,
@@ -315,7 +320,7 @@ pub fn plan(
     if (backend != .none and backend != .macos) {
         return .{ .approval_required = .unsupported_backend };
     }
-    if (target_os != .macos and target_os != .linux) {
+    if (target_os != .macos and target_os != .linux and target_os != .windows) {
         return .{ .approval_required = .unsupported_platform };
     }
 
@@ -477,14 +482,14 @@ fn planFamily(
     if (isNetworkCommand(command)) return .{ .approval_required = .network_access };
     if (isProcessOrSystemCommand(command)) return .{ .approval_required = .process_or_system };
     if (std.mem.eql(u8, command, "printf")) return planPrintf(alloc, words, target_os);
-    if (std.mem.eql(u8, command, "pwd")) return planPwd(alloc, words);
+    if (std.mem.eql(u8, command, "pwd")) return planPwd(alloc, words, target_os);
     if (std.mem.eql(u8, command, "ls")) return planLs(alloc, words, target_os);
-    if (std.mem.eql(u8, command, "wc")) return planWc(alloc, words);
-    if (std.mem.eql(u8, command, "cat")) return planCat(alloc, words);
-    if (std.mem.eql(u8, command, "head")) return planHeadOrTail(alloc, words, "/usr/bin/head");
-    if (std.mem.eql(u8, command, "tail")) return planHeadOrTail(alloc, words, "/usr/bin/tail");
-    if (std.mem.eql(u8, command, "grep")) return planGrep(alloc, words);
-    if (std.mem.eql(u8, command, "git")) return planGit(alloc, words);
+    if (std.mem.eql(u8, command, "wc")) return planWc(alloc, words, target_os);
+    if (std.mem.eql(u8, command, "cat")) return planCat(alloc, words, target_os);
+    if (std.mem.eql(u8, command, "head")) return planHeadOrTail(alloc, words, "/usr/bin/head", target_os);
+    if (std.mem.eql(u8, command, "tail")) return planHeadOrTail(alloc, words, "/usr/bin/tail", target_os);
+    if (std.mem.eql(u8, command, "grep")) return planGrep(alloc, words, target_os);
+    if (std.mem.eql(u8, command, "git")) return planGit(alloc, words, target_os);
     return .{ .approval_required = .unknown_command };
 }
 
@@ -493,6 +498,7 @@ fn planPrintf(
     words: []const []const u8,
     target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
+    if (target_os == .windows) return planWindowsPrintf(alloc, words);
     const policy = printfPolicy(target_os);
     if (words.len < 2) return .{ .approval_required = .unsupported_argument };
     const format = words[1];
@@ -513,8 +519,117 @@ fn planPrintf(
 fn printfPolicy(target_os: std.Target.Os.Tag) PrintfPolicy {
     return switch (target_os) {
         .macos, .linux => .{ .executable = "/usr/bin/printf" },
-        else => unreachable,
+        .windows => .{ .executable = windows_powershell_path },
+        else => .{ .executable = "printf" },
     };
+}
+
+fn appendPowerShellQuoted(
+    output: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    value: []const u8,
+) std.mem.Allocator.Error!void {
+    try output.append(alloc, '\'');
+    for (value) |byte| {
+        if (byte == '\'') try output.appendSlice(alloc, "''") else try output.append(alloc, byte);
+    }
+    try output.append(alloc, '\'');
+}
+
+fn windowsPowerShellArgv(
+    alloc: std.mem.Allocator,
+    script: []const u8,
+) std.mem.Allocator.Error![]const []const u8 {
+    const executable = if (comptime builtin.os.tag == .windows) blk: {
+        break :blk windows_paths.system32Executable(
+            alloc,
+            "WindowsPowerShell\\v1.0\\powershell.exe",
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => windows_powershell_path,
+        };
+    } else windows_powershell_path;
+    const argv = try alloc.alloc([]const u8, 6);
+    argv[0] = executable;
+    argv[1] = "-NoLogo";
+    argv[2] = "-NoProfile";
+    argv[3] = "-NonInteractive";
+    argv[4] = "-Command";
+    argv[5] = script;
+    return argv;
+}
+
+fn planWindowsPrintf(
+    alloc: std.mem.Allocator,
+    words: []const []const u8,
+) std.mem.Allocator.Error!StageAdmission {
+    if (words.len < 2) return .{ .approval_required = .unsupported_argument };
+    const format = words[1];
+    const conversions = printfStringConversionCount(format) orelse
+        return .{ .approval_required = .unsupported_argument };
+    if (words.len - 2 != conversions) {
+        return .{ .approval_required = .unsupported_argument };
+    }
+
+    var script: std.ArrayList(u8) = .empty;
+    errdefer script.deinit(alloc);
+    try script.appendSlice(alloc, windows_powershell_utf8_prelude);
+    try script.appendSlice(alloc, "$fx_format=");
+    try script.append(alloc, '\'');
+    var index: usize = 0;
+    var conversion: usize = 0;
+    const format_arguments = conversions != 0;
+    while (index < format.len) {
+        if (format[index] == '\\' and index + 1 < format.len and format[index + 1] == 'n') {
+            try script.append(alloc, '\n');
+            index += 2;
+            continue;
+        }
+        if (format[index] == '%') {
+            if (format[index + 1] == '%') {
+                try script.append(alloc, '%');
+                index += 2;
+                continue;
+            }
+            try script.append(alloc, '{');
+            var conversion_buffer: [32]u8 = undefined;
+            const conversion_text = std.fmt.bufPrint(
+                &conversion_buffer,
+                "{d}",
+                .{conversion},
+            ) catch unreachable;
+            try script.appendSlice(alloc, conversion_text);
+            try script.append(alloc, '}');
+            conversion += 1;
+            index += 2;
+            continue;
+        }
+        if (format[index] == '{' and format_arguments) {
+            try script.appendSlice(alloc, "{{");
+        } else if (format[index] == '}' and format_arguments) {
+            try script.appendSlice(alloc, "}}");
+        } else if (format[index] == '\'') {
+            try script.appendSlice(alloc, "''");
+        } else {
+            try script.append(alloc, format[index]);
+        }
+        index += 1;
+    }
+    try script.appendSlice(alloc, "';[Console]::Write($fx_format");
+    if (conversions != 0) {
+        try script.appendSlice(alloc, " -f ");
+        for (words[2..], 0..) |word, word_index| {
+            if (word_index != 0) try script.append(alloc, ',');
+            try appendPowerShellQuoted(&script, alloc, word);
+        }
+    }
+    try script.append(alloc, ')');
+    const script_owned = try script.toOwnedSlice(alloc);
+    const argv = try windowsPowerShellArgv(alloc, script_owned);
+    return .{ .direct = .{
+        .executable = argv[0],
+        .argv = argv,
+    } };
 }
 
 fn printfStringConversionCount(format: []const u8) ?usize {
@@ -548,7 +663,23 @@ fn printfStringConversionCount(format: []const u8) ?usize {
 fn planPwd(
     alloc: std.mem.Allocator,
     words: []const []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
+    if (target_os == .windows) {
+        if (words.len != 1 and !(words.len == 2 and std.mem.eql(u8, words[1], "-P"))) {
+            return .{ .approval_required = .unsupported_argument };
+        }
+        const executable = if (comptime builtin.os.tag == .windows)
+            windows_paths.system32Executable(alloc, "cmd.exe") catch windows_cmd_path
+        else
+            windows_cmd_path;
+        const argv = try alloc.alloc([]const u8, 4);
+        argv[0] = executable;
+        argv[1] = "/d";
+        argv[2] = "/c";
+        argv[3] = "cd";
+        return .{ .direct = .{ .executable = executable, .argv = argv } };
+    }
     if (words.len > 2 or (words.len == 2 and !std.mem.eql(u8, words[1], "-P"))) {
         return .{ .approval_required = .unsupported_argument };
     }
@@ -564,6 +695,7 @@ fn planLs(
     words: []const []const u8,
     target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
+    if (target_os == .windows) return planWindowsLs(alloc, words);
     const policy = lsPolicy(target_os);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(alloc, policy.executable);
@@ -618,14 +750,95 @@ fn lsPolicy(target_os: std.Target.Os.Tag) LsPolicy {
             .executable = "/bin/ls",
             .forced_argv = &.{"-q"},
         },
-        else => unreachable,
+        .windows => .{
+            .executable = windows_powershell_path,
+            .forced_argv = &.{ "-NoLogo", "-NoProfile", "-NonInteractive", "-Command" },
+        },
+        else => .{ .executable = "ls", .forced_argv = &.{} },
     };
+}
+
+fn planWindowsLs(
+    alloc: std.mem.Allocator,
+    words: []const []const u8,
+) std.mem.Allocator.Error!StageAdmission {
+    var include_hidden = false;
+    var directory_only = false;
+    var classify = false;
+    var long_format = false;
+    var mark_directories = false;
+    var operands: std.ArrayList([]const u8) = .empty;
+    var parsing_options = true;
+    var explicit_separator = false;
+    for (words[1..]) |word| {
+        if (parsing_options and std.mem.eql(u8, word, "--")) {
+            parsing_options = false;
+            explicit_separator = true;
+            continue;
+        }
+        if (parsing_options and word.len > 1 and word[0] == '-') {
+            for (word[1..]) |flag| switch (flag) {
+                '1' => {},
+                'a', 'A' => include_hidden = true,
+                'd' => directory_only = true,
+                'F' => classify = true,
+                'l', 'n' => long_format = true,
+                'p' => mark_directories = true,
+                else => return .{ .approval_required = .unsupported_argument },
+            };
+            continue;
+        }
+        parsing_options = false;
+        if (!explicit_separator and word.len > 1 and word[0] == '-') {
+            return .{ .approval_required = .unsupported_argument };
+        }
+        try operands.append(alloc, word);
+    }
+
+    if (operands.items.len > max_ls_operands) {
+        return .{ .approval_required = .unsupported_argument };
+    }
+    const default_paths = [_][]const u8{"."};
+    const paths: []const []const u8 = if (operands.items.len == 0)
+        default_paths[0..]
+    else
+        operands.items;
+    var script: std.ArrayList(u8) = .empty;
+    errdefer script.deinit(alloc);
+    try script.appendSlice(alloc, windows_powershell_utf8_prelude);
+    try script.appendSlice(alloc, "$fx_paths=@(");
+    for (paths, 0..) |path, path_index| {
+        if (path_index != 0) try script.append(alloc, ',');
+        try appendPowerShellQuoted(&script, alloc, path);
+    }
+    try script.appendSlice(alloc, ");$fx_include_hidden=");
+    try script.appendSlice(alloc, if (include_hidden) "$true" else "$false");
+    try script.appendSlice(alloc, ";$fx_directory_only=");
+    try script.appendSlice(alloc, if (directory_only) "$true" else "$false");
+    try script.appendSlice(alloc, ";$fx_classify=");
+    try script.appendSlice(alloc, if (classify) "$true" else "$false");
+    try script.appendSlice(alloc, ";$fx_long_format=");
+    try script.appendSlice(alloc, if (long_format) "$true" else "$false");
+    try script.appendSlice(alloc, ";$fx_mark_directories=");
+    try script.appendSlice(alloc, if (mark_directories) "$true" else "$false");
+    try script.appendSlice(
+        alloc,
+        ";$fx_items=@();try{foreach($fx_path in $fx_paths){$fx_item=Get-Item -LiteralPath $fx_path -Force -ErrorAction Stop;if($fx_directory_only){$fx_items+=$fx_item}elseif($fx_item.PSIsContainer){$fx_items+=@(Get-ChildItem -LiteralPath $fx_path -Force:$fx_include_hidden -ErrorAction Stop)}else{$fx_items+=$fx_item}};$fx_items=@($fx_items|Sort-Object -Property Name);foreach($fx_item in $fx_items){$fx_name=$fx_item.Name -replace '[\\x00-\\x1f\\x7f]','?';if($fx_classify -or $fx_mark_directories){if($fx_item.Attributes -band [IO.FileAttributes]::ReparsePoint){if($fx_classify){$fx_name+='@'}elseif($fx_item.PSIsContainer){$fx_name+='/'}}elseif($fx_item.PSIsContainer){$fx_name+='/'}};if($fx_long_format){$fx_kind=if($fx_item.PSIsContainer){'d'}else{'-'};$fx_size=if($fx_item.PSIsContainer){0}else{$fx_item.Length};$fx_time=$fx_item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss');[Console]::WriteLine('{0} {1} {2} {3}' -f $fx_kind,$fx_size,$fx_time,$fx_name)}else{[Console]::WriteLine($fx_name)}}}catch{[Console]::Error.WriteLine($_.Exception.Message);exit 2};exit 0",
+    );
+    const script_owned = try script.toOwnedSlice(alloc);
+    const argv = try windowsPowerShellArgv(alloc, script_owned);
+    return .{ .direct = .{
+        .executable = argv[0],
+        .argv = argv,
+    } };
 }
 
 fn planWc(
     alloc: std.mem.Allocator,
     words: []const []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
+    if (target_os == .windows) return planWindowsWc(alloc, words);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(alloc, "/usr/bin/wc");
     for (words[1..]) |word| {
@@ -650,11 +863,76 @@ fn planWc(
     } };
 }
 
-fn planCat(
+fn planWindowsWc(
     alloc: std.mem.Allocator,
     words: []const []const u8,
 ) std.mem.Allocator.Error!StageAdmission {
+    var count_bytes = false;
+    var count_lines = false;
+    var count_chars = false;
+    var count_words = false;
+    var count_longest = false;
+    for (words[1..]) |word| {
+        if (word.len < 2 or word[0] != '-') {
+            return .{ .approval_required = .unsupported_argument };
+        }
+        for (word[1..]) |flag| switch (flag) {
+            'c' => count_bytes = true,
+            'l' => count_lines = true,
+            'm' => count_chars = true,
+            'w' => count_words = true,
+            'L' => count_longest = true,
+            else => return .{ .approval_required = .unsupported_argument },
+        };
+    }
+    if (!count_bytes and !count_lines and !count_chars and !count_words and !count_longest) {
+        count_lines = true;
+        count_words = true;
+        count_bytes = true;
+    }
+    var script: std.ArrayList(u8) = .empty;
+    errdefer script.deinit(alloc);
+    try script.appendSlice(
+        alloc,
+        windows_powershell_utf8_prelude ++ "$fx_input=[Console]::OpenStandardInput();$fx_stream=[IO.MemoryStream]::new();$fx_input.CopyTo($fx_stream);$fx_bytes=$fx_stream.ToArray();$fx_text=[Text.Encoding]::UTF8.GetString($fx_bytes);$fx_values=@(",
+    );
+    var value_count: usize = 0;
+    const expressions = .{
+        .{ count_lines, "([regex]::Matches($fx_text,\"`n\")).Count" },
+        .{ count_words, "([regex]::Matches($fx_text,\"\\S+\")).Count" },
+        .{ count_chars, "$fx_text.Length" },
+        .{ count_bytes, "$fx_bytes.Length" },
+        .{ count_longest, "($fx_text -split \"`n\" | ForEach-Object { $_.TrimEnd(\"`r\").Length } | Measure-Object -Maximum).Maximum" },
+    };
+    inline for (expressions) |entry| {
+        if (entry[0]) {
+            if (value_count != 0) try script.append(alloc, ',');
+            try script.appendSlice(alloc, entry[1]);
+            value_count += 1;
+        }
+    }
+    try script.appendSlice(alloc, ");[Console]::WriteLine(($fx_values -join \" \"))");
+    const script_owned = try script.toOwnedSlice(alloc);
+    const argv = try windowsPowerShellArgv(alloc, script_owned);
+    return .{ .direct = .{
+        .executable = argv[0],
+        .argv = argv,
+    } };
+}
+
+fn planCat(
+    alloc: std.mem.Allocator,
+    words: []const []const u8,
+    target_os: std.Target.Os.Tag,
+) std.mem.Allocator.Error!StageAdmission {
     if (words.len != 1) return .{ .approval_required = .unsupported_argument };
+    if (target_os == .windows) {
+        const argv = try windowsPowerShellArgv(
+            alloc,
+            "$fx_input=[Console]::OpenStandardInput();$fx_output=[Console]::OpenStandardOutput();$fx_input.CopyTo($fx_output);$fx_output.Flush()",
+        );
+        return .{ .direct = .{ .executable = argv[0], .argv = argv } };
+    }
     const argv = try alloc.dupe([]const u8, &.{"/bin/cat"});
     return .{ .direct = .{
         .executable = "/bin/cat",
@@ -666,6 +944,7 @@ fn planHeadOrTail(
     alloc: std.mem.Allocator,
     words: []const []const u8,
     executable: []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
     var index: usize = 1;
     var count: []const u8 = "10";
@@ -679,6 +958,34 @@ fn planHeadOrTail(
 
     if (index != words.len) return .{ .approval_required = .unsupported_argument };
 
+    if (target_os == .windows) {
+        var script: std.ArrayList(u8) = .empty;
+        errdefer script.deinit(alloc);
+        try script.appendSlice(
+            alloc,
+            windows_powershell_utf8_prelude ++ "$fx_text=[Console]::In.ReadToEnd();$fx_has_final_newline=$fx_text.EndsWith(\"`n\");$fx_lines=@();if($fx_text.Length -gt 0){$fx_lines=@($fx_text -split \"`n\");if($fx_has_final_newline){$fx_lines=@($fx_lines[0..($fx_lines.Count-2)])}};$fx_line_count=$fx_lines.Count;$fx_start=0;$fx_end=$fx_line_count;",
+        );
+        if (std.mem.eql(u8, executable, "/usr/bin/head")) {
+            try script.appendSlice(alloc, "$fx_end=[Math]::Min($fx_line_count,");
+            try script.appendSlice(alloc, count);
+            try script.appendSlice(alloc, ");");
+        } else {
+            try script.appendSlice(alloc, "$fx_start=[Math]::Max(0,$fx_line_count-");
+            try script.appendSlice(alloc, count);
+            try script.appendSlice(alloc, ");");
+        }
+        try script.appendSlice(
+            alloc,
+            "for($fx_index=$fx_start;$fx_index -lt $fx_end;$fx_index++){[Console]::Write($fx_lines[$fx_index]);if($fx_has_final_newline -or $fx_index -lt ($fx_line_count-1)){[Console]::Write(\"`n\")}};exit 0",
+        );
+        const script_owned = try script.toOwnedSlice(alloc);
+        const argv = try windowsPowerShellArgv(alloc, script_owned);
+        return .{ .direct = .{
+            .executable = argv[0],
+            .argv = argv,
+        } };
+    }
+
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(alloc, &.{ executable, "-n", count });
     return .{ .direct = .{
@@ -690,7 +997,9 @@ fn planHeadOrTail(
 fn planGrep(
     alloc: std.mem.Allocator,
     words: []const []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
+    if (target_os == .windows) return planWindowsGrep(alloc, words);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(alloc, "/usr/bin/grep");
 
@@ -726,34 +1035,115 @@ fn planGrep(
     } };
 }
 
-fn planGit(
+fn planWindowsGrep(
     alloc: std.mem.Allocator,
     words: []const []const u8,
 ) std.mem.Allocator.Error!StageAdmission {
+    var case_insensitive = false;
+    var invert = false;
+    var numbered = false;
+    var fixed = false;
+    var index: usize = 1;
+    while (index < words.len) : (index += 1) {
+        const word = words[index];
+        if (std.mem.eql(u8, word, "--")) {
+            index += 1;
+            break;
+        }
+        if (word.len <= 1 or word[0] != '-') break;
+        for (word[1..]) |flag| switch (flag) {
+            'E' => {},
+            'i' => case_insensitive = true,
+            'v' => invert = true,
+            'n' => numbered = true,
+            'F' => fixed = true,
+            else => return .{ .approval_required = .unsupported_argument },
+        };
+    }
+    if (index + 1 != words.len) return .{ .approval_required = .unsupported_argument };
+    const pattern = words[index];
+    var script: std.ArrayList(u8) = .empty;
+    errdefer script.deinit(alloc);
+    try script.appendSlice(alloc, "$fx_pattern=");
+    if (fixed) {
+        try script.appendSlice(alloc, "[regex]::Escape(");
+        try appendPowerShellQuoted(&script, alloc, pattern);
+        try script.append(alloc, ')');
+    } else {
+        try appendPowerShellQuoted(&script, alloc, pattern);
+    }
+    try script.appendSlice(alloc, ";$fx_options=");
+    if (case_insensitive) {
+        try script.appendSlice(alloc, "[Text.RegularExpressions.RegexOptions]::IgnoreCase;");
+    } else {
+        try script.appendSlice(alloc, "0;");
+    }
+    try script.appendSlice(
+        alloc,
+        windows_powershell_utf8_prelude ++ "$fx_text=[Console]::In.ReadToEnd();$fx_has_final_newline=$fx_text.EndsWith(\"`n\");$fx_lines=@();if($fx_text.Length -gt 0){$fx_lines=@($fx_text -split \"`n\");if($fx_has_final_newline){$fx_lines=@($fx_lines[0..($fx_lines.Count-2)])}};$fx_number=0;$fx_found=$false;try{$fx_regex=[regex]::new($fx_pattern,$fx_options);for($fx_index=0;$fx_index -lt $fx_lines.Count;$fx_index++){$fx_number++;$fx_match=$fx_regex.IsMatch($fx_lines[$fx_index]);",
+    );
+    if (invert) try script.appendSlice(alloc, "$fx_match=-not $fx_match;");
+    try script.appendSlice(alloc, "if($fx_match){$fx_found=$true;");
+    if (numbered) try script.appendSlice(alloc, "[Console]::Write($fx_number);[Console]::Write(\":\");");
+    try script.appendSlice(
+        alloc,
+        "[Console]::Write($fx_lines[$fx_index]);if($fx_has_final_newline -or $fx_index -lt ($fx_lines.Count-1)){[Console]::Write(\"`n\")}}}catch{[Console]::Error.WriteLine($_.Exception.Message);exit 2};if($fx_found){exit 0}else{exit 1}",
+    );
+    const script_owned = try script.toOwnedSlice(alloc);
+    const argv = try windowsPowerShellArgv(alloc, script_owned);
+    return .{ .direct = .{
+        .executable = argv[0],
+        .argv = argv,
+    } };
+}
+
+fn planGit(
+    alloc: std.mem.Allocator,
+    words: []const []const u8,
+    target_os: std.Target.Os.Tag,
+) std.mem.Allocator.Error!StageAdmission {
     if (words.len < 2) return .{ .approval_required = .command_owned_input };
-    if (std.mem.eql(u8, words[1], "status")) return planGitStatus(alloc, words[2..]);
-    if (std.mem.eql(u8, words[1], "diff")) return planGitDiff(alloc, words[2..]);
-    if (std.mem.eql(u8, words[1], "log")) return planGitLog(alloc, words[2..]);
+    if (target_os == .windows and !windowsGitInstalled()) {
+        return .{ .approval_required = .unsupported_platform };
+    }
+    if (std.mem.eql(u8, words[1], "status")) return planGitStatus(alloc, words[2..], target_os);
+    if (std.mem.eql(u8, words[1], "diff")) return planGitDiff(alloc, words[2..], target_os);
+    if (std.mem.eql(u8, words[1], "log")) return planGitLog(alloc, words[2..], target_os);
     return .{ .approval_required = .command_owned_input };
+}
+
+fn windowsGitInstalled() bool {
+    if (comptime builtin.os.tag != .windows) return true;
+    var path: [32768]u8 = undefined;
+    _ = windows_paths.gitExecutableInto(&path) catch return false;
+    return true;
 }
 
 fn appendGitPrelude(
     alloc: std.mem.Allocator,
     argv: *std.ArrayList([]const u8),
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!void {
+    const executable = if (target_os == .windows and
+        comptime builtin.os.tag == .windows)
+        windows_paths.gitExecutable(alloc) catch windows_git_path
+    else if (target_os == .windows)
+        windows_git_path
+    else
+        "/usr/bin/git";
     try argv.appendSlice(alloc, &.{
-        "/usr/bin/git",
+        executable,
         "--no-pager",
         "-c",
-        "core.hooksPath=/dev/null",
+        if (target_os == .windows) "core.hooksPath=NUL" else "core.hooksPath=/dev/null",
         "-c",
         "core.fsmonitor=false",
     });
 }
 
-fn directGit(argv: []const []const u8) StageAdmission {
+fn directGit(argv: []const []const u8, target_os: std.Target.Os.Tag) StageAdmission {
     return .{ .direct = .{
-        .executable = "/usr/bin/git",
+        .executable = if (target_os == .windows) argv[0] else "/usr/bin/git",
         .argv = argv,
         .environment_profile = .git_read_only,
     } };
@@ -762,9 +1152,10 @@ fn directGit(argv: []const []const u8) StageAdmission {
 fn planGitStatus(
     alloc: std.mem.Allocator,
     arguments: []const []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
     var argv: std.ArrayList([]const u8) = .empty;
-    try appendGitPrelude(alloc, &argv);
+    try appendGitPrelude(alloc, &argv, target_os);
     try argv.appendSlice(alloc, &.{ "status", "--ignore-submodules=all" });
     for (arguments) |argument| {
         const canonical = if (std.mem.eql(u8, argument, "-s"))
@@ -783,15 +1174,16 @@ fn planGitStatus(
             return .{ .approval_required = .unsupported_argument };
         try argv.append(alloc, canonical);
     }
-    return directGit(try argv.toOwnedSlice(alloc));
+    return directGit(try argv.toOwnedSlice(alloc), target_os);
 }
 
 fn planGitDiff(
     alloc: std.mem.Allocator,
     arguments: []const []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
     var argv: std.ArrayList([]const u8) = .empty;
-    try appendGitPrelude(alloc, &argv);
+    try appendGitPrelude(alloc, &argv, target_os);
     try argv.appendSlice(alloc, &.{ "diff", "--no-ext-diff", "--no-textconv", "--color=never" });
 
     var index: usize = 0;
@@ -817,15 +1209,16 @@ fn planGitDiff(
     }
     try argv.append(alloc, "--");
     try argv.appendSlice(alloc, operands);
-    return directGit(try argv.toOwnedSlice(alloc));
+    return directGit(try argv.toOwnedSlice(alloc), target_os);
 }
 
 fn planGitLog(
     alloc: std.mem.Allocator,
     arguments: []const []const u8,
+    target_os: std.Target.Os.Tag,
 ) std.mem.Allocator.Error!StageAdmission {
     var argv: std.ArrayList([]const u8) = .empty;
-    try appendGitPrelude(alloc, &argv);
+    try appendGitPrelude(alloc, &argv, target_os);
     try argv.appendSlice(alloc, &.{ "log", "--no-ext-diff", "--no-textconv", "--color=never", "--max-count=100" });
 
     var index: usize = 0;
@@ -866,7 +1259,7 @@ fn planGitLog(
     }
     try argv.append(alloc, "--");
     try argv.appendSlice(alloc, operands);
-    return directGit(try argv.toOwnedSlice(alloc));
+    return directGit(try argv.toOwnedSlice(alloc), target_os);
 }
 
 fn boundedDecimal(value: []const u8, maximum: usize) bool {
@@ -1276,7 +1669,12 @@ test "planner preserves quoted shell metacharacters as literal argv" {
 test "planner enforces background backend and platform boundaries" {
     try expectApproval("pwd", true, .none, .macos, .background_process);
     try expectApproval("pwd", false, .just_bash, .macos, .unsupported_backend);
-    try expectApproval("pwd", false, .none, .windows, .unsupported_platform);
+    var windows = try expectDirect("pwd", .windows);
+    defer windows.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(
+        "cd",
+        windows.direct_read_only.stages[0].argv[3],
+    );
 }
 
 test "planner bounds direct pipelines at eight stages" {
@@ -1389,6 +1787,79 @@ test "planner target policies use reviewed absolute executables and argv" {
             }
         }
     }
+}
+
+test "planner admits the reviewed Windows direct command matrix" {
+    const commands = [_][]const u8{
+        "printf 'hello\\n'",
+        "printf x",
+        "printf '%%'",
+        "printf '%s' '--help'",
+        "printf '%s%s' one two",
+        "pwd",
+        "pwd -P",
+        "ls",
+        "ls src",
+        "ls -1aAdFlnp src",
+        "ls -- -option-looking-path",
+        "wc",
+        "wc -Lclmw",
+        "cat",
+        "head",
+        "head -n 20",
+        "tail -n 20",
+        "grep -n TODO",
+        "grep -EFi -- '-needle'",
+        "git status",
+        "git status --short --branch",
+        "git diff --stat",
+        "git diff --name-only -- src",
+        "git log --oneline -n 5",
+        "git log --max-count=20 -- src",
+        "printf x | wc -c",
+        "git status --short | wc -l",
+    };
+    for (commands) |command| {
+        var admission = try expectDirect(command, .windows);
+        admission.deinit(std.testing.allocator);
+    }
+
+    var printf_admission = try expectDirect("printf '{%s}' value", .windows);
+    defer printf_admission.deinit(std.testing.allocator);
+    const printf_script = printf_admission.direct_read_only.stages[0].argv[5];
+    try std.testing.expect(std.mem.startsWith(u8, printf_script, windows_powershell_utf8_prelude));
+    try std.testing.expect(std.mem.find(u8, printf_script, "$fx_format='{{{0}}}'") != null);
+
+    var ls_admission = try expectDirect("ls -aF -- -option-looking", .windows);
+    defer ls_admission.deinit(std.testing.allocator);
+    const ls_script = ls_admission.direct_read_only.stages[0].argv[5];
+    try std.testing.expect(std.mem.find(u8, ls_script, "Get-Item -LiteralPath") != null);
+    try std.testing.expect(std.mem.find(u8, ls_script, "-ErrorAction Stop") != null);
+    try std.testing.expect(std.mem.find(u8, ls_script, "exit 2") != null);
+
+    var grep_admission = try expectDirect("grep -EFi -- needle", .windows);
+    defer grep_admission.deinit(std.testing.allocator);
+    const grep_script = grep_admission.direct_read_only.stages[0].argv[5];
+    try std.testing.expect(std.mem.find(u8, grep_script, windows_powershell_utf8_prelude) != null);
+    try std.testing.expect(std.mem.find(u8, grep_script, "RegexOptions]::IgnoreCase") != null);
+    try std.testing.expect(std.mem.find(u8, grep_script, "exit 2") != null);
+    try std.testing.expect(std.mem.find(u8, grep_script, "exit 1") != null);
+
+    var head_admission = try expectDirect("head -n 3", .windows);
+    defer head_admission.deinit(std.testing.allocator);
+    const head_script = head_admission.direct_read_only.stages[0].argv[5];
+    try std.testing.expect(std.mem.startsWith(u8, head_script, windows_powershell_utf8_prelude));
+    try std.testing.expect(std.mem.find(u8, head_script, "$fx_has_final_newline=$fx_text.EndsWith") != null);
+    try std.testing.expect(std.mem.find(u8, head_script, "$fx_lines=@($fx_text -split \"`n\")") != null);
+    try std.testing.expect(std.mem.find(u8, head_script, "[Console]::Write($fx_lines[$fx_index])") != null);
+    try std.testing.expect(std.mem.find(u8, head_script, "if($fx_has_final_newline -or") != null);
+
+    var tail_admission = try expectDirect("tail -n 3", .windows);
+    defer tail_admission.deinit(std.testing.allocator);
+    const tail_script = tail_admission.direct_read_only.stages[0].argv[5];
+    try std.testing.expect(std.mem.startsWith(u8, tail_script, windows_powershell_utf8_prelude));
+    try std.testing.expect(std.mem.find(u8, tail_script, "$fx_start=[Math]::Max(0,$fx_line_count-3)") != null);
+    try std.testing.expect(std.mem.find(u8, tail_script, "$fx_has_final_newline=$fx_text.EndsWith") != null);
 }
 
 test "planner accepts every reviewed wc flag and rejects every operand" {
@@ -1564,7 +2035,6 @@ test "planner preserves accepted printf argv exactly" {
 }
 
 test "planner native printf forms match shell-visible execution" {
-    const builtin = @import("builtin");
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     const commands = [_][]const u8{
@@ -1581,7 +2051,6 @@ test "planner native printf forms match shell-visible execution" {
 }
 
 test "planner generated native printf matrix matches shell bytes status and stderr" {
-    const builtin = @import("builtin");
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;
@@ -1621,7 +2090,6 @@ test "planner generated native printf matrix matches shell bytes status and stde
 }
 
 test "planner native ls policy preserves reviewed target behavior" {
-    const builtin = @import("builtin");
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;

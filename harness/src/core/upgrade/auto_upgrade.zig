@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const helpers = @import("upgrade_helpers.zig");
 const update_target = @import("update_target.zig");
@@ -208,7 +209,12 @@ pub const AutoUpgrade = struct {
         var client: std.http.Client = .{ .allocator = alloc, .io = io_mod.getIo() };
         defer client.deinit();
 
-        const tmp_base: []const u8 = io_mod.getenv("TMPDIR") orelse "/tmp";
+        const tmp_base_owned: ?[]u8 = if (comptime builtin.os.tag == .windows)
+            io_mod.runtimeTempPathAlloc(alloc) catch return error.ExtractionFailed
+        else
+            null;
+        defer if (tmp_base_owned) |value| alloc.free(value);
+        const tmp_base: []const u8 = tmp_base_owned orelse (io_mod.getenv("TMPDIR") orelse "/tmp");
         var rand_buf: [8]u8 = undefined;
         io_mod.getIo().random(&rand_buf);
         const rand_hex = std.fmt.bytesToHex(rand_buf, .lower);
@@ -239,7 +245,7 @@ pub const AutoUpgrade = struct {
 
         if (self.should_stop.load(.acquire)) return error.Cancelled;
 
-        const extracted_bin = std.fmt.allocPrint(alloc, "{s}/fx", .{tmp_dir}) catch return error.AllocFailed;
+        const extracted_bin = std.fmt.allocPrint(alloc, "{s}/{s}", .{ tmp_dir, helpers.extractedExecutableName() }) catch return error.AllocFailed;
         defer alloc.free(extracted_bin);
 
         var self_exe_buf: [std.fs.max_path_bytes]u8 = undefined;

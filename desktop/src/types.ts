@@ -206,6 +206,7 @@ export type OverlaySurface = "notch" | "pill" | "popout";
 declare global {
   interface Window {
     emma: {
+      platform: string;
       request<T>(method: string, params?: Record<string, string>): Promise<T>;
       setOverlayPreferences(value: unknown): void;
       setOverlayBusy(value: boolean): void;

@@ -1,5 +1,6 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { pathInside } from "./platform";
 
 export type UiPlugin = { id: string; name: string; version: string; css: string };
 
@@ -32,7 +33,7 @@ export async function loadUiPlugins(userData: string): Promise<UiPlugin[]> {
       if (manifest.id !== entry.name) throw new Error("plugin directory must match its id");
       const stylesheet = await realpath(path.join(directory, manifest.uiStylesheet));
       const realDirectory = await realpath(directory);
-      if (!stylesheet.startsWith(`${realDirectory}${path.sep}`) || (await stat(stylesheet)).size > 128 * 1024) throw new Error("plugin stylesheet is outside its plugin");
+      if (!pathInside(realDirectory, stylesheet) || (await stat(stylesheet)).size > 128 * 1024) throw new Error("plugin stylesheet is outside its plugin");
       plugins.push({ id: manifest.id, name: manifest.name, version: manifest.version, css: validatePluginCss(await readFile(stylesheet, "utf8")) });
     } catch (error) {
       console.warn(`Emma skipped UI plugin ${entry.name}:`, error instanceof Error ? error.message : error);

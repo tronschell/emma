@@ -332,8 +332,6 @@ pub const Runtime = struct {
     }
 
     noinline fn resetDrainedState(self: *Runtime) void {
-        // The drain above already nulls every owned slot. Reset only the
-        // observable metadata so teardown does not copy the full runtime.
         self.process_provider = background_process_provider.unavailable_provider;
         self.mutex = .init;
         self.wake = .init;
@@ -967,6 +965,7 @@ fn endpointExists(host_dir: *io_mod.VerifiedDir) bool {
         host.endpoint_name,
         .{ .follow_symlinks = false },
     ) catch return false;
+    if (comptime builtin.os.tag == .windows) return stat.kind != .directory;
     return stat.kind == .unix_domain_socket;
 }
 
@@ -1312,6 +1311,7 @@ test "lazy runtime has no allocation or worker before first admission" {
 }
 
 test "stalled request cancellation emits only the targeted cancel" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (!host.isSupported()) return error.SkipZigTest;
     var handles: [2]std.c.fd_t = undefined;
     if (std.c.socketpair(

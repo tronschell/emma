@@ -24,9 +24,9 @@ export const PROVIDER_PRESETS = [
   { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", credentialEnv: "OPENROUTER_API_KEY", detail: "Every maker, one key" },
   { id: "zai", name: "Z.AI", baseUrl: "https://api.z.ai/api/paas/v4", credentialEnv: "ZAI_API_KEY", detail: "GLM, direct" },
   { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", credentialEnv: "DEEPSEEK_API_KEY", detail: "DeepSeek, direct" },
-  { id: "lmstudio", name: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "", detail: "On this Mac" },
-  { id: "ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", credentialEnv: "", detail: "On this Mac" },
-  { id: "llamacpp", name: "llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", credentialEnv: "", detail: "On this Mac" },
+  { id: "lmstudio", name: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "", detail: "On this computer" },
+  { id: "ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", credentialEnv: "", detail: "On this computer" },
+  { id: "llamacpp", name: "llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", credentialEnv: "", detail: "On this computer" },
   { id: "custom", name: "", baseUrl: "", credentialEnv: "", detail: "Any OpenAI-compatible endpoint" },
 ] as const;
 
@@ -152,7 +152,7 @@ export function validateWebSearch(value: unknown): WebSearchSettings {
   const endpoint = (search.endpoint ?? "").trim() || webSearchProvider(provider).endpoint;
   let url: URL;
   try { url = new URL(endpoint); } catch { throw new Error("The search instance must be a URL"); }
-  if (url.protocol !== "https:" && !localEndpoint(endpoint)) throw new Error("The search instance must be https, or http on this Mac");
+  if (url.protocol !== "https:" && !localEndpoint(endpoint)) throw new Error("The search instance must be https, or http on this computer");
   return { provider, endpoint, credentialEnv };
 }
 
@@ -232,6 +232,12 @@ export const HOLD_KEYS: Record<string, { keyCode: number; label: string }> = {
   MetaLeft: { keyCode: 55, label: "⌘ left" }, MetaRight: { keyCode: 54, label: "⌘ right" },
   ShiftLeft: { keyCode: 56, label: "⇧ left" }, ShiftRight: { keyCode: 60, label: "⇧ right" },
 };
+const WINDOWS_HOLD_CODES: Record<string, number> = {
+  AltLeft: 0xa4, AltRight: 0xa5,
+  ControlLeft: 0xa2, ControlRight: 0xa3,
+  MetaLeft: 0x5b, MetaRight: 0x5c,
+  ShiftLeft: 0xa0, ShiftRight: 0xa1,
+};
 export const HOLD_DURATIONS = [300, 500, 750, 1000] as const;
 export const DEFAULT_HOLD_MS = 500;
 
@@ -248,6 +254,18 @@ const KEYBIND_MODIFIERS = ["Command", "Control", "Alt", "Shift"] as const;
 const MODIFIER_GLYPHS: Record<string, string> = { Command: "⌘", Control: "⌃", Alt: "⌥", Shift: "⇧" };
 const KEY_GLYPHS: Record<string, string> = { Space: "␣", Return: "↩", Tab: "⇥", Backspace: "⌫", Delete: "⌦", Up: "↑", Down: "↓", Left: "←", Right: "→", PageUp: "⇞", PageDown: "⇟", Home: "↖", End: "↘" };
 const NAMED_KEYS = ["Space", "Return", "Tab", "Backspace", "Delete", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown"];
+const EVENT_KEYS: Record<string, string> = {
+  Space: "Space", Enter: "Return", NumpadEnter: "Return", Tab: "Tab", Backspace: "Backspace", Delete: "Delete",
+  ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+  Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`",
+};
+
+export function keyboardAccelerator(event: { code: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }, platform = "darwin"): string | null {
+  const key = /^Key([A-Z])$/.exec(event.code)?.[1] ?? /^Digit(\d)$/.exec(event.code)?.[1] ?? (/^F([1-9]|1\d|2[0-4])$/.test(event.code) ? event.code : EVENT_KEYS[event.code]);
+  if (!key || platform === "win32" && event.metaKey) return null;
+  const modifiers = [event.metaKey && "Command", event.ctrlKey && "Control", event.altKey && "Alt", event.shiftKey && "Shift"].filter(Boolean) as string[];
+  return [...modifiers, key].join("+");
+}
 
 const RESERVED = new Set([
   "Command+Space", "Command+Alt+Space", "Control+Space", "Command+Control+Space",
@@ -258,21 +276,24 @@ const RESERVED = new Set([
   "Control+Alt+Command+8", "Command+Alt+8", "Command+Alt+=", "Command+Alt+-",
   "Command+F1", "Command+F2", "Command+F3", "Command+F5",
 ]);
+const WINDOWS_RESERVED = new Set(["Alt+Tab", "Alt+Escape", "Control+Escape", "Control+Shift+Escape", "Control+Alt+Delete", "Control+Space", "Control+Shift+Space"]);
 
 function keyName(key: string): boolean {
   return /^[A-Z0-9]$/.test(key) || /^F([1-9]|1\d|2[0-4])$/.test(key) || NAMED_KEYS.includes(key) || "-=[]\\;',./`".includes(key) && key.length === 1;
 }
 
-export function keybindProblem(accelerator: string): string {
+export function keybindProblem(accelerator: string, platform = "darwin"): string {
   if (!accelerator) return "";
   const parts = accelerator.split("+");
   const key = parts[parts.length - 1];
   const modifiers = parts.slice(0, -1);
+  const effectiveModifiers = platform === "win32" ? modifiers.map((modifier) => modifier === "Command" ? "Control" : modifier) : modifiers;
   if (!key || !keyName(key)) return "Finish with a normal key.";
-  if (modifiers.some((modifier) => !(KEYBIND_MODIFIERS as readonly string[]).includes(modifier)) || new Set(modifiers).size !== modifiers.length) return "That combination is invalid.";
-  if (!modifiers.some((modifier) => modifier !== "Shift")) return "Add ⌘, ⌃, or ⌥ — otherwise it fires while you type.";
-  if (modifiers.length === 1 && modifiers[0] === "Command") return "⌘ with a single key belongs to app menus. Add ⌃, ⌥, or ⇧.";
-  if (RESERVED.has(normalizeAccelerator(accelerator))) return "macOS already uses that shortcut.";
+  if (effectiveModifiers.some((modifier) => !(KEYBIND_MODIFIERS as readonly string[]).includes(modifier)) || new Set(effectiveModifiers).size !== effectiveModifiers.length) return "That combination is invalid.";
+  if (!effectiveModifiers.some((modifier) => modifier !== "Shift")) return platform === "win32" ? "Add Ctrl, Alt, or Shift — otherwise it fires while you type." : "Add ⌘, ⌃, or ⌥ — otherwise it fires while you type.";
+  if (effectiveModifiers.length === 1 && effectiveModifiers[0] === (platform === "win32" ? "Control" : "Command")) return platform === "win32" ? "Ctrl with a single key belongs to app menus. Add Alt or Shift." : "⌘ with a single key belongs to app menus. Add ⌃, ⌥, or ⇧.";
+  const reserved = platform === "win32" ? WINDOWS_RESERVED : RESERVED;
+  if (reserved.has(normalizeAccelerator(platformAccelerator(accelerator, platform)))) return platform === "win32" ? "Windows already uses that shortcut." : "macOS already uses that shortcut.";
   return "";
 }
 
@@ -282,23 +303,31 @@ export function normalizeAccelerator(accelerator: string): string {
   return [...KEYBIND_MODIFIERS.filter((modifier) => parts.includes(modifier)), key].join("+");
 }
 
-export function accelLabel(accelerator: string): string {
+function platformAccelerator(accelerator: string, platform: string): string {
+  return platform === "win32" ? accelerator.replace(/\bCommand\b/g, "Control") : accelerator;
+}
+
+export function accelLabel(accelerator: string, platform = "darwin"): string {
   if (!accelerator) return "";
   const parts = normalizeAccelerator(accelerator).split("+");
   const key = parts[parts.length - 1];
-  return parts.slice(0, -1).map((modifier) => MODIFIER_GLYPHS[modifier] ?? modifier).join("") + (KEY_GLYPHS[key] ?? key);
+  return parts.slice(0, -1).map((modifier) => platform === "win32" ? modifier === "Command" || modifier === "Control" ? "Ctrl+" : `${modifier}+` : MODIFIER_GLYPHS[modifier] ?? modifier).join("") + (KEY_GLYPHS[key] ?? key);
 }
 
-export function keybindLabel(keybind: Keybind): string {
-  if (keybind.hold) return `Hold ${HOLD_KEYS[keybind.hold]?.label ?? keybind.hold} · ${keybind.ms}ms`;
-  return accelLabel(keybind.accelerator);
+export function keybindLabel(keybind: Keybind, platform = "darwin"): string {
+  if (keybind.hold) {
+    const hold = HOLD_KEYS[keybind.hold]?.label ?? keybind.hold;
+    const windowsHold = hold.replace("⌥", "Alt").replace("⌃", "Ctrl").replace("⌘", "Win").replace("⇧", "Shift");
+    return `Hold ${platform === "win32" ? windowsHold : hold} · ${keybind.ms}ms`;
+  }
+  return accelLabel(keybind.accelerator, platform);
 }
 
-function keybindKey(keybind: Keybind): string {
-  return keybind.hold ? `hold:${keybind.hold}` : normalizeAccelerator(keybind.accelerator);
+function keybindKey(keybind: Keybind, platform = "darwin"): string {
+  return keybind.hold ? `hold:${keybind.hold}` : normalizeAccelerator(platformAccelerator(keybind.accelerator, platform));
 }
 
-export function validateKeybinds(value: unknown): Keybinds {
+export function validateKeybinds(value: unknown, platform = "darwin"): Keybinds {
   if (value === undefined || value === null) return {};
   if (typeof value !== "object") throw new Error("Keybinds are invalid");
   const keybinds: Keybinds = {};
@@ -316,20 +345,20 @@ export function validateKeybinds(value: unknown): Keybinds {
       if (!Number.isInteger(ms) || ms! < HOLD_DURATIONS[0] || ms! > HOLD_DURATIONS[HOLD_DURATIONS.length - 1]) throw new Error("That hold is too short or too long.");
       keybind = holdKeybind(hold, ms!);
     } else {
-      const problem = keybindProblem(accelerator);
+      const problem = keybindProblem(accelerator, platform);
       if (problem) throw new Error(problem);
       keybind = comboKeybind(normalizeAccelerator(accelerator));
     }
-    const key = keybindKey(keybind);
-    if (taken.has(key)) throw new Error(`${keybindLabel(keybind)} is bound twice.`);
+    const key = keybindKey(keybind, platform);
+    if (taken.has(key)) throw new Error(`${keybindLabel(keybind, platform)} is bound twice.`);
     taken.add(key);
     keybinds[action] = keybind;
   }
   return keybinds;
 }
 
-export function holdBindings(keybinds: Keybinds): { id: string; keyCode: number; ms: number }[] {
-  return Object.entries(keybinds).flatMap(([id, keybind]) => keybind.hold && HOLD_KEYS[keybind.hold] ? [{ id, keyCode: HOLD_KEYS[keybind.hold].keyCode, ms: keybind.ms }] : []);
+export function holdBindings(keybinds: Keybinds, platform = "darwin"): { id: string; keyCode: number; ms: number }[] {
+  return Object.entries(keybinds).flatMap(([id, keybind]) => keybind.hold && HOLD_KEYS[keybind.hold] ? [{ id, keyCode: platform === "win32" ? WINDOWS_HOLD_CODES[keybind.hold] : HOLD_KEYS[keybind.hold].keyCode, ms: keybind.ms }] : []);
 }
 
 export const THINKING_LEVELS = ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -434,7 +463,7 @@ export const PROHIBITED = [
   "rm -rf, find -delete, truncation or redirection over a file, or a wildcard that covers more than the thing the user asked about.",
   "Destroying version control the user did not ask to change: force push, git reset --hard, git clean -fdx, deleting branches, tags or stashes, rewriting published history.",
   "Anything irreversible and published: npm publish, a release, a deploy, dropping or truncating a database, sending mail or messages, posting to an API that others read.",
-  "Sending the user's data off this Mac: uploading files, curl or scp of local content, pasting content into a remote service, webhooks.",
+  "Sending the user's data off this computer: uploading files, curl or scp of local content, pasting content into a remote service, webhooks.",
   "Downloading and running code: curl piped into a shell, installing from a URL, running a binary that was just fetched, npx of an unpinned package.",
   "Touching credentials: reading, printing, copying or transmitting keys, tokens, .env files, ~/.ssh, keychains, browser profiles, or cloud credentials.",
   "Changing the machine: sudo, system settings, firewall, SIP or Gatekeeper, launch agents, cron or launchd entries, system package managers, shell profiles.",
@@ -445,7 +474,7 @@ export const PROHIBITED = [
 export const MAX_VERIFIER_SYSTEM_CHARS = 8192;
 
 export const defaultVerifierSystem = [
-  "You review one action at a time for a coding agent working on someone's Mac.",
+  "You review one action at a time for a coding agent working on someone's computer.",
   "You are given what the user asked for and the exact action the agent wants to take. Decide whether it runs.",
   "",
   "Allow it only when both of these hold:",
@@ -505,7 +534,7 @@ export const defaultVision: VisionSettings = {
 };
 
 export const defaultSecretSystem = [
-  "You are the model the user picked for their secrets. Another agent must not see them, so it sends you the output of one command on this Mac and one question about it, and reads your answer as its only view of that output.",
+  "You are the model the user picked for their secrets. Another agent must not see them, so it sends you the output of one command on this computer and one question about it, and reads your answer as its only view of that output.",
   "",
   "Answer the question in plain sentences, and never repeat a secret value in full.",
   "- Names are not secrets: variables, files, accounts, hosts and vault paths can be quoted freely.",
@@ -560,10 +589,6 @@ export const defaultTagger: TaggerSettings = {
   system: defaultTaggerSystem,
 };
 
-/* A router picked for a second model is stored the way the main model stores one:
-   the chain, best first, in the model field. What falls through to the next one is
-   OpenRouter, not us — a rate-limited free verifier is the whole reason to have a
-   second name in the list. */
 export function verifierFromKey(key: string, profiles: ProviderProfile[], system: string, routers: ModelRouter[] = []): VerifierSettings {
   if (key.startsWith("provider:")) {
     const profile = profiles.find((item) => item.id === key.slice("provider:".length));
@@ -623,7 +648,7 @@ function validateSecondModel(value: unknown, fallback: VerifierSettings, label: 
   if (system.length > MAX_VERIFIER_SYSTEM_CHARS) throw new Error(`Keep the ${label} rules under ${MAX_VERIFIER_SYSTEM_CHARS} characters`);
   if (credentialEnv && !isEnvName(credentialEnv)) throw new Error(`The ${label} credential must be an environment variable name`);
   try { new URL(endpoint); } catch { throw new Error(`The ${label} endpoint must be a URL`); }
-  if (!providerEndpoint(endpoint, true)) throw new Error(`The ${label} endpoint must be https, or http on this Mac or your own network`);
+  if (!providerEndpoint(endpoint, true)) throw new Error(`The ${label} endpoint must be https, or http on this computer or your own network`);
   return { model, endpoint, credentialEnv, system };
 }
 
@@ -731,7 +756,7 @@ function validateNavHues(value: unknown): Record<string, AccentChoice> {
   return hues;
 }
 
-export function validateSettings(value: unknown): UserSettings {
+export function validateSettings(value: unknown, platform = "darwin"): UserSettings {
   if (!value || typeof value !== "object") throw new Error("Settings are invalid");
   const settings = value as Partial<UserSettings>;
   if (!Array.isArray(settings.quickActions) || settings.quickActions.length !== 3) throw new Error("Exactly three quick actions are required");
@@ -792,7 +817,7 @@ export function validateSettings(value: unknown): UserSettings {
   if (!isFontChoice(interfaceFont) || !isFontChoice(agentFont)) throw new Error("Font settings are invalid");
   const thinkingLevel = settings.thinkingLevel ?? defaultSettings.thinkingLevel;
   if (!isThinkingLevel(thinkingLevel)) throw new Error("The thinking level is invalid");
-  const keybinds = validateKeybinds(settings.keybinds);
+  const keybinds = validateKeybinds(settings.keybinds, platform);
   const contextPages = validateContextPages(settings.contextPages);
   const relayUrl = relayOrigin(settings.relayUrl);
   return { accent, navIconColors, navHues, uiScale, conversationWidth, interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, providers, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, favoriteModels: favoriteModels.map(legacyModelKey), routers, requireZeroRetention, systemPrompt, prompts, connections, relayUrl };
@@ -911,7 +936,7 @@ export function validateProviders(value: unknown): ProviderProfile[] {
     if (!Number.isInteger(contextWindow) || contextWindow < 0 || contextWindow > MAX_CONTEXT_WINDOW) throw new Error("A provider context window is invalid");
     if (typeof profile.baseUrl !== "string") throw new Error("A provider needs a base URL");
     const baseUrl = normalizeProviderEndpoint(profile.baseUrl, insecure);
-    if (!baseUrl) throw new Error(providerReach(profile.baseUrl) === "network" ? "That endpoint is plain http off this Mac. Tick the network box to send prompts and keys unencrypted, or serve it over https." : "A provider endpoint must be https, or http on this Mac or your own network");
+  if (!baseUrl) throw new Error(providerReach(profile.baseUrl) === "network" ? "That endpoint is plain http off this computer. Tick the network box to send prompts and keys unencrypted, or serve it over https." : "A provider endpoint must be https, or http on this computer or your own network");
     return { id: profile.id, name: profile.name.trim(), modelId: profile.modelId.trim(), baseUrl, credentialEnv: profile.credentialEnv, contextWindow, insecure };
   });
 }

@@ -17,6 +17,7 @@ const text_utils = @import("../shared/text_utils.zig");
 const types = @import("../shared/types.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const shell_resolver = @import("../terminal/shell_resolver.zig");
+const windows_job = @import("windows_job.zig");
 
 const Allocator = std.mem.Allocator;
 pub const CommandOutputStream = command_contract.CommandOutputStream;
@@ -54,8 +55,6 @@ pub const unsupported_os_sandbox_message = "operating system sandbox is not avai
 
 pub const BackendKind = types.BackendKind;
 
-/// Returns the backend captured for execution without changing configured
-/// sandbox state.
 pub fn effectiveBackend(
     permission_mode: types.PermissionMode,
     configured_backend: BackendKind,
@@ -66,9 +65,6 @@ pub fn effectiveBackend(
     };
 }
 
-/// Converts the already-validated merged sandbox value into process-local
-/// backend state. An absent setting selects automatic host resolution; the
-/// permission mode never influences the configured backend.
 pub fn backendFromConfig(configured: ?[]const u8) BackendKind {
     const raw = configured orelse return .auto;
     return switch (parseConfigMode(raw)) {
@@ -133,8 +129,6 @@ pub fn configErrorMessage(err: anyerror) ?[]const u8 {
     };
 }
 
-/// Foreground command execution configuration. Borrowed slices and callbacks
-/// must remain valid for the duration of executeCommand.
 pub const Config = struct {
     backend: BackendKind = .none,
     workspace_root: []const u8,
@@ -205,6 +199,15 @@ const script_from_stdin_launcher =
     "script=${script%.}\n" ++
     "eval \"$script\" </dev/null";
 
+fn windowsChildStartsSuspended(os_tag: std.Target.Os.Tag) bool {
+    return os_tag == .windows;
+}
+
+test "Windows Job launches begin suspended" {
+    try std.testing.expect(windowsChildStartsSuspended(.windows));
+    try std.testing.expect(!windowsChildStartsSuspended(.macos));
+}
+
 const BackendProbe = struct {
     host_capabilities: host.Capabilities,
 };
@@ -241,8 +244,6 @@ pub fn runForegroundSessionBootstrap(args: []const [:0]const u8) !void {
         return error.InvalidForegroundSessionRelease;
     }
 
-    // The group receives TERM together. Keep the supervisor alive while the
-    // target uses the cooperative shutdown window.
     @as(*volatile std.c.sig_atomic_t, &foreground_session_termination_requested).* = 0;
     const supervisor_action: std.posix.Sigaction = .{
         .handler = .{ .handler = recordForegroundSessionTermination },
@@ -485,7 +486,6 @@ fn exitForegroundSessionSupervisor(term: std.process.Child.Term) noreturn {
     }
 }
 
-/// Resolves auto backend selection from host OS and locally available tools.
 pub fn resolveBackend(requested: BackendKind) BackendKind {
     return resolveBackendForHost(requested, host.current());
 }
@@ -500,7 +500,6 @@ fn resolveBackendForProbe(requested: BackendKind, probe: BackendProbe) BackendKi
     return resolveBackendForHost(requested, probe.host_capabilities);
 }
 
-/// Executes one command and returns an owned formatted result.
 pub fn executeCommand(
     cfg: Config,
     arena: Allocator,
@@ -653,6 +652,9 @@ fn executeMacOS(
     command: []const u8,
     cwd: []const u8,
 ) !command_contract.RunCommandResult {
+    if (comptime builtin.os.tag == .windows) {
+        return executeWindows(alloc, scratch, cfg, command, cwd);
+    }
     if (!host.current().os_sandbox) return unsupportedOsSandboxResult(alloc, command, cwd);
 
     const shell_argv = [_][]const u8{
@@ -679,9 +681,37 @@ fn executeMacOSInvocation(
     cwd: []const u8,
     invocation: *const shell_resolver.Invocation,
 ) !command_contract.RunCommandResult {
+    if (comptime builtin.os.tag == .windows) {
+        return executeWindowsInvocation(alloc, scratch, cfg, command, cwd, invocation);
+    }
     if (!host.current().os_sandbox) return unsupportedOsSandboxResult(alloc, command, cwd);
     const argv = try buildDirectMacOSArgv(scratch, cfg, invocation.argv());
     const result = try executeProcessWithClosedInput(scratch, cfg, argv, cwd);
+    return formatCollectedOutput(alloc, command, cwd, result);
+}
+
+fn executeWindows(
+    alloc: Allocator,
+    scratch: Allocator,
+    cfg: Config,
+    command: []const u8,
+    cwd: []const u8,
+) !command_contract.RunCommandResult {
+    const shell_path = io_mod.getenv("COMSPEC") orelse "C:\\Windows\\System32\\cmd.exe";
+    const invocation = try shell_resolver.capturedInvocation(.{ .user = shell_path }, command);
+    return executeWindowsInvocation(alloc, scratch, cfg, command, cwd, &invocation);
+}
+
+fn executeWindowsInvocation(
+    alloc: Allocator,
+    scratch: Allocator,
+    cfg: Config,
+    command: []const u8,
+    cwd: []const u8,
+    invocation: *const shell_resolver.Invocation,
+) !command_contract.RunCommandResult {
+    if (!host.current().os_sandbox) return unsupportedOsSandboxResult(alloc, command, cwd);
+    const result = try executeProcessWithClosedInput(scratch, cfg, invocation.argv(), cwd);
     return formatCollectedOutput(alloc, command, cwd, result);
 }
 
@@ -1328,6 +1358,18 @@ fn executeProcess(scratch: Allocator, cfg: Config, argv: []const []const u8, cwd
     return executeProcessWithInput(scratch, cfg, argv, cwd, false, true);
 }
 
+fn initWindowsJob(child: *std.process.Child) !?windows_job.Job {
+    if (comptime builtin.os.tag != .windows) return null;
+    const process = child.id orelse return error.SpawnFailed;
+    var job = try windows_job.Job.init(process, true);
+    errdefer {
+        job.terminate();
+        job.deinit();
+    }
+    try windows_job.Job.resumeThread(child.thread_handle);
+    return job;
+}
+
 fn executeProcessWithClosedInput(
     scratch: Allocator,
     cfg: Config,
@@ -1362,7 +1404,13 @@ fn executeProcessWithInput(
         .stderr = .pipe,
         .cwd = .{ .path = cwd },
         .pgid = if (isolate_process_group and builtin.os.tag != .windows and builtin.os.tag != .wasi) 0 else null,
+        .start_suspended = windowsChildStartsSuspended(builtin.os.tag),
     });
+    var process_job = initWindowsJob(&child) catch |err| {
+        cleanupChild(&child);
+        return err;
+    };
+    defer if (process_job) |*job| job.deinit();
     if (child.stdin) |input| {
         input.close(io_mod.getIo());
         child.stdin = null;
@@ -1388,12 +1436,14 @@ fn executeProcessWithInput(
         null,
         process_group_id,
         &leader_term,
+        if (process_job) |*job| job else null,
     );
     const term = try waitForCollectedProcess(
         &child,
         source,
         process_group_id,
         leader_term,
+        if (process_job) |*job| job else null,
     );
     const duration_ms = elapsedMs(started_ms, io_mod.milliTimestamp());
     child_needs_cleanup = false;
@@ -1512,12 +1562,14 @@ fn executeProcessWithDetachedSession(
         &launch_failure_probe,
         process_group_id,
         &leader_term,
+        null,
     );
     const term = try waitForCollectedProcess(
         &child,
         source,
         process_group_id,
         leader_term,
+        null,
     );
     const duration_ms = elapsedMs(started_ms, io_mod.milliTimestamp());
     child_needs_cleanup = false;
@@ -1637,7 +1689,13 @@ fn executeProcessWithScriptUnisolated(
         .stderr = .pipe,
         .cwd = .{ .path = cwd },
         .pgid = if (builtin.os.tag != .windows and builtin.os.tag != .wasi) 0 else null,
+        .start_suspended = windowsChildStartsSuspended(builtin.os.tag),
     });
+    var process_job = initWindowsJob(&child) catch |err| {
+        cleanupChild(&child);
+        return err;
+    };
+    defer if (process_job) |*job| job.deinit();
 
     var output = OutputCollector.init(scratch, cfg);
     defer output.deinit();
@@ -1663,12 +1721,14 @@ fn executeProcessWithScriptUnisolated(
         null,
         process_group_id,
         &leader_term,
+        if (process_job) |*job| job else null,
     );
     const term = try waitForCollectedProcess(
         &child,
         source,
         process_group_id,
         leader_term,
+        if (process_job) |*job| job else null,
     );
     const duration_ms = elapsedMs(started_ms, io_mod.milliTimestamp());
     child_needs_cleanup = false;
@@ -1830,14 +1890,18 @@ fn artifactPath(alloc: Allocator, dir: []const u8, stem: []const u8, suffix: []c
 }
 
 fn fallbackCommandArtifactDir(alloc: Allocator) ![]u8 {
-    const temp_root = io_mod.getenv("TMPDIR") orelse "/tmp";
+    const temp_root = try io_mod.runtimeTempPathAlloc(alloc);
+    defer alloc.free(temp_root);
     const pid_text = try std.fmt.allocPrint(alloc, "{d}", .{currentProcessId()});
     defer alloc.free(pid_text);
     return std.fs.path.join(alloc, &.{ temp_root, command_artifact_fallback_dir_name, pid_text });
 }
 
 fn currentProcessId() u64 {
-    return @intCast(std.c.getpid());
+    return switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        else => @intCast(std.c.getpid()),
+    };
 }
 
 fn elapsedMs(started_ms: i64, finished_ms: i64) u64 {
@@ -1898,17 +1962,23 @@ fn executeRawInvocation(
     cwd: []const u8,
     invocation: *const shell_resolver.Invocation,
 ) !command_contract.RunCommandResult {
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
-        return error.InvalidCommandEnvironment;
-    }
-    const result = try executeProcessWithScript(
-        scratch,
-        cfg,
-        invocation.argv(),
-        cwd,
-        "",
-    );
+    if (builtin.os.tag == .wasi) return error.InvalidCommandEnvironment;
+    const result = if (builtin.os.tag == .windows)
+        try executeProcess(scratch, cfg, invocation.argv(), cwd)
+    else
+        try executeProcessWithScript(scratch, cfg, invocation.argv(), cwd, "");
     return formatCollectedOutput(alloc, command, cwd, result);
+}
+
+test "Windows captured command invocation retains the resolved shell argv" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const invocation = try shell_resolver.capturedInvocation(
+        .{ .clean = "C:\\Windows\\System32\\cmd.exe" },
+        "echo captured",
+    );
+    try std.testing.expect(std.fs.path.isAbsolute(invocation.path));
+    try std.testing.expectEqualStrings("/c", invocation.argv()[3]);
+    try std.testing.expectEqualStrings("echo captured", invocation.argv()[4]);
 }
 
 test "explicit captured profiles execute exact shells without synthetic stderr" {
@@ -2124,8 +2194,6 @@ fn writePreviewEnvelope(alloc: Allocator, writer: *std.Io.Writer, label: []const
 }
 
 const TerminationSource = enum {
-    // Cancellation and timeout share a signal path, so retain the initiating
-    // source until after the child is reaped.
     natural,
     cancelled,
     timed_out,
@@ -2335,6 +2403,7 @@ fn collectOutput(
     launch_failure_probe: ?*ForegroundLaunchFailureProbe,
     process_group_id: ?std.posix.pid_t,
     leader_term: *?std.process.Child.Term,
+    process_job: ?*windows_job.Job,
 ) !TerminationSource {
     const zio = io_mod.getIo();
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
@@ -2362,6 +2431,7 @@ fn collectOutput(
             source,
             &signal_started_ms,
             &force_kill_sent,
+            process_job,
         );
         if (leader_term.* == null) {
             if (try pollProcessLeader(child)) |term| {
@@ -2447,6 +2517,7 @@ fn collectOutputForProcess(
     launch_failure_probe: ?*ForegroundLaunchFailureProbe,
     process_group_id: ?std.posix.pid_t,
     leader_term: *?std.process.Child.Term,
+    process_job: ?*windows_job.Job,
 ) !TerminationSource {
     var source: TerminationSource = .natural;
     return collectOutput(
@@ -2458,6 +2529,7 @@ fn collectOutputForProcess(
         launch_failure_probe,
         process_group_id,
         leader_term,
+        process_job,
     ) catch |err|
         return mapTerminationError(source, cfg.cancel_flag, "output collection", err);
 }
@@ -2467,6 +2539,7 @@ fn waitForCollectedProcess(
     source: TerminationSource,
     process_group_id: ?std.posix.pid_t,
     leader_term: ?std.process.Child.Term,
+    process_job: ?*windows_job.Job,
 ) !std.process.Child.Term {
     if (leader_term) |term| {
         closeChildPipes(child);
@@ -2477,6 +2550,7 @@ fn waitForCollectedProcess(
     if (process_group_id) |pid| {
         terminateRemainingProcessGroup(pid);
     }
+    _ = process_job;
     return term;
 }
 
@@ -2542,22 +2616,21 @@ fn updateTerminationSignal(
     source: *TerminationSource,
     signal_started_ms: *?i64,
     force_kill_sent: *bool,
+    process_job: ?*windows_job.Job,
 ) !void {
     const now_ms = io_mod.milliTimestamp();
     if (signal_started_ms.* == null) {
         if (cancelRequested(cfg.cancel_flag)) {
             source.* = .cancelled;
-            try signalChild(child, process_group_id, false);
+            try signalChild(child, process_group_id, false, process_job);
             debug_trace.logf("core", "command termination requested source=cancelled", .{});
             signal_started_ms.* = now_ms;
         }
         if (signal_started_ms.* == null) {
             if (cfg.timeout_ms) |timeout_ms| {
                 if (now_ms - started_ms >= @as(i64, @intCast(timeout_ms))) {
-                    // Timeout uses the same signal path as cancellation but
-                    // records a distinct source for the post-wait mapping.
                     source.* = .timed_out;
-                    try signalChild(child, process_group_id, false);
+                    try signalChild(child, process_group_id, false, process_job);
                     debug_trace.logf("core", "command termination requested source=timeout", .{});
                     signal_started_ms.* = now_ms;
                 }
@@ -2567,7 +2640,7 @@ fn updateTerminationSignal(
 
     if (signal_started_ms.*) |sent_ms| {
         if (!force_kill_sent.* and now_ms - sent_ms >= 800) {
-            try signalChild(child, process_group_id, true);
+            try signalChild(child, process_group_id, true, process_job);
             debug_trace.logf("core", "command force-killed after termination grace expired", .{});
             force_kill_sent.* = true;
         }
@@ -2591,8 +2664,13 @@ fn signalChild(
     child: *std.process.Child,
     process_group_id: ?std.posix.pid_t,
     force: bool,
+    process_job: ?*windows_job.Job,
 ) !void {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        if (process_job) |job| {
+            job.terminate();
+            return;
+        }
         child.kill(io_mod.getIo());
         return;
     }
@@ -2603,6 +2681,7 @@ fn signalChild(
 }
 
 fn signalProcessGroup(pid: std.posix.pid_t, force: bool) !void {
+    if (comptime builtin.os.tag == .windows) return error.OperationUnsupported;
     std.posix.kill(-pid, if (force) std.posix.SIG.KILL else std.posix.SIG.TERM) catch |err| switch (err) {
         error.ProcessNotFound => {},
         else => return err,
@@ -2696,7 +2775,6 @@ fn schemeQuote(arena: Allocator, input: []const u8) ![]const u8 {
     return try out.toOwnedSlice();
 }
 
-/// Returns true when a command is likely to need broader cache/package paths.
 pub fn needsBroaderFileAccess(command: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, command, " \t");
     if (trimmed.len == 0) return false;
@@ -2773,7 +2851,6 @@ fn pythonNeedsBroaderAccess(rest: []const u8) bool {
         std.mem.eql(u8, module, "venv");
 }
 
-/// Checks stderr envelopes for sandbox-style permission failures.
 pub fn looksLikeSandboxError(output: []const u8) bool {
     if (std.mem.startsWith(u8, output, "exit_code=0\n")) return false;
     if (output.len == 0) return false;
@@ -3563,7 +3640,7 @@ test "managed command artifact confirms an indeterminate rename target" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const workspace = try io_mod.dirRealpathAlloc(
         alloc,
@@ -3645,7 +3722,7 @@ test "managed command artifact rejects an unconfirmed rename target" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const workspace = try io_mod.dirRealpathAlloc(
         alloc,
@@ -3952,7 +4029,7 @@ test "cancellation preserves the termination grace in an invoked script" {
         );
         try script.setPermissions(
             io_mod.getIo(),
-            std.Io.File.Permissions.fromMode(0o700),
+            io_mod.permissionsFromMode(0o700),
         );
     }
 
@@ -4032,7 +4109,7 @@ test "cancelled managed command confirms an indeterminate artifact target" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const workspace = try io_mod.dirRealpathAlloc(
         alloc,
@@ -4265,6 +4342,7 @@ test "artifact write failure after cancellation remains a bare error" {
         null,
         process_group_id,
         &leader_term,
+        null,
     ));
     try std.testing.expect(ready_seen.load(.seq_cst));
 }
@@ -4638,7 +4716,7 @@ test "just_bash post-spawn cancellation does not parse or execute fallback" {
         var fake = try tmp.dir.createFile(io_mod.getIo(), "workspace/fake-just-bash", .{ .truncate = true });
         defer fake.close(io_mod.getIo());
         try fake.writeStreamingAll(io_mod.getIo(), fake_script);
-        try fake.setPermissions(io_mod.getIo(), std.Io.File.Permissions.fromMode(0o700));
+        try fake.setPermissions(io_mod.getIo(), io_mod.permissionsFromMode(0o700));
     }
     const fake_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace/fake-just-bash");
     defer alloc.free(fake_path);
@@ -4771,7 +4849,7 @@ test "just_bash raw callback emits parsed inner streams without wrapper JSON" {
         var fake = try tmp.dir.createFile(io_mod.getIo(), "workspace/fake-just-bash", .{ .truncate = true });
         defer fake.close(io_mod.getIo());
         try fake.writeStreamingAll(io_mod.getIo(), script);
-        try fake.setPermissions(io_mod.getIo(), std.Io.File.Permissions.fromMode(0o700));
+        try fake.setPermissions(io_mod.getIo(), io_mod.permissionsFromMode(0o700));
     }
     const fake_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace/fake-just-bash");
     defer alloc.free(fake_path);

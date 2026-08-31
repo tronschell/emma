@@ -2,8 +2,9 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { clipboard, nativeImage, net } from "electron";
 import { attribute, externalUrl, MAX_FETCHED_PAGE_BYTES, readablePage } from "./ipc";
+import { isWindows } from "./platform";
+import { windowsFrontContext } from "./windows-front";
 
-/** Text and pictures ride one 128 KiB host request, so each gets a fixed slice of it. */
 export const MAX_CLIP_TEXT_BYTES = 32 * 1024;
 export const MAX_CLIP_IMAGES_CHARS = 56 * 1024;
 const MAX_CLIP_IMAGES = 4;
@@ -14,26 +15,14 @@ const MAX_HELPER_OUTPUT = 4096;
 export type FrontPage = { application: string; url: string; title?: string };
 export type PageClip = FrontPage & { title: string; text: string; images: string[] };
 
-/** Browsers that answer the front-tab question; the name is also the app the script tells. */
 const CHROMIUM = ["Google Chrome", "Google Chrome Beta", "Google Chrome Canary", "Chromium", "Brave Browser", "Brave Browser Beta", "Microsoft Edge", "Arc", "Dia", "Vivaldi", "Opera", "Comet"];
 const SAFARI = ["Safari", "Safari Technology Preview"];
 
-/**
- * Only whitelisted names reach the script, so the name can be interpolated as terminology.
- *
- * URL and title come back from one script because they are asked together: the URL is
- * what gets fetched, the title is what "this video" means to the model that has to
- * decide whether the user meant it.
- */
 export function browserScript(application: string): string | null {
   if (SAFARI.includes(application)) return `tell application "${application}" to return (URL of front document) & linefeed & (name of front document)`;
   return CHROMIUM.includes(application) ? `tell application "${application}" to return (URL of active tab of front window) & linefeed & (title of active tab of front window)` : null;
 }
 
-/// What osascript's stderr means to the person who pressed the button. Only the denied
-/// Automation prompt gets its own sentence: it is the one failure nothing else in Emma
-/// reports (there is no setup-status entry for Automation), and it is permanent until
-/// the user goes and flips it.
 function scriptFailure(stderr: string): string {
   if (stderr.includes("-1743") || stderr.includes("Not authorized to send Apple events")) {
     return "macOS has not allowed Emma to read your browser — grant it in System Settings → Privacy & Security → Automation → Emma.";
@@ -53,19 +42,18 @@ function osascript(script: string): Promise<string> {
   });
 }
 
-/** The first readable browser in a front-to-back list of running applications. */
 export function firstBrowser(names: string[]): string | undefined {
   return names.map((name) => name.trim()).find((name) => browserScript(name));
 }
 
-/**
- * The page the user is looking at. The overlay hides itself first, so the frontmost
- * app is theirs — but a turn asked from Emma's own window has Emma in front, and the
- * page they mean is in the browser behind it. System Events lists processes front to
- * back, so the first browser in that list is the one they were last on.
- */
 export async function frontmostPage(): Promise<FrontPage> {
-  if (process.platform !== "darwin") throw new Error("Clipping the front page is macOS only in this build");
+  if (isWindows) {
+    const context = await windowsFrontContext();
+    const page = context.front.url ? context.front : context.browsers.find((browser) => browser.url);
+    if (!page?.url || !externalUrl(page.url)) throw new Error(`${context.front.application || "That app"} has no web page in front. Put a Chrome or Edge window in front and try again.`);
+    return { application: page.application, url: page.url, title: page.title.trim().slice(0, 256) };
+  }
+  if (process.platform !== "darwin") throw new Error("Clipping the front page is unavailable on this platform");
   const front = await osascript('tell application "System Events" to return name of first application process whose frontmost is true');
   const application = browserScript(front)
     ? front
@@ -77,24 +65,25 @@ export async function frontmostPage(): Promise<FrontPage> {
   return { application, url, title: title.trim().slice(0, 256) };
 }
 
-/**
- * The tab that app has in front, or nothing when it is not a browser. Unlike
- * `frontmostPage` there is no falling back to a browser further back: this answers
- * "what is the user looking at", and a window they cannot see is not it.
- */
 export async function frontmostTab(application: string): Promise<{ url: string; title: string } | undefined> {
+  if (isWindows) {
+    if (!browserScript(application)) return undefined;
+    const context = await windowsFrontContext();
+    const page = context.front.application === application ? context.front : context.browsers.find((browser) => browser.application === application);
+    return page?.url && externalUrl(page.url) ? { url: page.url, title: page.title.trim().slice(0, 256) } : undefined;
+  }
   const script = process.platform === "darwin" ? browserScript(application) : null;
   if (!script) return undefined;
   const [url = "", title = ""] = (await osascript(script)).split("\n");
   return externalUrl(url) ? { url, title: title.trim().slice(0, 256) } : undefined;
 }
 
-/**
- * Who the screen belongs to, asked while Emma's own surfaces are hidden. The window
- * title needs Accessibility, so it is optional: the app name alone is still context.
- */
 export async function frontmostApplication(): Promise<{ application: string; window: string }> {
-  if (process.platform !== "darwin") throw new Error("Reading the front application is macOS only in this build");
+  if (isWindows) {
+    const context = await windowsFrontContext();
+    return { application: context.front.application.trim().slice(0, 120), window: context.front.window.trim().slice(0, 200) };
+  }
+  if (process.platform !== "darwin") throw new Error("Reading the front application is unavailable on this platform");
   const output = await osascript([
     'tell application "System Events"',
     "set frontApp to first application process whose frontmost is true",
@@ -112,12 +101,6 @@ export async function frontmostApplication(): Promise<{ application: string; win
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 20_000;
 
-/**
- * `guard` is how the caller says whose URL this is: `externalUrl` for a link the
- * user pointed at, `publicUrl` for one the model named. Redirects are followed by
- * hand so every hop goes through the same guard — a public URL that 302s to
- * 169.254.169.254 is exactly the request the guard exists to stop.
- */
 export async function fetchReadablePage(value: string, guard: (value: string) => URL | null = externalUrl) {
   const first = guard(value);
   if (!first) throw new Error("Only http and https links to public pages can be read");
@@ -143,10 +126,6 @@ export async function fetchReadablePage(value: string, guard: (value: string) =>
   return { ...page, html, url: url.toString() };
 }
 
-/**
- * Favicon first — the site's own mark is what makes the card recognisable — then the
- * pictures the page leads with. Whatever cannot be decoded is skipped downstream.
- */
 export function clipImageUrls(html: string, base: string): string[] {
   const tags = (name: string) => [...html.matchAll(new RegExp(`<${name}\\b[^>]*>`, "gi"))].map((match) => match[0]);
   const icons = tags("link").filter((tag) => /\brel\s*=\s*["']?[^"'>]*\bicon\b/i.test(tag));
@@ -170,7 +149,6 @@ export function clipImageUrls(html: string, base: string): string[] {
   return urls;
 }
 
-/// Small marks keep their transparency as PNG; photographs shrink until they fit the budget.
 export function encodeClipImage(bytes: Buffer, budget: number): string | null {
   const image = nativeImage.createFromBuffer(bytes);
   if (image.isEmpty()) return null;
@@ -188,7 +166,6 @@ export function encodeClipImage(bytes: Buffer, budget: number): string | null {
   return null;
 }
 
-/// The host request is capped in bytes, and one page of Japanese is three bytes a character.
 export function boundedText(text: string, limit: number) {
   let value = text;
   while (Buffer.byteLength(value) > limit) value = value.slice(0, Math.floor(value.length * (limit / Buffer.byteLength(value))));
@@ -202,7 +179,6 @@ async function fetchImage(url: string) {
   return bytes.length > 0 && bytes.length <= MAX_IMAGE_BYTES ? bytes : null;
 }
 
-/// Reads the page as text, then keeps as many of its pictures as the request budget allows.
 export async function clipPage(front: FrontPage): Promise<PageClip> {
   const page = await fetchReadablePage(front.url);
   const candidates = clipImageUrls(page.html, page.url).slice(0, MAX_IMAGE_FETCHES);

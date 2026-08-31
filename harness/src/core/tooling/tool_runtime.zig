@@ -157,9 +157,6 @@ pub const Context = struct {
     permission_rules: types.PermissionRuleSet,
     permission_state_override: ?*const session_permission_state.State = null,
     worker: *WorkerRuntime,
-    /// Sole prompt capability admission consults. When null, admission never
-    /// prompts: it resolves by rule, automatic review, or fail-closed denial
-    /// (e.g. ACP hosts prompt over JSON-RPC by setting this).
     permission_prompter: ?permission_prompter.Prompter = null,
     cancel_flag: ?*std.atomic.Value(bool) = null,
     background: *BackgroundRuntime,
@@ -212,9 +209,6 @@ pub const Context = struct {
     workspace_executor: ?js_host_workspace.Executor = null,
     host_sandbox_default: tool_admission.HostSandboxDefault = .none,
     model_capability_resolver: ?model_capabilities.Resolver = null,
-    /// False when running outside an interactive TUI (e.g. ACP). Tools
-    /// that require a live user (like `ask_user_question`) short-circuit
-    /// in that case.
     interactive: bool = true,
     lifecycle_view: hooks.RuntimeView = hooks.RuntimeView.empty(),
     lifecycle_scope: hooks.Scope = .{
@@ -222,7 +216,6 @@ pub const Context = struct {
         .workspace_root = "",
     },
 
-    /// Projects only the borrowed capabilities consumed by admission.
     pub fn admissionInput(self: Context) tool_admission.Input {
         var input: tool_admission.Input = .{
             .workspace_root = self.workspace_root,
@@ -317,9 +310,7 @@ pub fn validateToolCall(ctx: Context, arena: Allocator, call: ToolCall) !tool_co
         };
     };
     switch (spec.executor_kind) {
-        // Preserve execution-time argument failures for MCP control tool calls.
         .mcp_search_tools, .mcp_select_tool, .mcp_features => return .valid,
-        // File mutation arguments are decoded once by shared permission preflight.
         .write_file, .edit_file => return .valid,
         else => {},
     }
@@ -6142,7 +6133,7 @@ test "run_command timeout returns model-visible failure" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -6400,8 +6391,6 @@ test "run_command reactive sandbox retry timeout retains both attempts" {
     const workspace_path = try std.fs.path.join(alloc, &.{ fixture_root, "workspace" });
     defer alloc.free(workspace_path);
 
-    // The restricted profile permits /tmp and /private/tmp, so a fixture there
-    // cannot prove that the retry widens access to the user's cache directory.
     try std.Io.Dir.cwd().createDirPath(zio, cache_path);
     try std.Io.Dir.cwd().createDirPath(zio, workspace_path);
     const home = try io_mod.realpathAlloc(alloc, home_path);
@@ -9079,8 +9068,6 @@ test "vision runtime preserves partial success and exact total outage notices" {
     const partial_json =
         "{\"images\":[" ++
         "{\"image_id\":1,\"status\":\"ok\",\"summary\":\"read\",\"visible_text\":[],\"details\":[]}]}";
-    // The malformed response is scripted twice because a structurally invalid
-    // successful response is retried once. The outage before it is not retried.
     const responses = [_]VisionGatewayResponse{
         .{ .content = partial_json },
         .{ .status = .service_unavailable },
@@ -9165,7 +9152,6 @@ test "vision runtime classifies an empty successful provider result as invalid" 
     );
     try std.testing.expect(result.interactive_notice == null);
     try std.testing.expect(result.system_notice == null);
-    // An empty successful response is structurally invalid, so it earns the single retry.
     try std.testing.expectEqual(@as(usize, 2), fixture.call_count);
 }
 

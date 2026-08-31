@@ -8,19 +8,16 @@ const tool_result_errors = @import("../../core/tooling/tool_result_errors.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// Typed input for the built-in list_files tool.
 pub const Input = struct {
     path: []u8,
     path_provided: bool,
 
-    /// Frees the owned normalized path.
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.path);
         self.* = .{ .path = &.{}, .path_provided = false };
     }
 };
 
-/// Decodes list_files JSON into an owned Input released by ToolInput.deinit.
 pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
     var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, args_json, .{}) catch {
         return .{ .failure = try ctx.allocator.dupe(u8, "list_files arguments must be valid JSON") };
@@ -76,7 +73,6 @@ const DirEntrySource = struct {
     }
 };
 
-/// Lists the resolved directory and returns an owned tool result body.
 pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     const input = erased.as(Input);
     const requested = if (input.path_provided) input.path else ".";
@@ -114,12 +110,10 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     );
 }
 
-/// Reports that list_files only observes filesystem names.
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
     return true;
 }
 
-/// Reports that list_files has no irreversible side effects.
 pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return false;
 }
@@ -243,11 +237,11 @@ fn isSymlinkPermissionError(err: anyerror) bool {
 }
 
 fn setMode(path: []const u8, mode: std.posix.mode_t) !void {
-    try std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), path, std.Io.File.Permissions.fromMode(mode), .{});
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    try std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), path, io_mod.permissionsFromMode(mode), .{});
 }
 
 fn restoreMode(path: []const u8, mode: std.posix.mode_t) void {
-    // Best-effort test cleanup; tmpDir cleanup will surface any remaining filesystem issue.
     setMode(path, mode) catch {};
 }
 

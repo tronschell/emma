@@ -59,7 +59,7 @@ the global pointer; screen-context and annotation capture are separate features.
 | Host → main | serde `deny_unknown_fields` on every params struct | An unknown or misspelled field is an error, not a default |
 | Host → main | `BoundedLines` in [`ndjson.ts`](../desktop/main/ndjson.ts) | 16 MiB per line, UTF-8 fatal decode, `parseHostLine` re-checks every envelope |
 | Harness → main | `BoundedLines` in [`harness.ts`](../desktop/main/harness.ts) | 8 MiB per ACP line; unknown methods answered `-32601` |
-| Model → user's Mac | `toolGate` in [`shared/permissions.ts`](../desktop/shared/permissions.ts) | Which tools ask, which run, per permission mode |
+| Model → user's computer | `toolGate` in [`shared/permissions.ts`](../desktop/shared/permissions.ts) | Which tools ask, which run, per permission mode |
 
 A refused or unanswered permission question is a denial. Nothing about that is
 per-surface: the composer, Quick Ask, a quick action and a due scheduled job all
@@ -90,13 +90,14 @@ Emma's own directory so it never reads the user's `~/.fx`.
 ## Data on disk
 
 `emma-core` owns parsing, validation and atomic persistence. `$EMMA_DATA_DIR`, or
-`~/Library/Application Support/Emma` when unset, holds `threads/`, `scheduled/`
+the platform default when unset (normally Electron's `userData`: `%APPDATA%/Emma`
+on Windows and `~/Library/Application Support/Emma` on macOS), holds `threads/`, `scheduled/`
 and `research/` — one Markdown file per record, written to `.{id}.tmp` and
-renamed over the destination. Artifacts, components, plans, skills, tools and credentials
-are Electron's, under `userData`, and reach the renderer over named IPC channels
-rather than through the host. Kept notes go into the user's own vault, not into
-Emma's data directory — see [knowledge.md](knowledge.md). Full inventory in
-[data.md](data.md).
+renamed over the destination. Artifacts, components, plans, skills, tools and
+credentials are also Electron's, under `userData`, and reach the renderer over
+named IPC channels rather than through the host. Kept notes go into the user's
+own vault, not into Emma's data directory — see [knowledge.md](knowledge.md).
+Full inventory in [data.md](data.md).
 
 ## Window and page hardening
 
@@ -149,7 +150,7 @@ Vendor brand marks are credited in
 - [permissions.md](permissions.md) — the four modes and the gate table
 - [harness.md](harness.md) — the fx fork and the ACP session
 - [data.md](data.md) — every file and environment variable
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 
 ## Host response framing
 

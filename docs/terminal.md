@@ -1,12 +1,13 @@
 # The terminal panel
 
-A real login shell at the foot of the thread, opened in the folder that thread is
+A real shell at the foot of the thread, opened in the folder that thread is
 working out of. Select output with the mouse and it becomes a context chip on the
-composer; ⌘-click a URL and Emma asks which browser should take it.
+composer; Command-click on macOS or Ctrl-click on Windows a URL and Emma asks
+which browser should take it.
 
 | | |
 | --- | --- |
-| pty helper | [native/pty.c](../desktop/native/pty.c) → `emma-pty` |
+| pty helper | [native/pty.c](../desktop/native/pty.c) or [native/pty_win.c](../desktop/native/pty_win.c) → `emma-pty` or `emma-pty.exe` |
 | The shells | [main/terminal.ts](../desktop/main/terminal.ts) |
 | The panel | [src/terminal.tsx](../desktop/src/terminal.tsx), [styles/terminal.css](../desktop/src/styles/terminal.css) |
 | Bounds and the two shared helpers | [shared/terminal.ts](../desktop/shared/terminal.ts) |
@@ -49,10 +50,12 @@ shell can only ever start somewhere this thread already has — and a thread wit
 no folder connected cannot open one at all. Swapping a thread onto a worktree
 rewrites that grant, so a terminal opened afterwards starts in the worktree.
 
-The shell is `$SHELL` (falling back to `/bin/zsh`) run as `-il` — interactive and
-login, so your rc files, prompt and PATH are the ones you already have. `TERM` is
-`xterm-256color` and `COLORTERM` is `truecolor`. The tab is named after the last
-segment of the cwd, or `shell` if that is empty or over 40 characters.
+On macOS the shell is `$SHELL` (falling back to `/bin/zsh`) run as `-il` —
+interactive and login, so your rc files, prompt and PATH are the ones you
+already have. On Windows it is `COMSPEC` (normally `cmd.exe`) with `/d`, so
+AutoRun commands are skipped. `TERM` is `xterm-256color` and `COLORTERM` is
+`truecolor`. The tab is named after the last segment of the cwd, or `shell` if
+that is empty or over 40 characters.
 
 A thread keeps at most 8 shells. `+` opens another; the `×` on a tab ends that
 one; the `×` at the right of the strip hides the panel.
@@ -60,23 +63,24 @@ one; the `×` at the right of the strip hides the panel.
 ## The pty
 
 `node-pty` is a native module and would need a rebuild for every Electron
-release. Instead `native/pty.c` builds to `emma-pty` beside the other helpers in
-`dist-native/`, from the same `build:native` script, and ships as an
-`--extra-resource`:
+release. Instead the platform helper (`native/pty.c` on macOS or
+`native/pty_win.c` on Windows) builds to `emma-pty` or `emma-pty.exe` beside the
+other helpers in `dist-native/`, from the same `build:native` script, and ships
+as an `--extra-resource`:
 
 ```
 emma-pty <columns> <rows> <command> [argument...]
 ```
 
-It calls `forkpty(3)` at that size, `execvp`s the command in the child, and in
-the parent relays stdin ⇄ the pty master with one `poll()`. Resize is the one
-thing a pipe cannot carry, so it travels on **fd 3**: main writes `"COLS ROWS\n"`
-there and the helper calls `ioctl(TIOCSWINSZ)`. When fd 3 is absent the helper
-drops it from the poll set rather than spinning on it.
+On macOS it calls `forkpty(3)` at that size, `execvp`s the command in the child,
+and relays stdin ⇄ the pty master with one `poll()`. On Windows it creates a
+ConPTY session and relays the same streams through its pipes. Resize travels on
+the helper's control stream as `"COLS ROWS\n"`; the platform helper applies it
+to the active terminal.
 
-`emma-pty --self-test` forks `/bin/sh -c "stty size"` at 40×10 and asserts the
-shell saw exactly that. It runs as part of `build:native`, so a broken helper
-fails the build rather than the app.
+`emma-pty --self-test` starts a platform shell at 40×10 and asserts the terminal
+size. It runs as part of `build:native`, so a broken helper fails the build
+rather than the app.
 
 ## Scrollback and replay
 
@@ -114,9 +118,10 @@ it attaches nothing.
 ## Links
 
 xterm's web-links addon finds URLs in the output. A plain click does nothing: the
-handler returns unless `metaKey` is held, so ⌘-click is the gesture and ordinary
-selection is never interrupted by a stray link. ⌘-click opens a small menu at the
-pointer:
+handler returns unless the platform modifier is held (`metaKey` on macOS,
+`ctrlKey` on Windows), so Command-click or Ctrl-click is the gesture and ordinary
+selection is never interrupted by a stray link. That gesture opens a small menu
+at the pointer:
 
 | | |
 | --- | --- |
@@ -124,7 +129,7 @@ pointer:
 | **Default browser** | `emma:open-link` → `shell.openExternal`. |
 
 `emma:open-link` caps the string at 2048 characters and runs it through
-`externalUrl`, so only `http` and `https` ever reach macOS.
+`externalUrl`, so only `http` and `https` ever reach the system browser.
 
 ## What main will not accept
 
@@ -138,5 +143,5 @@ pointer:
 Every handler goes through `mainWindowSender(event)` first, so a renderer that is
 not Emma's own window is refused before any of this runs.
 
-Quitting sends `SIGHUP` to every shell and `SIGKILL` two seconds later if one has
-not gone.
+Quitting terminates every shell's process tree and forces it after two seconds if
+one has not gone.

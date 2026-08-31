@@ -161,7 +161,6 @@ pub const PostResult = HttpResult;
 pub const GetResult = HttpResult;
 
 pub const GatewayJsonResult = union(enum) {
-    /// Owned response body; the caller frees it with the request allocator.
     success: []u8,
     http_status: std.http.Status,
 
@@ -184,14 +183,11 @@ const gateway_transfer_buffer_bytes: usize = 256 * 1024;
 const provider_failure_detail_max_bytes: usize = 600;
 const generation_response_max_bytes: usize = 128 * 1024;
 const generation_lookup_timeout_ms: i64 = 30_000;
-// Covers a 4 MiB string at worst-case JSON escaping plus SSE framing.
 const max_sse_event_line_bytes: usize = 32 * 1024 * 1024;
 const e2e_gateway_chat_url_env = "FX_E2E_GATEWAY_CHAT_URL";
 const e2e_gateway_models_url_env = "FX_E2E_GATEWAY_MODELS_URL";
 const e2e_gateway_credits_url_env = "FX_E2E_GATEWAY_CREDITS_URL";
 const default_gateway_base_url = "https://openrouter.ai/api";
-/// Identifies emma-cli on every provider request; the zig std.http default
-/// (`zig/<version> (std.http)`) is never sent.
 pub const user_agent = "emma-cli/" ++ build_options.app_version;
 var resolved_model_trace_emitted = std.atomic.Value(bool).init(false);
 var test_cancel_watcher_spawn_error: ?anyerror = null;
@@ -202,7 +198,6 @@ pub const StreamResult = struct {
     err_body: ?[]u8 = null,
     retry_after_seconds: ?u64 = null,
 
-    /// Frees all owned response buffers allocated for this stream result.
     pub fn deinit(self: *StreamResult, alloc: std.mem.Allocator) void {
         if (self.err_body) |body| alloc.free(body);
         if (self.completion.content) |content| alloc.free(content);
@@ -222,9 +217,6 @@ pub const StreamResult = struct {
     }
 };
 
-/// Possibly-sent model requests are retried by the agent so transport retries
-/// cannot multiply the logical response budget. Other gateway consumers keep
-/// their existing bounded transport retry behavior.
 pub const ProviderAttemptOwner = enum {
     transport,
     agent,
@@ -566,8 +558,6 @@ test "gateway JSON transport preserves non-success HTTP status" {
 
 fn gatewayBaseUrl() []const u8 {
     const override = io_mod.getenv("FX_GATEWAY_BASE_URL") orelse return default_gateway_base_url;
-    // The base URL carries the bearer token; only a loopback HTTP override is
-    // trusted for local testing.
     if (!isLoopbackHttpUrl(override)) {
         debug_trace.logf("stream", "ignoring FX_GATEWAY_BASE_URL: not loopback http", .{});
         return default_gateway_base_url;
@@ -649,8 +639,6 @@ pub fn postGatewayCompletion(
     return error.HttpConnectionClosing;
 }
 
-/// Monotonic request-delivery evidence. It becomes possibly sent before the
-/// first body write so any later transport failure is treated as potentially billed.
 pub const DeliveryCertainty = agent_stream_provider.DeliveryCertainty;
 
 const ConnectionSetupOutcome = union(enum) {
@@ -969,7 +957,6 @@ pub const StreamRequest = struct {
     retry_count: usize,
     chat_url: []const u8,
     payload: []const u8,
-    /// Borrowed until `streamGatewayCompletion` returns.
     session_id: ?[]const u8 = null,
     trace_ctx: debug_trace.TraceContext = .{},
     content_capture_limit: ?usize = null,
@@ -1053,7 +1040,6 @@ pub fn streamGatewayRequiredToolCompletionBounded(
     return runBoundedCompletion(alloc, request, null, deadline, cancel_flag);
 }
 
-/// Use only when the request advertises the named tool as provider-executed.
 pub fn streamGatewayProviderToolCompletionBounded(
     alloc: std.mem.Allocator,
     request: StreamRequest,
@@ -2653,11 +2639,6 @@ fn consumeSseStream(
     return consumeSseStreamTraced(alloc, reader, callback_ctx, on_content_chunk, on_tool_start, null, null, cancel_flag, null, null, null);
 }
 
-/// Decodes a provider SSE response from a transport-owned reader.
-///
-/// The returned completion and every populated child buffer are owned by
-/// `alloc`. This is the shared protocol boundary used by native HTTP and web
-/// host transports; transports remain responsible for status and headers.
 pub fn consumeGatewaySseStream(
     alloc: std.mem.Allocator,
     reader: *std.Io.Reader,
@@ -3851,9 +3832,6 @@ test "gateway retry delay respects bounded retry-after seconds" {
     try std.testing.expectEqual(@as(u64, 2 * gateway_retry_base_delay_ns), retryDelayNsForResponse(invalid, 1));
 }
 
-// Gateway `tool-call` events may send `input` as parsed JSON instead of a
-// serialized string. Normalize it so downstream tool dispatch always receives
-// a JSON argument buffer.
 test "consumeSseStream serializes tool-call input that arrives as an object" {
     const payload =
         "data: {\"type\":\"tool-call\",\"toolCallId\":\"c1\",\"toolName\":\"ask_user_question\",\"input\":{\"questions\":[{\"question\":\"ok?\",\"options\":[{\"label\":\"yes\"},{\"label\":\"no\"}]}]}}\n" ++
@@ -3883,7 +3861,6 @@ test "consumeSseStream serializes tool-call input that arrives as an object" {
 
     try std.testing.expectEqual(@as(usize, 1), completion.tool_calls.len);
     try std.testing.expect(completion.tool_calls[0].arguments_json.len > 0);
-    // The normalized argument buffer remains parseable JSON.
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, completion.tool_calls[0].arguments_json, .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value == .object);
@@ -5536,16 +5513,18 @@ const LoopbackGatewayFixture = struct {
 
         switch (self.mode) {
             .reset_on_accept => {
-                const reset_on_close: std.posix.linger = .{
-                    .onoff = 1,
-                    .linger = 0,
-                };
-                try std.posix.setsockopt(
-                    stream.socket.handle,
-                    std.posix.SOL.SOCKET,
-                    std.posix.SO.LINGER,
-                    std.mem.asBytes(&reset_on_close),
-                );
+                if (comptime builtin.os.tag != .windows) {
+                    const reset_on_close: std.posix.linger = .{
+                        .onoff = 1,
+                        .linger = 0,
+                    };
+                    try std.posix.setsockopt(
+                        stream.socket.handle,
+                        std.posix.SOL.SOCKET,
+                        std.posix.SO.LINGER,
+                        std.mem.asBytes(&reset_on_close),
+                    );
+                }
                 self.markStage();
             },
             .tls_handshake_stall => {
@@ -5553,13 +5532,15 @@ const LoopbackGatewayFixture = struct {
                 self.hold();
             },
             .request_send_stall => {
-                const receive_buffer: c_int = 1024;
-                std.posix.setsockopt(
-                    stream.socket.handle,
-                    std.posix.SOL.SOCKET,
-                    std.posix.SO.RCVBUF,
-                    std.mem.asBytes(&receive_buffer),
-                ) catch {};
+                if (comptime builtin.os.tag != .windows) {
+                    const receive_buffer: c_int = 1024;
+                    std.posix.setsockopt(
+                        stream.socket.handle,
+                        std.posix.SOL.SOCKET,
+                        std.posix.SO.RCVBUF,
+                        std.mem.asBytes(&receive_buffer),
+                    ) catch {};
+                }
                 self.markStage();
                 self.hold();
             },
@@ -6306,6 +6287,7 @@ test "TLS setup does not retry after delivery when no certainty sink is provided
 }
 
 test "direct gateway cancellation before admission opens no connection" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try LoopbackGatewayFixture.init(.success, 0);
     defer fixture.deinit();
     try fixture.start();
@@ -6514,6 +6496,7 @@ fn writeLoopbackGatewayBytes(zio: std.Io, stream: std.Io.net.Stream, bytes: []co
 }
 
 test "loopback gateway fixture cleanup joins without a client" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try LoopbackGatewayFixture.init(.success, 0);
     defer fixture.deinit();
     try fixture.start();
@@ -6876,6 +6859,7 @@ test "delivery certainty stays definitely unsent when request setup fails" {
 }
 
 test "chat transport returns once a stalled model call is cancelled" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const emma_openai = @import("emma_openai.zig");
     const zio = io_mod.getIo();
     var fixture = try LoopbackGatewayFixture.init(.response_head_stall, 5000);
@@ -6938,6 +6922,7 @@ test "chat transport returns once a stalled model call is cancelled" {
 }
 
 test "delivery certainty becomes possibly sent before response head" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try LoopbackGatewayFixture.init(.response_head_stall, 500);
     defer fixture.deinit();
     try fixture.start();

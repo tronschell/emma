@@ -1,12 +1,12 @@
-//! Native system URL opener behind the host.UrlOpener contract. Opens a URL
-//! in the user's default browser via the platform launcher; shared by
-//! authentication and user-consented URL flows.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host = @import("host.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../shared/windows_paths.zig")
+else
+    struct {};
 
 const Allocator = std.mem.Allocator;
 
@@ -54,9 +54,23 @@ fn launchUrl(
 ) LaunchOutcome {
     var macos_argv = [_][]const u8{ "open", url };
     var linux_argv = [_][]const u8{ "xdg-open", url };
+    var windows_path: [32768]u8 = undefined;
+    var windows_argv: [2][]const u8 = undefined;
     const argv: []const []const u8 = switch (os_tag) {
         .macos => &macos_argv,
         .linux => &linux_argv,
+        .windows => blk: {
+            if (comptime builtin.os.tag == .windows) {
+                const path = windows_paths.system32ExecutableInto(
+                    &windows_path,
+                    "explorer.exe",
+                ) catch return .failed;
+                windows_argv = .{ path, url };
+            } else {
+                windows_argv = .{ "C:\\Windows\\System32\\explorer.exe", url };
+            }
+            break :blk &windows_argv;
+        },
         else => return .unsupported,
     };
 
@@ -118,12 +132,17 @@ test "url opener selects the platform launcher argv" {
     try std.testing.expectEqualStrings("xdg-open http://localhost:3000", linux.argv_joined.items);
 }
 
-test "url opener reports unsupported platforms without launching" {
+test "url opener uses the Windows shell opener" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var mock = MockLauncher{};
     defer mock.deinit(alloc);
-    try std.testing.expectEqual(LaunchOutcome.unsupported, launchUrl(alloc, "http://x", .windows, mock.launcher()));
-    try std.testing.expectEqualStrings("", mock.argv_joined.items);
+    try std.testing.expectEqual(LaunchOutcome.opened, launchUrl(alloc, "http://x", .windows, mock.launcher()));
+    try std.testing.expect(std.mem.endsWith(
+        u8,
+        mock.argv_joined.items,
+        "\\System32\\explorer.exe http://x",
+    ));
 }
 
 test "url opener treats nonzero exit, bad terms, and launch errors as failed" {

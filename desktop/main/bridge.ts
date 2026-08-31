@@ -12,9 +12,9 @@ const MAX_ID_CHARS = 128;
 const MAX_ERROR_CHARS = 200;
 const PEER_GONE = "-";
 const UNKNOWN_METHOD = "Emma does not answer that request.";
-const REQUEST_FAILED = "That request failed on the Mac.";
+const REQUEST_FAILED = "That request failed on this computer.";
 const TOO_LARGE = "That answer is too large to send to the phone.";
-const NO_RELAY = "This Mac could not reach the pairing relay.";
+const NO_RELAY = "This computer could not reach the pairing relay.";
 
 export type BridgeDeps = {
   userData: string;
@@ -118,8 +118,8 @@ export function createBridge(deps: BridgeDeps): Bridge {
   const drop = (ws: WebSocket, code: number) => {
     try {
       ws.close(code, "");
-    } catch {
-      /* already closing */
+    } catch (error) {
+      console.error("emma bridge: peer close failed", error);
     }
     if (socket !== ws) return;
     socket = undefined;

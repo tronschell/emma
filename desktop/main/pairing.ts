@@ -60,7 +60,7 @@ export function loadPeer(userData: string): Peer | undefined {
 }
 
 export function savePeer(userData: string, peer: Peer): void {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("This Mac's keychain is unavailable, so Emma will not store the phone's pairing key in plain text.");
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("This computer's secure credential store is unavailable, so Emma will not store the phone's pairing key in plain text.");
   const stored = { ...peer, key: safeStorage.encryptString(peer.key).toString("base64") };
   mkdirSync(userData, { recursive: true, mode: 0o700 });
   const temporary = path.join(userData, ".mobile-peer.tmp");

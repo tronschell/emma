@@ -1546,6 +1546,14 @@ mod tests {
         (Arc::new(move |job| sink.lock().unwrap().push(job)), seen)
     }
 
+    fn project_dir() -> String {
+        if cfg!(windows) {
+            r"C:\tmp\project".into()
+        } else {
+            "/tmp/project".into()
+        }
+    }
+
     fn temp_child() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
@@ -2005,7 +2013,7 @@ mod tests {
             runtime.save_research_job(
                 job_id,
                 title.into(),
-                "/tmp/project".into(),
+                project_dir(),
                 metric.into(),
                 "grep".into(),
                 String::new(),

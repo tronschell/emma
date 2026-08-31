@@ -15,7 +15,7 @@ export const SETUP_PERMISSIONS = [
     tasks: ["Screen captures", "Draw on the screen", "Vision"],
     title: "Screen Recording",
     what: "Attaches a picture of your screen to a question.",
-    why: "Nothing is captured until you ask for it — the ▣ orb, the ✎ pen, or a saved page. Each capture is compressed on this Mac and travels only with the turn you send it with.",
+    why: "Nothing is captured until you ask for it. Each capture is compressed locally and travels only with the turn you send it with.",
     pane: "com.apple.preference.security?Privacy_ScreenCapture",
     relaunch: true,
   },
@@ -24,7 +24,7 @@ export const SETUP_PERMISSIONS = [
     tasks: ["Dictation", "Quick Ask with voice"],
     title: "Microphone",
     what: "Dictates into the composer instead of typing.",
-    why: "Hold the ● orb, or the key you bind to voice, and Emma writes down what you say. The audio is transcribed and dropped; only the words reach a thread.",
+    why: "Hold the voice orb, or the key you bind to voice, and Emma writes down what you say. The audio is transcribed and dropped; only the words reach a thread.",
     pane: "com.apple.preference.security?Privacy_Microphone",
     relaunch: false,
   },
@@ -32,8 +32,8 @@ export const SETUP_PERMISSIONS = [
     id: "speech",
     tasks: ["Dictation · built-in engine"],
     title: "Speech Recognition",
-    what: "Transcribes on this Mac with the built-in recognizer.",
-    why: "Only the “macOS · built in” dictation engine asks for this, and only from a packaged Emma — under a development build macOS refuses the helper before it can ask. A local Whisper server needs neither.",
+    what: "Transcribes locally with the built-in recognizer.",
+    why: "The built-in dictation engine uses the operating system's local speech recognizer. A local speech server needs no speech permission.",
     pane: "com.apple.preference.security?Privacy_SpeechRecognition",
     relaunch: false,
   },
@@ -42,7 +42,7 @@ export const SETUP_PERMISSIONS = [
     tasks: ["Save page", "Read the front tab"],
     title: "Automation",
     what: "Saves the page your browser has open, without a screenshot.",
-    why: "Emma asks Safari or Chrome for the front tab's address and title, then fetches the page itself. macOS raises this the first time, once per browser, and lists Emma under the browser it is asking about.",
+    why: "Emma asks the supported browser for the front tab's address and title, then fetches the page itself. Browser integration may require an operating-system grant.",
     pane: "com.apple.preference.security?Privacy_Automation",
     relaunch: false,
   },
@@ -51,7 +51,7 @@ export const SETUP_PERMISSIONS = [
     tasks: ["Turn finished", "Permission asks"],
     title: "Notifications",
     what: "Tells you when a turn finishes, or needs an answer.",
-    why: "Emma posts one banner when a run lands or stops on a permission ask, and bounces the Dock icon when macOS will not. Nothing else is ever announced.",
+    why: "Emma posts one banner when a run lands or stops on a permission ask. Nothing else is ever announced.",
     pane: "com.apple.preference.notifications",
     relaunch: false,
   },
@@ -60,7 +60,7 @@ export const SETUP_PERMISSIONS = [
     tasks: ["Your vault", "Connected folders"],
     title: "Files & Folders",
     what: "Writes what you keep into the vault or folder you chose.",
-    why: "Each save is a plain Markdown note in a folder you already own — an Obsidian vault, iCloud Drive, anywhere. Nothing is kept in a format only Emma can open. macOS asks the first time Emma writes there.",
+    why: "Each save is a plain Markdown note in a folder you already own. Nothing is kept in a format only Emma can open.",
     pane: "com.apple.preference.security?Privacy_FilesAndFolders",
     relaunch: false,
   },
@@ -72,8 +72,16 @@ export type LinkedPermission = SetupPermission;
 
 export type SetupStatus = Record<SetupPermission, boolean | null> & { vault: VaultChoice | null };
 
-export function privacySettingsUrl(id: unknown): string {
+const WINDOWS_PANES: Partial<Record<SetupPermission, string>> = {
+  screen: "ms-settings:privacy-graphicscaptureprogrammatic",
+  microphone: "ms-settings:privacy-microphone",
+  speech: "ms-settings:privacy-speech",
+  notifications: "ms-settings:notifications",
+  files: "ms-settings:privacy-documents",
+};
+
+export function privacySettingsUrl(id: unknown, platform = "darwin"): string {
   const pane = SETUP_PERMISSIONS.find((item) => item.id === id)?.pane;
   if (!pane) throw new Error("That is not a permission Emma asks for.");
-  return `x-apple.systempreferences:${pane}`;
+  return platform === "darwin" ? `x-apple.systempreferences:${pane}` : WINDOWS_PANES[id as SetupPermission] ?? "ms-settings:privacy";
 }

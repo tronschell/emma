@@ -463,8 +463,6 @@ fn expectPermissionDeniedToolResult(gateway: *const FakeGateway, index: usize, t
         if (entry != .object) continue;
         const role = entry.object.get("role") orelse continue;
         if (role != .string or !std.mem.eql(u8, role.string, "tool")) continue;
-        // OpenAI tool messages carry no tool name, so the answered call has to
-        // be resolved back through the assistant turn that requested it.
         const call_id = entry.object.get("tool_call_id") orelse continue;
         if (call_id != .string) continue;
         const called = toolCallNameForId(prompt, call_id.string) orelse continue;
@@ -490,7 +488,6 @@ fn expectPermissionDeniedToolResult(gateway: *const FakeGateway, index: usize, t
     return error.TestExpectedToolResultMissing;
 }
 
-/// Resolves an OpenAI `tool_call_id` back to the name the assistant asked for.
 fn toolCallNameForId(messages: []const std.json.Value, call_id: []const u8) ?[]const u8 {
     for (messages) |entry| {
         if (entry != .object) continue;
@@ -549,8 +546,6 @@ fn expectMalformedArgumentToolPair(
                 if (function != .object) return error.TestExpectedToolCallInputMissing;
                 const name = function.object.get("name") orelse continue;
                 if (name != .string or !std.mem.eql(u8, name.string, tool_name)) continue;
-                // Malformed arguments are replayed as an empty object so the
-                // provider still sees a well-formed call to answer.
                 const arguments = function.object.get("arguments") orelse return error.TestExpectedToolCallInputMissing;
                 if (arguments != .string) return error.TestExpectedToolCallInputMissing;
                 try std.testing.expectEqualStrings("{}", arguments.string);
@@ -1861,7 +1856,7 @@ test "reactive sandbox widening failure preserves the restricted result" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2035,7 +2030,7 @@ test "reactive sandbox broader retry cancellation cleans replay captures" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -4456,7 +4451,7 @@ test "terminal publication failure deletes retained command replay" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,

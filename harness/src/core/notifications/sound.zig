@@ -6,18 +6,16 @@ const io_mod = @import("../shared/io.zig");
 
 const macos_player_path = "/usr/bin/afplay";
 
-// Sound defaults on only where a real audio player exists (macOS). Elsewhere
-// the fallback is the terminal bell, so notifications stay opt-in.
-pub const default_enabled: bool = builtin.os.tag == .macos;
+pub const default_enabled: bool = builtin.os.tag == .macos or builtin.os.tag == .windows;
 
-// One-shot notifications still construct Player directly. Keep these aliases
-// until that path moves behind its own provider boundary.
 pub const Cue = notification_contract.Cue;
 pub const Kind = notification_contract.Kind;
 
-// Chimes derived from cuelume's MIT-licensed recipes by Daniel Belyi, rendered
-// at 48kHz and encoded as AAC. `click` has no recipe to re-render from, so it
-// stays the original IMA4 CAF.
+const windows_native = if (builtin.os.tag == .windows) struct {
+    const windows = std.os.windows;
+    extern "user32" fn MessageBeep(kind: u32) callconv(.winapi) windows.BOOL;
+} else struct {};
+
 fn embeddedChime(cue: Cue) []const u8 {
     return switch (cue) {
         .click => @embedFile("click.caf"),
@@ -36,7 +34,6 @@ var sound_path_mutex: std.Io.Mutex = .init;
 var materialized_paths = [_]?[]const u8{null} ** std.enums.values(Cue).len;
 var sound_path_bufs: [std.enums.values(Cue).len][std.fs.max_path_bytes]u8 = undefined;
 
-// Materialize lazily to protect startup latency. Atomic replacement avoids following symlinks.
 fn ensureCueSoundPath(cue: Cue) ?[]const u8 {
     const idx = @intFromEnum(cue);
     sound_path_mutex.lockUncancelable(io_mod.getIo());
@@ -115,12 +112,14 @@ const Process = struct {
 const Platform = enum {
     macos,
     linux,
+    windows,
     unsupported,
 };
 
 const SpawnFn = *const fn (?*anyopaque, []const []const u8) std.process.SpawnError!Process;
 const StartWaiterFn = *const fn (?*anyopaque, Process) std.Thread.SpawnError!void;
 const SoundPathFn = *const fn (?*anyopaque, Cue) ?[]const u8;
+const BeepFn = *const fn (?*anyopaque, Cue) bool;
 
 const Dependencies = struct {
     ctx: ?*anyopaque,
@@ -128,15 +127,22 @@ const Dependencies = struct {
     spawn: SpawnFn,
     start_waiter: StartWaiterFn,
     sound_path: SoundPathFn,
+    beep: BeepFn,
 
     fn production() Dependencies {
         if (comptime builtin.os.tag != .macos) {
             return .{
                 .ctx = null,
-                .platform = if (builtin.os.tag == .linux) .linux else .unsupported,
+                .platform = if (builtin.os.tag == .linux)
+                    .linux
+                else if (builtin.os.tag == .windows)
+                    .windows
+                else
+                    .unsupported,
                 .spawn = unsupportedSpawnSoundProcess,
                 .start_waiter = unsupportedStartWaiter,
                 .sound_path = unavailableSoundPath,
+                .beep = productionWindowsBeep,
             };
         }
         return .{
@@ -145,6 +151,7 @@ const Dependencies = struct {
             .spawn = spawnSoundProcess,
             .start_waiter = startDetachedWaiter,
             .sound_path = productionSoundPath,
+            .beep = unavailableWindowsBeep,
         };
     }
 };
@@ -160,16 +167,29 @@ pub const Player = struct {
     pub fn play(self: *Player, cue: Cue) void {
         switch (self.dependencies.platform) {
             .macos => self.playMacos(cue, true),
+            .windows => self.playWindows(cue, true),
             .linux, .unsupported => self.emitBell(),
         }
     }
 
-    // Attention notifications always include a terminal BEL so multiplexers
-    // can mark the pane, even when macOS also plays the configured chime.
     pub fn playAttention(self: *Player, cue: Cue) void {
         self.emitBell();
-        if (self.dependencies.platform == .macos) {
-            self.playMacos(cue, false);
+        switch (self.dependencies.platform) {
+            .macos => self.playMacos(cue, false),
+            .windows => self.playWindows(cue, false),
+            .linux, .unsupported => {},
+        }
+    }
+
+    fn playWindows(self: *Player, cue: Cue, bell_on_failure: bool) void {
+        if (self.dependencies.beep(self.dependencies.ctx, cue)) return;
+        if (bell_on_failure) {
+            debug_trace.logf(
+                "notifications",
+                "native Windows beep failed; using terminal bell",
+                .{},
+            );
+            self.emitBell();
         }
     }
 
@@ -262,6 +282,20 @@ fn unavailableSoundPath(_: ?*anyopaque, _: Cue) ?[]const u8 {
     return null;
 }
 
+fn unavailableWindowsBeep(_: ?*anyopaque, _: Cue) bool {
+    return false;
+}
+
+fn productionWindowsBeep(_: ?*anyopaque, cue: Cue) bool {
+    if (comptime builtin.os.tag != .windows) return false;
+    const kind: u32 = switch (cue) {
+        .success, .release, .toggle => 0x00000040,
+        .@"error" => 0x00000010,
+        .bloom, .press, .click => 0x00000000,
+    };
+    return windows_native.MessageBeep(kind).toBool();
+}
+
 fn unsupportedSpawnSoundProcess(_: ?*anyopaque, _: []const []const u8) std.process.SpawnError!Process {
     return error.SystemResources;
 }
@@ -303,6 +337,8 @@ const TestState = struct {
     fail_spawn: bool = false,
     fail_waiter: bool = false,
     no_sound_path: bool = false,
+    beep_count: usize = 0,
+    beep_succeeded: bool = true,
     argv_matches: bool = false,
     last_cue: ?Cue = null,
 
@@ -340,6 +376,12 @@ const TestState = struct {
         const self: *TestState = @ptrCast(@alignCast(raw));
         self.reap_count += 1;
     }
+
+    fn beep(raw: ?*anyopaque, _: Cue) bool {
+        const self: *TestState = @ptrCast(@alignCast(raw.?));
+        self.beep_count += 1;
+        return self.beep_succeeded;
+    }
 };
 
 fn testPlayer(state: *TestState, platform: Platform) Player {
@@ -351,6 +393,7 @@ fn testPlayer(state: *TestState, platform: Platform) Player {
             .spawn = TestState.spawn,
             .start_waiter = TestState.startWaiter,
             .sound_path = TestState.soundPath,
+            .beep = TestState.beep,
         },
     };
 }
@@ -506,4 +549,20 @@ test "Linux attention emits exactly one bell without spawning" {
     try std.testing.expectEqual(@as(usize, 0), state.sound_path_count);
     try std.testing.expectEqual(@as(usize, 0), state.spawn_count);
     try std.testing.expectEqual(@as(usize, 1), state.bell_count);
+}
+
+test "Windows sound uses the native beep and falls back to one bell" {
+    var state = TestState{};
+    var player = testPlayer(&state, .windows);
+    player.play(.success);
+
+    try std.testing.expectEqual(@as(usize, 1), state.beep_count);
+    try std.testing.expectEqual(@as(usize, 0), state.bell_count);
+
+    var failed_state = TestState{ .beep_succeeded = false };
+    var failed_player = testPlayer(&failed_state, .windows);
+    failed_player.play(.@"error");
+
+    try std.testing.expectEqual(@as(usize, 1), failed_state.beep_count);
+    try std.testing.expectEqual(@as(usize, 1), failed_state.bell_count);
 }

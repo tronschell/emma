@@ -126,6 +126,10 @@ No child-context patch remains in the candidate.
    protection was changed.
 
 Global shortcuts, fresh privacy grants, VoiceOver, multiple-display geometry,
-macOS 12 hardware, Intel and non-macOS paths are not verified by these checks.
-Windows and Intel packages are not currently shipped. A local test pass is not
-a claim that every feature or platform interaction is bug-free.
+macOS 12 hardware, Intel hardware, and Windows runtime behavior are not verified
+by these checks.
+Windows x64 is the supported distributable/public target, and the current
+workflow produces an unsigned x64 target package plus an ARM64 compile/package
+rehearsal. Public signed Windows x64 publication is pending release-workflow
+authorization. ARM64 is not a public installer or auto-update target. A local
+test pass is not a claim that every feature or platform interaction is bug-free.

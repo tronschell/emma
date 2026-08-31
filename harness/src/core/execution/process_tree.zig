@@ -1,6 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
+const windows_process = if (builtin.os.tag == .windows)
+    @import("../shared/windows_process.zig")
+else
+    struct {};
+const windows_process_tree = if (builtin.os.tag == .windows)
+    @import("../shared/windows_process_tree.zig")
+else
+    struct {};
+const windows_job = @import("../permissions/windows_job.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -33,6 +42,11 @@ const ProcessSnapshot = struct {
     parent_unique_id: ?u64 = null,
 };
 
+const WindowsTrackedProcess = struct {
+    process_id: u32,
+    creation_time: u64,
+};
+
 pub const DeliverySummary = struct {
     delivered: usize = 0,
     incomplete: bool = false,
@@ -54,19 +68,19 @@ const SystemSignalEffects = struct {
     }
 
     fn send(pid: std.posix.pid_t, signal: std.posix.SIG) std.posix.KillError!void {
+        if (comptime builtin.os.tag == .windows) return error.PermissionDenied;
         return std.posix.kill(pid, signal);
     }
 };
 
-/// Tracks a command root and descendants across new sessions or process
-/// groups. Identity checks guard both traversal and signaling against PID
-/// reuse.
 pub const Tracker = struct {
     alloc: Allocator,
     root: ?TrackedProcess = null,
     processes: std.ArrayList(TrackedProcess) = .empty,
     macos_child_buffer: []std.posix.pid_t = &.{},
     macos_pid_buffer: []std.posix.pid_t = &.{},
+    windows_root: ?WindowsTrackedProcess = null,
+    windows_processes: std.ArrayList(WindowsTrackedProcess) = .empty,
 
     pub fn init(alloc: Allocator) !Tracker {
         var tracker = Tracker{ .alloc = alloc };
@@ -96,6 +110,7 @@ pub const Tracker = struct {
 
     pub fn deinit(self: *Tracker) void {
         self.processes.deinit(self.alloc);
+        self.windows_processes.deinit(self.alloc);
         if (self.macos_child_buffer.len > 0) {
             self.alloc.free(self.macos_child_buffer);
         }
@@ -106,6 +121,54 @@ pub const Tracker = struct {
     }
 
     pub fn refresh(self: *Tracker, root_pid: std.posix.pid_t) !void {
+        if (comptime builtin.os.tag == .windows) {
+            return self.refreshWindows(root_pid);
+        }
+        return self.refreshPosix(root_pid);
+    }
+
+    fn refreshWindows(self: *Tracker, root_pid: std.posix.pid_t) !void {
+        const root_process_id = windows_process.id(root_pid);
+        if (root_process_id == 0) return error.ProcessNotFound;
+        const root_creation_time = try windows_process.creationTime(root_pid);
+        const entries = try windows_process_tree.list(self.alloc);
+        defer self.alloc.free(entries);
+        self.windows_root = .{
+            .process_id = root_process_id,
+            .creation_time = root_creation_time,
+        };
+        self.windows_processes.clearRetainingCapacity();
+        var frontier: std.ArrayList(u32) = .empty;
+        defer frontier.deinit(self.alloc);
+        try frontier.append(self.alloc, root_process_id);
+        var frontier_index: usize = 0;
+        while (frontier_index < frontier.items.len) : (frontier_index += 1) {
+            const parent_id = frontier.items[frontier_index];
+            for (entries) |entry| {
+                if (entry.parent_process_id != parent_id or
+                    entry.creation_time == 0 or
+                    entry.process_id == root_process_id)
+                {
+                    continue;
+                }
+                var already_tracked = false;
+                for (self.windows_processes.items) |tracked| {
+                    if (tracked.process_id == entry.process_id) {
+                        already_tracked = true;
+                        break;
+                    }
+                }
+                if (already_tracked) continue;
+                try self.windows_processes.append(self.alloc, .{
+                    .process_id = entry.process_id,
+                    .creation_time = entry.creation_time,
+                });
+                try frontier.append(self.alloc, entry.process_id);
+            }
+        }
+    }
+
+    fn refreshPosix(self: *Tracker, root_pid: std.posix.pid_t) !void {
         const root_snapshot: ?ProcessSnapshot = captureSnapshot(self.alloc, root_pid) catch |err| switch (err) {
             error.ProcessNotFound => null,
             else => return err,
@@ -141,6 +204,7 @@ pub const Tracker = struct {
         self: *Tracker,
         root_pid: std.posix.pid_t,
     ) !void {
+        if (comptime builtin.os.tag == .windows) return;
         const snapshot = captureSnapshot(self.alloc, root_pid) catch |err| switch (err) {
             error.ProcessNotFound => return,
             else => return err,
@@ -206,6 +270,28 @@ pub const Tracker = struct {
         signal: std.posix.SIG,
         preserved_group: ?std.posix.pid_t,
     ) DeliverySummary {
+        if (comptime builtin.os.tag == .windows) {
+            var summary: DeliverySummary = .{};
+            if (self.windows_root) |root| {
+                if (windows_job.Job.terminateForProcess(
+                    root.process_id,
+                    root.creation_time,
+                )) {
+                    summary.delivered += 1;
+                } else {
+                    summary.incomplete = true;
+                }
+            }
+            for (self.windows_processes.items) |process| {
+                if (windows_job.Job.terminateForProcess(
+                    process.process_id,
+                    process.creation_time,
+                )) {
+                    summary.delivered += 1;
+                }
+            }
+            return summary;
+        }
         return self.signalProcessesWith(
             signal,
             preserved_group,
@@ -276,6 +362,29 @@ pub const Tracker = struct {
     }
 
     pub fn anyAlive(self: *Tracker) bool {
+        if (comptime builtin.os.tag == .windows) {
+            const entries = windows_process_tree.list(self.alloc) catch return true;
+            defer self.alloc.free(entries);
+            if (self.windows_root) |root| {
+                for (entries) |entry| {
+                    if (entry.process_id == root.process_id and
+                        entry.creation_time == root.creation_time)
+                    {
+                        return true;
+                    }
+                }
+            }
+            for (self.windows_processes.items) |process| {
+                for (entries) |entry| {
+                    if (entry.process_id == process.process_id and
+                        entry.creation_time == process.creation_time)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
         if (self.root) |root| {
             const actual: ?ProcessSnapshot = captureSnapshot(self.alloc, root.pid) catch null;
             if (actual) |snapshot| {
@@ -493,9 +602,6 @@ fn readLinuxChildrenFile(file: std.Io.File, buffer: []u8) !usize {
 
 fn openLinuxProcDir(path: []const u8) !?std.Io.Dir {
     if (comptime builtin.os.tag != .linux) return error.ProcessTreeUnsupported;
-    // A process can disappear between identity validation and opening its
-    // procfs entry. The POSIX wrapper maps Linux's ESRCH to FileNotFound;
-    // std.Io currently treats ESRCH from directory opens as unexpected.
     const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{
         .ACCMODE = .RDONLY,
         .NOFOLLOW = true,
@@ -535,6 +641,7 @@ test "Linux proc helpers treat missing process data as vanished" {
 }
 
 test "process-group exclusion preserves the captured command grace" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expect(shouldSignalProcess(41, null));
     try std.testing.expect(!shouldSignalProcess(41, 41));
     try std.testing.expect(shouldSignalProcess(42, 41));
@@ -542,6 +649,7 @@ test "process-group exclusion preserves the captured command grace" {
 }
 
 test "stale process identities cannot become traversal roots" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expect(shouldTraverseParent(
         .{ .linux_start_ticks = 41 },
         .{ .linux_start_ticks = 41 },
@@ -557,6 +665,7 @@ test "stale process identities cannot become traversal roots" {
 }
 
 test "child admission binds the observed process to its expected parent" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const snapshot = ProcessSnapshot{
         .identity = .{ .linux_start_ticks = 42 },
         .parent_pid = 17,
@@ -581,6 +690,7 @@ test "macOS lineage identity matches only the same unique process" {
 }
 
 test "checked signal delivery distinguishes vanished stale and failed targets" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const FakeEffects = struct {
         fn capture(_: Allocator, pid: std.posix.pid_t) !ProcessSnapshot {
             return switch (pid) {
@@ -634,6 +744,7 @@ test "checked signal delivery distinguishes vanished stale and failed targets" {
 }
 
 test "checked signal delivery keeps vanished stale and excluded targets complete" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const FakeEffects = struct {
         fn capture(_: Allocator, pid: std.posix.pid_t) !ProcessSnapshot {
             if (pid == 21) return error.ProcessNotFound;
@@ -764,8 +875,6 @@ fn captureMacOSSnapshot(pid: std.posix.pid_t) !ProcessSnapshot {
 }
 
 const Darwin = struct {
-    // Stable libproc process-identity flavor; the SDK omits this constant from
-    // its public header, but XNU defines the record as API with a fixed size.
     const proc_pid_unique_identifier_info: c_int = 17;
 
     const ProcUniqueIdentifierInfo = extern struct {

@@ -1,14 +1,14 @@
 # Voice and drawing
 
 Dictation: speak, and the words land in the composer. Everything happens on this
-Mac — the audio never reaches a network Emma does not control, and that is
+computer — the audio never reaches a network Emma does not control, and that is
 enforced, not promised.
 
 ## Off until you turn it on
 
 **Settings → Voice**. Until `transcriptionEnabled` is on there is no microphone
-access, no helper, and no orb. Turning it on is also what raises the macOS
-microphone prompt.
+access, no helper, and no orb. Turning it on lets Emma request the platform's
+microphone permission where applicable.
 
 ## Recording
 
@@ -21,30 +21,33 @@ does.
 | Captured as | WebM/Opus, echo cancellation and noise suppression on |
 | Sent as | 16 kHz mono 16-bit WAV — decoded and rewritten before it leaves the renderer, because llama.cpp sniffs containers by magic bytes and takes RIFF/WAVE, MP3 or fLaC only |
 | Ceiling | `MAX_UTTERANCE_BYTES` — 12 MiB |
-| After | Every track is stopped, so macOS's orange dot goes out |
+| After | Every track is stopped, so the platform's recording indicator goes out |
 
 `validateUtterance` re-checks the buffer and the MIME type in main before
 anything touches it.
 
 ## Two engines
 
-| | macOS, built in | Local server |
+| | Built-in recognizer | Local server |
 |---|---|---|
-| Engine | Speech.framework, through the `emma-transcribe` helper | [llama.cpp](https://github.com/ggml-org/llama.cpp) at `http://127.0.0.1:8080/v1/audio/transcriptions` |
-| Model | Whatever macOS has for your locale | `ggml-org/Qwen3-ASR-0.6B-GGUF` |
-| Install | Nothing | `brew install llama.cpp`, then `llama-server -hf ggml-org/Qwen3-ASR-0.6B-GGUF --port 8080` |
-| Needs | Speech Recognition, and the **packaged** Emma.app | Nothing from macOS |
+| Engine | macOS Speech.framework through `emma-transcribe`; Windows SAPI through `emma-transcribe.exe` | [llama.cpp](https://github.com/ggml-org/llama.cpp) at `http://127.0.0.1:8080/v1/audio/transcriptions` |
+| Model | The operating system's on-device speech model for the configured locale or language | `ggml-org/Qwen3-ASR-0.6B-GGUF` |
+| Install | Nothing beyond the platform speech setup | Install `llama.cpp`, then run `llama-server -hf ggml-org/Qwen3-ASR-0.6B-GGUF --port 8080` |
+| Needs | macOS Speech Recognition and the **packaged** Emma.app; Windows speech recognition is provided by SAPI | Nothing from the operating system |
 
-`emma-transcribe` ([`desktop/native/transcribe.m`](../desktop/native/transcribe.m),
-built with clang) is a two-line contract: `--check [locale]` prints `ready` or
-the reason it cannot, `<wav> [locale]` prints the transcript. It pins
-`requiresOnDeviceRecognition = YES`, so a Mac with no downloaded model for the
-locale fails loudly instead of uploading to Apple, and it asks for
-`SFSpeechRecognitionTaskHintDictation` with punctuation on.
+`emma-transcribe` ([`desktop/native/transcribe.m`](../desktop/native/transcribe.m)
+on macOS and [`desktop/native/transcribe_win.cpp`](../desktop/native/transcribe_win.cpp)
+on Windows, built with the platform toolchain) is a two-line contract:
+`--check [locale]` prints `ready` or the reason it cannot, and `<wav> [locale]`
+prints the transcript. The macOS helper pins `requiresOnDeviceRecognition = YES`,
+so a Mac with no downloaded model for the locale fails loudly instead of uploading
+to Apple, and it asks for `SFSpeechRecognitionTaskHintDictation` with punctuation
+on. The Windows helper uses the installed SAPI dictation recognizer.
 
 Under `npm run dev` macOS aborts the helper — TCC reads the *responsible*
 process's `NSSpeechRecognitionUsageDescription`, which only the packaged app
-carries. The error says so.
+carries. The error says so. Windows has no equivalent app-bundle TCC check; its
+SAPI helper still needs a supported Windows speech recognition language.
 
 ## The cleanup pass
 
@@ -80,12 +83,12 @@ spawn a helper anyway.
 
 ## Audio on disk
 
-Only the macOS engine touches disk, because Speech.framework reads a URL:
-`mkdtemp` under the system temp directory, `utterance.wav` at mode `0600`, read
-once, and the whole directory removed in a `finally` — deleted whether or not
-the recognizer succeeded. The server engine posts the buffer straight from
-memory. Nothing keeps the audio, and neither the recording nor the raw
-transcript is written into a thread.
+Both built-in helpers touch disk because they read a WAV path: `mkdtemp` under
+the system temp directory, `utterance.wav` at mode `0600`, read once, and the
+whole directory removed in a `finally` — deleted whether or not the recognizer
+succeeded. The server engine posts the buffer straight from memory. Nothing
+keeps the audio, and neither the recording nor the raw transcript is written
+into a thread.
 
 | Timeout | Value |
 |---|---|
@@ -127,6 +130,6 @@ The ▣ orb is the same capture without the pen.
 ## See also
 
 - [notch.md](notch.md) — the island, the orbs and the shortcuts
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 - [computer-use.md](computer-use.md) — approved app controls without screen capture
 - [models.md](models.md) — the vision endpoint, the one exception

@@ -9,6 +9,7 @@ import { MAX_PLAN_BYTES, MAX_PLAN_TITLE_CHARS, PLAN_STATUSES, type PlanStatus } 
 import { GOAL_ACTIONS, GOAL_UPDATE_STATUSES, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, type GoalAction, type GoalUpdateStatus } from "../shared/goal";
 import { KEEP_KINDS, MAX_NOTE_BYTES, isKeepKind, keepKindLabel, type KeepKind } from "../shared/vault";
 import { toolGate, type PermissionMode } from "../shared/permissions";
+import { isWindows } from "./platform";
 
 export const MAX_COMMAND_CHARS = 4096;
 export const MAX_TASK_PROMPT_CHARS = 8192;
@@ -18,6 +19,13 @@ export const MAX_ARTIFACT_CONTENT_CHARS = MAX_ARTIFACT_BYTES;
 export const MAX_WORKFLOW_NODE_CHARS = 32 * 1024;
 
 export const MAX_TOOL_OUTPUT_BYTES = 16 * 1024;
+
+const LOCAL_DEVICE = isWindows ? "PC" : "Mac";
+const LOCAL_PATH = isWindows ? "C:\\Users\\me\\notes" : "/Users/me/notes";
+const SECRET_COMMANDS = isWindows
+  ? "Get-ChildItem Env:, Get-Content .env, op read op://vault/item/field, vault kv get secret/app"
+  : "printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github";
+const TOOL_INTERPRETERS = isWindows ? "#! powershell, node, python" : "#!/usr/bin/env bash, python3, node";
 
 export type ToolAvailability = {
   folders: boolean;
@@ -75,11 +83,11 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "cli",
     needs: "folders",
     description:
-      "Run another coding CLI on this Mac — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n" +
+      `Run another coding CLI on this ${LOCAL_DEVICE} — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n` +
       "action \"run\" starts a conversation with a CLI and returns its run id once the first turn finishes; \"send\" gives an existing run the next prompt, continuing the same session with everything it already knows.\n" +
       "Check first with cli_runs {} which CLIs are installed — running one that is not there is the common failure.\n" +
       "Say everything the CLI needs in prompt: it does not see this conversation, only the folder. Prefer it over doing the work yourself when the user names a CLI, when they want a second agent's answer on the same code, or when that CLI is set up for this project and Emma is not.\n" +
-      "unattended passes that CLI's own skip-approvals flag, so it edits and runs commands without stopping. It is the difference between a real run and one that stalls on a question nobody sees — but it is the user's Mac, so leave it off unless they asked for a hands-off run.",
+      `unattended passes that CLI's own skip-approvals flag, so it edits and runs commands without stopping. It is the difference between a real run and one that stalls on a question nobody sees — but it is the user's ${LOCAL_DEVICE}, so leave it off unless they asked for a hands-off run.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -97,7 +105,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "cli_runs",
     needs: "always",
     description:
-      "Look after the CLI runs started with cli: call it with no arguments to see which CLIs are installed on this Mac and list every run and its state, with an id to read that run's terminal output, or with stop to kill the turn it is working on. A run stays readable between turns — that is how you check whether one has finished before sending it more.",
+      `Look after the CLI runs started with cli: call it with no arguments to see which CLIs are installed on this ${LOCAL_DEVICE} and list every run and its state, with an id to read that run's terminal output, or with stop to kill the turn it is working on. A run stays readable between turns — that is how you check whether one has finished before sending it more.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -192,7 +200,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
       properties: {
         question: { type: "string", description: "What you want to know about the image. One specific question; name the boxes, the text or the objects you want back." },
         path: { type: "string", description: "Image file relative to a connected folder's root, e.g. screenshots/error.png — or the absolute path an attached image was given." },
-        url: { type: "string", description: "Public URL of the image, when it is not on this Mac. Use path for a local file." },
+        url: { type: "string", description: `Public URL of the image, when it is not on this ${LOCAL_DEVICE}. Use path for a local file.` },
         ...FOLDER_FIELD,
       },
       required: ["question"],
@@ -203,7 +211,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     needs: "always",
     description:
       "Read something secret through the model the user picked for their secrets, without any of it entering this conversation. Keys, tokens, passwords, .env files, vault entries, whatever the user keeps private.\n" +
-      "command runs on this Mac in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github.\n" +
+      `command runs on this ${LOCAL_DEVICE} in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: ${SECRET_COMMANDS}.\n` +
       "Use it whenever the work touches a secret — which keys are set, why a request comes back unauthorised, whether two tokens differ, what is in a credentials file. Do it here rather than reading the file yourself: whatever you read has been sent to the model running you and stays in this thread, and that model is not the one the user chose for this.\n" +
       "Ask one specific question: \"which of these are empty\" beats \"what is in here\". Never ask for a value in full — ask only what you need to know to carry on.",
     inputSchema: {
@@ -397,14 +405,14 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "install_mcp",
     needs: "always",
     description:
-      "Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, a binary on this Mac). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.",
+      `Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, a binary on this ${LOCAL_DEVICE}). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.`,
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Short name for the server: letters, digits, dot, dash or underscore." },
         command: { type: "string", description: "The executable to run, e.g. npx." },
-        args: { type: "array", items: { type: "string" }, description: 'Its arguments, e.g. ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"].' },
-        env: { type: "object", description: "Environment variables the server needs. Values are stored on this Mac and appear in this transcript, so ask the user before putting a secret here." },
+        args: { type: "array", items: { type: "string" }, description: `Its arguments, e.g. ["-y", "@modelcontextprotocol/server-filesystem", "${LOCAL_PATH}"].` },
+        env: { type: "object", description: `Environment variables the server needs. Values are stored on this ${LOCAL_DEVICE} and appear in this transcript, so ask the user before putting a secret here.` },
       },
       required: ["name", "command"],
     },
@@ -548,8 +556,8 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     needs: "always",
     description:
       "Write a tool of your own: an executable script kept in Emma's own data folder and callable by name from any thread afterwards, with run_tool. Use it whenever the user asks you to build or write a tool, and whenever you notice yourself repeating the same fiddly sequence of commands — write it once, then call it.\n" +
-      "code is the whole script and must start with a #! line naming its interpreter (#!/usr/bin/env bash, python3, node). It is run with one argument — the input string run_tool was called with — and whatever it prints, on stdout or stderr, is the tool's result.\n" +
-      "Writing a name that already exists replaces it, which is how a tool gets fixed. Nothing is installed on this Mac and nothing is added to the user's project: it is one file in Emma's own folder. Say what you wrote and check it with a real run_tool call before reporting it works.",
+      `code is the whole script and must start with a #! line naming its interpreter (${TOOL_INTERPRETERS}). It is run with one argument — the input string run_tool was called with — and whatever it prints, on stdout or stderr, is the tool's result.\n` +
+      `Writing a name that already exists replaces it, which is how a tool gets fixed. Nothing is installed on this ${LOCAL_DEVICE} and nothing is added to the user's project: it is one file in Emma's own folder. Say what you wrote and check it with a real run_tool call before reporting it works.`,
     inputSchema: {
       type: "object",
       properties: {

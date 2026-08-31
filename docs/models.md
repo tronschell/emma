@@ -6,7 +6,7 @@ into **Settings → Models**, pick a model from the catalog, and the composer's
 picker switches models per thread. No account inside Emma, no config file.
 
 Anything else that speaks the same shape — Z.AI, DeepSeek, a GPU host, LM Studio
-on this Mac, llama.cpp on a box down the hall — is a **provider profile** you add
+on this computer, llama.cpp on a box down the hall — is a **provider profile** you add
 in the same place. A provider is `{ id, name, modelId, baseUrl, credentialEnv,
 contextWindow, insecure }`, and the profile is the whole mechanism: there are no
 per-vendor adapters, because there is nothing to adapt.
@@ -215,8 +215,8 @@ chain it is the **first** id's window that is sent (`model.split(",")[0]`).
 
 1. You paste a key in **Settings → Models → provider keys**. It goes over IPC to main and no further.
 2. `set(env, secret)` validates: the name against `isEnvName` (`/^[A-Za-z_][A-Za-z0-9_]{0,63}$/`), the secret 1–`MAX_SECRET_CHARS` (512) printable ASCII (`/^[!-~]+$/`).
-3. `save()` encrypts each secret with Electron `safeStorage.encryptString` — the macOS keychain — and base64s it. If `isEncryptionAvailable()` is false it throws: *"This Mac's keychain is unavailable, so Emma will not store a key in plain text."*
-4. The blob lands at `<userData>/credentials.json`, written to a `.tmp` with mode `0o600` in a directory created `0o700`, then renamed. `userData` is Electron's profile directory, separate from `EMMA_DATA_DIR`; see [data.md](data.md).
+3. `save()` encrypts each secret with Electron `safeStorage.encryptString` — the operating system's secure credential store — and base64s it. If `isEncryptionAvailable()` is false it throws: *"This computer's secure credential store is unavailable, so Emma will not store a key in plain text."*
+4. The blob lands at `<userData>/credentials.json`, written to a `.tmp` with mode `0o600` in a directory created `0o700`, then renamed. `userData` is Electron's profile directory; packaged Windows builds use `%APPDATA%/Emma`, while macOS builds use `~/Library/Application Support/Emma`. See [data.md](data.md).
 5. `applyToEnv(process.env)` decrypts and mirrors the secrets onto Electron's own environment, clearing names it set on an earlier pass.
 6. `Harness` spawns `emma-cli` with `{ ...process.env, HOME: <userData>/harness, AI_GATEWAY_API_KEY: key, EMMA_PROVIDER_API_KEY: key }`, where `key` is `process.env.OPENROUTER_API_KEY`.
 
@@ -255,8 +255,9 @@ Read by `emma-cli`, the process that runs your turn:
 | `FX_MODEL` | Overrides the startup model ([app_lifecycle.zig](../harness/src/core/app/app_lifecycle.zig)) |
 | `FX_GATEWAY_BASE_URL` | Overrides the gateway base URL (`https://openrouter.ai/api`); ignored unless it is loopback http |
 
-Read by the Rust host: `EMMA_DATA_DIR` alone, which moves
-`~/Library/Application Support/Emma`. [runtime.rs](../crates/host/src/runtime.rs)
+Read by the Rust host: `EMMA_DATA_DIR` alone, which moves the platform data root
+(`%APPDATA%/Emma` on Windows or `~/Library/Application Support/Emma` on macOS).
+[runtime.rs](../crates/host/src/runtime.rs)
 resolves the data root, starts the store, and answers requests — it spawns no
 child, holds no credential and makes no network request.
 
@@ -289,8 +290,8 @@ its first real use; the listed ids also fill the Model ID field's datalist.
 | any URL carrying a username, password, query or fragment | no |
 
 `insecure` is the checkbox that appears only when what you typed is plain http
-off this Mac, and it says what it does: the prompts and the key cross your network
-unencrypted. `providerReach()` sorts a saved URL into **On this Mac**, **Your
+off this computer, and it says what it does: the prompts and the key cross your network
+unencrypted. `providerReach()` sorts a saved URL into **On this computer**, **Your
 network** or **Over the internet** for the row's second line.
 
 An id must match `/^[A-Za-z0-9_-]{1,64}$/`, a name ≤ 64 chars, a model id ≤ 128,
@@ -369,7 +370,7 @@ Emma's process. See [privacy.md](privacy.md).
 to this model and nowhere else, and the thread's own model gets the answer only.
 Clamped at `MAX_SECRET_OUTPUT` (32,000). Off until you pick a model, because the
 whole point is that you choose which one your keys reach — a local profile keeps
-them on this Mac. See [privacy.md](privacy.md).
+them on this computer. See [privacy.md](privacy.md).
 
 **Note tagger** — titles and tags a note kept into your vault
 (`MAX_TAG_TEXT_CHARS` 6000, at most `MAX_TAGS` tags). See
@@ -418,7 +419,7 @@ of it. Over Tailscale a `100.x` address counts as your network too.
 **Settings → Models → Providers**, leave Key env empty, and pick
 that profile in the Verifier, Advisor or Vision panel. `verifierFromKey` builds
 `http://127.0.0.1:1234/v1/chat/completions` and posts with no `authorization`
-header. That traffic never leaves the Mac.
+header. That traffic never leaves the computer.
 
 **As the main thread model**, add it as a provider and pick it — that is what the
 provider profile is for. The environment variables below still work and still
@@ -450,7 +451,7 @@ credential message.
 **There is no local answer path on this branch.** The Settings copy that reads
 *"Without a selected provider, Emma uses its deterministic local fallback"*, the
 "Automatic fallback" panel, and the picker row *"Deterministic local fallback ·
-On this Mac"* all describe a mechanism that no longer exists in `desktop/main`.
+On this computer"* all describe a mechanism that no longer exists in `desktop/main`.
 
 ## Dictation models
 
@@ -458,14 +459,15 @@ Two, both local, both covered in [voice.md](voice.md). Defaults from
 [voice.ts](../desktop/shared/voice.ts): speech to text
 `ggml-org/Qwen3-ASR-0.6B-GGUF` on `http://127.0.0.1:8080/v1/audio/transcriptions`,
 cleanup `superwhisper/s1-mini-GGUF` on `http://127.0.0.1:8081/v1/chat/completions`,
-both under `llama.cpp`. The alternative engine is macOS Speech.framework with
-`requiresOnDeviceRecognition = YES`. A non-local endpoint is refused when saved
-and refused again before use.
+both under `llama.cpp`. The alternative engine is the platform's built-in
+recognizer: macOS Speech.framework with `requiresOnDeviceRecognition = YES`, or
+Windows SAPI. A non-local endpoint is refused when saved and refused again
+before use.
 
 ## See also
 
 - [harness.md](harness.md) — `emma-cli` in detail
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 - [permissions.md](permissions.md) — the four modes the verifier plugs into
 - [tools.md](tools.md) — the tools Emma advertises every turn
 - [voice.md](voice.md) — the two dictation models

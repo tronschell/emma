@@ -214,8 +214,6 @@ fn historyPrefixDigest(turns: []const session.HistoryTurn) error{ WriteFailed, N
     try hashing.writer.writeAll("fx.history-page-prefix.v2\x00");
     for (turns) |turn| {
         try session_codec.writeHistoryTurn(&hashing.writer, turn);
-        // Canonical JSON never contains a literal NUL, so this makes the
-        // concatenation unambiguous without introducing another serializer.
         try hashing.writer.writeByte(0);
     }
     try hashing.writer.flush();
@@ -234,9 +232,6 @@ fn mapHistoryPageLoadError(err: anyerror) LoadHistoryPageError {
         error.InvalidDurableBytes,
         error.InvalidSessionIndex,
         => error.CorruptSession,
-        // `loadReadOnly` intentionally has an inferred upstream error set.
-        // Its uncategorized I/O and replay failures are unavailable storage,
-        // never evidence that the committed session itself is corrupt.
         else => error.SessionStoreUnavailable,
     };
 }
@@ -481,9 +476,12 @@ fn openUsageRecoveryProfileRoot(
     };
     errdefer profile.close(zio);
     const stat = try profile.stat(zio);
-    if (stat.kind != .directory or
-        stat.permissions.toMode() & 0o777 != 0o700)
-    {
+    if (stat.kind != .directory) return error.InvalidUsageRecoveryIndex;
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateDirectoryAclMatches(profile))) {
+            return error.InvalidUsageRecoveryIndex;
+        }
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.InvalidUsageRecoveryIndex;
     }
     return .{ .dir = profile };
@@ -504,9 +502,12 @@ fn openUsageRecoveryDir(
     };
     errdefer dir.close(io_mod.getIo());
     const stat = try dir.stat(io_mod.getIo());
-    if (stat.kind != .directory or
-        stat.permissions.toMode() & 0o777 != 0o700)
-    {
+    if (stat.kind != .directory) return error.InvalidUsageRecoveryIndex;
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateDirectoryAclMatches(dir))) {
+            return error.InvalidUsageRecoveryIndex;
+        }
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.InvalidUsageRecoveryIndex;
     }
     return .{ .dir = dir };
@@ -530,9 +531,15 @@ fn validateUsageRecoveryMarker(
     if (stat.kind != .file or
         stat.nlink != 1 or
         stat.size == 0 or
-        stat.size > max_usage_recovery_marker_bytes or
-        stat.permissions.toMode() & 0o777 != 0o600)
+        stat.size > max_usage_recovery_marker_bytes)
     {
+        return error.InvalidUsageRecoveryIndex;
+    }
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateFileAclMatches(marker))) {
+            return error.InvalidUsageRecoveryIndex;
+        }
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.InvalidUsageRecoveryIndex;
     }
     var bytes: [max_usage_recovery_marker_bytes]u8 = undefined;
@@ -569,13 +576,8 @@ pub const Store = struct {
     home_dir: []u8,
     workspace_root: []u8,
     canonical_root: session_log.Root,
-    // How many sessions one resume page yields before flagging `has_more`.
-    // Carried on the value so it propagates through the by-value page chain;
-    // the UI sets it from the visible screen height.
     resume_page_limit: usize = default_resume_page_limit,
 
-    /// Narrow, copyable view of this store for the discovery/migration helpers,
-    /// so they depend on `StoreContext` instead of the full facade.
     fn ctx(self: Store) StoreContext {
         return .{
             .sessions_dir = self.sessions_dir,
@@ -585,19 +587,16 @@ pub const Store = struct {
         };
     }
 
-    /// Opens a writable store rooted at `$HOME`, creating the layout if needed.
     pub fn init(alloc: Allocator, workspace_root: []const u8) !Store {
         const home = io_mod.getenv("HOME") orelse return error.HomeNotSet;
         return initWithHome(alloc, home, workspace_root, true);
     }
 
-    /// Opens a read-only store rooted at `$HOME`; never creates layout.
     pub fn initReadOnly(alloc: Allocator, workspace_root: []const u8) !Store {
         const home = io_mod.getenv("HOME") orelse return error.HomeNotSet;
         return initWithHome(alloc, home, workspace_root, false);
     }
 
-    /// Read-only store with an injected home directory (tests / non-HOME callers).
     pub fn initReadOnlyFromHome(
         alloc: Allocator,
         home_dir: []const u8,
@@ -606,14 +605,10 @@ pub const Store = struct {
         return initWithHome(alloc, home_dir, workspace_root, false);
     }
 
-    /// Opens the store using an injected home directory for tests.
-    /// Writable store with an injected home directory (tests).
     pub fn initFromHome(alloc: Allocator, home_dir: []const u8, workspace_root: []const u8) !Store {
         return initWithHome(alloc, home_dir, workspace_root, true);
     }
 
-    /// Frees store path strings.
-    /// Frees the store path strings and the canonical root.
     pub fn deinit(self: *Store, alloc: Allocator) void {
         self.canonical_root.deinit(alloc);
         alloc.free(self.sessions_dir);
@@ -622,7 +617,6 @@ pub const Store = struct {
         self.* = undefined;
     }
 
-    /// Starts a brand-new writable session from `state`, with default log options.
     pub fn startWritableSession(
         self: Store,
         alloc: Allocator,
@@ -631,8 +625,6 @@ pub const Store = struct {
         return self.startWritableSessionWithOptions(alloc, state, .{});
     }
 
-    /// Starts a new writable session, attaching the latest-pointer lifecycle and
-    /// the writable managed-child capability. Caller owns the returned session.
     pub fn startWritableSessionWithOptions(
         self: Store,
         alloc: Allocator,
@@ -777,7 +769,6 @@ pub const Store = struct {
         return .promoted;
     }
 
-    /// Consumes `loaded` on every return.
     fn discardRecoveryStagedSession(
         staging_root: *session_log.Root,
         alloc: Allocator,
@@ -846,8 +837,6 @@ pub const Store = struct {
         return .discarded;
     }
 
-    /// Consumes `loaded` on every return. A confirmed result means the canonical
-    /// session directory was removed and the sessions parent was synced.
     pub fn discardPristineStartedSession(
         self: Store,
         alloc: Allocator,
@@ -869,8 +858,6 @@ pub const Store = struct {
         );
     }
 
-    /// Consumes an exact writable session on every return. Policy checks such
-    /// as terminal one-off admission remain with the caller that owns them.
     pub fn deleteCommittedSession(
         self: Store,
         alloc: Allocator,
@@ -986,8 +973,6 @@ pub const Store = struct {
         return .discarded;
     }
 
-    /// Resumes a specific session by id for writing, rebinding it to this store's
-    /// workspace if needed.
     pub fn resumeForWrite(
         self: Store,
         alloc: Allocator,
@@ -1029,9 +1014,6 @@ pub const Store = struct {
         };
     }
 
-    /// Resumes a target (a specific id, or the latest) for writing under
-    /// `workspace_root`, migrating legacy storage and recovering interrupted
-    /// authority transitions as needed. Caller owns the returned session.
     pub fn resumeTargetForWrite(
         self: Store,
         alloc: Allocator,
@@ -1335,7 +1317,6 @@ pub const Store = struct {
         return context.contention_reported;
     }
 
-    /// Loads a session's full durable state read-only. Caller owns the state.
     pub fn loadReadOnly(
         self: Store,
         alloc: Allocator,
@@ -1348,9 +1329,6 @@ pub const Store = struct {
         return state;
     }
 
-    /// Reads one bounded chronological history page without acquiring the
-    /// session writer lock. The cursor is opaque and anchored to the history
-    /// length that produced it, so later appends cannot duplicate older pages.
     pub fn loadHistoryPage(
         self: Store,
         alloc: Allocator,
@@ -1405,7 +1383,6 @@ pub const Store = struct {
         };
     }
 
-    /// Opens read-only managed-child storage for a session, validating it loads.
     pub fn openChildCapabilityReadOnly(
         self: Store,
         alloc: Allocator,
@@ -1430,9 +1407,6 @@ pub const Store = struct {
         );
     }
 
-    /// Opens child storage for a session id that was already accepted by list
-    /// or another caller-owned read-only selection. This avoids replaying the
-    /// canonical event log when only managed child routes are needed.
     pub fn openListedChildCapabilityReadOnly(
         self: Store,
         alloc: Allocator,
@@ -1454,7 +1428,6 @@ pub const Store = struct {
         );
     }
 
-    /// Opens verified read-only storage restricted to subagent control files.
     pub fn openSubagentControlCapabilityReadOnly(
         self: Store,
         alloc: Allocator,
@@ -1469,9 +1442,6 @@ pub const Store = struct {
         );
     }
 
-    /// Opens verified writable storage restricted to subagent control files.
-    /// The returned capability never owns `session.lock` and cannot mutate the
-    /// transcript or any other managed-child route.
     pub fn openSubagentControlCapabilityWritable(
         self: Store,
         alloc: Allocator,
@@ -1537,8 +1507,6 @@ pub const Store = struct {
         };
     }
 
-    /// Returns owned session metadata needed to initialize a control record.
-    /// This validates ordinary-session visibility without replaying transcript history.
     pub fn loadSubagentBootstrapMetadata(
         self: Store,
         alloc: Allocator,
@@ -1790,8 +1758,6 @@ pub const Store = struct {
         try cache.publish(alloc, state, position);
     }
 
-    /// Loads a session's summary, state, and storage format read-only, handling
-    /// both schema-v3 and legacy snapshots. Caller owns the returned detail.
     pub fn loadReadOnlyDetail(
         self: Store,
         alloc: Allocator,
@@ -1830,8 +1796,6 @@ pub const Store = struct {
         };
     }
 
-    /// Lists supported readable sessions newest-first; caller frees each item and the list.
-    /// Lists all readable sessions newest-first. Caller frees each item and the list.
     pub fn list(self: Store, alloc: Allocator) anyerror!std.ArrayList(SessionSummary) {
         const scan = try self.scanSessionSummariesWithDiagnostics(alloc, .read_only_list, false);
         return scan.summaries;
@@ -1851,8 +1815,6 @@ pub const Store = struct {
         return .{ .tokens = tokens };
     }
 
-    /// Invalidates the derived resume catalog after managed child ownership
-    /// changes. The relationship index remains the canonical authority.
     pub fn invalidateResumableIndex(self: Store, alloc: Allocator) !void {
         if (self.canonical_root.mode != .writable) return error.SessionStoreReadOnly;
         var sessions = self.canonical_root.sessions orelse
@@ -1866,8 +1828,6 @@ pub const Store = struct {
         try summary_codec.writeSessionIndexMarker(alloc, &sessions);
     }
 
-    /// Returns owned IDs for every readable ordinary session. Caller frees each
-    /// ID and the list with the allocator passed here.
     pub fn listSubagentControlSessionIds(
         self: Store,
         alloc: Allocator,
@@ -1893,8 +1853,6 @@ pub const Store = struct {
         return ids;
     }
 
-    /// Returns a bounded page of ordinary-session IDs for derived relationship
-    /// migration only. These candidates never establish relationship truth.
     pub fn listRelationshipMigrationCandidates(
         self: Store,
         alloc: Allocator,
@@ -1990,8 +1948,6 @@ pub const Store = struct {
         return page;
     }
 
-    /// Persists the unresolved marker before its matching session checkpoint.
-    /// The caller must persist the returned timestamp with that checkpoint.
     pub fn prepareUsageRecoveryCheckpoint(
         self: Store,
         alloc: Allocator,
@@ -2030,8 +1986,6 @@ pub const Store = struct {
         };
     }
 
-    /// Completes the marker transition after the matching session checkpoint
-    /// is durable.
     pub fn finishUsageRecoveryCheckpoint(
         self: Store,
         session_id: []const u8,
@@ -2042,8 +1996,6 @@ pub const Store = struct {
         }
     }
 
-    /// Records that this session has profile usage which is not yet proven
-    /// durable in the profile ledger.
     pub fn markUsageRecoveryPending(
         self: Store,
         alloc: Allocator,
@@ -2105,8 +2057,6 @@ pub const Store = struct {
         );
     }
 
-    /// Clears a session's recovery marker only after its settled checkpoint is
-    /// durable. Missing markers are already clear.
     pub fn clearUsageRecoveryPending(
         self: Store,
         session_id: []const u8,
@@ -2131,8 +2081,6 @@ pub const Store = struct {
         try io_mod.syncVerifiedDir(recovery.dir);
     }
 
-    /// Returns the bounded durable recovery marker set. The caller owns every
-    /// entry and the list.
     pub fn listUsageRecoverySessions(
         self: Store,
         alloc: Allocator,
@@ -2176,7 +2124,6 @@ pub const Store = struct {
         return marked;
     }
 
-    /// Lists readable sessions for this store's workspace newest-first. Caller frees each item and the list.
     pub fn listForWorkspace(self: Store, alloc: Allocator) anyerror!std.ArrayList(SessionSummary) {
         const scan = try self.scanSessionSummariesWithDiagnostics(alloc, .read_only_list, false);
         var summaries = scan.summaries;
@@ -2185,8 +2132,6 @@ pub const Store = struct {
         return summaries;
     }
 
-    /// Lists session candidates for workspace-owned managed children. Child
-    /// payloads remain the authority when the global index update is pending.
     pub fn listManagedChildCandidatesForWorkspace(self: Store, alloc: Allocator) anyerror!std.ArrayList(SessionSummary) {
         if (self.canonical_root.sessions) |*sessions| {
             const summaries = readSessionIndexWorkspaceCandidates(
@@ -2204,9 +2149,6 @@ pub const Store = struct {
         return self.listForWorkspace(alloc);
     }
 
-    /// Lists one bounded workspace page newest-first. The canonical summary
-    /// index is preferred; discovery remains a read-only fallback for legacy
-    /// or damaged indexes.
     pub fn listWorkspacePage(
         self: Store,
         alloc: Allocator,
@@ -2275,7 +2217,6 @@ pub const Store = struct {
         return page;
     }
 
-    /// Lists up to ten resumable sessions after filtering the current and empty sessions.
     pub fn listResumablePage(
         self: Store,
         alloc: Allocator,
@@ -2348,9 +2289,6 @@ pub const Store = struct {
         return self.listResumablePageFromDiscoveryForScope(alloc, scope, active_id, continuation);
     }
 
-    /// Rewrites the cached title for one indexed session. The index freezes
-    /// display metadata once present, so a rename must update it here or the
-    /// resume picker keeps serving the previously derived title.
     pub fn updateIndexedTitle(
         self: Store,
         alloc: Allocator,
@@ -2528,9 +2466,6 @@ pub const Store = struct {
         );
     }
 
-    /// Takes ownership of `page` and refreshes stale display rows when the
-    /// source is small enough for bounded first-paint work. Large histories
-    /// keep their honest fallback title instead of blocking the whole page.
     fn hydrateResumablePage(
         self: Store,
         alloc: Allocator,
@@ -2614,8 +2549,6 @@ pub const Store = struct {
         return (try events.stat(io_mod.getIo())).size;
     }
 
-    /// Fills display metadata from an existing frozen sidecar so hydration
-    /// replays the event log only when no sidecar is readable.
     fn adoptFrozenSidecar(
         self: Store,
         alloc: Allocator,
@@ -2667,8 +2600,6 @@ pub const Store = struct {
         );
     }
 
-    /// Returns the single newest readable session summary, or
-    /// `error.NoSavedSessions`. Caller owns it.
     pub fn latestReadOnlySummary(
         self: Store,
         alloc: Allocator,
@@ -2684,8 +2615,6 @@ pub const Store = struct {
         return latest;
     }
 
-    /// Returns the newest readable session summary for this store's workspace, or
-    /// `error.NoSavedSessions`. Caller owns it.
     pub fn latestReadOnlyWorkspaceSummary(
         self: Store,
         alloc: Allocator,
@@ -2726,11 +2655,6 @@ pub const Store = struct {
         return scan.summaries;
     }
 
-    /// Scans session directories into summaries. `probe_managed_children`
-    /// controls whether each session's subagent relationship index is opened to
-    /// resolve `has_managed_children`. Callers that persist summaries via
-    /// `writeSessionIndex` or filter with `resumable_only` must pass true;
-    /// list-only consumers that never read the field should pass false.
     fn scanSessionSummariesWithDiagnostics(
         self: Store,
         alloc: Allocator,
@@ -2921,7 +2845,6 @@ pub const Store = struct {
         return false;
     }
 
-    /// Reads the aggregate summary cache, or null when absent/unreadable.
     pub fn readStateSummary(self: Store, alloc: Allocator) !?StateSummary {
         const path = try summaryPath(alloc, self.sessions_dir);
         defer alloc.free(path);
@@ -2932,8 +2855,6 @@ pub const Store = struct {
         };
     }
 
-    /// Runs `doctor` over every session and returns one diagnostic per problem
-    /// found. Caller frees the list.
     pub fn inspectForDoctor(
         self: Store,
         alloc: Allocator,
@@ -2951,8 +2872,6 @@ pub const Store = struct {
         return result.takeDiagnostics();
     }
 
-    /// Runs `doctor` over up to `max_valid_sessions` valid session directories.
-    /// Caller frees the returned result.
     pub fn inspectForDoctorBounded(
         self: Store,
         alloc: Allocator,
@@ -3019,8 +2938,6 @@ pub const Store = struct {
         return result;
     }
 
-    /// Opens the named session writable and deletes its orphaned artifacts,
-    /// returning a report of what was removed.
     pub fn cleanupForDoctor(
         self: Store,
         alloc: Allocator,
@@ -3682,9 +3599,6 @@ pub const Store = struct {
         };
     }
 
-    /// Migrates a legacy session to schema-v3 in place without returning a live
-    /// session, reporting the source schema/bytes. Idempotent on already-current
-    /// sessions. Caller owns the returned result.
     pub fn migrateLegacyStorageOnly(
         self: Store,
         alloc: Allocator,
@@ -3781,9 +3695,6 @@ pub const Store = struct {
         };
     }
 
-    /// Creates a new schema-v3 session from the exact validated manifest
-    /// boundary of a source whose commit watermark is corrupt. The source is
-    /// locked for the read and is never modified.
     pub fn recoverSessionCopy(
         self: Store,
         alloc: Allocator,
@@ -4714,14 +4625,14 @@ test "session snapshot locator resolver rejects symlink leaves and directories" 
         try tmp.dir.createDir(
             std.testing.io,
             sessions_name,
-            std.Io.File.Permissions.fromMode(0o700),
+            io_mod.permissionsFromMode(0o700),
         );
         var sessions = try tmp.dir.openDir(std.testing.io, sessions_name, .{});
         defer sessions.close(std.testing.io);
         try sessions.createDir(
             std.testing.io,
             "session",
-            std.Io.File.Permissions.fromMode(0o700),
+            io_mod.permissionsFromMode(0o700),
         );
         var session_dir = try sessions.openDir(std.testing.io, "session", .{});
         defer session_dir.close(std.testing.io);
@@ -4730,7 +4641,7 @@ test "session snapshot locator resolver rejects symlink leaves and directories" 
             try tmp.dir.createDir(
                 std.testing.io,
                 "outside-images",
-                std.Io.File.Permissions.fromMode(0o700),
+                io_mod.permissionsFromMode(0o700),
             );
             var outside_images = try tmp.dir.openDir(std.testing.io, "outside-images", .{});
             defer outside_images.close(std.testing.io);
@@ -4762,7 +4673,7 @@ test "session snapshot locator resolver rejects symlink leaves and directories" 
             try session_dir.createDir(
                 std.testing.io,
                 "images",
-                std.Io.File.Permissions.fromMode(0o700),
+                io_mod.permissionsFromMode(0o700),
             );
             var images_dir = try session_dir.openDir(std.testing.io, "images", .{});
             defer images_dir.close(std.testing.io);
@@ -4863,12 +4774,21 @@ fn loadedWriterBelongsToRoot(
 }
 
 fn prepareWritableSessionDir(dir: std.Io.Dir) !void {
-    const permissions = std.Io.File.Permissions.fromMode(0o700);
-    dir.setPermissions(io_mod.getIo(), permissions) catch
-        return error.PrivateStatePermissionsUnsupported;
+    const permissions = io_mod.permissionsFromMode(0o700);
+    if (comptime builtin.os.tag == .windows) {
+        io_mod.enforcePrivateDirectoryAcl(dir) catch
+            return error.PrivateStatePermissionsUnsupported;
+    } else {
+        dir.setPermissions(io_mod.getIo(), permissions) catch
+            return error.PrivateStatePermissionsUnsupported;
+    }
     const stat = try dir.stat(io_mod.getIo());
     if (stat.kind != .directory) return error.SessionPathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o700) {
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateDirectoryAclMatches(dir))) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }
@@ -5059,7 +4979,7 @@ fn makeRawSessionsEntry(store: Store, name: []const u8) !void {
     sessions.dir.createDir(
         io_mod.getIo(),
         name,
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     ) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
@@ -7603,7 +7523,7 @@ test "same-workspace append defers latest cache contention and marks cache dirty
     defer token.close(io_mod.getIo());
     const token_stat = try token.stat(io_mod.getIo());
     try std.testing.expectEqual(std.Io.File.Kind.file, token_stat.kind);
-    try std.testing.expectEqual(@as(u32, 0o600), token_stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(u32, 0o600), io_mod.permissionsMode(token_stat.permissions) & 0o777);
     const token_bytes = try io_mod.readFileToEnd(
         alloc,
         &token,
@@ -7638,7 +7558,7 @@ test "deferred token failure prevents a same-workspace canonical commit" {
         .read = true,
         .truncate = false,
         .exclusive = true,
-        .permissions = std.Io.File.Permissions.fromMode(0o600),
+        .permissions = io_mod.permissionsFromMode(0o600),
         .resolve_beneath = true,
     });
     obstacle.close(io_mod.getIo());
@@ -8862,6 +8782,7 @@ test "bounded doctor inspection stops at valid session limit" {
 }
 
 test "doctor reports unsafe managed child artifacts" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -8884,7 +8805,7 @@ test "doctor reports unsafe managed child artifacts" {
     try session_dir.createDir(
         io_mod.getIo(),
         "tool-results",
-        std.Io.File.Permissions.fromMode(0o755),
+        io_mod.permissionsFromMode(0o755),
     );
     var managed_dir = try session_dir.openDir(
         io_mod.getIo(),
@@ -8892,7 +8813,7 @@ test "doctor reports unsafe managed child artifacts" {
         .{ .iterate = true, .follow_symlinks = false },
     );
     defer managed_dir.close(io_mod.getIo());
-    try managed_dir.setPermissions(io_mod.getIo(), std.Io.File.Permissions.fromMode(0o755));
+    try managed_dir.setPermissions(io_mod.getIo(), io_mod.permissionsFromMode(0o755));
 
     var diagnostics = try ctx.store.inspectForDoctor(alloc);
     defer freeDoctorDiagnostics(alloc, &diagnostics);
@@ -8954,6 +8875,7 @@ test "doctor reports corrupt subagent control records without hiding the session
 }
 
 test "doctor ignores legacy task records" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -8975,12 +8897,12 @@ test "doctor ignores legacy task records" {
     defer session_dir.close(io_mod.getIo());
     try session_dir.setPermissions(
         io_mod.getIo(),
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     try session_dir.createDir(
         io_mod.getIo(),
         "tasks",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const corrupt_path = try std.fs.path.join(alloc, &.{
         session_path,
@@ -10113,7 +10035,7 @@ test "recovery verifies and copies persisted image snapshots into the new sessio
     try std.Io.Dir.createDirAbsolute(
         io_mod.getIo(),
         source_images,
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const image_bytes = "\x89PNG\r\n\x1a\nrecovery-image";
     var digest_bytes: [32]u8 = undefined;
@@ -10136,7 +10058,7 @@ test "recovery verifies and copies persisted image snapshots into the new sessio
         .{
             .truncate = false,
             .exclusive = true,
-            .permissions = std.Io.File.Permissions.fromMode(0o600),
+            .permissions = io_mod.permissionsFromMode(0o600),
         },
     );
     try image_file.writeStreamingAll(io_mod.getIo(), image_bytes);
@@ -11732,7 +11654,7 @@ test "summary index marker preparation rejects an uncommitted session" {
     try sessions.dir.createDir(
         io_mod.getIo(),
         "index.pending",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
 
     var state = try testDurableState(alloc, "marker-prepare-failure", ctx.workspace);
@@ -12462,7 +12384,7 @@ test "missing home is empty for reads and bootstrapped privately for writes" {
     defer home_dir.close(io_mod.getIo());
     const home_stat = try home_dir.stat(io_mod.getIo());
     try std.testing.expectEqual(std.Io.File.Kind.directory, home_stat.kind);
-    try std.testing.expectEqual(@as(u32, 0o700), home_stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(u32, 0o700), io_mod.permissionsMode(home_stat.permissions) & 0o777);
     const sessions_path = try std.fs.path.join(alloc, &.{ missing_home, ".fx", "sessions" });
     defer alloc.free(sessions_path);
     try std.Io.Dir.accessAbsolute(io_mod.getIo(), sessions_path, .{});
@@ -12557,7 +12479,7 @@ test "first write creates only the private session layout" {
     const durable_stat = try durable_dir.stat(io_mod.getIo());
     try std.testing.expectEqual(
         @as(u64, 0o700),
-        durable_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(durable_stat.permissions) & 0o777,
     );
     var durable_iter = durable_dir.iterate();
     const sessions_entry = (try durable_iter.next(io_mod.getIo())) orelse
@@ -12574,7 +12496,7 @@ test "first write creates only the private session layout" {
     const sessions_stat = try sessions_dir.stat(io_mod.getIo());
     try std.testing.expectEqual(
         @as(u64, 0o700),
-        sessions_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(sessions_stat.permissions) & 0o777,
     );
     var sessions_iter = sessions_dir.iterate();
     var saw_session = false;

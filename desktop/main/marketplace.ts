@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdir, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -28,6 +28,7 @@ import {
   type RunnableHookEvent,
   type WrittenPlugin,
 } from "../shared/plugins";
+import { findExecutable, isWindows, pathInside, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
 
 const DEFAULT_MARKETPLACE = "openai/plugins";
 const MAX_JSON_BYTES = 512 * 1024;
@@ -48,6 +49,9 @@ const MAX_HOOK_OUTPUT_BYTES = 8 * 1024;
 const HOOK_SECONDS = 10;
 const MAX_HOOK_SECONDS = 60;
 const MAX_SESSION_END_SECONDS = 3;
+let gitExecutable: { pathValue: string; value: Promise<string | null> } | undefined;
+let npmExecutable: { pathValue: string; value: Promise<string | null> } | undefined;
+let tarExecutable: { pathValue: string; value: Promise<string | null> } | undefined;
 
 export function marketplaceRoot(userData: string) {
   return path.join(userData, "marketplaces");
@@ -108,27 +112,87 @@ async function writeJson(file: string, value: unknown) {
 }
 
 const MISSING_TOOL: Record<string, string> = {
-  git: "Git is not installed on this Mac — install the Xcode command line tools and try again.",
-  npm: "npm is not installed on this Mac — install Node.js and try again, or ask the marketplace for a Git source.",
-  tar: "tar is missing from this Mac, so Emma cannot unpack an npm package.",
+  git: "Git is not installed — install Git and try again.",
+  npm: "npm is not installed — install Node.js and try again, or ask the marketplace for a Git source.",
+  tar: "tar is missing, so Emma cannot unpack an npm package.",
 };
 
 function execute(command: string, cwd: string, args: string[], timeout: number, env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd, timeout, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, ...env } }, (error, stdout) => {
-      if (!error) return resolve(stdout);
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new Error(MISSING_TOOL[command] ?? `Emma cannot find "${command}" on this Mac.`));
-      const blob = (error instanceof Error ? error.message : String(error)).replace(new RegExp(`^Command failed: ${command}\\b.*\\n?`), "");
-      const line = blob.split("\n")
+    const child = spawnCommand(command, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let overflow = false;
+    let timedOut = false;
+    let settled = false;
+    const append = (target: "stdout" | "stderr", chunk: Buffer) => {
+      if (target === "stdout") stdout += String(chunk);
+      else stderr += String(chunk);
+      if (Buffer.byteLength(stdout) > 8 * 1024 * 1024 || Buffer.byteLength(stderr) > 8 * 1024 * 1024) {
+        overflow = true;
+        if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false);
+      }
+    };
+    child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false);
+    }, timeout);
+    timer.unref();
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(stdout);
+    };
+    child.once("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        const name = path.basename(command).replace(/\.(?:cmd|exe)$/i, "");
+        finish(new Error(MISSING_TOOL[name] ?? `Emma cannot find "${name}".`));
+      } else {
+        finish(error);
+      }
+    });
+    child.once("close", (code) => {
+      if (code === 0 && !overflow && !timedOut) return finish();
+      if (overflow) return finish(new Error(`${command} produced more than 8 MB of output.`));
+      if (timedOut) return finish(new Error(`${command} timed out after ${Math.ceil(timeout / 1000)} seconds.`));
+      const line = `${stderr}\n${stdout}`.split("\n")
         .map((each) => each.replace(/^npm (?:error|ERR!)\s*/, "").trim())
         .find((each) => each && !/^(?:code E\w+|\d+)$/.test(each) && !each.startsWith("A complete log of this run"));
-      reject(new Error((line ?? "").slice(0, 240) || `${command} failed`));
+      finish(new Error((line ?? "").slice(0, 240) || `${command} failed`));
     });
   });
 }
 
-function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<string> {
-  return execute("git", cwd, args, timeout, { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", GIT_SSH_COMMAND: "ssh -oBatchMode=yes" });
+async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<string> {
+  const pathValue = process.env.PATH || "";
+  if (!gitExecutable || gitExecutable.pathValue !== pathValue) gitExecutable = { pathValue, value: findExecutable(isWindows ? "git.exe" : "git", pathValue) };
+  const binary = await gitExecutable.value;
+  if (!binary) throw new Error(MISSING_TOOL.git);
+  return execute(binary, cwd, args, timeout, { GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", GIT_ASKPASS: "", GIT_SSH_COMMAND: "ssh -oBatchMode=yes" });
+}
+
+async function npm(cwd: string, args: string[], timeout = NPM_TIMEOUT_MS): Promise<string> {
+  const pathValue = process.env.PATH || "";
+  if (!npmExecutable || npmExecutable.pathValue !== pathValue) {
+    const value = isWindows
+      ? findExecutable(path.join(path.dirname(process.execPath), "npm.cmd")).then((found) => found ?? findExecutable("npm.cmd", pathValue))
+      : findExecutable("npm", pathValue);
+    npmExecutable = { pathValue, value };
+  }
+  const binary = await npmExecutable.value;
+  if (!binary) throw new Error(MISSING_TOOL.npm);
+  return execute(binary, cwd, args, timeout, {
+    npm_config_ignore_scripts: "true",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_update_notifier: "false",
+    npm_config_progress: "false",
+    NO_UPDATE_NOTIFIER: "1",
+  });
 }
 
 async function exists(value: string) {
@@ -140,7 +204,7 @@ async function inside(root: string, ...parts: string[]) {
   if (!await exists(target)) return "";
   const real = await realpath(target);
   const realRoot = await realpath(root);
-  return real === realRoot || real.startsWith(`${realRoot}${path.sep}`) ? real : "";
+  return pathInside(realRoot, real) ? real : "";
 }
 
 async function cloneRepo(url: string, ref: string, sparse: string[], destination: string) {
@@ -160,24 +224,29 @@ async function fetchNpmPackage(source: Extract<PluginSource, { kind: "npm" }>, d
   const args = ["pack", "--ignore-scripts", "--pack-destination", destination];
   if (source.registry) args.push("--registry", source.registry);
   args.push("--", source.version ? `${source.package}@${source.version}` : source.package);
-  await execute("npm", destination, args, NPM_TIMEOUT_MS, {
-    npm_config_ignore_scripts: "true",
-    npm_config_audit: "false",
-    npm_config_fund: "false",
-    npm_config_update_notifier: "false",
-    npm_config_progress: "false",
-    NO_UPDATE_NOTIFIER: "1",
-  });
+  await npm(destination, args);
   const tarball = (await readdir(destination)).find((entry) => entry.endsWith(".tgz"));
   if (!tarball) throw new Error(`npm published no tarball for ${source.package}.`);
   await unpack(path.join(destination, tarball), destination);
   await rm(path.join(destination, tarball), { force: true });
 }
 
-export function unpack(tarball: string, destination: string, cap = MAX_NPM_UNPACKED_BYTES): Promise<void> {
+export async function unpack(tarball: string, destination: string, cap = MAX_NPM_UNPACKED_BYTES): Promise<void> {
+  const pathValue = process.env.PATH || "";
+  if (!tarExecutable || tarExecutable.pathValue !== pathValue) tarExecutable = { pathValue, value: findExecutable(isWindows ? "tar.exe" : "tar", pathValue) };
+  const binary = await tarExecutable.value;
+  if (!binary) throw new Error(MISSING_TOOL.tar);
   return new Promise((resolve, reject) => {
-    const child = spawn("tar", ["-xf", "-", "-C", destination], { stdio: ["pipe", "ignore", "pipe"] });
+    const child = spawnCommand(binary, ["-xf", "-", "-C", destination], { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
     const stream = createReadStream(tarball).pipe(createGunzip());
+    const stdin = child.stdin;
+    const stderrStream = child.stderr;
+    if (!stdin || !stderrStream) {
+      stream.destroy();
+      child.kill();
+      reject(new Error("tar could not open its input and error streams."));
+      return;
+    }
     let stderr = "";
     let unpacked = 0;
     let settled = false;
@@ -185,18 +254,18 @@ export function unpack(tarball: string, destination: string, cap = MAX_NPM_UNPAC
       if (settled) return;
       settled = true;
       stream.destroy();
-      child.kill("SIGKILL");
+      if (child.pid !== undefined) terminateProcessTree(child.pid, "SIGKILL", false);
       reject(new Error(message));
     };
-    child.stderr.on("data", (chunk) => { if (stderr.length < 4096) stderr += String(chunk); });
-    child.stdin.on("error", () => undefined);
+    stderrStream.on("data", (chunk) => { if (stderr.length < 4096) stderr += String(chunk); });
+    stdin.on("error", () => undefined);
     child.once("error", (error) => fail((error as NodeJS.ErrnoException).code === "ENOENT" ? MISSING_TOOL.tar : error.message));
     stream.on("error", (error) => fail(`the npm package could not be unpacked — ${error.message}`));
     stream.on("data", (chunk: Buffer) => {
       unpacked += chunk.length;
       if (unpacked > cap) fail(`the npm package unpacks to more than ${Math.max(1, cap >> 20)} MB, so Emma stopped before filling the disk.`);
     });
-    stream.pipe(child.stdin);
+    stream.pipe(stdin);
     child.once("close", (code) => {
       if (settled) return;
       settled = true;
@@ -218,7 +287,7 @@ export function imageType(bytes: Buffer): string {
 
 async function readImage(root: string, relative: string, max: number): Promise<string> {
   if (!relative || max <= 0) return "";
-  const file = await inside(root, ...relative.split("/"));
+  const file = await inside(root, ...relative.split(/[\\/]/));
   if (!file) return "";
   try {
     const handle = await open(file, "r");
@@ -238,14 +307,14 @@ async function readImage(root: string, relative: string, max: number): Promise<s
 
 async function readHostedApps(root: string, relative: string): Promise<HostedApp[]> {
   if (!relative) return [];
-  const file = await inside(root, ...relative.split("/"));
+  const file = await inside(root, ...relative.split(/[\\/]/));
   if (!file) return [];
   try { return parseHostedApps(await readJson(file)); } catch { return []; }
 }
 
 async function readMarketplaceFile(root: string) {
   for (const candidate of MARKETPLACE_FILES) {
-    const file = await inside(root, ...candidate.split("/"));
+    const file = await inside(root, ...candidate.split(/[\\/]/));
     if (file) return parseMarketplace(await readJson(file));
   }
   throw new Error(`No marketplace.json here — Emma looked for ${MARKETPLACE_FILES.join(", ")}.`);
@@ -312,11 +381,11 @@ async function readInstalled(userData: string): Promise<StoredPlugin[]> {
 }
 
 async function bundledRoot(marketplaceRootPath: string, plugin: MarketplacePlugin) {
-  return plugin.source.kind === "local" ? await inside(marketplaceRootPath, ...plugin.source.path.split("/")) : "";
+  return plugin.source.kind === "local" ? await inside(marketplaceRootPath, ...plugin.source.path.split(/[\\/]/)) : "";
 }
 
 async function readManifestAt(root: string) {
-  const manifestFile = await inside(root, ...PLUGIN_MANIFEST.split("/"));
+  const manifestFile = await inside(root, ...PLUGIN_MANIFEST.split(/[\\/]/));
   return manifestFile ? parsePluginManifest(await readJson(manifestFile)) : undefined;
 }
 
@@ -324,7 +393,7 @@ async function readHooksAt(root: string, manifest: PluginManifest): Promise<Plug
   const named = manifest.hooks.paths.length > 0 || manifest.hooks.inline.length > 0;
   const hooks = named ? [...manifest.hooks.inline] : [];
   for (const relative of named ? manifest.hooks.paths : [PLUGIN_HOOKS_FILE]) {
-    const file = await inside(root, ...relative.split("/"));
+    const file = await inside(root, ...relative.split(/[\\/]/));
     if (!file) continue;
     try { hooks.push(...parseHooksFile(await readJson(file))); } catch { continue; }
   }
@@ -455,7 +524,7 @@ export async function addMarketplace(userData: string, request: { source: unknow
   let checkout = "";
   let stored: StoredSource;
   if (source.kind === "local") {
-    const directory = source.path.startsWith("~") ? path.join(homedir(), source.path.slice(1)) : path.resolve(source.path);
+    const directory = source.path.startsWith("~") ? path.resolve(homedir(), source.path.slice(1).replace(/^[\\/]+/, "")) : path.resolve(source.path);
     if (!await exists(directory)) throw new Error(`There is no folder at ${directory}.`);
     const listing = await readMarketplaceFile(directory);
     stored = { id: listing.name, origin: directory, ref: "", sparse: [], local: true, path: directory };
@@ -516,7 +585,7 @@ export async function refreshMarketplace(userData: string, id: unknown): Promise
 async function resolvePluginRoot(userData: string, marketplace: Marketplace, plugin: MarketplacePlugin) {
   if (plugin.source.kind === "unsupported") throw new Error(`Emma cannot install "${plugin.name}": ${plugin.source.reason}.`);
   if (plugin.source.kind === "local") {
-    const root = await inside(marketplace.root, ...plugin.source.path.split("/"));
+    const root = await inside(marketplace.root, ...plugin.source.path.split(/[\\/]/));
     if (!root) throw new Error(`"${plugin.name}" points at ${plugin.source.path}, which is not in this marketplace.`);
     return root;
   }
@@ -529,17 +598,17 @@ async function resolvePluginRoot(userData: string, marketplace: Marketplace, plu
   }
   await rm(checkout, { recursive: true, force: true });
   await cloneRepo(plugin.source.url, plugin.source.ref, plugin.source.path ? [plugin.source.path] : [], checkout);
-  const root = plugin.source.path ? await inside(checkout, ...plugin.source.path.split("/")) : checkout;
+  const root = plugin.source.path ? await inside(checkout, ...plugin.source.path.split(/[\\/]/)) : checkout;
   if (!root) throw new Error(`"${plugin.name}" is not at ${plugin.source.path} in ${plugin.source.url}.`);
   return root;
 }
 
 async function readPluginAt(root: string) {
-  const manifestFile = await inside(root, ...PLUGIN_MANIFEST.split("/"));
+  const manifestFile = await inside(root, ...PLUGIN_MANIFEST.split(/[\\/]/));
   if (!manifestFile) throw new Error(`There is no ${PLUGIN_MANIFEST} in ${root} — that folder is not a plugin.`);
   const manifest = parsePluginManifest(await readJson(manifestFile));
-  const skills = manifest.skills ? await inside(root, ...manifest.skills.split("/")) : "";
-  const mcp = manifest.mcpServers ? await inside(root, ...manifest.mcpServers.split("/")) : "";
+  const skills = manifest.skills ? await inside(root, ...manifest.skills.split(/[\\/]/)) : "";
+  const mcp = manifest.mcpServers ? await inside(root, ...manifest.mcpServers.split(/[\\/]/)) : "";
   const apps = await readHostedApps(root, manifest.apps);
   const hooks = await readHooksAt(root, manifest);
   if (!skills && !mcp && !apps.length && !hooks.length) throw new Error(`"${manifest.name}" carries no skills and no MCP servers Emma can use.`);
@@ -611,13 +680,21 @@ function firstLine(output: string) {
 
 function runHook(hook: PluginHook, root: string, data: string, cwd: string, input: unknown, seconds: number): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/sh", ["-c", hook.command], {
+    const child = spawn(isWindows ? shellBinary() : "/bin/sh", isWindows ? shellArguments(hook.command, false) : ["-c", hook.command], {
       cwd,
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: homedir(),
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? homedir(),
+        ...(isWindows ? {
+          USERPROFILE: process.env.USERPROFILE ?? homedir(),
+          APPDATA: process.env.APPDATA ?? "",
+          LOCALAPPDATA: process.env.LOCALAPPDATA ?? "",
+          ComSpec: process.env.ComSpec ?? "cmd.exe",
+          PATHEXT: process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD",
+        } : {}),
         PLUGIN_ROOT: root,
         PLUGIN_DATA: data,
         CLAUDE_PLUGIN_ROOT: root,
@@ -639,7 +716,7 @@ function runHook(hook: PluginHook, root: string, data: string, cwd: string, inpu
       resolve(failure);
     };
     const timer = setTimeout(() => {
-      try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+      if (child.pid) terminateProcessTree(child.pid, "SIGKILL");
       settle(`ran past ${seconds}s and was stopped`);
     }, seconds * 1000);
     child.once("error", (error) => settle(`could not start — ${error.message}`));

@@ -15,7 +15,6 @@ const OutputMode = enum {
     count,
 };
 
-/// Typed input for the built-in glob_files tool.
 pub const Input = struct {
     pattern: []u8,
     path: []u8,
@@ -28,7 +27,6 @@ pub const Input = struct {
     }
 };
 
-/// Decodes glob_files JSON into an owned Input released by ToolInput.deinit.
 pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
     var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, args_json, .{}) catch {
         return .{ .failure = try ctx.allocator.dupe(u8, "glob_files arguments must be valid JSON") };
@@ -84,7 +82,6 @@ pub fn validate(_: tool_dispatch.DispatchContext, _: tool_dispatch.ToolInput) to
     return null;
 }
 
-/// Searches the resolved root and returns an owned tool result body.
 pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     return callWithWorkspaceOptions(ctx, erased, .{});
 }
@@ -424,12 +421,10 @@ fn patternContainsHiddenDirectoryComponent(pattern: []const u8) bool {
     return workspace_files.pathContainsHiddenDirectoryComponent(pattern);
 }
 
-/// Reports that glob_files only observes filesystem names and metadata.
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
     return true;
 }
 
-/// Reports that glob_files has no irreversible side effects.
 pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return false;
 }
@@ -755,8 +750,8 @@ test "glob_files permission denied directory returns structured recovery" {
     defer alloc.free(blocked);
     try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), blocked);
 
-    std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), blocked, std.Io.File.Permissions.fromMode(0), .{}) catch return error.SkipZigTest;
-    defer std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), blocked, std.Io.File.Permissions.fromMode(0o700), .{}) catch {};
+    std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), blocked, io_mod.permissionsFromMode(0), .{}) catch return error.SkipZigTest;
+    defer std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), blocked, io_mod.permissionsFromMode(0o700), .{}) catch {};
 
     var result = try dispatchGlobFiles(alloc, workspace, "**/*.zig", blocked);
     defer result.deinit(alloc);
@@ -984,8 +979,6 @@ test "glob_files distinguishes candidate cap from output cap" {
 
 test "glob_files allows external absolute path search roots" {
     const alloc = std.testing.allocator;
-    // Keep the external root out of std.testing.tmpDir(), whose generated path
-    // may contain ignored component names and invalidate this absolute-path case.
     const root = try std.fmt.allocPrint(alloc, "/tmp/fx-glob-external-{d}", .{io_mod.nanoTimestamp()});
     defer alloc.free(root);
     defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), root) catch {};
