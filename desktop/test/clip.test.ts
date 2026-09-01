@@ -1,14 +1,49 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 
 const png = { isEmpty: () => false, getSize: () => ({ width: 32, height: 32 }), toPNG: () => Buffer.from("icon"), toJPEG: () => Buffer.from("jpeg"), resize: () => png };
 const photo = { isEmpty: () => false, getSize: () => ({ width: 1200, height: 800 }), toPNG: () => Buffer.alloc(4096), toJPEG: () => Buffer.from("jpeg"), resize: () => photo };
-const electron = { net: { fetch: async () => { throw new Error("not used"); } }, nativeImage: { createFromBuffer: (bytes: Buffer) => (String(bytes) === "broken" ? { isEmpty: () => true } : String(bytes) === "photo" ? photo : png) } };
+type Route = { status: number; type?: string; body?: string; location?: string };
+const routes: Record<string, Route> = {};
+const requested: string[] = [];
+
+function fakeRequest({ url: start }: { url: string }) {
+  const request = new EventEmitter() as EventEmitter & { end: () => void; abort: () => void; followRedirect: () => void };
+  let url = start;
+  let aborted = false;
+  let followed = false;
+  const step = () => {
+    if (aborted) return;
+    requested.push(url);
+    const route = routes[url];
+    if (!route) { request.emit("error", new Error(`no route for ${url}`)); return; }
+    if (route.location) {
+      followed = false;
+      request.emit("redirect", route.status, "GET", route.location);
+      if (!followed || aborted) return;
+      url = route.location;
+      setImmediate(step);
+      return;
+    }
+    const response = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> };
+    response.statusCode = route.status;
+    response.headers = { "content-type": route.type ?? "text/html" };
+    request.emit("response", response);
+    setImmediate(() => { response.emit("data", Buffer.from(route.body ?? "")); response.emit("end"); });
+  };
+  request.end = () => { setImmediate(step); };
+  request.abort = () => { aborted = true; };
+  request.followRedirect = () => { followed = true; };
+  return request;
+}
+
+const electron = { net: { fetch: async () => { throw new Error("not used"); }, request: fakeRequest }, nativeImage: { createFromBuffer: (bytes: Buffer) => (String(bytes) === "broken" ? { isEmpty: () => true } : String(bytes) === "photo" ? photo : png) } };
 const electronPath = require.resolve("electron");
 require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: electron } as unknown as NodeModule;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { boundedText, browserScript, clipImageUrls, encodeClipImage, firstBrowser }: typeof import("../main/clip") = require("../main/clip");
+const { boundedText, browserScript, clipImageUrls, encodeClipImage, fetchReadablePage, firstBrowser }: typeof import("../main/clip") = require("../main/clip");
 
 test("only whitelisted browsers are asked for their front tab", () => {
   assert.match(browserScript("Safari") ?? "", /URL of front document/);
@@ -55,4 +90,37 @@ test("clipped text is trimmed by bytes, not characters", () => {
   const trimmed = boundedText(japanese, 30);
   assert.ok(Buffer.byteLength(trimmed) <= 30 && trimmed.length === 10);
   assert.equal(boundedText("", 0), "");
+});
+
+test("a redirect is followed, and every hop is held to the public-address guard", async () => {
+  const page = "<html><head><title>Landed</title></head><body><p>The page that was asked for, with enough words to read.</p></body></html>";
+  Object.assign(routes, {
+    "https://example.com/start": { status: 301, location: "https://example.com/moved" },
+    "https://example.com/moved": { status: 302, location: "https://www.example.com/final" },
+    "https://www.example.com/final": { status: 200, body: page },
+    "https://example.com/inward": { status: 302, location: "http://127.0.0.1:8080/secret" },
+    "http://127.0.0.1:8080/secret": { status: 200, body: "<html><body><p>INTERNAL SECRET</p></body></html>" },
+    "https://example.com/looping": { status: 302, location: "https://example.com/looping" },
+  });
+  requested.length = 0;
+
+  const landed = await fetchReadablePage("https://example.com/start");
+  assert.equal(landed.title, "Landed");
+  assert.equal(landed.url, "https://www.example.com/final");
+  assert.match(landed.text, /asked for/);
+  assert.deepEqual(requested, ["https://example.com/start", "https://example.com/moved", "https://www.example.com/final"]);
+
+  requested.length = 0;
+  await assert.rejects(fetchReadablePage("https://example.com/inward"), /redirects somewhere Emma will not follow/);
+  assert.deepEqual(requested, ["https://example.com/inward"]);
+
+  await assert.rejects(fetchReadablePage("https://example.com/looping"), /redirects too many times/);
+});
+
+test("a link into this machine is refused before anything is asked for", async () => {
+  requested.length = 0;
+  for (const attempt of ["http://127.0.0.1:8080/secret", "http://169.254.169.254/latest/meta-data/", "http://192.168.1.1/", "http://localhost:3000/", "http://printer.local/", "file:///etc/passwd"]) {
+    await assert.rejects(fetchReadablePage(attempt), /Only http and https links to public pages can be read/, attempt);
+  }
+  assert.deepEqual(requested, []);
 });

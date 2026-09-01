@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { clipboard, nativeImage, net } from "electron";
-import { attribute, externalUrl, MAX_FETCHED_PAGE_BYTES, readablePage } from "./ipc";
+import { attribute, externalUrl, MAX_FETCHED_PAGE_BYTES, publicUrl, readablePage } from "./ipc";
 import { isWindows } from "./platform";
 import { windowsFrontContext } from "./windows-front";
 
@@ -101,29 +101,64 @@ export async function frontmostApplication(): Promise<{ application: string; win
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 20_000;
 
-export async function fetchReadablePage(value: string, guard: (value: string) => URL | null = externalUrl) {
+type FetchedPage = { status: number; type: string; body: Buffer; url: string };
+
+function requestPage(first: URL, guard: (value: string) => URL | null): Promise<FetchedPage> {
+  return new Promise((resolve, reject) => {
+    const request = net.request({ url: first.toString(), redirect: "manual", credentials: "omit" });
+    let url = first.toString();
+    let hops = 0;
+    const timer = setTimeout(() => {
+      request.abort();
+      reject(new Error("That link took too long to answer"));
+    }, FETCH_TIMEOUT_MS);
+    const refuse = (message: string) => {
+      clearTimeout(timer);
+      request.abort();
+      reject(new Error(message));
+    };
+    request.on("redirect", (_status, _method, redirectUrl) => {
+      hops += 1;
+      if (hops > MAX_REDIRECTS) return refuse("That link redirects too many times");
+      const next = guard(redirectUrl);
+      if (!next) return refuse("That link redirects somewhere Emma will not follow");
+      url = next.toString();
+      request.followRedirect();
+    });
+    request.on("response", (response) => {
+      const header = (name: string) => String(response.headers[name] ?? "");
+      if (Number(header("content-length") || 0) > MAX_FETCHED_PAGE_BYTES) return refuse("That page is too large to read");
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        if (bytes >= MAX_FETCHED_PAGE_BYTES) return;
+        bytes += chunk.length;
+        chunks.push(chunk);
+      });
+      response.on("error", () => refuse("That link stopped answering partway through"));
+      response.on("end", () => {
+        clearTimeout(timer);
+        resolve({ status: response.statusCode, type: header("content-type"), body: Buffer.concat(chunks).subarray(0, MAX_FETCHED_PAGE_BYTES), url });
+      });
+    });
+    request.on("error", (error: Error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    request.end();
+  });
+}
+
+export async function fetchReadablePage(value: string, guard: (value: string) => URL | null = publicUrl) {
   const first = guard(value);
   if (!first) throw new Error("Only http and https links to public pages can be read");
-  let url: URL = first;
-  let response: Response | undefined;
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    response = await net.fetch(url.toString(), { redirect: "manual", credentials: "omit", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (response.status < 300 || response.status > 399) break;
-    const location = response.headers.get("location");
-    const next = location ? guard(new URL(location, url).toString()) : null;
-    if (!next) throw new Error("That link redirects somewhere Emma will not follow");
-    url = next;
-    response = undefined;
-  }
-  if (!response) throw new Error("That link redirects too many times");
-  if (!response.ok) throw new Error(`That link returned ${response.status}`);
-  const type = response.headers.get("content-type") ?? "";
-  if (!/^\s*(text\/|application\/(xhtml|xml|json))/i.test(type)) throw new Error("That link is not a text page");
-  if (Number(response.headers.get("content-length") ?? 0) > MAX_FETCHED_PAGE_BYTES) throw new Error("That page is too large to read");
-  const html = Buffer.from(await response.arrayBuffer()).subarray(0, MAX_FETCHED_PAGE_BYTES).toString("utf8");
+  const response = await requestPage(first, guard);
+  if (response.status < 200 || response.status > 299) throw new Error(`That link returned ${response.status}`);
+  if (!/^\s*(text\/|application\/(xhtml|xml|json))/i.test(response.type)) throw new Error("That link is not a text page");
+  const html = response.body.toString("utf8");
   const page = readablePage(html);
   if (!page.text) throw new Error("Nothing readable came back from that link");
-  return { ...page, html, url: url.toString() };
+  return { ...page, html, url: response.url };
 }
 
 export function clipImageUrls(html: string, base: string): string[] {
@@ -173,6 +208,7 @@ export function boundedText(text: string, limit: number) {
 }
 
 async function fetchImage(url: string) {
+  if (!publicUrl(url)) return null;
   const response = await net.fetch(url, { redirect: "follow", credentials: "omit" });
   if (!response.ok || !/^\s*image\//i.test(response.headers.get("content-type") ?? "")) return null;
   const bytes = Buffer.from(await response.arrayBuffer());
