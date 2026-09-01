@@ -1,6 +1,6 @@
 import { chatCompletion, type ChatMessage } from "./verifier";
-import { defaultTagger, defaultTaggerSystem, tagName, type TaggerSettings } from "../shared/settings";
-import { MAX_TAGS, MAX_TITLE_BYTES, validTag, type KeptNote } from "../shared/vault";
+import { defaultTagger, defaultTaggerSystem, type TaggerSettings } from "../shared/settings";
+import { MAX_TAGS, MAX_TITLE_BYTES, tagName, validTag, type KeptNote } from "../shared/vault";
 
 const TAG_TIMEOUT = 20_000;
 const TAG_MAX_TOKENS = 1_024;

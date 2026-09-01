@@ -33,9 +33,9 @@ import { CredentialStore } from "./credentials";
 import { FolderStore } from "./folders";
 import { AttachmentStore, isImageAttachment, type Attachment } from "./attachments";
 import { defaultVaultRoot, vaultReady } from "./setup";
-import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNoteFolders, listNotes, moveNote, obsidianInstallCommand, obsidianInstalled, readVault, renameNoteFolder, saveVault } from "./vault";
+import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNoteFolders, listNotes, moveNote, noteInVault, notesRoot, obsidianInstallCommand, obsidianInstalled, readVault, renameNoteFolder, saveVault } from "./vault";
 import { tagNote } from "./vault-tags";
-import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, noteFolder, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
+import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
 import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
 import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
@@ -1188,13 +1188,6 @@ function visibleFolders() {
 
 const obsidianVaults = (): VaultChoice[] =>
   detectObsidianVaults().map((found) => ({ root: found.path, folder: DEFAULT_VAULT_FOLDER, kind: "obsidian", name: found.name }));
-
-function noteInVault(vault: VaultChoice, value: unknown): string {
-  const root = noteFolder(vault);
-  const full = path.resolve(root, boundedCapabilityId(value, "Note"));
-  if (!pathInside(root, full)) throw new Error("That note is not in your vault.");
-  return path.relative(root, full);
-}
 
 const notesChanged = () => broadcast("emma:notes-changed");
 
@@ -4006,7 +3999,7 @@ if (primaryInstance) app.whenReady().then(() => {
     panelSender(event);
     const vault = readVault(app.getPath("userData"));
     if (!vault) throw new Error("No vault is connected.");
-    const file = path.join(noteFolder(vault), noteInVault(vault, value));
+    const file = path.join(notesRoot(vault), noteInVault(vault, value));
     if (!statSync(file).isFile() || statSync(file).size > MAX_NOTE_BYTES) throw new Error("That note cannot be read.");
     return readFileSync(file, "utf8");
   });
@@ -4016,7 +4009,7 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!vault) throw new Error("No vault is connected.");
     const relative = noteInVault(vault, value);
     if (vault.kind === "obsidian") void shell.openExternal(obsidianOpenUrl(vault, relative));
-    else shell.showItemInFolder(path.join(noteFolder(vault), relative));
+    else shell.showItemInFolder(path.join(notesRoot(vault), relative));
   });
   ipcMain.handle("emma:install-obsidian", (event) => {
     mainWindowSender(event);
