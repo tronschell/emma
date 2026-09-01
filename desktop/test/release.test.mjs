@@ -27,9 +27,11 @@ test("the Windows lane covers the native x64 and arm64 builds and stays off the 
   assert.match(workflow, /probe Windows native toolchain/);
   assert.match(workflow, /Get-Command clang\.exe/);
   assert.match(workflow, /Get-Command clang\+\+\.exe/);
-  assert.match(workflow, /Get-Command rc\.exe/);
-  assert.match(workflow, /VersionInfo\.FileVersion/);
   assert.match(workflow, /npm run build:native/);
+  assert.match(workflow, /node node_modules\/electron\/install\.js/);
+  const build = readFileSync(new URL("../scripts/build-native.mjs", import.meta.url), "utf8");
+  assert.match(build, /function resourceCompiler/);
+  assert.match(build, /Windows Kits/);
   assert.match(workflow, /workflow_call:/);
   assert.match(workflow, /package the Windows release candidate without signing secrets\n {8}if: github\.base_ref == 'main'\n {8}run: npm run package:win/);
   for (const duplicated of [/npm run check/g, /cargo fmt/g, /cargo check /g]) assert.equal(workflow.match(duplicated).length, 1);

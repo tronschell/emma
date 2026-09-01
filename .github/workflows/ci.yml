@@ -110,6 +110,10 @@ jobs:
       - run: npm ci
         working-directory: desktop
 
+      - name: materialise the Electron binary before parallel tests race for it
+        run: node node_modules/electron/install.js
+        working-directory: desktop
+
       - run: npm run test
         working-directory: desktop
 
@@ -118,12 +122,8 @@ jobs:
         run: |
           $clang = Get-Command clang.exe -ErrorAction Stop
           $clangpp = Get-Command clang++.exe -ErrorAction Stop
-          $resourceCompiler = Get-Command rc.exe -ErrorAction Stop
           & $clang.Source --version
           & $clangpp.Source --version
-          $resourceVersion = (Get-Item $resourceCompiler.Source).VersionInfo.FileVersion
-          if (!$resourceVersion) { throw "Windows SDK resource compiler version is unavailable" }
-          Write-Output "Windows SDK resource compiler $resourceVersion ($($resourceCompiler.Source))"
 
       - run: npm run build:native
         working-directory: desktop

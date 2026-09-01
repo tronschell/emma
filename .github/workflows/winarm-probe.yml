@@ -66,12 +66,8 @@ jobs:
         run: |
           $clang = Get-Command clang.exe -ErrorAction Stop
           $clangpp = Get-Command clang++.exe -ErrorAction Stop
-          $resourceCompiler = Get-Command rc.exe -ErrorAction Stop
           & $clang.Source --version
           & $clangpp.Source --version
-          $resourceVersion = (Get-Item $resourceCompiler.Source).VersionInfo.FileVersion
-          if (!$resourceVersion) { throw "Windows SDK resource compiler version is unavailable" }
-          Write-Output "Windows SDK resource compiler $resourceVersion ($($resourceCompiler.Source))"
       - run: npm run build:native
         working-directory: desktop
       - run: cargo test --workspace --locked
