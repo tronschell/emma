@@ -15,7 +15,7 @@ import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor,
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, settleRun, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, steerQueued, steerRunning, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
+import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, settleRun, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, steerQueued, steerRunning, stopTurn, takeDraft, turnToRetry, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { showsUpdate } from "../shared/update";
 import { brandForImporter, brandForModel, brandForProvider, obsidianBrand, providerBrands, type BrandDefinition } from "./brands";
@@ -221,6 +221,7 @@ function MessageTray({ attached }: { attached?: TurnAttachment[] }) {
 }
 
 function Turn({ item, blocks, index, attached, spawned }: { item: Message; blocks?: Block[]; index?: number; attached?: TurnAttachment[]; spawned?: Spawned[] }) {
+  if (item.role === "system") return <div className="turn-notice" data-turn={index}>{!!blocks?.length && <Blocks blocks={blocks} />}<ContextNotice text={item.content} plain /></div>;
   const model = item.generation?.model ?? "";
   const { from, body } = sentByThread(item.content);
   const thought = item.role !== "assistant" ? "" : blocks?.length ? thinkingOf(blocks) : splitThinking(body).thinking;
@@ -2365,7 +2366,7 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
   const swapStalledModel = async (next: UserSettings) => {
     const label = modelKeyLabel(next, next.selectedModel);
     const quiet = run.activeAt ? clock(Date.now() - run.activeAt) : "";
-    const turn = run.pending;
+    const turn = turnToRetry(thread.id);
     closeModels();
     await window.emma.setThreadContext({ threadId: thread.id, folderIds, mode, model: next.selectedModel }).catch(() => undefined);
     recordModelSwitch(thread.id, { at: thread.messages.length, label, brand: modelKeyBrand(next, next.selectedModel)?.id ?? "", after: quiet });
@@ -2528,7 +2529,6 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
         {streaming === null && spawned.loose.length > 0 && <SubagentChips spawned={spawned.loose} onOpen={openSubagentTab} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> {agents.find((agent) => agent.threadId === thread.id)?.activity || "getting started"}…</p>}
         {sending && run.activeAt > 0 && <Stalled since={run.activeAt} working={stepRunning(run.blocks)} onSwap={() => { setStallSwap(true); setModelsOpen(true); }} />}
-        {!sending && run.stopped && <p className="waiting stopped" role="status">Agent stopped. Ask Emma to continue where it left off.</p>}
         </RunContext.Provider>
       </div>
       <SelectionQuote scroller={transcript} onQuote={addContext} onThread={(quote) => newThread(`${quote}\n\n`)} />

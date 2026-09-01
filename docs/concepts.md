@@ -39,6 +39,14 @@ once. When a turn finishes, `recordTurn` appends the prompt and the answer, and
 the assistant message carries `output_tokens`, `duration_milliseconds`,
 `input_tokens` and `model`.
 
+Every way a turn can end leaves one record, and only what the model actually
+said is stored as a model message. A run that was stopped, refused, cut off at
+its output limit or that ended without speaking appends a `system` message
+instead — the turn's notice — drawn the way the context notices are drawn, with
+no model name, no copy button and no rate. An answer that was cut off keeps its
+text and gets the notice under it, so a truncated reply cannot be read later as
+a terse one. When the model said nothing at all, no assistant message is written.
+
 ## Queue · steer · stop
 
 **Three doors into a turn already running, and they are not the same door.**
@@ -56,11 +64,12 @@ it fires and the model keeps the work it had already done. At most 8 messages,
 the same turn wins.
 
 Esc, and ■ **stop.** The turn is cancelled — the partial answer, the tool call
-it was in, and what it had already finished are all written to history, so
-nothing is lost — and everything still queued behind it is *held* rather than
-fired at a thread whose direction just changed. Held messages sit above the
-composer with ↑ to send and × to drop. With text typed, Esc stops and sends what
-you typed as the next turn.
+it was in, and what it had already finished are all written to history under a
+notice saying you stopped it, so nothing is lost and nothing reads as finished
+— and everything still queued behind it is *held* rather than fired at a thread
+whose direction just changed. Held messages sit above the composer with ↑ to
+send and × to drop. With text typed, Esc stops and sends what you typed as the
+next turn.
 
 A subagent has its own composer, and its own door: `session/steer_child`, which
 lands with the child's next tool result.

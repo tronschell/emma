@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, compactionNotice, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, compactionNotice, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, turnToRetry, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import type { TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
@@ -340,13 +340,24 @@ test("a thread keeps one folder, and one stored before that was true collapses o
   assert.deepEqual(threadFolders("never-opened"), []);
 });
 
-test("a turn whose reply has not landed yet is drawn, but not cached against the wrong one", () => {
+test("a turn whose reply has not landed yet is not painted over an older one", () => {
   const messages = [said("assistant", "the first answer", "2026-08-22T10:00:01Z"), said("user", "two", "2026-08-22T10:01:00Z")];
-  // The run ended before the transcript caught up, so this pairs onto the older reply.
   const blocks: Block[] = [{ kind: "text", text: "the answer to the second prompt" }];
-  const paired = pairBlocks(messages, [blocks], {});
-  assert.deepEqual(paired[0], blocks);
-  assert.equal(wrote(messages[0].content, paired[0]!), false);
+  assert.equal(pairBlocks(messages, [blocks], {})[0], undefined);
+});
+
+test("a reload empties the landed runs, and the next answer still lands on its own message", () => {
+  const messages = [
+    said("user", "reply APPLE", "2026-08-22T10:00:00Z"), said("assistant", "APPLE", "2026-08-22T10:00:01Z"),
+    said("user", "reply BANANA", "2026-08-22T10:01:00Z"),
+  ];
+  const banana: Block[] = [{ kind: "text", text: "BANANA" }];
+  assert.equal(pairBlocks(messages, [banana], {})[1], undefined);
+
+  const answered = [...messages, said("assistant", "BANANA", "2026-08-22T10:01:01Z")];
+  const paired = pairBlocks(answered, [banana], {});
+  assert.equal(paired[1], undefined);
+  assert.deepEqual(paired[3], banana);
 });
 
 test("a finished turn stays drawn where it happened until the reply it wrote arrives", () => {
@@ -358,13 +369,33 @@ test("a finished turn stays drawn where it happened until the reply it wrote arr
   const second: Block[] = [{ kind: "text", text: "the answer to the second prompt" }];
   assert.equal(arrived(messages, second), false);
   const paired = pairBlocks(messages, [first, second], {});
-  assert.deepEqual(paired[1], second);
+  assert.deepEqual(paired[1], first);
   const held = pairBlocks(messages, [first, second].slice(0, -1), {});
   assert.deepEqual(held[1], first);
 
   const answered = [...messages, said("assistant", "the answer to the second prompt, at length", "2026-08-22T10:01:01Z")];
   assert.equal(arrived(answered, second), true);
   assert.deepEqual(pairBlocks(answered, [first, second], {})[3], second);
+});
+
+test("a turn's notice takes the tool calls of a run that said nothing", () => {
+  const messages = [
+    said("user", "do it", "2026-08-22T10:00:00Z"),
+    said("system", "You stopped this run before anything was said.", "2026-08-22T10:00:01Z"),
+  ];
+  const steps: Block[] = [{ kind: "step", step: step("a", "cancelled") }];
+  assert.deepEqual(pairBlocks(messages, [steps], {})[1], steps);
+});
+
+test("the stall swap only resends a turn that is still running", async () => {
+  sendTurn("stalling", turn("PING-F"), () => {});
+  await settle();
+  assert.equal(turnToRetry("stalling")?.content, "PING-F");
+
+  release?.();
+  await settle();
+  assert.equal(runOf("stalling").sending, false);
+  assert.equal(turnToRetry("stalling"), null);
 });
 
 test("a turn the host refuses hands its text back once", async () => {
@@ -470,4 +501,17 @@ test("a steer is rebuilt from the trace at the point it cut into the answer", ()
     "\nThen writing them.",
   ]);
   assert.equal(blocks.every((block) => block.kind !== "notice" || block.steer), true);
+});
+
+test("a turn that ends refetches the thread, so the answer it wrote is drawn", async () => {
+  let reloads = 0;
+  request = (_method, params) => { sent.push(params.content); return new Promise<void>((resolve) => { release = resolve; }); };
+  sendTurn("quiet", turn("PING-G"), () => { reloads += 1; });
+  await settle();
+  assert.equal(reloads, 0);
+
+  release?.();
+  await settle();
+  assert.equal(runOf("quiet").sending, false);
+  assert.equal(reloads, 1);
 });

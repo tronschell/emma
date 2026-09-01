@@ -77,6 +77,7 @@ enum Command {
         thread_id: ThreadId,
         prompt: String,
         response: String,
+        notice: String,
         output_tokens: u64,
         duration_milliseconds: u64,
         input_tokens: u64,
@@ -290,6 +291,7 @@ impl LiveClient {
         thread_id: ThreadId,
         prompt: String,
         response: String,
+        notice: String,
         output_tokens: u64,
         duration_milliseconds: u64,
         input_tokens: u64,
@@ -305,6 +307,7 @@ impl LiveClient {
                 thread_id,
                 prompt,
                 response,
+                notice,
                 output_tokens,
                 duration_milliseconds,
                 input_tokens,
@@ -759,6 +762,7 @@ impl Runtime {
                 thread_id,
                 prompt,
                 response,
+                notice,
                 output_tokens,
                 duration_milliseconds,
                 input_tokens,
@@ -773,6 +777,7 @@ impl Runtime {
                     thread_id,
                     prompt,
                     response,
+                    notice,
                     output_tokens,
                     duration_milliseconds,
                     input_tokens,
@@ -1420,6 +1425,7 @@ impl Runtime {
         thread_id: ThreadId,
         prompt: String,
         response: String,
+        notice: String,
         output_tokens: u64,
         duration_milliseconds: u64,
         input_tokens: u64,
@@ -1431,8 +1437,15 @@ impl Runtime {
     ) -> Result<Thread, LiveError> {
         let prompt = elide_middle(&prompt, MAX_AGENT_MESSAGE_BYTES);
         let response = elide_middle(&response, MAX_AGENT_MESSAGE_BYTES);
+        let notice = elide_middle(&notice, MAX_AGENT_MESSAGE_BYTES);
         validate_agent_text("prompt", &prompt, true, MAX_AGENT_MESSAGE_BYTES)?;
-        validate_agent_text("response", &response, true, MAX_AGENT_MESSAGE_BYTES)?;
+        validate_agent_text(
+            "response",
+            &response,
+            notice.trim().is_empty(),
+            MAX_AGENT_MESSAGE_BYTES,
+        )?;
+        validate_agent_text("turn notice", &notice, false, MAX_AGENT_MESSAGE_BYTES)?;
         let mut thread = self.threads.load(&thread_id).map_err(|error| {
             LiveError::new(format!("could not load thread {thread_id}: {error}"))
         })?;
@@ -1443,30 +1456,44 @@ impl Runtime {
                     .map_err(|error| LiveError::new(format!("prompt is invalid: {error}")))?,
             )
             .map_err(|error| LiveError::new(format!("could not append prompt: {error}")))?;
-        let mut answer = ThreadMessage::new(
-            ThreadRole::Assistant,
-            response,
-            asked.max(thread.updated_at),
-        )
-        .map_err(|error| LiveError::new(format!("response is invalid: {error}")))?;
-        answer.generation = GenerationTelemetry::measured(
-            output_tokens,
-            duration_milliseconds,
-            input_tokens,
-            model,
-        )
-        .and_then(|generation| {
-            generation.with_provider_usage(
-                cache_read_tokens,
-                cache_input_tokens,
-                cache_write_tokens,
-                cost_micro_usd,
+        if !response.trim().is_empty() {
+            let mut answer = ThreadMessage::new(
+                ThreadRole::Assistant,
+                response,
+                asked.max(thread.updated_at),
             )
-        })
-        .ok();
-        thread
-            .push(answer)
-            .map_err(|error| LiveError::new(format!("could not append response: {error}")))?;
+            .map_err(|error| LiveError::new(format!("response is invalid: {error}")))?;
+            answer.generation = GenerationTelemetry::measured(
+                output_tokens,
+                duration_milliseconds,
+                input_tokens,
+                model,
+            )
+            .and_then(|generation| {
+                generation.with_provider_usage(
+                    cache_read_tokens,
+                    cache_input_tokens,
+                    cache_write_tokens,
+                    cost_micro_usd,
+                )
+            })
+            .ok();
+            thread
+                .push(answer)
+                .map_err(|error| LiveError::new(format!("could not append response: {error}")))?;
+        }
+        if !notice.trim().is_empty() {
+            thread
+                .push(
+                    ThreadMessage::new(ThreadRole::System, notice, asked.max(thread.updated_at))
+                        .map_err(|error| {
+                            LiveError::new(format!("turn notice is invalid: {error}"))
+                        })?,
+                )
+                .map_err(|error| {
+                    LiveError::new(format!("could not append the turn notice: {error}"))
+                })?;
+        }
         thread.note_goal_turn(
             output_tokens.saturating_add(input_tokens),
             duration_milliseconds,
@@ -1672,6 +1699,7 @@ mod tests {
                 created.id.clone(),
                 "hello".into(),
                 "Fake reply to hello".into(),
+                String::new(),
                 4,
                 200,
                 2,
@@ -1836,6 +1864,7 @@ mod tests {
                 thread.id.clone(),
                 "build me a timer".into(),
                 "Built it in timer.html.".into(),
+                String::new(),
                 42,
                 1_500,
                 3_700,
@@ -1893,6 +1922,7 @@ mod tests {
                     thread.id.clone(),
                     "ask".into(),
                     "  ".into(),
+                    String::new(),
                     0,
                     0,
                     0,
@@ -1904,12 +1934,40 @@ mod tests {
                 )
                 .is_err()
         );
+        runtime
+            .record_turn(
+                thread.id.clone(),
+                "no wait".into(),
+                String::new(),
+                "You stopped this run before anything was said.".into(),
+                0,
+                0,
+                0,
+                None,
+                None,
+                None,
+                None,
+                "gpt-5.6-luna".into(),
+            )
+            .unwrap();
+        let saved = runtime.threads.load(&thread.id).unwrap();
+        assert_eq!(saved.messages.len(), 4);
+        assert_eq!(saved.messages[3].role, ThreadRole::System);
+        assert!(saved.messages[3].generation.is_none());
+        assert!(
+            saved
+                .messages
+                .iter()
+                .all(|message| message.role != ThreadRole::Assistant
+                    || !message.content.contains("stopped this run"))
+        );
         let long = "let x = 1;\n".repeat(MAX_AGENT_MESSAGE_BYTES / 8);
         runtime
             .record_turn(
                 thread.id.clone(),
                 "build a 3js game".into(),
                 long,
+                String::new(),
                 0,
                 0,
                 0,
@@ -1921,9 +1979,9 @@ mod tests {
             )
             .unwrap();
         let saved = runtime.threads.load(&thread.id).unwrap();
-        assert_eq!(saved.messages.len(), 4);
-        assert!(saved.messages[3].content.len() <= MAX_AGENT_MESSAGE_BYTES);
-        assert!(saved.messages[3].content.contains("lines elided"));
+        assert_eq!(saved.messages.len(), 6);
+        assert!(saved.messages[5].content.len() <= MAX_AGENT_MESSAGE_BYTES);
+        assert!(saved.messages[5].content.contains("lines elided"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -182,6 +182,7 @@
 
 .message.pending .message-body { color: var(--text-2); }
 .transcript > .turn-agents { max-width: var(--conversation-column); margin-inline: auto; padding-left: var(--s-4); }
+.transcript > .turn-notice { max-width: var(--conversation-column); margin-inline: auto; }
 
 .waiting { display: flex; align-items: center; gap: var(--s-2); max-width: var(--conversation-column); margin: var(--s-3) auto 0; padding-left: var(--s-4); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .waiting .mark svg { animation: mark-wiggle 2.6s ease-in-out infinite; }
@@ -202,8 +203,6 @@
 .project-rules > button { padding: 0; color: var(--text-2); background: transparent; border: 0; font: inherit; letter-spacing: inherit; text-transform: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; transition: color var(--t); }
 .project-rules > button:hover { color: var(--text); }
 .project-rules > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.waiting.stopped { color: var(--text-2); }
 
 .message-meta { display: flex; align-items: baseline; gap: var(--s-3); margin-top: var(--s-2); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.4; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .message-meta > :first-child { margin-right: auto; }
