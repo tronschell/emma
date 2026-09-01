@@ -11,14 +11,22 @@ export function threadLabel(thread: Thread): string {
 }
 
 export function nested(threads: Thread[], parent = ""): Thread[] {
-  return threads
-    .filter((item) => ownerIn(threads, item) === parent)
+  const ids = new Set(threads.map((item) => item.id));
+  const children = new Map<string, Thread[]>();
+  for (const item of threads) {
+    const owner = ids.has(item.parentThreadId ?? "") ? item.parentThreadId ?? "" : "";
+    const kin = children.get(owner);
+    if (kin) kin.push(item);
+    else children.set(owner, [item]);
+  }
+  const under = (owner: string): Thread[] => (children.get(owner) ?? [])
     .map((item) => {
-      const under = nested(threads, item.id);
-      return { item, under, at: under.reduce((latest, child) => Math.max(latest, stamp(child)), stamp(item)) };
+      const kin = under(item.id);
+      return { item, kin, at: kin.reduce((latest, child) => Math.max(latest, stamp(child)), stamp(item)) };
     })
     .sort((left, right) => right.at - left.at)
-    .flatMap((entry) => [entry.item, ...entry.under]);
+    .flatMap((entry) => [entry.item, ...entry.kin]);
+  return under(parent);
 }
 
 function stamp(thread: Thread): number {

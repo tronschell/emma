@@ -896,15 +896,16 @@ function Workspace() {
   } as CSSProperties;
   const filedThreads = useMemo(() => liveThreads.filter((item) => !item.scheduledJobId), [liveThreads]);
   const scheduledThreads = useMemo(() => liveThreads.filter((item) => item.scheduledJobId), [liveThreads]);
+  const threadById = useMemo(() => new Map(liveThreads.map((item) => [item.id, item])), [liveThreads]);
   const projectOf = useCallback((item: Thread) => {
     let at: Thread | undefined = item;
     for (let hop = 0; at && hop < 8; hop += 1) {
       const grant = grants.find((folder) => folder.id === filedFolders[at!.id]?.[0]);
       if (grant) return grant.id;
-      at = liveThreads.find((owner) => owner.id === at!.parentThreadId);
+      at = threadById.get(at.parentThreadId ?? "");
     }
     return "";
-  }, [filedFolders, grants, liveThreads]);
+  }, [filedFolders, grants, threadById]);
   const projectName = useCallback((item: Thread) => grants.find((grant) => grant.id === projectOf(item))?.name ?? "", [grants, projectOf]);
   const projects = useMemo(() => {
     const filedTo = new Map(filedThreads.map((item) => [item.id, projectOf(item)]));
