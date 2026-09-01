@@ -2563,7 +2563,7 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
     </div>}
     {layout.terminalOpen && <div className="terminal-row">
       <ResizeHandle label="Resize terminal" axis="y" value={layout.terminalHeight} min={MIN_TERMINAL_HEIGHT} max={MAX_TERMINAL_HEIGHT} direction={-1} onChange={(terminalHeight) => pane({ terminalHeight })} />
-      <TerminalPanel threadId={thread.id} popped={popped} onPop={(id) => setPopped((current) => [...current, id])}
+      <TerminalPanel threadId={thread.id} folderId={folderIds[0] ?? ""} popped={popped} onPop={(id) => setPopped((current) => [...current, id])}
         onSelect={(value) => addPick({ kind: "terminal", id: value.id, text: value.text, lines: value.lines })}
         onHide={() => pane({ terminalOpen: false })}
         onOpenInEmma={(url) => { showBrowser(true); void window.emma.browserOpen({ threadId: thread.id, url }).catch((reason: unknown) => setRunError(reasonText(reason))); }} />

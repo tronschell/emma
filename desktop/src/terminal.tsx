@@ -10,6 +10,7 @@ export type TerminalSurfaceProps = {
 };
 export type TerminalPanelProps = {
   threadId: string;
+  folderId: string;
   popped: string[];
   onPop: (id: string) => void;
   onSelect: (value: TerminalSelection) => void;
