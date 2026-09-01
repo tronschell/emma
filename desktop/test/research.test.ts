@@ -227,3 +227,20 @@ test("the judge scores in the job's own mode, never one that waits for an answer
   assert.equal(rig.turns[1].mode, "full");
   assert.notEqual(rig.turns[1].mode, "ask");
 });
+
+test("the experiment form starts a new job in a mode the runner will actually accept", () => {
+  const form = readFileSync(path.join(__dirname, "..", "..", "src", "research.tsx"), "utf8");
+  const picked = /const \[mode, setMode\] = useState<PermissionMode>\((.+)\);/.exec(form)?.[1];
+  assert.equal(picked, "job?.permissionMode ?? UNATTENDED_PERMISSION_MODE");
+  assert.equal(unattendedRefusal(job({ permissionMode: UNATTENDED_PERMISSION_MODE })), undefined);
+});
+
+test("an armed two-press delete is filled, not just relabelled", () => {
+  const base = path.join(__dirname, "..", "..");
+  assert.match(readFileSync(path.join(base, "src/index.css"), "utf8"), /button\[data-armed="true"\][^\n]*background: var\(--danger\)/);
+  for (const [file, marker] of [["src/research.tsx", "research-danger"], ["src/App.tsx", "task-danger"], ["src/mobile.tsx", "reset-data"]] as const) {
+    const line = readFileSync(path.join(base, file), "utf8").split("\n").find((row) => row.includes(`className="${marker}"`));
+    assert.ok(line, `${file} no longer has a ${marker} button`);
+    assert.match(line, /data-armed=\{/);
+  }
+});

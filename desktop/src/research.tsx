@@ -126,7 +126,7 @@ function JobDetail({ job, act, busy, back }: { job: ResearchJob; act: Act; busy:
     <details className="research-edit">
       <summary>Edit experiment</summary>
       <ResearchForm job={job} act={act} busy={busy} onSaved={() => undefined} />
-      <div className="research-actions"><button type="button" className="research-danger" disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete experiment"}</button></div>
+      <div className="research-actions"><button type="button" className="research-danger" data-armed={confirming} disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete experiment"}</button></div>
     </details>
   </section>;
 }

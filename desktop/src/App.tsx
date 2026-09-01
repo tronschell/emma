@@ -1480,7 +1480,7 @@ function TaskEditor({ job, runs, act, busy, openThread, onSaved, onDeleted, comm
       <button type="button" disabled={busy || !graph.nodes.length || graph.errors.length > 0} onClick={() => void test()}>Test</button>
       {job && <button type="button" disabled={busy} onClick={() => void act("runScheduledJob", { jobId: job.id })}>Run now</button>}
       {job && <button type="button" disabled={busy} onClick={() => void act("setScheduledJobEnabled", { jobId: job.id, enabled: String(!job.enabled) })}>{job.enabled ? "Pause" : "Resume"}</button>}
-      {job && <button type="button" className="task-danger" disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete"}</button>}
+      {job && <button type="button" className="task-danger" data-armed={confirming} disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete"}</button>}
     </div>
     {dryRun && <pre className="task-dry-run">{dryRun}</pre>}
     {job && <section className="task-runs">
