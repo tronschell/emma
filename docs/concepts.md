@@ -68,8 +68,8 @@ it was in, and what it had already finished are all written to history under a
 notice saying you stopped it, so nothing is lost and nothing reads as finished
 — and everything still queued behind it is *held* rather than fired at a thread
 whose direction just changed. Held messages sit above the composer with ↑ to
-send and × to drop. With text typed, Esc stops and sends what
-you typed as the next turn.
+send and × to drop. With text typed, Esc stops and sends what you typed as the
+next turn.
 
 A subagent has its own composer, and its own door: `session/steer_child`, which
 lands with the child's next tool result.
