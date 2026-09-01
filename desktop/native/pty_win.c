@@ -371,8 +371,15 @@ static int self_test(void) {
   while (length + 1 < sizeof(output) && ReadFile(output_read, output + length, (DWORD)(sizeof(output) - length - 1), &got, NULL) && got > 0) length += got;
   close_handle(output_read);
   output[length] = 0;
-  if (status == 0 && strstr(output, "received:100x30:26481") != NULL) return 0;
-  fprintf(stderr, "pty self-test failed: status %d\n", status);
+  char plain[BUFFER_BYTES];
+  size_t kept = 0;
+  for (size_t index = 0; index < length; index += 1) {
+    const unsigned char character = (unsigned char)output[index];
+    if (character >= 0x20 && character <= 0x7e) plain[kept++] = (char)character;
+  }
+  plain[kept] = 0;
+  if (status == 0 && strstr(plain, "received:100x30:26481") != NULL) return 0;
+  fprintf(stderr, "pty self-test failed: status %d, %zu bytes, %zu printable\n", status, length, kept);
   return 1;
 }
 
