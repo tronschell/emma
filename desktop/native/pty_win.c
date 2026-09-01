@@ -382,7 +382,7 @@ static int self_test(void) {
   }
   close_handle(input_write);
   close_handle(resize_write);
-  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"& { Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
+  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"& { Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])); Start-Sleep -Milliseconds 750 }", L"東京", NULL };
   const int status = run_pty(80, 24, command, 7, input_read, output_write, resize_read);
   close_handle(input_read);
   close_handle(output_write);
