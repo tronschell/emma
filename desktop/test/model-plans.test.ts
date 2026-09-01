@@ -82,7 +82,7 @@ test("a plan whose subscription no endpoint can bill is marked metered, not subs
 test("a CLI plan names a harness Emma can actually spawn and detect", () => {
   for (const plan of CLI_PLANS) {
     assert.ok(CLI_IDS.includes(plan.id), `${plan.id} is not a CLI Emma runs`);
-    assert.ok(plan.note.includes("unmodified"), `${plan.id} does not say it runs the vendor's own binary`);
+    assert.ok(plan.note.includes(plan.id === "codex" ? "Emma reads that token" : "unmodified"), `${plan.id} does not say how the plan reaches Emma`);
   }
   assert.deepEqual(CLI_PLANS.map((plan) => plan.id), ["claude", "codex", "gemini"]);
 });

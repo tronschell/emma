@@ -180,7 +180,7 @@ fourteen:
 | `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments` |
 | `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
 | `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
-| `session/steer` | Hands the running turn `content` for its next model step. Refused when no turn is running, over 16 KiB, or more than 8 deep |
+| `session/steer` | Cuts into the running turn: the tool call or model stream in flight is aborted, and the same turn carries on with `content` as its next user message. Refused when no turn is running, over 16 KiB, or more than 8 deep |
 | `session/steer_child` | Queues a message for one running subagent by `childId`, not queued behind the active prompt |
 | `session/cancel_child` | Stops one running subagent by `childId` |
 

@@ -244,6 +244,21 @@ test("an adopted run times the model from the tokens coming back", () => {
   assert.equal(stored.find((span) => span.kind === "agent")?.status, "ok");
 });
 
+test("a steer is kept in the turn's trace at the point the answer had reached", () => {
+  const recorded: string[] = [];
+  const agents = runtime({ request: async (method, params) => { if (method === "recordTrace") recorded.push(params.trace); return {}; } });
+  agents.adopt({ threadId: "t1", content: "build it", mode: "full", title: "Build it" });
+  agents.noteDelta("t1", "Reading the styles.");
+  agents.noteSteer("t1", "stop, use the other palette");
+  const live = agents.spans().t1.find((span) => span.kind === "steer");
+  assert.equal(live?.input, "stop, use the other palette");
+  assert.equal(live?.said, "Reading the styles.".length);
+  agents.finish("t1");
+  const stored = decodeSpans(recorded.at(-1) ?? "").find((span) => span.kind === "steer");
+  assert.equal(stored?.input, "stop, use the other palette", "the steer did not survive into the stored trace");
+  assert.equal(stored?.parentId, "agent:t1");
+});
+
 test("a truncated tool result still fits the host's byte ceiling", () => {
   const output = bounded("é".repeat(MAX_TOOL_OUTPUT_BYTES));
   assert.ok(Buffer.byteLength(output) <= MAX_TOOL_OUTPUT_BYTES);

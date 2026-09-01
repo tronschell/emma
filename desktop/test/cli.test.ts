@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CLI_HARNESSES, cliHarness, describeRuns, terminalText, type CliRun } from "../shared/cli";
+import { CLI_PLANS, cliPlan } from "../shared/settings";
+import { shellArguments } from "../main/platform";
+import { signedIn } from "../main/cli";
 import { parseToolArgs, toolDefinitions } from "../main/tools";
 import { toolGate } from "../shared/permissions";
 
@@ -61,4 +64,21 @@ test("the run list reads as one line each", () => {
   };
   assert.equal(describeRuns([]), "No CLI runs have been started in this session.");
   assert.match(describeRuns([run]), /cli1 {2}codex {2}idle {2}2 turns {2}p {2}fix the parser/);
+});
+
+test("a plan sign-in runs the vendor's own command and nothing the renderer names", () => {
+  assert.equal(cliPlan("opencode"), undefined);
+  assert.equal(cliPlan("codex; rm -rf ~"), undefined);
+  assert.equal(cliPlan("codex")?.signIn, "codex login");
+  for (const plan of CLI_PLANS) {
+    assert.doesNotMatch(plan.signIn, /[;&|<>$`(){}[\]*?~#\n]/);
+    assert.deepEqual(shellArguments(plan.signIn).slice(-1), [plan.signIn]);
+    assert.doesNotMatch(plan.authFile, /^[/~]|\.\./);
+  }
+});
+
+test("only a plan CLI reports a sign-in, and it never asks for the secret itself", async () => {
+  assert.equal(await signedIn("opencode"), undefined);
+  assert.equal(await signedIn("cursor"), undefined);
+  assert.equal(typeof await signedIn("codex"), "boolean");
 });

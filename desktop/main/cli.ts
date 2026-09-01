@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { CLI_HARNESSES, cliHarness, terminalText, type CliRun } from "../shared/cli";
+import { cliPlan } from "../shared/settings";
 import { findExecutable, isWindows, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
 
 const MAX_OUTPUT = 256 * 1024;
@@ -15,6 +19,21 @@ type Entry = CliRun & {
   output: string;
 };
 
+export type InstalledCli = { id: string; label: string; bin: string; path: string; signedIn?: boolean };
+
+const keychainEntry = (service: string) => new Promise<boolean>((resolve) => {
+  const child = spawn("/usr/bin/security", ["find-generic-password", "-s", service], { stdio: "ignore" });
+  child.once("error", () => resolve(false));
+  child.once("close", (code) => resolve(code === 0));
+});
+
+export async function signedIn(cli: string): Promise<boolean | undefined> {
+  const plan = cliPlan(cli);
+  if (!plan) return undefined;
+  if (await access(join(homedir(), plan.authFile)).then(() => true, () => false)) return true;
+  return plan.authKeychain !== undefined && !isWindows && await keychainEntry(plan.authKeychain);
+}
+
 export class CliRuns {
   private runs = new Map<string, Entry>();
   private stopping = new Map<string, Promise<void>>();
@@ -27,11 +46,11 @@ export class CliRuns {
 
   constructor(private readonly onChange: () => void) {}
 
-  async installed(): Promise<{ id: string; label: string; bin: string; path: string }[]> {
-    const found = [];
+  async installed(): Promise<InstalledCli[]> {
+    const found: InstalledCli[] = [];
     for (const harness of CLI_HARNESSES) {
       const resolved = await this.resolve(harness.bin);
-      if (resolved) found.push({ id: harness.id, label: harness.label, bin: harness.bin, path: resolved });
+      if (resolved) found.push({ id: harness.id, label: harness.label, bin: harness.bin, path: resolved, signedIn: await signedIn(harness.id) });
     }
     return found;
   }

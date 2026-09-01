@@ -52,6 +52,11 @@ type Reply<T> = Sender<Result<T, LiveError>>;
 
 enum Command {
     Snapshot(Reply<LiveSnapshot>),
+    UncachedSnapshot(Reply<LiveSnapshot>),
+    Thread {
+        thread_id: ThreadId,
+        reply: Reply<Thread>,
+    },
     CreateThread {
         title: Option<String>,
         parent_thread_id: Option<ThreadId>,
@@ -205,6 +210,26 @@ impl LiveClient {
         result
             .recv()
             .map_err(|_| LiveError::new("Emma runtime stopped while loading the library"))?
+    }
+
+    pub fn snapshot_uncached(&self) -> Result<LiveSnapshot, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::UncachedSnapshot(reply))
+            .map_err(|_| LiveError::new("Emma runtime stopped before loading the library"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while loading the library"))?
+    }
+
+    pub fn thread(&self, thread_id: ThreadId) -> Result<Thread, LiveError> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::Thread { thread_id, reply })
+            .map_err(|_| LiveError::new("Emma runtime stopped before loading the thread"))?;
+        result
+            .recv()
+            .map_err(|_| LiveError::new("Emma runtime stopped while loading the thread"))?
     }
 
     pub fn create_thread(
@@ -702,6 +727,12 @@ impl Runtime {
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
             }
+            Command::UncachedSnapshot(reply) => {
+                let _ = reply.send(self.snapshot_uncached());
+            }
+            Command::Thread { thread_id, reply } => {
+                let _ = reply.send(self.thread(thread_id));
+            }
             Command::CreateThread {
                 title,
                 parent_thread_id,
@@ -990,10 +1021,20 @@ impl Runtime {
     }
 
     fn snapshot(&self) -> Result<LiveSnapshot, LiveError> {
-        let mut thread_listing = self
-            .threads
-            .list()
-            .map_err(|error| LiveError::new(format!("could not load threads: {error}")))?;
+        self.snapshot_with_thread_cache(true)
+    }
+
+    fn snapshot_uncached(&self) -> Result<LiveSnapshot, LiveError> {
+        self.snapshot_with_thread_cache(false)
+    }
+
+    fn snapshot_with_thread_cache(&self, cache_threads: bool) -> Result<LiveSnapshot, LiveError> {
+        let mut thread_listing = if cache_threads {
+            self.threads.list()
+        } else {
+            self.threads.list_uncached()
+        }
+        .map_err(|error| LiveError::new(format!("could not load threads: {error}")))?;
         let expired = Timestamp::now().unix_seconds() - ARCHIVE_RETENTION_SECONDS;
         thread_listing.threads.retain(|thread| {
             let keep = thread
@@ -1047,6 +1088,12 @@ impl Runtime {
             research_jobs: research_listing.jobs,
             warnings,
         })
+    }
+
+    fn thread(&self, thread_id: ThreadId) -> Result<Thread, LiveError> {
+        self.threads
+            .load(&thread_id)
+            .map_err(|error| LiveError::new(format!("could not load thread {thread_id}: {error}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1644,6 +1691,60 @@ mod tests {
         );
         assert_eq!(runtime.threads.load(&created.id).unwrap(), updated);
         assert!(!stale_temp.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn targeted_thread_load_reads_only_the_requested_record() {
+        let root = temp_child();
+        let runtime = Runtime::new(
+            root.join("threads"),
+            root.join("scheduled"),
+            root.join("research"),
+            no_jobs(),
+        );
+        let first = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
+        let second = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
+        let loaded = runtime.thread(first.id.clone()).unwrap();
+        assert_eq!(loaded.id, first.id);
+        assert_ne!(loaded.id, second.id);
+        let missing = ThreadId::parse("missing-thread-id").unwrap();
+        assert!(runtime.thread(missing).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compact_snapshot_does_not_populate_the_thread_cache() {
+        let root = temp_child();
+        let runtime = Runtime::new(
+            root.join("threads"),
+            root.join("scheduled"),
+            root.join("research"),
+            no_jobs(),
+        );
+        let first = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
+        let second = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
+        runtime.threads.clear_cache_for_test();
+        let full = runtime.snapshot().unwrap();
+        assert_eq!(full.threads.len(), 2);
+        assert_eq!(runtime.threads.cached_len(), 2);
+        runtime.threads.clear_cache_for_test();
+        runtime.thread(first.id.clone()).unwrap();
+        assert_eq!(runtime.threads.cached_len(), 1);
+        let compact = runtime.snapshot_uncached().unwrap();
+        assert_eq!(compact.threads.len(), 2);
+        assert_eq!(runtime.threads.cached_len(), 0);
+        assert_eq!(runtime.thread(first.id.clone()).unwrap().id, first.id);
+        assert_eq!(runtime.threads.cached_len(), 1);
+        runtime.thread(second.id.clone()).unwrap();
+        fs::remove_file(root.join("threads").join(format!("{}.md", second.id))).unwrap();
+        let compact = runtime.snapshot_uncached().unwrap();
+        assert_eq!(compact.threads.len(), 1);
+        assert_eq!(runtime.threads.cached_len(), 0);
+        fs::remove_dir_all(root.join("threads")).unwrap();
+        let compact = runtime.snapshot_uncached().unwrap();
+        assert!(compact.threads.is_empty());
+        assert_eq!(runtime.threads.cached_len(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 

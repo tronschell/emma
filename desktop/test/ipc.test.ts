@@ -13,7 +13,7 @@ import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
-import type { Snapshot } from "../src/types";
+import type { Thread } from "../src/types";
 import { BoundedLines, MAX_RECORDED_TURN_BYTES, parseHostLine, recordedTurn } from "../main/ndjson";
 import { brandRenderData, matchesLocalAlias } from "../src/brand-data";
 import { frontApplicationNote, ScreenContextStore } from "../shared/screen-context";
@@ -51,6 +51,10 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.throws(() => validateRequest({ method: "recordTurn", params: { threadId: "thread-123456789", prompt: "p", response: "r" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "submitToolResult", params: { threadId: "thread-123456789", results: "[]" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
+  assert.deepEqual(validateRequest({ method: "threadSummaries", params: {} }), { method: "threadSummaries", params: {} });
+  assert.deepEqual(validateRequest({ method: "thread", params: { threadId: "thread-123456789" } }), { method: "thread", params: { threadId: "thread-123456789" } });
+  assert.throws(() => validateRequest({ method: "threadSummaries", params: { threadId: "thread-123456789" } }), /Invalid parameters/);
+  assert.throws(() => validateRequest({ method: "thread", params: {} }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
   assert.deepEqual(validateRequest({ method: "selectProviderModel", params: { providerId: "p-1", effort: "" } }).params, { providerId: "p-1", effort: "" });
   assert.throws(() => validateRequest({ method: "selectProviderModel", params: { providerId: "" } }), /Invalid parameters/);
@@ -399,9 +403,9 @@ test("the status chip parks inside the work area and the island opens beside it"
 });
 
 test("draft reconciliation checks only messages persisted by the attempted turn", () => {
-  const snapshot: Snapshot = { threads: [{ id: "thread-1", title: "Draft test", createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] }], scheduledJobs: [], researchJobs: [], warnings: [] };
-  assert.equal(hasPersistedPrompt(snapshot, "thread-1", 1, "retry"), true);
-  assert.equal(hasPersistedPrompt(snapshot, "thread-1", 2, "retry"), false);
+  const thread: Thread = { id: "thread-1", title: "Draft test", createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] };
+  assert.equal(hasPersistedPrompt(thread, 1, "retry"), true);
+  assert.equal(hasPersistedPrompt(thread, 2, "retry"), false);
 });
 
 test("external navigation is limited to HTTP(S)", () => {

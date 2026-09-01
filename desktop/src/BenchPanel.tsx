@@ -106,9 +106,10 @@ export default function BenchPanel({ snapshot, busy, openThread, mode, model, tr
       });
   };
 
-  const harvest = () => {
+  const harvest = async () => {
     setError("");
-    const thread = harvestable.find((row) => row.id === pick);
+    const summary = harvestable.find((row) => row.id === pick);
+    const thread = summary ? await window.emma.request<{ id: string; title: string; messages: { role: string; content: string }[] }>("thread", { threadId: pick }).catch(() => undefined) : undefined;
     const prompt = thread?.messages.find((message) => message.role === "user")?.content.trim() ?? "";
     const folderId = thread ? threadFolders(thread.id)[0] ?? "" : "";
     if (!thread || !prompt) { setError("That thread has no prompt."); return; }
@@ -158,7 +159,7 @@ export default function BenchPanel({ snapshot, busy, openThread, mode, model, tr
           <option value="">Pick a thread</option>
           {harvestable.map((thread) => <option key={thread.id} value={thread.id} disabled={saved(thread.id)}>{thread.title}{saved(thread.id) ? " · saved" : ""}</option>)}
         </select>
-        <button type="button" disabled={busy || !pick || !!live || full} onClick={harvest}>Save as case</button>
+        <button type="button" disabled={busy || !pick || !!live || full} onClick={() => void harvest()}>Save as case</button>
         {full && <small>{store.cases.length}/{MAX_BENCH_CASES} · remove one first</small>}
       </div>
 

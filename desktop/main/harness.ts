@@ -545,6 +545,7 @@ export class Harness {
     ];
     if (this.cancelled.delete(threadId)) throw new Error("This turn was stopped before it reached the model.");
     this.phase(threadId, "sending the prompt");
+    this.paused.delete(threadId);
     await this.lifecycle("UserPromptSubmit", threadId, sessionId, mode, model, { prompt: text });
     this.phase(threadId, "waiting for the model");
     const result = (await this.request("session/prompt", {
@@ -605,7 +606,9 @@ export class Harness {
   async steer(threadId: string, content: string) {
     const sessionId = this.sessions.get(threadId);
     if (!sessionId || sessionId !== this.active || !this.running) return false;
+    for (const check of this.permissionChecks.values()) if (check.threadId === threadId && !check.childId) check.cancelled = true;
     await this.request("session/steer", { sessionId, content });
+    this.sweepCalls(threadId);
     return true;
   }
 

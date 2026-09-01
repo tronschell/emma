@@ -41,8 +41,8 @@ const isModel = (value: unknown): value is CatalogModel => {
 /** The listing is public, so this request carries no credential — browsing models works before a key exists. */
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?supported_parameters=tools&sort=most-popular";
 const MAX_CATALOG_MODELS = 2048;
-/** The closed effort vocabulary, weakest first. A model may publish any subset. */
-const EFFORT_NAMES = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const EFFORT_NAMES = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+const EFFORT_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const MODALITIES = ["image", "file", "audio"];
 
 /** A price string in dollars per token, as micro-dollars per million tokens. Unreadable is 0. */
@@ -103,10 +103,10 @@ export async function fetchOpenRouterCatalog(timeoutMs = 30_000): Promise<Catalo
     if (!readable(id, name, contextLength, inputModalities) || seen.has(id)) continue;
     seen.add(id);
     const reasoning = row.reasoning as Record<string, unknown> | undefined;
-    const published = Array.isArray(reasoning?.supported_efforts) ? reasoning.supported_efforts : [];
-    let reasoningEfforts = EFFORT_NAMES.filter((effort) => published.includes(effort));
-    // `reasoning_effort` with no published list: OpenRouter's own three-stop default, so the
-    // knob is offered with the vendor default behind it rather than a value it would reject.
+    const published = Array.isArray(reasoning?.supported_efforts)
+      ? [...new Set(reasoning.supported_efforts.filter((effort): effort is string => typeof effort === "string" && EFFORT_NAME.test(effort)))]
+      : [];
+    let reasoningEfforts = [...EFFORT_NAMES.filter((effort) => published.includes(effort)), ...published.filter((effort) => !EFFORT_NAMES.includes(effort))];
     if (!reasoningEfforts.length && supportsParameter(row.supported_parameters, "reasoning_effort")) {
       reasoningEfforts = ["low", "medium", "high"];
     }

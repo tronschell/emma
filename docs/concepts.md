@@ -46,12 +46,14 @@ The composer never blocks: Enter always queues, and
 [`runs.ts`](../desktop/src/runs.ts) drains the queue one turn at a time, so a
 second message waits for the first turn to end.
 
-⤳ **steers.** The text goes over `session/steer` and the running turn reads it
-at its next model step — after the tool call in flight finishes, not instead of
-it. It arrives as a `<user_steering>` system message on that step alone, and is
-dropped only once a request carrying it may have reached the model, so a step
-that never got there projects it again rather than swallowing it. At most 8
-messages, 4096 characters each, and there has to be a turn running.
+⤳ **steers.** ⌘Enter in the composer, or `steer` on a queued line, sends the
+text over `session/steer`, and it cuts in: the tool call or model stream in
+flight is aborted, the partial answer and the aborted call are written to
+history the way a stop writes them, and the same turn carries straight on with
+the text as its next user message. The turn never ends, so nothing queued behind
+it fires and the model keeps the work it had already done. At most 8 messages,
+4096 characters each, and there has to be a turn running. A stop that lands on
+the same turn wins.
 
 Esc, and ■ **stop.** The turn is cancelled — the partial answer, the tool call
 it was in, and what it had already finished are all written to history, so

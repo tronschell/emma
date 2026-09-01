@@ -99,10 +99,11 @@ export type Thread = {
   updatedAt: string;
   archivedAt?: string;
   goal?: Goal;
+  labelPrompt?: string;
   messages: Message[];
 };
 
-export type ThreadSummary = Omit<Thread, "messages"> & { messages: number; folderIds?: string[] };
+export type ThreadSummary = Omit<Thread, "messages"> & { messages: number; folderIds?: string[]; messageDates?: string[]; userMessageCount?: number; displayTitle?: string; subagentBrief?: string };
 
 export type MessagePage = { messages: Message[]; total: number; from: number };
 

@@ -52,8 +52,16 @@ export interface Thread {
   updatedAt: string;
   archivedAt?: string | null;
   messages: Message[];
+  messageCount?: number;
+  messageDates?: string[];
+  userMessageCount?: number;
+  displayTitle?: string;
+  labelPrompt?: string;
+  subagentBrief?: string;
   goal?: Goal | null;
 }
+
+export type ThreadSummary = Omit<Thread, "messages" | "messageCount"> & { messages: number; messageDates?: string[]; userMessageCount?: number };
 
 export interface ScheduledJob {
   id: string;
@@ -118,16 +126,59 @@ export interface Snapshot {
   warnings: string[];
 }
 
+export interface CompactSnapshot {
+  threads: ThreadSummary[];
+  scheduledJobs: ScheduledJob[];
+  researchJobs: ResearchJob[];
+  warnings: string[];
+}
+
+export const threadMessageCount = (thread: Thread) => thread.messageCount ?? thread.messages.length;
+export const threadUserMessageCount = (thread: Thread) => thread.userMessageCount ?? thread.messages.filter((message) => message.role === "user").length;
+export const threadMessageDates = (thread: Thread) => thread.messageDates ?? thread.messages.map((message) => message.timestamp);
+export const isCurrentThreadLoad = (requestedFor: string, selectedId: string, requestedId = selectedId, currentRequestId = requestedId) => requestedFor === selectedId && requestedId === currentRequestId;
+
 export type ModelModality = "image" | "file" | "audio";
+
+export interface RouteModelMetadata {
+  source: "openrouter" | "models.dev" | "codex" | "manual";
+  name?: string;
+  description?: string;
+  family?: string;
+  contextWindow?: number;
+  advertisedContextWindow?: number;
+  maximumContextWindow?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  reasoning?: boolean;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  toolCall?: boolean;
+  structuredOutput?: boolean;
+  temperature?: boolean;
+  knowledgeCutoff?: string;
+  releaseDate?: string;
+  updatedAt?: string;
+  fetchedAt?: string;
+  inputUsdPerMillion?: number;
+  outputUsdPerMillion?: number;
+  cacheReadUsdPerMillion?: number;
+}
 
 export interface OpenRouterCatalog {
   selectedModel?: string;
   models: { id: string; name: string; contextLength: number; inputModalities: ModelModality[]; reasoningEfforts?: string[]; reasoningMandatory?: boolean; free: boolean }[];
+  routes?: Record<string, RouteModelMetadata>;
   added?: string[];
   removed?: string[];
   fetchedAt?: string;
   stale?: boolean;
   error?: string;
+  metadataFetchedAt?: string;
+  metadataStale?: boolean;
+  metadataError?: string;
 }
 
 export interface AgentImportSource {
@@ -347,7 +398,8 @@ declare global {
       listCliRuns(): Promise<CliRun[]>;
       readCliRun(id: string): Promise<{ run: CliRun; output: string } | null>;
       stopCliRun(id: string): Promise<boolean>;
-      installedClis(): Promise<{ id: string; label: string; bin: string; path: string }[]>;
+      installedClis(): Promise<{ id: string; label: string; bin: string; path: string; signedIn?: boolean }[]>;
+      signInCli(value: { signIn: string; columns: number; rows: number }): Promise<TerminalTab>;
       cliModels(value: { cli: string; refresh?: boolean }): Promise<CliModels>;
       setCliRunModel(value: { id: string; model: string }): Promise<CliRun>;
       sendCliRun(value: { id: string; prompt: string }): Promise<CliRun | null>;

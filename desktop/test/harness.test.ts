@@ -817,3 +817,15 @@ test("a paused recovery is kept as the reason a run stopped", () => {
   apply({ state: "recovered", message: "✓ recovered" });
   assert.equal(client.paused.get("t1"), undefined);
 });
+
+test("a recovery replayed while the session opens is not why the next run stopped", async () => {
+  const { client } = harness(
+    async () => "allow_once",
+    undefined,
+    undefined,
+    path.join(tmpdir(), `emma-harness-stale-recovery-${process.pid}`),
+  );
+  await client.prompt("t_stale", workspace, "hello", "ask");
+  assert.equal(client.paused.get("t_stale"), undefined);
+  client.close();
+});

@@ -69,8 +69,8 @@
 .context-expand { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; color: var(--text-3); background: none; transition: color var(--t); }
 .context-expand:hover { color: var(--text); }
 .context-usage > span b { color: var(--text); font-weight: 400; letter-spacing: 0; text-transform: none; }
-.context-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; height: 8px; }
-.context-grid i { display: block; width: auto; height: 100%; background: var(--kind); }
+.context-grid { display: flex; height: 8px; }
+.context-grid i { flex-basis: 0; min-width: 1px; height: 100%; background: var(--kind); }
 .context-legend { display: grid; gap: var(--s-1); margin: 0; padding: 0; list-style: none; }
 .context-legend li { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; color: var(--text-2); font: var(--fs-sm)/1.4 var(--font-mono); }
 .context-legend i { flex: 0 0 auto; width: 8px; height: 8px; background: var(--kind); }

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { toCanvas } from "qrcode";
 import { isPin, PIN_MAX_DIGITS, type PairingPayload } from "../shared/mobile-protocol";
 import { day } from "./dates";
 import { reasonText } from "./errors";
@@ -49,8 +48,6 @@ export function MobileSettings({ busy }: { busy: boolean }) {
     const apply = (next: MobileStatus) => {
       if (!live) return;
       setStatus(next);
-      // The main process owns the staged pairing, so it is what ends the code —
-      // whether the phone finished, the two minutes ran out, or the PINs ran out.
       if (showing.current && !next.pairing) {
         showing.current = false;
         setPairing(null);
@@ -85,8 +82,18 @@ export function MobileSettings({ busy }: { busy: boolean }) {
   useEffect(() => {
     const target = canvas.current;
     if (!pairing || !target) return;
-    void toCanvas(target, JSON.stringify(pairing), { width: QR_PIXELS, margin: 2, color: { dark: tone("--bg"), light: tone("--text") } })
-      .catch(() => { setPairing(null); setError("This computer could not draw the pairing code."); });
+    let live = true;
+    void import("qrcode")
+      .then(({ toCanvas }) => {
+        if (!live) return;
+        return toCanvas(target, JSON.stringify(pairing), { width: QR_PIXELS, margin: 2, color: { dark: tone("--bg"), light: tone("--text") } });
+      })
+      .catch(() => {
+        if (!live) return;
+        setPairing(null);
+        setError("This computer could not draw the pairing code.");
+      });
+    return () => { live = false; };
   }, [pairing]);
 
   const pair = async () => {

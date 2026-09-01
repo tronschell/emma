@@ -287,6 +287,7 @@ contextBridge.exposeInMainWorld("emma", {
   readCliRun: (id: string) => ipcRenderer.invoke("emma:read-cli-run", id),
   stopCliRun: (id: string) => ipcRenderer.invoke("emma:stop-cli-run", id),
   installedClis: () => ipcRenderer.invoke("emma:installed-clis"),
+  signInCli: (value: { signIn: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:cli-sign-in", value),
   cliModels: (value: { cli: string; refresh?: boolean }) => ipcRenderer.invoke("emma:cli-models", value),
   setCliRunModel: (value: { id: string; model: string }) => ipcRenderer.invoke("emma:cli-run-model", value),
   sendCliRun: (value: { id: string; prompt: string }) => ipcRenderer.invoke("emma:send-cli-run", value),

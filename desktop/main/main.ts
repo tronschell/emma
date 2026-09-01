@@ -38,6 +38,7 @@ import { tagNote } from "./vault-tags";
 import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, noteFolder, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
 import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
+import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
 import { branchPrefixName, validateGitArgs } from "../shared/git";
 import { installUpdate, readyUpdate, startUpdates } from "./update";
 import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "./git";
@@ -48,13 +49,14 @@ import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, 
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
-import { MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { CODEX_MODEL_ID, CODEX_PREFIX, cliPlan, codexSlug, MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
 import { nameThread } from "./thread-namer";
 import { applied, validateImprovements, type Arm } from "../shared/improvement";
 import { frontApplicationNote, ScreenContextStore, validScreenContextId, type FrontApplication } from "../shared/screen-context";
 import { AgentRuntime, benchReplay, benchThread, haltBench, inheritBench, lastAssistantMessage, ownBench, OWN_TOOLS, refuseBenchTurn, towardGoal, type TurnRequest } from "./agent-loop";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
+import { chatgptAuth, chatgptRoute } from "./chatgpt";
 import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
 import { forceArm, harnessPromptFile, setImprovements, setPrompts, setSystemPrompt, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
@@ -69,6 +71,8 @@ import { browserArgv, BROWSER_NAVIGATIONS, describeToolCall, MAX_CLI_PROMPT_CHAR
 import { Browsers, type BrowserStatus } from "./browser";
 import { Terminals } from "./terminal";
 import { MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT } from "../shared/terminal";
+
+const SIGN_IN_THREAD = "sign-in";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type PermissionMode } from "../shared/permissions";
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
@@ -89,7 +93,7 @@ class Host {
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: Error | null = null;
   private writes = 0;
-  private snapshot: { writes: number; at: number; value: Promise<unknown> } | undefined;
+  private snapshots = new Map<string, { writes: number; at: number; value: Promise<unknown> }>();
 
   constructor(binary: string) {
     this.child = spawn(binary, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
@@ -106,24 +110,25 @@ class Host {
 
   request(request: { method: string; params: Record<string, string> }): Promise<unknown> {
     if (this.failure) return Promise.reject(this.failure);
-    if (request.method !== "snapshot") {
+    if (request.method === "thread") return this.send(request);
+    if (request.method !== "snapshot" && request.method !== "threadSummaries") {
       this.storeChanged();
       return this.send(request);
     }
-    const cached = this.snapshot;
+    const cached = this.snapshots.get(request.method);
     if (cached && cached.writes === this.writes && Date.now() - cached.at < SNAPSHOT_CACHE_MS) return cached.value;
     const value = this.send(request);
     const entry = { writes: this.writes, at: Date.now(), value };
-    this.snapshot = entry;
+    this.snapshots.set(request.method, entry);
     const { at } = entry;
-    setTimeout(() => { if (this.snapshot?.at === at) this.snapshot = undefined; }, SNAPSHOT_CACHE_MS).unref();
-    value.catch(() => { if (this.snapshot === entry) this.snapshot = undefined; });
+    setTimeout(() => { if (this.snapshots.get(request.method)?.at === at) this.snapshots.delete(request.method); }, SNAPSHOT_CACHE_MS).unref();
+    value.catch(() => { if (this.snapshots.get(request.method) === entry) this.snapshots.delete(request.method); });
     return value;
   }
 
   private storeChanged() {
     this.writes++;
-    this.snapshot = undefined;
+    this.snapshots.clear();
   }
 
   private send(request: { method: string; params: Record<string, string> }): Promise<unknown> {
@@ -171,7 +176,7 @@ class Host {
 
   private fail(error: Error) {
     this.failure ??= error;
-    this.snapshot = undefined;
+    this.snapshots.clear();
     for (const request of this.pending.values()) request.reject(this.failure);
     this.pending.clear();
     this.responses.clear();
@@ -183,6 +188,7 @@ let credentials: CredentialStore | undefined;
 let folders: FolderStore | undefined;
 let attachments: AttachmentStore | undefined;
 let modelCatalog: CatalogCache | undefined;
+let modelMetadata: ModelMetadataCatalog | undefined;
 let capabilities: ImportedCapabilityRuntime | undefined;
 let computerRuntime: ComputerUseRuntime | undefined;
 let agents: AgentRuntime | undefined;
@@ -309,10 +315,15 @@ async function steerThread(threadId: string, text: string) {
   if (child) {
     if (!child.client.running) throw new Error("That subagent's harness is no longer running.");
     await child.client.steerChild(child.childId, text);
+    agents!.noteSteer(threadId, text);
     return;
   }
   for (const harness of harnesses.values()) {
-    if (await harness.steer(threadId, text)) return;
+    if (await harness.steer(threadId, text)) {
+      agents!.dropAsks(threadId);
+      agents!.noteSteer(threadId, text);
+      return;
+    }
   }
   agents!.steer(threadId, text);
 }
@@ -1109,7 +1120,7 @@ function broadcast(channel: string, payload?: unknown) {
 }
 
 const CHANGED_COALESCE_MS = 150;
-const READ_ONLY_METHODS = new Set(["snapshot", "listOpenRouterModels"]);
+const READ_ONLY_METHODS = new Set(["snapshot", "threadSummaries", "thread", "listOpenRouterModels"]);
 let changedAt = 0;
 let changedQueued: ReturnType<typeof setTimeout> | undefined;
 
@@ -1306,10 +1317,10 @@ function ensureComputerRun(threadId: string) {
 async function reportContext(turn: TurnRequest, compact: boolean): Promise<string> {
   const window = contextWindowFor(turn.model) ?? 0;
   const live = agents!.list().find((agent) => agent.threadId === turn.threadId)?.inputTokens ?? 0;
-  const snapshot = await host!.request({ method: "snapshot", params: {} }) as {
-    threads?: { id: string; messages?: { generation?: { inputTokens?: number } | null }[] }[];
-  };
-  const messages = snapshot.threads?.find((item) => item.id === turn.threadId)?.messages ?? [];
+  const thread = await host!.request({ method: "thread", params: { threadId: turn.threadId } }).catch(() => undefined) as {
+    messages?: { generation?: { inputTokens?: number } | null }[];
+  } | undefined;
+  const messages = thread?.messages ?? [];
   const landed = messages.reduce((last, message) => message.generation?.inputTokens || last, 0);
   const used = live || landed;
   const carried = `${used.toLocaleString()} tokens went into ${live ? "this turn so far" : "the last turn"}`;
@@ -2047,13 +2058,22 @@ function providerFor(key: string | undefined): ProviderProfile | undefined {
   return key?.startsWith("provider:") ? providers.find((item) => item.id === key.slice("provider:".length)) : undefined;
 }
 
+async function turnRoute(key: string | undefined): Promise<ProviderRoute | undefined> {
+  return codexSlug(key) ? await chatgptRoute() : providerRoute(key);
+}
+
 function providerRoute(key: string | undefined): ProviderRoute | undefined {
   const profile = providerFor(key);
   if (!profile) return undefined;
-  return { id: profile.id, chatUrl: providerChatUrl(profile), apiKey: (profile.credentialEnv ? process.env[profile.credentialEnv] : "") || "no-key" };
+  const apiKey = (profile.credentialEnv ? process.env[profile.credentialEnv]?.trim() : "") ?? "";
+  if (profile.credentialEnv && !apiKey) {
+    throw new Error(`${profile.name} has no key saved under ${profile.credentialEnv}. Paste one in Settings → Models, then send this again.`);
+  }
+  return { id: profile.id, chatUrl: providerChatUrl(profile), apiKey: apiKey || "no-key" };
 }
 
 function harnessModel(key: string | undefined) {
+  if (key?.startsWith(CODEX_PREFIX)) return codexSlug(key);
   const routerId = routerIdFor(key);
   if (routerId) return routerChain(modelCatalog?.ids(), routers.find((router) => router.id === routerId)?.models ?? []);
   if (key?.startsWith("openrouter:")) return key.slice("openrouter:".length);
@@ -2062,16 +2082,32 @@ function harnessModel(key: string | undefined) {
 
 function modelName(key: string | undefined) {
   if (key?.startsWith("openrouter:")) return key.slice("openrouter:".length);
+  if (key?.startsWith(CODEX_PREFIX)) return codexSlug(key);
   return providerFor(key)?.modelId ?? key ?? "";
 }
 
-function contextWindowFor(model: string | undefined, key?: string) {
-  return providerFor(key)?.contextWindow || modelCatalog?.contextLength(model?.split(",")[0]);
+function metadataFor(key: string | undefined, routedModel?: string): RouteModelMetadata | undefined {
+  const profile = providerFor(key);
+  if (profile) return modelMetadata?.provider(profile);
+  const slug = codexSlug(key);
+  if (slug) return modelMetadata?.codex(slug);
+  if (!key?.startsWith("openrouter:") && !routerIdFor(key)) return undefined;
+  const model = (routedModel ?? harnessModel(key) ?? "").split(",")[0];
+  if (!model) return undefined;
+  return {
+    source: "openrouter",
+    contextWindow: modelCatalog?.contextLength(model),
+    reasoningEfforts: modelCatalog?.reasoningEfforts(model),
+  };
 }
 
-function thinkingRoute(model: string | undefined, level: string | undefined): ThinkingRoute | undefined {
-  if (!model) return undefined;
-  const published = modelCatalog?.reasoningEfforts(model.split(",")[0]) ?? [];
+function contextWindowFor(key: string | undefined, routedModel?: string) {
+  return metadataFor(key, routedModel)?.contextWindow;
+}
+
+function thinkingRoute(key: string | undefined, routedModel: string | undefined, level: string | undefined): ThinkingRoute | undefined {
+  if (!routedModel) return undefined;
+  const published = metadataFor(key, routedModel)?.reasoningEfforts ?? [];
   return { level: level && published.includes(level) ? level : "", published };
 }
 
@@ -2084,7 +2120,7 @@ function catalogued(modelId: string): string {
 
 const thinkingLevel = (value: unknown): ThinkingLevel => isThinkingLevel(value) ? value : "";
 
-function selectModel(method: string, params: Record<string, string>): unknown {
+async function selectModel(method: string, params: Record<string, string>): Promise<unknown> {
   if (method === "setThreadModel") {
     if (params.modelId) catalogued(params.modelId);
     return { set: true };
@@ -2093,6 +2129,14 @@ function selectModel(method: string, params: Record<string, string>): unknown {
     selectedModel = "";
     selectedEffort = "";
     return { model: "" };
+  }
+  if (method === "selectCodexModel") {
+    const modelId = (params.modelId ?? "").trim();
+    if (!CODEX_MODEL_ID.test(modelId)) throw new Error("That is not a Codex model.");
+    await chatgptAuth();
+    selectedModel = `${CODEX_PREFIX}${modelId}`;
+    selectedEffort = thinkingLevel(params.effort);
+    return { model: modelId };
   }
   if (method === "selectProviderModel") {
     const profile = providers.find((item) => item.id === params.providerId);
@@ -2107,11 +2151,26 @@ function selectModel(method: string, params: Record<string, string>): unknown {
   return { model: modelId };
 }
 
+async function listModelCatalog(force: boolean) {
+  const maxAge = force ? 0 : 24 * 60 * 60 * 1000;
+  const [catalog, metadata] = await Promise.all([
+    modelCatalog!.refresh(() => fetchOpenRouterCatalog(), maxAge),
+    modelMetadata!.refresh(maxAge),
+  ]);
+  return {
+    ...catalog,
+    routes: modelMetadata!.routes(catalog.models, providers),
+    metadataFetchedAt: metadata.fetchedAt,
+    metadataStale: metadata.stale,
+    metadataError: metadata.error,
+  };
+}
+
 function answerRequest(method: string, params: Record<string, string> = {}): Promise<unknown> {
   switch (method) {
     case "listOpenRouterModels":
-      return modelCatalog!.refresh(() => fetchOpenRouterCatalog(), params.force ? 0 : 24 * 60 * 60 * 1000);
-    case "selectOpenRouterModel": case "selectProviderModel": case "selectFallbackModel": case "setThreadModel":
+      return listModelCatalog(!!params.force);
+    case "selectOpenRouterModel": case "selectProviderModel": case "selectCodexModel": case "selectFallbackModel": case "setThreadModel":
       return Promise.resolve().then(() => selectModel(method, params));
     case "createThread":
       return host!.request({ method, params }).then((created) => {
@@ -2217,8 +2276,8 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     const { stopReason, usage } = await client.prompt(turn.threadId, cwd, turn.content, turn.mode, route, {
       skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
       images: attachedImagePaths(turn.params?.attachedImages),
-      contextWindow: contextWindowFor(route, turn.model),
-      effort: thinkingRoute(route, turn.effort),
+      contextWindow: contextWindowFor(turn.model, route),
+      effort: thinkingRoute(turn.model, route, turn.effort),
       experiments: harnessExperiments,
       compact: compactNext.delete(turn.threadId),
       continueRecovery: turn.continueRecovery,
@@ -2248,12 +2307,12 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     agents!.finish(turn.threadId, detail);
     if (sleepWedged.delete(turn.threadId) && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
-      return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, content: SLEEP_CONTINUATION }, key);
+      return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, content: SLEEP_CONTINUATION }, key);
     }
     if (pausedRecovery.delete(turn.threadId) && !turn.continueRecovery && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
       try {
-        return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, continueRecovery: true }, key);
+        return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, continueRecovery: true }, key);
       } catch {
         throw error;
       }
@@ -2261,7 +2320,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     if (!client.running && turn.content !== CRASH_CONTINUATION && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
       try {
-        return await runOnHarness(harnessClient(cwd, key, providerRoute(turn.model)), cwd, { ...turn, content: CRASH_CONTINUATION }, key);
+        return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, content: CRASH_CONTINUATION }, key);
       } catch {
         throw error;
       }
@@ -2311,7 +2370,7 @@ async function runTurn(turn: TurnRequest) {
   turn.objective ??= activeGoal(turn.threadId)?.objective;
   const cwd = harnessCwd(turn.threadId);
   const nested = turn.nested ? turn.threadId : undefined;
-  const route = providerRoute(turn.model);
+  const route = await turnRoute(turn.model);
   const key = harnessKey(cwd, turn.threadId, route?.id);
   try {
     return await runOnHarness(harnessClient(cwd, key, route), cwd, withGoal(withTrialArm(turn), activeGoal(turn.threadId)), key);
@@ -2359,7 +2418,7 @@ function livePartial(): LiveState["partial"] {
 
 const MESSAGE_PAGE = 40;
 
-type StoredThreads = { threads: (Omit<ThreadSummary, "messages"> & { messages: Message[] })[]; warnings: string[] };
+type StoredThreadSummaries = { threads: ThreadSummary[]; warnings: string[] };
 
 const threadNamer: VerifierSettings = {
   model: routerChain(modelCatalog?.ids(), FREE_ROUTER_MODELS),
@@ -2374,7 +2433,7 @@ async function autoNameThread(threadId: string, asked: string) {
   if (!asked.trim() || namingThreads.has(threadId) || benchThread(threadId)) return;
   namingThreads.add(threadId);
   try {
-    const snapshot = await host!.request({ method: "snapshot", params: {} }) as { threads?: { id: string; title?: string }[] };
+    const snapshot = await host!.request({ method: "threadSummaries", params: {} }) as { threads?: { id: string; title?: string }[] };
     const thread = snapshot.threads?.find((entry) => entry.id === threadId);
     if (thread?.title !== DEFAULT_THREAD_TITLE) return;
     const title = await nameThread(asked, threadNamer);
@@ -2388,8 +2447,8 @@ async function autoNameThread(threadId: string, asked: string) {
   }
 }
 
-async function threadStore(): Promise<StoredThreads> {
-  const stored = await runRequest(validateRequest({ method: "snapshot", params: {} })) as Partial<StoredThreads>;
+async function threadSummaryStore(): Promise<StoredThreadSummaries> {
+  const stored = await runRequest(validateRequest({ method: "threadSummaries", params: {} })) as Partial<StoredThreadSummaries>;
   return { threads: stored.threads ?? [], warnings: stored.warnings ?? [] };
 }
 
@@ -2427,21 +2486,22 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
   };
   switch (method) {
     case "snapshot": {
-      const stored = await threadStore();
+      const stored = await threadSummaryStore();
       return {
-        threads: stored.threads.map((thread) => ({ ...threadSummary(thread), folderIds: threadFolderIds((thread as { id: string }).id) })),
+        threads: stored.threads.map((thread) => ({ ...thread, folderIds: threadFolderIds(thread.id) })),
         warnings: stored.warnings,
       };
     }
     case "threadMessages": {
       const threadId = boundedCapabilityId(params.threadId, "Thread");
-      const thread = (await threadStore()).threads.find((entry) => entry.id === threadId);
+      const thread = await runRequest(validateRequest({ method: "thread", params: { threadId } })).catch(() => undefined) as { messages?: Message[] } | undefined;
       if (!thread) throw new Error("That thread is gone.");
-      const total = thread.messages.length;
+      const messages = thread.messages ?? [];
+      const total = messages.length;
       const before = Math.min(gitCount(params.before, "Before") ?? total, total);
       const limit = Math.min(gitCount(params.limit, "Limit") || MESSAGE_PAGE, MESSAGE_PAGE);
       const from = Math.max(0, before - limit);
-      return { messages: thread.messages.slice(from, before), total, from };
+      return { messages: messages.slice(from, before), total, from };
     }
     case "live":
       return bridgeLive();
@@ -2656,7 +2716,7 @@ type StoredJob = {
 };
 
 async function scheduledJobs(): Promise<StoredJob[]> {
-  const snapshot = await host!.request({ method: "snapshot", params: {} }) as { scheduledJobs?: StoredJob[] };
+  const snapshot = await host!.request({ method: "threadSummaries", params: {} }) as { scheduledJobs?: StoredJob[] };
   return snapshot.scheduledJobs ?? [];
 }
 
@@ -3095,9 +3155,11 @@ if (primaryInstance) app.whenReady().then(() => {
   if (storedVault) connectVault(storedVault);
   attachments = new AttachmentStore(app.getPath("userData"));
   modelCatalog = new CatalogCache(app.getPath("userData"));
+  modelMetadata = new ModelMetadataCatalog(app.getPath("userData"));
+  void modelMetadata.refresh(24 * 60 * 60 * 1000);
   startHost();
   fireEvent("launch");
-  void host!.request({ method: "snapshot", params: {} }).then(primeGoals).catch(() => undefined);
+  void host!.request({ method: "threadSummaries", params: {} }).then(primeGoals).catch(() => undefined);
   capabilities = new ImportedCapabilityRuntime(app.getPath("userData"));
   void seedBuiltinSkills(builtinSkills(), app.getPath("userData"), path.join(app.getPath("userData"), "harness"), ["artifact"]).then(syncHarnessSkills);
   computerRuntime = new ComputerUseRuntime(nativeHelper("emma-computer"), closeRunBanner, console.log, reportRunProgress);
@@ -3306,6 +3368,14 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:installed-clis", (event) => {
     mainWindowSender(event);
     return clis.installed();
+  });
+  ipcMain.handle("emma:cli-sign-in", (event, value: unknown) => {
+    mainWindowSender(event);
+    const candidate = terminalRequest(value);
+    const signIn = boundedCapabilityId(candidate.signIn, "Plan");
+    if (!cliPlan(signIn)) throw new Error("Emma does not know that plan.");
+    const { columns, rows } = terminalSize(candidate);
+    return terminals.open({ threadId: SIGN_IN_THREAD, cwd: homedir(), columns, rows, signIn });
   });
   ipcMain.handle("emma:send-cli-run", async (event, value: unknown) => {
     mainWindowSender(event);

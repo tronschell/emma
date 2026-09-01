@@ -74,7 +74,7 @@ export function cliHarness(id: string): CliHarness | undefined {
 export const CLI_IDS = CLI_HARNESSES.map((harness) => harness.id);
 
 export const MAX_CLI_MODELS = 400;
-export const CLI_MODELS_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+export const CLI_MODELS_STALE_MS = 60 * 60 * 1000;
 
 export type CliModels = { cli: string; models: string[]; at: number };
 

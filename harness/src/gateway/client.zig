@@ -1701,6 +1701,20 @@ fn selectE2eGatewayUrl(override_url: ?[]const u8, default_url: []const u8) ![]co
     return override;
 }
 
+pub fn isHttpsUrl(url: []const u8) bool {
+    const uri = std.Uri.parse(url) catch return false;
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "https") or
+        uri.user != null or
+        uri.password != null)
+    {
+        return false;
+    }
+    const host_component = uri.host orelse return false;
+    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const host = host_component.toRaw(&host_buf) catch return false;
+    return host.len > 0;
+}
+
 pub fn isLoopbackHttpUrl(url: []const u8) bool {
     const uri = std.Uri.parse(url) catch return false;
     if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") or

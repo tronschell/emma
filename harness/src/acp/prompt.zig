@@ -922,21 +922,53 @@ pub fn handlePrompt(
         writable.childCapability() catch null
     else
         null;
-    agent_runtime.processQueuedPrompt(&deps, null, .{
-        .view = state.lifecycle_view,
-        .scope = .{
-            .kind = .acp,
-            .workspace_root = session.workspace_root,
-            .session_id = session.session_id,
-        },
-        .outcome_allocator = alloc,
-    }, agent_config, job) catch |err| {
-        if (err == error.NonInteractivePermissionRequired) {
-            ctx.stop_reason = .refused;
-        } else {
-            return err;
-        }
-    };
+    var steer_arena = std.heap.ArenaAllocator.init(alloc);
+    defer steer_arena.deinit();
+    var interjected_history: ?[]types.HistoryTurn = null;
+    defer if (interjected_history) |turns| types.freeHistoryTurnSlice(alloc, turns);
+    var turn_job = job;
+    while (true) {
+        agent_runtime.processQueuedPrompt(&deps, null, .{
+            .view = state.lifecycle_view,
+            .scope = .{
+                .kind = .acp,
+                .workspace_root = session.workspace_root,
+                .session_id = session.session_id,
+            },
+            .outcome_allocator = alloc,
+        }, agent_config, turn_job) catch |err| {
+            if (err == error.NonInteractivePermissionRequired) {
+                ctx.stop_reason = .refused;
+            } else {
+                return err;
+            }
+        };
+        if (!server.takeSteerInterject(state)) break;
+        const steering = try server.takePendingSteering(state, steer_arena.allocator()) orelse break;
+        server.clearDeliveredSteering(state);
+        session.cancel_flag.store(false, .seq_cst);
+        ctx.stop_reason = .end_turn;
+        if (interjected_history) |turns| types.freeHistoryTurnSlice(alloc, turns);
+        interjected_history = try session.session_rt.snapshotContextHistory(alloc);
+        turn_job = .{
+            .turn_id = 0,
+            .prompt = @constCast(steering),
+            .images = &.{},
+            .authorized_image_catalog = authorized_image_catalog,
+            .model = session.model,
+            .api_key = @constCast(session.api_key),
+            .credential_source = session.credential_source,
+            .provider = session.provider,
+            .permission_mode = captured_permission_mode,
+            .sandbox_backend = captured_sandbox_backend,
+            .history = interjected_history.?,
+            .root_user_intent_context = root_user_intent_context,
+            .grants = session.session_grants,
+            .context_snapshot = context_snapshot,
+            .recovery_checkpoint = null,
+            .recovery_source_already_presented = false,
+        };
+    }
 
     if (session.cancel_flag.load(.seq_cst)) {
         ctx.stop_reason = .cancelled;

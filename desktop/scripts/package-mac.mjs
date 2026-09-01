@@ -25,7 +25,7 @@ const runAsync = (command, args, cwd = desktop) => new Promise((resolve, reject)
   child.once("error", reject);
   child.once("exit", (code, signal) => code === 0 ? resolve() : reject(new Error(`${command} exited with ${code ?? signal}`)));
 });
-const output = (command, args, cwd = desktop) => execFileSync(command, args, { cwd, env, encoding: "utf8" });
+const output = (command, args, cwd = desktop) => execFileSync(command, args, { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 const version = stableVersion(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version);
 const electronChecksums = JSON.parse(readFileSync(path.join(desktop, "node_modules/electron/checksums.json"), "utf8"));
 const zigOptimize = process.env.EMMA_FAST_BUILD === "1" ? "Debug" : "ReleaseSafe";
@@ -48,12 +48,14 @@ for (const [source, name] of [
   ["desktop/dist-renderer/.vite/license.md", "Renderer-LICENSES.md"],
 ]) cpSync(path.join(root, source), path.join(notices, name));
 writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MIT", "UNLICENSE"].map((name) => readFileSync(path.join(desktop, "vendor", name), "utf8")).join("\n\n"));
-const metadata = JSON.parse(output("cargo", ["metadata", "--locked", "--offline", "--format-version", "1"], root));
+const metadata = JSON.parse(output("cargo", ["metadata", "--locked", "--offline", "--filter-platform", "aarch64-apple-darwin", "--format-version", "1"], root));
 writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter((pkg) => pkg.source).map((pkg) => {
   const cwd = path.dirname(pkg.manifest_path);
   const files = globSync(["LICENSE*", "COPYING*", "NOTICE*"], { cwd }).filter((name) => statSync(path.join(cwd, name)).isFile()).sort();
-  assert.ok(files.length, `Missing license text for ${pkg.name}.`);
-  return `${pkg.name} ${pkg.version}\n\n${files.map((name) => readFileSync(path.join(cwd, name), "utf8")).join("\n\n")}`;
+  // Crates that ship no license text (most of the objc2 family) still declare an SPDX expression.
+  assert.ok(files.length || pkg.license, `Missing license for ${pkg.name}.`);
+  const text = files.length ? files.map((name) => readFileSync(path.join(cwd, name), "utf8")).join("\n\n") : pkg.license;
+  return `${pkg.name} ${pkg.version}\n\n${text}`;
 }).join("\n\n"));
 
 const resources = [

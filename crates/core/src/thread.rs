@@ -983,6 +983,16 @@ impl ThreadStore {
         &self.root
     }
 
+    #[cfg(test)]
+    pub(crate) fn cached_len(&self) -> usize {
+        self.parsed.borrow().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_cache_for_test(&self) {
+        self.parsed.borrow_mut().clear();
+    }
+
     fn take_parsed(&self, id: &ThreadId, stamp: (SystemTime, u64)) -> Option<Arc<Thread>> {
         self.parsed
             .borrow()
@@ -1060,24 +1070,28 @@ impl ThreadStore {
         if let Some(thread) = stamp.and_then(|stamp| self.take_parsed(id, stamp)) {
             return Ok(thread);
         }
-        let markdown = fs::read_to_string(&path)?;
+        let thread = Self::parse_file(&path, id)?;
+        if let Some(stamp) = stamp {
+            self.keep_parsed(stamp, Arc::clone(&thread));
+        }
+        Ok(thread)
+    }
+
+    fn parse_file(path: &Path, id: &ThreadId) -> Result<Arc<Thread>, ThreadStoreError> {
+        let markdown = fs::read_to_string(path)?;
         let thread = Thread::from_markdown(&markdown).map_err(|error| {
             ThreadStoreError::Malformed(MalformedThread {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 reason: error.to_string(),
             })
         })?;
         if &thread.id != id {
             return Err(ThreadStoreError::Malformed(MalformedThread {
-                path,
+                path: path.to_path_buf(),
                 reason: "thread ID does not match filename".into(),
             }));
         }
-        let thread = Arc::new(thread);
-        if let Some(stamp) = stamp {
-            self.keep_parsed(stamp, Arc::clone(&thread));
-        }
-        Ok(thread)
+        Ok(Arc::new(thread))
     }
 
     pub fn delete(&self, id: &ThreadId) -> Result<(), ThreadStoreError> {
@@ -1089,10 +1103,23 @@ impl ThreadStore {
     }
 
     pub fn list(&self) -> Result<ThreadListing, ThreadStoreError> {
+        self.list_with_cache(true)
+    }
+
+    pub(crate) fn list_uncached(&self) -> Result<ThreadListing, ThreadStoreError> {
+        let listing = self.list_with_cache(false);
+        self.parsed.borrow_mut().clear();
+        listing
+    }
+
+    fn list_with_cache(&self, cache_threads: bool) -> Result<ThreadListing, ThreadStoreError> {
         let mut listing = ThreadListing::default();
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(listing),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.parsed.borrow_mut().clear();
+                return Ok(listing);
+            }
             Err(error) => return Err(ThreadStoreError::Io(error)),
         };
         for entry in entries {
@@ -1117,7 +1144,12 @@ impl ThreadStore {
                     continue;
                 }
             };
-            match self.cached(&id) {
+            let loaded = if cache_threads {
+                self.cached(&id)
+            } else {
+                Self::parse_file(&path, &id)
+            };
+            match loaded {
                 Ok(thread) => listing.threads.push(thread),
                 Err(ThreadStoreError::Malformed(thread)) => listing.malformed.push(thread),
                 Err(ThreadStoreError::Io(error)) => return Err(ThreadStoreError::Io(error)),

@@ -127,7 +127,7 @@ function ContextLedger({ ledger, messages: history, threadId, orientation }: { l
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (expanded && !dialog.current?.open) dialog.current?.showModal(); }, [expanded]);
   const dismiss = () => dialog.current?.close();
-  const grid = cells.length > 0 && <div className="context-grid" aria-hidden="true">{cells.map((key, index) => <i key={index} data-kind={kinds.get(key)} />)}</div>;
+  const grid = cells.length > 0 && <div className="context-grid" aria-hidden="true">{cells.map((cell) => <i key={cell.key} data-kind={kinds.get(cell.key)} style={{ flexGrow: cell.chars }} />)}</div>;
   return <section className="context-usage" data-orientation={orientation}>
     <span title={capacity ? "" : "This model states no context window, so the rows are shares of what this thread sent, not of a window"}><span className="context-title">{capacity ? "Context window" : "Context used"}<button type="button" className="context-expand" aria-haspopup="dialog" aria-label="Expand the context ledger" title="Expand the context ledger" onClick={() => setExpanded(true)}><ExpandIcon /></button></span><b>{tokenLabel(total)}{capacity ? ` / ${tokenLabel(capacity)}` : ""} {plural(Math.round(total / CHARS_PER_TOKEN), "token")}{capacity ? ` (${shareLabel(total, whole)})` : " sent · no stated window"}</b></span>
     {grid}

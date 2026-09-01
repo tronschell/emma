@@ -397,7 +397,7 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
     var auth_header: ?[]u8 = null;
     defer if (auth_header) |value| secret.zeroAndFree(alloc, value);
 
-    var headers: std.http.Client.Request.Headers = .{};
+    var headers: std.http.Client.Request.Headers = .{ .content_type = .{ .override = "application/json" } };
     if (request.api_key.len > 0) {
         auth_header = try std.fmt.allocPrint(alloc, "Bearer {s}", .{request.api_key});
         headers.authorization = .{ .override = auth_header.? };

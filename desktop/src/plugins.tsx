@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Bars } from "./bars";
 import { hookRuns, matchesPluginQuery, pluginCategories, type InstalledPlugin, type Marketplace, type MarketplacePlugin, type PluginCatalog, type PluginDetail, type PluginHookState } from "../shared/plugins";
 import { byUse, lastUsed, recentDays, rowSeries, rowTotal, usageSeries, type UsageRow } from "../shared/invocations";
 import type { ToolSettings } from "../shared/settings";
@@ -162,12 +163,7 @@ export function PluginsView({ busy, tools, onTools }: { busy: boolean; tools: To
   </section>;
 }
 
-export function Bars({ values, labels, className }: { values: number[]; labels: string[]; className: string }) {
-  const peak = Math.max(1, ...values);
-  return <div className={className} aria-hidden="true">
-    {values.map((count, index) => <span key={labels[index]} title={`${labels[index]} · ${count}`}><i style={{ height: `${Math.round((count / peak) * 100)}%` }} /></span>)}
-  </div>;
-}
+export { Bars };
 
 const PANELS = {
   skills: {

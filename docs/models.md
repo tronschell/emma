@@ -63,12 +63,13 @@ The picker deals in keys, not raw model ids ([settings.ts](../desktop/shared/set
 | `openrouter:<id>` | A model from the OpenRouter catalog | that id |
 | `router:<id>` | One of the router profiles | that router's whole chain, comma-separated |
 | `provider:<profileId>` | A provider profile | that profile's `modelId`, to that profile's endpoint |
+| `codex:<slug>` | A ChatGPT subscription model exposed by Codex | `codex exec --model <slug>` |
 | `fallback` | The shipped default | nothing — see below |
 
 `defaultSettings.selectedModel` is `"fallback"` and `favoriteModels` starts as
 `["fallback"]`. `harnessModel()` sends a `model` config option for `openrouter:`,
-`router:` and `provider:`; only `fallback` sends **nothing**, leaving the
-harness on its own `default_model`.
+`router:` and `provider:`; `codex:` runs the Codex CLI instead of the harness.
+Only `fallback` sends **nothing**, leaving the harness on its own `default_model`.
 
 A key saved as `local:<profileId>` is rewritten to `provider:<profileId>` by
 `legacyModelKey` on the way through `validateSettings`, and a stored `localModels`
@@ -91,9 +92,9 @@ A profile with an empty `credentialEnv` is a server that wants no key, but
 literal `no-key` and the server ignores it.
 
 `contextWindow` on the profile is sent as the harness's `context_window` config
-option. Leave it 0 and Emma falls back to the OpenRouter catalog's number for
-that id — which a local model is not in, so the harness silently caps its history
-and turns off token-pressure compaction. Fill it in for anything off-catalog.
+option. Leave it 0 and `ModelMetadataCatalog` looks up the exact provider and
+model in the live metadata cache. Fill it in to override that source or for an
+off-catalog endpoint; the manual value always wins.
 
 Main learns the table over `emma:set-providers`, which validates and then calls
 `recycleHarnesses()`. Like the verifier and the free chain, it is renderer state
@@ -176,8 +177,9 @@ million tokens (`Math.round(usdPerToken * 1e12)`) on `promptMicroUsdPerMtok` and
 `completionMicroUsdPerMtok`. The renderer's own `isFreeModel` is a plain
 `idOrKey.endsWith(":free")`.
 
-**Thinking modes.** `reasoningEfforts` is filtered against a closed list, weakest
-first: `none, minimal, low, medium, high, xhigh, max`. A model that advertises
+**Thinking modes.** Known efforts are ordered weakest first — `none, minimal,
+low, medium, high, xhigh, max, ultra` — and any safe unfamiliar effort published
+later is appended and rendered from its name. A model that advertises
 `reasoning_effort` but publishes no list gets OpenRouter's own three stops
 (`low, medium, high`). `reasoningMandatory` comes straight from the vendor.
 
@@ -195,7 +197,7 @@ next launch, not a failed reload.
 `listOpenRouterModels` passes `refresh()` a 24-hour `maxAgeMs`, so a cache fetched
 today is served without touching the network, and one fetch is shared by every
 caller in flight — the panes that list models all ask on mount. The **Reload
-OpenRouter catalog** button sends `force`, which drops the age gate.
+model catalogs** button sends `force`, which drops the age gate.
 
 [catalog-seed.ts](../desktop/main/catalog-seed.ts) compiles a model snapshot into the
 app for a first launch with neither cache nor network. Regenerate with
@@ -207,6 +209,25 @@ only a handful of model-id prefixes: Electron looks the real numbers up and send
 the window as the `context_window` config option, without which the harness
 silently caps its history and disables token-pressure compaction. For the free
 chain it is the **first** id's window that is sent (`model.split(",")[0]`).
+
+### Route-aware metadata
+
+[model-metadata.ts](../desktop/main/model-metadata.ts) keeps model facts keyed by
+route, because one model slug does not imply one limit. It refreshes
+`https://models.dev/api.json` daily, validates and stores the last good catalog
+at `<userData>/model-metadata.json`, and serves that cache when the network is
+down. The full source catalog stays on disk while the renderer receives a small
+normalized record containing context and input/output limits, modalities,
+reasoning efforts, tool and structured-output support, dates and token prices.
+
+OpenRouter rows keep OpenRouter's current context, effort and price data and are
+enriched with the matching OpenRouter metadata record. Direct provider profiles
+use the provider's own record. `codex:<slug>` reads Codex's local
+`~/.codex/models_cache.json`, including `effective_context_window_percent`, so
+an API route may report 1,050,000 while the same slug through a ChatGPT plan
+reports 258,400. A profile's nonzero manual `contextWindow` overrides every
+catalog. These route records drive both the picker and the context window sent to
+the harness.
 
 ## Credentials
 
@@ -387,11 +408,69 @@ still: the Gemini CLI terms forbid third-party software reaching Gemini Code
 Assist through that OAuth login, and the sanction falls on the user's account —
 so the binary spawns as itself or not at all. Google AI Plus is not supported.
 
-**A CLI run is a delegated side channel, not the thread model.** The call goes
-out through the `cli` tool and comes back as one tool result;
-[harness.ts](../desktop/main/harness.ts) only ever speaks ACP to `emma-cli`, so
-no plan and no CLI changes which process runs the loop. This is not "use Claude
-as your model" and should not be read as one.
+**A CLI run is a delegated side channel, not the thread model — except Codex.**
+For Claude Code and Gemini CLI the call goes out through the `cli` tool and comes
+back as one tool result; [harness.ts](../desktop/main/harness.ts) only ever
+speaks ACP to `emma-cli`, so neither plan changes which process runs the loop.
+This is not "use Claude as your model" and should not be read as one. Codex is
+the single exception, and the next section says what that costs.
+
+### The ChatGPT route runs someone else's agent
+
+A GPT row in the catalog offers three buttons, not two: OpenRouter, the metered
+OpenAI key, and **ChatGPT**. The third picks the key `codex:<slug>`, and
+[main.ts](../desktop/main/main.ts) sends that turn to
+[codex.ts](../desktop/main/codex.ts) instead of the harness — `codex exec --json`
+in the workspace, one process per turn, resumed by the `thread_id` Codex hands
+back on `thread.started`.
+
+Be clear about what changes. **Codex runs its own agent loop, its own tools and
+its own sandbox.** Emma's system prompt, its tool permissions, its disabled-tool
+list and its approval prompts do not reach it. Emma passes `sandbox_mode` as
+`workspace-write` and `approval_policy` as `never`, so a ChatGPT-routed turn can
+write anywhere in the workspace without asking. The steps you see in the timeline
+are Codex's `item.started` and `item.completed` events mapped onto Emma's, and
+there is no token-level streaming in `--json`: an answer lands whole, not
+letter by letter.
+
+What does not change is the trust story. Emma spawns the unmodified `codex`
+binary you signed in to yourself with `codex login`, and never reads, stores or
+forwards that login — `~/.codex/auth.json` is Codex's file and Emma does not open
+it. This is the shape OpenAI documents and ships itself: its own
+[Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) drives
+Codex from a competitor's product under the user's ChatGPT subscription, and the
+[pricing page](https://learn.chatgpt.com/docs/pricing) lists `codex exec` and
+scriptable workflows as available on Plus, Pro, Business and Enterprise. Turns
+draw on the plan's five-hour window, shared with your other ChatGPT use.
+
+Picking the route fails loudly rather than silently: `selectCodexModel` refuses a
+slug that is not a plain model id, and refuses outright if `codex` is not on the
+PATH. The same guard sits in `codexArgs`, because a thread's pinned model is a
+second way into the runner and a pin is only length-checked. **Emma always sends
+its own `model_reasoning_effort`**, defaulting to `medium` when the turn has
+none: without that, a `model_reasoning_effort` in your own
+`~/.codex/config.toml` decides Emma's turns, and a global `max` is rejected
+outright by the smaller models.
+
+The button only appears on rows Codex can actually run. `useCodexSlugs` reads the
+route metadata returned with the live catalog and falls back to Codex's model
+list, cached for one hour, so `openai/gpt-5.4-mini` offers the route and
+`openai/gpt-3.5-turbo-16k` does not.
+
+**Some models exist only here.** `codexEntries` in
+[App.tsx](../desktop/src/App.tsx) reads the Codex model cache and adds a row for
+every slug OpenRouter does not carry — `gpt-5.3-codex-spark` is
+`supported_in_api: false`, so a subscription is the only way to reach it at all.
+Those rows have one route and no provider buttons.
+
+**Ceilings.** Codex-only rows appear in Settings → Models and in the workspace
+and per-task pickers, with their effective local context window. Quota is not
+read — `codex exec --json` reports per-turn tokens on
+`turn.completed` and nothing about the five-hour window, so a ChatGPT turn shows
+up in the local ledger like any other and the remaining-quota line stays empty.
+Reading quota, and signing in from inside Emma, both need `codex app-server`,
+which is the upgrade path when either becomes worth an experimental JSON-RPC
+surface that has no compatibility policy.
 
 **Emma detects installed, not signed in.** `installedClis` resolves each binary
 with `command -v` in a login shell, and the row reads **Installed** with the

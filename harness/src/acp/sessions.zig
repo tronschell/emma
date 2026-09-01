@@ -628,6 +628,7 @@ fn sendPendingRecoveryUpdate(
     if (recovery.assistant_source.len > 0) {
         try sendAgentHistoryChunk(state, alloc, session_id, recovery.assistant_source);
     }
+    if (recovery.action != .paused) return;
     const attempt = recovery.consumed_provider_attempts +| @intFromBool(recovery.outstanding_reservation);
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
@@ -639,7 +640,7 @@ fn sendPendingRecoveryUpdate(
         .failed_attempt = attempt,
         .attempt_limit = recovery.max_provider_attempts,
         .cause = recovery.cause,
-        .action = .paused,
+        .action = recovery.action,
         .required_action = if (recovery.tool_state == .uncertain)
             .inspect_uncertain_tool
         else

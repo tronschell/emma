@@ -252,7 +252,7 @@
 .settings-view .catalog-star:hover { color: var(--text); background: var(--surface-3); border: 0; }
 .settings-view .catalog-star[aria-pressed="true"] { color: #ffd60a; }
 .settings-view .catalog-use { min-height: 26px; }
-.settings-view .model-provider-picker { grid-template-columns: auto minmax(140px, 220px) minmax(140px, 220px); }
+.settings-view .model-provider-picker { grid-template-columns: auto; grid-auto-columns: minmax(120px, 220px); }
 .catalog-row.selected .catalog-use { opacity: 1; color: var(--accent); border-color: var(--accent); }
 .catalog-row.router { grid-template-columns: 20px minmax(0, 1fr) auto auto auto; }
 .settings-view .catalog-drop { display: grid; place-items: center; width: 26px; height: 26px; min-height: 26px; padding: 0; color: var(--text-3); background: transparent; border: 0; transition: color var(--t), background-color var(--t); }
@@ -554,7 +554,9 @@
 .plan-row.set small { color: var(--lime); }
 .plan-model { overflow: hidden; color: var(--text-3); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .plan-model.live { color: var(--accent); }
-.cli-plan-row { grid-template-columns: 20px minmax(0, 1fr) auto auto; }
+.cli-plan-row { grid-template-columns: 20px minmax(0, 1fr) auto auto auto; }
+.cli-plan-row .warn { color: var(--text-3); }
+.cli-plan-terminal { position: relative; grid-column: 1 / -1; margin-top: var(--s-3); height: 280px; border: 1px solid var(--border); border-radius: var(--r-2); overflow: hidden; background: var(--surface-2); }
 .model-plans .provider-key-balance { display: flex; gap: var(--s-2); align-items: baseline; margin-top: 1px; }
 .model-plans .provider-key-balance a { flex: none; }
 

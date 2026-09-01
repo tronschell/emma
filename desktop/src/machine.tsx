@@ -8,7 +8,7 @@ let sampling = false;
 const listeners = new Set<(samples: MachineSample[]) => void>();
 
 async function tick() {
-  if (sampling) return;
+  if (sampling || document.hidden) return;
   sampling = true;
   try {
     const sample = await window.emma.machineSample();
@@ -21,19 +21,36 @@ async function tick() {
   }
 }
 
+const stop = () => {
+  if (timer === undefined) return;
+  clearInterval(timer);
+  timer = undefined;
+};
+
+const start = () => {
+  if (timer !== undefined || document.hidden || !listeners.size) return;
+  void tick();
+  timer = setInterval(() => void tick(), MACHINE_TICK_MS);
+};
+
+const visibilityChanged = () => {
+  if (document.hidden) stop();
+  else start();
+};
+
 export function useMachine(): MachineSample[] {
   const [samples, setSamples] = useState(history);
   useEffect(() => {
     listeners.add(setSamples);
-    if (!timer) {
-      void tick();
-      timer = setInterval(() => void tick(), MACHINE_TICK_MS);
+    if (listeners.size === 1) {
+      document.addEventListener("visibilitychange", visibilityChanged);
+      start();
     }
     return () => {
       listeners.delete(setSamples);
       if (!listeners.size) {
-        clearInterval(timer);
-        timer = undefined;
+        stop();
+        document.removeEventListener("visibilitychange", visibilityChanged);
       }
     };
   }, []);

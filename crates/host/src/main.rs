@@ -4,9 +4,9 @@ use std::{
 };
 
 use emma_core::{
-    DueJob, GoalStatus, LiveClient, ResearchJobId, ScheduledJobId, ThreadId, ThreadKind,
+    DueJob, GoalStatus, LiveClient, ResearchJobId, ScheduledJobId, Thread, ThreadId, ThreadKind,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -197,6 +197,155 @@ struct RenameThreadParams {
 struct SetScheduledJobEnabledParams {
     job_id: String,
     enabled: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadSummary {
+    id: ThreadId,
+    title: String,
+    parent_thread_id: Option<ThreadId>,
+    kind: ThreadKind,
+    scheduled_job_id: Option<ScheduledJobId>,
+    created_at: emma_core::Timestamp,
+    updated_at: emma_core::Timestamp,
+    archived_at: Option<emma_core::Timestamp>,
+    goal: Option<emma_core::Goal>,
+    messages: usize,
+    message_dates: Vec<emma_core::Timestamp>,
+    user_message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subagent_brief: Option<String>,
+}
+
+fn sent_thread_body(content: &str) -> &str {
+    let Some(rest) = content.strip_prefix("[thread ") else {
+        return content;
+    };
+    let Some(marker_end) = rest.find(" messaged]\n") else {
+        return content;
+    };
+    let sender = &rest[..marker_end];
+    if !(1..=96).contains(&sender.len())
+        || !sender
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return content;
+    }
+    &rest[marker_end + " messaged]\n".len()..]
+}
+
+fn normalized_prompt(content: &str) -> String {
+    sent_thread_body(content)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn display_title(content: &str) -> String {
+    if content.encode_utf16().count() <= 48 {
+        return content.to_owned();
+    }
+    let mut title = String::new();
+    let mut units = 0;
+    for character in content.chars() {
+        let width = character.len_utf16();
+        if units + width > 47 {
+            break;
+        }
+        title.push(character);
+        units += width;
+    }
+    title.push('…');
+    title
+}
+
+fn needs_renderer_prompt(content: &str) -> bool {
+    if content.encode_utf16().count() <= 48 {
+        return false;
+    }
+    let mut units = 0;
+    for character in content.chars() {
+        let width = character.len_utf16();
+        if units + width > 47 {
+            return width == 2;
+        }
+        units += width;
+    }
+    false
+}
+
+fn utf16_prefix(content: &str, limit: usize) -> String {
+    let mut prefix = String::new();
+    let mut units = 0;
+    for character in content.chars() {
+        if units >= limit {
+            break;
+        }
+        prefix.push(character);
+        units += character.len_utf16();
+    }
+    prefix
+}
+
+impl From<&Thread> for ThreadSummary {
+    fn from(thread: &Thread) -> Self {
+        let first_user_message = thread
+            .messages
+            .iter()
+            .find(|message| message.role == emma_core::ThreadRole::User)
+            .map(|message| normalized_prompt(&message.content));
+        let default_title = thread.title.trim().is_empty() || thread.title.trim() == "New thread";
+        let display_title = if default_title {
+            first_user_message
+                .as_deref()
+                .map(display_title)
+                .filter(|content| !content.is_empty())
+        } else {
+            None
+        };
+        let label_prompt = if default_title {
+            first_user_message
+                .as_deref()
+                .filter(|content| needs_renderer_prompt(content))
+                .map(|content| utf16_prefix(content, 50))
+        } else {
+            None
+        };
+        Self {
+            id: thread.id.clone(),
+            title: thread.title.clone(),
+            parent_thread_id: thread.parent_thread_id.clone(),
+            kind: thread.kind,
+            scheduled_job_id: thread.scheduled_job_id.clone(),
+            created_at: thread.created_at,
+            updated_at: thread.updated_at,
+            archived_at: thread.archived_at,
+            goal: thread.goal.clone(),
+            messages: thread.messages.len(),
+            message_dates: thread
+                .messages
+                .iter()
+                .map(|message| message.timestamp)
+                .collect(),
+            user_message_count: thread
+                .messages
+                .iter()
+                .filter(|message| message.role == emma_core::ThreadRole::User)
+                .count(),
+            display_title,
+            label_prompt,
+            subagent_brief: (thread.kind == ThreadKind::Subagent)
+                .then_some(first_user_message)
+                .flatten()
+                .filter(|content| !content.is_empty()),
+        }
+    }
 }
 
 fn main() {
@@ -432,7 +581,27 @@ fn optional_u64(value: Option<String>, name: &str) -> Result<Option<u64>, String
 fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (String, String)> {
     let result = (|| -> Result<Value, String> {
         match request.method.as_str() {
-            "snapshot" => encode(call(live.snapshot())?),
+            "snapshot" => encode(call(live.snapshot_uncached())?),
+            "threadSummaries" => {
+                let snapshot = call(live.snapshot_uncached())?;
+                let threads = snapshot
+                    .threads
+                    .iter()
+                    .map(|thread| ThreadSummary::from(thread.as_ref()))
+                    .collect::<Vec<_>>();
+                encode(json!({
+                    "threads": threads,
+                    "scheduledJobs": snapshot.scheduled_jobs,
+                    "researchJobs": snapshot.research_jobs,
+                    "warnings": snapshot.warnings,
+                }))
+            }
+            "thread" => {
+                let params: ThreadParams = params(request)?;
+                encode(call(live.thread(
+                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
+                ))?)
+            }
             "createThread" => {
                 let params: CreateThreadParams = if request.params.is_null() {
                     CreateThreadParams::default()
@@ -724,6 +893,52 @@ mod tests {
         let long = "x".repeat(129);
         assert!(parse_request(&format!(r#"{{"id":"{long}","method":"snapshot"}}"#)).is_err());
         assert!(parse_request(r#"{"id":"1","method":"snapshot"}"#).is_ok());
+    }
+
+    #[test]
+    fn thread_summary_keeps_renderer_label_rules() {
+        fn summary(prompt: &str) -> ThreadSummary {
+            let now = emma_core::Timestamp::now();
+            let mut thread = Thread::new("New thread", now).unwrap();
+            thread
+                .push(
+                    emma_core::ThreadMessage::new(emma_core::ThreadRole::User, prompt, now)
+                        .unwrap(),
+                )
+                .unwrap();
+            ThreadSummary::from(&thread)
+        }
+
+        let forty_eight = "a".repeat(48);
+        assert_eq!(
+            summary(&forty_eight).display_title.as_deref(),
+            Some(forty_eight.as_str())
+        );
+        let forty_nine = "a".repeat(49);
+        let expected = format!("{}…", "a".repeat(47));
+        assert_eq!(
+            summary(&forty_nine).display_title.as_deref(),
+            Some(expected.as_str())
+        );
+        let emoji = "🙂".repeat(24);
+        assert_eq!(
+            summary(&emoji).display_title.as_deref(),
+            Some(emoji.as_str())
+        );
+        let split = format!("{emoji}x");
+        assert!(summary(&split).label_prompt.is_some());
+        assert_eq!(
+            summary("[thread short! messaged]\nhello")
+                .display_title
+                .as_deref(),
+            Some("[thread short! messaged] hello")
+        );
+        assert_eq!(
+            summary("[thread short-id messaged]\nhello")
+                .display_title
+                .as_deref(),
+            Some("hello")
+        );
     }
 
     #[test]

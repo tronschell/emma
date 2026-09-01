@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { canRemoveProvider, defaultSettings, forgetProvider, validateSettings, type ProviderProfile, type UserSettings } from "../shared/settings";
+import { canRemoveProvider, CODEX_PREFIX, codexSlug, defaultSettings, forgetProvider, validateSettings, type ProviderProfile, type UserSettings } from "../shared/settings";
 
 const source = ts.createSourceFile("App.tsx", readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const main = ts.createSourceFile("main.ts", readFileSync(path.join(__dirname, "../../main/main.ts"), "utf8"), ts.ScriptTarget.Latest, true);
@@ -80,7 +81,7 @@ test("adding registers before publishing; immediate Use and shared picker work w
   const profile = view.settings().providers[0];
   await view.invoke("select", profile);
   assert.equal(view.settings().selectedModel, `provider:${profile.id}`);
-  const select = compile(named(source, "selectModelKey").getText(source), { routerFor: () => undefined });
+  const select = compile(named(source, "selectModelKey").getText(source), { CODEX_PREFIX, codexSlug, routerFor: () => undefined });
   assert.equal((await select(view.settings(), `provider:${profile.id}`, view.act)).selectedModel, `provider:${profile.id}`);
   assert.equal(view.state.registrations, 1);
   assert.equal(view.state.error, "");
@@ -156,4 +157,30 @@ test("rollback failure surfaces both storage and registration errors", async () 
   assert.equal(view.state.error, "Storage full Could not restore providers: Registration failed");
   assert.equal(view.state.status, "");
   assert.equal(view.state.saving, false);
+});
+
+test("a provider whose named key is missing says so, while a keyless local endpoint still runs", () => {
+  const source = readFileSync(path.join(__dirname, "../main/main.js"), "utf8");
+  const route = source.match(/function providerRoute\(key\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(route);
+  const providerRoute = runInNewContext(`${route}\nproviderRoute`, {
+    providerFor: () => ({ id: "plan-zai", name: "GLM Coding Plan", credentialEnv: "ZAI_API_KEY", baseUrl: "https://api.z.ai/api/coding/paas/v4" }),
+    settings_1: { providerChatUrl: (profile: { baseUrl: string }) => `${profile.baseUrl}/chat/completions` },
+    process: { env: {} as Record<string, string> },
+  }) as (key: string) => { apiKey: string };
+  assert.throws(() => providerRoute("provider:plan-zai"), /no key saved under ZAI_API_KEY/);
+
+  const keyed = runInNewContext(`${route}\nproviderRoute`, {
+    providerFor: () => ({ id: "plan-zai", name: "GLM Coding Plan", credentialEnv: "ZAI_API_KEY", baseUrl: "https://api.z.ai/api/coding/paas/v4" }),
+    settings_1: { providerChatUrl: (profile: { baseUrl: string }) => `${profile.baseUrl}/chat/completions` },
+    process: { env: { ZAI_API_KEY: "  real-key  " } as Record<string, string> },
+  }) as (key: string) => { apiKey: string };
+  assert.equal(keyed("provider:plan-zai").apiKey, "real-key");
+
+  const local = runInNewContext(`${route}\nproviderRoute`, {
+    providerFor: () => ({ id: "local", name: "Mac Studio", credentialEnv: "", baseUrl: "http://127.0.0.1:1234/v1" }),
+    settings_1: { providerChatUrl: (profile: { baseUrl: string }) => `${profile.baseUrl}/chat/completions` },
+    process: { env: {} as Record<string, string> },
+  }) as (key: string) => { apiKey: string };
+  assert.equal(local("provider:local").apiKey, "no-key");
 });

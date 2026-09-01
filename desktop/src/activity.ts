@@ -1,5 +1,5 @@
 import { usageDay } from "../shared/invocations";
-import type { Thread } from "./types";
+import { threadMessageCount, threadMessageDates, type Thread } from "./types";
 
 export interface DayGrid {
   weeks: string[][];
@@ -40,7 +40,7 @@ export function countDays(stamps: string[]): Record<string, number> {
   return days;
 }
 
-export const messageDays = (threads: Thread[]) => countDays(threads.flatMap((thread) => thread.messages.map((message) => message.timestamp)));
+export const messageDays = (threads: Thread[]) => countDays(threads.flatMap(threadMessageDates));
 
 export function weekGrid(from: Date, to: Date): DayGrid {
   const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
@@ -88,10 +88,10 @@ export function projectActivity(threads: Thread[], nameOf: (thread: Thread) => s
     const name = nameOf(thread) || "Other";
     const row = rows.get(name) ?? { name, threads: 0, messages: 0, days: {}, lastAt: 0 };
     row.threads += 1;
-    row.messages += thread.messages.length;
+    row.messages += threadMessageCount(thread);
     row.lastAt = Math.max(row.lastAt, new Date(thread.updatedAt).getTime() || 0);
-    for (const message of thread.messages) {
-      const key = dayOf(message.timestamp);
+    for (const timestamp of threadMessageDates(thread)) {
+      const key = dayOf(timestamp);
       if (key) row.days[key] = (row.days[key] ?? 0) + 1;
     }
     rows.set(name, row);

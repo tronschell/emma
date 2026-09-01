@@ -454,3 +454,20 @@ test("a call the turn never finished comes back as not executed, not as still wo
   assert.equal(statusOf("running"), "in_progress");
   assert.equal(statusOf("ok"), "completed");
 });
+
+test("a steer is rebuilt from the trace at the point it cut into the answer", () => {
+  const content = "Reading the styles now.\nThen writing them.";
+  const messages: Message[] = [{ role: "assistant", content, timestamp: "2026-08-27T21:11:28Z" }];
+  const text = [
+    JSON.stringify({ v: 1, thread: "dither", model: "z-ai/glm-5.3-flash" }),
+    JSON.stringify({ id: "agent:dither", name: "This thread", kind: "agent", startedAt: 1787865075384, endedAt: 1787865075884, status: "ok" }),
+    JSON.stringify({ id: "steer:dither:1", parentId: "agent:dither", name: "steer", kind: "steer", startedAt: 1787865075385, endedAt: 1787865075385, status: "ok", input: "use the other palette", said: 23 }),
+  ].join("\n");
+  const blocks = tracedBlocks("dither", messages, [{ timestamp: "2026-08-27T21:11:28Z", text }])[messages[0].timestamp];
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.kind === "notice" ? `steer:${block.text}` : block.text), [
+    "Reading the styles now.",
+    "steer:use the other palette",
+    "\nThen writing them.",
+  ]);
+  assert.equal(blocks.every((block) => block.kind !== "notice" || block.steer), true);
+});

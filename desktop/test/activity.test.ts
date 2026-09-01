@@ -56,6 +56,18 @@ test("projectActivity groups by folder name and falls back to Other", () => {
   assert.equal(Object.values(rows[0].days)[0], 2);
 });
 
+test("activity reads compact message metadata without a transcript", () => {
+  const rows = projectActivity([
+    thread("compact", {
+      messageCount: 3,
+      messageDates: ["2026-08-20T10:00:00.000Z", "2026-08-20T11:00:00.000Z", "2026-08-21T10:00:00.000Z"],
+      userMessageCount: 1,
+    }),
+  ], () => "project");
+  assert.equal(rows[0].messages, 3);
+  assert.deepEqual(rows[0].days, { "2026-08-20": 2, "2026-08-21": 1 });
+});
+
 test("lineage nests subagents under their parent and keeps the spine open", () => {
   const rows = lineage([
     thread("root-new", { updatedAt: "2026-08-26T10:00:00.000Z" }),

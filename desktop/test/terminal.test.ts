@@ -86,6 +86,15 @@ test("terminal subscriptions follow the selected thread and ignore stale tabs an
   assert.equal(writes, settledWrites);
 });
 
+test("xterm stays behind the terminal implementation lazy boundary", () => {
+  const eager = readFileSync(path.join(__dirname, "..", "..", "src", "terminal.tsx"), "utf8");
+  const implementation = readFileSync(path.join(__dirname, "..", "..", "src", "terminal-implementation.tsx"), "utf8");
+  assert.doesNotMatch(eager, /@xterm\//);
+  assert.match(eager, /LazyTerminalSurface = lazy\(\(\) => import\(["']\.\/terminal-implementation["']\)/);
+  assert.match(eager, /LazyTerminalPanel = lazy\(\(\) => import\(["']\.\/terminal-implementation["']\)/);
+  assert.match(implementation, /@xterm\/xterm\/css\/xterm\.css/);
+});
+
 test("a shell is named after the folder it was opened in", () => {
   assert.equal(terminalTitle("/Users/someone/Documents/emma"), "emma");
   assert.equal(terminalTitle("/Users/someone/Documents/emma/"), "emma");
@@ -136,7 +145,7 @@ test("the terminal is a full-width row under the thread, not a fourth column", (
 });
 
 test("output that arrived during a failed replay is still written to the pane", () => {
-  const source = readFileSync(path.join(__dirname, "..", "..", "src", "terminal.tsx"), "utf8");
+  const source = readFileSync(path.join(__dirname, "..", "..", "src", "terminal-implementation.tsx"), "utf8");
   const replay = source.slice(source.indexOf("readTerminal(tab.id)"), source.indexOf("term.onData"));
   const failed = replay.slice(replay.indexOf(".catch("));
   assert.match(failed, /for \(const chunk of queued\) term\.write\(chunk\.data\)/);

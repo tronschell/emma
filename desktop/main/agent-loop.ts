@@ -238,6 +238,24 @@ export class AgentRuntime {
       .join("\n");
   }
 
+  noteSteer(threadId: string, text: string): void {
+    const run = this.runs.get(threadId);
+    if (!run || !run.spans.length) return;
+    const at = Date.now();
+    run.spans.push({
+      id: `steer:${run.threadId}:${run.spans.length}`,
+      parentId: run.spans[0].id,
+      name: "steer",
+      kind: "steer",
+      startedAt: at,
+      endedAt: at,
+      status: "ok",
+      input: text,
+      said: run.said,
+    });
+    this.deps.changed();
+  }
+
   steer(threadId: string, _text: string) {
     if (!this.runs.has(threadId)) throw new Error("That agent is no longer running.");
     throw new Error("Emma could not reach the turn that is running on this thread. Wait for it to finish, then send it again.");
@@ -271,6 +289,11 @@ export class AgentRuntime {
 
   answer(id: string, allowed: boolean) {
     this.asks.get(id)?.settle(allowed);
+  }
+
+  dropAsks(threadId: string) {
+    const run = this.runs.get(threadId);
+    if (run) this.dismissAsks(run);
   }
 
   private dismissAsks(run: Run) {

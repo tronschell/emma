@@ -3,7 +3,7 @@ import { contextBlock, pickKey, slashName, type ContextPick, type FolderFile, ty
 import { pathName, type SlashCommand } from "../shared/slash";
 import { ARTIFACT_LABELS, type ArtifactMeta } from "../shared/artifacts";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
-import { allocateCells, CHARS_PER_TOKEN, mergeUses, rateByContext, usageKey, type ContextUse } from "../shared/usage";
+import { CHARS_PER_TOKEN, mergeUses, rateByContext, usageKey, type ContextUse } from "../shared/usage";
 import { SETTINGS_KEY, tagName, validateSettings } from "../shared/settings";
 import { keepKindLabel, type KeptNote } from "../shared/vault";
 import { COMPONENT_ZONE_LABEL } from "../shared/components";
@@ -318,8 +318,6 @@ export function lastInputTokens(thread: Thread): number {
   return 0;
 }
 
-const USAGE_CELLS = 48;
-
 export type SegmentSource = "messages" | "turn" | "attachment" | "residual" | "prompt" | "tools" | "mcp" | "skills" | "memory";
 
 export interface LedgerRow extends ContextUse {
@@ -392,7 +390,7 @@ export interface Ledger {
   capacity: number;
   free: number;
   whole: number;
-  cells: string[];
+  cells: { key: string; chars: number }[];
   kinds: Map<string, string>;
   messages: number;
   replies: number;
@@ -443,7 +441,6 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
   const total = rows.reduce((sum, row) => sum + row.chars, 0);
   const capacity = contextTokens * CHARS_PER_TOKEN;
   const free = Math.max(0, capacity - total);
-  const packed = allocateCells([...rows.map((row) => ({ key: usageKey(row), chars: row.chars })), { key: "free", chars: free }], USAGE_CELLS);
   const tokens = messages.reduce((sum, message) => sum + (message.generation?.outputTokens ?? 0), 0)
     + liveTurns.reduce((sum, agent) => sum + agent.outputTokens, 0);
   return {
@@ -452,7 +449,7 @@ export function buildLedger(thread: Thread | undefined, uses: ContextUse[], cont
     capacity,
     free,
     whole: capacity || total,
-    cells: [...packed.filter((key) => key !== "free"), ...packed.filter((key) => key === "free")],
+    cells: [...rows.map((row) => ({ key: usageKey(row), chars: row.chars })), { key: "free", chars: free }].filter((cell) => cell.chars > 0),
     kinds: new Map<string, string>([...rows.map((row) => [usageKey(row), row.kind] as const), ["free", "free"]]),
     messages: messages.length + liveTurns.length * 2,
     replies: replies + liveTurns.length,

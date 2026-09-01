@@ -112,6 +112,19 @@ export function modelPlanRoute(settings: UserSettings, plan: ModelPlan, key: str
   return { settings: next, key: `provider:${planProfileFor(next.providers, plan, modelId)!.id}` };
 }
 
+export const CODEX_PREFIX = "codex:";
+
+export const CODEX_MODEL_ID = /^[A-Za-z0-9][\w.-]{0,63}$/;
+
+export const codexSlug = (key: string | undefined) => (key?.startsWith(CODEX_PREFIX) ? key.slice(CODEX_PREFIX.length) : "");
+
+export const codexModelKey = (plan: ModelPlan, key: string) => `${CODEX_PREFIX}${planModelId(plan, key)}`;
+
+export const availableCodexModelKey = (plan: ModelPlan, key: string, slugs?: readonly string[]) => {
+  const candidate = codexModelKey(plan, key);
+  return slugs === undefined || slugs.includes(codexSlug(candidate)) ? candidate : "";
+};
+
 export const PLAN_WINDOW_MS = 5 * 60 * 60 * 1000;
 export const PLAN_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -148,15 +161,19 @@ export type CliPlan = {
   brand: string;
   plan: string;
   signIn: string;
+  authFile: string;
+  authKeychain?: string;
   detail: string;
   note: string;
 };
 
 export const CLI_PLANS: readonly CliPlan[] = [
-  { id: "claude", label: "Claude Code", brand: "anthropic", plan: "Claude Pro or Max", signIn: "claude", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified claude binary you signed in to yourself, which is the only route Anthropic sanctions for a subscription; Emma never sees, stores, or forwards that login. Turns draw on the usage limits your Claude chats already share, and Anthropic publishes no counts for them. Reaching for a key instead silently moves billing to that key." },
-  { id: "codex", label: "Codex", brand: "openai", plan: "ChatGPT Plus, Pro or Business", signIn: "codex login", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified codex binary you signed in to yourself; Emma never sees, stores, or forwards that login. Turns draw on your plan's five-hour message window, which your ChatGPT and Codex use share. Signing in with an API key instead bills the Platform account per token rather than the subscription." },
-  { id: "gemini", label: "Gemini CLI", brand: "gemini", plan: "Google AI Pro or Ultra", signIn: "gemini", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified gemini binary you signed in to yourself; Emma never sees, stores, or forwards that login. It is the only route Google sanctions for a subscription — the Gemini CLI terms forbid other software reaching Gemini Code Assist through this login, and the penalty falls on your account. A free sign-in allows 1,000 requests a day, AI Pro 1,500 and AI Ultra 2,000; Google AI Plus is not supported. Reaching for an API key instead bills per token." },
+  { id: "claude", label: "Claude Code", brand: "anthropic", plan: "Claude Pro or Max", signIn: "claude", authFile: ".claude/.credentials.json", authKeychain: "Claude Code-credentials", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified claude binary you signed in to yourself, which is the only route Anthropic sanctions for a subscription; Emma never sees, stores, or forwards that login. Turns draw on the usage limits your Claude chats already share, and Anthropic publishes no counts for them. Reaching for a key instead silently moves billing to that key." },
+  { id: "codex", label: "Codex", brand: "openai", plan: "ChatGPT Plus, Pro or Business", signIn: "codex login", authFile: ".codex/auth.json", detail: "Thread model, run by Emma's own agent", note: "`codex login` stores the sign-in; Emma reads that token to reach the ChatGPT endpoint and sends nothing else anywhere. Turns run on Emma's own tools, and draw on your plan's five-hour message window, which your ChatGPT and Codex use share. Signing in with an API key instead bills the Platform account per token rather than the subscription." },
+  { id: "gemini", label: "Gemini CLI", brand: "gemini", plan: "Google AI Pro or Ultra", signIn: "gemini", authFile: ".gemini/oauth_creds.json", detail: "Delegated run, not the thread model", note: "Emma spawns the unmodified gemini binary you signed in to yourself; Emma never sees, stores, or forwards that login. It is the only route Google sanctions for a subscription — the Gemini CLI terms forbid other software reaching Gemini Code Assist through this login, and the penalty falls on your account. A free sign-in allows 1,000 requests a day, AI Pro 1,500 and AI Ultra 2,000; Google AI Plus is not supported. Reaching for an API key instead bills per token." },
 ];
+
+export const cliPlan = (id: string) => CLI_PLANS.find((plan) => plan.id === id);
 
 export const MAX_PROVIDERS = 24;
 export const MAX_CONTEXT_WINDOW = 100_000_000;
@@ -533,19 +550,21 @@ export function saveShortcut(settings: UserSettings, request: ShortcutRequest): 
   return { settings: validateSettings({ ...settings, quickActions, keybinds: { ...settings.keybinds, [action]: comboKeybind(accelerator) } }), action };
 }
 
-export const THINKING_LEVELS = ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+export const THINKING_LEVELS = ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type ThinkingLevel = string;
 
-export const THINKING_LABELS: Record<ThinkingLevel, string> = { "": "Default", off: "Off", none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Very high", max: "Max" };
+export const THINKING_LABELS: Record<string, string> = { "": "Default", off: "Off", none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Very high", max: "Max", ultra: "Ultra" };
+
+export const thinkingLabel = (level: string) => THINKING_LABELS[level] ?? level.replace(/[-_]+/g, " ").replace(/^./, (letter) => letter.toUpperCase());
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+  return typeof value === "string" && (value === "" || /^[a-z][a-z0-9_-]{0,31}$/.test(value));
 }
 
 export function thinkingStops(model?: { reasoningEfforts?: string[]; reasoningMandatory?: boolean }): ThinkingLevel[] {
-  const efforts = model?.reasoningEfforts ?? [];
+  const efforts = [...new Set((model?.reasoningEfforts ?? []).filter((level) => isThinkingLevel(level) && level !== "" && level !== "off"))];
   if (!efforts.length) return [];
-  const stops = THINKING_LEVELS.filter((level) => efforts.includes(level));
+  const stops = [...THINKING_LEVELS.filter((level) => efforts.includes(level)), ...efforts.filter((level) => !(THINKING_LEVELS as readonly string[]).includes(level))];
   return model?.reasoningMandatory || stops.includes("none") ? ["", ...stops] : ["", "off", ...stops];
 }
 

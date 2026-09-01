@@ -13,6 +13,7 @@ export type QueuedTurn = {
   after: number;
   params: Record<string, string>;
   prepare?: () => Promise<Pick<QueuedTurn, "params" | "delivered">>;
+  attached?: boolean;
   cancelled?: boolean;
   delivered?: () => void;
   notice?: string;
@@ -23,7 +24,7 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "step"; step: ThreadStep }
 
-  | { kind: "notice"; text: string; plain?: boolean };
+  | { kind: "notice"; text: string; plain?: boolean; steer?: boolean };
 
 export function pairBlocks(messages: Message[], landed: Block[][], cached: Record<string, Block[]>): (Block[] | undefined)[] {
   const assistants = messages.reduce((count, item) => item.role === "assistant" ? count + 1 : count, 0);
@@ -66,7 +67,7 @@ export function withoutThinking(blocks: Block[]): Block[] {
 
 export type Grouped =
   | { kind: "text" | "thinking"; text: string }
-  | { kind: "notice"; text: string; plain?: boolean }
+  | { kind: "notice"; text: string; plain?: boolean; steer?: boolean }
 
   | { kind: "steps"; steps: ThreadStep[]; keep: number }
 
@@ -151,6 +152,10 @@ export function joinPartial(restored: string, held: string): string {
   return restored + held;
 }
 
+const marked = (span: TraceSpan) => span.id.startsWith("call:") || span.id.startsWith("steer:");
+
+export const isSteer = (block: Block) => block.kind === "notice" && !!block.steer;
+
 export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { text: string; thinking: string }): Block[] {
   const byId = new Map(spans.map((span) => [span.id, span]));
   const ownedHere = (span: TraceSpan) => {
@@ -162,24 +167,27 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
     return true;
   };
   const calls = spans
-    .filter((span) => span.id.startsWith("call:") && ownedHere(span))
+    .filter((span) => marked(span) && ownedHere(span))
     .sort((left, right) => left.startedAt - right.startedAt)
     .map((span) => ({
       said: span.said,
-      block: {
-        kind: "step",
-        step: {
-          threadId,
-          toolCallId: span.id.slice("call:".length),
-          title: span.name,
-          kind: span.kind,
-          status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : span.status === "cancelled" ? "cancelled" : "in_progress",
-          input: span.input,
-          output: span.output,
-          at: span.startedAt,
-        },
-      } as Block,
-    }));
+      block: (span.id.startsWith("steer:")
+        ? { kind: "notice", text: span.input ?? "", plain: true, steer: true }
+        : {
+          kind: "step",
+          step: {
+            threadId,
+            toolCallId: span.id.slice("call:".length),
+            title: span.name,
+            kind: span.kind,
+            status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : span.status === "cancelled" ? "cancelled" : "in_progress",
+            input: span.input,
+            output: span.output,
+            at: span.startedAt,
+          },
+        }) as Block,
+    }))
+    .filter((mark) => mark.block.kind !== "notice" || mark.block.text.trim().length > 0);
   const answer = partial?.text ?? "";
   const said = (text: string | undefined, kind: "text" | "thinking"): Block[] => text?.trim() ? [{ kind, text }] : [];
   const blocks = said(partial?.thinking, "thinking");
@@ -199,7 +207,7 @@ const RECOVERED_TRACE_OF_TURN_MS = 2 * TRACE_OF_TURN_MS;
 export function tracedBlocks(threadId: string, messages: Message[], traces: readonly { timestamp: string; text: string }[]): Record<string, Block[]> {
   const recorded = traces
     .map((trace) => ({ at: Date.parse(trace.timestamp), spans: decodeSpans(trace.text), within: traceHeader(trace.text).recovered === "session" ? RECOVERED_TRACE_OF_TURN_MS : TRACE_OF_TURN_MS }))
-    .filter((trace) => Number.isFinite(trace.at) && trace.spans.some((span) => span.id.startsWith("call:")))
+    .filter((trace) => Number.isFinite(trace.at) && trace.spans.some(marked))
     .sort((left, right) => left.at - right.at);
   const turns: Record<string, Block[]> = {};
   let at = 0;
@@ -213,7 +221,7 @@ export function tracedBlocks(threadId: string, messages: Message[], traces: read
     at += 1;
     const { answer, thinking } = splitThinking(message.content);
     const blocks = restoreBlocks(threadId, trace.spans, { text: answer, thinking });
-    if (blocks.some((block) => block.kind === "step")) turns[message.timestamp] = blocks;
+    if (blocks.some((block) => block.kind === "step" || isSteer(block))) turns[message.timestamp] = blocks;
   }
   return turns;
 }
@@ -225,7 +233,7 @@ function rehydrate(threadId: string, token: number) {
       if (!restored.length || generations.get(threadId) !== token) return;
       write(threadId, (run) => {
         const calls = new Set(run.blocks.flatMap((block) => block.kind === "step" ? [block.step.toolCallId] : []));
-        const held = [...run.blocks];
+        const held = run.blocks.filter((block) => !isSteer(block));
         const blocks = restored.flatMap((block): Block[] => {
           if (block.kind === "step") return calls.has(block.step.toolCallId) ? [] : [block];
           if (block.kind !== "text" && block.kind !== "thinking") return [block];
@@ -315,6 +323,21 @@ export const RUN_ERROR_EVENT = "emma:run-error";
 
 export const runOf = (threadId: string): Run => read(threadId);
 
+export function settleRun(threadId: string, messages: Message[], cached: Record<string, Block[]>): void {
+  const run = read(threadId);
+  const settled = run.landed.at(-1);
+  if (run.sending || run.foreign || run.queue.length || !settled?.length || run.blocks !== settled) return;
+  const assistants = messages.filter((message) => message.role === "assistant");
+  const first = assistants.length - run.landed.length;
+  if (first < 0) return;
+  for (let at = 0; at < run.landed.length; at += 1) {
+    const message = assistants[first + at];
+    const blocks = run.landed[at];
+    if (!message || !blocks.length || !wrote(message.content, blocks) || !Object.prototype.hasOwnProperty.call(cached, message.timestamp) || !Array.isArray(cached[message.timestamp]) || !cached[message.timestamp].length) return;
+  }
+  write(threadId, { blocks: [], landed: [], pending: null });
+}
+
 export function useRun(threadId: string) {
   return useSyncExternalStore((listener) => {
     wire();
@@ -331,7 +354,7 @@ export function sendTurn(threadId: string, turn: QueuedTurn, reload: () => unkno
 
 const inFlight = (run: Run) => (run.sending && !run.foreign ? 1 : 0);
 
-export const canSteer = (turn: QueuedTurn) => !turn.prepare && Object.keys(turn.params).length === 0;
+export const canSteer = (turn: QueuedTurn) => !turn.attached && Object.keys(turn.params).length === 0;
 
 export function queuedTurns(run: Run) {
   return run.queue.slice(inFlight(run));
@@ -339,6 +362,28 @@ export function queuedTurns(run: Run) {
 
 export function dropQueued(threadId: string, index: number) {
   write(threadId, (run) => ({ queue: run.queue.filter((_, at) => at !== index + inFlight(run)) }));
+}
+
+export function steerRunning(threadId: string, content: string) {
+  const block: Block = { kind: "notice", text: content, plain: true, steer: true };
+  write(threadId, (run) => ({ blocks: [...run.blocks, block] }));
+  return window.emma.steerAgent({ threadId, text: content }).catch((reason: unknown) => {
+    write(threadId, (run) => ({ blocks: run.blocks.filter((item) => item !== block) }));
+    throw reason;
+  });
+}
+
+export function steerQueued(threadId: string, index: number) {
+  const run = read(threadId);
+  const at = index + inFlight(run);
+  const turn = run.queue[at];
+  if (!turn || !canSteer(turn)) return;
+  write(threadId, { queue: run.queue.filter((_, item) => item !== at) });
+  void steerRunning(threadId, turn.content).catch((reason: unknown) => {
+    write(threadId, (current) => ({ queue: [...current.queue.slice(0, inFlight(current)), turn, ...current.queue.slice(inFlight(current))] }));
+    dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text: reasonText(reason) } }));
+    interruptQueued(threadId, 0);
+  });
 }
 
 export function interruptQueued(threadId: string, index: number) {

@@ -1,14 +1,13 @@
-import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type RefObject } from "react";
-import type { AgentImportSource, CredentialSummary, HeldAttachment, ImportedMcpServer, ImportedSkill, ToolTarget, Message, ModelModality, OpenRouterCatalog, OverlaySurface, ScheduledJob, Snapshot, Thread } from "./types";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type RefObject } from "react";
+import { isCurrentThreadLoad, threadMessageCount, type AgentImportSource, type CompactSnapshot, type CredentialSummary, type HeldAttachment, type ImportedMcpServer, type ImportedSkill, type ToolTarget, type Message, type ModelModality, type OpenRouterCatalog, type OverlaySurface, type ScheduledJob, type Snapshot, type Thread } from "./types";
 import { describeRun, describeTrigger, parseVariables, parseWorkflow, runWorkflow, triggerProblem } from "../shared/workflow";
-import { PluginsView } from "./plugins";
 import { PromptField, TriggerPicker, useTaskCommands, WorkflowGraph } from "./schedule";
 import { plural } from "./plural";
 import { ColorPicker } from "./color-picker";
 import { zoned } from "./dates";
 import { nested, newest, spawnedAgents, spawnedByTurn, threadAt, threadDepth, threadLabel, type Spawned } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keyboardAccelerator, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, saveShortcut, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
-import { THINKING_LABELS, ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, tagName, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_KEYS_URL, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultHarnessExperiments, defaultSettings, forgetProvider, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, MODEL_PLANS, modelPlanRoute, planForModel, planForProfile, planModelId, planProfileFor, providerChatUrl, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ModelPlan, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
+import { ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, tagName, thinkingLabel, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_KEYS_URL, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, type HarnessExperiments, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultHarnessExperiments, defaultSettings, forgetProvider, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, MODEL_PLANS, CODEX_PREFIX, availableCodexModelKey, codexModelKey, codexSlug, planFor, modelPlanRoute, planForModel, planForProfile, planModelId, planProfileFor, providerChatUrl, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ModelPlan, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
 import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { defaultPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, WIDE_BROWSER_WIDTH, type PaneLayout } from "./layout";
@@ -16,7 +15,7 @@ import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor,
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, interruptQueued, pairBlocks, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
+import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, settleRun, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, steerQueued, steerRunning, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { showsUpdate } from "../shared/update";
 import { brandForImporter, brandForModel, brandForProvider, obsidianBrand, providerBrands, type BrandDefinition } from "./brands";
@@ -62,7 +61,7 @@ import { CLEANUP_INSTALL, HOLD_TO_TALK_MS, LLAMA_INSTALL, LLAMA_SITE_URL, SPEECH
 import { useDictation, useSpaceHold } from "./voice";
 import { reasonText } from "./errors";
 import { ModelPlans } from "./model-plans";
-import { isWorkspaceWindow, takeBootSnapshot } from "./boot";
+import { isWorkspaceWindow, takeBootSnapshot, whenProvidersReady } from "./boot";
 import { GoalCard, GoalThreads, GoalView } from "./goal";
 import { GOAL_LABELS, markedGoal, usageLimitedFailure } from "../shared/goal";
 
@@ -78,6 +77,7 @@ const ALT_LABEL = IS_WINDOWS ? "Alt" : "⌥";
 const OVERLAY_LABEL = IS_WINDOWS ? "Quick Ask" : "island";
 const validateSettings = (value: unknown) => validateSettingsForPlatform(value, RUNTIME_PLATFORM);
 const AgentView = lazy(() => import("./AgentView"));
+const PluginsView = lazy(() => import("./plugins").then(({ PluginsView }) => ({ default: PluginsView })));
 const ResearchView = lazy(() => import("./research"));
 const dateFormat = zoned({ month: "short", day: "numeric", year: "numeric" });
 const timeFormat = zoned({ hour: "numeric", minute: "2-digit" });
@@ -239,7 +239,9 @@ function Blocks({ blocks }: { blocks: Block[] }) {
     : block.kind === "visual"
       ? <Visual key={index} id={block.id} onKept={openArtifactsPage} onPicked={pickIntoComposer} />
       : block.kind === "notice"
-        ? <ContextNotice key={index} text={block.text} plain={block.plain} />
+        ? block.steer
+          ? <Steered key={index} text={block.text} />
+          : <ContextNotice key={index} text={block.text} plain={block.plain} />
         : <Body key={index} content={block.text} />)}</>;
 }
 
@@ -247,6 +249,10 @@ const NOTICE_KEY = /([+\u2212-]?\d[\d.,:]*\s?[%kM]?)/g;
 
 function keyed(text: string) {
   return text.split(NOTICE_KEY).map((part, index) => index % 2 ? <b key={index}>{part}</b> : part);
+}
+
+function Steered({ text }: { text: string }) {
+  return <p className="steered"><span>{"\u2933"} Steered</span>{text}</p>;
 }
 
 function ContextNotice({ text, plain }: { text: string; plain?: boolean }) {
@@ -638,6 +644,8 @@ function ScreenAnnotation() {
 function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   const [snapshot, setSnapshot] = useState(empty);
   const [error, setError] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [revision, setRevision] = useState(0);
   const booted = useRef(takeBootSnapshot());
   const skipped = useRef(false);
   const latest = useRef(0);
@@ -646,13 +654,20 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
     try {
       const inFlight = booted.current;
       booted.current = undefined;
-      const next = await (inFlight ?? window.emma.request<Snapshot>("snapshot"));
+      const compact = await (inFlight ?? window.emma.request<CompactSnapshot>("threadSummaries"));
       if (ticket !== latest.current) return;
+      const next: Snapshot = {
+        ...compact,
+        threads: compact.threads.map(({ messages, ...thread }) => ({ ...thread, messages: [], messageCount: messages })),
+      };
       setSnapshot(next);
+      setRevision((current) => current + 1);
       onLoad?.(next);
+      setLoaded(true);
       setError("");
     } catch (reason) {
       if (ticket !== latest.current) return;
+      setLoaded(true);
       setError(reasonText(reason));
     }
   }, [onLoad]);
@@ -664,15 +679,15 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
     const shown = () => { if (document.visibilityState === "visible" && skipped.current) refresh(); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", shown);
-    const interval = window.setInterval(refreshVisible, SNAPSHOT_REFRESH_MS);
+    const timer = setInterval(refreshVisible, SNAPSHOT_REFRESH_MS);
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", shown);
+      clearInterval(timer);
       window.emma.offChanged(listener);
     };
   }, [load]);
-  return { snapshot, load, error, setError };
+  return { snapshot, load, error, setError, revision, loading: !loaded };
 }
 
 function Workspace() {
@@ -681,7 +696,7 @@ function Workspace() {
     const live = next.threads.filter((item) => !item.archivedAt && item.kind !== "subagent");
     setThreadId((current) => live.some((item) => item.id === current) ? current : (live[0]?.id ?? ""));
   }, []);
-  const { snapshot, load, error, setError } = useSnapshot(pinSelections);
+  const { snapshot, load, error, setError, revision, loading: snapshotLoading } = useSnapshot(pinSelections);
   const [view, setView] = useState<"threads" | "knowledge" | "artifacts" | "agent" | "scheduled" | "plugins" | "research" | "archive" | "settings">("threads");
   const trail = useRef({ stack: [] as { view: typeof view; threadId: string }[], at: -1, jumping: false });
   const [trailAt, setTrailAt] = useState(-1);
@@ -768,7 +783,51 @@ function Workspace() {
   const restoredModel = useRef(false);
   const liveThreads = useMemo(() => snapshot.threads.filter((item) => !item.archivedAt && item.kind !== "subagent"), [snapshot.threads]);
   const archivedThreads = useMemo(() => snapshot.threads.filter((item) => item.archivedAt && item.kind !== "subagent"), [snapshot.threads]);
-  const thread = liveThreads.find((item) => item.id === threadId) ?? snapshot.threads.find((item) => item.id === threadId) ?? liveThreads[0];
+  const selectedSummary = liveThreads.find((item) => item.id === threadId) ?? snapshot.threads.find((item) => item.id === threadId) ?? liveThreads[0];
+  const selectedId = selectedSummary?.id ?? "";
+  const selectedIdRef = useRef(selectedId);
+  const loadedFor = useRef("");
+  const loadSequence = useRef(0);
+  const parentRequest = useRef("");
+  const subthreadRequest = useRef("");
+  const [loadedThread, setLoadedThread] = useState<Thread>();
+  const [loadedSubthread, setLoadedSubthread] = useState<Thread>();
+  const [threadLoadError, setThreadLoadError] = useState<{ id: string; text: string }>();
+  useLayoutEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
+  const loadThread = useCallback(async (id: string) => {
+    const parentId = selectedId;
+    const requestId = `${id}:${++loadSequence.current}`;
+    if (id === parentId) parentRequest.current = requestId;
+    else subthreadRequest.current = requestId;
+    setThreadLoadError((current) => current?.id === id ? undefined : current);
+    try {
+      const next = await window.emma.request<Thread>("thread", { threadId: id });
+      const currentRequest = id === parentId ? parentRequest.current : subthreadRequest.current;
+      if (!isCurrentThreadLoad(parentId, selectedIdRef.current, requestId, currentRequest)) return;
+      if (id === parentId) setLoadedThread(next);
+      else setLoadedSubthread(next);
+    } catch (reason) {
+      const currentRequest = id === parentId ? parentRequest.current : subthreadRequest.current;
+      if (selectedIdRef.current === parentId && currentRequest === requestId) {
+        const text = reasonText(reason);
+        setThreadLoadError({ id, text });
+      }
+    }
+  }, [selectedId]);
+  useEffect(() => {
+    if (loadedFor.current !== selectedId) {
+      loadedFor.current = selectedId;
+      parentRequest.current = "";
+      subthreadRequest.current = "";
+    }
+    if (!selectedId) {
+      return;
+    }
+    let active = true;
+    queueMicrotask(() => { if (active) void loadThread(selectedId); });
+    return () => { active = false; };
+  }, [loadThread, revision, selectedId, selectedSummary?.messageCount, selectedSummary?.title, selectedSummary?.updatedAt]);
+  const thread = loadedThread?.id === selectedId ? loadedThread : undefined;
   const uiBusy = busy || interactionLocked;
   const threadStatus = useMemo(() => {
     const rank: Record<string, number> = { running: 1, waiting: 2, failed: 3 };
@@ -1020,7 +1079,8 @@ function Workspace() {
 
   const saveBenchCase = async (id: string) => {
     setThreadMenu(null);
-    const item = liveThreads.find((entry) => entry.id === id);
+    const summary = liveThreads.find((entry) => entry.id === id);
+    const item = summary ? await window.emma.request<Thread>("thread", { threadId: id }).catch(() => undefined) : undefined;
     const prompt = item?.messages.find((message) => message.role === "user")?.content.trim() ?? "";
     const folderId = threadFolders(id)[0] ?? "";
     if (!item || !prompt) { setError("The bench replays a thread's first message, and this one has none yet."); return; }
@@ -1030,7 +1090,7 @@ function Workspace() {
     if (store.cases.some((row) => row.fromThreadId === id)) { setError("That thread is already a bench case, and the bench counts each case once."); return; }
     if (store.cases.length >= MAX_BENCH_CASES) { setError(`The bench holds ${MAX_BENCH_CASES} cases — remove one on the Agent page first.`); return; }
     saveBench({ ...store, cases: [...store.cases, { id: `case-${Date.now().toString(36)}`, title: item.title, prompt: prompt.slice(0, MAX_BENCH_PROMPT_CHARS), folderId, fromThreadId: id, createdAt: Date.now() }] });
-    setError(`Saved as bench case ${store.cases.length + 1} of ${MAX_BENCH_CASES} · ${threadLabel(item)}`);
+    setError(`Saved as bench case ${store.cases.length + 1} of ${MAX_BENCH_CASES} · ${threadLabel(summary ?? item)}`);
   };
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
@@ -1123,7 +1183,7 @@ function Workspace() {
       </aside>
       </Region>
       <main id="content" className="content">
-        {view === "threads" ? <ThreadView key={thread?.id} thread={thread} snapshot={snapshot} notes={notes} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={(seed?: string) => { setError(""); void createThread(undefined, seed); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={threadModelKey} modelLabel={threadModelLabel} modelTag={threadModelTag} modelBrand={threadModelBrand} thinkingLevel={settings.thinkingLevel} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} onContextPages={(contextPages) => setSettings(persistSettings({ ...settings, contextPages }))} layout={layout} pane={pane} showBrowser={showBrowser} /> : view === "knowledge" ? <NotesView notes={notes} busy={uiBusy} reload={reloadNotes} hues={settings.folderHues} setHues={(folderHues) => setSettings(persistSettings({ ...settings, folderHues }))} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} projectName={projectName} mode={settings.defaultPermissionMode} model={settings.selectedModel} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <PluginsView busy={uiBusy} tools={settings.tools} onTools={saveToolSettings} /> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} onAttach={attachComponent} />}
+        {view === "threads" ? thread ? <ThreadView key={thread.id} thread={thread} loadedSubthread={loadedSubthread} loadThread={loadThread} threadLoadError={threadLoadError} clearThreadLoadError={() => setThreadLoadError(undefined)} snapshot={snapshot} notes={notes} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={(seed?: string) => { setError(""); void createThread(undefined, seed); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={threadModelKey} modelLabel={threadModelLabel} modelTag={threadModelTag} modelBrand={threadModelBrand} thinkingLevel={settings.thinkingLevel} defaultMode={settings.defaultPermissionMode} contextTokens={contextTokens} contextPages={settings.contextPages} onContextPages={(contextPages) => setSettings(persistSettings({ ...settings, contextPages }))} layout={layout} pane={pane} showBrowser={showBrowser} /> : <ThreadLoading loading={snapshotLoading || !!selectedSummary} error={threadLoadError?.id === selectedId ? threadLoadError.text : ""} busy={uiBusy} retry={() => { setError(""); setThreadLoadError(undefined); void loadThread(selectedId); }} newThread={() => { setError(""); void createThread(); }} /> : view === "knowledge" ? <NotesView notes={notes} busy={uiBusy} reload={reloadNotes} hues={settings.folderHues} setHues={(folderHues) => setSettings(persistSettings({ ...settings, folderHues }))} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} projectName={projectName} mode={settings.defaultPermissionMode} model={settings.selectedModel} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <Suspense fallback={<AgentLoading copy="Loading plugins…" />}><PluginsView busy={uiBusy} tools={settings.tools} onTools={saveToolSettings} /></Suspense> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} onAttach={attachComponent} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
       {threadMenu && menuThread && <div className="thread-menu-scrim" onClick={(event) => { if (event.target === event.currentTarget) setThreadMenu(null); }} onContextMenu={(event) => { event.preventDefault(); if (event.target === event.currentTarget) setThreadMenu(null); }}>
@@ -1269,6 +1329,14 @@ function AgentLoading({ copy = "Reading what Emma's own runs recorded…" }: { c
   return <div className="content-empty" role="status" aria-live="polite"><Mark /><p>{copy}</p></div>;
 }
 
+function ThreadLoading({ loading, error, busy, retry, newThread }: { loading: boolean; error: string; busy: boolean; retry: () => void; newThread: () => void }) {
+  return <div className="content-empty"><Mark /><h2>{error ? "Couldn’t load thread" : loading ? "Loading thread" : "Start a thread"}</h2><p>{error ? "Emma could not read that transcript." : loading ? "Reading its transcript…" : "Threads keep their transcript, folder and context between launches."}</p>{error ? <button type="button" disabled={busy} onClick={retry}>Retry</button> : !loading && <button type="button" disabled={busy} onClick={newThread}>New thread</button>}</div>;
+}
+
+function AgentTranscriptLoading({ error, busy, retry }: { error: string; busy: boolean; retry: () => void }) {
+  return <div className="content-empty" role="status" aria-live="polite"><Mark /><p>{error ? "Emma could not read that agent transcript." : "Loading agent transcript…"}</p>{error && <button type="button" disabled={busy} onClick={retry}>Retry</button>}</div>;
+}
+
 const NODE_PLACEHOLDER = '[\n  {"id": "process", "kind": "script", "text": "/Users/me/project/analyze.py", "input": "{{source}}", "saveAs": "analysis"},\n  {"id": "explain", "kind": "agent", "text": "Analyze this script output:\\n{{analysis}}"}\n]';
 
 const NODE_GLYPHS = { agent: "◆", script: "▶", set: "◇", if: "◈" } as const;
@@ -1279,18 +1347,19 @@ function variableRows(outputs: string) {
 
 function TaskModelPicker({ model, onChange, busy, label = "The model this task runs on", inherit = "Whichever model Emma is set to" }: { model: string; onChange: (model: string, settings: UserSettings) => void; busy: boolean; label?: string; inherit?: string }) {
   const settings = readSettings();
-  const [catalog, setCatalog] = useState<OpenRouterCatalog["models"]>([]);
+  const [catalog, setCatalog] = useState<OpenRouterCatalog>();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
   const box = useRef<HTMLDivElement>(null);
-  useEffect(() => { void window.emma.request<OpenRouterCatalog>("listOpenRouterModels").then((loaded) => setCatalog(loaded.models)).catch(() => undefined); }, []);
+  const codexSlugs = useCodexSlugs(catalog?.routes);
+  useEffect(() => { void window.emma.request<OpenRouterCatalog>("listOpenRouterModels").then(setCatalog).catch(() => undefined); }, []);
   useEffect(() => {
     if (!open) return;
     const away = (event: Event) => { if (!box.current?.contains(event.target as Node)) setOpen(false); };
     document.addEventListener("pointerdown", away);
     return () => document.removeEventListener("pointerdown", away);
   }, [open]);
-  const entries = useMemo(() => modelEntries(settings.providers, catalog), [catalog, settings.providers]);
+  const entries = useMemo(() => modelEntries(settings.providers, catalog?.models ?? [], codexSlugs, catalog?.routes, model), [catalog, codexSlugs, model, settings.providers]);
   const pick = async (key: string, plan?: ModelPlan) => {
     setError("");
     try {
@@ -1401,7 +1470,7 @@ function TaskEditor({ job, runs, act, busy, openThread, onSaved, onDeleted, comm
     {dryRun && <pre className="task-dry-run">{dryRun}</pre>}
     {job && <section className="task-runs">
       <header><h4>Runs</h4><small>{runs.length} {plural(runs.length, "thread")}</small></header>
-      {runs.slice(0, 8).map((item) => <button key={item.id} type="button" disabled={busy} onClick={() => openThread(item.id)}>{date(item.createdAt)} · {time(item.createdAt)}<small>{item.messages.length} {plural(item.messages.length, "message")}</small></button>)}
+      {runs.slice(0, 8).map((item) => <button key={item.id} type="button" disabled={busy} onClick={() => openThread(item.id)}>{date(item.createdAt)} · {time(item.createdAt)}<small>{threadMessageCount(item)} {plural(threadMessageCount(item), "message")}</small></button>)}
       {!runs.length && <p>Nothing has run yet.</p>}
       {variableRows(job.outputs).length > 0 && <dl>{variableRows(job.outputs).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl>}
     </section>}
@@ -1475,7 +1544,7 @@ function ScheduledView({ snapshot, act, busy, openThread }: { snapshot: Snapshot
 const ARCHIVE_RETENTION_DAYS = 30;
 
 function ArchiveView({ threads, busy, restore }: { threads: Thread[]; busy: boolean; restore: (id: string) => void }) {
-  return <section className="scheduled-view"><header><span>Archive · auto-discard</span><h2>Archived threads</h2><p>Right-click any thread in the sidebar to archive it. Archived threads are deleted permanently {ARCHIVE_RETENTION_DAYS} days after they are archived.</p></header>{!threads.length && <div className="content-empty"><Mark /><h2>Nothing archived</h2><p>Archived threads appear here until they are discarded.</p></div>}<div className="job-list">{threads.map((item) => <article key={item.id}><header><div><span className="job-state">Archived</span><h3>{threadLabel(item)}</h3></div><button type="button" disabled={busy} onClick={() => restore(item.id)}>Restore</button></header><dl><div><dt>Archived</dt><dd>{date(item.archivedAt ?? "")} · {time(item.archivedAt ?? "")}</dd></div><div><dt>Messages</dt><dd>{item.messages.length} {plural(item.messages.length, "message")}</dd></div></dl></article>)}</div></section>;
+  return <section className="scheduled-view"><header><span>Archive · auto-discard</span><h2>Archived threads</h2><p>Right-click any thread in the sidebar to archive it. Archived threads are deleted permanently {ARCHIVE_RETENTION_DAYS} days after they are archived.</p></header>{!threads.length && <div className="content-empty"><Mark /><h2>Nothing archived</h2><p>Archived threads appear here until they are discarded.</p></div>}<div className="job-list">{threads.map((item) => <article key={item.id}><header><div><span className="job-state">Archived</span><h3>{threadLabel(item)}</h3></div><button type="button" disabled={busy} onClick={() => restore(item.id)}>Restore</button></header><dl><div><dt>Archived</dt><dd>{date(item.archivedAt ?? "")} · {time(item.archivedAt ?? "")}</dd></div><div><dt>Messages</dt><dd>{threadMessageCount(item)} {plural(threadMessageCount(item), "message")}</dd></div></dl></article>)}</div></section>;
 }
 
 function useVault() {
@@ -1889,10 +1958,10 @@ function SelectionQuote({ scroller, onQuote, onThread }: { scroller: RefObject<H
   </div>;
 }
 
-function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, thinkingLevel, defaultMode, contextTokens, contextPages, onContextPages, layout, pane, showBrowser }: { thread?: Thread; snapshot: Snapshot; notes: KeptNote[]; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: (seed?: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; thinkingLevel: ThinkingLevel; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[]; onContextPages: (pages: ContextPage[]) => void } & PaneProps) {
-  const [message, setMessage] = useState(() => takeComposerSeed(thread?.id ?? "") || threadDraft(thread?.id ?? "").text);
-  useEffect(() => { if (composerSeed.threadId === thread?.id) composerSeed = { threadId: "", text: "" }; }, [thread?.id]);
-  const [mode, setMode] = useState<PermissionMode>(() => threadMode(thread?.id ?? "", defaultMode));
+function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clearThreadLoadError, snapshot, notes, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, thinkingLevel, defaultMode, contextTokens, contextPages, onContextPages, layout, pane, showBrowser }: { thread: Thread; loadedSubthread?: Thread; loadThread: (id: string) => Promise<void>; threadLoadError?: { id: string; text: string }; clearThreadLoadError: () => void; snapshot: Snapshot; notes: KeptNote[]; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: (seed?: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; thinkingLevel: ThinkingLevel; defaultMode: PermissionMode; contextTokens: number; contextPages: ContextPage[]; onContextPages: (pages: ContextPage[]) => void } & PaneProps) {
+  const [message, setMessage] = useState(() => takeComposerSeed(thread.id) || threadDraft(thread.id).text);
+  useEffect(() => { if (composerSeed.threadId === thread.id) composerSeed = { threadId: "", text: "" }; }, [thread.id]);
+  const [mode, setMode] = useState<PermissionMode>(() => threadMode(thread.id, defaultMode));
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
@@ -2043,17 +2112,28 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   const subagents = useMemo(() => agents.filter((agent) => agent.parentThreadId === threadId), [agents, threadId]);
   const spawned = useMemo(
     () => spawnedByTurn(thread?.messages ?? [], spawnedAgents(snapshot.threads, agents, threadId ?? "")),
-    [agents, snapshot.threads, thread?.messages, threadId],
+    [agents, snapshot.threads, thread.messages, threadId],
   );
   const subthreads = useMemo(
     () => snapshot.threads.filter((item) => item.parentThreadId === threadId && !item.archivedAt && item.kind !== "subagent"),
     [snapshot.threads, threadId],
   );
-  const inspected = useMemo(
-    () => snapshot.threads.find((item) => item.id === tab && item.kind === "subagent") ?? thread,
-    [snapshot.threads, tab, thread],
+  const subagentSummary = useMemo(
+    () => snapshot.threads.find((item) => item.id === tab && item.kind === "subagent"),
+    [snapshot.threads, tab],
   );
-  const inspectedId = inspected?.id ?? "";
+  const activeSubagent = agents.some((agent) => agent.threadId === tab) ? tab : "";
+  const subagentId = subagentSummary?.id ?? activeSubagent;
+  const subagentRevision = `${subagentSummary?.updatedAt ?? ""}:${subagentSummary ? threadMessageCount(subagentSummary) : 0}`;
+  useEffect(() => {
+    if (!subagentId) return;
+    void loadThread(subagentId);
+  }, [loadThread, subagentId, subagentRevision]);
+  const inspected = useMemo(
+    () => subagentId ? loadedSubthread?.id === subagentId ? loadedSubthread : undefined : thread,
+    [loadedSubthread, subagentId, thread],
+  );
+  const inspectedId = inspected?.id ?? subagentId;
   const inFlight = useMemo(
     () => agents
       .filter((agent) => agent.threadId === inspectedId || agent.parentThreadId === inspectedId)
@@ -2113,7 +2193,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     addEventListener(OPEN_GOAL_EVENT, open);
     return () => removeEventListener(OPEN_GOAL_EVENT, open);
   }, [threadId, setTab]);
-  const cached = useMemo(() => cachedBlocks(thread?.id ?? ""), [thread?.id]);
+  const cached = useMemo(() => { void run.landed; return cachedBlocks(thread.id); }, [thread.id, run.landed]);
   const [traced, setTraced] = useState<{ threadId: string; traces: { timestamp: string; text: string }[] }>({ threadId: "", traces: [] });
   useEffect(() => {
     if (!threadId) return;
@@ -2125,19 +2205,20 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
   }, [threadId, thread?.messages.length]);
   const recorded = useMemo(
     () => tracedBlocks(traced.threadId, traced.threadId === threadId ? thread?.messages ?? [] : [], traced.traces),
-    [threadId, thread?.messages, traced],
+    [threadId, thread.messages, traced],
   );
   useEffect(() => {
     if (!thread) return;
     const paired = pairBlocks(thread.messages, run.landed, {});
-    rememberBlocks(thread.id, Object.fromEntries(thread.messages.flatMap((item, index) =>
-      paired[index] && wrote(item.content, paired[index]!) ? [[item.timestamp, paired[index]!]] : [])));
+    const turns = Object.fromEntries(thread.messages.flatMap((item, index) =>
+      paired[index] && wrote(item.content, paired[index]!) ? [[item.timestamp, paired[index]!]] : []));
+    rememberBlocks(thread.id, turns);
+    settleRun(thread.id, thread.messages, cachedBlocks(thread.id));
   }, [thread, run.landed]);
   const attachedTurns = useMemo(() => thread ? turnAttachments(thread.id, thread.messages) : {}, [thread]);
   const ask = usePermissionAsk(threadId ?? "", agents);
-  if (!thread) return <div className="content-empty"><Mark /><h2>Start a thread</h2><p>Threads keep their transcript, folder and context between launches.</p><button type="button" disabled={busy} onClick={() => newThread()}>New thread</button></div>;
   const locked = busy || capabilityBusy;
-  const echo = run.pending && !hasPersistedPrompt(snapshot, thread.id, run.pending.after, run.pending.content) ? run.pending.content : null;
+  const echo = run.pending && !thread.messages.slice(run.pending.after).some((message) => message.role === "user" && message.content === run.pending?.content) ? run.pending.content : null;
   const echoTray = echo !== null && run.pending ? pendingAttachments(thread.id, run.pending.after, echo) : [];
   const unlanded = !sending && run.blocks.length > 0 && !arrived(thread.messages, run.blocks);
   const streaming = (sending || unlanded) && run.blocks.length ? run.blocks : null;
@@ -2218,6 +2299,16 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
         return;
       }
     }
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && sending && (message.trim() || queued.length)) {
+      event.preventDefault();
+      const steered = message.trim();
+      if (!steered) { steerNow(queued.findIndex((turn) => canSteer(turn))); return; }
+      setMessage("");
+      setHistory(-1);
+      setRunError("");
+      void steerRunning(thread.id, steered).catch((reason: unknown) => { setMessage(steered); setRunError(reasonText(reason)); });
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
   };
   const send = (event?: FormEvent, text?: string) => {
@@ -2240,6 +2331,7 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
       content,
       after,
       params: {},
+      attached: picks.length > 0 || !!attachedSkill,
       prepare: folderIds.length || picks.length || attachedSkill ? async () => {
         const attached = folderIds.length || picks.length ? await buildAttachedContext(folders, folderIds, picks, folderFiles) : { text: "", uses: [], images: [] };
         return {
@@ -2268,17 +2360,17 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
     stopTurn(thread.id, undefined, reload);
     if (message.trim()) void send();
   };
-  const steerQueued = (index: number) => {
+  const steerNow = (index: number) => {
     const turn = queued[index];
-    if (!turn || !canSteer(turn)) return;
-    const text = turn.content.trim();
-    if (!text) return;
+    if (!turn || !canSteer(turn) || !turn.content.trim()) return;
     setRunError("");
-    interruptQueued(thread.id, index);
+    steerQueued(thread.id, index);
   };
   const openAgent = subagents.find((agent) => agent.threadId === tab);
-  const agentThread = openAgent && snapshot.threads.find((item) => item.id === openAgent.threadId);
-  const pastAgent = !openAgent ? snapshot.threads.find((item) => item.id === tab && item.kind === "subagent") : undefined;
+  const agentThread = openAgent && loadedSubthread?.id === openAgent.threadId ? loadedSubthread : undefined;
+  const pastAgent = !openAgent && loadedSubthread?.id === tab ? loadedSubthread : undefined;
+  const subagentLoading = !!subagentId && loadedSubthread?.id !== subagentId;
+  const subagentError = threadLoadError?.id === subagentId ? threadLoadError.text : "";
   const threadClis = cliRuns.filter((run) => run.threadId === thread.id);
   const openCli = threadClis.find((run) => run.id === tab);
   const parentThread = thread.parentThreadId ? snapshot.threads.find((item) => item.id === thread.parentThreadId) : undefined;
@@ -2340,7 +2432,8 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
         onLink={({ url }) => { showBrowser(true); void window.emma.browserOpen({ threadId: thread.id, url }).catch(() => undefined); }} />,
     })),
   ];
-  const panel = openCli ? <CliPanel run={openCli} busy={locked} onFloat={() => { setFloated((current) => [...current, openCli.id]); setTab("thread"); }} />
+  const panel = subagentLoading ? <AgentTranscriptLoading error={subagentError} busy={locked} retry={() => { clearThreadLoadError(); void loadThread(subagentId); }} />
+    : openCli ? <CliPanel run={openCli} busy={locked} onFloat={() => { setFloated((current) => [...current, openCli.id]); setTab("thread"); }} />
     : tab === "goal" ? <GoalView thread={thread} busy={locked} reload={reload} onOpenThread={openThreadPage} />
     : tab === "changes" ? <ChangesPanel changes={changes} busy={locked} onReverted={reloadChanges} />
     : tab === "git" && gitOpen && folderIds[0] ? (git ? <GitPage snapshot={git} folderId={folderIds[0]} brand={modelBrand} /> : <GitSetup ready={gitState.ready} folderId={folderIds[0]} />)
@@ -2422,12 +2515,12 @@ function ThreadView({ thread, snapshot, notes, busy, act, reload, agents, tab, s
       </div>
       <ProjectBar folders={folders} ids={folderIds} setFolders={setFolders} setIds={setFolderIds} git={git} name={worktreeName(thread.id)} busy={locked} />
       {sending && confirmStop && <div className="queued-stack" role="status"><div className="queued-row"><span>Press Esc again to stop Emma</span><button type="button" onClick={() => setConfirmStop(false)} aria-label="Keep going">×</button></div></div>}
-      {queued.length > 0 && <div className="queued-stack" aria-label="Queued messages">{queued.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Queued · {turn.content}</span><button type="button" className="steering" disabled={!canSteer(turn)} onClick={() => steerQueued(index)} aria-label="Interrupt and steer with this message now" title={!canSteer(turn) ? "Attachments cannot be steered — this one waits for the turn to end" : "Interrupt — stop the current turn and send this message right away"}>steer</button><button type="button" onClick={() => dropQueued(thread.id, index)} aria-label="Drop this queued message">×</button></div>)}</div>}
+      {queued.length > 0 && <div className="queued-stack" aria-label="Queued messages">{queued.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Queued · {turn.content}</span><button type="button" className="steering" disabled={!canSteer(turn)} onClick={() => steerNow(index)} aria-label="Steer the running turn with this message now" title={!canSteer(turn) ? "Attachments cannot be steered — this one waits for the turn to end" : "Steer — cut into what Emma is doing now and hand it this message"}>steer</button><button type="button" onClick={() => dropQueued(thread.id, index)} aria-label="Drop this queued message">×</button></div>)}</div>}
       {run.held.length > 0 && <div className="queued-stack held-stack" aria-label="Held messages">{run.held.map((turn, index) => <div className="queued-row" key={`${index}-${turn.content}`}><span>Held · {turn.content}</span><button type="button" onClick={() => releaseHeld(thread.id, index, reload)} aria-label="Send this held message">↑</button><button type="button" onClick={() => dropHeld(thread.id, index)} aria-label="Drop this held message">×</button></div>)}</div>}
       <DropVeil onFiles={attachDropped} />
       {ask && <PermissionPrompt ask={ask} agents={agents} />}
       <form className={`composer ${ask ? "asking" : ""}`} onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label>{run.draft && <div className="composer-attachment queued-turn"><span>Not sent · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}
-        <PickTray picks={picks} folders={folders} locked={locked} drop={dropPick} /><div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={65_536} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, steer on a queued line interrupts and sends it now, Esc Esc stops…" : "Ask Emma to continue…"} rows={2} /></div>{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, saved notes and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} /></div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}${modelTag ? ` · ${modelTag}` : ""}${thinkingLevel ? ` · thinking ${THINKING_LABELS[thinkingLevel]}` : ""}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span>{modelTag && <em className={`model-route ${modelTag === "Local" ? "local" : "remote"}`}>{modelTag}</em>}<ThinkingTag level={thinkingLevel} /><span aria-hidden="true">▾</span></button>{sending
+        <PickTray picks={picks} folders={folders} locked={locked} drop={dropPick} /><div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={65_536} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, ⌘Enter steers (empty: oldest queued first), Esc Esc stops…" : "Ask Emma to continue…"} rows={2} /></div>{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, saved notes and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} /></div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}${modelTag ? ` · ${modelTag}` : ""}${thinkingLevel ? ` · thinking ${thinkingLabel(thinkingLevel)}` : ""}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span>{modelTag && <em className={`model-route ${modelTag === "Local" ? "local" : "remote"}`}>{modelTag}</em>}<ThinkingTag level={thinkingLevel} /><span aria-hidden="true">▾</span></button>{sending
           ? (message.trim()
             ? <button className="composer-send" disabled={locked} aria-label="Queue message" title="Queue — sent when this turn ends. Steer it from the queue to interrupt and send it now">↑</button>
             : <button type="button" className="composer-send stopping" onClick={interrupt} aria-label="Stop this turn" title="Stop this turn — Esc Esc">■</button>)
@@ -2568,6 +2661,7 @@ function modelKeyLabel(settings: UserSettings, key: string): string {
   if (routerIdFor(key)) return routerFor(settings, key)?.name ?? "Router";
   if (key === "fallback") return "No model chosen";
   if (key.startsWith("openrouter:")) return key.slice("openrouter:".length).split("/").at(-1) ?? "OpenRouter";
+  if (key.startsWith(CODEX_PREFIX)) return codexSlug(key);
   if (key.startsWith("provider:")) {
     const profile = settings.providers.find((item) => item.id === key.slice("provider:".length));
     return profile ? planForProfile(profile) ? profile.modelId : profile.name : "Provider";
@@ -2578,6 +2672,7 @@ function modelKeyLabel(settings: UserSettings, key: string): string {
 function modelKeyBrand(settings: UserSettings, key: string): BrandDefinition | undefined {
   if (routerIdFor(key)) return routerBrand;
   if (key.startsWith("openrouter:")) return brandForModel(key.slice("openrouter:".length), "openrouter");
+  if (key.startsWith(CODEX_PREFIX)) return brandForProvider("openai");
   if (key.startsWith("provider:")) {
     const profile = settings.providers.find((item) => item.id === key.slice("provider:".length));
     const plan = profile && planForProfile(profile);
@@ -2591,6 +2686,7 @@ function modelKeyRoute(settings: UserSettings, key: string): string {
   if (router) return `${router.models.length} ${plural(router.models.length, "model")} · via OpenRouter`;
   if (key === "fallback") return "No model sent · the agent’s own free route";
   if (key.startsWith("openrouter:")) return `${modelKeyBrand(settings, key)?.label ?? "Community"} · via OpenRouter`;
+  if (key.startsWith(CODEX_PREFIX)) return "OpenAI · ChatGPT subscription";
   if (key.startsWith("provider:")) {
     const profile = settings.providers.find((item) => item.id === key.slice("provider:".length));
     const plan = profile && planForProfile(profile);
@@ -2599,7 +2695,7 @@ function modelKeyRoute(settings: UserSettings, key: string): string {
   return "Unknown route";
 }
 
-const modelKeyTag = (key: string) => key.startsWith("provider:") ? "Direct" : routerIdFor(key) ? "Router" : key === "fallback" || isFreeModel(key) ? "Free" : "";
+const modelKeyTag = (key: string) => key.startsWith(CODEX_PREFIX) ? "Plan" : key.startsWith("provider:") ? "Direct" : routerIdFor(key) ? "Router" : key === "fallback" || isFreeModel(key) ? "Free" : "";
 
 const selectedModelLabel = (settings: UserSettings) => modelKeyLabel(settings, settings.selectedModel);
 
@@ -2613,18 +2709,22 @@ function useSelectedModel(settings: UserSettings, selectedModel: string): { cont
     : "";
   const [windows, setWindows] = useState<Record<string, number>>({});
   useEffect(() => {
-    if (!modelId) return;
+    if (!selectedModel) return;
     let live = true;
-    void window.emma.request<OpenRouterCatalog>("listOpenRouterModels")
-      .then((catalog) => { if (live) setWindows((current) => ({ ...current, [modelId]: catalog.models.find((model) => model.id === modelId)?.contextLength ?? 0 })); })
+    void whenProvidersReady()
+      .then(() => window.emma.request<OpenRouterCatalog>("listOpenRouterModels"))
+      .then((catalog) => {
+        const context = catalog.routes?.[selectedModel]?.contextWindow ?? catalog.models.find((model) => model.id === modelId)?.contextLength ?? 0;
+        if (live) setWindows((current) => ({ ...current, [selectedModel]: context }));
+      })
       .catch(() => undefined);
     return () => { live = false; };
-  }, [modelId]);
-  return { contextTokens: profile?.contextWindow || windows[modelId] || 0 };
+  }, [modelId, selectedModel]);
+  return { contextTokens: profile?.contextWindow || windows[selectedModel] || 0 };
 }
 
 function ThinkingTag({ level }: { level: ThinkingLevel }) {
-  return level ? <em className="model-effort" data-level={level}>{THINKING_LABELS[level]}</em> : null;
+  return level ? <em className="model-effort" data-level={level}>{thinkingLabel(level)}</em> : null;
 }
 
 function ThinkingSlider({ level, stops, setLevel, disabled }: { level: ThinkingLevel; stops: ThinkingLevel[]; setLevel: (level: ThinkingLevel) => void | Promise<void>; disabled: boolean }) {
@@ -2639,13 +2739,13 @@ function ThinkingSlider({ level, stops, setLevel, disabled }: { level: ThinkingL
     setDragged(next);
     void Promise.resolve(setLevel(next)).finally(() => setDragged((current) => current === next ? null : current));
   };
-  return <label className="thinking-slider" data-level={shown} style={style} title={`Thinking · ${THINKING_LABELS[shown]}`}>
+  return <label className="thinking-slider" data-level={shown} style={style} title={`Thinking · ${thinkingLabel(shown)}`}>
     <span className="sr-only">Thinking effort</span>
     <span className="thinking-control">
       <span className="thinking-track" aria-hidden="true"><span className="thinking-fill" />{stops.map((stop, position) => <i key={stop} data-on={position <= index ? "true" : "false"} />)}<span className="thinking-knob" /></span>
-      <input type="range" min={0} max={stops.length - 1} step={1} value={index} disabled={disabled || stops.length < 2} aria-label="Thinking effort" aria-valuetext={THINKING_LABELS[shown]} onChange={(event) => setDragged(stops[Number(event.target.value)])} onPointerUp={(event) => save(stops[Number(event.currentTarget.value)])} onKeyUp={(event) => save(stops[Number(event.currentTarget.value)])} />
+      <input type="range" min={0} max={stops.length - 1} step={1} value={index} disabled={disabled || stops.length < 2} aria-label="Thinking effort" aria-valuetext={thinkingLabel(shown)} onChange={(event) => setDragged(stops[Number(event.target.value)])} onPointerUp={(event) => save(stops[Number(event.currentTarget.value)])} onKeyUp={(event) => save(stops[Number(event.currentTarget.value)])} />
     </span>
-    <em>{stops.length < 2 && shown === "" ? "None" : THINKING_LABELS[shown]}</em>
+    <em>{stops.length < 2 && shown === "" ? "None" : thinkingLabel(shown)}</em>
   </label>;
 }
 
@@ -2656,6 +2756,8 @@ async function selectModelKey(settings: UserSettings, key: string, act: (method:
     if (await act("selectOpenRouterModel", { modelId: routerChain(ids, router.models).split(",")[0], effort: "" }) === undefined) return undefined;
   } else if (key.startsWith("openrouter:")) {
     if (await act("selectOpenRouterModel", { modelId: key.slice("openrouter:".length), effort }) === undefined) return undefined;
+  } else if (key.startsWith(CODEX_PREFIX)) {
+    if (await act("selectCodexModel", { modelId: codexSlug(key), effort }) === undefined) return undefined;
   } else if (key.startsWith("provider:")) {
     const profile = settings.providers.find((item) => item.id === key.slice("provider:".length));
     if (!profile || await act("selectProviderModel", { providerId: profile.id, effort }) === undefined) return undefined;
@@ -3100,18 +3202,47 @@ const allBrand: BrandDefinition = { id: "all", label: "All models", fallback: "�
 
 const catalogMarks = [["local", "Local models", LOCAL_DEVICE], ...providerMarks, ["other", "Other providers", "Various"]] as const;
 
-function modelEntries(providers: ProviderProfile[], models: OpenRouterCatalog["models"]): CatalogEntry[] {
+function codexEntries(models: OpenRouterCatalog["models"], slugs: readonly string[], routes: OpenRouterCatalog["routes"]): CatalogEntry[] {
+  const plan = planFor("openai");
+  if (!plan) return [];
+  const listed = new Set(models.filter((model) => planForModel(model.id)?.id === plan.id).map((model) => planModelId(plan, model.id)));
+  return slugs.filter((slug) => !listed.has(slug)).map((slug) => {
+    const key = `${CODEX_PREFIX}${slug}`;
+    const context = routes?.[key]?.contextWindow;
+    return {
+      maker: plan.brand,
+      key,
+      name: routes?.[key]?.name ?? slug,
+      detail: `${slug}${context ? ` · ${Math.round(context / 1000)}K context` : ""} · ChatGPT subscription`,
+      brand: brandForProvider(plan.brand),
+      context,
+    };
+  });
+}
+
+function modelEntries(providers: ProviderProfile[], models: OpenRouterCatalog["models"], codexSlugs: readonly string[] = [], routes?: OpenRouterCatalog["routes"], active = ""): CatalogEntry[] {
   const standalone = providers.filter((profile) => {
     const plan = planForProfile(profile);
     return !plan || !models.some((model) => planForModel(model.id)?.id === plan.id && planModelId(plan, model.id) === profile.modelId);
   });
   const entries: CatalogEntry[] = [
     { maker: "other", key: "fallback", name: "No model chosen", detail: "Emma sends no model · the agent answers on its own free OpenRouter route", free: true },
-    ...standalone.map((profile) => ({ maker: "local", key: `provider:${profile.id}`, name: profile.name, detail: `${profile.modelId} · ${profile.baseUrl}`, brand: brandForModel(profile.modelId, "local") ?? localBrand })),
+    ...standalone.map((profile) => {
+      const key = `provider:${profile.id}`;
+      const context = (routes?.[key]?.contextWindow ?? profile.contextWindow) || undefined;
+      return { maker: "local", key, name: profile.name, detail: `${profile.modelId}${context ? ` · ${Math.round(context / 1000)}K context` : ""} · ${profile.baseUrl}`, brand: brandForModel(profile.modelId, "local") ?? localBrand, context };
+    }),
     ...models.map((model) => {
       const brand = brandForModel(model.id, "openrouter");
-      return { maker: brand?.id ?? "other", key: `openrouter:${model.id}`, name: model.name, detail: `${model.id} · ${Math.round(model.contextLength / 1000)}K context`, brand, modalities: model.inputModalities, free: model.free, context: model.contextLength };
+      const key = `openrouter:${model.id}`;
+      const plan = planForModel(key);
+      const profile = plan && planProfileFor(providers, plan, planModelId(plan, key));
+      const codexKey = plan?.id === "openai" && !isFreeModel(key) ? codexModelKey(plan, key) : "";
+      const route = active === codexKey ? codexKey : profile && active === `provider:${profile.id}` ? active : key;
+      const context = routes?.[route]?.contextWindow ?? model.contextLength;
+      return { maker: brand?.id ?? "other", key, name: model.name, detail: `${model.id} · ${Math.round(context / 1000)}K context`, brand, modalities: model.inputModalities, free: model.free, context };
     }),
+    ...codexEntries(models, codexSlugs, routes),
   ];
   const order = ["local", ...providerBrands.map((brand) => brand.id), "other"];
   return entries.sort((left, right) => order.indexOf(left.maker) - order.indexOf(right.maker));
@@ -3148,24 +3279,54 @@ function modelEntryPlanProfile(entry: ModelEntry, providers: readonly ProviderPr
   return plan ? planProfileFor(providers, plan, planModelId(plan, entry.key)) : undefined;
 }
 
+const CODEX_SLUG_REFRESH_MS = 60 * 60 * 1000;
+let codexSlugsOnce: { at: number; value: Promise<string[]> } | undefined;
+
+function useCodexSlugs(routes?: OpenRouterCatalog["routes"]): string[] {
+  const routed = Object.keys(routes ?? {}).filter((key) => key.startsWith(CODEX_PREFIX)).map(codexSlug);
+  const [slugs, setSlugs] = useState<string[]>([]);
+  useEffect(() => {
+    if (routed.length) return;
+    let live = true;
+    if (!codexSlugsOnce || Date.now() - codexSlugsOnce.at >= CODEX_SLUG_REFRESH_MS) {
+      codexSlugsOnce = { at: Date.now(), value: window.emma.cliModels({ cli: "codex" }).then((found) => found.models).catch(() => []) };
+    }
+    void codexSlugsOnce.value.then((found) => { if (live) setSlugs(found); });
+    return () => { live = false; };
+  }, [routed.length]);
+  return routed.length ? routed : slugs;
+}
+
+function modelEntryCodexKey(entry: ModelEntry, slugs?: readonly string[]): string {
+  const plan = modelEntryPlan(entry);
+  if (plan?.id !== "openai" || isFreeModel(entry.key)) return "";
+  return availableCodexModelKey(plan, entry.key, slugs);
+}
+
 function modelEntryCurrent(entry: ModelEntry, active: string, providers: readonly ProviderProfile[]): boolean {
   const profile = modelEntryPlanProfile(entry, providers);
-  return active === entry.key || !!profile && `provider:${profile.id}` === active;
+  return active === entry.key || modelEntryCodexKey(entry) === active || !!profile && `provider:${profile.id}` === active;
 }
 
 function ModelProviderPicker({ entry, active, providers, busy, onPick }: { entry: ModelEntry; active: string; providers: readonly ProviderProfile[]; busy?: boolean; onPick: ModelPick }) {
+  const codexSlugs = useCodexSlugs();
   const plan = modelEntryPlan(entry);
   if (!plan || !modelEntryCurrent(entry, active, providers)) return null;
   const profile = modelEntryPlanProfile(entry, providers);
-  const direct = !!profile && `provider:${profile.id}` === active;
+  const codexKey = modelEntryCodexKey(entry, codexSlugs);
+  const chatgpt = !!codexKey && codexKey === active;
+  const direct = !chatgpt && !!profile && `provider:${profile.id}` === active;
   return <div className="model-provider-picker" role="group" aria-label={`Provider for ${entry.name}`}>
     <span>Provider</span>
-    <button type="button" aria-pressed={!direct} disabled={busy} title={`Bill ${entry.name} through OpenRouter`} onClick={() => { if (direct) onPick(entry.key); }}>
+    <button type="button" aria-pressed={!direct && !chatgpt} disabled={busy} title={`Bill ${entry.name} through OpenRouter`} onClick={() => { if (direct || chatgpt) onPick(entry.key); }}>
       <BrandIcon brand={brandForProvider("openrouter")} className="model-brand" /><span>OpenRouter</span><small>API</small>
     </button>
     <button type="button" aria-pressed={direct} disabled={busy} title={`Bill ${entry.name} through ${plan.label}`} onClick={() => { if (!direct) onPick(entry.key, plan); }}>
       <BrandIcon brand={brandForProvider(plan.brand)} className="model-brand" /><span>{plan.label}</span><small>{plan.billing === "subscription" ? "Plan" : "API"}</small>
     </button>
+    {codexKey && <button type="button" aria-pressed={chatgpt} disabled={busy} title={`Run ${entry.name} on Emma's own agent, spending your ChatGPT subscription`} onClick={() => { if (!chatgpt) onPick(codexKey); }}>
+      <BrandIcon brand={brandForProvider(plan.brand)} className="model-brand" /><span>ChatGPT</span><small>Plan</small>
+    </button>}
   </div>;
 }
 
@@ -3182,7 +3343,7 @@ function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, dra
   const plan = modelEntryPlan(entry);
   const profile = modelEntryPlanProfile(entry, providers);
   const direct = !!plan && !!profile && `provider:${profile.id}` === active;
-  const current = active === entry.key || direct;
+  const current = modelEntryCurrent(entry, active, providers);
   return <div className={`model-row ${current ? "current" : ""}`} {...drag}>
     <button type="button" className="model-row-pick" disabled={busy} aria-current={current} title={entry.detail} onClick={() => onPick(entry.key, direct ? plan : undefined)}>
       <strong><span>{entry.name}</span>{modalityMarks(entry.modalities)}{entry.free ? priceBadge(true) : null}</strong>
@@ -3287,6 +3448,7 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
 
 function ModelCatalog({ settings, onChange, act, busy }: { settings: UserSettings; onChange: (settings: UserSettings) => void | Promise<void>; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean }) {
   const [models, setModels] = useState<OpenRouterCatalog["models"]>([]);
+  const [routes, setRoutes] = useState<OpenRouterCatalog["routes"]>({});
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
@@ -3295,13 +3457,14 @@ function ModelCatalog({ settings, onChange, act, busy }: { settings: UserSetting
   const [limit, setLimit] = useState(CATALOG_PAGE);
   const [routerOpen, setRouterOpen] = useState("");
   const [names, setNames] = useState<Record<string, string>>({});
+  const codexSlugs = useCodexSlugs(routes);
   const load = useCallback((force = false) => window.emma.request<OpenRouterCatalog>("listOpenRouterModels", force ? { force: "1" } : {})
-    .then((catalog) => { setModels(catalog.models); setError(catalog.error ?? ""); setStatus(catalogStatus(catalog)); })
+    .then((catalog) => { setModels(catalog.models); setRoutes(catalog.routes ?? {}); setError(catalog.error ?? catalog.metadataError ?? ""); setStatus(catalogStatus(catalog)); })
     .catch((reason: unknown) => setError(reasonText(reason)))
     .finally(() => setLoading(false)), []);
   useEffect(() => { void load(); }, [load]);
   const reload = () => { setLoading(true); setError(""); setStatus(""); void load(true); };
-  const entries = useMemo(() => modelEntries(settings.providers, models), [settings.providers, models]);
+  const entries = useMemo(() => modelEntries(settings.providers, models, codexSlugs, routes, settings.selectedModel), [settings.providers, settings.selectedModel, models, codexSlugs, routes]);
   const needle = query.trim().toLowerCase();
   const searched = entries.filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle));
   const counts = new Map<string, number>();
@@ -3413,7 +3576,7 @@ function ModelCatalog({ settings, onChange, act, busy }: { settings: UserSetting
     {!matched.length && !loading && <p className="local-model-empty">{needle ? `Nothing matches “${query}”.` : "No models under this maker."}</p>}
     {filter === "local" && <a className="load-models catalog-setup" href="#local-models">Set up a local model</a>}
     {matched.length > limit && <button type="button" className="load-models" onClick={() => setLimit(limit + CATALOG_PAGE)}>Show {Math.min(CATALOG_PAGE, matched.length - limit)} more · {matched.length - limit} left</button>}
-    <button type="button" className="load-models" disabled={loading} onClick={reload}>{loading ? "Loading OpenRouter catalog…" : "Reload OpenRouter catalog"}</button>
+    <button type="button" className="load-models" disabled={loading} onClick={reload}>{loading ? "Loading model catalogs…" : "Reload model catalogs"}</button>
   </section>;
 }
 
@@ -4430,16 +4593,20 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
   const [catalog, setCatalog] = useState<OpenRouterCatalog>();
   const [settings, setSettings] = useState(readSettings);
   const [error, setError] = useState("");
+  const codexSlugs = useCodexSlugs(catalog?.routes);
   useEffect(() => {
     void window.emma.request<OpenRouterCatalog>("listOpenRouterModels")
       .then(setCatalog)
       .catch((reason: unknown) => setError(reasonText(reason)));
   }, []);
-  const modelFor = (key: string) => {
+  const modelFor = (key: string): { reasoningEfforts?: string[]; reasoningMandatory?: boolean } | undefined => {
+    const routed = catalog?.routes?.[key];
+    if (key.startsWith(CODEX_PREFIX)) return routed;
     if (key.startsWith("openrouter:")) return catalog?.models.find((model) => model.id === key.slice("openrouter:".length));
     const profile = key.startsWith("provider:") ? settings.providers.find((item) => item.id === key.slice("provider:".length)) : undefined;
     const plan = profile && planForProfile(profile);
-    return plan && catalog?.models.find((model) => planForModel(model.id)?.id === plan.id && planModelId(plan, model.id) === profile.modelId);
+    const listed = plan && catalog?.models.find((model) => planForModel(model.id)?.id === plan.id && planModelId(plan, model.id) === profile.modelId);
+    return routed?.reasoningEfforts ? { ...listed, reasoningEfforts: routed.reasoningEfforts } : listed;
   };
   const choose = async (key: string, plan?: ModelPlan) => {
     if (busy) return;
@@ -4488,12 +4655,12 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
   const stops = thinkingStops(modelFor(settings.selectedModel));
   const active = pinned ? pinned.key : settings.selectedModel;
   const entries = useMemo(() => {
-    const all = modelEntries(settings.providers, catalog?.models ?? []);
+    const all = modelEntries(settings.providers, catalog?.models ?? [], codexSlugs, catalog?.routes, active);
     const listed = pinned ? all.filter((entry) => entry.key.startsWith("openrouter:")) : all;
     if (!active || listed.some((entry) => modelEntryCurrent(entry, active, settings.providers))) return listed;
     const brand = modelKeyBrand(settings, active);
     return [{ maker: brand?.id ?? "other", key: active, name: modelKeyLabel(settings, active), detail: modelKeyRoute(settings, active), brand }, ...listed];
-  }, [settings, catalog, pinned, active]);
+  }, [settings, catalog, codexSlugs, pinned, active]);
   return <section className="source-popover model-menu" ref={ref} role="dialog" aria-modal="false" aria-label="Model" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") close(); }}>
     <ModelPicker label="models" entries={entries} active={active} busy={busy} providers={settings.providers} favorites={settings.favoriteModels} onStar={star} onReorder={reorder} routers={pinned ? undefined : settings.routers} onPick={(key, plan) => void choose(key, plan)}
       lead={pinned ? { key: "", name: "Same as the workspace", detail: pinned.key ? selectedModelLabel(settings) : "Active" } : undefined}>
@@ -4645,7 +4812,7 @@ function StatusPill({ status, label }: { status: "working" | "error" | "done"; l
 }
 
 function Overlay() {
-  const { load, error, setError } = useSnapshot();
+  const [error, setError] = useState("");
   const [message, setMessage] = useState(() => localStorage.getItem(OVERLAY_DRAFT_KEY) ?? "");
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(readSettings);
@@ -4782,15 +4949,13 @@ function Overlay() {
       setThread(turn);
       setTurns((list) => [...list, { role: "assistant", content: latestReply(turn), steps: liveSteps.current }]);
       if (screenContextId) { setAnnotationId(""); setThumbnail(""); setAttachedApp(""); }
-      await load();
     } catch (reason) {
       if (session.current !== mine) return;
-      const latest = await window.emma.request<Snapshot>("snapshot").catch(() => undefined);
-      if (!active || !latest || !hasPersistedPrompt(latest, active.id, previousMessageCount, content)) {
+      const latest = active ? await window.emma.request<Thread>("thread", { threadId: active.id }).catch(() => undefined) : undefined;
+      if (!active || !latest || !hasPersistedPrompt(latest, previousMessageCount, content)) {
         localStorage.setItem(OVERLAY_DRAFT_KEY, content);
         setMessage(content);
       }
-      await load();
       setError(reasonText(reason));
     } finally {
       endRun();
@@ -4821,10 +4986,9 @@ function Overlay() {
       if (session.current !== mine) return;
       setTurns((list) => [...list, { role: "assistant", content: latestReply(answered), steps: liveSteps.current }]);
       if (screenContextId) { setAnnotationId(""); setThumbnail(""); setAttachedApp(""); }
-      await load();
     } catch (reason) { if (session.current === mine) setError(reasonText(reason)); }
     finally { endRun(); if (session.current === mine) { endStream(); setBusy(false); } }
-  }, [applyMode, busy, endRun, endStream, load, screenContextId, setError, settings, startRun, startStream]);
+  }, [applyMode, busy, endRun, endStream, screenContextId, settings, startRun, startStream]);
   useSpaceHold(settings.voiceHoldMs, dictation.ready && !busy && !transcribing && !message.trim(), dictation);
   useEffect(() => { const listener = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && /^[123]$/.test(event.key)) { event.preventDefault(); void runAction(Number(event.key) - 1); } }; addEventListener("keydown", listener); return () => removeEventListener("keydown", listener); }, [runAction]);
   useEffect(() => { const reload = () => setSettings(readSettings()); addEventListener("storage", reload); addEventListener("focus", reload); return () => { removeEventListener("storage", reload); removeEventListener("focus", reload); }; }, []);
@@ -4970,7 +5134,7 @@ function Overlay() {
       {modesOpen && <ModeMenu ref={modeMenu} mode={mode} setMode={setMode} close={() => setModesOpen(false)} />}
       <footer className="island-foot">
         <div className="mode-picker" data-mode={mode}><ModeTrigger mode={mode} open={modesOpen} onToggle={() => { setModesOpen((open) => !open); setModelsOpen(false); }} /></div>
-        <button type="button" className="model-button" disabled={busy} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelKeyLabel(settings, modelKey)}${modelKeyTag(modelKey) ? ` · ${modelKeyTag(modelKey)}` : ""}${effort ? ` · thinking ${THINKING_LABELS[effort]}` : ""}`} onClick={() => { setModelsOpen((open) => !open); setModesOpen(false); }}><BrandIcon brand={modelKeyBrand(settings, modelKey)} className="model-brand" /><span className="model-label">{modelKeyLabel(settings, modelKey)}</span>{modelKeyTag(modelKey) && <em className={`model-route ${modelKeyTag(modelKey) === "Direct" ? "local" : "remote"}`}>{modelKeyTag(modelKey)}</em>}<ThinkingTag level={effort} /><span aria-hidden="true">▾</span></button>
+        <button type="button" className="model-button" disabled={busy} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelKeyLabel(settings, modelKey)}${modelKeyTag(modelKey) ? ` · ${modelKeyTag(modelKey)}` : ""}${effort ? ` · thinking ${thinkingLabel(effort)}` : ""}`} onClick={() => { setModelsOpen((open) => !open); setModesOpen(false); }}><BrandIcon brand={modelKeyBrand(settings, modelKey)} className="model-brand" /><span className="model-label">{modelKeyLabel(settings, modelKey)}</span>{modelKeyTag(modelKey) && <em className={`model-route ${modelKeyTag(modelKey) === "Direct" ? "local" : "remote"}`}>{modelKeyTag(modelKey)}</em>}<ThinkingTag level={effort} /><span aria-hidden="true">▾</span></button>
         <span className="island-stats"><span title="Context window of the selected model">{contextTokens ? `${Math.round(contextTokens / 1000)}K ctx` : "— ctx"}</span><span title="Output tokens per second of the last answer">{rate ? `${rate} tok/s` : "— tok/s"}</span></span>
       </footer>
     </div>

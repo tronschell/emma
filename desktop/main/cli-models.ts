@@ -63,10 +63,13 @@ async function newestClaudeBundle(): Promise<string | undefined> {
   return newest ? join(versions, newest) : undefined;
 }
 
+export function codexCachedSlugs(cache: unknown): string[] {
+  const models = (cache as { models?: { slug?: string; visibility?: string }[] } | undefined)?.models ?? [];
+  return models.filter((model) => model.visibility !== "hide").map((model) => model.slug ?? "").filter(Boolean);
+}
+
 async function codexModels(): Promise<string[]> {
-  const cache = await json(join(homedir(), ".codex", "models_cache.json")).catch(() => undefined);
-  const models = (cache as { models?: { slug?: string }[] } | undefined)?.models ?? [];
-  return models.map((model) => model.slug ?? "");
+  return codexCachedSlugs(await json(join(homedir(), ".codex", "models_cache.json")).catch(() => undefined));
 }
 
 async function piModels(): Promise<string[]> {

@@ -295,6 +295,14 @@ Release and hosting infrastructure: the Vercel Blob CDN workflows
 unless the loopback E2E override is set, because emma-cli ships inside the
 desktop app and has nothing to self-update from.
 
+`EMMA_PROVIDER_CHAT_URL` now also accepts any HTTPS endpoint, not just a
+loopback HTTP one. Emma points emma-cli at whichever provider host a plan or
+custom profile names, so the upstream loopback-only rule sent every one of them
+to OpenRouter instead. Cleartext HTTP is still refused off loopback, so the
+bearer token never travels unencrypted, and the credential is read from the same
+environment that sets this URL — anyone able to redirect the endpoint can
+already read the key.
+
 Renames: `AI_GATEWAY_API_KEY` → `EMMA_PROVIDER_API_KEY`,
 `FX_E2E_UPGRADE_BASE_URL` → `EMMA_UPGRADE_BASE_URL`, `fx` → `emma-cli` in help,
 usage, and error text, `fx.shared_model_context.v1` →

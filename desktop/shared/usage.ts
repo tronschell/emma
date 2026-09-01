@@ -35,33 +35,6 @@ export function mergeUses(current: ContextUse[], added: Omit<ContextUse, "turns"
   return [...touched, ...kept.values()].slice(0, MAX_USES);
 }
 
-/** Lay the segments out over a fixed cell count, largest first, every segment
-    worth at least one cell. Largest-remainder, so the grid is always full. */
-export function allocateCells(items: { key: string; chars: number }[], cells: number): string[] {
-  const ranked = items.filter((item) => item.chars > 0).sort((left, right) => right.chars - left.chars).slice(0, cells);
-  const total = ranked.reduce((sum, item) => sum + item.chars, 0);
-  if (!total) return [];
-  const shares = ranked.map((item) => {
-    const exact = item.chars / total * cells;
-    return { key: item.key, count: Math.max(1, Math.floor(exact)), remainder: exact - Math.floor(exact) };
-  });
-  let spare = cells - shares.reduce((sum, share) => sum + share.count, 0);
-  for (const share of [...shares].sort((left, right) => right.remainder - left.remainder)) {
-    if (spare <= 0) break;
-    share.count += 1;
-    spare -= 1;
-  }
-  // The min-one floor can overshoot when one segment dwarfs the rest; take the
-  // cells back off the biggest blocks, never off a segment's last cell.
-  while (spare < 0) {
-    const biggest = shares.reduce((left, right) => (right.count > left.count ? right : left));
-    if (biggest.count <= 1) break;
-    biggest.count -= 1;
-    spare += 1;
-  }
-  return shares.flatMap((share) => Array.from({ length: share.count }, () => share.key));
-}
-
 /* Where the speed curve starts. Every bucket after it is a doubling — 4K, 8K,
    16K … — so a model that slows as the request grows shows it as a slope. */
 const RATE_FLOOR = 4096;

@@ -87,9 +87,11 @@ export function ModePicker({ mode, setMode, disabled }: { mode: PermissionMode; 
 
 let askQueue: PermissionAsk[] = [];
 const askListeners = new Set<() => void>();
+let permissionEventsWired = false;
 const publishAsks = (next: PermissionAsk[]) => { askQueue = next; for (const listener of askListeners) listener(); };
 const subscribeAsks = (listener: () => void) => {
-  if (!askListeners.size) {
+  if (!permissionEventsWired) {
+    permissionEventsWired = true;
     window.emma.onPermissionAsk((ask) => publishAsks([...askQueue, ask]));
     window.emma.onPermissionResolved(({ id }) => publishAsks(askQueue.filter((ask) => ask.id !== id)));
   }
@@ -97,7 +99,6 @@ const subscribeAsks = (listener: () => void) => {
   return () => { askListeners.delete(listener); };
 };
 
-/** The ask this thread owns — its own, or one from a subagent it spawned. */
 export function usePermissionAsk(threadId: string, agents: LiveAgent[]): PermissionAsk | undefined {
   const queue = useSyncExternalStore(subscribeAsks, () => askQueue);
   return queue.find((ask) => ask.threadId === threadId || agents.some((agent) => agent.threadId === ask.threadId && agent.parentThreadId === threadId));
@@ -152,11 +153,16 @@ export function BackgroundRail() {
   useEffect(() => { reload(); return window.emma.onBackground(reload); }, []);
   useEffect(() => {
     if (!open) return;
-    const read = () => void window.emma.readBackground(open).then((found) => setOutput(found?.output ?? "")).catch(() => undefined);
+    let live = true;
+    const read = () => void window.emma.readBackground(open).then((found) => {
+      if (!live) return;
+      setOutput(found?.output ?? "");
+      if (!found || found.task.status === "exited") clearInterval(timer);
+    }).catch(() => undefined);
     read();
     const timer = setInterval(read, 2000);
-    return () => clearInterval(timer);
-  }, [open, tasks]);
+    return () => { live = false; clearInterval(timer); };
+  }, [open]);
   if (!tasks.length) return null;
   const running = tasks.filter((task) => task.status === "running").length;
   return <div className="sidebar-agents sidebar-background">
@@ -264,7 +270,7 @@ export function ThreadCard({ id, title, onOpen }: { id: string; title: string; o
     if (!text) return;
     setMessage("");
     setError("");
-    setSent(live ? "Queued — it arrives with that agent's next tool results." : "Sent; this thread is working on it.");
+    setSent(live ? "Sent into the run already going there." : "Sent; this thread is working on it.");
     const delivery = live
       ? window.emma.steerAgent({ threadId: id, text })
       : window.emma.request<unknown>("sendMessage", { threadId: id, content: text });
