@@ -264,7 +264,6 @@ button:where(.composer *) { background: transparent; color: inherit; }
   color: var(--text); font-family: var(--font); font-size: var(--fs-md); line-height: 1.55;
   white-space: pre-wrap; overflow-wrap: break-word; pointer-events: none;
 }
-.composer-input[data-long] textarea { field-sizing: fixed; height: 40vh; color: var(--text); }
 .slash-token { color: var(--teal); }
 .slash-token[data-hue="1"] { color: var(--violet); }
 .slash-token[data-hue="2"] { color: var(--lime); }

@@ -69,14 +69,10 @@ test("the thread header field is keyed and seeded on the label the rest of the a
   assert.ok(!/defaultValue=\{threadLabel\(thread\)\}/.test(app), "the header no longer seeds from the truncated display label");
 });
 
-test("a long composer value stops mirroring and stops content-sizing, and the cap is said out loud", () => {
+test("the composer says when a paste has hit the length it holds", () => {
   const app = read("desktop/src/App.tsx");
-  const css = read("desktop/src/styles/conversation.css");
-  assert.match(app, /data-long=\{message\.length > COMPOSER_MIRROR_MAX \? "" : undefined\}/);
-  assert.match(app, /\{message\.length > COMPOSER_MIRROR_MAX \? null : <div className="composer-highlight"/);
   assert.match(app, /maxLength=\{COMPOSER_MAX\}/);
   assert.match(app, /message\.length >= COMPOSER_MAX && <div className="composer-attachment">/);
-  assert.match(css, /\.composer-input\[data-long\] textarea \{[^}]*field-sizing: fixed/);
 });
 
 test("the composer chip row wraps and every chip keeps a floor instead of overlapping", () => {
