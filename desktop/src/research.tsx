@@ -88,7 +88,7 @@ function JobDetail({ job, act, busy, back }: { job: ResearchJob; act: Act; busy:
   const rows = [...job.iterations].reverse();
   const remove = async () => {
     if (!confirming) { setConfirming(true); return; }
-    await act("deleteResearchJob", { jobId: job.id });
+    if (await act("deleteResearchJob", { jobId: job.id }) === undefined) return;
     back();
   };
   return <section className="research-view">

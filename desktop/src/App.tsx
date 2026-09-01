@@ -675,7 +675,7 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
     queueMicrotask(() => void load());
     const refresh = () => { skipped.current = false; void load(); };
     const refreshVisible = () => { if (document.visibilityState === "visible") refresh(); else skipped.current = true; };
-    const listener = window.emma.onChanged(refreshVisible);
+    const listener = window.emma.onChanged(refresh);
     const shown = () => { if (document.visibilityState === "visible" && skipped.current) refresh(); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", shown);
@@ -1430,7 +1430,7 @@ function TaskEditor({ job, runs, act, busy, openThread, onSaved, onDeleted, comm
   const remove = async () => {
     if (!job) return;
     if (!confirming) { setConfirming(true); return; }
-    await act("deleteScheduledJob", { jobId: job.id });
+    if (await act("deleteScheduledJob", { jobId: job.id }) === undefined) return;
     onDeleted();
   };
   return <div className="task-detail">

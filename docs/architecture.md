@@ -29,6 +29,14 @@ Four processes, three trust boundaries. Every boundary validates its input.
 └─────────────────────────┘        └─────────────────────────────────┘
 ```
 
+The renderer holds one snapshot and learns it is stale two ways: main's `changed()`
+broadcast on `emma:changed`, and a `SNAPSHOT_REFRESH_MS` interval. Only the
+interval stands down while the window is off screen — the broadcast always
+reloads. On macOS an occluded window reports `visibilityState` as `hidden` just
+as a minimised one does, so gating the broadcast on visibility left saving a job,
+deleting one or starting an experiment invisible behind any other window until
+something else refreshed.
+
 ## Who may touch what
 
 | | Filesystem | Network | Model | Screen / app controls |
