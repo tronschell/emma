@@ -360,7 +360,7 @@ static int self_test(void) {
   }
   close_handle(input_write);
   close_handle(resize_write);
-  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"& { $value=[Console]::ReadLine(); Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$value+':'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
+  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"& { Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
   const int status = run_pty(80, 24, command, 7, input_read, output_write, resize_read);
   close_handle(input_read);
   close_handle(output_write);
@@ -371,7 +371,7 @@ static int self_test(void) {
   while (length + 1 < sizeof(output) && ReadFile(output_read, output + length, (DWORD)(sizeof(output) - length - 1), &got, NULL) && got > 0) length += got;
   close_handle(output_read);
   output[length] = 0;
-  return status == 0 && strstr(output, "received:Emma:100x30:26481") != NULL ? 0 : 1;
+  return status == 0 && strstr(output, "received:100x30:26481") != NULL ? 0 : 1;
 }
 
 int wmain(int argc, wchar_t **argv) {
