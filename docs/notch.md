@@ -67,7 +67,10 @@ picker, and a footer reading the model's window and the last answer's tok/s.
   label and a prompt, run as one turn in a fresh thread.
 - The mode picker opens on **Settings → Tools → Default permission mode**, the
   same rung a fresh thread starts on. Pick another there and the island keeps
-  that one from then on, in `emma.overlayMode.v1`.
+  that one from then on, in `emma.overlayMode.v2`. A build before that fix
+  wrote `auto` into `emma.overlayMode.v1` on first mount, so that key is read
+  once and dropped: any mode but `auto` is carried over, `auto` is discarded as
+  the bug's own value and the picker falls back to the Settings default.
 - Escape leaves the island; so does clicking away.
 - Reopening while a turn is still running starts a new quick session, unless
   **Settings → Notch → Quick Ask behaviour** is `continue`.

@@ -174,10 +174,19 @@ export function setThreadMode(threadId: string, mode: PermissionMode): void {
   localStorage.setItem(MODES_KEY, JSON.stringify({ ...allModes(), [threadId]: mode }));
 }
 
-const OVERLAY_MODE_KEY = "emma.overlayMode.v1";
+const OVERLAY_MODE_KEY = "emma.overlayMode.v2";
+const POISONED_OVERLAY_MODE_KEY = "emma.overlayMode.v1";
+
+function carriedOverlayMode(): string | null {
+  const legacy = localStorage.getItem(POISONED_OVERLAY_MODE_KEY);
+  localStorage.removeItem(POISONED_OVERLAY_MODE_KEY);
+  if (legacy === null || legacy === "auto" || !isPermissionMode(legacy)) return null;
+  localStorage.setItem(OVERLAY_MODE_KEY, legacy);
+  return legacy;
+}
 
 export function overlayMode(fallback: PermissionMode = DEFAULT_PERMISSION_MODE): PermissionMode {
-  const saved = localStorage.getItem(OVERLAY_MODE_KEY);
+  const saved = localStorage.getItem(OVERLAY_MODE_KEY) ?? carriedOverlayMode();
   return isPermissionMode(saved) ? saved : fallback;
 }
 
