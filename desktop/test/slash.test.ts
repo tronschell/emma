@@ -60,6 +60,15 @@ test("choosing a file writes an @path token, and matching reads the whole path",
   assert.equal(pathName("./ odd name.txt"), "odd-name.txt");
 });
 
+test("a note in another script keeps its own name in the composer", () => {
+  const names = ["会议纪要 定价策略", "議事録 プライシング", "Планёрка по ценам", "ملاحظات التسعير", "회의록 가격 정책"].map(pathName);
+  assert.equal(new Set(names).size, names.length, names.join(" "));
+  assert.ok(names.every((name) => name !== "file"), names.join(" "));
+  assert.deepEqual(mentions("read @会议纪要-定价策略 twice", "@"), ["会议纪要-定价策略"]);
+  assert.deepEqual(slashQuery("read @会议", 8), { start: 5, query: "会议", sigil: "@" });
+  assert.deepEqual(highlightSegments("read @会议纪要-定价策略", [], ["会议纪要-定价策略"]).filter((item) => item.hue !== undefined), [{ text: "@会议纪要-定价策略", hue: FILE_HUE }]);
+});
+
 test("a file mention keeps its own hue, whatever colours the commands took", () => {
   const segments = highlightSegments("/context7 on @src/App.tsx and @gone", ["context7"], ["src/App.tsx"]);
   assert.deepEqual(segments.filter((item) => item.hue !== undefined), [

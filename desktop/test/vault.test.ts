@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyNoteTags, createNoteFolder, keepNote, listNoteFolders, listNotes, moveNote, readVault, renameNoteFolder, saveVault } from "../main/vault";
+import { applyNoteTags, createNoteFolder, keepNote, listNoteFolders, listNotes, moveNote, readVault, renameNoteFolder, saveVault, vaultWritable } from "../main/vault";
 import { readTagReply, tagNote } from "../main/vault-tags";
-import { noteFolder, type KeptNote, type VaultChoice } from "../shared/vault";
-import { defaultTagger } from "../shared/settings";
+import { catalogSeed } from "../main/catalog-seed";
+import { type ChatMessage, type chatCompletion } from "../main/verifier";
+import { noteFolder, noteSlug, type KeptNote, type VaultChoice } from "../shared/vault";
+import { defaultTagger, defaultTaggerSystem } from "../shared/settings";
 
 function workspace(folder = "knowledge-base"): VaultChoice {
   const root = mkdtempSync(path.join(tmpdir(), "emma-vault-"));
@@ -100,7 +102,31 @@ test("the user's own notes in that folder are skipped, never thrown on", async (
   writeFileSync(path.join(folder, "other-tool.md"), "---\ntags:\n  - theirs\n---\n\nbody\n");
   const notes = listNotes(vault);
   assert.deepEqual(notes.map((item) => item.relative), [kept.relative]);
-  assert.deepEqual(listNotes({ ...vault, root: path.join(vault.root, "gone") }), []);
+});
+
+test("a vault that has moved is said out loud, never recreated underneath the user", async () => {
+  const vault = workspace();
+  await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
+  const moved = { ...vault, root: `${vault.root}-moved` };
+  renameSync(vault.root, moved.root);
+  assert.throws(() => listNotes(vault), /is not at .* any more/);
+  await assert.rejects(keepNote(vault, { kind: "note", title: "Later", text: "body" }), /is not at .* any more/);
+  assert.equal(existsSync(vault.root), false);
+  assert.equal(vaultWritable(vault), false);
+  assert.deepEqual(listNotes(moved).map((item) => item.title), ["Kept"]);
+});
+
+test("a note in another script keeps a filename that names it", async () => {
+  const vault = workspace();
+  const titles = ["会议纪要 定价策略", "議事録 プライシング", "Планёрка по ценам", "ملاحظات التسعير", "회의록 가격 정책"];
+  const kept = [];
+  for (const title of titles) kept.push(await keepNote(vault, { kind: "note", title, text: title }));
+  const names = kept.map((note) => note.relative);
+  assert.equal(new Set(names).size, names.length, names.join(" "));
+  assert.ok(names.every((name) => !/^note(-\d+)?\.md$/.test(name)), names.join(" "));
+  assert.equal(noteSlug("会议纪要 — 定价策略 2026年第三季度"), "会议纪要-定价策略-2026年第三季度");
+  assert.equal(noteSlug("Ünïcödé ﬁ ligature ✧"), "ünïcödé-fi-ligature");
+  assert.equal(noteSlug("✧✦✧"), "note");
 });
 
 test("newest first, and a note whose frontmatter lies about its date falls back to the file", async () => {
@@ -184,6 +210,20 @@ test("a garbage reply from the tagger leaves the note alone", async () => {
     await tagNote(note, "body", { ...defaultTagger, credentialEnv: "" }, reply('Sure!\n```json\n{"title": "Rate limits", "tags": ["API", "http", "#http"]}\n```')),
     { title: "Rate limits", tags: ["api", "http"] },
   );
+});
+
+test("the tagger asks for a title and tags, with room for a model that thinks first", async () => {
+  const note: KeptNote = { path: "/tmp/x.md", relative: "x.md", title: "Draft", tags: [], savedAt: "2026-01-01T00:00:00.000Z", kind: "note" };
+  let asked: { messages: ChatMessage[]; maxTokens: number } | undefined;
+  const ask: typeof chatCompletion = async (_settings, messages, _key, options) => {
+    asked = { messages, maxTokens: options.maxTokens };
+    return '{"title": "Vendor risk review", "tags": ["vendor-risk"]}';
+  };
+  assert.deepEqual(await tagNote(note, "body", { ...defaultTagger, credentialEnv: "" }, ask), { title: "Vendor risk review", tags: ["vendor-risk"] });
+  assert.equal(asked?.messages[0].content, defaultTaggerSystem);
+  assert.match(String(asked?.messages[0].content), /"title": string, "tags": \[string\]/);
+  assert.ok((asked?.maxTokens ?? 0) >= 1024, `budget ${asked?.maxTokens}`);
+  for (const id of defaultTagger.model.split(",")) assert.ok(catalogSeed.some((model) => model.id === id), `${id} is not a model the catalog knows`);
 });
 
 test("the note body cannot become an instruction to the tagger", () => {

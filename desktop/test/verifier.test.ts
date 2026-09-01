@@ -116,6 +116,19 @@ test("a chained second model asks OpenRouter to fall through for it", async () =
   } finally { globalThis.fetch = original; }
 });
 
+test("a reasoning model that answers in its thinking field is still read", async () => {
+  const original = globalThis.fetch;
+  const reply = (message: Record<string, unknown>) => (async () =>
+    new Response(JSON.stringify({ choices: [{ message }] }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+  const ask = () => chatCompletion(settings, [{ role: "user", content: "hi" }], "", { maxTokens: 10, timeoutMs: 5_000, label: "verifier" });
+  try {
+    globalThis.fetch = reply({ content: null, reasoning_content: '{"title": "Vendor risk", "tags": []}' });
+    assert.equal(await ask(), '{"title": "Vendor risk", "tags": []}');
+    globalThis.fetch = reply({ content: "", reasoning: "thought" });
+    assert.equal(await ask(), "thought");
+  } finally { globalThis.fetch = original; }
+});
+
 test("auto gates exactly what ask gates, so the verifier is asked the same questions", () => {
   assert.equal(toolGate("auto", "run_tool"), "ask");
   assert.equal(toolGate("auto", "computer"), "ask");

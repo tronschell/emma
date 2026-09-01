@@ -583,13 +583,15 @@ go through one `chatCompletion` helper in
 [verifier.ts](../desktop/main/verifier.ts), which posts
 `{ model, messages, temperature: 0, max_tokens, stream: false }` with
 `authorization: Bearer <key>` from `process.env[credentialEnv]`, and reads
-`message.reasoning` when `content` comes back empty. An empty `credentialEnv`
+`message.reasoning` or `message.reasoning_content` when `content` comes back
+empty. Every one of these budgets has to cover the reasoning a current model
+spends before it answers, not just the answer. An empty `credentialEnv`
 means a local server that needs no key.
 
 | Subsystem | File | Default model | Timeout | Max tokens |
 | --- | --- | --- | --- | --- |
 | Verifier | [verifier.ts](../desktop/main/verifier.ts) | `liquid/lfm-2.5-2.6b:free` | 20 s | 700 |
-| Note tagger | [vault-tags.ts](../desktop/main/vault-tags.ts) | `liquid/lfm-2.5-2.6b:free` | 20 s | 256 |
+| Note tagger | [vault-tags.ts](../desktop/main/vault-tags.ts) | `thinkingmachines/inkling-small:free` | 20 s | 1024 |
 | Vision | [vision.ts](../desktop/main/vision.ts) | `nvidia/nemotron-nano-12b-v2-vl:free` | 60 s | 1024 |
 | Advisor | [advisor.ts](../desktop/main/advisor.ts) | `""` (off) | 120 s | 1024 |
 | Secrets | [secret.ts](../desktop/main/secret.ts) | `""` (off) | 60 s | 1024 |
@@ -624,9 +626,11 @@ them on this computer. See [privacy.md](privacy.md).
 
 **Note tagger** — titles and tags a note kept into your vault
 (`MAX_TAG_TEXT_CHARS` 6000, at most `MAX_TAGS` tags). See
-[knowledge.md](knowledge.md). It has no panel: `emma:set-tagger` exists on the
-IPC surface but nothing in the renderer calls it, so its model is whatever
-`defaultTagger` says.
+[knowledge.md](knowledge.md). Its rules are `defaultTaggerSystem` and it sends
+them; a stored `system` replaces them. It has no panel: `emma:set-tagger` exists
+on the IPC surface but nothing in the renderer calls it, so its model is
+whatever `defaultTagger` says — a three-model chain, none of which reasons
+unless asked to.
 
 ## Token, rate and cost accounting
 
