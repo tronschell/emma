@@ -122,6 +122,9 @@ test("a recorded turn is cut to fit the host's request line", () => {
   const telemetry = { threadId: "t", durationMilliseconds: "1", outputTokens: "0", inputTokens: "0", cacheInputTokens: "100", cacheReadTokens: "80", cacheWriteTokens: "12", costMicroUsd: "3456", model: "m" };
   const small = recordedTurn({ ...telemetry, prompt: "hi", thinking: "weighing it up", answer: "done" });
   assert.deepEqual(small, { ...telemetry, prompt: "hi", response: "<think>weighing it up</think>\ndone" });
+  const silent = recordedTurn({ ...telemetry, prompt: "hi", thinking: "weighing it up", answer: "", notice: "You stopped this run before anything was said." });
+  assert.equal(silent.response, "");
+  assert.equal(silent.notice, "You stopped this run before anything was said.");
   const huge = recordedTurn({ ...telemetry, prompt: "hi", thinking: "thought\n".repeat(50_000), answer: "answer\n".repeat(50_000) });
   assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= MAX_RECORDED_TURN_BYTES);
   assert.match(huge.response, /^<think>thought/);

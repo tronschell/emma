@@ -347,7 +347,6 @@ test("a turn whose reply has not landed yet is not painted over an older one", (
 });
 
 test("a reload empties the landed runs, and the next answer still lands on its own message", () => {
-  // APPLE was answered before the reload, so nothing in the run store belongs to it.
   const messages = [
     said("user", "reply APPLE", "2026-08-22T10:00:00Z"), said("assistant", "APPLE", "2026-08-22T10:00:01Z"),
     said("user", "reply BANANA", "2026-08-22T10:01:00Z"),
@@ -391,10 +390,8 @@ test("a turn's notice takes the tool calls of a run that said nothing", () => {
 test("the stall swap only resends a turn that is still running", async () => {
   sendTurn("stalling", turn("PING-F"), () => {});
   await settle();
-  // Nothing has streamed for minutes, so the stall notice is up and the turn is still open.
   assert.equal(turnToRetry("stalling")?.content, "PING-F");
 
-  // The answer lands while the model menu sits open. Swapping now must not pay for it twice.
   release?.();
   await settle();
   assert.equal(runOf("stalling").sending, false);

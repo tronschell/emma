@@ -66,7 +66,7 @@ export function recordedTurn({ thinking, answer, ...rest }: RecordedTurn): Recor
   const fitted = (room: number) => ({
     ...rest,
     prompt: elided(rest.prompt, room),
-    response: withThinking(elided(thinking ?? "", room), elided(answer, room)),
+    response: answer.trim() ? withThinking(elided(thinking ?? "", room), elided(answer, room)) : "",
   });
   const sized = (params: Record<string, string>) => Buffer.byteLength(JSON.stringify(params));
   let room = MAX_RECORDED_TURN_BYTES;
