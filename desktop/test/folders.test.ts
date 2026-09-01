@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import ts from "typescript";
 import { FolderStore } from "../main/folders";
+import { isImageAttachment } from "../main/attachments";
+import { pathInside } from "../main/platform";
 import { contextBlock, mergeSkillContext, slashName } from "../shared/folders";
 
 function workspace() {
@@ -66,4 +69,82 @@ test("merged context stays inside the host's skill-context ceiling", () => {
 test("a slash name is one word in the command alphabet", () => {
   assert.equal(slashName("notes/my plan (final).md"), "my-plan-final-.md");
   assert.equal(slashName("///"), "file");
+});
+
+const mainSource = ts.createSourceFile("main.ts", readFileSync(path.join(__dirname, "../../main/main.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+
+function mainFunction(name: string): string {
+  const declaration = mainSource.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.ok(declaration, name);
+  return declaration.getText(mainSource);
+}
+
+function mainHandler(channel: string): string {
+  let found: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(mainSource) === "ipcMain.handle" && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === channel) found = node.arguments[1];
+    else ts.forEachChild(node, visit);
+  };
+  visit(mainSource);
+  assert.ok(found, channel);
+  return found.getText(mainSource);
+}
+
+function pathHandlers() {
+  const root = mkdtempSync(path.join(tmpdir(), "emma-preview-"));
+  const project = path.join(root, "project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(path.join(project, "chart.png"), "inside");
+  writeFileSync(path.join(project, "readme.md"), "# inside");
+  writeFileSync(path.join(root, "private.png"), "outside");
+  writeFileSync(path.join(root, "secret.md"), "outside");
+  const attached = path.join(root, "dropped.png");
+  writeFileSync(attached, "dropped");
+  const previewed: string[] = [];
+  const revealed: string[] = [];
+  const scope = {
+    folders: { list: () => [{ id: "grant-1", path: project }], read: (_id: string, relative: string) => ({ text: readFileSync(path.join(project, relative), "utf8") }) },
+    attachments: { holds: (file: string) => file === attached },
+    pathInside,
+    isImageAttachment,
+    previewImage: (file: string) => { previewed.push(file); return "data:image/png;base64,MARKER"; },
+    mainWindowSender: () => undefined,
+    shell: { showItemInFolder: (file: string) => revealed.push(file) },
+    statSync,
+    readFileSync,
+    existsSync,
+    homedir: () => root,
+    path,
+    MAX_FILE_BYTES: 1024 * 1024,
+  };
+  const code = ts.transpile(`${mainFunction("namedPath")}\n${mainFunction("pathGrant")}\nreturn { preview: ${mainHandler("emma:preview-path")}, reveal: ${mainHandler("emma:reveal-path")} };`, { target: ts.ScriptTarget.ES2022 });
+  const handlers = Function(...Object.keys(scope), code)(...Object.values(scope)) as {
+    preview: (event: unknown, value: unknown) => { path: string; text: string | null; image?: string | null } | null;
+    reveal: (event: unknown, value: unknown) => boolean;
+  };
+  return { root, project, attached, previewed, revealed, ...handlers };
+}
+
+test("a preview only reads inside a grant, and being an image is not a way past it", () => {
+  const { root, project, attached, previewed, preview } = pathHandlers();
+  assert.deepEqual(preview(null, path.join(project, "chart.png")), { path: path.join(project, "chart.png"), text: null, image: "data:image/png;base64,MARKER" });
+  assert.deepEqual(preview(null, path.join(project, "readme.md")), { path: path.join(project, "readme.md"), text: "# inside" });
+  assert.deepEqual(preview(null, attached), { path: attached, text: null, image: "data:image/png;base64,MARKER" });
+  assert.deepEqual(previewed, [path.join(project, "chart.png"), attached]);
+
+  for (const outside of [path.join(root, "private.png"), path.join(root, "secret.md")]) {
+    assert.deepEqual(preview(null, outside), { path: outside, text: null }, outside);
+  }
+  assert.deepEqual(preview(null, "~/private.png"), { path: path.join(root, "private.png"), text: null });
+  assert.equal(preview(null, path.join(root, "nothing.png")), null);
+  assert.deepEqual(previewed, [path.join(project, "chart.png"), attached]);
+});
+
+test("revealing a path in the file manager asks the same grant question", () => {
+  const { root, project, attached, revealed, reveal } = pathHandlers();
+  assert.equal(reveal(null, path.join(project, "readme.md")), true);
+  assert.equal(reveal(null, attached), true);
+  assert.equal(reveal(null, path.join(root, "secret.md")), false);
+  assert.equal(reveal(null, path.join(root, "private.png")), false);
+  assert.deepEqual(revealed, [path.join(project, "readme.md"), attached]);
 });

@@ -252,6 +252,11 @@ function namedPath(value: unknown): string | undefined {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
+function pathGrant(file: string) {
+  const grant = folders!.list().find((folder) => pathInside(folder.path, file));
+  return { grant, attached: !grant && attachments!.holds(file) };
+}
+
 function attachProject(threadId: string, directory: string) {
   const resolved = realpathSync(directory);
   const grant = folders!.add(resolved).find((folder) => samePath(folder.path, resolved));
@@ -3598,6 +3603,8 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     const found = namedPath(value);
     if (!found) return false;
+    const { grant, attached } = pathGrant(found);
+    if (!grant && !attached) return false;
     shell.showItemInFolder(found);
     return true;
   });
@@ -3605,12 +3612,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     const found = namedPath(value);
     if (!found) return null;
-    const grant = folders!.list().find((folder) => pathInside(folder.path, found));
-    const attached = !grant && attachments!.holds(found);
-    const picture = isImageAttachment(found);
-    if (!grant && !attached && !picture) return { path: found, text: null };
+    const { grant, attached } = pathGrant(found);
+    if (!grant && !attached) return { path: found, text: null };
     try {
-      if (picture) return { path: found, text: null, image: previewImage(found) };
+      if (isImageAttachment(found)) return { path: found, text: null, image: previewImage(found) };
       if (attached && statSync(found).size > MAX_FILE_BYTES) return { path: found, text: null };
       return { path: found, text: attached ? readFileSync(found, "utf8") : folders!.read(grant!.id, path.relative(grant!.path, found)).text };
     } catch {
@@ -4077,8 +4082,8 @@ if (primaryInstance) app.whenReady().then(() => {
     const editorId = boundedCapabilityId(request.editorId, "Editor");
     if (request.folderId === undefined) {
       const file = namedPath(request.path);
-      const grant = file && folders!.list().some((folder) => pathInside(folder.path, file));
-      if (!file || (!grant && !attachments!.holds(file))) throw new Error("That file is not open to Emma.");
+      const held = file ? pathGrant(file) : { grant: undefined, attached: false };
+      if (!file || (!held.grant && !held.attached)) throw new Error("That file is not open to Emma.");
       await openInEditor(editorId, file);
       return;
     }
