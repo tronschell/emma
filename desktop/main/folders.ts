@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { MAX_FILE_BYTES, MAX_FOLDER_FILES, MAX_FOLDERS, missingFolderMessage, type FolderFile, type FolderGrant, type FolderListing } from "../shared/folders";
+import { MAX_FILE_BYTES, MAX_FOLDER_COUNT, MAX_FOLDER_FILES, MAX_FOLDERS, missingFolderMessage, type FolderFile, type FolderGrant, type FolderListing } from "../shared/folders";
 import { pathInside, samePath } from "./platform";
 
 const SKIP_DIRECTORIES = new Set(["node_modules", "target", "dist", "build", "__pycache__", ".venv", "vendor"]);
@@ -54,20 +54,20 @@ export class FolderStore {
       let entries: import("node:fs").Dirent<string>[];
       try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
+        if (total >= MAX_FOLDER_COUNT) return;
         if (entry.name.startsWith(".") || SKIP_DIRECTORIES.has(entry.name)) continue;
         const full = path.join(directory, entry.name);
         if (entry.isDirectory()) walk(full, depth + 1);
         else if (entry.isFile() && TEXT_FILE.test(entry.name)) {
-          if (found.length >= MAX_FOLDER_FILES) { total += 1; continue; }
           const bytes = statSync(full).size;
           if (bytes > MAX_FILE_BYTES) continue;
-          found.push({ path: path.relative(root, full), bytes });
           total += 1;
+          if (found.length < MAX_FOLDER_FILES) found.push({ path: path.relative(root, full), bytes });
         }
       }
     };
     walk(root, 0);
-    return { files: found.sort((left, right) => left.path.localeCompare(right.path)), total };
+    return { files: found.sort((left, right) => left.path.localeCompare(right.path)), total, capped: total >= MAX_FOLDER_COUNT };
   }
 
   read(id: string, relative: string): { path: string; text: string; missing?: boolean } {

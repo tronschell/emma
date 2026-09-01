@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import ts from "typescript";
 import { FolderStore } from "../main/folders";
 import { isImageAttachment } from "../main/attachments";
 import { pathInside } from "../main/platform";
-import { contextBlock, MAX_FOLDER_FILES, mergeSkillContext, slashName } from "../shared/folders";
+import { contextBlock, MAX_FILE_BYTES, MAX_FOLDER_COUNT, MAX_FOLDER_FILES, mergeSkillContext, slashName } from "../shared/folders";
 
 function workspace() {
   const root = mkdtempSync(path.join(tmpdir(), "emma-folders-"));
@@ -27,6 +27,7 @@ test("a grant lists its text files and skips vendored and non-text ones", () => 
   const [grant] = store.add(project);
   assert.deepEqual(store.files(grant.id).files.map((file) => file.path), ["notes/plan.txt", "readme.md"]);
   assert.equal(store.files(grant.id).total, 2);
+  assert.equal(store.files(grant.id).capped, false);
   assert.equal(store.read(grant.id, "readme.md").text, "# hello");
 });
 
@@ -39,6 +40,38 @@ test("a capped listing still counts every file it walked past", () => {
   const listing = store.files(grant.id);
   assert.equal(listing.files.length, MAX_FOLDER_FILES);
   assert.equal(listing.total, MAX_FOLDER_FILES + 22);
+  assert.equal(listing.capped, false);
+});
+
+test("the total counts only files the listing would accept, on both sides of the cap", () => {
+  const { project, store } = workspace();
+  for (let bucket = 0; bucket < 30; bucket += 1) {
+    const directory = path.join(project, `bucket${bucket}`);
+    mkdirSync(directory, { recursive: true });
+    for (let index = 0; index < 20; index += 1) writeFileSync(path.join(directory, `mod${index}.ts`), "export const v = 1;");
+    const oversized = path.join(directory, "oversized.ts");
+    writeFileSync(oversized, "");
+    truncateSync(oversized, MAX_FILE_BYTES + 1);
+  }
+  const [grant] = store.add(project);
+  const listing = store.files(grant.id);
+  assert.equal(listing.files.length, MAX_FOLDER_FILES);
+  assert.equal(listing.files.some((file) => file.bytes > MAX_FILE_BYTES), false);
+  assert.equal(listing.total, 602);
+});
+
+test("the walk stops at MAX_FOLDER_COUNT instead of reading the whole tree", () => {
+  const { project, store } = workspace();
+  for (let bucket = 0; bucket < 6; bucket += 1) {
+    const directory = path.join(project, `bucket${bucket}`);
+    mkdirSync(directory, { recursive: true });
+    for (let index = 0; index < 400; index += 1) writeFileSync(path.join(directory, `mod${index}.ts`), "export const v = 1;");
+  }
+  const [grant] = store.add(project);
+  const listing = store.files(grant.id);
+  assert.equal(listing.total, MAX_FOLDER_COUNT);
+  assert.equal(listing.capped, true);
+  assert.equal(listing.files.length, MAX_FOLDER_FILES);
 });
 
 test("a missing optional file reads as empty rather than throwing", () => {
