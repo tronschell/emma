@@ -120,7 +120,6 @@ export function vaultWritable(vault: VaultChoice): boolean {
   }
   const probe = path.join(folder, ".emma-write-check");
   return attempt(() => {
-    mkdirSync(folder, { recursive: true });
     writeFileSync(probe, "");
     rmSync(probe);
   });
@@ -261,7 +260,6 @@ export async function keepNote(vault: VaultChoice, request: KeepRequest): Promis
   const choice = normalizeVault(vault);
   if (!request || typeof request !== "object" || !isKeepKind(request.kind)) throw new Error("Emma keeps screenshots, highlights, pages and notes.");
   const folder = notesRoot(choice);
-  mkdirSync(folder, { recursive: true });
   const title = clampBytes((((request.title ?? "").trim() || fallbackTitle(request)).replace(/\s+/g, " ")), MAX_TITLE_BYTES);
   const { file, relative } = freeNotePath(folder, noteSlug(title));
   if (!contains(folder, file)) throw new Error("Emma will not write outside your knowledge folder.");
@@ -349,10 +347,20 @@ function subfolders(root: string): string[] {
   }
 }
 
-function notesRoot(vault: VaultChoice): string {
+export function notesRoot(vault: VaultChoice): string {
   const choice = normalizeVault(vault);
   if (!isDirectory(choice.root)) throw new Error(`Your vault is not at ${choice.root} any more. It was moved, renamed or unmounted, so Emma is not reading or writing your notes until you choose it again on the Knowledge base page.`);
-  return noteFolder(choice);
+  const folder = noteFolder(choice);
+  if (!isDirectory(folder)) throw new Error(`Your knowledge folder is not at ${folder} any more. It was moved, renamed or deleted, so Emma is not reading or writing your notes until you choose it again on the Knowledge base page.`);
+  return folder;
+}
+
+export function noteInVault(vault: VaultChoice, value: unknown): string {
+  const root = notesRoot(vault);
+  if (typeof value !== "string" || !value || value.length > 256) throw new Error("That note is not in your vault.");
+  const full = path.resolve(root, value);
+  if (!contains(root, full)) throw new Error("That note is not in your vault.");
+  return path.relative(root, full);
 }
 
 export function listNotes(vault: VaultChoice): KeptNote[] {

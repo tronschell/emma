@@ -1,17 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyNoteTags, createNoteFolder, keepNote, listNoteFolders, listNotes, moveNote, readVault, renameNoteFolder, saveVault, vaultWritable } from "../main/vault";
+import { applyNoteTags, createNoteFolder, keepNote, listNoteFolders, listNotes, moveNote, noteInVault, readVault, renameNoteFolder, saveVault, vaultWritable } from "../main/vault";
 import { readTagReply, tagNote } from "../main/vault-tags";
 import { catalogSeed } from "../main/catalog-seed";
 import { type ChatMessage, type chatCompletion } from "../main/verifier";
-import { noteFolder, noteSlug, type KeptNote, type VaultChoice } from "../shared/vault";
+import { noteFolder, noteSlug, tagName, validTag, type KeptNote, type VaultChoice } from "../shared/vault";
 import { defaultTagger, defaultTaggerSystem } from "../shared/settings";
 
 function workspace(folder = "knowledge-base"): VaultChoice {
   const root = mkdtempSync(path.join(tmpdir(), "emma-vault-"));
+  mkdirSync(path.join(root, folder), { recursive: true });
   return { root, folder, kind: "folder", name: path.basename(root) };
 }
 
@@ -113,7 +114,55 @@ test("a vault that has moved is said out loud, never recreated underneath the us
   await assert.rejects(keepNote(vault, { kind: "note", title: "Later", text: "body" }), /is not at .* any more/);
   assert.equal(existsSync(vault.root), false);
   assert.equal(vaultWritable(vault), false);
+  assert.throws(() => noteInVault(vault, "kept.md"), /is not at .* any more/);
   assert.deepEqual(listNotes(moved).map((item) => item.title), ["Kept"]);
+});
+
+test("a knowledge folder deleted under a vault that is still there is said out loud, never recreated", async () => {
+  const vault = workspace();
+  const note = await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
+  rmSync(noteFolder(vault), { recursive: true });
+  assert.throws(() => listNotes(vault), /is not at .* any more/);
+  assert.throws(() => listNoteFolders(vault), /is not at .* any more/);
+  assert.throws(() => noteInVault(vault, note.relative), /is not at .* any more/);
+  await assert.rejects(keepNote(vault, { kind: "note", title: "Later", text: "body" }), /is not at .* any more/);
+  assert.equal(vaultWritable(vault), false);
+  assert.equal(existsSync(noteFolder(vault)), false);
+  assert.deepEqual(readdirSync(vault.root), []);
+});
+
+test("a note is named relative to the guarded folder, and nothing outside it is a note", async () => {
+  const vault = workspace();
+  const note = await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
+  assert.equal(noteInVault(vault, note.relative), note.relative);
+  for (const value of ["../../etc/passwd", "/etc/passwd", "", 7, undefined, "x".repeat(300)]) {
+    assert.throws(() => noteInVault(vault, value), /not in your vault/, `accepted ${JSON.stringify(value)}`);
+  }
+});
+
+test("a tag the model writes in another script reaches the note on disk", async () => {
+  const vault = workspace();
+  const note = await keepNote(vault, { kind: "note", title: "定价会议", text: "会议纪要" });
+  const tagged = readTagReply('{"title": "定价会议", "tags": ["定价", "会议 纪要", "Планёрка", "планёрка", "#プライシング"]}');
+  assert.deepEqual(tagged, { title: "定价会议", tags: ["定价", "会议-纪要", "планёрка", "プライシング"] });
+  applyNoteTags(note.path, tagged!.title, tagged!.tags);
+  assert.deepEqual(listNotes(vault)[0].tags, tagged!.tags);
+  assert.match(body(note), /tags: \["定价", "会议-纪要", "планёрка", "プライシング"\]/);
+});
+
+test("a tag stays one lower case word that cannot walk a path", () => {
+  assert.equal(tagName("  #МЕТКА  "), "метка");
+  assert.equal(tagName("../定价"), "定价");
+  assert.equal(tagName("Rate Limits"), "rate-limits");
+  assert.equal(tagName("✨✨"), "");
+  const long = tagName("定".repeat(30));
+  assert.ok(validTag(long) && long.length === 16, long);
+  for (const bad of ["../etc", "a b", ".hidden", "/root", "a:b", "a\\b", "SHOUTING", "-lead", "定价\n会议", "定价\u0000", "", "定".repeat(30)]) {
+    assert.equal(validTag(bad), false, `accepted ${JSON.stringify(bad)}`);
+  }
+  for (const good of ["定价", "планёрка", "rate-limits", "ok/nested", "ملاحظات"]) {
+    assert.equal(validTag(good), true, `refused ${JSON.stringify(good)}`);
+  }
 });
 
 test("a note in another script keeps a filename that names it", async () => {

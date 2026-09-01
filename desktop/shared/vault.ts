@@ -66,8 +66,15 @@ export function clampBytes(value: string, limit: number): string {
   return text;
 }
 
+const TAG = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}/-]*$/u;
+
 export function validTag(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z0-9][a-z0-9/-]*$/.test(value) && byteLength(value) <= MAX_TAG_BYTES;
+  return typeof value === "string" && TAG.test(value) && value === value.toLowerCase() && byteLength(value) <= MAX_TAG_BYTES;
+}
+
+export function tagName(value: string): string {
+  const name = clampBytes(value.normalize("NFKD").trim().toLowerCase().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}\p{M}-]+/gu, ""), MAX_TAG_BYTES);
+  return name.replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}\p{M}]+$/u, "").normalize("NFC");
 }
 
 export const MAX_FOLDER_NAME = 64;
