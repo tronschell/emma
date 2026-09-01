@@ -57,3 +57,32 @@ test("a render error is caught at the root and offers a way back instead of a bl
 test("the mount wraps the whole app in the root boundary", () => {
   assert.match(read("desktop/src/main.tsx"), /<RootBoundary>\s*<App \/>\s*<\/RootBoundary>/);
 });
+
+test("the thread header field is keyed and seeded on the label the rest of the app shows", () => {
+  const app = read("desktop/src/App.tsx");
+  assert.match(app, /const threadName = \(thread: Thread\) => threadLabel\(thread, THREAD_NAME_MAX\);/);
+  assert.match(app, /className="thread-name"\s*\n\s*key=\{`\$\{thread\.id\}:\$\{threadName\(thread\)\}`\}\s*\n\s*defaultValue=\{threadName\(thread\)\}/);
+  assert.ok(!/defaultValue=\{threadLabel\(thread\)\}/.test(app), "the header no longer seeds from the truncated display label");
+});
+
+test("a long composer value stops mirroring and stops content-sizing, and the cap is said out loud", () => {
+  const app = read("desktop/src/App.tsx");
+  const css = read("desktop/src/styles/conversation.css");
+  assert.match(app, /data-long=\{message\.length > COMPOSER_MIRROR_MAX \? "" : undefined\}/);
+  assert.match(app, /\{message\.length > COMPOSER_MIRROR_MAX \? null : <div className="composer-highlight"/);
+  assert.match(app, /maxLength=\{COMPOSER_MAX\}/);
+  assert.match(app, /message\.length >= COMPOSER_MAX && <div className="composer-attachment">/);
+  assert.match(css, /\.composer-input\[data-long\] textarea \{[^}]*field-sizing: fixed/);
+});
+
+test("the composer chip row wraps and every chip keeps a floor instead of overlapping", () => {
+  const css = read("desktop/src/styles/conversation.css");
+  assert.match(css, /\.composer-row \{[^}]*flex-wrap: wrap/);
+  assert.match(css, /\.composer-tools \{[^}]*min-width: min-content/);
+  assert.match(css, /\.composer-row \.model-button \{[^}]*min-width: 88px/);
+});
+
+test("collapsing the rail takes focus out of the sidebar so the peek does not stick open", () => {
+  const app = read("desktop/src/App.tsx");
+  assert.match(app, /aria-expanded=\{!layout\.sidebarCollapsed\} onClick=\{\(event\) => \{ event\.currentTarget\.focus\(\); pane\(\{ sidebarCollapsed: !layout\.sidebarCollapsed \}\); \}\}/);
+});

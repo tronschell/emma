@@ -264,6 +264,7 @@ button:where(.composer *) { background: transparent; color: inherit; }
   color: var(--text); font-family: var(--font); font-size: var(--fs-md); line-height: 1.55;
   white-space: pre-wrap; overflow-wrap: break-word; pointer-events: none;
 }
+.composer-input[data-long] textarea { field-sizing: fixed; height: 40vh; color: var(--text); }
 .slash-token { color: var(--teal); }
 .slash-token[data-hue="1"] { color: var(--violet); }
 .slash-token[data-hue="2"] { color: var(--lime); }
@@ -285,8 +286,8 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .slash-kind[data-kind="artifact"] { color: var(--lime); }
 .slash-kind[data-kind="page"] { color: var(--rose); }
 
-.composer-row { display: flex; align-items: center; gap: var(--s-1); padding: var(--s-2) var(--s-1); border-top: 1px solid var(--border); }
-.composer-tools { display: flex; align-items: center; flex: 1; gap: var(--s-1); min-width: 0; }
+.composer-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-1); padding: var(--s-2) var(--s-1); border-top: 1px solid var(--border); }
+.composer-tools { display: flex; align-items: center; flex: 1 1 auto; gap: var(--s-1); min-width: min-content; }
 
 .composer-row .source-trigger, .composer-row .model-button {
   display: flex; align-items: center; gap: var(--s-2); flex: 0 0 auto; height: 26px; padding: 0 var(--s-2);
@@ -298,7 +299,7 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .composer-row .source-trigger[aria-expanded="true"], .composer-row .model-button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
 .composer-row .source-trigger { justify-content: center; width: 26px; padding: 0; font-size: var(--fs-lg); line-height: 1; }
 
-.composer-row .model-button { flex: 0 1 auto; min-width: 0; color: var(--text); }
+.composer-row .model-button { flex: 0 1 auto; min-width: 88px; color: var(--text); }
 .composer-row .model-button .model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .composer-row .model-button .model-brand { display: grid; flex: 0 0 auto; place-items: center; width: 16px; height: 16px; padding: 2px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
 .composer-row .model-button > span[aria-hidden] { flex: 0 0 auto; color: var(--text-3); }

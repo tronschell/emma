@@ -1,12 +1,12 @@
 import { agentColor, sentByThread, type LiveAgent } from "../shared/agents";
 import type { Message, Thread } from "./types";
 
-export function threadLabel(thread: Thread): string {
+export function threadLabel(thread: Thread, limit = 48): string {
   const title = thread.title.trim();
   if (title && title !== "New thread") return title;
   const first = thread.labelPrompt ?? thread.messages.find((item) => item.role === "user")?.content ?? "";
   const asked = sentByThread(first).body.trim().replace(/\s+/g, " ");
-  if (asked) return asked.length > 48 ? `${asked.slice(0, 47)}…` : asked;
+  if (asked) return asked.length > limit ? `${asked.slice(0, limit - 1)}…` : asked;
   return thread.displayTitle?.trim() || "New thread";
 }
 
