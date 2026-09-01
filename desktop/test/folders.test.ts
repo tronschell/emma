@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import ts from "typescript";
 import { FolderStore } from "../main/folders";
 import { isImageAttachment } from "../main/attachments";
-import { pathInside } from "../main/platform";
+import { pathInside, realPath, realPathInside } from "../main/platform";
 import { contextBlock, MAX_FILE_BYTES, MAX_FOLDER_COUNT, MAX_FOLDER_FILES, mergeSkillContext, slashName } from "../shared/folders";
 
 function workspace() {
@@ -146,6 +146,8 @@ function pathHandlers() {
   const project = path.join(root, "project");
   mkdirSync(project, { recursive: true });
   writeFileSync(path.join(project, "chart.png"), "inside");
+  symlinkSync(path.join(root, "private.png"), path.join(project, "escape.png"));
+  symlinkSync(path.join(root, "secret.md"), path.join(project, "escape.md"));
   writeFileSync(path.join(project, "readme.md"), "# inside");
   writeFileSync(path.join(root, "private.png"), "outside");
   writeFileSync(path.join(root, "secret.md"), "outside");
@@ -157,6 +159,8 @@ function pathHandlers() {
     folders: { list: () => [{ id: "grant-1", path: project }], read: (_id: string, relative: string) => ({ text: readFileSync(path.join(project, relative), "utf8") }) },
     attachments: { holds: (file: string) => file === attached },
     pathInside,
+    realPath,
+    realPathInside,
     isImageAttachment,
     previewImage: (file: string) => { previewed.push(file); return "data:image/png;base64,MARKER"; },
     mainWindowSender: () => undefined,
@@ -198,4 +202,74 @@ test("revealing a path in the file manager asks the same grant question", () => 
   assert.equal(reveal(null, path.join(root, "secret.md")), false);
   assert.equal(reveal(null, path.join(root, "private.png")), false);
   assert.deepEqual(revealed, [path.join(project, "readme.md"), attached]);
+});
+
+test("a symlink inside a grant is not a way out of it", () => {
+  const { root, project, previewed, preview, reveal } = pathHandlers();
+  const escapePng = path.join(project, "escape.png");
+  const escapeMd = path.join(project, "escape.md");
+  assert.equal(realPath(escapePng), path.join(realPath(root)!, "private.png"));
+  assert.equal(pathInside(project, escapePng), true);
+  assert.equal(realPathInside(project, escapePng), false);
+
+  assert.deepEqual(preview(null, escapePng), { path: escapePng, text: null });
+  assert.deepEqual(preview(null, escapeMd), { path: escapeMd, text: null });
+  assert.deepEqual(previewed, []);
+  assert.equal(reveal(null, escapePng), false);
+  assert.equal(reveal(null, escapeMd), false);
+});
+
+test("a grant refuses a symlinked leaf for reads, writes and editor opens", () => {
+  const { root, project, store } = workspace();
+  const outside = path.join(root, "secret.md");
+  symlinkSync(outside, path.join(project, "escape.md"));
+  symlinkSync(root, path.join(project, "door"));
+  const [grant] = store.add(project);
+  for (const escape of ["escape.md", "door/secret.md"]) {
+    assert.throws(() => store.read(grant.id, escape), /outside the granted folder/, escape);
+    assert.throws(() => store.within(grant.id, escape), /outside the granted folder/, escape);
+    assert.throws(() => store.fileWithin(grant.id, escape), /outside the granted folder/, escape);
+    assert.throws(() => store.write(grant.id, escape, "overwritten"), /outside the granted folder/, escape);
+  }
+  assert.equal(readFileSync(outside, "utf8"), "outside the grant");
+  assert.equal(store.fileWithin(grant.id, "readme.md"), path.join(realPath(project)!, "readme.md"));
+  assert.equal(store.fileWithin(grant.id, path.join(project, "readme.md")), path.join(realPath(project)!, "readme.md"));
+  assert.throws(() => store.fileWithin(grant.id, outside), /outside the granted folder/);
+});
+
+function visionImage() {
+  const { root, project, store } = workspace();
+  writeFileSync(path.join(project, "chart.png"), "inside");
+  writeFileSync(path.join(root, "private.png"), "outside");
+  symlinkSync(path.join(root, "private.png"), path.join(project, "escape.png"));
+  const attached = path.join(root, "dropped.png");
+  writeFileSync(attached, "dropped");
+  const [grant] = store.add(project);
+  const asked: string[] = [];
+  const optional = (name: string) => mainSource.statements.some((node) => ts.isFunctionDeclaration(node) && node.name?.text === name) ? mainFunction(name) : "";
+  const scope = {
+    folders: store,
+    attachments: { holds: (file: string) => file === attached },
+    grantFor: () => grant.id,
+    nativeImage: { createFromPath: (file: string) => { asked.push(file); return { isEmpty: () => false }; } },
+    compressScreenFrame: () => ({ image: "data:image/jpeg;base64,MARKER" }),
+    realPath,
+    path,
+  };
+  const code = ts.transpile(`${optional("grantedImage")}\nreturn ${mainFunction("folderImage")};`, { target: ts.ScriptTarget.ES2022 });
+  const look = Function(...Object.keys(scope), code)(...Object.values(scope)) as (threadId: string, named: string | undefined, relative: string) => string;
+  return { root, project, attached, asked, look };
+}
+
+test("the vision tool is bound by the same grants as every other door", () => {
+  const { root, project, attached, asked, look } = visionImage();
+  for (const escape of [path.join(root, "private.png"), path.join(project, "escape.png"), "../private.png", "/etc/hosts"]) {
+    assert.throws(() => look("thread", undefined, escape), /outside the granted folder/, escape);
+  }
+  assert.deepEqual(asked, [], "the vision tool read a file outside every grant");
+
+  assert.equal(look("thread", undefined, "chart.png"), "data:image/jpeg;base64,MARKER");
+  assert.equal(look("thread", undefined, path.join(project, "chart.png")), "data:image/jpeg;base64,MARKER");
+  assert.equal(look("thread", undefined, attached), "data:image/jpeg;base64,MARKER");
+  assert.deepEqual(asked, [path.join(realPath(project)!, "chart.png"), path.join(realPath(project)!, "chart.png"), attached]);
 });

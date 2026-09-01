@@ -77,7 +77,7 @@ import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
 import { isPin, MAX_ASK_MS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
-import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
+import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
@@ -256,7 +256,8 @@ function namedPath(value: unknown): string | undefined {
 }
 
 function pathGrant(file: string) {
-  const grant = folders!.list().find((folder) => pathInside(folder.path, file));
+  const real = realPath(file);
+  const grant = real ? folders!.list().find((folder) => realPathInside(folder.path, real)) : undefined;
   return { grant, attached: !grant && attachments!.holds(file) };
 }
 
@@ -1300,9 +1301,13 @@ function previewImage(file: string): string | null {
   return (frame.getSize().width > PREVIEW_IMAGE_WIDTH ? frame.resize({ width: PREVIEW_IMAGE_WIDTH }) : frame).toDataURL();
 }
 
+function grantedImage(threadId: string, named: string | undefined, given: string): string {
+  if (attachments!.holds(given)) return given;
+  return folders!.fileWithin(grantFor(threadId, named), given);
+}
+
 function folderImage(threadId: string, named: string | undefined, relative: string): string {
-  const grant = path.isAbsolute(relative) || attachments!.holds(relative) ? undefined : grantFor(threadId, named);
-  const frame = nativeImage.createFromPath(grant ? path.join(folders!.directory(grant), folders!.within(grant, relative)) : relative);
+  const frame = nativeImage.createFromPath(grantedImage(threadId, named, relative));
   if (frame.isEmpty()) throw new Error(`Emma could not read ${relative} as an image. PNG, JPEG, GIF and BMP work; a PDF, an SVG or a missing file does not.`);
   try {
     return compressScreenFrame(frame).image;
@@ -4114,9 +4119,7 @@ if (primaryInstance) app.whenReady().then(() => {
       return;
     }
     const folderId = boundedCapabilityId(request.folderId, "Folder");
-    const root = folders!.directory(folderId);
-    const relative = folders!.within(folderId, boundedCapabilityId(request.path, "File path"));
-    await openInEditor(editorId, path.join(root, relative));
+    await openInEditor(editorId, folders!.fileWithin(folderId, boundedCapabilityId(request.path, "File path")));
   });
   ipcMain.handle("emma:set-branch", async (event, value: unknown) => {
     mainWindowSender(event);

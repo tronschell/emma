@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { MAX_FILE_BYTES, MAX_FOLDER_COUNT, MAX_FOLDER_FILES, MAX_FOLDERS, missingFolderMessage, type FolderFile, type FolderGrant, type FolderListing } from "../shared/folders";
-import { pathInside, samePath } from "./platform";
+import { pathInside, realPath, realPathInside, samePath } from "./platform";
 
 const SKIP_DIRECTORIES = new Set(["node_modules", "target", "dist", "build", "__pycache__", ".venv", "vendor"]);
 const TEXT_FILE = /\.(md|markdown|txt|rst|org|json|jsonc|ya?ml|toml|ini|csv|tsv|tsx?|jsx?|mjs|cjs|rs|zig|py|go|rb|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|zsh|sql|css|scss|html?|xml|tex|env|gitignore)$/i;
@@ -108,16 +108,16 @@ export class FolderStore {
     return path.relative(root, this.contain(root, relative));
   }
 
+  fileWithin(id: string, given: string): string {
+    const root = this.root(id);
+    const relative = path.isAbsolute(given) ? path.relative(root, realPath(given) ?? given) : given;
+    return path.join(root, this.within(id, relative));
+  }
+
   private contain(root: string, relative: string): string {
     if (path.isAbsolute(relative)) throw new Error("Name the file relative to the granted folder.");
     const target = path.resolve(root, relative);
-    if (!pathInside(root, target)) throw new Error("That file is outside the granted folder.");
-    let existing = path.dirname(target);
-    while (!samePath(existing, root) && pathInside(root, existing) && !this.exists(existing)) {
-      existing = path.dirname(existing);
-    }
-    const real = realpathSync(existing);
-    if (!pathInside(root, real)) throw new Error("That file is outside the granted folder.");
+    if (!realPathInside(root, target)) throw new Error("That file is outside the granted folder.");
     return target;
   }
 

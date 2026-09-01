@@ -103,7 +103,7 @@ const FETCH_TIMEOUT_MS = 20_000;
 
 type FetchedPage = { status: number; type: string; body: Buffer; url: string };
 
-function requestPage(first: URL, guard: (value: string) => URL | null): Promise<FetchedPage> {
+function requestPage(first: URL, guard: (value: string) => URL | null, limit = MAX_FETCHED_PAGE_BYTES): Promise<FetchedPage> {
   return new Promise((resolve, reject) => {
     const request = net.request({ url: first.toString(), redirect: "manual", credentials: "omit" });
     let url = first.toString();
@@ -127,18 +127,18 @@ function requestPage(first: URL, guard: (value: string) => URL | null): Promise<
     });
     request.on("response", (response) => {
       const header = (name: string) => String(response.headers[name] ?? "");
-      if (Number(header("content-length") || 0) > MAX_FETCHED_PAGE_BYTES) return refuse("That page is too large to read");
+      if (Number(header("content-length") || 0) > limit) return refuse("That page is too large to read");
       const chunks: Buffer[] = [];
       let bytes = 0;
       response.on("data", (chunk: Buffer) => {
-        if (bytes >= MAX_FETCHED_PAGE_BYTES) return;
+        if (bytes >= limit) return;
         bytes += chunk.length;
         chunks.push(chunk);
       });
       response.on("error", () => refuse("That link stopped answering partway through"));
       response.on("end", () => {
         clearTimeout(timer);
-        resolve({ status: response.statusCode, type: header("content-type"), body: Buffer.concat(chunks).subarray(0, MAX_FETCHED_PAGE_BYTES), url });
+        resolve({ status: response.statusCode, type: header("content-type"), body: Buffer.concat(chunks).subarray(0, limit), url });
       });
     });
     request.on("error", (error: Error) => {
@@ -208,11 +208,11 @@ export function boundedText(text: string, limit: number) {
 }
 
 async function fetchImage(url: string) {
-  if (!publicUrl(url)) return null;
-  const response = await net.fetch(url, { redirect: "follow", credentials: "omit" });
-  if (!response.ok || !/^\s*image\//i.test(response.headers.get("content-type") ?? "")) return null;
-  const bytes = Buffer.from(await response.arrayBuffer());
-  return bytes.length > 0 && bytes.length <= MAX_IMAGE_BYTES ? bytes : null;
+  const first = publicUrl(url);
+  if (!first) return null;
+  const response = await requestPage(first, publicUrl, MAX_IMAGE_BYTES);
+  if (response.status < 200 || response.status > 299 || !/^\s*image\//i.test(response.type)) return null;
+  return response.body.length > 0 && response.body.length <= MAX_IMAGE_BYTES ? response.body : null;
 }
 
 export async function clipPage(front: FrontPage): Promise<PageClip> {

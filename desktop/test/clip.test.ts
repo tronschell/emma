@@ -43,7 +43,7 @@ const electronPath = require.resolve("electron");
 require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: electron } as unknown as NodeModule;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { boundedText, browserScript, clipImageUrls, encodeClipImage, fetchReadablePage, firstBrowser }: typeof import("../main/clip") = require("../main/clip");
+const { boundedText, browserScript, clipImageUrls, clipPage, encodeClipImage, fetchReadablePage, firstBrowser }: typeof import("../main/clip") = require("../main/clip");
 
 test("only whitelisted browsers are asked for their front tab", () => {
   assert.match(browserScript("Safari") ?? "", /URL of front document/);
@@ -123,4 +123,35 @@ test("a link into this machine is refused before anything is asked for", async (
     await assert.rejects(fetchReadablePage(attempt), /Only http and https links to public pages can be read/, attempt);
   }
   assert.deepEqual(requested, []);
+});
+
+test("a clipped page's picture is held to the public-address guard on every hop", async () => {
+  const page = `<html><head><title>Shop</title></head><body><p>A page with pictures and enough words to read.</p>
+    <img src="https://cdn.example.com/safe.png"><img src="https://cdn.example.com/inward.png"></body></html>`;
+  Object.assign(routes, {
+    "https://shop.example.com/item": { status: 200, body: page },
+    "https://cdn.example.com/safe.png": { status: 302, location: "https://images.example.com/safe.png" },
+    "https://images.example.com/safe.png": { status: 200, type: "image/png", body: "icon" },
+    "https://cdn.example.com/inward.png": { status: 302, location: "http://169.254.169.254/latest/meta-data/" },
+    "http://169.254.169.254/latest/meta-data/": { status: 200, type: "image/png", body: "CREDENTIALS" },
+    "https://shop.example.com/favicon.ico": { status: 404 },
+  });
+  requested.length = 0;
+
+  const clip = await clipPage({ application: "Safari", url: "https://shop.example.com/item", title: "Shop" });
+  assert.deepEqual(clip.images, ["data:image/png;base64,aWNvbg=="]);
+  assert.ok(requested.includes("https://images.example.com/safe.png"));
+  assert.ok(!requested.includes("http://169.254.169.254/latest/meta-data/"), "followed a redirect into link-local");
+});
+
+test("a picture whose first hop is already inside this machine is never asked for", async () => {
+  Object.assign(routes, {
+    "https://shop.example.com/local": { status: 200, body: `<html><head><title>L</title></head><body><p>Words enough to read here.</p><img src="http://127.0.0.1:9000/secret.png"></body></html>` },
+    "http://127.0.0.1:9000/secret.png": { status: 200, type: "image/png", body: "icon" },
+    "https://shop.example.com/favicon.ico": { status: 404 },
+  });
+  requested.length = 0;
+  const clip = await clipPage({ application: "Safari", url: "https://shop.example.com/local", title: "L" });
+  assert.deepEqual(clip.images, []);
+  assert.deepEqual(requested.filter((url) => url.includes("127.0.0.1")), []);
 });
