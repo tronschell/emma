@@ -226,3 +226,23 @@ test("stopping a parent revokes descendant grants without touching unrelated run
   assert.deepEqual(stopped, [application.threadId, "child", "grandchild", "other"]);
   assert.equal(runtime.isLive("other"), false);
 });
+
+test("overlapping permission prompts are billed once, so the wait can never outrun the turn", async () => {
+  const { runtime, asked } = fixture();
+  const startedAt = runtime.list()[0].startedAt;
+  await new Promise((done) => setTimeout(done, 40));
+  const first = runtime.question(application, { humanOnly: true });
+  const second = runtime.question({ ...application, summary: "Control Notes" }, { humanOnly: true });
+  assert.equal(asked.length, 2);
+  await new Promise((done) => setTimeout(done, 60));
+  runtime.answer(asked[0].id, true);
+  runtime.answer(asked[1].id, true);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+
+  const waited = runtime.awaited(application.threadId);
+  const wall = Date.now() - startedAt;
+  assert.ok(waited >= 50, `the overlapping wait was measured: ${waited}`);
+  assert.ok(waited <= wall - 30, `two overlapping asks were summed instead of unioned: waited ${waited} of a ${wall} wall`);
+  runtime.finish(application.threadId);
+  assert.ok(runtime.list()[0].generationMs >= 30, `the turn duration collapsed to the clamp: ${runtime.list()[0].generationMs}`);
+});

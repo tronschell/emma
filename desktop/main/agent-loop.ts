@@ -119,6 +119,8 @@ type Run = Omit<LiveAgent, "tool"> & {
   depth: number;
   changes: FileChange[];
   awaited: number;
+  waiting: number;
+  waitingSince: number;
 
   tools: Set<string>;
 
@@ -357,6 +359,8 @@ export class AgentRuntime {
       depth,
       changes: [],
       awaited: 0,
+      waiting: 0,
+      waitingSince: 0,
       tools: new Set(),
       spans: [],
       said: 0,
@@ -614,11 +618,11 @@ export class AgentRuntime {
     const live = () => current() && !options.signal?.aborted;
     if (!live()) return false;
     const id = randomUUID();
-    let held: { status: Run["status"]; activity: string; at: number } | undefined;
+    let held: { status: Run["status"]; activity: string } | undefined;
     const allowed = await new Promise<boolean>((resolve) => {
       const settle = (allowed: boolean) => {
         if (!this.asks.delete(id)) return;
-        if (held) this.stopWaiting(run, Date.now() - held.at);
+        if (held) this.stopWaiting(run);
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", abort);
         allowed = allowed && live();
@@ -637,7 +641,8 @@ export class AgentRuntime {
       const show = () => {
         if (!this.asks.has(id)) return;
         if (!live()) { settle(false); return; }
-        held = { status: run.status, activity: run.activity, at: Date.now() };
+        held = { status: run.status, activity: run.activity };
+        this.startWaiting(run);
         run.status = "waiting";
         run.activity = `waiting for your approval · ${ask.summary}`;
         try {
@@ -663,7 +668,16 @@ export class AgentRuntime {
     return allowed && live();
   }
 
-  private stopWaiting(run: Run, waited: number): void {
+  private startWaiting(run: Run): void {
+    if (run.waiting === 0) run.waitingSince = Date.now();
+    run.waiting += 1;
+  }
+
+  private stopWaiting(run: Run): void {
+    if (run.waiting === 0) return;
+    run.waiting -= 1;
+    if (run.waiting > 0) return;
+    const waited = Date.now() - run.waitingSince;
     if (waited <= 0) return;
     run.awaited += waited;
     for (const span of run.spans) {
