@@ -60,7 +60,15 @@ status note 512. Statuses are `running`, `paused`, `finished`, `failed`. A new
 job is created `paused`: saving does not start it, you press start.
 
 Permission mode: core accepts `ask`, `acceptEdits`, `full` — the same three a
-scheduled job may be saved with, and `plan` loads as `ask`.
+scheduled job may be saved with, and `plan` loads as `ask`. Nobody watches a
+running experiment, so `ask` cannot get through an iteration: every edit and
+command waits `MAX_ASK_MS` for an answer and then counts as a refusal, and the
+prompt is only ever drawn on the thread view, never in Autoresearch. A job in
+`ask` therefore refuses to start — `unattendedRefusal` pauses it with a note
+saying so, the same way an unclean repository or a spent budget does. The form
+offers `acceptEdits` to a new job: the weakest mode in which the agent's one
+change can land, with commands and app access still asking. Nothing widens a
+mode a job was saved with.
 
 ## The loop
 
