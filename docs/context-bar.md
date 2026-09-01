@@ -137,7 +137,7 @@ See [plugins.md](plugins.md).
 
 | Data | Produced by |
 |---|---|
-| Messages, replies, output tokens, tok/s, rate curve | `message.generation` on the thread |
+| Messages, replies, output tokens, tok/s, rate curve | `message.generation` on the thread. Its `durationMilliseconds` is the turn's wall clock less any time the turn spent parked on a permission prompt, so tok/s reads the model's speed rather than yours |
 | Attachment and skill rows | `recordUses` → `emma.threadContextUses.v1`, merged by `mergeUses`, capped at `MAX_USES` (32) |
 | The transcript row | `historyUse` — the characters of every stored message |
 | The turn in flight | `inputTokens` and `toolCalls` summed over the live agents main broadcasts |
@@ -145,7 +145,7 @@ See [plugins.md](plugins.md).
 | Window capacity | The OpenRouter catalog's `contextLength`. Zero on the fallback and local routes, which is why free space disappears |
 | Subagent rows | The live agent list (`LiveAgent`, [`desktop/shared/agents.ts`](../desktop/shared/agents.ts)) |
 | Sub thread rows | `snapshot.threads` from the host — not the agent list, which is why an idle sub thread still has a row |
-| Timeline spans | `listSpans()` and `onSpans` for the live turn, `threadTraces(threadId)` for the rest |
+| Timeline spans | `listSpans()` and `onSpans` for the live turn, `threadTraces(threadId)` for the rest. A span that was open while you sat on a permission prompt has its start pushed forward by the wait, so the bar measures the tool, not the dialog |
 | Git | `gitStatus(folderId)` |
 | CPU, memory, GPU, network | `machineSample()` — `os.cpus()` deltas in the main process, plus platform probes: macOS uses `/bin/sh` with `netstat`, `ioreg` and `vm_stat`; Windows uses PowerShell network, memory and GPU counters ([`desktop/main/machine.ts`](../desktop/main/machine.ts)) |
 

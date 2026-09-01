@@ -118,6 +118,7 @@ type Run = Omit<LiveAgent, "tool"> & {
   stopped: boolean;
   depth: number;
   changes: FileChange[];
+  awaited: number;
 
   tools: Set<string>;
 
@@ -176,7 +177,7 @@ export class AgentRuntime {
     run.activity = "thinking";
     if (!thinking) run.said += text.length;
     run.outputTokens += Math.ceil(text.length / CHARS_PER_TOKEN);
-    run.generationMs = Date.now() - run.startedAt;
+    run.generationMs = Date.now() - run.startedAt - run.awaited;
     if (run.adopted && !run.spans.some((span) => span.kind === "model" && span.endedAt === undefined)) {
       run.spans.push({ id: `model:${run.threadId}:${run.spans.length}`, parentId: run.spans[0].id, name: "model", kind: "model", startedAt: Date.now(), status: "running" });
       this.deps.changed();
@@ -266,6 +267,10 @@ export class AgentRuntime {
     this.deps.changed();
   }
 
+  awaited(threadId: string): number {
+    return this.runs.get(threadId)?.awaited ?? 0;
+  }
+
   mode(threadId: string): PermissionMode {
     return this.runs.get(threadId)?.mode ?? "ask";
   }
@@ -351,6 +356,7 @@ export class AgentRuntime {
       stopped: this.runs.get(turn.parentThreadId ?? "")?.stopped ?? false,
       depth,
       changes: [],
+      awaited: 0,
       tools: new Set(),
       spans: [],
       said: 0,
@@ -475,7 +481,7 @@ export class AgentRuntime {
     run.error = error;
     run.endedAt = Date.now();
     this.dismissAsks(run);
-    run.generationMs = Math.max(run.generationMs, run.endedAt - run.startedAt, 1);
+    run.generationMs = Math.max(run.generationMs, run.endedAt - run.startedAt - run.awaited, 1);
     this.closeRun(run, error ? "failed" : "ok", error);
     for (const span of run.spans) {
       if (span.endedAt !== undefined || span.status !== "running") continue;
@@ -608,10 +614,11 @@ export class AgentRuntime {
     const live = () => current() && !options.signal?.aborted;
     if (!live()) return false;
     const id = randomUUID();
-    let held: { status: Run["status"]; activity: string } | undefined;
+    let held: { status: Run["status"]; activity: string; at: number } | undefined;
     const allowed = await new Promise<boolean>((resolve) => {
       const settle = (allowed: boolean) => {
         if (!this.asks.delete(id)) return;
+        if (held) this.stopWaiting(run, Date.now() - held.at);
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", abort);
         allowed = allowed && live();
@@ -630,7 +637,7 @@ export class AgentRuntime {
       const show = () => {
         if (!this.asks.has(id)) return;
         if (!live()) { settle(false); return; }
-        held = { status: run.status, activity: run.activity };
+        held = { status: run.status, activity: run.activity, at: Date.now() };
         run.status = "waiting";
         run.activity = `waiting for your approval · ${ask.summary}`;
         try {
@@ -654,6 +661,15 @@ export class AgentRuntime {
       } else show();
     });
     return allowed && live();
+  }
+
+  private stopWaiting(run: Run, waited: number): void {
+    if (waited <= 0) return;
+    run.awaited += waited;
+    for (const span of run.spans) {
+      if (span === run.spans[0] || span.endedAt !== undefined) continue;
+      span.startedAt = Math.min(span.startedAt + waited, Date.now());
+    }
   }
 
   private async reviewed(run: Run, ask: Omit<PermissionAsk, "id">): Promise<VerifierReview> {
