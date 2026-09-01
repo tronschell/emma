@@ -146,6 +146,10 @@ export type LiveAgent = {
   error?: string;
 };
 
+type RunRecord = "mode" | "model" | "prompt" | "tool" | "startedAt" | "steps" | "toolCalls" | "inputTokens" | "outputTokens" | "generationMs";
+
+export type AgentRow = Omit<LiveAgent, RunRecord> & Partial<Pick<LiveAgent, RunRecord>>;
+
 export function tokensPerSecond(agent: Pick<LiveAgent, "outputTokens" | "generationMs">): number {
   return agent.generationMs > 0 ? agent.outputTokens / (agent.generationMs / 1000) : 0;
 }

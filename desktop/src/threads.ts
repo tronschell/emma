@@ -1,5 +1,4 @@
-import { agentColor, sentByThread, type LiveAgent } from "../shared/agents";
-import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
+import { agentColor, sentByThread, type AgentRow, type LiveAgent } from "../shared/agents";
 import type { Message, Thread } from "./types";
 
 export function threadTitle(thread: Thread): string {
@@ -97,28 +96,18 @@ export function spawnedAgents(threads: Thread[], agents: LiveAgent[], parentThre
     .map((item, index) => item.color ? item : { ...item, color: agentColor(index) });
 }
 
-export function subagentRows(threads: Thread[], agents: LiveAgent[], parentThreadId: string): LiveAgent[] {
+export function subagentRows(threads: Thread[], agents: LiveAgent[], parentThreadId: string): AgentRow[] {
   const live = agents.filter((agent) => agent.parentThreadId === parentThreadId);
   const running = new Set(live.map((agent) => agent.threadId));
   const recorded = spawnedAgents(threads, agents, parentThreadId)
     .filter((item) => !running.has(item.id))
-    .map((item): LiveAgent => ({
+    .map((item): AgentRow => ({
       threadId: item.id,
       parentThreadId,
       title: item.name,
       color: item.color,
       status: "done",
-      mode: DEFAULT_PERMISSION_MODE,
-      model: "",
       activity: item.brief,
-      prompt: item.brief,
-      tool: false,
-      startedAt: item.at,
-      steps: 0,
-      toolCalls: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      generationMs: 0,
     }));
   return [...recorded, ...live];
 }

@@ -143,7 +143,7 @@ See [plugins.md](plugins.md).
 | The turn in flight | `inputTokens` and `toolCalls` summed over the live agents main broadcasts |
 | The residual row | `systemChars(lastInputTokens(thread), measuredChars)`, floored at 0 |
 | Window capacity | The OpenRouter catalog's `contextLength`. Zero on the fallback and local routes, which is why free space disappears |
-| Subagent rows | `subagentRows` — the live agent list (`LiveAgent`, [`desktop/shared/agents.ts`](../desktop/shared/agents.ts)) over the thread's recorded `subagent` threads, so a subagent from an earlier turn keeps its row after the live run is forgotten |
+| Subagent rows | `subagentRows` — the live agent list (`LiveAgent`, [`desktop/shared/agents.ts`](../desktop/shared/agents.ts)) over the thread's recorded `subagent` threads, so a subagent from an earlier turn keeps its row after the live run is forgotten. A recorded row is an `AgentRow`: a name, a colour and the brief, and none of the mode, model, elapsed or token fields only a live run knows. Opening one draws the finished thread's transcript, not the stat block |
 | Sub thread rows | `snapshot.threads` from the host — not the agent list, which is why an idle sub thread still has a row |
 | Timeline spans | `listSpans()` and `onSpans` for the live turn, `threadTraces(threadId)` for the rest. A span that was open while you sat on a permission prompt has its start pushed forward by the wait, so the bar measures the tool, not the dialog |
 | Git | `gitStatus(folderId)` |

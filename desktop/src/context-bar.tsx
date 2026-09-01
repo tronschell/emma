@@ -5,7 +5,7 @@ import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, v
 import { CSS } from "@dnd-kit/utilities";
 import { cacheHitRate, cacheWriteTokens, CONTEXT_METRICS, CONTEXT_WIDGETS, costLabel, costPerTask, DEFAULT_METRICS, MAX_CONTEXT_PAGES, MAX_PAGE_NAME, nextPageId, widgetDefinition, type ContextMetric, type ContextPage, type ContextWidget, type ContextWidgetType, type WidgetOrientation } from "../shared/context-bar";
 import { charLabel, CHARS_PER_TOKEN, shareLabel, usageKey, type ContextUse } from "../shared/usage";
-import { agentColor, type LiveAgent } from "../shared/agents";
+import { agentColor, type AgentRow, type LiveAgent } from "../shared/agents";
 import type { Plan } from "../shared/plan";
 import type { TaskList } from "../shared/task-list";
 import type { GitSnapshot } from "../shared/git";
@@ -223,22 +223,22 @@ function SegmentPanel({ source, messages, threadId }: { source: SegmentSource; m
 const railColumns = (count: number) => ({ "--cols": Math.max(1, Math.ceil(Math.sqrt(count))) }) as CSSProperties;
 
 function SubagentRail({ agents, all, active, onPick, orientation }: {
-  agents: LiveAgent[];
-  all: LiveAgent[];
+  agents: AgentRow[];
+  all: AgentRow[];
   active: string;
   onPick: (threadId: string) => void;
   orientation: WidgetOrientation;
 }) {
   const live = agents.filter(alive);
   const done = agents.filter((agent) => !alive(agent));
-  const roots = (list: LiveAgent[]) => list.filter((agent) => !list.some((other) => other.threadId === agent.parentThreadId));
-  const branch = (agent: LiveAgent) => {
+  const roots = (list: AgentRow[]) => list.filter((agent) => !list.some((other) => other.threadId === agent.parentThreadId));
+  const branch = (agent: AgentRow) => {
     const kids = all.filter((other) => other.parentThreadId === agent.threadId && alive(other) === alive(agent));
     return <li key={agent.threadId}>
       <button type="button" className={`subagent ${agent.threadId === active ? "active" : ""}`} title={`${agent.title} — ${agent.activity}${agent.model ? ` · ${agent.model}` : ""}`} onClick={() => onPick(agent.threadId)}>
         <i className="subagent-square" style={{ background: agent.color }} data-status={agent.status} aria-hidden="true" />
         <span>{agent.title}</span>
-        <BrandIcon brand={brandForModel(agent.model)} className="subagent-model" />
+        <BrandIcon brand={brandForModel(agent.model ?? "")} className="subagent-model" />
       </button>
       {!!kids.length && <ul className="subagent-list subagent-kids" style={railColumns(kids.length)}>{kids.map(branch)}</ul>}
     </li>;
@@ -254,7 +254,7 @@ function SubagentRail({ agents, all, active, onPick, orientation }: {
   </section>;
 }
 
-const alive = (agent?: LiveAgent) => agent?.status === "running" || agent?.status === "waiting";
+const alive = (agent?: AgentRow) => agent?.status === "running" || agent?.status === "waiting";
 
 function SubthreadRail({ threads, agents, onOpen, orientation }: {
   threads: Thread[];
@@ -288,7 +288,7 @@ export interface WidgetContext {
   messages: Message[];
   threadId: string;
   sending: boolean;
-  subagents: LiveAgent[];
+  subagents: AgentRow[];
   subthreads: Thread[];
   agents: LiveAgent[];
   onOpenThread: (threadId: string) => void;

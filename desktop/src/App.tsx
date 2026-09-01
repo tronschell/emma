@@ -2397,7 +2397,7 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
     setRunError("");
     steerQueued(thread.id, index);
   };
-  const openAgent = subagents.find((agent) => agent.threadId === tab);
+  const openAgent = agents.find((agent) => agent.threadId === tab && agent.parentThreadId === threadId);
   const agentThread = openAgent && loadedSubthread?.id === openAgent.threadId ? loadedSubthread : undefined;
   const pastAgent = !openAgent && loadedSubthread?.id === tab ? loadedSubthread : undefined;
   const subagentLoading = !!subagentId && loadedSubthread?.id !== subagentId;
