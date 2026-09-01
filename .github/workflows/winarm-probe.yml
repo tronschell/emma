@@ -1,0 +1,65 @@
+name: winarm probe
+
+on:
+  push:
+    branches: [ci/win-arm-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  check-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+          - runner: windows-11-vs2026-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: setup-zig v2.2.1
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run test
+        working-directory: desktop
+      - name: probe Windows native toolchain
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang.exe -ErrorAction Stop
+          $clangpp = Get-Command clang++.exe -ErrorAction Stop
+          $resourceCompiler = Get-Command rc.exe -ErrorAction Stop
+          & $clang.Source --version
+          & $clangpp.Source --version
+          $resourceVersion = (Get-Item $resourceCompiler.Source).VersionInfo.FileVersion
+          if (!$resourceVersion) { throw "Windows SDK resource compiler version is unavailable" }
+          Write-Output "Windows SDK resource compiler $resourceVersion ($($resourceCompiler.Source))"
+      - run: npm run build:native
+        working-directory: desktop
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --locked --all-targets -- -D warnings
+      - run: zig build test
+        working-directory: harness
+      - run: npm run package:win
+        working-directory: desktop

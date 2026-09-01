@@ -16,10 +16,12 @@ test("dev checks never compile the app and full CI only targets main", () => {
   assert.deepEqual([...dev.matchAll(/^\s+- uses: (.+)$/gm)].map((match) => match[1]), ["actions/checkout@v5", "actions/setup-node@v5"]);
 });
 
-test("the Windows lane covers the native x64 build and stays off the release path", () => {
+test("the Windows lane covers the native x64 and arm64 builds and stays off the release path", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
-  assert.match(workflow, /check-windows:\n {4}if: github\.event_name == 'pull_request'\n {4}runs-on: windows-2025/);
-  assert.doesNotMatch(workflow, /strategy:|matrix|windows-11-vs2026-arm/);
+  assert.match(workflow, /check-windows:\n {4}if: github\.event_name == 'pull_request'\n {4}strategy:\n {6}fail-fast: false/);
+  assert.match(workflow, /- runner: windows-2025\n {12}arch: x64/);
+  assert.match(workflow, /- runner: windows-11-vs2026-arm\n {12}arch: arm64/);
+  assert.match(workflow, /runs-on: \$\{\{ matrix\.runner \}\}/);
   assert.match(workflow, /node-version: 24/);
   assert.match(workflow, /version: 0\.16\.0/);
   assert.match(workflow, /probe Windows native toolchain/);

@@ -72,7 +72,15 @@ jobs:
 
   check-windows:
     if: github.event_name == 'pull_request'
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+          - runner: windows-11-vs2026-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5

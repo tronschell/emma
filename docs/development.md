@@ -37,7 +37,7 @@ that is a rule, and Apache-2.0 §4 keeps `LICENSE` and
 | | Version | Pinned in |
 | --- | --- | --- |
 | macOS | 12 or later, Apple silicon | `desktop/native/Info.extra.plist` and `desktop/scripts/package-mac.mjs` |
-| Windows | Windows 10 version 1809 or later, x64 supported distributable/public target | `desktop/scripts/package-windows.mjs` and the Windows CI runner |
+| Windows | Windows 10 version 1809 or later, x64 supported distributable/public target; arm64 CI compile/package validation target | `desktop/scripts/package-windows.mjs` and the Windows CI runners |
 | Node | 24+ | no `engines` field |
 | Rust | 1.97.1 | [`rust-toolchain.toml`](../rust-toolchain.toml) |
 | Zig | 0.16.0 | [`harness/build.zig.zon`](../harness/build.zig.zon) and CI |
@@ -159,7 +159,7 @@ To avoid replacing a running bundle, pass a separate output directory:
 npm --prefix desktop run package:mac -- /tmp/emma-release-check
 ```
 
-On a native Windows x64 host, use the Squirrel packaging path:
+On a native Windows x64 or arm64 host, use the Squirrel packaging path:
 
 ```powershell
 npm --prefix desktop run package:win
@@ -179,11 +179,12 @@ on Ubuntu, with no app dependency installation, compilation, or packaging.
 Pushes to `dev` only prepare the generated release PR.
 
 Promotion PRs into `main` and release pushes to `main` run the six checks and
-native self-tests on `macos-15`. Promotion PRs also run a `windows-2025` (x64)
-lane covering only what macOS cannot: the desktop tests, the native toolchain
-probe and helper build, `cargo test`, `cargo clippy`, `zig build test`, and the
-unsigned `package:win` rehearsal. That lane is skipped on release pushes so a
-Windows runner can never gate a macOS release. Main's release workflow remains
+native self-tests on `macos-15`. Promotion PRs also run `windows-2025` (x64) and
+`windows-11-vs2026-arm` (arm64) lanes covering only what macOS cannot: the
+desktop tests, the native toolchain probe and helper build, `cargo test`,
+`cargo clippy`, `zig build test`, and the unsigned `package:win` rehearsal. Those
+lanes are skipped on release pushes so a Windows runner can never gate a macOS
+release. Main's release workflow remains
 macOS-only for signing, notarization, and publication. Public signed Windows x64
 publication is pending release-workflow authorization.
 
