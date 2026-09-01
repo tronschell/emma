@@ -123,3 +123,19 @@ export function spawnedByTurn(messages: Message[], spawned: Spawned[]): { turns:
   }
   return { turns, loose };
 }
+
+export function latestAssistantMessage(thread?: Thread) {
+  const messages = thread?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") return undefined;
+    if (messages[index].role === "assistant") return messages[index];
+  }
+  return undefined;
+}
+
+export const latestReply = (thread?: Thread) => latestAssistantMessage(thread)?.content ?? "";
+
+export const latestRate = (thread?: Thread) => {
+  const generation = latestAssistantMessage(thread)?.generation;
+  return generation?.durationMilliseconds ? Math.round(generation.outputTokens / generation.durationMilliseconds * 1000) : 0;
+};

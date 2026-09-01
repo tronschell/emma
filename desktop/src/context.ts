@@ -364,7 +364,7 @@ function toolItems(): SegmentItem[] {
 export async function segmentItems(source: SegmentSource, messages: Message[], threadId: string): Promise<SegmentItem[]> {
   if (source === "messages") {
     return messages.slice(-MAX_SEGMENT_ITEMS).map((message, index) => ({
-      name: `${index + 1}. ${message.role === "user" ? "You" : "Emma"}`,
+      name: `${index + 1}. ${message.role === "user" ? "You" : message.role === "system" ? "Notice" : "Emma"}`,
       detail: message.content.replace(/\s+/g, " ").slice(0, PREVIEW_CHARS).trim(),
       chars: message.content.length,
     }));
