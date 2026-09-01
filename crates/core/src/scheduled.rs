@@ -522,6 +522,19 @@ impl ScheduledJobStore {
         Ok(job)
     }
 
+    pub fn find(
+        &self,
+        id: &ScheduledJobId,
+    ) -> Result<Option<ScheduledJob>, ScheduledJobStoreError> {
+        match self.load(id) {
+            Ok(job) => Ok(Some(job)),
+            Err(ScheduledJobStoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn delete(&self, id: &ScheduledJobId) -> Result<(), ScheduledJobStoreError> {
         match fs::remove_file(self.path_for(id)) {
             Ok(()) => Ok(()),

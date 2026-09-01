@@ -143,7 +143,7 @@ enum Command {
         job_id: ScheduledJobId,
         outputs: String,
         depth: u32,
-        reply: Reply<ScheduledJob>,
+        reply: Reply<Option<ScheduledJob>>,
     },
     FireScheduledEvent {
         event: String,
@@ -465,7 +465,7 @@ impl LiveClient {
         job_id: ScheduledJobId,
         outputs: String,
         depth: u32,
-    ) -> Result<ScheduledJob, LiveError> {
+    ) -> Result<Option<ScheduledJob>, LiveError> {
         let (reply, result) = mpsc::channel();
         self.commands
             .send(Command::FinishScheduledJob {
@@ -1178,18 +1178,21 @@ impl Runtime {
         job_id: ScheduledJobId,
         outputs: String,
         depth: u32,
-    ) -> Result<ScheduledJob, LiveError> {
-        let mut job = self
+    ) -> Result<Option<ScheduledJob>, LiveError> {
+        let Some(mut job) = self
             .scheduled
-            .load(&job_id)
-            .map_err(|error| LiveError::new(format!("could not load scheduled job: {error}")))?;
+            .find(&job_id)
+            .map_err(|error| LiveError::new(format!("could not load scheduled job: {error}")))?
+        else {
+            return Ok(None);
+        };
         job.set_outputs(outputs.clone())
             .map_err(|error| LiveError::new(format!("run outputs are invalid: {error}")))?;
         self.scheduled
             .save(&job)
             .map_err(|error| LiveError::new(format!("could not save scheduled job: {error}")))?;
         self.fire_trigger(&format!("after {job_id}"), outputs, depth.saturating_add(1))?;
-        Ok(job)
+        Ok(Some(job))
     }
 
     fn fire_scheduled_event(
@@ -2170,6 +2173,13 @@ mod tests {
 
         runtime.delete_scheduled_job(second.id.clone()).unwrap();
         assert!(runtime.scheduled.load(&second.id).is_err());
+        assert!(
+            runtime
+                .finish_scheduled_job(second.id.clone(), outputs.into(), 0)
+                .unwrap()
+                .is_none(),
+            "a run whose job was deleted while it was in flight finishes quietly"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
