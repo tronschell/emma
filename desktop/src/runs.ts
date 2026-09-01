@@ -26,19 +26,28 @@ export type Block =
 
   | { kind: "notice"; text: string; plain?: boolean; steer?: boolean };
 
+const voice = (blocks: Block[], least: number) =>
+  blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > least) as { text: string } | undefined;
+
 export function pairBlocks(messages: Message[], landed: Block[][], cached: Record<string, Block[]>): (Block[] | undefined)[] {
-  const assistants = messages.reduce((count, item) => item.role === "assistant" ? count + 1 : count, 0);
-  let seen = -1;
-  return messages.map((item) => {
-    if (item.role !== "assistant") return undefined;
-    seen += 1;
-    return landed[seen - (assistants - landed.length)] ?? cached[item.timestamp];
-  });
+  const spots = messages.flatMap((item, at) => item.role === "user" ? [] : [at]);
+  const paired = new Map<number, Block[]>();
+  const spare: Block[][] = [];
+  for (const blocks of landed) {
+    const said = voice(blocks, 0);
+    if (!said) { spare.push(blocks); continue; }
+    const spot = spots.find((at) => !paired.has(at) && messages[at].content.includes(said.text.trim().slice(0, 40)));
+    if (spot !== undefined) paired.set(spot, blocks);
+  }
+  const open = spots.filter((at) => !paired.has(at));
+  const take = Math.min(spare.length, open.length);
+  for (let at = 0; at < take; at += 1) paired.set(open[open.length - take + at], spare[spare.length - take + at]);
+  return messages.map((item, at) => paired.get(at) ?? (item.role === "user" ? undefined : cached[item.timestamp]));
 }
 
 export function wrote(content: string, blocks: Block[]): boolean {
-  const said = blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > 8);
-  return !said || content.includes((said as { text: string }).text.trim().slice(0, 40));
+  const said = voice(blocks, 8);
+  return !said || content.includes(said.text.trim().slice(0, 40));
 }
 
 export function arrived(messages: Message[], blocks: Block[]): boolean {
@@ -327,13 +336,12 @@ export function settleRun(threadId: string, messages: Message[], cached: Record<
   const run = read(threadId);
   const settled = run.landed.at(-1);
   if (run.sending || run.foreign || run.queue.length || !settled?.length || run.blocks !== settled) return;
-  const assistants = messages.filter((message) => message.role === "assistant");
-  const first = assistants.length - run.landed.length;
-  if (first < 0) return;
-  for (let at = 0; at < run.landed.length; at += 1) {
-    const message = assistants[first + at];
-    const blocks = run.landed[at];
-    if (!message || !blocks.length || !wrote(message.content, blocks) || !Object.prototype.hasOwnProperty.call(cached, message.timestamp) || !Array.isArray(cached[message.timestamp]) || !cached[message.timestamp].length) return;
+  const paired = pairBlocks(messages, run.landed, {});
+  if (paired.filter(Boolean).length < run.landed.length) return;
+  for (const [at, blocks] of paired.entries()) {
+    if (!blocks) continue;
+    const message = messages[at];
+    if (!blocks.length || !wrote(message.content, blocks) || !Array.isArray(cached[message.timestamp]) || !cached[message.timestamp].length) return;
   }
   write(threadId, { blocks: [], landed: [], pending: null });
 }
