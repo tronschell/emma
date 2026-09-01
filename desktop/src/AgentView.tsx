@@ -11,6 +11,7 @@ import { reasonText } from "./errors";
 import ActivityView from "./ActivityView";
 import type { MemoryNote, Snapshot, Thread } from "./types";
 import { day } from "./dates";
+import { latestReply } from "./threads";
 
 const RECENT_THREADS = 40;
 const WINDOW_DAYS = 30;
@@ -95,8 +96,8 @@ export default function AgentView({ snapshot, act, busy, openThread, projectName
       const thread = await act("createThread") as { id?: string } | undefined;
       if (!thread?.id) throw new Error("Emma could not open a thread for this");
       await act("renameThread", { threadId: thread.id, title: `Fix · ${item.tool}`.slice(0, 120) });
-      const answered = await act("sendMessage", { threadId: thread.id, content: briefFor(item) }) as { messages?: { content: string }[] } | undefined;
-      const written = (answered?.messages?.at(-1)?.content ?? "").trim().slice(0, MAX_ADDITION_CHARS);
+      const answered = await act("sendMessage", { threadId: thread.id, content: briefFor(item) }) as Thread | undefined;
+      const written = latestReply(answered).trim().slice(0, MAX_ADDITION_CHARS);
       if (!trial) propose(item);
       if (written) setDraft((current) => current ? { ...current, addition: written } : current);
       openThread(thread.id);
