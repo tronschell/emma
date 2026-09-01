@@ -115,7 +115,7 @@ static DWORD WINAPI relay_resize(void *value) {
       held[index] = 0;
       int columns = 0;
       int rows = 0;
-      if (sscanf(held + start, "%d %d", &columns, &rows) == 2 && columns > 0 && rows > 0 && columns <= 4096 && rows <= 4096) {
+      if (sscanf_s(held + start, "%d %d", &columns, &rows) == 2 && columns > 0 && rows > 0 && columns <= 4096 && rows <= 4096) {
         if (FAILED(resize(context->console, (COORD){ (SHORT)columns, (SHORT)rows }))) InterlockedExchange(&context->relay_failure, 1);
       }
       start = index + 1;

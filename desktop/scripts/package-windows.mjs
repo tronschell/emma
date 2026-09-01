@@ -200,7 +200,7 @@ verifyPeArchitecture(executable);
 const archive = path.join(app, "resources", "app.asar");
 assert.ok(existsSync(archive), `Missing packaged archive: ${archive}`);
 assert.equal(JSON.parse(extractFile(archive, "package.json")).version, version);
-const files = listPackage(archive);
+const files = listPackage(archive).map((file) => file.replaceAll("\\", "/"));
 for (const file of ["/dist-main/main/main.js", "/dist-main/main/preload.js", "/dist-renderer/index.html", "/dist-renderer/.vite/license.md"]) assert.ok(files.includes(file), `Missing packaged file: ${file}`);
 assert.ok(files.every((file) => bundled.test(file)), "Source files must not ship in app.asar.");
 for (const resource of required) {
@@ -231,6 +231,7 @@ await createWindowsInstaller({
   setupIcon: ico,
   noMsi: true,
   title: "Emma",
+  description: "A self-learning, self-building metaharness.",
   version,
   ...(windowsSign ? { windowsSign } : {}),
 });
