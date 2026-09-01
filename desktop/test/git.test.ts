@@ -33,7 +33,7 @@ deleted file mode 100644
 type Repo = { root: string; repo: string; run: (...args: string[]) => string };
 
 function makeRepo(): Repo {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "emma-git-")));
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "emma-git-")));
   const repo = path.join(root, "project");
   execFileSync("git", ["init", "-q", "-b", "main", repo], { cwd: root, stdio: "pipe" });
   const run = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString();
