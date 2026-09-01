@@ -1896,7 +1896,8 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         threadId,
         prompt: child.title,
         thinking,
-        answer: spoken || (reason ? `(this subagent stopped: ${reason})` : "(the subagent finished without an answer)"),
+        answer: spoken,
+        notice: reason ? `This subagent stopped: ${reason}` : spoken ? "" : "This subagent finished without an answer.",
         durationMilliseconds: String(Date.now() - child.startedAt),
         outputTokens: String(spent?.outputTokens ?? 0),
         inputTokens: String(spent?.inputTokens ?? 0),
@@ -2214,6 +2215,19 @@ function harnessCwd(threadId: string) {
   return scratch;
 }
 
+const STOP_NOTICES: Record<string, string> = {
+  cancelled: "You stopped this run",
+  refused: "The run was refused",
+  max_output_tokens: "The model hit its output limit",
+  max_model_turns: "The run hit its step limit",
+};
+
+function turnNotice(stopReason: string, spoken: string): string {
+  const ended = STOP_NOTICES[stopReason];
+  if (!ended) return spoken ? "" : "This turn ended without an answer.";
+  return spoken ? `${ended} — the answer above stops where it was cut off.` : `${ended}.`;
+}
+
 function recordTurn(turn: RecordedTurn): Promise<unknown> {
   return host!.request({ method: "recordTurn", params: recordedTurn(turn) });
 }
@@ -2294,7 +2308,8 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
       threadId: turn.threadId,
       prompt: turn.content,
       thinking: harnessThought.get(turn.threadId),
-      answer: spoken || `(the run ended: ${stopReason})`,
+      answer: spoken,
+      notice: turnNotice(stopReason, spoken),
       durationMilliseconds: String(Date.now() - startedAt),
       outputTokens: String(usage.outputTokens),
       inputTokens: String(usage.inputTokens),
@@ -2334,7 +2349,8 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
         threadId: turn.threadId,
         prompt: turn.content,
         thinking: thought,
-        answer: `${spoken}\n\n_(this run stopped: ${client.paused.get(turn.threadId) ?? detail})_`.trim(),
+        answer: spoken,
+        notice: `This run stopped: ${client.paused.get(turn.threadId) ?? detail}`,
         durationMilliseconds: String(Date.now() - startedAt),
         outputTokens: String(stoppedUsage.outputTokens),
         inputTokens: String(stoppedUsage.inputTokens),

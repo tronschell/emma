@@ -43,6 +43,7 @@ export type RecordedTurn = {
   prompt: string;
   thinking?: string;
   answer: string;
+  notice?: string;
   durationMilliseconds: string;
   outputTokens: string;
   inputTokens: string;

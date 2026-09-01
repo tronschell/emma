@@ -221,6 +221,7 @@ function MessageTray({ attached }: { attached?: TurnAttachment[] }) {
 }
 
 function Turn({ item, blocks, index, attached, spawned }: { item: Message; blocks?: Block[]; index?: number; attached?: TurnAttachment[]; spawned?: Spawned[] }) {
+  if (item.role === "system") return <div className="turn-notice" data-turn={index}>{!!blocks?.length && <Blocks blocks={blocks} />}<ContextNotice text={item.content} plain /></div>;
   const model = item.generation?.model ?? "";
   const { from, body } = sentByThread(item.content);
   const thought = item.role !== "assistant" ? "" : blocks?.length ? thinkingOf(blocks) : splitThinking(body).thinking;
