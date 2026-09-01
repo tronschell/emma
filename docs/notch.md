@@ -65,6 +65,9 @@ picker, and a footer reading the model's window and the last answer's tok/s.
 - `⌘1` / `⌘2` / `⌘3` on macOS, or `Ctrl+1` / `Ctrl+2` / `Ctrl+3` on Windows,
   run the three quick actions from **Settings → Quick actions** — each is a
   label and a prompt, run as one turn in a fresh thread.
+- The mode picker opens on **Settings → Tools → Default permission mode**, the
+  same rung a fresh thread starts on. Pick another there and the island keeps
+  that one from then on, in `emma.overlayMode.v1`.
 - Escape leaves the island; so does clicking away.
 - Reopening while a turn is still running starts a new quick session, unless
   **Settings → Notch → Quick Ask behaviour** is `continue`.

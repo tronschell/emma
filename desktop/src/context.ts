@@ -2,7 +2,7 @@
 import { contextBlock, pickKey, slashName, type ContextPick, type FolderFile, type FolderGrant } from "../shared/folders";
 import { pathName, type SlashCommand } from "../shared/slash";
 import { ARTIFACT_LABELS, type ArtifactMeta } from "../shared/artifacts";
-import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
+import { DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
 import { CHARS_PER_TOKEN, mergeUses, rateByContext, usageKey, type ContextUse } from "../shared/usage";
 import { SETTINGS_KEY, tagName, validateSettings } from "../shared/settings";
 import { keepKindLabel, type KeptNote } from "../shared/vault";
@@ -176,8 +176,9 @@ export function setThreadMode(threadId: string, mode: PermissionMode): void {
 
 const OVERLAY_MODE_KEY = "emma.overlayMode.v1";
 
-export function overlayMode(): PermissionMode {
-  return asPermissionMode(localStorage.getItem(OVERLAY_MODE_KEY) ?? "auto");
+export function overlayMode(fallback: PermissionMode = DEFAULT_PERMISSION_MODE): PermissionMode {
+  const saved = localStorage.getItem(OVERLAY_MODE_KEY);
+  return isPermissionMode(saved) ? saved : fallback;
 }
 
 export function setOverlayMode(mode: PermissionMode): void {

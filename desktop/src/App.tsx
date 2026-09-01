@@ -4000,7 +4000,7 @@ function ToolSettingsPanel({ settings, onChange, onDefaultMode, busy }: { settin
       : <p className="tool-empty">{empty}</p>;
   return <div className="tool-settings">
     <section className="local-model-settings default-mode">
-      <header><div><div className="settings-head"><h3>Default permission mode</h3><InfoDot>The rung a thread's picker opens on. Change it in the composer and that thread keeps its own from then on; this only decides where a fresh one starts. Quick Ask keeps its own memory and is not affected.</InfoDot></div></div><ModePicker mode={settings.defaultPermissionMode} setMode={onDefaultMode} disabled={busy} /></header>
+      <header><div><div className="settings-head"><h3>Default permission mode</h3><InfoDot>The rung a thread's picker opens on. Change it in the composer and that thread keeps its own from then on; this only decides where a fresh one starts. Quick Ask starts here too, until you change it in the island.</InfoDot></div></div><ModePicker mode={settings.defaultPermissionMode} setMode={onDefaultMode} disabled={busy} /></header>
     </section>
     <section className="local-model-settings">
       <header><div><span>Built in</span><h3>What the agent may call</h3><p>Switching a tool off hides it from the model entirely — it is not offered, and a call to it is refused. Permission modes still apply on top of this: <b>Plan</b> already hides everything that changes anything. The two tools that call a model of their own — <b>Advisor</b> and <b>Vision</b> — pick it in <b>Settings → Models</b>.</p></div><strong>{off ? `${off} off` : "All on"}</strong></header>
@@ -4822,7 +4822,8 @@ function Overlay() {
   const [modelsOpen, setModelsOpen] = useState(false);
   const modelMenu = useRef<HTMLElement>(null);
   const [menuBand, setMenuBand] = useState(0);
-  const [mode, setMode] = useState<PermissionMode>(overlayMode);
+  const [mode, setMode] = useState<PermissionMode>(() => overlayMode(settings.defaultPermissionMode));
+  const pickMode = useCallback((next: PermissionMode) => { setMode(next); setOverlayMode(next); }, []);
   const [modesOpen, setModesOpen] = useState(false);
   const modeMenu = useRef<HTMLDivElement>(null);
   const [modeBand, setModeBand] = useState(0);
@@ -4883,7 +4884,6 @@ function Overlay() {
     setThreadMode(threadId, mode);
     await window.emma.setThreadContext({ threadId, folderIds: [], mode, model: modelKey }).catch(() => undefined);
   }, [mode, modelKey]);
-  useEffect(() => { setOverlayMode(mode); }, [mode]);
   useEffect(() => window.emma.onNewQuickSession(() => {
     session.current += 1;
     endStream();
@@ -5131,7 +5131,7 @@ function Overlay() {
         {turns.length >= MIGRATE_AFTER && <button type="button" className="island-migrate" onClick={() => window.emma.openWorkspace()}>Getting long — continue in the full app →</button>}
       </div>
       {modelsOpen && <ModelMenu ref={modelMenu} close={() => setModelsOpen(false)} act={act} busy={busy} onSettingsChanged={setSettings} onManage={() => window.emma.openWorkspace()} pinned={settings.notchModel ? { key: settings.notchModel, onPick: pickModel } : undefined} />}
-      {modesOpen && <ModeMenu ref={modeMenu} mode={mode} setMode={setMode} close={() => setModesOpen(false)} />}
+      {modesOpen && <ModeMenu ref={modeMenu} mode={mode} setMode={pickMode} close={() => setModesOpen(false)} />}
       <footer className="island-foot">
         <div className="mode-picker" data-mode={mode}><ModeTrigger mode={mode} open={modesOpen} onToggle={() => { setModesOpen((open) => !open); setModelsOpen(false); }} /></div>
         <button type="button" className="model-button" disabled={busy} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelKeyLabel(settings, modelKey)}${modelKeyTag(modelKey) ? ` · ${modelKeyTag(modelKey)}` : ""}${effort ? ` · thinking ${thinkingLabel(effort)}` : ""}`} onClick={() => { setModelsOpen((open) => !open); setModesOpen(false); }}><BrandIcon brand={modelKeyBrand(settings, modelKey)} className="model-brand" /><span className="model-label">{modelKeyLabel(settings, modelKey)}</span>{modelKeyTag(modelKey) && <em className={`model-route ${modelKeyTag(modelKey) === "Direct" ? "local" : "remote"}`}>{modelKeyTag(modelKey)}</em>}<ThinkingTag level={effort} /><span aria-hidden="true">▾</span></button>
