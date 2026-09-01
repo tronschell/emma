@@ -8,12 +8,18 @@ const native_session = @import("native_session.zig");
 const terminal_store = @import("store.zig");
 const host_capabilities = @import("../hosts/host.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_acl = if (builtin.os.tag == .windows) @import("../shared/windows_acl.zig") else struct {};
 const profile_paths = @import("../shared/profile_paths.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const background_process_provider = @import(
     "../execution/background_process_provider.zig",
 );
 const process_supervisor = @import("../background/process_supervisor.zig");
+const windows_console = if (builtin.os.tag == .windows)
+    @import("../../ui/terminal/windows_console.zig")
+else
+    struct {};
+const windows = std.os.windows;
 
 const Allocator = std.mem.Allocator;
 
@@ -29,7 +35,8 @@ const listener_poll_ms = 50;
 const transport_hash_bytes: usize = 16;
 const transport_hash_context = "fx.terminal.transport.v1\x00";
 const socket_permissions: std.Io.File.Permissions = switch (builtin.os.tag) {
-    .macos, .linux => .fromMode(0o600),
+    .macos, .linux => io_mod.permissionsFromMode(0o600),
+    .windows => .default_file,
     else => .default_file,
 };
 
@@ -54,15 +61,20 @@ fn nativeEndpointPathLimit(target: std.Target.Os.Tag) ?usize {
     return switch (target) {
         .macos => 104,
         .linux => 108,
+        .windows => 108,
         else => null,
     };
 }
 
-fn runtimeBase(target: std.Target.Os.Tag) ?[]const u8 {
+fn runtimeBaseAlloc(alloc: Allocator, target: std.Target.Os.Tag) ![]u8 {
     return switch (target) {
-        .macos => "/private/tmp",
-        .linux => "/tmp",
-        else => null,
+        .macos => alloc.dupe(u8, "/private/tmp"),
+        .linux => alloc.dupe(u8, "/tmp"),
+        .windows => if (comptime builtin.os.tag == .windows)
+            io_mod.runtimeTempPathAlloc(alloc)
+        else
+            error.TerminalHostUnsupported,
+        else => error.TerminalHostUnsupported,
     };
 }
 
@@ -73,6 +85,17 @@ fn validateEndpointPathForTarget(
     const limit = nativeEndpointPathLimit(target) orelse
         return error.TerminalHostUnsupported;
     if (path.len >= limit) return error.NameTooLong;
+}
+
+fn endpointKindAllowedForTarget(
+    target: std.Target.Os.Tag,
+    kind: std.Io.File.Kind,
+) bool {
+    return switch (target) {
+        .windows => false,
+        .macos, .linux => kind == .unix_domain_socket,
+        else => false,
+    };
 }
 
 const EndpointSelection = struct {
@@ -95,8 +118,8 @@ fn resolveEndpointSelection(
     home: []const u8,
     uid: std.c.uid_t,
 ) !EndpointSelection {
-    const runtime_base = runtimeBase(target) orelse
-        return error.TerminalHostUnsupported;
+    const runtime_base = try runtimeBaseAlloc(alloc, target);
+    defer alloc.free(runtime_base);
     const authority_root = try std.fs.path.join(
         alloc,
         &.{ home, profile_paths.root_dir_name, host_dir_name },
@@ -203,7 +226,7 @@ pub const Paths = struct {
             alloc,
             builtin.os.tag,
             home,
-            std.c.getuid(),
+            io_mod.currentUserId(),
         );
         var selection_owned = true;
         errdefer if (selection_owned) selection.deinit(alloc);
@@ -229,7 +252,7 @@ pub const Paths = struct {
         if (selection.uses_fallback) {
             transport_dir = try openRuntimeTransportDir(
                 selection.transport_root,
-                std.c.getuid(),
+                io_mod.currentUserId(),
             );
         }
         selection_owned = false;
@@ -290,7 +313,7 @@ fn openVerifiedPrivateRuntimeDir(
             parent.createDir(
                 zio,
                 name,
-                std.Io.File.Permissions.fromMode(0o700),
+                io_mod.permissionsFromMode(0o700),
             ) catch |create_err| switch (create_err) {
                 error.PathAlreadyExists => {},
                 else => return create_err,
@@ -313,6 +336,13 @@ fn openVerifiedPrivateRuntimeDir(
 
 fn verifyPrivateRuntimeDir(dir: std.Io.Dir, uid: std.c.uid_t) !void {
     const stat = try dir.stat(io_mod.getIo());
+    if (comptime builtin.os.tag == .windows) {
+        try io_mod.enforcePrivateDirectoryAcl(dir);
+        if (!(try io_mod.privateDirectoryAclMatches(dir))) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
+        return;
+    }
     const owner_uid = try directoryOwner(dir);
     try validatePrivateRuntimeDir(stat, owner_uid, uid);
 }
@@ -351,6 +381,7 @@ fn directoryOwner(dir: std.Io.Dir) !std.c.uid_t {
                 }
             }
         },
+        .windows => io_mod.currentUserId(),
         else => error.TerminalHostUnsupported,
     };
 }
@@ -361,8 +392,12 @@ fn validatePrivateRuntimeDir(
     uid: std.c.uid_t,
 ) !void {
     if (stat.kind != .directory) return error.RuntimeDirectoryUnsafe;
+    if (comptime builtin.os.tag == .windows) {
+        if (!io_mod.permissionsMatch(stat.permissions, 0o700)) return error.PrivateStatePermissionsUnsupported;
+        return;
+    }
     if (owner_uid != uid) return error.RuntimeDirectoryOwnerMismatch;
-    if (stat.permissions.toMode() & 0o777 != 0o700) {
+    if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }
@@ -411,12 +446,7 @@ fn runSupported(alloc: Allocator, config: Config) !void {
     defer server.deinit(io_mod.getIo());
     var endpoint_created = true;
     defer if (endpoint_created) cleanupEndpoint(paths.endpointDir());
-    try paths.endpointDir().dir.setFilePermissions(
-        io_mod.getIo(),
-        endpoint_name,
-        socket_permissions,
-        .{ .follow_symlinks = false },
-    );
+    try enforceEndpointPermissions(paths.endpointDir());
     try verifyEndpointPermissions(paths.endpointDir());
 
     var instance_bytes: [16]u8 = undefined;
@@ -457,7 +487,7 @@ fn runSupported(alloc: Allocator, config: Config) !void {
     debug_trace.logf(
         "terminal_host",
         "host listening pid={d} protocol={d}-{d}",
-        .{ std.c.getpid(), config.hello.range.minimum, config.hello.range.current },
+        .{ io_mod.currentProcessId(), config.hello.range.minimum, config.hello.range.current },
     );
 
     while (!state.stopping.load(.acquire)) {
@@ -614,6 +644,20 @@ fn idleOwner(state: *HostState) void {
 }
 
 fn listenerReady(handle: std.Io.net.Socket.Handle) !bool {
+    if (comptime builtin.os.tag == .windows) {
+        const result = windows_console.pollSocketWithInterest(
+            handle,
+            listener_poll_ms,
+            true,
+            false,
+        );
+        if (result.has_error) return error.SocketNotListening;
+        return result.readable;
+    }
+    return listenerReadyPosix(handle);
+}
+
+fn listenerReadyPosix(handle: std.Io.net.Socket.Handle) !bool {
     var poll_fds = [_]std.posix.pollfd{.{
         .fd = handle,
         .events = std.posix.POLL.IN,
@@ -1161,6 +1205,41 @@ fn testCorrelationFromEnvironment(name: []const u8) ?u64 {
 
 fn applySocketTimeout(stream: std.Io.net.Stream) void {
     if (comptime !isSupported()) return;
+    if (comptime builtin.os.tag == .windows) {
+        applySocketTimeoutWindows(stream);
+        return;
+    }
+    applySocketTimeoutPosix(stream);
+}
+
+extern "ws2_32" fn setsockopt(
+    socket: usize,
+    level: c_int,
+    option_name: c_int,
+    option_value: [*]const u8,
+    option_length: c_int,
+) callconv(.winapi) c_int;
+
+fn applySocketTimeoutWindows(stream: std.Io.net.Stream) void {
+    var timeout_ms: c_int = 5_000;
+    const socket = @intFromPtr(stream.socket.handle);
+    _ = setsockopt(
+        socket,
+        @intCast(windows.ws2_32.SOL.SOCKET),
+        @intCast(windows.ws2_32.SO.RCVTIMEO),
+        @ptrCast(&timeout_ms),
+        @sizeOf(c_int),
+    );
+    _ = setsockopt(
+        socket,
+        @intCast(windows.ws2_32.SOL.SOCKET),
+        @intCast(windows.ws2_32.SO.SNDTIMEO),
+        @ptrCast(&timeout_ms),
+        @sizeOf(c_int),
+    );
+}
+
+fn applySocketTimeoutPosix(stream: std.Io.net.Stream) void {
     const timeout = std.posix.timeval{ .sec = 5, .usec = 0 };
     std.posix.setsockopt(
         stream.socket.handle,
@@ -1182,7 +1261,7 @@ fn peerMatchesCurrentUser(handle: std.Io.net.Socket.Handle) bool {
             ) c_int;
         };
         if (Peer.getpeereid(handle, &peer_uid, &peer_gid) != 0) return false;
-        return peer_uid == std.c.getuid();
+        return peer_uid == io_mod.currentUserId();
     }
     if (comptime builtin.os.tag == .linux) {
         const UCred = extern struct {
@@ -1200,7 +1279,11 @@ fn peerMatchesCurrentUser(handle: std.Io.net.Socket.Handle) bool {
             &credentials_len,
         ) != 0) return false;
         return credentials_len == @sizeOf(UCred) and
-            credentials.uid == std.c.getuid();
+            credentials.uid == io_mod.currentUserId();
+    }
+    if (comptime builtin.os.tag == .windows) {
+        const pid = windowsPeerProcessId(handle) orelse return false;
+        return windows_acl.peerProcessMatchesCurrentUser(pid) catch false;
     }
     return false;
 }
@@ -1242,6 +1325,16 @@ fn peerProcessOwner(
             return error.TerminalPeerIdentityUnavailable;
         }
         break :blk credentials.pid;
+    } else if (comptime builtin.os.tag == .windows) {
+        const pid = windowsPeerProcessId(handle) orelse
+            return error.TerminalPeerIdentityUnavailable;
+        if (!(try windows_acl.peerProcessMatchesCurrentUser(pid))) {
+            return error.TerminalPeerIdentityUnavailable;
+        }
+        var pid_buffer: [32]u8 = undefined;
+        const pid_text = try std.fmt.bufPrint(&pid_buffer, "{d}", .{pid});
+        const token = try process_provider.captureToken(alloc, pid_text);
+        return contracts.ProcessOwner.init(@intCast(pid), token.view());
     } else return error.TerminalHostUnsupported;
 
     var pid_buffer: [32]u8 = undefined;
@@ -1261,7 +1354,7 @@ fn writeIdentity(
     instance: []const u8,
 ) !void {
     var pid_buffer: [32]u8 = undefined;
-    const pid = try std.fmt.bufPrint(&pid_buffer, "{d}", .{std.c.getpid()});
+    const pid = try std.fmt.bufPrint(&pid_buffer, "{d}", .{io_mod.currentProcessId()});
     const process_token = try process_provider.captureToken(
         alloc,
         pid,
@@ -1327,8 +1420,6 @@ pub fn identityEvidence(
     };
 }
 
-/// The caller must hold `host.lock` and must have classified the identity as
-/// absent or dead. This keeps destructive stale cleanup behind both proofs.
 pub fn removeStaleArtifacts(
     host_dir: *io_mod.VerifiedDir,
     endpoint_dir: *io_mod.VerifiedDir,
@@ -1338,12 +1429,18 @@ pub fn removeStaleArtifacts(
 }
 
 fn cleanupEndpoint(host_dir: *io_mod.VerifiedDir) void {
+    if (comptime builtin.os.tag == .windows) {
+        var endpoint = openEndpointForPermissions(host_dir) catch return;
+        defer endpoint.close(io_mod.getIo());
+        windows_acl.deleteEndpointHandle(endpoint.handle) catch {};
+        return;
+    }
     const stat = host_dir.dir.statFile(
         io_mod.getIo(),
         endpoint_name,
         .{ .follow_symlinks = false },
     ) catch return;
-    if (stat.kind != .unix_domain_socket) return;
+    if (!endpointKindAllowedForTarget(builtin.os.tag, stat.kind)) return;
     host_dir.dir.deleteFile(io_mod.getIo(), endpoint_name) catch {};
 }
 
@@ -1358,16 +1455,83 @@ fn cleanupIdentity(host_dir: *io_mod.VerifiedDir) void {
 }
 
 fn verifyEndpointPermissions(host_dir: *io_mod.VerifiedDir) !void {
+    if (comptime builtin.os.tag == .windows) {
+        var endpoint = try openEndpointForPermissions(host_dir);
+        defer endpoint.close(io_mod.getIo());
+        if (!(try windows_acl.matchesEndpointHandle(endpoint.handle))) {
+            return error.PrivateEndpointPermissionsUnsupported;
+        }
+        return;
+    }
     const stat = try host_dir.dir.statFile(
         io_mod.getIo(),
         endpoint_name,
         .{ .follow_symlinks = false },
     );
-    if (stat.kind != .unix_domain_socket or
-        stat.permissions.toMode() & 0o777 != 0o600)
+    if (!endpointKindAllowedForTarget(builtin.os.tag, stat.kind) or
+        io_mod.permissionsMode(stat.permissions) & 0o777 != 0o600)
     {
         return error.PrivateEndpointPermissionsUnsupported;
     }
+}
+
+fn enforceEndpointPermissions(host_dir: *io_mod.VerifiedDir) !void {
+    if (comptime builtin.os.tag == .windows) {
+        var endpoint = try openEndpointForPermissions(host_dir);
+        defer endpoint.close(io_mod.getIo());
+        try windows_acl.applyEndpointHandle(endpoint.handle);
+        if (!(try windows_acl.matchesEndpointHandle(endpoint.handle))) {
+            return error.PrivateEndpointPermissionsUnsupported;
+        }
+        return;
+    }
+    try host_dir.dir.setFilePermissions(
+        io_mod.getIo(),
+        endpoint_name,
+        socket_permissions,
+        .{ .follow_symlinks = false },
+    );
+}
+
+fn openEndpointForPermissions(host_dir: *io_mod.VerifiedDir) !std.Io.File {
+    return host_dir.dir.openFile(io_mod.getIo(), endpoint_name, .{
+        .mode = .read_write,
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    });
+}
+
+const windows_peer_pid_ioctl: u32 = 0x58000100;
+
+extern "ws2_32" fn WSAIoctl(
+    socket: usize,
+    control_code: u32,
+    input_buffer: ?*const anyopaque,
+    input_size: u32,
+    output_buffer: ?*anyopaque,
+    output_size: u32,
+    bytes_returned: *u32,
+    overlapped: ?*anyopaque,
+    completion_routine: ?*anyopaque,
+) callconv(.winapi) c_int;
+
+fn windowsPeerProcessId(handle: std.Io.net.Socket.Handle) ?u32 {
+    if (comptime builtin.os.tag != .windows) return null;
+    var pid: u32 = 0;
+    var bytes_returned: u32 = 0;
+    if (WSAIoctl(
+        @intFromPtr(handle),
+        windows_peer_pid_ioctl,
+        null,
+        0,
+        @ptrCast(&pid),
+        @sizeOf(u32),
+        &bytes_returned,
+        null,
+        null,
+    ) != 0 or bytes_returned != @sizeOf(u32) or pid == 0) return null;
+    return pid;
 }
 
 test "hidden host mode is exact and remains private" {
@@ -1514,6 +1678,15 @@ test "endpoint paths honor the native sockaddr capacity" {
     try std.testing.expectError(error.NameTooLong, validateEndpointPath(&oversized));
 }
 
+test "endpoint kind policy matches the native socket representation" {
+    try std.testing.expect(!endpointKindAllowedForTarget(.windows, .file));
+    try std.testing.expect(!endpointKindAllowedForTarget(.windows, .unknown));
+    try std.testing.expect(!endpointKindAllowedForTarget(.windows, .directory));
+    try std.testing.expect(!endpointKindAllowedForTarget(.windows, .sym_link));
+    try std.testing.expect(endpointKindAllowedForTarget(.macos, .unix_domain_socket));
+    try std.testing.expect(!endpointKindAllowedForTarget(.macos, .file));
+}
+
 test "endpoint selection preserves short homes and deterministically separates long homes" {
     if (!isSupported()) return error.SkipZigTest;
     const alloc = std.testing.allocator;
@@ -1575,12 +1748,18 @@ test "endpoint selection preserves short homes and deterministically separates l
     ));
 }
 
-test "endpoint selection allocation and unsupported targets fail closed" {
+test "endpoint selection allocation and supported targets fail closed" {
     const alloc = std.testing.allocator;
-    try std.testing.expectError(
-        error.TerminalHostUnsupported,
-        resolveEndpointSelection(alloc, .windows, "C:\\profile", 501),
-    );
+    if (comptime builtin.os.tag == .windows) {
+        var windows_selection = try resolveEndpointSelection(
+            alloc,
+            .windows,
+            "C:\\profile",
+            501,
+        );
+        defer windows_selection.deinit(alloc);
+        try std.testing.expect(windows_selection.uses_fallback);
+    }
 
     const long_home = "/profiles/" ++ "x" ** 160;
     var probe = std.testing.FailingAllocator.init(alloc, .{});
@@ -1616,39 +1795,39 @@ test "endpoint selection allocation and unsupported targets fail closed" {
 }
 
 test "runtime transport directories reject symlinks non-private modes and foreign owners" {
-    if (!isSupported()) return error.SkipZigTest;
+    if (!isSupported() or comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     var private = try openVerifiedPrivateRuntimeDir(
         tmp.dir,
         "private",
-        std.c.getuid(),
+        io_mod.currentUserId(),
     );
     defer private.close();
     const private_stat = try private.dir.stat(std.testing.io);
     try std.testing.expectEqual(
         @as(std.posix.mode_t, 0o700),
-        private_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(private_stat.permissions) & 0o777,
     );
     try std.testing.expectError(
         error.RuntimeDirectoryOwnerMismatch,
         validatePrivateRuntimeDir(
             private_stat,
-            std.c.getuid() + 1,
-            std.c.getuid(),
+            io_mod.currentUserId() + 1,
+            io_mod.currentUserId(),
         ),
     );
 
     try tmp.dir.createDir(
         std.testing.io,
         "public",
-        std.Io.File.Permissions.fromMode(0o755),
+        io_mod.permissionsFromMode(0o755),
     );
     try tmp.dir.setFilePermissions(
         std.testing.io,
         "public",
-        std.Io.File.Permissions.fromMode(0o755),
+        io_mod.permissionsFromMode(0o755),
         .{ .follow_symlinks = false },
     );
     const public_stat = try tmp.dir.statFile(
@@ -1658,11 +1837,11 @@ test "runtime transport directories reject symlinks non-private modes and foreig
     );
     try std.testing.expectEqual(
         @as(std.posix.mode_t, 0o755),
-        public_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(public_stat.permissions) & 0o777,
     );
     try std.testing.expectError(
         error.PrivateStatePermissionsUnsupported,
-        openVerifiedPrivateRuntimeDir(tmp.dir, "public", std.c.getuid()),
+        openVerifiedPrivateRuntimeDir(tmp.dir, "public", io_mod.currentUserId()),
     );
 
     try tmp.dir.symLink(
@@ -1673,6 +1852,6 @@ test "runtime transport directories reject symlinks non-private modes and foreig
     );
     try std.testing.expectError(
         error.RuntimeDirectoryUnsafe,
-        openVerifiedPrivateRuntimeDir(tmp.dir, "linked", std.c.getuid()),
+        openVerifiedPrivateRuntimeDir(tmp.dir, "linked", io_mod.currentUserId()),
     );
 }

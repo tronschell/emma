@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { chatCompletion, type ChatMessage } from "./verifier";
 import { defaultTagger, type TaggerSettings } from "../shared/settings";
-import { fileState, parseHistory, parseStatus, validateGitArgs, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot } from "../shared/git";
+import { fileState, parseHistory, parseStatus, parseWorktrees, validateGitArgs, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot, type WorktreeEntry } from "../shared/git";
+import { findExecutable, isWindows } from "./platform";
 
 const MAX_DIFF_BYTES = 512 * 1024;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -23,7 +24,7 @@ export const MAX_MESSAGE_DIFF_CHARS = 12_000;
 const MESSAGE_TIMEOUT = 45_000;
 const MESSAGE_MAX_TOKENS = 400;
 
-export const NO_GIT = "git is not installed on this Mac. Install the Xcode command line tools with xcode-select --install.";
+export const NO_GIT = isWindows ? "git is not installed on this PC. Install Git for Windows and try again." : "git is not installed on this Mac. Install the Xcode command line tools with xcode-select --install.";
 
 export function gitFailure(error: unknown): string {
   const raw = (error instanceof Error ? error.message : String(error)).trim();
@@ -34,9 +35,22 @@ export function gitFailure(error: unknown): string {
 
 type Attempt = { error: unknown; stdout: string; stderr: string };
 
-function exec(cwd: string, args: string[], timeout = TIMEOUT_MS, maxBuffer = MAX_BUFFER_BYTES): Promise<Attempt> {
+let gitExecutable: { pathValue: string; value: Promise<string | null> } | undefined;
+
+async function exec(cwd: string, args: string[], timeout = TIMEOUT_MS, maxBuffer = MAX_BUFFER_BYTES): Promise<Attempt> {
+  const pathValue = process.env.PATH || "";
+  if (!gitExecutable || gitExecutable.pathValue !== pathValue) gitExecutable = { pathValue, value: findExecutable(isWindows ? "git.exe" : "git", pathValue) };
+  const binary = await gitExecutable.value;
+  if (!binary) return { error: Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }), stdout: "", stderr: "" };
+  const gitEnv = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "Never",
+    GIT_ASKPASS: "",
+    GIT_SSH_COMMAND: `${process.env.GIT_SSH_COMMAND ?? "ssh"} -o BatchMode=yes`,
+  };
   return new Promise((resolve) => {
-    execFile("git", args, { cwd, maxBuffer, timeout }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+    execFile(binary, args, { cwd, maxBuffer, timeout, env: gitEnv }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
   });
 }
 
@@ -70,7 +84,7 @@ export async function gitSnapshot(cwd: string): Promise<GitSnapshot | null> {
   const untracked = (await git(cwd, ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"]).catch(() => ""))
     .split("\n").filter(Boolean).slice(0, MAX_UNTRACKED);
   const created = await Promise.all(untracked.map(async (file) =>
-    (await exec(cwd, ["diff", "--no-color", "--no-index", "--", "/dev/null", file])).stdout));
+    (await exec(cwd, ["diff", "--no-color", "--no-index", "--", isWindows ? "NUL" : "/dev/null", file])).stdout));
   const whole = [tracked, ...created].filter(Boolean).join("\n");
   const diff = whole.length > MAX_DIFF_BYTES ? whole.slice(0, whole.lastIndexOf("\n", MAX_DIFF_BYTES)) : whole;
   const [own, common] = await gitDirs(cwd).catch(() => ["", ""]);
@@ -114,8 +128,8 @@ export function commitPaths(value: unknown): string[] {
   if (value.length > MAX_COMMIT_PATHS) throw new Error(`At most ${MAX_COMMIT_PATHS} files at a time.`);
   return value.map((item) => {
     if (typeof item !== "string" || !item || item.length > MAX_PATH_CHARS) throw new Error("That file path is not one git can be given.");
-    if (item.includes("\0") || item.startsWith("-") || path.isAbsolute(item)) throw new Error(`“${item}” is not a path inside this folder.`);
-    if (item.split("/").some((part) => part === "..")) throw new Error(`“${item}” is not a path inside this folder.`);
+    if (item.includes("\0") || item.startsWith("-") || path.isAbsolute(item) || path.win32.isAbsolute(item)) throw new Error(`“${item}” is not a path inside this folder.`);
+    if (item.split(/[\\/]/).some((part) => part === "..")) throw new Error(`“${item}” is not a path inside this folder.`);
     return item.replace(/\/+$/, "");
   });
 }
@@ -236,4 +250,33 @@ export async function addWorktree(cwd: string, name: string): Promise<string> {
   await git(top, ["worktree", "add", "-b", name, dir]).catch(() => git(top, ["worktree", "add", dir, name]));
   if (!existsSync(dir)) throw new Error(`git could not create a worktree at ${dir}.`);
   return dir;
+}
+
+export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
+  const [primary, text] = await Promise.all([
+    mainCheckout(cwd),
+    git(cwd, ["worktree", "list", "--porcelain", "-z"]),
+  ]);
+  const rows = parseWorktrees(text, primary);
+  const checked = await Promise.all(rows.map(async (row) => {
+    if (row.bare) return row;
+    const { stdout } = await exec(row.path, ["status", "--porcelain", "--untracked-files=normal"]);
+    return { ...row, dirty: row.dirty || !!stdout.trim() };
+  }));
+  return checked;
+}
+
+export async function removeWorktrees(cwd: string, targets: string[]): Promise<void> {
+  if (!Array.isArray(targets) || !targets.length || targets.length > 32) throw new Error("Pick the worktrees to delete.");
+  const primary = await mainCheckout(cwd);
+  const text = await git(cwd, ["worktree", "list", "--porcelain", "-z"]);
+  const known = new Map(parseWorktrees(text, primary).map((row) => [row.path, row]));
+  for (const target of targets) {
+    const row = known.get(target);
+    if (!row) throw new Error("That worktree is no longer on this repository's list. Refresh and try again.");
+    if (row.primary) throw new Error("The main checkout cannot be deleted from here.");
+    if (row.bare) throw new Error("A bare repository cannot be deleted from here.");
+    if (row.locked) throw new Error(`Unlock “${path.basename(row.path)}” with git worktree unlock first.`);
+    await git(cwd, ["worktree", "remove", row.path]);
+  }
 }

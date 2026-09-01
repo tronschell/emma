@@ -8,12 +8,12 @@ import { toCsv } from "../shared/csv";
 import { MAX_NOTE_BYTES, MAX_TITLE_BYTES } from "../shared/vault";
 import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
-import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveProvider, defaultSettings, fontStack, forgetProvider, isEnvName, localEndpoint, providerEndpoint, providerReach, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, normalizeProviderEndpoint, printableSecret, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
+import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveProvider, defaultSettings, fontStack, forgetProvider, isEnvName, localEndpoint, providerEndpoint, providerReach, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, normalizeProviderEndpoint, printableSecret, saveShortcut, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
 import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
-import type { Snapshot } from "../src/types";
+import type { Thread } from "../src/types";
 import { BoundedLines, MAX_RECORDED_TURN_BYTES, parseHostLine, recordedTurn } from "../main/ndjson";
 import { brandRenderData, matchesLocalAlias } from "../src/brand-data";
 import { frontApplicationNote, ScreenContextStore } from "../shared/screen-context";
@@ -51,6 +51,10 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.throws(() => validateRequest({ method: "recordTurn", params: { threadId: "thread-123456789", prompt: "p", response: "r" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "submitToolResult", params: { threadId: "thread-123456789", results: "[]" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "snapshot", params: { extra: "x" } }), /Invalid parameters/);
+  assert.deepEqual(validateRequest({ method: "threadSummaries", params: {} }), { method: "threadSummaries", params: {} });
+  assert.deepEqual(validateRequest({ method: "thread", params: { threadId: "thread-123456789" } }), { method: "thread", params: { threadId: "thread-123456789" } });
+  assert.throws(() => validateRequest({ method: "threadSummaries", params: { threadId: "thread-123456789" } }), /Invalid parameters/);
+  assert.throws(() => validateRequest({ method: "thread", params: {} }), /Invalid parameters/);
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "x" } }), /Invalid parameters/);
   assert.deepEqual(validateRequest({ method: "selectProviderModel", params: { providerId: "p-1", effort: "" } }).params, { providerId: "p-1", effort: "" });
   assert.throws(() => validateRequest({ method: "selectProviderModel", params: { providerId: "" } }), /Invalid parameters/);
@@ -115,7 +119,7 @@ test("host response lines are framed and bounded before JSON parsing", () => {
 });
 
 test("a recorded turn is cut to fit the host's request line", () => {
-  const telemetry = { threadId: "t", durationMilliseconds: "1", outputTokens: "0", inputTokens: "0", model: "m" };
+  const telemetry = { threadId: "t", durationMilliseconds: "1", outputTokens: "0", inputTokens: "0", cacheInputTokens: "100", cacheReadTokens: "80", cacheWriteTokens: "12", costMicroUsd: "3456", model: "m" };
   const small = recordedTurn({ ...telemetry, prompt: "hi", thinking: "weighing it up", answer: "done" });
   assert.deepEqual(small, { ...telemetry, prompt: "hi", response: "<think>weighing it up</think>\ndone" });
   const huge = recordedTurn({ ...telemetry, prompt: "hi", thinking: "thought\n".repeat(50_000), answer: "answer\n".repeat(50_000) });
@@ -356,7 +360,10 @@ test("overlay geometry hangs off the reported camera housing and falls back to t
   assert.deepEqual(plain.bounds, { x: -1270, y: 0, width: 620, height: 248 });
   assert.deepEqual(plain.notch, { left: 220, width: 180, height: 25 });
   const target = hotspotLayout(notched, housing);
-  assert.deepEqual(target, { bounds: { x: 649, y: 0, width: 213, height: 82 }, notch: { left: 14, width: 185, height: 38 } });
+  assert.deepEqual(target, { bounds: { x: 649, y: 0, width: 213, height: 82 }, hot: { x: 663, y: 0, width: 185, height: 38 }, notch: { left: 14, width: 185, height: 38 } });
+  assert.equal(nearBounds(target.hot, { x: 700, y: 20 }), true);
+  assert.equal(nearBounds(target.hot, { x: 700, y: 60 }), false);
+  assert.equal(nearBounds(target.hot, { x: 655, y: 20 }), false);
   assert.equal(nearBounds(target.bounds, { x: 700, y: 20 }), true);
   assert.equal(nearBounds(target.bounds, { x: 649, y: 82 }), true);
   assert.equal(nearBounds(target.bounds, { x: 648, y: 20 }), false);
@@ -396,9 +403,9 @@ test("the status chip parks inside the work area and the island opens beside it"
 });
 
 test("draft reconciliation checks only messages persisted by the attempted turn", () => {
-  const snapshot: Snapshot = { threads: [{ id: "thread-1", title: "Draft test", createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] }], scheduledJobs: [], researchJobs: [], warnings: [] };
-  assert.equal(hasPersistedPrompt(snapshot, "thread-1", 1, "retry"), true);
-  assert.equal(hasPersistedPrompt(snapshot, "thread-1", 2, "retry"), false);
+  const thread: Thread = { id: "thread-1", title: "Draft test", createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T00:00:02Z", messages: [{ role: "user", content: "old", timestamp: "2026-08-20T00:00:01Z" }, { role: "user", content: "retry", timestamp: "2026-08-20T00:00:02Z" }] };
+  assert.equal(hasPersistedPrompt(thread, 1, "retry"), true);
+  assert.equal(hasPersistedPrompt(thread, 2, "retry"), false);
 });
 
 test("external navigation is limited to HTTP(S)", () => {
@@ -482,6 +489,21 @@ test("keybinds refuse what macOS and app menus already own", () => {
   assert.deepEqual(validateSettings({ ...defaultSettings, keybinds: undefined }).keybinds, {});
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { toggle: comboKeybind("Control+Alt+E"), draw: comboKeybind("Alt+Control+E") } }), /bound twice/);
   assert.throws(() => validateSettings({ ...defaultSettings, keybinds: { nope: comboKeybind("Control+Alt+E") } }), /invalid/);
+});
+
+test("natural-language shortcuts fill and reuse the three Quick Action slots", () => {
+  const first = saveShortcut(defaultSettings, { accelerator: "Shift+Alt+Command+K", label: "Focus brief", prompt: "Summarize what I am working on." });
+  assert.equal(first.action, "action0");
+  assert.equal(first.settings.quickActions[0].label, "Focus brief");
+  assert.deepEqual(first.settings.keybinds.action0, comboKeybind("Command+Alt+Shift+K"));
+
+  const updated = saveShortcut(first.settings, { accelerator: "Control+Alt+F", label: "focus brief", prompt: "Give me the next concrete step." });
+  assert.equal(updated.action, "action0");
+  assert.equal(updated.settings.quickActions[0].prompt, "Give me the next concrete step.");
+  const second = saveShortcut(updated.settings, { accelerator: "Control+Alt+G", label: "Second", prompt: "Run the second action." });
+  const third = saveShortcut(second.settings, { accelerator: "Control+Alt+H", label: "Third", prompt: "Run the third action." });
+  assert.throws(() => saveShortcut(third.settings, { accelerator: "Control+Alt+J", label: "Fourth", prompt: "Run the fourth action." }), /All three/);
+  assert.throws(() => saveShortcut(defaultSettings, { accelerator: "Command+Shift+4", label: "Reserved", prompt: "Never runs." }), /macOS/);
 });
 
 test("holds are modifiers only, and reach the native listener as key codes", () => {

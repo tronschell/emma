@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { usageDay, recentDays } from "../shared/invocations";
 import { activeYears, countDays, heatLevel, lineage, messageDays, projectActivity, streak, weekGrid, type DayGrid } from "./activity";
-import { Bars } from "./plugins";
+import { Bars } from "./bars";
 import { InfoDot, Mark } from "./icons";
 import { plural } from "./plural";
 import { day } from "./dates";
-import type { Snapshot, Thread } from "./types";
+import { threadMessageCount, threadUserMessageCount, type Snapshot, type Thread } from "./types";
 
 const SPARK_DAYS = 30;
 const LINEAGE_ROWS = 60;
@@ -134,7 +134,7 @@ function LineagePanel({ threads, openThread }: { threads: Thread[]; openThread: 
             <button type="button" className="git-subject activity-open" onClick={() => openThread(row.thread.id)}>{row.thread.title || "Untitled thread"}</button>
             {row.thread.kind === "subagent" && <b className="git-ref">subagent</b>}
           </span>
-          <span className="git-meta">{row.thread.messages.length} · {day(new Date(row.thread.updatedAt).getTime())}</span>
+          <span className="git-meta">{threadMessageCount(row.thread)} · {day(new Date(row.thread.updatedAt).getTime())}</span>
         </div>
       </li>)}
       {!rows.length && <li className="git-commit-row">No threads yet</li>}
@@ -148,7 +148,7 @@ export default function ActivityView({ snapshot, projectName, openThread }: { sn
   const spark = recentDays(SPARK_DAYS);
   const started = useMemo(() => countDays(threads.map((thread) => thread.createdAt)), [threads]);
   const subagents = threads.filter((thread) => thread.kind === "subagent").length;
-  const turns = threads.reduce((sum, thread) => sum + thread.messages.filter((message) => message.role === "user").length, 0);
+  const turns = threads.reduce((sum, thread) => sum + threadUserMessageCount(thread), 0);
 
   return <div className="activity-view">
     <div className="agent-metrics">

@@ -32,6 +32,28 @@ function tabName(tab: BrowserTab): string {
   return tab.title.trim() || host(tab.url) || "New tab";
 }
 
+export function createBrowserPlacementScheduler(
+  place: () => void,
+  requestFrame: (callback: () => void) => number = requestAnimationFrame,
+  cancelFrame: (id: number) => void = cancelAnimationFrame,
+) {
+  let frame: number | undefined;
+  let stopped = false;
+  const schedule = () => {
+    if (stopped || frame !== undefined) return;
+    frame = requestFrame(() => {
+      frame = undefined;
+      if (!stopped) place();
+    });
+  };
+  const stop = () => {
+    stopped = true;
+    if (frame !== undefined) cancelFrame(frame);
+    frame = undefined;
+  };
+  return { schedule, stop };
+}
+
 export function browserPip(threadId: string, onClose: () => void, onDock?: () => void): PipWindow {
   return {
     id: `browser:${threadId}`,
@@ -83,11 +105,73 @@ export function BrowserPane({ threadId, onHide, onClose, wide, onToggleWide, onF
   }, [threadId]);
 
   useEffect(() => {
+    const box = stage.current;
+    if (!box) return;
     sent.current = "";
     place();
-    const timer = window.setInterval(place, 1000 / 30);
+    const scheduler = createBrowserPlacementScheduler(place);
+    const { schedule } = scheduler;
+    const observer = new ResizeObserver(schedule);
+    observer.observe(box);
+    const dialogs = new MutationObserver(schedule);
+    dialogs.observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ["open"] });
+    const shell = box.closest<HTMLElement>(".app-shell");
+    const shellChanges = shell ? new MutationObserver(schedule) : undefined;
+    if (shell) shellChanges?.observe(shell, { attributes: true, attributeFilter: ["style"] });
+    const sidebar = shell?.querySelector<HTMLElement>(".sidebar");
+    const sidebarChanges = sidebar ? new MutationObserver(schedule) : undefined;
+    if (sidebar) sidebarChanges?.observe(sidebar, { attributes: true, attributeFilter: ["class", "style"] });
+    const pip = box.closest<HTMLElement>(".pip");
+    const pipChanges = pip ? new MutationObserver(schedule) : undefined;
+    if (pip) pipChanges?.observe(pip, { attributes: true, attributeFilter: ["data-held", "data-depth", "style"] });
+    addEventListener("resize", schedule);
+    addEventListener("scroll", schedule, true);
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", schedule);
+    viewport?.addEventListener("scroll", schedule);
+    const transitions = new Set<string>();
+    let transitionFrame: number | undefined;
+    let transitioning = false;
+    const track = () => {
+      transitionFrame = undefined;
+      if (!transitioning) return;
+      place();
+      transitionFrame = requestAnimationFrame(track);
+    };
+    const startTransition = (event: TransitionEvent) => {
+      transitions.add(event.propertyName);
+      if (transitioning) return;
+      transitioning = true;
+      transitionFrame = requestAnimationFrame(track);
+    };
+    const endTransition = (event: TransitionEvent) => {
+      transitions.delete(event.propertyName);
+      if (transitions.size) return;
+      transitioning = false;
+      if (transitionFrame !== undefined) cancelAnimationFrame(transitionFrame);
+      transitionFrame = undefined;
+      schedule();
+    };
+    pip?.addEventListener("transitionrun", startTransition);
+    pip?.addEventListener("transitionend", endTransition);
+    pip?.addEventListener("transitioncancel", endTransition);
     return () => {
-      window.clearInterval(timer);
+      observer.disconnect();
+      dialogs.disconnect();
+      shellChanges?.disconnect();
+      sidebarChanges?.disconnect();
+      pipChanges?.disconnect();
+      removeEventListener("resize", schedule);
+      removeEventListener("scroll", schedule, true);
+      viewport?.removeEventListener("resize", schedule);
+      viewport?.removeEventListener("scroll", schedule);
+      pip?.removeEventListener("transitionrun", startTransition);
+      pip?.removeEventListener("transitionend", endTransition);
+      pip?.removeEventListener("transitioncancel", endTransition);
+      transitioning = false;
+      transitions.clear();
+      if (transitionFrame !== undefined) cancelAnimationFrame(transitionFrame);
+      scheduler.stop();
       void window.emma.browserPlace({ threadId, bounds: null }).catch(() => undefined);
     };
   }, [threadId, place]);

@@ -25,8 +25,16 @@ export type KeptNote = {
   tags: readonly string[];
   savedAt: string;
   kind: KeepKind;
+  folder?: string;
+  excerpt?: string;
+  image?: string;
   sourceUrl?: string;
   sourceApplication?: string;
+};
+
+export type NoteFolder = {
+  name: string;
+  changedAt: string;
 };
 
 export const DEFAULT_VAULT_FOLDER = "knowledge-base";
@@ -52,6 +60,16 @@ export function noteSlug(title: string): string {
 
 export function validTag(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9][a-z0-9/-]*$/.test(value) && new TextEncoder().encode(value).length <= MAX_TAG_BYTES;
+}
+
+export const MAX_FOLDER_NAME = 64;
+
+export function validNoteFolder(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const name = value.trim();
+  if (!name || name.length > MAX_FOLDER_NAME || name === ATTACHMENT_FOLDER) return false;
+  if (name.startsWith(".") || /[/\\:]/.test(name) || [...name].some((char) => char < " " || char === "\u007f")) return false;
+  return true;
 }
 
 export function validVaultFolder(value: unknown): value is string {

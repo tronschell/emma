@@ -194,12 +194,12 @@ test "legacy log path maps to managed only for exact display parent" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session-logs",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     try tmp.dir.createDir(
         io_mod.getIo(),
         "external-logs",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const managed_dir = try io_mod.dirRealpathAlloc(
         alloc,
@@ -281,7 +281,7 @@ test "managed background read only absence does not create route" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -404,7 +404,6 @@ pub const Store = struct {
         return .{ .capability = capability };
     }
 
-    /// Transitional legacy-only constructor retained until adapter conversion.
     pub fn initWithDir(alloc: Allocator, dir_path: []const u8) !Store {
         const owned = try alloc.create(session_child_store.SessionChildCapability);
         errdefer alloc.destroy(owned);
@@ -683,7 +682,6 @@ fn readRecordFile(
     };
 }
 
-/// Returns an owned record; caller must deinit it with Record.deinit.
 fn loadRecordFromFile(
     alloc: Allocator,
     capability: *session_child_store.SessionChildCapability,

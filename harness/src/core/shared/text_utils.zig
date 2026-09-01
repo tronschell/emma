@@ -503,6 +503,20 @@ pub fn redactUrlForDisplay(alloc: std.mem.Allocator, raw_url: []const u8) error{
     return out.toOwnedSlice() catch return error.OutOfMemory;
 }
 
+pub fn orphanToolCallResidue(text: []const u8) ?usize {
+    const closer = "</tool_call>";
+    const trimmed = std.mem.trimEnd(u8, text, " \t\r\n");
+    if (!std.mem.endsWith(u8, trimmed, closer)) return null;
+    if (std.mem.find(u8, trimmed, "<tool_call>") != null) return null;
+    if (std.mem.count(u8, trimmed, "```") % 2 != 0) return null;
+
+    var start = trimmed.len - closer.len;
+    for ([_][]const u8{ "<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>" }) |marker| {
+        if (std.mem.find(u8, trimmed, marker)) |at| start = @min(start, at);
+    }
+    return start;
+}
+
 pub fn sanitizeAssistantText(text: []const u8) []const u8 {
     var trimmed = std.mem.trim(u8, text, " \r\n\t");
     if (trimmed.len == 0) return trimmed;
@@ -850,6 +864,34 @@ test "isModelSafeText rejects nul bytes and invalid utf-8" {
     try std.testing.expect(isModelSafeText("hello"));
     try std.testing.expect(!isModelSafeText("hello\x00world"));
     try std.testing.expect(!isModelSafeText("\xff"));
+}
+
+test "orphanToolCallResidue cuts provider leftovers and spares real prose" {
+    try std.testing.expectEqual(
+        @as(?usize, 0),
+        orphanToolCallResidue("</arg_key><arg_value>consult the advisor</arg_value></tool_call>"),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, 19),
+        orphanToolCallResidue("Let me check that. <arg_value>open</arg_value><arg_key>url</arg_key></tool_call>"),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, 6),
+        orphanToolCallResidue("Done.\n</tool_call>"),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        orphanToolCallResidue("<tool_call>advisor<arg_key>k</arg_key></tool_call>"),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        orphanToolCallResidue("The provider drops the head and leaves ```\n</tool_call>"),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        orphanToolCallResidue("A stray </tool_call> in prose is not a lost call."),
+    );
+    try std.testing.expectEqual(@as(?usize, null), orphanToolCallResidue("Nothing to see."));
 }
 
 test "sanitizeModelText returns replacement text for unsafe input" {

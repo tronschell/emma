@@ -15,6 +15,8 @@
 //! `builtins/tools.zig`. Emma's image tool is `look_at_image`, which is what it
 //! does: ask a written question about one file or URL.
 
+const std = @import("std");
+const tool_args = @import("../../core/tooling/tool_args.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const gateway_schema = @import("../../core/tooling/gateway_schema.zig");
 const bridge = @import("../../tools/emma/bridge.zig");
@@ -124,9 +126,21 @@ pub const memory = ToolSpec{
 
 const look_at_image_description =
     "Look at an image through a vision model and get an answer back in words. Use it whenever the work involves a picture: a screenshot, a photo, a mockup, a chart, a scanned page, a diagram — including when you cannot see images at all, which is most of the time.\n" ++
-    "Name the image with path (a file in a connected folder, or the absolute path of one the user attached to their message) or url (a public image URL), and ask one specific question. Specific questions get specific answers: \"what error is in this dialog, quoted exactly\" beats \"what is this\".\n" ++
+    "Name the image with path (a file in a connected folder, or the absolute path of any image on this Mac — an attachment, a screenshot, a file a tool just wrote) or url (a public image URL), and ask one specific question. Specific questions get specific answers: \"what error is in this dialog, quoted exactly\" beats \"what is this\".\n" ++
     "It can identify what is in the image, read the text in it, and locate things — ask for a bounding box and you get [x0, y0, x1, y1] in pixels with the image size, which is what you need before clicking anything.\n" ++
     "Ask again with a narrower question rather than assuming: the model that looked is not you, and it can misread. Never state as fact something it said it could not tell.";
+
+fn lookAtImagePresentation(args: std.json.ObjectMap) ?tool_dispatch.CallPresentation {
+    if (tool_args.optionalStringArg(args, "path") != null) return null;
+    if (tool_args.optionalStringArg(args, "url") == null) return null;
+    return .{
+        .activity_kind = .read,
+        .action_label = "Looking at",
+        .completed_action_label = "Looked at",
+        .label_arg_kind = .url,
+        .label_arg_default = "the image",
+    };
+}
 
 pub const look_at_image = ToolSpec{
     .name = "look_at_image",
@@ -144,7 +158,7 @@ pub const look_at_image = ToolSpec{
                 .{
                     .name = "path",
                     .json_type = .string,
-                    .description = "Image file relative to a connected folder's root, e.g. screenshots/error.png — or the absolute path an attached image was given.",
+                    .description = "Image file relative to a connected folder's root, e.g. screenshots/error.png — or any absolute path on this Mac, such as one a tool just wrote.",
                 },
                 .{
                     .name = "url",
@@ -160,8 +174,11 @@ pub const look_at_image = ToolSpec{
     .executor_kind = .emma,
     .activity_kind = .read,
     .requires_approval = false,
-    .action_label = "Looking at the image",
-    .completed_action_label = "Looked at the image",
+    .action_label = "Looking at",
+    .completed_action_label = "Looked at",
+    .label_arg_kind = .path,
+    .label_arg_default = "the image",
+    .presentation_fn = lookAtImagePresentation,
     .permission_target_kind = .none,
     .decode = bridge.decode,
     .validate = bridge.validate,

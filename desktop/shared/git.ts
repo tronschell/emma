@@ -32,6 +32,58 @@ export type GitHistory = { commits: GitCommit[]; more: boolean };
 
 export type GitCommandResult = { ok: boolean; output: string };
 
+export type WorktreeEntry = {
+  path: string;
+  head: string;
+  branch: string;
+  primary: boolean;
+  bare: boolean;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  dirty: boolean;
+};
+
+export function parseWorktrees(text: string, primaryPath: string): WorktreeEntry[] {
+  const rows: WorktreeEntry[] = [];
+  let current: Partial<WorktreeEntry> | undefined;
+  const flush = () => {
+    if (!current?.path) return;
+    rows.push({
+      path: current.path,
+      head: current.head ?? "",
+      branch: current.branch ?? "",
+      primary: current.path === primaryPath,
+      bare: current.bare ?? false,
+      detached: current.detached ?? false,
+      locked: current.locked ?? false,
+      prunable: current.prunable ?? false,
+      dirty: current.dirty ?? false,
+    });
+    current = undefined;
+  };
+  for (const field of text.split("\0")) {
+    if (!field) { flush(); continue; }
+    if (field.startsWith("worktree ")) { flush(); current = { path: field.slice("worktree ".length) };
+    } else if (field.startsWith("HEAD ")) { current = current ?? {}; current.head = field.slice("HEAD ".length);
+    } else if (field.startsWith("branch ")) { current = current ?? {}; current.branch = field.slice("branch ".length).replace(/^refs\/heads\//, "");
+    } else if (field === "detached") { current = current ?? {}; current.detached = true;
+    } else if (field === "bare") { current = current ?? {}; current.bare = true;
+    } else if (field.startsWith("locked")) { current = current ?? {}; current.locked = true;
+    } else if (field.startsWith("prunable")) { current = current ?? {}; current.prunable = true;
+    } else if (field.startsWith("dirty")) { current = current ?? {}; current.dirty = true; }
+  }
+  flush();
+  return rows;
+}
+
+export function branchPrefixName(prefix: string, name: string): string {
+  const clean = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  if (!clean) throw new Error("Give the branch a name.");
+  const stem = prefix.replace(/[^A-Za-z0-9._/-]+/g, "").replace(/\/+$/, "");
+  return stem ? `${stem}/${clean}` : clean;
+}
+
 export type GitReady = "ready" | "no-git" | "no-repo";
 
 export type GitFileState = "new" | "modified" | "deleted" | "renamed" | "untracked" | "conflict";

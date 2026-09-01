@@ -6,13 +6,6 @@ import { isEnvName, MAX_SECRET_CHARS, maskSecret, printableSecret } from "../sha
 
 export type CredentialSummary = { env: string; masked: string };
 
-/**
- * Provider keys the user pastes in Settings. Main and the harness read credentials from
- * their environment, so the plaintext lives here and reaches them only through this
- * process's env — it is never returned to the renderer, only its mask.
- *
- * Reads and writes are synchronous because the env has to be complete before anything spawns.
- */
 export class CredentialStore {
   private readonly file: string;
   private secrets = new Map<string, string>();
@@ -40,7 +33,6 @@ export class CredentialStore {
     if (this.secrets.delete(env)) this.save();
   }
 
-  /** Mirrors the stored keys into `env`, clearing names this store set on an earlier pass. */
   applyToEnv(env: NodeJS.ProcessEnv): void {
     for (const name of this.applied) if (!this.secrets.has(name)) delete env[name];
     this.applied.clear();
@@ -66,7 +58,7 @@ export class CredentialStore {
   }
 
   private save() {
-    if (!safeStorage.isEncryptionAvailable()) throw new Error("This Mac's keychain is unavailable, so Emma will not store a key in plain text.");
+    if (!safeStorage.isEncryptionAvailable()) throw new Error("This computer's secure credential store is unavailable, so Emma will not store a key in plain text.");
     const stored = Object.fromEntries([...this.secrets].map(([env, secret]) => [env, safeStorage.encryptString(secret).toString("base64")]));
     mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const temporary = `${this.file}.tmp`;

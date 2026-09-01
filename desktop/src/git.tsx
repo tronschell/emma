@@ -12,6 +12,8 @@ import { plural } from "./plural";
 
 const MARKS = import.meta.glob<string>("../assets/filetypes/*.svg", { eager: true, query: "?url", import: "default" });
 const mark = (name: string): string | undefined => MARKS[`../assets/filetypes/${name}.svg`];
+const IS_WINDOWS = typeof window !== "undefined" && window.emma?.platform === "win32";
+const GIT_INSTALL_COMMAND = IS_WINDOWS ? "winget install --id Git.Git --exact" : "xcode-select --install";
 
 const GROUPS: Record<string, string> = {
   rust: "rs", js: "mjs cjs", ts: "mts cts", react: "jsx tsx", py: "pyi pyw ipynb", md: "markdown mdx",
@@ -76,7 +78,7 @@ export function GitSetup({ ready, folderId }: { ready: GitReady; folderId: strin
     <div className="git-setup-card">
       <span className="git-setup-mark" aria-hidden>⑂</span>
       {ready === "no-git"
-        ? <><h2>Git is not installed</h2><code>xcode-select --install</code></>
+        ? <><h2>Git is not installed</h2><code>{GIT_INSTALL_COMMAND}</code></>
         : <><h2>No repository here yet</h2><button type="button" className="git-do" disabled={busy} onClick={init}>{busy ? "Starting…" : "git init"}</button></>}
       {error && <p className="git-commit-error" role="alert">{error}</p>}
     </div>
@@ -313,8 +315,12 @@ export function GitPage({ snapshot, folderId, brand }: { snapshot: GitSnapshot; 
               {!rows.length && <li className="git-commit-row">No commits yet</li>}
               {rows.map((row, index) => <li className="git-commit-row" key={row.commit.hash}>
                 <svg className="git-lanes" width={width} height={ROW_HEIGHT} viewBox={`0 0 ${width} ${ROW_HEIGHT}`} aria-hidden>
-                  {(index ? rows[index - 1].links : []).map((link) => <path key={`in-${link.to}`} className={`git-lane-${link.to % LANE_COLOURS}`} fill="none"
-                    d={`M ${laneX(link.to)} 0 L ${laneX(link.to)} ${ROW_HEIGHT / 2}`} />)}
+                  {(index ? rows[index - 1].links : []).map((link) => {
+                    const out = row.links.find((next) => next.to === link.to);
+                    const continues = out && out.from !== link.to;
+                    return <path key={`in-${link.to}`} className={`git-lane-${link.to % LANE_COLOURS}`} fill="none"
+                      d={`M ${laneX(link.to)} 0 L ${laneX(link.to)} ${continues ? ROW_HEIGHT : ROW_HEIGHT / 2}`} />;
+                  })}
                   {row.links.map((link, position) => <path key={position} className={`git-lane-${link.to % LANE_COLOURS}`} fill="none"
                     d={`M ${laneX(link.from)} ${ROW_HEIGHT / 2} C ${laneX(link.from)} ${ROW_HEIGHT} ${laneX(link.to)} ${ROW_HEIGHT / 2} ${laneX(link.to)} ${ROW_HEIGHT}`} />)}
                   <circle className={`git-lane-${row.lane % LANE_COLOURS}`} cx={laneX(row.lane)} cy={ROW_HEIGHT / 2} r={LANE_RADIUS} />

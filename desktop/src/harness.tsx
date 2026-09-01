@@ -9,7 +9,7 @@ const FLOWS: HarnessFlow[] = ["out", "in", "err"];
 const POLL_MS = 10_000;
 
 const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour12: false });
-const folder = (cwd: string) => cwd.split("/").filter(Boolean).pop() || cwd;
+const folder = (cwd: string) => cwd.split(/[\\/]+/).filter(Boolean).pop() || cwd;
 const silence = (ms: number) => (ms ? `heard ${ms < 1000 ? "just now" : `${Math.round(ms / 1000)}s ago`}` : "never spoke");
 
 export function HarnessStatus() {

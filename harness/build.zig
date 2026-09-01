@@ -148,7 +148,6 @@ pub fn build(b: *std.Build) void {
     );
     mcp_dispatcher_e2e_step.dependOn(&run_mcp_dispatcher_e2e.step);
 
-    // --- file_index search benchmark ---
     const benchmark_exports_mod = b.createModule(.{
         .root_source_file = b.path("src/benchmark_exports.zig"),
         .target = target,
@@ -175,7 +174,6 @@ pub fn build(b: *std.Build) void {
     const run_bench_step = b.step("run-bench-file-index", "Build and run file_index search benchmark");
     run_bench_step.dependOn(&run_bench.step);
 
-    // --- UI activity progress benchmark ---
     const ui_activity_bench = b.addExecutable(.{
         .name = "ui-activity-progress-bench",
         .root_module = b.createModule(.{
@@ -223,7 +221,6 @@ pub fn build(b: *std.Build) void {
     );
     test_ui_activity_bench_step.dependOn(&run_ui_activity_bench_tests.step);
 
-    // --- file-diff approval review benchmark ---
     const approval_review_bench = b.addExecutable(.{
         .name = "approval-review-bench",
         .root_module = b.createModule(.{

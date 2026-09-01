@@ -1,13 +1,3 @@
-/* An artifact, shown as the thing it is: a document reads, a page runs, a drawing
-   draws, a diagram draws itself. The Artifacts page renders every one of them for
-   real rather than as a thumbnail — a picture of the work is the only way to find
-   the right one at a glance — and clips each to a fixed height so a long document
-   cannot blow the grid out.
-
-   The kinds that can carry script (html, app, svg, and the react source we do not
-   run) never touch Emma's own document. Everything else here is elements built from
-   parsed data, the same rule markdown.tsx keeps. */
-
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ARTIFACT_EXTENSIONS, ARTIFACT_KINDS, ARTIFACT_LABELS, artifactFrameUrl, SURFACE_LABELS, type Artifact, type ArtifactKind, type ArtifactMeta } from "../shared/artifacts";
 import { reasonText } from "./errors";
@@ -18,14 +8,12 @@ import { Markdown } from "./markdown";
 const MermaidArtifact = lazy(() => import("./mermaid-artifact"));
 
 const GONE = "That artifact is no longer in the folder.";
+const REVEAL_LABEL = typeof window !== "undefined" && window.emma?.platform === "win32" ? "Reveal in File Explorer" : "Reveal in Finder";
+const GRID_PREVIEW_MARGIN = "400px";
 
-/** An SVG is a document, not a fragment: it is framed, so the shell is the frame's page. */
 const svgPage = (svg: string) => `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}body{display:grid;place-items:center}svg{max-width:100%;max-height:100%}</style>${svg}`;
 
-/** One artifact, read by id. `null` while it loads, `false` once it is known to be gone. */
 function useArtifact(id: string) {
-  // The id it was read for is kept beside it, so a card never shows the previous
-  // artifact for a frame — the same reason run-block keeps its task's id.
   const [state, setState] = useState<{ id: string; artifact: Artifact | false } | null>(null);
   useEffect(() => {
     if (!id) return;
@@ -38,23 +26,21 @@ function useArtifact(id: string) {
   return state?.id === id ? state.artifact : null;
 }
 
-/**
- * A page's frame — an `html` artifact, an `app`, or either of them mounted into
- * Emma herself — and the only thing what runs inside it can reach out and do.
- *
- * It is loaded from `ARTIFACT_SCHEME` rather than srcDoc, which would inherit the
- * workspace's `script-src 'self'` and silently make it inert, and granted script
- * and nothing else. Never allow-same-origin alongside it, which would let the page
- * reach out and rewrite the sandbox attribute holding it. No allow-forms and no
- * allow-popups either: it may draw, it may not post or open.
- *
- * The id it answers for is this component's — the artifact it was handed to draw —
- * and never the frame's, so a page cannot ask for another app's rows by naming one.
- * The reply goes back to that one window and nowhere else; `"*"` is the target
- * because the sandbox holds it at an opaque origin, which no origin string matches.
- * An `html` page has no bridge to ask with, so the listener simply never fires.
- */
-export function ArtifactFrame({ meta, className = "artifact-frame" }: { meta: ArtifactMeta; className?: string }) {
+function useNearViewport() {
+  const [nearViewport, setNearViewport] = useState(() => typeof IntersectionObserver === "undefined");
+  const target = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const node = target.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(([entry]) => setNearViewport(entry?.isIntersecting ?? false), { rootMargin: GRID_PREVIEW_MARGIN });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  return [target, nearViewport] as const;
+}
+
+export function ArtifactFrame({ meta, className = "artifact-frame", loading }: { meta: ArtifactMeta; className?: string; loading?: "eager" | "lazy" }) {
   const frame = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     const answer = (event: MessageEvent) => {
@@ -69,13 +55,10 @@ export function ArtifactFrame({ meta, className = "artifact-frame" }: { meta: Ar
     window.addEventListener("message", answer);
     return () => window.removeEventListener("message", answer);
   }, [meta.id]);
-  return <iframe ref={frame} className={className} title={meta.title} sandbox="allow-scripts" src={artifactFrameUrl(meta.id, meta.version)} />;
+  return <iframe ref={frame} className={className} title={meta.title} loading={loading} sandbox="allow-scripts" src={artifactFrameUrl(meta.id, meta.version)} />;
 }
 
-/** The visual. `source` flips any kind back to the text it was written as. */
-export function ArtifactRender({ artifact, source }: { artifact: Artifact; source?: boolean }) {
-  // React is source by definition — Emma renders no model-written component — and
-  // `code` is source by name, so only the other four have a picture to show.
+export function ArtifactRender({ artifact, source, loading }: { artifact: Artifact; source?: boolean; loading?: "eager" | "lazy" }) {
   if (source || artifact.kind === "code" || artifact.kind === "react") {
     const language = artifact.language || ARTIFACT_EXTENSIONS[artifact.kind];
     return <pre className="artifact-code"><code>{tokenize(artifact.content, language).map((token, at) =>
@@ -83,22 +66,16 @@ export function ArtifactRender({ artifact, source }: { artifact: Artifact; sourc
   }
   if (artifact.kind === "markdown") return <div className="message-body artifact-prose"><Markdown text={artifact.content} /></div>;
   if (artifact.kind === "mermaid") return <Suspense fallback={<pre className="artifact-code">{artifact.content}</pre>}><MermaidArtifact text={artifact.content} /></Suspense>;
-  // A drawing is a picture, so its frame is the file preview's: no script at all,
-  // and srcDoc is enough because nothing in it has to run.
-  if (artifact.kind === "svg") return <iframe className="artifact-frame" title={artifact.title} sandbox="" srcDoc={svgPage(artifact.content)} />;
-  // Both pages take the same frame; an app is the one that gets answered.
-  return <ArtifactFrame meta={artifact} />;
+  if (artifact.kind === "svg") return <iframe className="artifact-frame" title={artifact.title} loading={loading} sandbox="" srcDoc={svgPage(artifact.content)} />;
+  return <ArtifactFrame meta={artifact} loading={loading} />;
 }
 
-/** The card a thread shows inline, where the reply named an artifact. */
 export function ArtifactCard({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
   const artifact = useArtifact(id);
   if (artifact === false) return <p className="artifact-missing">{GONE}</p>;
   if (!artifact) return null;
   return <button type="button" className="artifact-card artifact-card-inline" onClick={() => onOpen(id)}>
     <header><span>{ARTIFACT_LABELS[artifact.kind]}</span><strong>{artifact.title}</strong><small>v{artifact.version}</small></header>
-    {/* inert, so the frame inside never takes the click or the tab stop that
-        belongs to the card. */}
     <div className="artifact-clip" inert><ArtifactRender artifact={artifact} /></div>
   </button>;
 }
@@ -152,40 +129,40 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
       <p>An artifact is something a conversation produced that is worth keeping — a document, a snippet, a page, a drawing, a diagram. Type <b>/artifact</b> in a thread to make one.</p>
     </div>}
     {list.length > 0 && !shown.length && <p className="artifact-missing">Nothing matches that.</p>}
-    <div className="artifact-grid">{shown.map((meta) => <GridCard key={`${meta.id}:${meta.version}`} meta={meta} busy={busy} open={() => openArtifactId(meta.id)} edit={openArtifact} remove={() => setDoomed(meta)} />)}</div>
+    <div className="artifact-grid">{shown.map((meta) => <GridCard key={`${meta.id}:${meta.version}`} meta={meta} busy={busy} open={() => openArtifactId(meta.id)} edit={openArtifact} onEditError={() => setError("That artifact could not be opened for editing.")} remove={() => setDoomed(meta)} />)}</div>
     {openId && <ArtifactDialog id={openId} busy={busy} close={() => openArtifactId("")} edit={openArtifact} remove={setDoomed} />}
     {doomed && <ConfirmDialog meta={doomed} busy={busy} close={() => setDoomed(null)} confirm={() => void remove(doomed.id)} />}
   </section>;
 }
 
-function GridCard({ meta, busy, open, edit, remove }: { meta: ArtifactMeta; busy: boolean; open: () => void; edit: (artifact: Artifact) => void; remove: () => void }) {
-  const artifact = useArtifact(meta.id);
-  // The picture is the button, the same as the card a thread shows inline: opening
-  // it is reading it, so it never waited on a word to click.
-  return <article className="artifact-card">
+function GridCard({ meta, busy, open, edit, onEditError, remove }: { meta: ArtifactMeta; busy: boolean; open: () => void; edit: (artifact: Artifact) => void; onEditError: () => void; remove: () => void }) {
+  const [target, nearViewport] = useNearViewport();
+  const editCurrent = () => {
+    void window.emma.readArtifact(meta.id).then(edit).catch(onEditError);
+  };
+  return <article ref={target} className="artifact-card">
     <button type="button" className="artifact-card-open" onClick={open} aria-label={`Open ${meta.title}`}>
-      {/* A mounted panel says where it is running, because the Artifacts page is
-          where the user takes it back out — of the four regions, only this one lists it. */}
       <header><span>{ARTIFACT_LABELS[meta.kind]}{meta.surface ? ` · in the ${SURFACE_LABELS[meta.surface]}` : ""}</span><strong>{meta.title}</strong><small>v{meta.version}</small></header>
-      {artifact === false ? <p className="artifact-missing">{GONE}</p>
-        : <div className="artifact-clip" inert>{artifact && <ArtifactRender artifact={artifact} />}</div>}
+      {nearViewport ? <GridPreview meta={meta} /> : <div className="artifact-clip artifact-clip-lazy" inert />}
     </button>
-    {/* Three marks rather than three words: the card is mostly picture, and the
-        label lives in the tooltip the accessible name already says. */}
     <div className="artifact-actions artifact-icons">
-      <button type="button" title="Edit in a thread" aria-label="Edit in a thread" disabled={busy || !artifact} onClick={() => { if (artifact) edit(artifact); }}><PencilIcon /></button>
-      <button type="button" title="Reveal in Finder" aria-label="Reveal in Finder" disabled={busy} onClick={() => void window.emma.revealArtifact(meta.id)}><FolderIcon /></button>
+      <button type="button" title="Edit in a thread" aria-label="Edit in a thread" disabled={busy} onClick={editCurrent}><PencilIcon /></button>
+      <button type="button" title={REVEAL_LABEL} aria-label={REVEAL_LABEL} disabled={busy} onClick={() => void window.emma.revealArtifact(meta.id)}><FolderIcon /></button>
       <button type="button" className="artifact-danger" title="Delete" aria-label="Delete" disabled={busy} onClick={remove}><TrashIcon /></button>
     </div>
   </article>;
 }
 
-/** Rewriting it: the nib the rest of the app would draw if it drew one. */
+function GridPreview({ meta }: { meta: ArtifactMeta }) {
+  const artifact = useArtifact(meta.id);
+  if (artifact === false) return <p className="artifact-missing">{GONE}</p>;
+  return <div className="artifact-clip" inert>{artifact && <ArtifactRender artifact={artifact} loading="lazy" />}</div>;
+}
+
 function PencilIcon() {
   return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11.1 2.3a1.3 1.3 0 0 1 1.9 0l.7.7a1.3 1.3 0 0 1 0 1.9l-7.6 7.6-3 .8.8-3zM10.2 3.2l2.6 2.6" /></svg>;
 }
 
-/** Where it is on disk. */
 function FolderIcon() {
   return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.9 12.6V3.9a.9.9 0 0 1 .9-.9h3l1.6 1.8h5.8a.9.9 0 0 1 .9.9v6.9a.9.9 0 0 1-.9.9H2.8a.9.9 0 0 1-.9-.9z" /></svg>;
 }
@@ -211,8 +188,7 @@ function ArtifactDialog({ id, busy, close, edit, remove }: { id: string; busy: b
           onClick={() => void navigator.clipboard.writeText(artifact.content).then(() => setCopied(true)).catch(() => undefined)}>{copied ? "Copied" : "Copy"}</button>}
         <button type="button" onClick={close} aria-label="Close artifact">×</button>
       </header>
-      {/* Where it is, is half the question — the same answer the file preview gives. */}
-      {artifact && <button type="button" className="artifact-location" title="Reveal in Finder" onClick={() => void window.emma.revealArtifact(artifact.id)}>{artifact.path}</button>}
+      {artifact && <button type="button" className="artifact-location" title={REVEAL_LABEL} onClick={() => void window.emma.revealArtifact(artifact.id)}>{artifact.path}</button>}
       {artifact === false && <p className="dialog-error">{GONE}</p>}
       {artifact && <div className="artifact-body"><ArtifactRender artifact={artifact} source={source} /></div>}
       {artifact && <div className="artifact-actions">
@@ -223,7 +199,6 @@ function ArtifactDialog({ id, busy, close, edit, remove }: { id: string; busy: b
   </dialog>;
 }
 
-/** Deleting takes the file off disk, so it is never one click. */
 function ConfirmDialog({ meta, busy, close, confirm }: { meta: ArtifactMeta; busy: boolean; close: () => void; confirm: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);

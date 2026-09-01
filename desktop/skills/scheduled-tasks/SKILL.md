@@ -1,6 +1,6 @@
 ---
 name: scheduled-tasks
-description: How to build, edit, test, run and delete the user's scheduled tasks with the `workflow` tool — the trigger grammar (cron, manual, after another task, on an app event), the node graph (agent, set, if), variables and conditions. Use whenever the user asks for something to happen on a schedule, to happen every time they do something, to happen after something else finishes, or asks to see, change, pause or delete what is already scheduled.
+description: How to build, edit, test, run and delete the user's scheduled tasks with the `workflow` tool — the trigger grammar (cron, manual, after another task, on an app event), the node graph (agent, script, set, if), variables and conditions. Use whenever the user asks for something to happen on a schedule, to happen every time they do something, to run a local script and pass its output onward, to happen after something else finishes, or asks to see, change, pause or delete what is already scheduled.
 ---
 
 # Scheduled tasks
@@ -46,12 +46,16 @@ and `text`.
 | kind | what it does |
 |---|---|
 | `agent` | runs `text` as a full turn, exactly like a message from the user |
+| `script` | runs the fixed absolute file in `text`, sends optional templated `input` on stdin and returns its output |
 | `set` | stores `text` in `saveAs` without running anything |
 | `if` | reads `text` as a condition; goes to `next` when it holds, `otherwise` when it does not |
 
 - `saveAs` keeps a step's result as a variable. `if` has nothing to save.
-- `{{name}}` anywhere in `text` becomes that variable; `{{last}}` is the last
-  agent answer. An unset variable expands to nothing.
+- `{{name}}` in ordinary `text` or script `input` becomes that variable;
+  `{{last}}` is the last agent answer. An unset variable expands to nothing.
+- A script path is absolute, fixed rather than templated, and inside a folder
+  the user connected to Emma. `.py`, `.js`/`.mjs`/`.cjs`, `.sh` and `.zsh`
+  have built-in runners; another script must be executable and carry a shebang.
 - A step with no `next` falls through to the node written below it, so a plain
   list of steps needs no wiring. `"next": "end"` finishes the run.
 - A branch **must** say where both sides go — a branch that says nothing ends
@@ -73,6 +77,16 @@ is false, never a guess.
 The variables a run ends with are its output: a task triggered `after` this one
 starts with `digest` and `writeup` already set.
 
+To hand deterministic script output to a model, save it and use that variable in
+the next agent prompt:
+
+```json
+[
+  {"id": "calculate", "kind": "script", "text": "/Users/me/reports/calculate.py", "input": "{{source}}", "saveAs": "numbers"},
+  {"id": "analyze", "kind": "agent", "text": "Analyze these calculated results:\n{{numbers}}"}
+]
+```
+
 ## Working on tasks
 
 | Ask | Call |
@@ -87,7 +101,8 @@ starts with `digest` and `writeup` already set.
 **Test before you save something the clock will run unattended.** `test` reports
 the path a run takes, which branch each `if` takes and what the variables end
 up as, without running a single turn. It accepts a graph you have not saved
-yet, so a task can be checked before it exists.
+yet, so a task can be checked before it exists. A test validates a script path
+but does not execute the script; use **Run now** for a real end-to-end check.
 
 ## Tasks that keep an artifact up to date
 

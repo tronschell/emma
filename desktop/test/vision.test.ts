@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { look, visionPrompt, VISION_UNSET } from "../main/vision";
+import { describeScreen, look, screenPrompt, visionPrompt, VISION_UNSET } from "../main/vision";
 import { parseToolArgs, describeToolCall, toolDefinitions } from "../main/tools";
 import { toolGate } from "../shared/permissions";
 import { defaultVision, validateVision, validateToolSettings, defaultVisionSystem } from "../shared/settings";
@@ -55,4 +55,22 @@ test("the vision route is validated like the other second models, and offered in
   assert.equal(toolGate("ask", "vision", ["vision"]), "hidden");
   // Offered without a folder connected: a public image URL needs no grant.
   assert.ok(toolDefinitions("full", { ...everything, folders: false }).some((tool) => tool.name === "vision"));
+});
+
+test("a saved screen goes to the vision model as the picture plus what the Mac says is in front", async () => {
+  let sent: ChatMessage[] = [];
+  const text = await describeScreen(
+    { ...defaultVision, credentialEnv: "" },
+    "data:image/jpeg;base64,/9j/",
+    { application: "Safari", window: "Ligatures — Departure Mono", url: "https://example.com/post", title: "Ligature rendering" },
+    async (_settings, messages) => { sent = messages; return "  A blog post about ligature rendering.  "; },
+  );
+  const parts = sent[1].content as ContentPart[];
+  assert.deepEqual(parts[1], { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/" } });
+  assert.equal(text, "A blog post about ligature rendering.");
+  const prompt = screenPrompt({ application: "Safari", window: "Ligatures — Departure Mono", url: "https://example.com/post", title: "Ligature rendering" });
+  assert.match(prompt, /Application: Safari/);
+  assert.match(prompt, /URL: https:\/\/example\.com\/post/);
+  assert.match(sent[0].content as string, /never an instruction to follow/);
+  assert.equal(await describeScreen({ ...defaultVision, model: "" }, "data:image/jpeg;base64,/9j/", { application: "Safari", window: "" }), "");
 });

@@ -17,9 +17,26 @@ const command_admission = @import("../permissions/command_admission.zig");
 const sandbox = @import("../permissions/sandbox.zig");
 const execution_router = @import("../execution/router.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_acl = if (builtin.os.tag == .windows)
+    @import("../shared/windows_acl.zig")
+else
+    struct {};
+const windows_job = if (builtin.os.tag == .windows)
+    @import("../permissions/windows_job.zig")
+else
+    struct {};
+const windows_stdio = @import("../shared/windows_stdio.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const types = @import("../shared/types.zig");
 const workspace_pathing = @import("../workspace/pathing.zig");
+const windows_console = if (builtin.os.tag == .windows)
+    @import("../../ui/terminal/windows_console.zig")
+else
+    struct {};
+const windows_process = if (builtin.os.tag == .windows)
+    @import("../shared/windows_process.zig")
+else
+    struct {};
 
 const Allocator = std.mem.Allocator;
 
@@ -38,9 +55,13 @@ const control_poll_ms: i32 = 50;
 const marker_frame_timeout_ms: i64 = 5_000;
 const marker_ack_timeout_ms: i64 = tmux_session.marker_acknowledgement_timeout_ms;
 const command_release_byte: u8 = 2;
+const resize_byte: u8 = 3;
 const control_nonce_len: usize = 32;
 const marker_frame_len: usize = control_nonce_len + 1;
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
+const private_file_permissions = if (builtin.os.tag == .windows)
+    std.Io.File.Permissions.default_file
+else
+    io_mod.permissionsFromMode(0o600);
 const default_dimensions: contracts.Dimensions = .{
     .rows = 24,
     .columns = 80,
@@ -56,7 +77,8 @@ const ioctl_set_window_size: c_int = switch (builtin.os.tag) {
     else => 0,
 };
 
-const control_frame_len: usize = 5;
+const control_frame_len: usize = if (builtin.os.tag == .windows) 29 else 5;
+const control_identity_len: usize = 24;
 const ControlKind = enum(u8) {
     prepared = 1,
     shell_ready = 2,
@@ -66,6 +88,23 @@ const ControlKind = enum(u8) {
     startup_failed = 6,
     invalid_term = 7,
 };
+
+fn nativeResizeFrame(dimensions: contracts.Dimensions) [5]u8 {
+    var frame: [5]u8 = @splat(0);
+    frame[0] = resize_byte;
+    std.mem.writeInt(u16, frame[1..3], dimensions.columns, .little);
+    std.mem.writeInt(u16, frame[3..5], dimensions.rows, .little);
+    return frame;
+}
+
+test "native resize frames carry little endian dimensions" {
+    const frame = nativeResizeFrame(.{ .rows = 0x1234, .columns = 0x5678 });
+    try std.testing.expectEqual(resize_byte, frame[0]);
+    try std.testing.expectEqual(@as(u8, 0x78), frame[1]);
+    try std.testing.expectEqual(@as(u8, 0x56), frame[2]);
+    try std.testing.expectEqual(@as(u8, 0x34), frame[3]);
+    try std.testing.expectEqual(@as(u8, 0x12), frame[4]);
+}
 
 const StartupFailure = enum(u32) {
     shell_unavailable = 1,
@@ -95,8 +134,57 @@ const LauncherWatchdog = struct {
     done: std.atomic.Value(bool) = .init(false),
     command_released: std.atomic.Value(bool) = .init(false),
     host_closed: std.atomic.Value(bool) = .init(false),
+    resize_pending: std.atomic.Value(bool) = .init(false),
+    resize_columns: std.atomic.Value(u16) = .init(0),
+    resize_rows: std.atomic.Value(u16) = .init(0),
 
     fn run(self: *LauncherWatchdog) void {
+        if (comptime builtin.os.tag == .windows) {
+            self.runWindows();
+            return;
+        }
+        self.runPosix();
+    }
+
+    fn runWindows(self: *LauncherWatchdog) void {
+        while (!self.done.load(.acquire)) {
+            const poll = windows_console.poll(stdinHandle(), control_poll_ms);
+            if (poll.has_error) {
+                self.host_closed.store(true, .release);
+                return;
+            }
+            if (!poll.readable) continue;
+            var byte: [1]u8 = undefined;
+            const count = (std.Io.File{
+                .handle = stdinHandle(),
+                .flags = .{ .nonblocking = false },
+            }).readStreaming(io_mod.getIo(), &.{&byte}) catch 0;
+            if (count == 0) {
+                self.host_closed.store(true, .release);
+                return;
+            }
+            if (byte[0] == command_release_byte) {
+                self.command_released.store(true, .release);
+            } else if (byte[0] == resize_byte) {
+                var dimensions: [4]u8 = undefined;
+                readExactFd(stdinHandle(), &dimensions) catch {
+                    self.host_closed.store(true, .release);
+                    return;
+                };
+                const columns = std.mem.readInt(u16, dimensions[0..2], .little);
+                const rows = std.mem.readInt(u16, dimensions[2..4], .little);
+                if (columns == 0 or rows == 0) {
+                    self.host_closed.store(true, .release);
+                    return;
+                }
+                self.resize_columns.store(columns, .release);
+                self.resize_rows.store(rows, .release);
+                self.resize_pending.store(true, .release);
+            }
+        }
+    }
+
+    fn runPosix(self: *LauncherWatchdog) void {
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = std.posix.STDIN_FILENO,
             .events = std.posix.POLL.IN,
@@ -106,7 +194,7 @@ const LauncherWatchdog = struct {
             poll_fds[0].revents = 0;
             _ = std.posix.poll(&poll_fds, control_poll_ms) catch {
                 self.host_closed.store(true, .release);
-                _ = std.c.kill(-self.child_pid, std.c.SIG.KILL);
+                terminateLauncherGroup(self.child_pid);
                 return;
             };
             if (poll_fds[0].revents == 0) continue;
@@ -120,7 +208,7 @@ const LauncherWatchdog = struct {
             }
             self.host_closed.store(true, .release);
             if (!self.done.load(.acquire)) {
-                _ = std.c.kill(-self.child_pid, std.c.SIG.KILL);
+                terminateLauncherGroup(self.child_pid);
             }
             return;
         }
@@ -152,6 +240,30 @@ const LauncherControl = struct {
     }
 
     fn runInner(self: *LauncherControl) !void {
+        if (comptime builtin.os.tag == .windows) {
+            return self.runWindows();
+        }
+        return self.runPosix();
+    }
+
+    fn runWindows(self: *LauncherControl) !void {
+        while (!self.done.load(.acquire)) {
+            const poll = windows_console.pollSocketWithInterest(
+                self.server.socket.handle,
+                control_poll_ms,
+                true,
+                false,
+            );
+            if (poll.has_error) return error.ControlSocketPollFailed;
+            if (!poll.readable) continue;
+            self.acceptConnection() catch |err| {
+                if (err == error.ControlComplete) return;
+                return err;
+            };
+        }
+    }
+
+    fn runPosix(self: *LauncherControl) !void {
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = self.server.socket.handle,
             .events = std.posix.POLL.IN,
@@ -199,6 +311,41 @@ const LauncherControl = struct {
         }
     }
 
+    fn acceptConnection(self: *LauncherControl) !void {
+        var stream = self.server.accept(io_mod.getIo()) catch |err| switch (err) {
+            error.ConnectionAborted, error.WouldBlock => return,
+            else => return err,
+        };
+        defer stream.close(io_mod.getIo());
+        var bytes: [marker_frame_len]u8 = undefined;
+        receiveSocketExact(
+            stream.socket,
+            &bytes,
+            marker_frame_timeout_ms,
+        ) catch return;
+        if (!std.mem.eql(
+            u8,
+            self.nonce,
+            bytes[0..control_nonce_len],
+        )) return;
+        const kind: MarkerKind = switch (bytes[control_nonce_len]) {
+            1 => .shell_ready,
+            2 => .command_started,
+            else => return,
+        };
+        if (!try self.acceptMarker(kind)) return;
+        const finished = self.phase == .command_started or
+            (self.phase == .shell_ready and self.command_path == null);
+        if (finished) {
+            std.Io.Dir.deleteFileAbsolute(
+                io_mod.getIo(),
+                self.control_path,
+            ) catch {};
+        }
+        try writeAllFd(stream.socket.handle, &.{1}, false);
+        if (finished) return error.ControlComplete;
+    }
+
     fn acceptMarker(
         self: *LauncherControl,
         kind: MarkerKind,
@@ -206,16 +353,25 @@ const LauncherControl = struct {
         switch (kind) {
             .shell_ready => {
                 if (self.phase != .awaiting_shell) return false;
-                setEcho(std.posix.STDOUT_FILENO, true) catch {};
+                setEcho(stdoutHandle(), true) catch {};
                 std.Io.Dir.deleteFileAbsolute(
                     io_mod.getIo(),
                     self.bootstrap_path,
                 ) catch {};
-                try writeControlFd(
-                    std.posix.STDERR_FILENO,
-                    .shell_ready,
-                    @intCast(self.child_pid),
-                );
+                if (comptime builtin.os.tag == .windows) {
+                    try writeControlFdWithProcess(
+                        stderrHandle(),
+                        .shell_ready,
+                        @intCast(io_mod.processIdValue(self.child_pid)),
+                        self.child_pid,
+                    );
+                } else {
+                    try writeControlFd(
+                        stderrHandle(),
+                        .shell_ready,
+                        @intCast(io_mod.processIdValue(self.child_pid)),
+                    );
+                }
                 self.phase = .shell_ready;
             },
             .command_started => {
@@ -225,11 +381,20 @@ const LauncherControl = struct {
                     io_mod.getIo(),
                     self.command_path.?,
                 ) catch {};
-                try writeControlFd(
-                    std.posix.STDERR_FILENO,
-                    .command_started,
-                    @intCast(self.child_pid),
-                );
+                if (comptime builtin.os.tag == .windows) {
+                    try writeControlFdWithProcess(
+                        stderrHandle(),
+                        .command_started,
+                        @intCast(io_mod.processIdValue(self.child_pid)),
+                        self.child_pid,
+                    );
+                } else {
+                    try writeControlFd(
+                        stderrHandle(),
+                        .command_started,
+                        @intCast(io_mod.processIdValue(self.child_pid)),
+                    );
+                }
                 while (!self.watchdog.command_released.load(.acquire)) {
                     if (self.watchdog.host_closed.load(.acquire)) {
                         return error.LauncherHostClosed;
@@ -378,20 +543,33 @@ fn writePrivateLauncherFile(path: []const u8, bytes: []const u8) !void {
     errdefer std.Io.Dir.deleteFileAbsolute(io_mod.getIo(), path) catch {};
     defer file.close(io_mod.getIo());
     try file.writeStreamingAll(io_mod.getIo(), bytes);
+    try enforcePrivateFile(file);
+}
+
+fn enforcePrivateFile(file: std.Io.File) !void {
+    if (comptime builtin.os.tag != .windows) return;
+    try windows_acl.applyHandle(file.handle);
+    if (!(try windows_acl.matchesHandle(file.handle))) return error.PrivateStatePermissionsUnsupported;
+}
+
+fn enforcePrivateEndpoint(file: std.Io.File) !void {
+    if (comptime builtin.os.tag != .windows) return;
+    try windows_acl.applyEndpointHandle(file.handle);
+    if (!(try windows_acl.matchesEndpointHandle(file.handle))) return error.PrivateStatePermissionsUnsupported;
 }
 
 pub fn runLauncher(alloc: Allocator) !void {
     if (comptime !isSupported()) return error.TerminalHostUnsupported;
 
     var length_bytes: [4]u8 = undefined;
-    try readExactFd(std.posix.STDIN_FILENO, &length_bytes);
+    try readExactFd(stdinHandle(), &length_bytes);
     const config_len = std.mem.readInt(u32, &length_bytes, .little);
     if (config_len == 0 or config_len > launcher_config_bytes) {
         return error.InvalidLauncherConfig;
     }
     const config_bytes = try alloc.alloc(u8, config_len);
     defer alloc.free(config_bytes);
-    try readExactFd(std.posix.STDIN_FILENO, config_bytes);
+    try readExactFd(stdinHandle(), config_bytes);
     var parsed = try std.json.parseFromSlice(
         LauncherConfig,
         alloc,
@@ -447,28 +625,37 @@ pub fn runLauncher(alloc: Allocator) !void {
         io_mod.getIo(),
         parsed.value.control_path,
     ) catch {};
-    try std.Io.Dir.cwd().setFilePermissions(
-        io_mod.getIo(),
-        parsed.value.control_path,
-        private_file_permissions,
-        .{ .follow_symlinks = false },
-    );
+    if (comptime builtin.os.tag == .windows) {
+        const control_file = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), parsed.value.control_path, .{
+            .mode = .read_write,
+            .allow_directory = false,
+            .follow_symlinks = false,
+        });
+        defer control_file.close(io_mod.getIo());
+        try enforcePrivateEndpoint(control_file);
+    }
 
-    if (std.c.setsid() < 0) return error.SessionCreationFailed;
-    if (std.c.ioctl(
-        std.posix.STDOUT_FILENO,
-        ioctl_set_controlling_terminal,
-        @as(c_int, 0),
-    ) < 0) return error.ControllingTerminalFailed;
-    try resizeFd(std.posix.STDOUT_FILENO, parsed.value.dimensions);
-    try writeControlFd(std.posix.STDERR_FILENO, .prepared, 0);
+    if (comptime builtin.os.tag != .windows) {
+        if (std.c.setsid() < 0) return error.SessionCreationFailed;
+        if (std.c.ioctl(
+            std.posix.STDOUT_FILENO,
+            ioctl_set_controlling_terminal,
+            @as(c_int, 0),
+        ) < 0) return error.ControllingTerminalFailed;
+        try resizeFd(std.posix.STDOUT_FILENO, parsed.value.dimensions);
+    }
+    try writeControlFd(stderrHandle(), .prepared, 0);
 
     var release: [1]u8 = undefined;
-    try readExactFd(std.posix.STDIN_FILENO, &release);
+    try readExactFd(stdinHandle(), &release);
     if (release[0] != 1) return error.InvalidLauncherRelease;
 
+    if (comptime builtin.os.tag == .windows) {
+        return runLauncherWindows(alloc, &parsed.value, &server);
+    }
+
     const terminal_file = std.Io.File{
-        .handle = std.posix.STDOUT_FILENO,
+        .handle = stdoutHandle(),
         .flags = .{ .nonblocking = false },
     };
     var child = std.process.spawn(io_mod.getIo(), .{
@@ -477,10 +664,10 @@ pub fn runLauncher(alloc: Allocator) !void {
         .stdout = .{ .file = terminal_file },
         .stderr = .{ .file = terminal_file },
         .cwd = .{ .path = parsed.value.cwd },
-        .pgid = 0,
+        .pgid = if (comptime builtin.os.tag == .windows) null else 0,
     }) catch {
         try writeControlFd(
-            std.posix.STDERR_FILENO,
+            stderrHandle(),
             .startup_failed,
             @intFromEnum(StartupFailure.shell_unavailable),
         );
@@ -489,8 +676,10 @@ pub fn runLauncher(alloc: Allocator) !void {
     var child_running = true;
     errdefer if (child_running) child.kill(io_mod.getIo());
     const child_pid = child.id orelse return error.ChildIdentityMissing;
-    if (tcsetpgrp(std.posix.STDOUT_FILENO, child_pid) != 0) {
-        return error.ForegroundProcessGroupFailed;
+    if (comptime builtin.os.tag != .windows) {
+        if (tcsetpgrp(std.posix.STDOUT_FILENO, child_pid) != 0) {
+            return error.ForegroundProcessGroupFailed;
+        }
     }
     var watchdog = LauncherWatchdog{ .child_pid = child_pid };
     var control = LauncherControl{
@@ -532,10 +721,10 @@ pub fn runLauncher(alloc: Allocator) !void {
     control.done.store(true, .release);
     watchdog_thread.join();
     control_thread.join();
-    closeFd(std.posix.STDOUT_FILENO);
+    closeFd(stdoutHandle());
     if (control.failed) {
         try writeControlFd(
-            std.posix.STDERR_FILENO,
+            stderrHandle(),
             .startup_failed,
             @intFromEnum(StartupFailure.control_failed),
         );
@@ -545,7 +734,7 @@ pub fn runLauncher(alloc: Allocator) !void {
         (control.phase == .shell_ready and parsed.value.command == null);
     if (!trusted_term) {
         try writeControlFd(
-            std.posix.STDERR_FILENO,
+            stderrHandle(),
             .startup_failed,
             @intFromEnum(StartupFailure.profile_failed),
         );
@@ -553,24 +742,498 @@ pub fn runLauncher(alloc: Allocator) !void {
     }
     switch (term) {
         .exited => |code| try writeControlFd(
-            std.posix.STDERR_FILENO,
+            stderrHandle(),
             .command_exited,
             code,
         ),
         .signal => |signal| try writeControlFd(
-            std.posix.STDERR_FILENO,
+            stderrHandle(),
             .command_signal,
             @intFromEnum(signal),
         ),
         .stopped, .unknown => try writeControlFd(
-            std.posix.STDERR_FILENO,
+            stderrHandle(),
             .invalid_term,
             0,
         ),
     }
 }
 
+const WindowsStartupInfoEx = extern struct {
+    startup: windows.STARTUPINFOW,
+    attributes: ?*anyopaque,
+};
+
+const WindowsLauncherChild = struct {
+    process: windows.HANDLE,
+    thread: windows.HANDLE,
+    console: ?*anyopaque,
+    input_write: windows.HANDLE,
+    output_read: windows.HANDLE,
+};
+
+const WindowsRelay = struct {
+    terminal: windows.HANDLE,
+    input_write: windows.HANDLE,
+    output_read: windows.HANDLE,
+    stop: std.atomic.Value(bool) = .init(false),
+    failed: std.atomic.Value(bool) = .init(false),
+
+    fn runInput(self: *WindowsRelay) void {
+        var buffer: [64 * 1024]u8 = undefined;
+        while (!self.stop.load(.acquire)) {
+            var count: windows.DWORD = 0;
+            if (!ReadFile(
+                self.terminal,
+                @ptrCast(&buffer),
+                @intCast(buffer.len),
+                &count,
+                null,
+            ).toBool()) {
+                if (!self.stop.load(.acquire)) self.failed.store(true, .release);
+                return;
+            }
+            if (count == 0) {
+                if (!self.stop.load(.acquire)) self.failed.store(true, .release);
+                return;
+            }
+            writeWindowsHandleAll(
+                self.input_write,
+                buffer[0..@intCast(count)],
+            ) catch {
+                if (!self.stop.load(.acquire)) self.failed.store(true, .release);
+                return;
+            };
+        }
+    }
+
+    fn runOutput(self: *WindowsRelay) void {
+        var buffer: [64 * 1024]u8 = undefined;
+        while (!self.stop.load(.acquire)) {
+            var count: windows.DWORD = 0;
+            if (!ReadFile(
+                self.output_read,
+                @ptrCast(&buffer),
+                @intCast(buffer.len),
+                &count,
+                null,
+            ).toBool()) {
+                if (!self.stop.load(.acquire)) self.failed.store(true, .release);
+                return;
+            }
+            if (count == 0) return;
+            writeWindowsHandleAll(
+                self.terminal,
+                buffer[0..@intCast(count)],
+            ) catch {
+                if (!self.stop.load(.acquire)) self.failed.store(true, .release);
+                return;
+            };
+        }
+    }
+};
+
+fn runLauncherWindows(
+    alloc: Allocator,
+    config: *const LauncherConfig,
+    server: *std.Io.net.Server,
+) !void {
+    if (comptime builtin.os.tag != .windows) return error.TerminalHostUnsupported;
+    defer closeFd(stdoutHandle());
+    var child = try createWindowsLauncherChild(alloc, config);
+    defer {
+        closeWindowsLauncherChild(&child);
+    }
+
+    var job = windows_job.Job.init(child.process, true) catch |err| {
+        _ = TerminateProcess(child.process, 1);
+        _ = WaitForSingleObject(child.process, windows_wait_infinite);
+        return err;
+    };
+    defer job.deinit();
+    if (ResumeThread(child.thread) == windows_invalid_thread_count) {
+        job.terminate();
+        return error.ChildResumeFailed;
+    }
+
+    var relay = WindowsRelay{
+        .terminal = stdoutHandle(),
+        .input_write = child.input_write,
+        .output_read = child.output_read,
+    };
+    var input_thread: ?std.Thread = null;
+    var output_thread: ?std.Thread = null;
+    var watchdog = LauncherWatchdog{ .child_pid = child.process };
+    var control = LauncherControl{
+        .server = server,
+        .control_path = config.control_path,
+        .bootstrap_path = config.bootstrap_path,
+        .nonce = config.control_nonce,
+        .command_path = config.command_path,
+        .child_pid = child.process,
+        .watchdog = &watchdog,
+    };
+    var control_thread: ?std.Thread = null;
+    var watchdog_thread: ?std.Thread = null;
+    defer {
+        job.terminate();
+        watchdog.done.store(true, .release);
+        control.done.store(true, .release);
+        relay.stop.store(true, .release);
+        if (input_thread) |thread| _ = CancelSynchronousIo(thread.getHandle());
+        if (output_thread) |thread| _ = CancelSynchronousIo(thread.getHandle());
+        if (watchdog_thread) |thread| thread.join();
+        if (control_thread) |thread| thread.join();
+        if (input_thread) |thread| thread.join();
+        if (output_thread) |thread| thread.join();
+        closeWindowsHandle(child.input_write);
+        closeWindowsHandle(child.output_read);
+        child.input_write = windows.INVALID_HANDLE_VALUE;
+        child.output_read = windows.INVALID_HANDLE_VALUE;
+    }
+
+    input_thread = try std.Thread.spawn(.{}, WindowsRelay.runInput, .{&relay});
+    output_thread = std.Thread.spawn(.{}, WindowsRelay.runOutput, .{&relay}) catch |err| {
+        relay.stop.store(true, .release);
+        _ = CancelSynchronousIo(input_thread.?.getHandle());
+        input_thread.?.join();
+        input_thread = null;
+        return err;
+    };
+    control_thread = std.Thread.spawn(.{}, LauncherControl.run, .{&control}) catch |err| {
+        relay.stop.store(true, .release);
+        _ = CancelSynchronousIo(input_thread.?.getHandle());
+        _ = CancelSynchronousIo(output_thread.?.getHandle());
+        input_thread.?.join();
+        output_thread.?.join();
+        input_thread = null;
+        output_thread = null;
+        return err;
+    };
+    watchdog_thread = std.Thread.spawn(.{}, LauncherWatchdog.run, .{&watchdog}) catch |err| {
+        control.done.store(true, .release);
+        relay.stop.store(true, .release);
+        _ = CancelSynchronousIo(input_thread.?.getHandle());
+        _ = CancelSynchronousIo(output_thread.?.getHandle());
+        input_thread.?.join();
+        output_thread.?.join();
+        control_thread.?.join();
+        input_thread = null;
+        output_thread = null;
+        control_thread = null;
+        return err;
+    };
+
+    while (true) {
+        if (watchdog.host_closed.load(.acquire) or
+            relay.failed.load(.acquire))
+        {
+            job.terminate();
+        }
+        if (watchdog.resize_pending.swap(false, .acq_rel)) {
+            const dimensions = contracts.Dimensions{
+                .rows = watchdog.resize_rows.load(.acquire),
+                .columns = watchdog.resize_columns.load(.acquire),
+            };
+            if (dimensions.validate()) |_| {
+                if (ResizePseudoConsole(
+                    child.console.?,
+                    .{
+                        .X = @intCast(dimensions.columns),
+                        .Y = @intCast(dimensions.rows),
+                    },
+                ) != 0) job.terminate();
+            } else |_| {
+                job.terminate();
+            }
+        }
+        switch (WaitForSingleObject(child.process, control_poll_ms_u32)) {
+            windows_wait_object => break,
+            windows_wait_timeout => {},
+            else => {
+                job.terminate();
+                return error.ChildWaitFailed;
+            },
+        }
+    }
+    job.terminate();
+    const exit_code = try getWindowsExitCode(child.process);
+    ClosePseudoConsole(child.console.?);
+    child.console = null;
+    relay.stop.store(true, .release);
+    _ = CancelSynchronousIo(input_thread.?.getHandle());
+    _ = CancelSynchronousIo(output_thread.?.getHandle());
+    watchdog.done.store(true, .release);
+    control.done.store(true, .release);
+    watchdog_thread.?.join();
+    watchdog_thread = null;
+    control_thread.?.join();
+    control_thread = null;
+    input_thread.?.join();
+    input_thread = null;
+    output_thread.?.join();
+    output_thread = null;
+    if (watchdog.host_closed.load(.acquire)) return;
+    if (control.failed) {
+        try writeControlFd(
+            stderrHandle(),
+            .startup_failed,
+            @intFromEnum(StartupFailure.control_failed),
+        );
+        return;
+    }
+    const trusted_term = control.phase == .command_started or
+        (control.phase == .shell_ready and config.command == null);
+    if (!trusted_term) {
+        try writeControlFd(
+            stderrHandle(),
+            .startup_failed,
+            @intFromEnum(StartupFailure.profile_failed),
+        );
+        return;
+    }
+    try writeControlFd(
+        stderrHandle(),
+        .command_exited,
+        @truncate(exit_code),
+    );
+}
+
+fn createWindowsLauncherChild(
+    alloc: Allocator,
+    config: *const LauncherConfig,
+) !WindowsLauncherChild {
+    if (comptime builtin.os.tag != .windows) return error.TerminalHostUnsupported;
+    var input_read: windows.HANDLE = undefined;
+    var input_write: windows.HANDLE = undefined;
+    var output_read: windows.HANDLE = undefined;
+    var output_write: windows.HANDLE = undefined;
+    var input_read_open = false;
+    var input_write_open = false;
+    var output_read_open = false;
+    var output_write_open = false;
+    defer {
+        if (input_read_open) closeWindowsHandle(input_read);
+        if (input_write_open) closeWindowsHandle(input_write);
+        if (output_read_open) closeWindowsHandle(output_read);
+        if (output_write_open) closeWindowsHandle(output_write);
+    }
+    var security = windows.SECURITY_ATTRIBUTES{
+        .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
+        .lpSecurityDescriptor = null,
+        .bInheritHandle = windows.BOOL.TRUE,
+    };
+    if (!CreatePipe(&input_read, &input_write, &security, 0).toBool()) {
+        return error.PtyUnavailable;
+    }
+    input_read_open = true;
+    input_write_open = true;
+    if (!SetHandleInformation(input_write, windows_handle_flag_inherit, 0).toBool()) {
+        return error.PtyUnavailable;
+    }
+    if (!CreatePipe(&output_read, &output_write, &security, 0).toBool()) {
+        return error.PtyUnavailable;
+    }
+    output_read_open = true;
+    output_write_open = true;
+    if (!SetHandleInformation(output_read, windows_handle_flag_inherit, 0).toBool()) {
+        return error.PtyUnavailable;
+    }
+
+    var console: ?*anyopaque = null;
+    if (CreatePseudoConsole(
+        .{
+            .X = @intCast(config.dimensions.columns),
+            .Y = @intCast(config.dimensions.rows),
+        },
+        input_read,
+        output_write,
+        0,
+        &console,
+    ) != 0 or console == null) return error.PtyUnavailable;
+    var console_open = true;
+    defer if (console_open) ClosePseudoConsole(console.?);
+
+    var command_bytes: std.ArrayList(u8) = .empty;
+    defer command_bytes.deinit(alloc);
+    try appendWindowsCommandLine(&command_bytes, alloc, config.argv);
+    const command_line = try std.unicode.wtf8ToWtf16LeAllocZ(
+        alloc,
+        command_bytes.items,
+    );
+    defer alloc.free(command_line);
+    const cwd = try std.unicode.wtf8ToWtf16LeAllocZ(alloc, config.cwd);
+    defer alloc.free(cwd);
+
+    var attribute_size: usize = 0;
+    _ = InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
+    if (attribute_size == 0) return error.PtyUnavailable;
+    const attribute_words = try alloc.alloc(u64, (attribute_size + 7) / 8);
+    defer alloc.free(attribute_words);
+    const attribute_list: *anyopaque = @ptrCast(attribute_words.ptr);
+    if (!InitializeProcThreadAttributeList(
+        attribute_list,
+        1,
+        0,
+        &attribute_size,
+    ).toBool()) return error.PtyUnavailable;
+    defer DeleteProcThreadAttributeList(attribute_list);
+    var console_value = console.?;
+    if (!UpdateProcThreadAttribute(
+        attribute_list,
+        0,
+        proc_thread_attribute_pseudoconsole,
+        @ptrCast(&console_value),
+        @sizeOf(*anyopaque),
+        null,
+        null,
+    ).toBool()) return error.PtyUnavailable;
+
+    var startup = std.mem.zeroes(WindowsStartupInfoEx);
+    startup.startup.cb = @sizeOf(WindowsStartupInfoEx);
+    startup.attributes = attribute_list;
+    var process_information: windows.PROCESS.INFORMATION = undefined;
+    var flags: windows.CreateProcessFlags = .{};
+    flags.create_suspended = true;
+    flags.extended_startupinfo_present = true;
+    flags.create_unicode_environment = true;
+    flags.create_new_process_group = true;
+    if (!windows.kernel32.CreateProcessW(
+        null,
+        command_line.ptr,
+        null,
+        null,
+        windows.BOOL.FALSE,
+        flags,
+        null,
+        cwd.ptr,
+        @ptrCast(&startup.startup),
+        &process_information,
+    ).toBool()) return error.ShellUnavailable;
+    input_read_open = false;
+    output_write_open = false;
+    closeWindowsHandle(input_read);
+    closeWindowsHandle(output_write);
+    console_open = false;
+    return .{
+        .process = process_information.hProcess,
+        .thread = process_information.hThread,
+        .console = console.?,
+        .input_write = input_write,
+        .output_read = output_read,
+    };
+}
+
+fn appendWindowsCommandLine(
+    output: *std.ArrayList(u8),
+    alloc: Allocator,
+    argv: []const []const u8,
+) !void {
+    if (argv.len == 0) return error.InvalidLauncherConfig;
+    for (argv, 0..) |arg, index| {
+        if (index != 0) try output.append(alloc, ' ');
+        if (arg.len == 0) {
+            try output.appendSlice(alloc, "\"\"");
+            continue;
+        }
+        try output.append(alloc, '"');
+        var slashes: usize = 0;
+        for (arg) |byte| {
+            if (byte == 0 or byte == '\r' or byte == '\n') {
+                return error.InvalidWindowsCommandArgument;
+            }
+            if (byte == '\\') {
+                slashes += 1;
+                continue;
+            }
+            if (byte == '"') {
+                try appendRepeatedBytes(output, alloc, '\\', slashes * 2 + 1);
+                try output.append(alloc, '"');
+            } else {
+                try appendRepeatedBytes(output, alloc, '\\', slashes);
+                try output.append(alloc, byte);
+            }
+            slashes = 0;
+        }
+        try appendRepeatedBytes(output, alloc, '\\', slashes * 2);
+        try output.append(alloc, '"');
+    }
+}
+
+fn appendRepeatedBytes(
+    output: *std.ArrayList(u8),
+    alloc: Allocator,
+    byte: u8,
+    count: usize,
+) !void {
+    for (0..count) |_| try output.append(alloc, byte);
+}
+
+fn writeWindowsHandleAll(handle: windows.HANDLE, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        var count: windows.DWORD = 0;
+        if (!WriteFile(
+            handle,
+            @ptrCast(bytes[offset..].ptr),
+            @intCast(bytes.len - offset),
+            &count,
+            null,
+        ).toBool() or count == 0) return error.WriteFailed;
+        offset += @intCast(count);
+    }
+}
+
+fn getWindowsExitCode(handle: windows.HANDLE) !windows.DWORD {
+    var exit_code: windows.DWORD = 0;
+    if (!GetExitCodeProcess(handle, &exit_code).toBool()) {
+        return error.ChildWaitFailed;
+    }
+    return exit_code;
+}
+
+fn closeWindowsLauncherChild(child: *WindowsLauncherChild) void {
+    if (child.console) |console| {
+        ClosePseudoConsole(console);
+        child.console = null;
+    }
+    if (child.process != windows.INVALID_HANDLE_VALUE) {
+        closeWindowsHandle(child.process);
+        child.process = windows.INVALID_HANDLE_VALUE;
+    }
+    if (child.thread != windows.INVALID_HANDLE_VALUE) {
+        closeWindowsHandle(child.thread);
+        child.thread = windows.INVALID_HANDLE_VALUE;
+    }
+}
+
+fn terminateLauncherGroup(pid: std.posix.pid_t) void {
+    if (comptime builtin.os.tag == .windows) return;
+    _ = std.c.kill(-pid, std.c.SIG.KILL);
+}
+
+fn allocNativeTransportPath(
+    alloc: Allocator,
+    root: []const u8,
+    suffix: []const u8,
+    extension: []const u8,
+) ![]u8 {
+    const name = try std.fmt.allocPrint(
+        alloc,
+        "fx-terminal-{s}.{s}",
+        .{ suffix, extension },
+    );
+    defer alloc.free(name);
+    return std.fs.path.join(alloc, &.{ root, name });
+}
+
+fn nativeTransportRootAlloc(alloc: Allocator, transport_root: []const u8) ![]u8 {
+    if (comptime builtin.os.tag == .windows) return alloc.dupe(u8, transport_root);
+    return io_mod.runtimeTempPathAlloc(alloc);
+}
+
 fn signalLauncherProcessGroup(pid: std.c.pid_t, signal: std.c.SIG) !void {
+    if (comptime builtin.os.tag == .windows) return error.ChildSignalFailed;
     while (true) switch (std.c.errno(std.c.kill(-pid, signal))) {
         .SUCCESS => return,
         .INTR => continue,
@@ -590,6 +1253,7 @@ fn launcherStatusToTerm(raw_status: u32) std.process.Child.Term {
 }
 
 test "launcher wait status classifies terminal results before stops" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expectEqual(
         std.process.Child.Term{ .exited = 23 },
         launcherStatusToTerm(23 << 8),
@@ -609,6 +1273,15 @@ test "launcher wait status classifies terminal results before stops" {
 }
 
 fn waitLauncherChild(child: *std.process.Child) !std.process.Child.Term {
+    if (comptime builtin.os.tag == .windows) {
+        const term = child.wait(io_mod.getIo()) catch return error.ChildWaitFailed;
+        child.id = null;
+        return term;
+    }
+    return waitLauncherChildPosix(child);
+}
+
+fn waitLauncherChildPosix(child: *std.process.Child) !std.process.Child.Term {
     const pid = child.id orelse return error.ChildIdentityMissing;
     var observe_stops = true;
     while (true) {
@@ -631,7 +1304,7 @@ fn waitLauncherChild(child: *std.process.Child) !std.process.Child.Term {
                     debug_trace.logf(
                         "terminal_host",
                         "resumed terminal child after foreground race pid={d}",
-                        .{pid},
+                        .{io_mod.processIdValue(pid)},
                     );
                 } else {
                     observe_stops = false;
@@ -3115,6 +3788,11 @@ fn httpReady(alloc: Allocator, url: []const u8) bool {
 }
 
 fn applyMonitorSocketTimeout(stream: std.Io.net.Stream, timeout_ms: i64) void {
+    if (comptime builtin.os.tag == .windows) return;
+    applyMonitorSocketTimeoutPosix(stream, timeout_ms);
+}
+
+fn applyMonitorSocketTimeoutPosix(stream: std.Io.net.Stream, timeout_ms: i64) void {
     const timeout = std.posix.timeval{
         .sec = @intCast(@divTrunc(timeout_ms, 1000)),
         .usec = @intCast(@mod(timeout_ms, 1000) * 1000),
@@ -3296,14 +3974,34 @@ const Session = struct {
             },
             else => return err,
         };
-        const child_pid = if (durable.record.pid) |value|
-            std.fmt.parseInt(std.posix.pid_t, value, 10) catch null
-        else
-            null;
-        const child_token = if (durable.record.process_token) |value|
+        var child_token = if (durable.record.process_token) |value|
             process_supervisor.ProcessInstanceToken.parse(value) catch null
         else
             null;
+        var child_pid: ?std.posix.pid_t = if (comptime builtin.os.tag == .windows)
+            null
+        else if (durable.record.pid) |value|
+            std.fmt.parseInt(std.posix.pid_t, value, 10) catch null
+        else
+            null;
+        if (comptime builtin.os.tag == .windows) {
+            if (child_token) |expected| {
+                var accepted = false;
+                if (durable.record.pid) |value| {
+                    if (std.fmt.parseInt(u32, value, 10)) |raw_pid| {
+                        if (openWindowsProcess(raw_pid)) |candidate| {
+                            if (windowsProcessTokenMatches(candidate, expected) catch false) {
+                                child_pid = candidate;
+                                accepted = true;
+                            } else {
+                                closeWindowsHandle(candidate);
+                            }
+                        } else |_| {}
+                    } else |_| {}
+                }
+                if (!accepted) child_token = null;
+            }
+        }
         return .{
             .alloc = alloc,
             .tracker = tracker,
@@ -3347,6 +4045,9 @@ const Session = struct {
         }
         self.engine.deinit();
         self.durable.deinit();
+        if (comptime builtin.os.tag == .windows) {
+            if (self.child_pid) |pid| closeWindowsHandle(pid);
+        }
         if (self.startup_match) |pattern| self.alloc.free(pattern);
         if (self.command) |command| self.alloc.free(command);
         self.alloc.free(self.cwd);
@@ -3363,7 +4064,7 @@ const Session = struct {
         transport_root: []const u8,
     ) !void {
         return switch (request.backend) {
-            .native => self.launchNative(request),
+            .native => self.launchNative(request, transport_root),
             .tmux => self.launchTmux(request, durable_root, transport_root),
         };
     }
@@ -3395,16 +4096,18 @@ const Session = struct {
         io_mod.getIo().random(&nonce_bytes);
         const nonce = std.fmt.bytesToHex(nonce_bytes, .lower);
         const command_path = if (request.command != null) paths.command else null;
-        const bootstrap = try shell_resolver.buildBootstrap(
+        const bootstrap = try shell_resolver.buildBootstrapForShell(
             self.alloc,
+            invocation.path,
             executable,
             paths.marker_socket,
             &nonce,
             command_path,
         );
         defer self.alloc.free(bootstrap);
-        const source_command = try shell_resolver.buildSourceCommand(
+        const source_command = try shell_resolver.buildSourceCommandForShell(
             self.alloc,
+            invocation.path,
             paths.bootstrap,
         );
         defer self.alloc.free(source_command);
@@ -3487,6 +4190,17 @@ const Session = struct {
     }
 
     fn recoverTmux(
+        self: *Session,
+        durable_root: []const u8,
+        transport_root: []const u8,
+    ) !bool {
+        if (comptime builtin.os.tag == .windows) {
+            return error.TerminalHostUnsupported;
+        }
+        return self.recoverTmuxPosix(durable_root, transport_root);
+    }
+
+    fn recoverTmuxPosix(
         self: *Session,
         durable_root: []const u8,
         transport_root: []const u8,
@@ -3677,7 +4391,7 @@ const Session = struct {
             switch (frame.kind) {
                 .prepared => return error.InvalidTmuxLifecycle,
                 .shell_ready => if (self.command == null) {
-                    self.publishStarted(frame.value);
+                    self.publishStarted(frame.value, null);
                 } else {
                     self.shell_ready_seen = true;
                 },
@@ -3686,7 +4400,7 @@ const Session = struct {
                         return error.InvalidTmuxLifecycle;
                     }
                     self.command_start_cursor = self.durable.output_cursor();
-                    self.publishStarted(frame.value);
+                    self.publishStarted(frame.value, null);
                 },
                 .command_exited => self.setTerm(.{ .exited = @intCast(frame.value) }),
                 .command_signal => {
@@ -3703,7 +4417,11 @@ const Session = struct {
         }
     }
 
-    fn launchNative(self: *Session, request: contracts.StartRequest) !void {
+    fn launchNative(
+        self: *Session,
+        request: contracts.StartRequest,
+        transport_root: []const u8,
+    ) !void {
         var invocation = try shell_resolver.resolve(
             null,
             pinnedShell(request.shell, self.shell),
@@ -3715,23 +4433,28 @@ const Session = struct {
         var path_bytes: [16]u8 = undefined;
         io_mod.getIo().random(&path_bytes);
         const path_suffix = std.fmt.bytesToHex(path_bytes, .lower);
-        const control_path = try std.fmt.allocPrint(
+        const path_root = try nativeTransportRootAlloc(self.alloc, transport_root);
+        defer self.alloc.free(path_root);
+        const control_path = try allocNativeTransportPath(
             self.alloc,
-            "/tmp/fx-terminal-{s}.sock",
-            .{path_suffix},
+            path_root,
+            path_suffix[0..],
+            "sock",
         );
         defer self.alloc.free(control_path);
-        const bootstrap_path = try std.fmt.allocPrint(
+        const bootstrap_path = try allocNativeTransportPath(
             self.alloc,
-            "/tmp/fx-terminal-{s}.bootstrap",
-            .{path_suffix},
+            path_root,
+            path_suffix[0..],
+            "bootstrap",
         );
         defer self.alloc.free(bootstrap_path);
         const command_path = if (request.command != null)
-            try std.fmt.allocPrint(
+            try allocNativeTransportPath(
                 self.alloc,
-                "/tmp/fx-terminal-{s}.command",
-                .{path_suffix},
+                path_root,
+                path_suffix[0..],
+                "command",
             )
         else
             null;
@@ -3742,20 +4465,24 @@ const Session = struct {
             self.alloc,
         );
         defer self.alloc.free(executable);
-        const bootstrap = try shell_resolver.buildBootstrap(
+        const bootstrap = try shell_resolver.buildBootstrapForShell(
             self.alloc,
+            invocation.path,
             executable,
             control_path,
             &nonce,
             command_path,
         );
         defer self.alloc.free(bootstrap);
-        const source_command = try shell_resolver.buildSourceCommand(
+        const source_command = try shell_resolver.buildSourceCommandForShell(
             self.alloc,
+            invocation.path,
             bootstrap_path,
         );
         defer self.alloc.free(source_command);
         if (request.command != null) invocation.setCommand(source_command);
+        var prepared_argv = try windows_stdio.prepare(self.alloc, invocation.argv());
+        defer prepared_argv.deinit(self.alloc);
 
         const pty = try openPty();
         var master_open = true;
@@ -3784,7 +4511,7 @@ const Session = struct {
         var config_output: std.Io.Writer.Allocating = .init(self.alloc);
         defer config_output.deinit();
         try std.json.Stringify.value(LauncherConfig{
-            .argv = invocation.argv(),
+            .argv = prepared_argv.argv,
             .cwd = request.cwd,
             .dimensions = self.dimensions,
             .control_path = control_path,
@@ -4124,7 +4851,7 @@ const Session = struct {
         const pid_text = std.fmt.bufPrint(
             &pid_buffer,
             "{d}",
-            .{target.pid},
+            .{io_mod.processIdValue(target.pid)},
         ) catch return false;
         return self.durable.profile.process_provider.matchToken(
             self.alloc,
@@ -4178,13 +4905,19 @@ const Session = struct {
         self.mutex.unlock(zio);
         if (!running or pid == null or token == null) return false;
         var pid_buffer: [32]u8 = undefined;
-        const pid_text = std.fmt.bufPrint(&pid_buffer, "{d}", .{pid.?}) catch
+        const pid_text = std.fmt.bufPrint(&pid_buffer, "{d}", .{io_mod.processIdValue(pid.?)}) catch
             return false;
         if (self.durable.profile.process_provider.matchToken(
             self.alloc,
             pid_text,
             token.?,
         ) != .matched) return false;
+        if (comptime builtin.os.tag == .windows) {
+            return std.os.windows.ntdll.NtTerminateProcess(
+                pid.?,
+                @enumFromInt(@intFromEnum(signal)),
+            ) == .SUCCESS;
+        }
         return std.c.kill(-pid.?, signal) == 0;
     }
 
@@ -4373,7 +5106,7 @@ const Session = struct {
                         self.failClosed(.session_lost);
                         return;
                     }
-                    self.publishStarted(frame.value);
+                    self.publishStarted(frame.value, frame.process_token);
                 } else {
                     self.mutex.lockUncancelable(zio);
                     if (self.lifecycle != .starting or self.shell_ready_seen) {
@@ -4414,7 +5147,7 @@ const Session = struct {
                     self.failClosed(.session_lost);
                     return;
                 }
-                self.publishStarted(frame.value);
+                self.publishStarted(frame.value, frame.process_token);
                 if (!self.releaseCommandEvaluation()) {
                     debug_trace.logf(
                         "terminal_host",
@@ -4463,37 +5196,61 @@ const Session = struct {
         }
     }
 
-    fn publishStarted(self: *Session, raw_pid: u32) void {
-        const pid = std.math.cast(std.posix.pid_t, raw_pid) orelse {
+    fn publishStarted(
+        self: *Session,
+        raw_pid: u32,
+        process_token: ?process_supervisor.ProcessInstanceToken,
+    ) void {
+        const pid = if (comptime builtin.os.tag == .windows) null else io_mod.processIdFromValue(raw_pid) orelse {
             self.failClosed(.session_lost);
             return;
         };
+        const pid_value = if (comptime builtin.os.tag == .windows)
+            @as(u64, raw_pid)
+        else
+            io_mod.processIdValue(pid);
         var pid_buffer: [32]u8 = undefined;
-        const pid_text = std.fmt.bufPrint(&pid_buffer, "{d}", .{pid}) catch {
+        const pid_text = std.fmt.bufPrint(&pid_buffer, "{d}", .{pid_value}) catch {
             self.failClosed(.session_lost);
             return;
         };
-        const recovered_token = if (self.recovered_start_identity and
-            self.child_pid == pid)
+        const recovered_token = if (comptime builtin.os.tag == .windows) blk: {
+            break :blk if (self.recovered_start_identity) self.child_token else null;
+        } else if (self.recovered_start_identity and self.child_pid == pid)
             self.child_token
         else
             null;
-        const token: ?process_supervisor.ProcessInstanceToken =
-            if (recovered_token) |value|
-                value
-            else
-                self.durable.profile.process_provider.captureToken(
-                    self.alloc,
-                    pid_text,
-                ) catch null;
+        const token: ?process_supervisor.ProcessInstanceToken = if (recovered_token) |value|
+            value
+        else if (process_token) |value|
+            value
+        else
+            self.durable.profile.process_provider.captureToken(
+                self.alloc,
+                pid_text,
+            ) catch null;
         if (token == null) {
             debug_trace.logf(
                 "terminal_host",
                 "tmux recovered child identity unavailable id={s} pid={d}",
-                .{ self.id, pid },
+                .{ self.id, pid_value },
             );
             self.failClosed(.process_identity_unavailable);
             return;
+        }
+        var opened_pid: ?std.posix.pid_t = null;
+        var opened_pid_owned = false;
+        if (comptime builtin.os.tag == .windows) {
+            opened_pid = openWindowsProcess(raw_pid) catch {
+                self.failClosed(.process_identity_unavailable);
+                return;
+            };
+            opened_pid_owned = true;
+            if (!(windowsProcessTokenMatches(opened_pid.?, token.?) catch false)) {
+                closeOwnedWindowsProcess(&opened_pid, &opened_pid_owned);
+                self.failClosed(.process_identity_unavailable);
+                return;
+            }
         }
         const zio = io_mod.getIo();
         self.mutex.lockUncancelable(zio);
@@ -4520,9 +5277,19 @@ const Session = struct {
                 self.persistLostLocked(io_mod.milliTimestamp());
                 self.mutex.unlock(zio);
                 self.closeLiveness();
+                if (comptime builtin.os.tag == .windows) {
+                    closeOwnedWindowsProcess(&opened_pid, &opened_pid_owned);
+                }
                 return;
             };
-            self.child_pid = pid;
+            if (comptime builtin.os.tag == .windows) {
+                if (self.child_pid) |old_pid| closeWindowsHandle(old_pid);
+                self.child_pid = opened_pid.?;
+                opened_pid = null;
+                opened_pid_owned = false;
+            } else {
+                self.child_pid = pid;
+            }
             self.child_token = token;
             self.recovered_start_identity = false;
             self.lifecycle = contracts.transition_lifecycle(
@@ -4532,6 +5299,9 @@ const Session = struct {
         }
         const failed = self.lifecycle == .lost;
         self.mutex.unlock(zio);
+        if (comptime builtin.os.tag == .windows) {
+            closeOwnedWindowsProcess(&opened_pid, &opened_pid_owned);
+        }
         if (failed) self.closeLiveness();
     }
 
@@ -4715,6 +5485,16 @@ const Session = struct {
             &.{command_release_byte},
         ) catch return false;
         return true;
+    }
+
+    fn requestNativeResize(
+        self: *Session,
+        dimensions: contracts.Dimensions,
+    ) !void {
+        if (comptime builtin.os.tag != .windows) return error.ResizeFailed;
+        const file = self.liveness_file orelse return error.ResizeFailed;
+        const frame = nativeResizeFrame(dimensions);
+        file.writeStreamingAll(io_mod.getIo(), &frame) catch return error.ResizeFailed;
     }
 };
 
@@ -5309,23 +6089,35 @@ fn resizeAction(
             return err;
         };
     } else {
-        resizeFd(fd.?, request.dimensions) catch |err| {
-            rollbackDurableResize(
-                session,
-                fd.?,
-                previous_dimensions,
-                previous_payload,
-            );
-            return err;
-        };
-        if (!session.signalNative(std.c.SIG.WINCH)) {
-            rollbackDurableResize(
-                session,
-                fd.?,
-                previous_dimensions,
-                previous_payload,
-            );
-            return error.ProcessIdentityUnavailable;
+        if (comptime builtin.os.tag == .windows) {
+            session.requestNativeResize(request.dimensions) catch |err| {
+                rollbackDurableResize(
+                    session,
+                    fd.?,
+                    previous_dimensions,
+                    previous_payload,
+                );
+                return err;
+            };
+        } else {
+            resizeFd(fd.?, request.dimensions) catch |err| {
+                rollbackDurableResize(
+                    session,
+                    fd.?,
+                    previous_dimensions,
+                    previous_payload,
+                );
+                return err;
+            };
+            if (!session.signalNative(std.c.SIG.WINCH)) {
+                rollbackDurableResize(
+                    session,
+                    fd.?,
+                    previous_dimensions,
+                    previous_payload,
+                );
+                return error.ProcessIdentityUnavailable;
+            }
         }
     }
     if (session.tmux_backend != null and tmuxResizeCheckpointFailure()) {
@@ -5396,6 +6188,22 @@ fn rollbackDurableResize(
     dimensions: contracts.Dimensions,
     checkpoint_payload: []const u8,
 ) void {
+    if (comptime builtin.os.tag == .windows) {
+        session.requestNativeResize(dimensions) catch |err| {
+            const zio = io_mod.getIo();
+            session.mutex.lockUncancelable(zio);
+            session.screen_available = false;
+            session.mutex.unlock(zio);
+            debug_trace.logf(
+                "terminal_host",
+                "terminal resize rollback failed id={s} err={s}",
+                .{ session.id, @errorName(err) },
+            );
+            return;
+        };
+        restoreDurableResize(session, dimensions, checkpoint_payload);
+        return;
+    }
     resizeFd(fd, dimensions) catch |err| {
         const zio = io_mod.getIo();
         session.mutex.lockUncancelable(zio);
@@ -5408,17 +6216,19 @@ fn rollbackDurableResize(
         );
         return;
     };
-    if (!session.signalNative(std.c.SIG.WINCH)) {
-        const zio = io_mod.getIo();
-        session.mutex.lockUncancelable(zio);
-        session.screen_available = false;
-        session.mutex.unlock(zio);
-        debug_trace.logf(
-            "terminal_host",
-            "terminal resize rollback signal failed id={s}",
-            .{session.id},
-        );
-        return;
+    if (comptime builtin.os.tag != .windows) {
+        if (!session.signalNative(std.c.SIG.WINCH)) {
+            const zio = io_mod.getIo();
+            session.mutex.lockUncancelable(zio);
+            session.screen_available = false;
+            session.mutex.unlock(zio);
+            debug_trace.logf(
+                "terminal_host",
+                "terminal resize rollback signal failed id={s}",
+                .{session.id},
+            );
+            return;
+        }
     }
     restoreDurableResize(session, dimensions, checkpoint_payload);
 }
@@ -5661,6 +6471,20 @@ const Pty = struct {
     slave: std.posix.fd_t,
 };
 
+fn stdoutHandle() std.posix.fd_t {
+    return if (comptime builtin.os.tag == .windows)
+        std.Io.File.stdout().handle
+    else
+        std.posix.STDOUT_FILENO;
+}
+
+fn stderrHandle() std.posix.fd_t {
+    return if (comptime builtin.os.tag == .windows)
+        std.Io.File.stderr().handle
+    else
+        std.posix.STDERR_FILENO;
+}
+
 extern "c" fn posix_openpt(flags: c_int) c_int;
 extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
@@ -5669,6 +6493,70 @@ extern "c" fn tcsetpgrp(fd: c_int, pgrp: std.c.pid_t) c_int;
 
 fn openPty() !Pty {
     if (!isSupported()) return error.TerminalHostUnsupported;
+    if (comptime builtin.os.tag == .windows) return openPtyWindows();
+    return openPtyPosix();
+}
+
+fn openPtyWindows() !Pty {
+    const id = windows.GetCurrentProcessId();
+    const serial = windowsPipeSerial.fetchAdd(1, .monotonic);
+    var name_bytes: [128]u8 = undefined;
+    const name = try std.fmt.bufPrint(
+        &name_bytes,
+        "\\\\.\\pipe\\emma-terminal-{d}-{d}",
+        .{ id, serial },
+    );
+    var name_w: [128:0]u16 = undefined;
+    if (name.len + 1 > name_w.len) return error.PtyUnavailable;
+    for (name, 0..) |byte, index| name_w[index] = byte;
+    name_w[name.len] = 0;
+    var security = windows.SECURITY_ATTRIBUTES{
+        .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
+        .lpSecurityDescriptor = null,
+        .bInheritHandle = @enumFromInt(0),
+    };
+    const server = CreateNamedPipeW(
+        &name_w,
+        pipeAccessDuplex | fileFlagFirstPipeInstance,
+        pipeTypeByte | pipeReadmodeByte | pipeWait | pipeRejectRemoteClients,
+        1,
+        256 * 1024,
+        256 * 1024,
+        0,
+        &security,
+    );
+    if (server == windows.INVALID_HANDLE_VALUE) {
+        return error.PtyUnavailable;
+    }
+    errdefer windows.CloseHandle(server);
+    const client = CreateFileW(
+        &name_w,
+        genericRead | genericWrite,
+        0,
+        &security,
+        openExisting,
+        0,
+        null,
+    );
+    if (client == windows.INVALID_HANDLE_VALUE) {
+        return error.PtyUnavailable;
+    }
+    errdefer windows.CloseHandle(client);
+    if (!ConnectNamedPipe(server, null).toBool() and
+        windows.GetLastError() != .PIPE_CONNECTED)
+    {
+        return error.PtyUnavailable;
+    }
+    return .{ .master = client, .slave = server };
+}
+
+test "Windows terminal pipe creation claims its instance and rejects remote clients" {
+    try std.testing.expect((fileFlagFirstPipeInstance & pipeAccessDuplex) == 0);
+    try std.testing.expect((pipeAccessDuplex | fileFlagFirstPipeInstance) & fileFlagFirstPipeInstance != 0);
+    try std.testing.expect((pipeTypeByte | pipeReadmodeByte | pipeWait | pipeRejectRemoteClients) & pipeRejectRemoteClients != 0);
+}
+
+fn openPtyPosix() !Pty {
     const master_flags = std.posix.O{
         .ACCMODE = .RDWR,
         .NOCTTY = true,
@@ -5701,6 +6589,12 @@ test "PTY output drains use a nonblocking master" {
     defer closeFd(pty.master);
     defer closeFd(pty.slave);
 
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expect(@intFromPtr(pty.master) != 0);
+        try std.testing.expect(@intFromPtr(pty.slave) != 0);
+        return;
+    }
+
     const result = std.posix.system.fcntl(
         pty.master,
         std.posix.F.GETFL,
@@ -5713,6 +6607,11 @@ test "PTY output drains use a nonblocking master" {
 }
 
 fn resizeFd(fd: std.posix.fd_t, dimensions: contracts.Dimensions) !void {
+    if (comptime builtin.os.tag == .windows) return;
+    return resizeFdPosix(fd, dimensions);
+}
+
+fn resizeFdPosix(fd: std.posix.fd_t, dimensions: contracts.Dimensions) !void {
     var size = std.posix.winsize{
         .row = dimensions.rows,
         .col = dimensions.columns,
@@ -5727,6 +6626,7 @@ fn resizeFd(fd: std.posix.fd_t, dimensions: contracts.Dimensions) !void {
 }
 
 fn setEcho(fd: std.posix.fd_t, enabled: bool) !void {
+    if (comptime builtin.os.tag == .windows) return;
     var termios = try std.posix.tcgetattr(fd);
     termios.lflag.ECHO = enabled;
     try std.posix.tcsetattr(fd, .NOW, termios);
@@ -5742,10 +6642,23 @@ fn closeFd(fd: std.posix.fd_t) void {
 fn readExactFd(fd: std.posix.fd_t, destination: []u8) !void {
     var offset: usize = 0;
     while (offset < destination.len) {
-        const count = try std.posix.read(fd, destination[offset..]);
+        const count = if (comptime builtin.os.tag == .windows)
+            try (std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } }).readStreaming(
+                io_mod.getIo(),
+                &.{destination[offset..]},
+            )
+        else
+            try std.posix.read(fd, destination[offset..]);
         if (count == 0) return error.EndOfStream;
         offset += count;
     }
+}
+
+fn stdinHandle() std.posix.fd_t {
+    return if (comptime builtin.os.tag == .windows)
+        std.Io.File.stdin().handle
+    else
+        std.posix.STDIN_FILENO;
 }
 
 fn receiveSocketExact(
@@ -5775,14 +6688,222 @@ fn writeAllFd(
 ) !void {
     const file = std.Io.File{
         .handle = fd,
-        .flags = .{ .nonblocking = nonblocking },
+        .flags = .{ .nonblocking = if (comptime builtin.os.tag == .windows) false else nonblocking },
     };
     try file.writeStreamingAll(io_mod.getIo(), bytes);
+}
+
+const windows = std.os.windows;
+var windowsPipeSerial: std.atomic.Value(u32) = .init(0);
+const windows_wait_object: u32 = 0;
+const windows_wait_timeout: u32 = 0x102;
+const windows_wait_infinite: u32 = 0xffffffff;
+const windows_invalid_thread_count: u32 = 0xffffffff;
+const control_poll_ms_u32: u32 = @intCast(control_poll_ms);
+const windows_handle_flag_inherit: u32 = 0x00000001;
+const proc_thread_attribute_pseudoconsole: usize = 0x00020016;
+const pipeAccessDuplex: u32 = 0x00000003;
+const fileFlagFirstPipeInstance: u32 = 0x00080000;
+const pipeTypeByte: u32 = 0x00000000;
+const pipeReadmodeByte: u32 = 0x00000000;
+const pipeWait: u32 = 0x00000000;
+const pipeRejectRemoteClients: u32 = 0x00000008;
+const genericRead: u32 = 0x80000000;
+const genericWrite: u32 = 0x40000000;
+const openExisting: u32 = 3;
+
+extern "kernel32" fn CreateNamedPipeW(
+    name: windows.LPCWSTR,
+    open_mode: u32,
+    pipe_mode: u32,
+    maximum_instances: u32,
+    out_buffer_size: u32,
+    in_buffer_size: u32,
+    default_timeout: u32,
+    security_attributes: ?*windows.SECURITY_ATTRIBUTES,
+) callconv(.winapi) windows.HANDLE;
+
+extern "kernel32" fn CreateFileW(
+    name: windows.LPCWSTR,
+    desired_access: u32,
+    share_mode: u32,
+    security_attributes: ?*windows.SECURITY_ATTRIBUTES,
+    creation_disposition: u32,
+    flags_and_attributes: u32,
+    template_file: ?windows.HANDLE,
+) callconv(.winapi) windows.HANDLE;
+
+const windows_process_terminate: windows.DWORD = 0x0001;
+const windows_process_query_limited_information: windows.DWORD = 0x1000;
+const windows_process_synchronize: windows.DWORD = 0x00100000;
+
+extern "kernel32" fn OpenProcess(
+    desired_access: windows.DWORD,
+    inherit_handle: windows.BOOL,
+    process_id: windows.DWORD,
+) callconv(.winapi) ?windows.HANDLE;
+
+fn openWindowsProcess(process_id: u32) !windows.HANDLE {
+    if (comptime builtin.os.tag != .windows) return error.ProcessNotFound;
+    return OpenProcess(
+        windows_process_terminate |
+            windows_process_query_limited_information |
+            windows_process_synchronize,
+        windows.BOOL.FALSE,
+        process_id,
+    ) orelse error.ProcessNotFound;
+}
+
+extern "kernel32" fn ConnectNamedPipe(
+    pipe: windows.HANDLE,
+    overlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn CreatePipe(
+    read_pipe: *windows.HANDLE,
+    write_pipe: *windows.HANDLE,
+    security_attributes: ?*windows.SECURITY_ATTRIBUTES,
+    size: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn SetHandleInformation(
+    handle: windows.HANDLE,
+    mask: windows.DWORD,
+    flags: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn ReadFile(
+    handle: windows.HANDLE,
+    buffer: ?*anyopaque,
+    bytes_to_read: windows.DWORD,
+    bytes_read: *windows.DWORD,
+    overlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn WriteFile(
+    handle: windows.HANDLE,
+    buffer: ?*const anyopaque,
+    bytes_to_write: windows.DWORD,
+    bytes_written: *windows.DWORD,
+    overlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn CancelSynchronousIo(
+    thread: windows.HANDLE,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn WaitForSingleObject(
+    handle: windows.HANDLE,
+    milliseconds: windows.DWORD,
+) callconv(.winapi) windows.DWORD;
+
+extern "kernel32" fn GetExitCodeProcess(
+    process: windows.HANDLE,
+    exit_code: *windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn TerminateProcess(
+    process: windows.HANDLE,
+    exit_code: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn ResumeThread(
+    thread: windows.HANDLE,
+) callconv(.winapi) windows.DWORD;
+
+extern "kernel32" fn CreatePseudoConsole(
+    size: windows.COORD,
+    input: windows.HANDLE,
+    output: windows.HANDLE,
+    flags: windows.DWORD,
+    console: *?*anyopaque,
+) callconv(.winapi) i32;
+
+extern "kernel32" fn ResizePseudoConsole(
+    console: *anyopaque,
+    size: windows.COORD,
+) callconv(.winapi) i32;
+
+extern "kernel32" fn ClosePseudoConsole(
+    console: *anyopaque,
+) callconv(.winapi) void;
+
+extern "kernel32" fn InitializeProcThreadAttributeList(
+    attribute_list: ?*anyopaque,
+    attribute_count: windows.DWORD,
+    flags: windows.DWORD,
+    size: *usize,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn UpdateProcThreadAttribute(
+    attribute_list: *anyopaque,
+    flags: windows.DWORD,
+    attribute: usize,
+    value: ?*const anyopaque,
+    size: usize,
+    previous: ?*anyopaque,
+    return_size: ?*usize,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn DeleteProcThreadAttributeList(
+    attribute_list: *anyopaque,
+) callconv(.winapi) void;
+
+fn closeWindowsHandle(handle: windows.HANDLE) void {
+    if (handle != windows.INVALID_HANDLE_VALUE) windows.CloseHandle(handle);
+}
+
+fn closeOwnedWindowsProcess(
+    handle: *?windows.HANDLE,
+    owned: *bool,
+) void {
+    if (!owned.*) return;
+    if (handle.*) |value| closeWindowsHandle(value);
+    handle.* = null;
+    owned.* = false;
+}
+
+fn windowsProcessTokenMatches(
+    process: windows.HANDLE,
+    expected: process_supervisor.ProcessInstanceToken,
+) !bool {
+    if (comptime builtin.os.tag != .windows) return false;
+    const creation = try windows_process.creationTime(process);
+    const actual = try process_supervisor.ProcessInstanceToken.fromWindowsCreationTime(
+        creation,
+    );
+    return actual.eql(expected);
+}
+
+test "Windows native process ownership is released idempotently" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var process: ?windows.HANDLE = try openWindowsProcess(windows.GetCurrentProcessId());
+    var owned = true;
+    closeOwnedWindowsProcess(&process, &owned);
+    closeOwnedWindowsProcess(&process, &owned);
+    try std.testing.expect(process == null);
+    try std.testing.expect(!owned);
+}
+
+test "Windows native process ownership requires the creation token" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const process = try openWindowsProcess(windows.GetCurrentProcessId());
+    defer closeWindowsHandle(process);
+    const creation = try windows_process.creationTime(process);
+    const expected = try process_supervisor.ProcessInstanceToken.fromWindowsCreationTime(
+        creation,
+    );
+    try std.testing.expect(try windowsProcessTokenMatches(process, expected));
+    var mismatched = expected;
+    const last = @as(usize, mismatched.len) - 1;
+    mismatched.bytes[last] = if (mismatched.bytes[last] == '0') '1' else '0';
+    try std.testing.expect(!try windowsProcessTokenMatches(process, mismatched));
 }
 
 const ControlFrame = struct {
     kind: ControlKind,
     value: u32,
+    process_token: ?process_supervisor.ProcessInstanceToken = null,
 };
 
 fn tmuxLifecycleTerminal(kind: tmux_session.LifecycleKind) bool {
@@ -5828,14 +6949,39 @@ fn tmuxStartupFrameCount(frames: []const tmux_session.LifecycleFrame) usize {
 
 fn writeControlFd(fd: std.posix.fd_t, kind: ControlKind, value: u32) !void {
     var bytes: [control_frame_len]u8 = undefined;
+    @memset(&bytes, 0);
     bytes[0] = @intFromEnum(kind);
     std.mem.writeInt(u32, bytes[1..5], value, .little);
+    try writeAllFd(fd, &bytes, false);
+}
+
+fn writeControlFdWithProcess(
+    fd: std.posix.fd_t,
+    kind: ControlKind,
+    value: u32,
+    process: std.posix.pid_t,
+) !void {
+    if (comptime builtin.os.tag != .windows) return writeControlFd(fd, kind, value);
+    const creation = try windows_process.creationTime(process);
+    const token = try process_supervisor.ProcessInstanceToken.fromWindowsCreationTime(creation);
+    var bytes: [control_frame_len]u8 = undefined;
+    @memset(&bytes, 0);
+    bytes[0] = @intFromEnum(kind);
+    std.mem.writeInt(u32, bytes[1..5], value, .little);
+    @memcpy(bytes[5 .. 5 + control_identity_len], token.view());
     try writeAllFd(fd, &bytes, false);
 }
 
 fn readControlFile(file: std.Io.File) !ControlFrame {
     var bytes: [control_frame_len]u8 = undefined;
     try readExactFd(file.handle, &bytes);
+    var process_token: ?process_supervisor.ProcessInstanceToken = null;
+    if (comptime builtin.os.tag == .windows) {
+        const token_bytes = bytes[5 .. 5 + control_identity_len];
+        var nonzero = false;
+        for (token_bytes) |byte| nonzero = nonzero or byte != 0;
+        if (nonzero) process_token = try process_supervisor.ProcessInstanceToken.parse(token_bytes);
+    }
     return .{
         .kind = switch (bytes[0]) {
             1 => .prepared,
@@ -5848,6 +6994,7 @@ fn readControlFile(file: std.Io.File) !ControlFrame {
             else => return error.InvalidControlFrame,
         },
         .value = std.mem.readInt(u32, bytes[1..5], .little),
+        .process_token = process_token,
     };
 }
 
@@ -6044,6 +7191,27 @@ fn readOutputChunk(
     buffer: []u8,
     timeout_ms: i32,
 ) !bool {
+    if (comptime builtin.os.tag == .windows) {
+        const poll = windows_console.poll(fd, timeout_ms);
+        if (poll.has_error or poll.hung_up) return error.EndOfStream;
+        if (!poll.readable) return false;
+        const count = try (std.Io.File{
+            .handle = fd,
+            .flags = .{ .nonblocking = false },
+        }).readStreaming(io_mod.getIo(), &.{buffer});
+        if (count == 0) return error.EndOfStream;
+        session.appendOutput(buffer[0..count]);
+        return true;
+    }
+    return readOutputChunkPosix(session, fd, buffer, timeout_ms);
+}
+
+fn readOutputChunkPosix(
+    session: *Session,
+    fd: std.posix.fd_t,
+    buffer: []u8,
+    timeout_ms: i32,
+) !bool {
     var total: usize = 0;
     var poll_timeout = timeout_ms;
     while (total < buffer.len) {
@@ -6136,6 +7304,13 @@ fn launchFailureCode(err: anyerror) contracts.StructuredErrorCode {
 }
 
 fn signalValue(signal: contracts.Signal) std.c.SIG {
+    if (comptime builtin.os.tag == .windows) {
+        return switch (signal) {
+            .hangup, .terminate, .kill => .TERM,
+            .interrupt => .INT,
+            .quit => .ABRT,
+        };
+    }
     return switch (signal) {
         .hangup => std.c.SIG.HUP,
         .interrupt => std.c.SIG.INT,
@@ -6253,6 +7428,7 @@ test "write payload encoding preserves text paste keys and controls" {
 }
 
 test "terminal outcomes preserve exact exit and signal status" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expectEqual(
         contracts.ReturnOutcome{ .exited = 23 },
         outcomeFromTerm(.{ .exited = 23 }).?,

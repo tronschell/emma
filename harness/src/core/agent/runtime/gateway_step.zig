@@ -100,6 +100,16 @@ pub fn streamGatewayCompletion(
         result.generation_origin,
         null,
     );
+    if (result.completion.billing) |billing| {
+        const streamed_usage = result.completion.usage;
+        result.completion.usage = .{
+            .input_tokens = billing.input_tokens,
+            .output_tokens = billing.output_tokens,
+            .cache_read_tokens = streamed_usage.cache_read_tokens,
+            .cache_write_tokens = streamed_usage.cache_write_tokens,
+            .cost_micro_usd = billing.cost_micro_usd,
+        };
+    }
     if (comptime @import("builtin").os.tag != .wasi) {
         if (result.reconcile_generation_usage) {
             if (usage) |ledger| ledger.startReconciliation(usage_allocator, api_key);

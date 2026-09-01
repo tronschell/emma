@@ -286,8 +286,14 @@ pub const FileMutationActionIdentity = struct {
                 );
             },
             .edit => |edit| {
-                identity.first_argument_hash = hashIdentityField(edit.old_string);
-                identity.second_argument_hash = hashIdentityField(edit.new_string);
+                var old_hasher = std.crypto.hash.sha2.Sha256.init(.{});
+                var new_hasher = std.crypto.hash.sha2.Sha256.init(.{});
+                for (edit.edits) |item| {
+                    old_hasher.update(item.old_string);
+                    new_hasher.update(item.new_string);
+                }
+                identity.first_argument_hash = old_hasher.finalResult();
+                identity.second_argument_hash = new_hasher.finalResult();
             },
         }
         return identity;
@@ -1232,7 +1238,7 @@ fn requestPermissionOutcomeResolved(
         targets.items,
     ) catch |err| switch (err) {
         error.InvalidToolArguments => return .{
-            .tool_failure = "Vision paths must reference regular files.",
+            .tool_failure = "Vision paths must reference regular image files, not a directory or special file. Run list_files on the directory and pass one image path.",
         },
         else => return err,
     };
@@ -2617,15 +2623,30 @@ pub fn permissionTargetResolutionFailureMessage(
     err: anyerror,
 ) !?[]const u8 {
     return switch (err) {
-        error.PathOutsideWorkspace,
-        error.FileNotFound,
-        error.HomeNotSet,
-        error.InvalidPath,
-        error.WorkspaceUnavailable,
-        => try std.fmt.allocPrint(
+        error.FileNotFound => try std.fmt.allocPrint(
             arena,
-            "Permission target resolution failed for {s}: {s}",
-            .{ tool_name, @errorName(err) },
+            "{s} found no such file or directory. This is not a permission denial, so retrying the same path will fail again. Confirm the path with list_files or glob_files first.",
+            .{tool_name},
+        ),
+        error.PathOutsideWorkspace => try std.fmt.allocPrint(
+            arena,
+            "{s} cannot reach that path: it resolves outside the connected workspace. This is not a permission denial and retrying will fail again. Use a path under the workspace root, or ask the user to connect that folder.",
+            .{tool_name},
+        ),
+        error.WorkspaceUnavailable => try std.fmt.allocPrint(
+            arena,
+            "{s} has no connected workspace to resolve that path against. This is not a permission denial. Ask the user to connect a folder before retrying.",
+            .{tool_name},
+        ),
+        error.HomeNotSet => try std.fmt.allocPrint(
+            arena,
+            "{s} cannot expand a home-relative path because HOME is unset. This is not a permission denial. Retry with an absolute path or one relative to the workspace root.",
+            .{tool_name},
+        ),
+        error.InvalidPath => try std.fmt.allocPrint(
+            arena,
+            "{s} was given a malformed path. This is not a permission denial. Retry with a plain path, absolute or relative to the workspace root, without empty or null-byte segments.",
+            .{tool_name},
         ),
         else => null,
     };
@@ -2768,7 +2789,32 @@ test "permission target resolution never grants authority for a missing home" {
         error.HomeNotSet,
     )).?;
     defer std.testing.allocator.free(failure);
-    try std.testing.expect(std.mem.find(u8, failure, "HomeNotSet") != null);
+    try std.testing.expect(std.mem.find(u8, failure, "HOME is unset") != null);
+    try std.testing.expect(std.mem.find(u8, failure, "not a permission denial") != null);
+}
+
+test "permission target resolution failures name the real cause instead of blaming permissions" {
+    const cases = [_]struct { err: anyerror, needle: []const u8 }{
+        .{ .err = error.FileNotFound, .needle = "found no such file or directory" },
+        .{ .err = error.PathOutsideWorkspace, .needle = "outside the connected workspace" },
+        .{ .err = error.WorkspaceUnavailable, .needle = "no connected workspace" },
+        .{ .err = error.InvalidPath, .needle = "malformed path" },
+    };
+    for (cases) |case| {
+        const failure = (try permissionTargetResolutionFailureMessage(
+            std.testing.allocator,
+            "file_info",
+            case.err,
+        )).?;
+        defer std.testing.allocator.free(failure);
+        try std.testing.expect(std.mem.startsWith(u8, failure, "file_info "));
+        try std.testing.expect(std.mem.find(u8, failure, case.needle) != null);
+        try std.testing.expect(std.mem.find(u8, failure, "not a permission denial") != null);
+        try std.testing.expect(std.mem.find(u8, failure, "Permission target resolution failed") == null);
+    }
+    try std.testing.expect(
+        (try permissionTargetResolutionFailureMessage(std.testing.allocator, "file_info", error.OutOfMemory)) == null,
+    );
 }
 
 test "interactive terminal exec approval permits command amendments" {
@@ -3134,7 +3180,7 @@ test "Vision path admission returns a tool failure for directories" {
     );
     try std.testing.expect(outcome.execution_authority == null);
     try std.testing.expectEqualStrings(
-        "Vision paths must reference regular files.",
+        "Vision paths must reference regular image files, not a directory or special file. Run list_files on the directory and pass one image path.",
         outcome.tool_failure orelse return error.TestExpectedEqual,
     );
 }

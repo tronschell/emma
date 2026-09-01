@@ -1,14 +1,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoundedLines } from "./ndjson";
+import { pathInside, samePath, terminateProcessTree } from "./platform";
 export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import type { RunnableHookEvent } from "../shared/plugins";
 import { MAX_LOG_BODY, type HarnessFlow, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import type { HarnessExperiments } from "../shared/settings";
+import { decodeSpans, encodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const PROTOCOL_VERSION = 1;
@@ -22,7 +24,7 @@ export type StopReason = "end_turn" | "cancelled" | "refused" | "max_output_toke
 
 export const failedTurn = (reason: StopReason) => reason === "refused";
 
-export type TurnUsage = { inputTokens: number; outputTokens: number };
+export type TurnUsage = { inputTokens: number; outputTokens: number; cacheInputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costMicroUsd?: number };
 
 const mediaType =(file: string) => `image/${path.extname(file).slice(1).toLowerCase().replace("jpg", "jpeg")}`;
 
@@ -34,6 +36,7 @@ export const effortOption = ({ level, published }: ThinkingRoute) => `${level ||
 
 export const experimentOption = (experiments: HarnessExperiments) =>
   [
+    `compact_percent=${experiments.autoCompactPercent}`,
     `reinject_steps=${experiments.reinjectPromptSteps}`,
     `reinject_percent=${experiments.reinjectPromptPercent}`,
     `prune_steps=${experiments.pruneToolsSteps}`,
@@ -54,9 +57,13 @@ const streamedChunk = (message: Record<string, unknown>) => {
   return typeof update?.sessionUpdate === "string" && update.sessionUpdate.endsWith("_chunk");
 };
 
-const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+const measured = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+const exactMeasured = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+const count = (value: unknown) => measured(value) ?? 0;
 
 export type HarnessToolCall = ThreadStep & { filePath?: string };
+
+export const INTERRUPTED_CALL = "The turn was interrupted before this tool call reported a result. It may have partially run, so check the current state before reissuing it.";
 
 export type ContextExperimentFired = { prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number };
 
@@ -96,11 +103,30 @@ export function contextBreakdownReported(update: Record<string, unknown>): Conte
   };
 }
 
+export type Compaction = { removedTurns: number; summaryChars: number; modelWritten: boolean };
+
+export function compactionReported(update: Record<string, unknown>): Compaction | undefined {
+  if (update.sessionUpdate !== "_emma_compacted") return undefined;
+  const removedTurns = count(update.removedTurns);
+  if (!removedTurns) return undefined;
+  return { removedTurns, summaryChars: count(update.summaryChars), modelWritten: update.modelWritten === true };
+}
+
 export function turnUsageReported(update: Record<string, unknown>): TurnUsage | undefined {
   const usage = (update._meta as { fx?: { turnUsage?: unknown } } | undefined)?.fx?.turnUsage as
-    { inputTokens?: unknown; outputTokens?: unknown } | undefined;
+    { inputTokens?: unknown; outputTokens?: unknown; cacheInputTokens?: unknown; cacheReadTokens?: unknown; cacheWriteTokens?: unknown; costMicroUsd?: unknown } | undefined;
   if (!usage || typeof usage !== "object") return undefined;
-  return { inputTokens: count(usage.inputTokens), outputTokens: count(usage.outputTokens) };
+  const cacheInputTokens = measured(usage.cacheInputTokens);
+  const cacheReadTokens = measured(usage.cacheReadTokens);
+  const cacheWriteTokens = exactMeasured(usage.cacheWriteTokens);
+  const costMicroUsd = exactMeasured(usage.costMicroUsd);
+  return {
+    inputTokens: count(usage.inputTokens),
+    outputTokens: count(usage.outputTokens),
+    ...(cacheInputTokens === undefined || cacheReadTokens === undefined ? {} : { cacheInputTokens, cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(costMicroUsd === undefined ? {} : { costMicroUsd }),
+  };
 }
 
 export type HarnessDeps = {
@@ -113,6 +139,7 @@ export type HarnessDeps = {
   cwd: string;
   apiKey?: string;
   chatUrl?: string;
+  promptFile?: string;
 
   idleMs?: number;
 
@@ -122,6 +149,7 @@ export type HarnessDeps = {
   onThought: (threadId: string, delta: string) => void;
   onToolCall: (call: HarnessToolCall) => void;
 
+  onCompacted: (threadId: string, compacted: Compaction) => void;
   onContextExperiment: (threadId: string, fired: ContextExperimentFired) => void;
   onContextBreakdown: (threadId: string, parts: ContextBreakdown) => void;
   onRoutedModel: (threadId: string, routed: RoutedModel) => void;
@@ -136,6 +164,7 @@ export type HarnessDeps = {
 
   onToolRequest: (threadId: string, name: string, args: Record<string, unknown>) => Promise<string>;
   onLifecycle?: (event: RunnableHookEvent, threadId: string, input: Record<string, unknown>) => Promise<void>;
+  onPhase?: (threadId: string, phase: string) => void;
   onLog?: (line: HarnessLogLine) => void;
 };
 
@@ -149,6 +178,8 @@ export const harnessKey = (cwd: string, nestedThreadId?: string, providerId?: st
   [cwd, ...(nestedThreadId ? [nestedThreadId] : []), ...(providerId ? [`@${providerId}`] : [])].join("\u0000");
 
 const SESSION_INDEX = "emma-sessions.json";
+const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
+const SESSION_ID = /^[A-Za-z0-9._-]{1,200}$/;
 
 const sessionIndexes = new Map<string, Map<string, string>>();
 
@@ -181,6 +212,174 @@ function saveSessionIndex(home: string) {
   }
 }
 
+export type StoredThreadTrace = { timestamp: string; text: string };
+
+type RecoveredCall = {
+  id: string;
+  name: string;
+  status: "ok" | "failed";
+  input?: string;
+  output?: string;
+  at: number;
+};
+
+type RecoveredTurn = { at: number; calls: RecoveredCall[] };
+
+const object = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+const RECOVERED_TOOL_TITLES: Record<string, string> = {
+  advisor: "Using the advisor",
+  browser: "Using the browser",
+  edit_file: "Editing file",
+  grep_files: "Searching files",
+  look_at_image: "Looking at the image",
+  read_file: "Reading file",
+  search_tools: "Searching tools",
+  select_tool: "Selecting tool",
+  terminal: "Using the terminal",
+  vision: "Looking at the image",
+  write_file: "Writing file",
+};
+
+const recoveredToolTitle = (name: string) => RECOVERED_TOOL_TITLES[name] ?? name.replaceAll("_", " ");
+
+const recoveredToolKind = (name: string) => {
+  if (/edit|write|patch|mutation/.test(name)) return "edit";
+  if (/read/.test(name)) return "read";
+  if (/grep|search|find/.test(name)) return "search";
+  if (/terminal|shell|command/.test(name)) return "execute";
+  if (/delete|remove/.test(name)) return "delete";
+  if (/move|rename/.test(name)) return "move";
+  return "other";
+};
+
+function recoveredTurns(raw: unknown): RecoveredTurn[] {
+  const state = object(object(raw)?.state);
+  if (!state) return [];
+  const recovery = object(state.recovery_checkpoint);
+  const entries = [...(Array.isArray(state.history) ? state.history : []), ...(recovery ? [recovery] : [])];
+  const fallback = count(state.updated_at_ms) || Date.now();
+  return entries.flatMap((entry): RecoveredTurn[] => {
+    const steps = object(object(entry)?.execution)?.tool_steps;
+    if (!Array.isArray(steps)) return [];
+    const calls: RecoveredCall[] = [];
+    for (const rawStep of steps) {
+      const step = object(rawStep);
+      if (!step) continue;
+      const inputs = new Map<string, string>();
+      if (Array.isArray(step.tool_calls)) {
+        for (const rawCall of step.tool_calls) {
+          const call = object(rawCall);
+          if (typeof call?.id === "string" && typeof call.arguments_json === "string") inputs.set(call.id, call.arguments_json);
+        }
+      }
+      if (!Array.isArray(step.tool_results)) continue;
+      for (const rawResult of step.tool_results) {
+        const result = object(rawResult);
+        if (typeof result?.tool_call_id !== "string" || !result.tool_call_id || result.tool_call_id.length > 1024) continue;
+        if (typeof result.tool_name !== "string" || !result.tool_name || result.tool_name.length > 256) continue;
+        calls.push({
+          id: `call:${result.tool_call_id}`,
+          name: result.tool_name,
+          status: result.status === "failure" ? "failed" : "ok",
+          input: inputs.get(result.tool_call_id),
+          output: typeof result.output === "string" ? result.output : undefined,
+          at: count(result.created_at_ms),
+        });
+        if (calls.length >= 1024) break;
+      }
+      if (calls.length >= 1024) break;
+    }
+    if (!calls.length) return [];
+    return [{ at: Math.max(...calls.map((call) => call.at)) || fallback, calls }];
+  });
+}
+
+export function recoveredSessionTraces(home: string, threadId: string, traces: StoredThreadTrace[]): StoredThreadTrace[] {
+  const sessionId = sessionIndex(home).get(threadId);
+  if (!sessionId || !SESSION_ID.test(sessionId)) return traces;
+  let turns: RecoveredTurn[];
+  try {
+    const file = path.join(home, ".fx", "sessions", sessionId, "checkpoint.json");
+    if (statSync(file).size > MAX_CHECKPOINT_BYTES) return traces;
+    turns = recoveredTurns(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    return traces;
+  }
+  if (!turns.length) return traces;
+  const merged = traces.map((trace) => ({ ...trace }));
+  const claimed = new Set<number>();
+  for (const turn of turns) {
+    const decoded = merged.map((trace) => decodeSpans(trace.text));
+    const known = new Set(decoded.flatMap((spans) => spans.filter((span) => span.id.startsWith("call:")).map((span) => span.id)));
+    if (turn.calls.every((call) => known.has(call.id))) continue;
+    let target = -1;
+    let overlap = 0;
+    for (let index = 0; index < decoded.length; index += 1) {
+      const ids = new Set(decoded[index].map((span) => span.id));
+      const matches = turn.calls.reduce((sum, call) => sum + Number(ids.has(call.id)), 0);
+      if (matches > overlap) { overlap = matches; target = index; }
+    }
+    if (!overlap) {
+      let distance = 60_001;
+      for (let index = 0; index < merged.length; index += 1) {
+        if (claimed.has(index)) continue;
+        const apart = Math.abs(Date.parse(merged[index].timestamp) - turn.at);
+        if (apart < distance) { distance = apart; target = index; }
+      }
+      if (distance > 60_000) target = -1;
+    }
+    if (target < 0) {
+      const rootId = `agent:${threadId}`;
+      const start = Math.max(0, turn.at - turn.calls.length);
+      const calls = turn.calls.map((call, index): TraceSpan => ({
+        id: call.id,
+        parentId: rootId,
+        name: recoveredToolTitle(call.name),
+        kind: recoveredToolKind(call.name),
+        startedAt: start + index,
+        endedAt: start + index + 1,
+        status: call.status,
+        input: call.input,
+        output: call.output,
+        tokens: call.output ? Math.ceil(call.output.length / 4) : undefined,
+      }));
+      merged.push({
+        timestamp: new Date(turn.at).toISOString(),
+        text: encodeSpans([{ id: rootId, name: "This thread", kind: "agent", startedAt: start, endedAt: turn.at, status: "ok" }, ...calls], { thread: threadId, recovered: "session" }),
+      });
+      claimed.add(merged.length - 1);
+      continue;
+    }
+    claimed.add(target);
+    const spans = decoded[target];
+    const root: TraceSpan = spans.find((span) => span.id === `agent:${threadId}`) ?? { id: `agent:${threadId}`, name: "This thread", kind: "agent", startedAt: Math.max(0, turn.at - turn.calls.length), status: "ok" };
+    const elsewhere = new Set(decoded.flatMap((items, index) => index === target ? [] : items.filter((span) => span.id.startsWith("call:")).map((span) => span.id)));
+    const calls = turn.calls.filter((call) => !elsewhere.has(call.id));
+    const old = new Map(spans.filter((span) => span.id.startsWith("call:")).map((span) => [span.id, span]));
+    const start = Math.min(root.startedAt, turn.at - calls.length);
+    const width = Math.max(calls.length, turn.at - start);
+    const recovered = calls.map((call, index): TraceSpan => ({
+      id: call.id,
+      parentId: root.id,
+      name: old.get(call.id)?.name ?? recoveredToolTitle(call.name),
+      kind: old.get(call.id)?.kind ?? recoveredToolKind(call.name),
+      startedAt: start + Math.floor((width * index) / calls.length),
+      endedAt: start + Math.floor((width * (index + 1)) / calls.length),
+      status: call.status,
+      input: call.input,
+      output: call.output,
+      said: old.get(call.id)?.said,
+      tokens: call.output ? Math.ceil(call.output.length / 4) : undefined,
+    }));
+    const recoveredIds = new Set(recovered.map((span) => span.id));
+    const extras = spans.filter((span) => span.id.startsWith("call:") && !recoveredIds.has(span.id));
+    const frame = { ...root, startedAt: Math.min(root.startedAt, start), endedAt: Math.max(root.endedAt ?? turn.at, turn.at) };
+    merged[target].text = encodeSpans([frame, ...spans.filter((span) => span.id !== root.id && !span.id.startsWith("call:")), ...recovered, ...extras], traceHeader(merged[target].text));
+  }
+  return merged.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+}
+
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; touch: () => void };
 
 export class Harness {
@@ -204,6 +403,7 @@ export class Harness {
   private rebind = false;
 
   private cancelled = new Set<string>();
+  readonly paused = new Map<string, string>();
   private readonly permissionChecks = new Set<{ threadId: string; childId?: string; cancelled: boolean }>();
   private failure: Error | undefined;
 
@@ -233,6 +433,10 @@ export class Harness {
     };
   }
 
+  private phase(threadId: string, what: string) {
+    this.deps.onPhase?.(threadId, what);
+  }
+
   private log(flow: HarnessFlow, label: string, body: string) {
     this.deps.onLog?.({ at: Date.now(), flow, label, body: body.slice(0, MAX_LOG_BODY) });
   }
@@ -242,10 +446,23 @@ export class Harness {
 
     const key = this.deps.apiKey ? { AI_GATEWAY_API_KEY: this.deps.apiKey, EMMA_PROVIDER_API_KEY: this.deps.apiKey } : {};
     const route = this.deps.chatUrl ? { EMMA_PROVIDER_CHAT_URL: this.deps.chatUrl } : {};
+    const prompt = this.deps.promptFile ? { EMMA_SYSTEM_PROMPT: this.deps.promptFile } : {};
     const child = spawn(this.deps.binaryPath, this.deps.args ?? ["acp"], {
       cwd: this.deps.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, HOME: this.deps.home, ...key, ...route },
+      windowsHide: process.platform === "win32",
+      env: {
+        ...process.env,
+        HOME: this.deps.home,
+        ...(process.platform === "win32" ? {
+          USERPROFILE: this.deps.home,
+          APPDATA: path.join(this.deps.home, "AppData", "Roaming"),
+          LOCALAPPDATA: path.join(this.deps.home, "AppData", "Local"),
+        } : {}),
+        ...key,
+        ...route,
+        ...prompt,
+      },
     });
     this.child = child;
     child.stdout.on("data", (data: Uint8Array) => {
@@ -272,7 +489,7 @@ export class Harness {
       });
     } catch (error) {
       this.fail(error as Error);
-      this.close();
+      await this.close();
       throw error;
     }
   }
@@ -281,6 +498,8 @@ export class Harness {
 
     if (cwd !== this.deps.cwd) throw new Error(`Harness is bound to ${this.deps.cwd}, not ${cwd}`);
     this.cancelled.delete(threadId);
+    this.paused.delete(threadId);
+    if (this.busy) this.phase(threadId, "waiting for the turn ahead of this one");
 
     const turn = this.turns.catch(() => undefined).then(() => this.runPrompt(threadId, cwd, text, mode, model, extra));
     this.turns = turn.catch(() => undefined);
@@ -289,10 +508,16 @@ export class Harness {
 
   private async runPrompt(threadId: string, cwd: string, text: string, mode: PermissionMode, model?: string, extra: TurnExtras = {}): Promise<{ stopReason: StopReason; usage: TurnUsage }> {
     for (const check of this.permissionChecks.values()) if (check.threadId === threadId && !check.childId) check.cancelled = true;
+    if (!this.running) this.phase(threadId, "starting the agent");
     await this.start();
     const opening = !this.sessions.has(threadId);
+    this.phase(threadId, opening ? "opening this thread's session" : "reopening this thread's session");
     const sessionId = await this.activeSession(threadId, cwd);
-    if (opening) await this.lifecycle("SessionStart", threadId, sessionId, mode, model, { source: "startup" });
+    if (opening) {
+      this.phase(threadId, "running startup hooks");
+      await this.lifecycle("SessionStart", threadId, sessionId, mode, model, { source: "startup" });
+    }
+    this.phase(threadId, "setting up the session");
     await this.request("session/set_mode", { sessionId, modeId: HARNESS_MODE_ID });
 
     if (model) await this.request("session/set_config_option", { sessionId, configId: "model", value: model });
@@ -310,26 +535,37 @@ export class Harness {
     }
 
     if (extra.compact) {
+      this.phase(threadId, "compacting the context");
       await this.request("session/compact", { sessionId }).catch((error: unknown) => console.error("Emma: the harness would not compact", error));
     }
     const prompt = extra.continueRecovery ? [] : [
-      ...(extra.skillContext ? [{ type: "text", text: extra.skillContext }] : []),
       { type: "text", text },
+      ...(extra.skillContext ? [{ type: "text", text: extra.skillContext }] : []),
       ...(extra.images ?? []).map((file) => ({ type: "image", mimeType: mediaType(file), uri: pathToFileURL(file).href })),
     ];
     if (this.cancelled.delete(threadId)) throw new Error("This turn was stopped before it reached the model.");
+    this.phase(threadId, "sending the prompt");
+    this.paused.delete(threadId);
     await this.lifecycle("UserPromptSubmit", threadId, sessionId, mode, model, { prompt: text });
+    this.phase(threadId, "waiting for the model");
     const result = (await this.request("session/prompt", {
       sessionId,
       prompt,
       ...(extra.continueRecovery ? { _meta: { fx: { continueRecovery: true } } } : {}),
-    })) as { stopReason?: string; usage?: { inputTokens?: unknown; outputTokens?: unknown } } | null;
+    })) as { stopReason?: string; usage?: { inputTokens?: unknown; outputTokens?: unknown; cacheWriteTokens?: unknown; costMicroUsd?: unknown } } | null;
     for (const check of this.permissionChecks.values()) if (check.threadId === threadId && !check.childId) check.cancelled = true;
     const stopReason = (result?.stopReason ?? "end_turn") as StopReason;
     await this.lifecycle("Stop", threadId, sessionId, mode, model, { stop_hook_active: false, stop_reason: stopReason });
+    const cacheWriteTokens = exactMeasured(result?.usage?.cacheWriteTokens);
+    const costMicroUsd = exactMeasured(result?.usage?.costMicroUsd);
     return {
       stopReason,
-      usage: { inputTokens: count(result?.usage?.inputTokens), outputTokens: count(result?.usage?.outputTokens) },
+      usage: {
+        inputTokens: count(result?.usage?.inputTokens),
+        outputTokens: count(result?.usage?.outputTokens),
+        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+        ...(costMicroUsd === undefined ? {} : { costMicroUsd }),
+      },
     };
   }
 
@@ -348,6 +584,7 @@ export class Harness {
 
   async cancel(threadId: string) {
     this.cancelled.add(threadId);
+    this.sweepCalls(threadId);
     if (this.computerTurn?.threadId === threadId) this.computerTurn = undefined;
     for (const check of this.permissionChecks.values()) if (check.threadId === threadId) check.cancelled = true;
     const sessionId = this.sessions.get(threadId);
@@ -357,10 +594,21 @@ export class Harness {
     this.send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
   }
 
+  private sweepCalls(threadId: string) {
+    for (const [key, call] of this.calls) {
+      if (call.threadId !== threadId || call.status !== "pending" && call.status !== "in_progress") continue;
+      const stopped: HarnessToolCall = { ...call, status: "cancelled", output: call.output ?? INTERRUPTED_CALL, at: Date.now() };
+      this.calls.set(key, stopped);
+      this.deps.onToolCall(stopped);
+    }
+  }
+
   async steer(threadId: string, content: string) {
     const sessionId = this.sessions.get(threadId);
     if (!sessionId || sessionId !== this.active || !this.running) return false;
+    for (const check of this.permissionChecks.values()) if (check.threadId === threadId && !check.childId) check.cancelled = true;
     await this.request("session/steer", { sessionId, content });
+    this.sweepCalls(threadId);
     return true;
   }
 
@@ -380,12 +628,16 @@ export class Harness {
     return `emma-cli ${how}${detail ? `: ${detail}` : ""}`;
   }
 
-  close() {
+  async close() {
     this.fail(new Error("Harness closed"));
+    if (this.deps.promptFile) rmSync(this.deps.promptFile, { force: true });
     const child = this.child;
     this.child = undefined;
     if (!child) return;
     if (!child.stdin.destroyed) child.stdin.end();
+    if (process.platform === "win32" && child.pid !== undefined) {
+      if (await terminateProcessTree(child.pid, "SIGKILL")) return;
+    }
     if (!child.killed) child.kill();
   }
 
@@ -397,11 +649,17 @@ export class Harness {
     saveSessionIndex(this.deps.home);
   }
 
+  private async servers(threadId: string) {
+    const servers = await this.deps.mcpServers(threadId);
+    if (servers.length) this.phase(threadId, `connecting ${servers.length} MCP server${servers.length === 1 ? "" : "s"}`);
+    return servers;
+  }
+
   private async activeSession(threadId: string, cwd: string) {
     const sessionId = await this.session(threadId, cwd);
     if (this.active === sessionId && !this.rebind) return sessionId;
     try {
-      await this.request("session/resume", { sessionId, mcpServers: await this.deps.mcpServers(threadId) });
+      await this.request("session/resume", { sessionId, mcpServers: await this.servers(threadId) });
       this.active = sessionId;
       this.rebind = false;
       return sessionId;
@@ -420,7 +678,7 @@ export class Harness {
       this.threadsBySession.set(existing, threadId);
       return existing;
     }
-    const result = await this.request("session/new", { cwd, mcpServers: await this.deps.mcpServers(threadId) });
+    const result = await this.request("session/new", { cwd, mcpServers: await this.servers(threadId) });
     const sessionId = (result as { sessionId?: unknown } | null)?.sessionId;
     if (typeof sessionId !== "string" || sessionId.length === 0) throw new Error("Harness returned no session id");
     this.sessions.set(threadId, sessionId);
@@ -579,6 +837,7 @@ export class Harness {
           toolCallId,
           title: toolCallText(update.title) ?? known?.title ?? "",
           kind: toolCallText(update.kind) ?? known?.kind ?? "other",
+          toolName: toolCallText(update._emma_toolName) ?? known?.toolName,
           status: (update.status as HarnessToolCall["status"]) ?? known?.status ?? "pending",
 
           input: rawInput(update.rawInput) ?? known?.input,
@@ -590,6 +849,11 @@ export class Harness {
         };
         this.calls.set(key, call);
         this.deps.onToolCall(call);
+        return;
+      }
+      case "_emma_compacted": {
+        const compacted = compactionReported(update);
+        if (compacted) this.deps.onCompacted(threadId, compacted);
         return;
       }
       case "plan":
@@ -624,8 +888,9 @@ export class Harness {
           ? ` (attempt ${recovery.attempt} of ${recovery.attemptLimit})`
           : "";
         const wait = typeof recovery.delaySeconds === "number" && recovery.delaySeconds > 0 ? `, retrying in ${recovery.delaySeconds}s` : "";
-
-        this.deps.onThought(threadId, `${recovery.message}${attempt}${wait}\n`);
+        const line = `${recovery.message}${attempt}${wait}`;
+        if (recovery.state === "paused") this.paused.set(threadId, line); else this.paused.delete(threadId);
+        this.deps.onThought(threadId, `${line}\n`);
         return;
       }
       default:
@@ -737,14 +1002,14 @@ export function escapesRoot(root: string, value: string): boolean {
   let real: string;
   try { real = realpathSync(root); } catch { return true; }
   const target = path.isAbsolute(value) ? path.resolve(value) : path.resolve(real, value);
-  if (target !== real && !target.startsWith(real + path.sep)) return true;
+  if (!pathInside(real, target)) return true;
   let existing = target;
-  while (existing !== real && existing.startsWith(real + path.sep) && !exists(existing)) {
+  while (!samePath(existing, real) && pathInside(real, existing) && !exists(existing)) {
     existing = path.dirname(existing);
   }
   try {
     const resolved = realpathSync(existing);
-    return resolved !== real && !resolved.startsWith(real + path.sep);
+    return !pathInside(real, resolved);
   } catch { return true; }
 }
 

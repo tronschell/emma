@@ -16,6 +16,45 @@ test("dev checks never compile the app and full CI only targets main", () => {
   assert.deepEqual([...dev.matchAll(/^\s+- uses: (.+)$/gm)].map((match) => match[1]), ["actions/checkout@v5", "actions/setup-node@v5"]);
 });
 
+test("the Windows lane covers the native x64 build and stays off the release path", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(workflow, /check-windows:\n {4}if: github\.event_name == 'pull_request'\n {4}runs-on: windows-2025/);
+  assert.doesNotMatch(workflow, /strategy:|matrix|windows-11-vs2026-arm/);
+  assert.match(workflow, /node-version: 24/);
+  assert.match(workflow, /version: 0\.16\.0/);
+  assert.match(workflow, /probe Windows native toolchain/);
+  assert.match(workflow, /Get-Command clang\.exe/);
+  assert.match(workflow, /Get-Command clang\+\+\.exe/);
+  assert.match(workflow, /Get-Command rc\.exe/);
+  assert.match(workflow, /VersionInfo\.FileVersion/);
+  assert.match(workflow, /npm run build:native/);
+  assert.match(workflow, /workflow_call:/);
+  assert.match(workflow, /package the Windows release candidate without signing secrets\n {8}if: github\.base_ref == 'main'\n {8}run: npm run package:win/);
+  for (const duplicated of [/npm run check/g, /cargo fmt/g, /cargo check /g]) assert.equal(workflow.match(duplicated).length, 1);
+});
+
+test("Windows transcription keeps Unicode paths in its native argv", () => {
+  const source = readFileSync(new URL("../native/transcribe_win.cpp", import.meta.url), "utf8");
+  const build = readFileSync(new URL("../scripts/build-native.mjs", import.meta.url), "utf8");
+  assert.match(source, /int wmain\(int argc, wchar_t\*\* argv\)/);
+  assert.match(source, /transcribe\(argv\[1\]\)/);
+  assert.match(build, /-municode[^\n]*native\/transcribe_win\.cpp/);
+});
+
+test("signed Windows packaging verifies every PE payload", () => {
+  const script = readFileSync(new URL("../scripts/package-windows.mjs", import.meta.url), "utf8");
+  assert.match(script, /const isPe =/);
+  assert.match(script, /const expectedMachine =/);
+  assert.match(script, /const archive = path\.join\(app, "resources", "app\.asar"\)/);
+  assert.match(script, /listPackage/);
+  assert.match(script, /Wrong Windows architecture/);
+  assert.match(script, /const verifyPeDirectory =/);
+  assert.match(script, /const verifyNupkg =/);
+  assert.match(script, /inflateRawSync/);
+  assert.match(script, /productName: "Emma"/);
+  assert.match(script, /for \(const nupkg of nupkgs\) verifyNupkg/);
+});
+
 test("draft release validation has the permission GitHub requires to view drafts", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
   const plan = workflow.match(/^ {2}plan:\n([\s\S]*?)(?=^ {2}\S)/m)?.[1] ?? "";

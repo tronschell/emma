@@ -20,7 +20,7 @@ export const MIN_TERMINAL_HEIGHT = 120;
 export const MAX_TERMINAL_HEIGHT = 720;
 
 export function terminalTitle(cwd: string): string {
-  const name = cwd.replace(/\/+$/, "").split("/").pop();
+  const name = cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   return name && name.length <= 40 ? name : "shell";
 }
 

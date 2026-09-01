@@ -1,7 +1,7 @@
 # The notch
 
-Quick Ask: one island that opens under the camera housing, on top of whatever
-you were doing. Main-process geometry is
+Quick Ask: one macOS island that opens under the camera housing, or a Windows
+pill near the top of the display, on top of whatever you were doing. Main-process geometry is
 [`desktop/main/overlay.ts`](../desktop/main/overlay.ts), the windows are in
 [`desktop/main/main.ts`](../desktop/main/main.ts), and every surface is the same
 renderer bundle picking a component off its query string
@@ -9,18 +9,18 @@ renderer bundle picking a component off its query string
 
 ## Opening it
 
-Double-tap the **left** Option key. macOS reports a bare modifier only to a
-trusted app, so this is an event tap in a native helper —
-`emma-option-tap`, built with clang from
-[`desktop/native/quick_ask.m`](../desktop/native/quick_ask.m) — which writes
-`toggle` on stdout and nothing else.
+On macOS, double-tap the **left** Option key. macOS reports a bare modifier only
+to a trusted app, so this is an event tap in `emma-option-tap`, built with clang
+from [`desktop/native/quick_ask.m`](../desktop/native/quick_ask.m). On Windows,
+double-tap the **left** Alt key; `emma-option-tap.exe` uses the Windows keyboard
+hook. Both helpers write `toggle` on stdout and nothing else.
 
 | | |
 |---|---|
-| Key | Left Option, keycode 58; the right one is not it |
+| Key | Left Option on macOS, or left Alt on Windows; the right key is not it |
 | Window | Second press within **0.35 s** of the first release |
 | Needs | Accessibility. Without it the helper says so on stderr and ⌥⌥ stays dead |
-| Also opens it | Any accelerator or hold bound in **Settings → Shortcuts** |
+| Also opens it | Any accelerator or hold bound in **Settings → Keybinds** |
 
 The helper does the holds too: bind an action to holding a modifier and Emma
 sends the helper a `{"holds":[…]}` line over stdin; it answers `hold <action>`
@@ -28,7 +28,7 @@ when the key is held past its duration and cancels on any other key.
 
 ## Where it draws
 
-`emma-option-tap --screens` reports the real camera housing per display —
+On macOS, `emma-option-tap --screens` reports the real camera housing per display —
 AppKit's `auxiliaryTopLeftArea`/`auxiliaryTopRightArea` bracket it and
 `safeAreaInsets.top` is its height. Emma re-reads it whenever the helper prints,
 and `parseNotchGeometry` refuses anything outside 40–600 wide or 8–120 tall.
@@ -38,18 +38,20 @@ A display with no housing gets a **virtual notch**: a centred gap of
 the calibration knob — an external monitor has no housing to measure, so the
 number is what makes the island's shoulders sit where you want them.
 
-The island window spans the housing and hangs below it: 620px wide (or the
+The macOS island window spans the housing and hangs below it: 620px wide (or the
 display minus 16), the menu-bar height, plus 97px of island and a 126px
-transparent band for the orbs.
+transparent band for the orbs. On Windows, the pill uses the active display's
+work area and the saved pill position; it has no camera-housing geometry.
 
 ## The idle sliver
 
 With the island closed, main polls the cursor every 120ms and, once it comes
 within 220px of the housing, builds a transparent hotspot window over it —
-the housing plus 14px each side and 44px of drop. It is click-through
-(`setIgnoreMouseEvents(true, { forward: true })`) until the cursor is actually
-inside, so the menu bar underneath keeps working; inside, it lights up and a
-click opens Quick Ask. Opening the island destroys it.
+the housing plus 14px each side and 44px of drop for the sliver to draw in. It
+is click-through (`setIgnoreMouseEvents(true, { forward: true })`) unless the
+cursor is inside the housing itself — the pad and the drop never take a click,
+so the menu bar and whatever sits under them keep working; inside, it lights up
+and a click opens Quick Ask. Opening the island destroys it.
 
 ## The island
 
@@ -60,8 +62,9 @@ picker, and a footer reading the model's window and the last answer's tok/s.
   from the transcript plus whatever menu or slash band is open. Past that the
   transcript scrolls instead of the window growing.
 - After **6** turns it offers *"Getting long — continue in the full app →"*.
-- `⌘1` / `⌘2` / `⌘3` run the three quick actions from **Settings → Quick
-  actions** — each is a label and a prompt, run as one turn in a fresh thread.
+- `⌘1` / `⌘2` / `⌘3` on macOS, or `Ctrl+1` / `Ctrl+2` / `Ctrl+3` on Windows,
+  run the three quick actions from **Settings → Quick actions** — each is a
+  label and a prompt, run as one turn in a fresh thread.
 - Escape leaves the island; so does clicking away.
 - Reopening while a turn is still running starts a new quick session, unless
   **Settings → Notch → Quick Ask behaviour** is `continue`.
@@ -88,7 +91,7 @@ one you cannot get back. Clicking it expands the same island beside it, with a
 ## The orb ring
 
 Two ways to the same commands, both off `settings.cursorOrbs` (up to
-`MAX_CURSOR_ORBS`, **8**; default ⌘1, ⌘2, ⌘3, ▣ Screen, ✎ Draw, ⧉ Save page):
+`MAX_CURSOR_ORBS`, **8**; default ⌘1, ⌘2, ⌘3, ▣ Screen, ✎ Draw, ⧉ Save screen):
 
 - **Under the island** — sweep the cursor down through the notch and the orbs
   drop out of it. Turned off by **Settings → Notch → notch commands**.
@@ -103,10 +106,10 @@ anything that is not on the list.
 
 | Command | Glyph | Does |
 |---|---|---|
-| `0` `1` `2` | ⌘1 ⌘2 ⌘3 | Runs that quick action |
+| `0` `1` `2` | ⌘1/`Ctrl+1`, ⌘2/`Ctrl+2`, ⌘3/`Ctrl+3` | Runs that quick action |
 | `screen` | ▣ | Captures the screen and attaches it to the next turn |
 | `draw` | ✎ | Opens the yellow pen over the screen — see [voice.md](voice.md) |
-| `page` | ⧉ | Keeps the page in front as a note — see [knowledge.md](knowledge.md) |
+| `page` | ⧉ | Keeps what you are looking at as a note — screenshot, then the vision model, then the app in front — see [knowledge.md](knowledge.md) |
 | `keep` | ◈ | Listed in the catalog, but the island has no handler for it — nothing happens |
 | `workspace` | ▤ | Opens the main window |
 
@@ -121,6 +124,12 @@ anything that is not on the list.
 | Notch commands | On/off — the orbs that drop under the island |
 | Quick actions | Three labels and prompts |
 | Shortcuts | Accelerator or modifier-hold per action |
+
+The user can create one conversationally, for example: “Make ⌘⌥K ask Emma to
+summarize what I am working on.” The `shortcut` tool fills the next unbound
+Quick Action, registers the global accelerator immediately, and shows its label
+and prompt on **Settings → Keybinds**. Reusing the same label or combination
+updates that slot; all three occupied means one must be cleared first.
 
 Everything above is validated by `validateOverlayPreferences` and
 `validateKeybinds` before main acts on it.

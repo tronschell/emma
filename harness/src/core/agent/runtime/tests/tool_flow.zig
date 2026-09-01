@@ -463,8 +463,6 @@ fn expectPermissionDeniedToolResult(gateway: *const FakeGateway, index: usize, t
         if (entry != .object) continue;
         const role = entry.object.get("role") orelse continue;
         if (role != .string or !std.mem.eql(u8, role.string, "tool")) continue;
-        // OpenAI tool messages carry no tool name, so the answered call has to
-        // be resolved back through the assistant turn that requested it.
         const call_id = entry.object.get("tool_call_id") orelse continue;
         if (call_id != .string) continue;
         const called = toolCallNameForId(prompt, call_id.string) orelse continue;
@@ -490,7 +488,6 @@ fn expectPermissionDeniedToolResult(gateway: *const FakeGateway, index: usize, t
     return error.TestExpectedToolResultMissing;
 }
 
-/// Resolves an OpenAI `tool_call_id` back to the name the assistant asked for.
 fn toolCallNameForId(messages: []const std.json.Value, call_id: []const u8) ?[]const u8 {
     for (messages) |entry| {
         if (entry != .object) continue;
@@ -549,8 +546,6 @@ fn expectMalformedArgumentToolPair(
                 if (function != .object) return error.TestExpectedToolCallInputMissing;
                 const name = function.object.get("name") orelse continue;
                 if (name != .string or !std.mem.eql(u8, name.string, tool_name)) continue;
-                // Malformed arguments are replayed as an empty object so the
-                // provider still sees a well-formed call to answer.
                 const arguments = function.object.get("arguments") orelse return error.TestExpectedToolCallInputMissing;
                 if (arguments != .string) return error.TestExpectedToolCallInputMissing;
                 try std.testing.expectEqualStrings("{}", arguments.string);
@@ -1861,7 +1856,7 @@ test "reactive sandbox widening failure preserves the restricted result" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2035,7 +2030,7 @@ test "reactive sandbox broader retry cancellation cleans replay captures" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -4069,6 +4064,81 @@ test "processQueuedPrompt auto parallel availability failure does not suppress v
     try expectBodyContains(&gateway, 1, tool_dispatch.web_search_unavailable_message);
 }
 
+const MixedBatchProbe = struct {
+    in_flight: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    peak_after_write: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    write_overlapped: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn override(self: *MixedBatchProbe) test_support.ToolExecutionOverride {
+        return .{ .context = self, .execute_fn = MixedBatchProbe.run };
+    }
+
+    fn run(raw: *anyopaque, request: runtime_tool_contracts.ToolExecutionRequest) anyerror!runtime_tool_contracts.ToolExecutionResult {
+        const self: *MixedBatchProbe = @ptrCast(@alignCast(raw));
+        const entered = self.in_flight.fetchAdd(1, .seq_cst) + 1;
+        defer _ = self.in_flight.fetchSub(1, .seq_cst);
+
+        if (std.mem.eql(u8, request.call.name, "write_file")) {
+            if (entered > 1) self.write_overlapped.store(true, .seq_cst);
+            io_mod.sleep(20 * std.time.ns_per_ms);
+            if (self.in_flight.load(.seq_cst) > 1) self.write_overlapped.store(true, .seq_cst);
+        } else if (std.mem.startsWith(u8, request.call.id, "after_")) {
+            var waited_ms: usize = 0;
+            while (self.in_flight.load(.seq_cst) < 2 and waited_ms < 2000) : (waited_ms += 1) {
+                io_mod.sleep(std.time.ns_per_ms);
+            }
+            const observed = self.in_flight.load(.seq_cst);
+            var peak = self.peak_after_write.load(.seq_cst);
+            while (observed > peak) {
+                peak = self.peak_after_write.cmpxchgWeak(peak, observed, .seq_cst, .seq_cst) orelse break;
+            }
+        }
+        return .{
+            .status = .success,
+            .model_output = try request.result_allocator.dupe(u8, request.call.id),
+        };
+    }
+};
+
+test "mixed batch runs post-write reads concurrently and keeps call order" {
+    const alloc = std.testing.allocator;
+    const calls = [_]ToolCall{
+        toolCall("before_1", "read_file", "{\"path\":\"a\"}"),
+        toolCall("before_2", "grep_files", "{\"pattern\":\"b\"}"),
+        toolCall("gate_write", "write_file", "{\"path\":\"c\",\"content\":\"x\"}"),
+        toolCall("after_1", "read_file", "{\"path\":\"d\"}"),
+        toolCall("after_2", "grep_files", "{\"pattern\":\"e\"}"),
+        toolCall("after_3", "file_info", "{\"path\":\"f\"}"),
+    };
+    const completions = [_]FakeCompletion{
+        .{ .tool_calls = &calls },
+        .{ .content = "Final" },
+    };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var probe = MixedBatchProbe{};
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.tool_execution_override = probe.override();
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.permission_mode = .auto;
+
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+
+    try std.testing.expect(!probe.write_overlapped.load(.seq_cst));
+    try std.testing.expect(probe.peak_after_write.load(.seq_cst) > 1);
+    try std.testing.expectEqual(@as(usize, 0), probe.in_flight.load(.seq_cst));
+    try expectBodyContainsInOrder(&gateway, 1, &.{
+        "before_1",
+        "before_2",
+        "gate_write",
+        "after_1",
+        "after_2",
+        "after_3",
+    });
+}
+
 test "parallel invalid web_search with valid read_file starts only read_file" {
     const alloc = std.testing.allocator;
     const calls = [_]ToolCall{
@@ -4456,7 +4526,7 @@ test "terminal publication failure deletes retained command replay" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -5273,7 +5343,7 @@ test "processQueuedPrompt always permission retains external mutation session gr
     );
 }
 
-test "processQueuedPrompt returns ordinary results for repeated calls" {
+test "processQueuedPrompt blocks a third identical read and finishes the turn" {
     const alloc = std.testing.allocator;
     const calls = [_]ToolCall{toolCall("call_1", "read_file", "{\"path\":\"same\"}")};
     const completions = [_]FakeCompletion{
@@ -5291,9 +5361,11 @@ test "processQueuedPrompt returns ordinary results for repeated calls" {
 
     try runFakePrompt(&gateway, &hooks, fixture.config(), fixture.job());
 
-    try std.testing.expectEqual(@as(usize, 3), hooks.permission_names.items.len);
-    try std.testing.expectEqual(@as(usize, 3), hooks.executed_names.items.len);
-    try expectBodyNotContains(&gateway, 3, "Repeated identical tool call blocked");
+    try std.testing.expectEqual(@as(usize, 2), hooks.permission_names.items.len);
+    try std.testing.expectEqual(@as(usize, 2), hooks.executed_names.items.len);
+    try expectBodyNotContains(&gateway, 1, "already ran");
+    try expectBodyContains(&gateway, 3, "already ran 2 times this turn");
+    try std.testing.expectEqualStrings("Final", hooks.history_assistant_text.?);
 }
 
 test "processQueuedPrompt stops repeated distinct terminal corrections after the complete second batch" {

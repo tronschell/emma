@@ -1,7 +1,53 @@
+const std = @import("std");
+const tool_args = @import("../../core/tooling/tool_args.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const core_types = @import("../../core/shared/types.zig");
 const bridge = @import("../../tools/emma/bridge.zig");
 
 const ToolSpec = tool_dispatch.Tool;
+
+const Step = struct {
+    action: []const u8,
+    kind: core_types.ToolActivityKind,
+    label: []const u8,
+    completed: []const u8,
+    arg: tool_dispatch.LabelArgKind,
+    default: []const u8,
+};
+
+const steps = [_]Step{
+    .{ .action = "open", .kind = .command, .label = "Opening", .completed = "Opened", .arg = .url, .default = "a page" },
+    .{ .action = "snapshot", .kind = .read, .label = "Reading", .completed = "Read", .arg = .none, .default = "the page" },
+    .{ .action = "click", .kind = .command, .label = "Clicking", .completed = "Clicked", .arg = .selector, .default = "the page" },
+    .{ .action = "fill", .kind = .command, .label = "Filling in", .completed = "Filled in", .arg = .selector, .default = "a field" },
+    .{ .action = "type", .kind = .command, .label = "Typing into", .completed = "Typed into", .arg = .selector, .default = "the page" },
+    .{ .action = "press", .kind = .command, .label = "Pressing", .completed = "Pressed", .arg = .key, .default = "a key" },
+    .{ .action = "hover", .kind = .command, .label = "Hovering over", .completed = "Hovered over", .arg = .selector, .default = "the page" },
+    .{ .action = "scroll", .kind = .command, .label = "Scrolling", .completed = "Scrolled", .arg = .none, .default = "the page" },
+    .{ .action = "get", .kind = .read, .label = "Reading", .completed = "Read", .arg = .selector, .default = "the page" },
+    .{ .action = "eval", .kind = .command, .label = "Running JavaScript in", .completed = "Ran JavaScript in", .arg = .none, .default = "the page" },
+    .{ .action = "screenshot", .kind = .read, .label = "Taking a picture of", .completed = "Took a picture of", .arg = .none, .default = "the page" },
+    .{ .action = "wait", .kind = .read, .label = "Waiting for", .completed = "Waited for", .arg = .selector, .default = "the page" },
+    .{ .action = "back", .kind = .command, .label = "Going", .completed = "Went", .arg = .none, .default = "back" },
+    .{ .action = "forward", .kind = .command, .label = "Going", .completed = "Went", .arg = .none, .default = "forward" },
+    .{ .action = "reload", .kind = .command, .label = "Reloading", .completed = "Reloaded", .arg = .none, .default = "the page" },
+    .{ .action = "close", .kind = .command, .label = "Closing", .completed = "Closed", .arg = .none, .default = "the browser" },
+};
+
+pub fn presentation(args: std.json.ObjectMap) ?tool_dispatch.CallPresentation {
+    const action = tool_args.optionalStringArg(args, "action") orelse return null;
+    for (steps) |step| {
+        if (!std.mem.eql(u8, step.action, action)) continue;
+        return .{
+            .activity_kind = step.kind,
+            .action_label = step.label,
+            .completed_action_label = step.completed,
+            .label_arg_kind = step.arg,
+            .label_arg_default = step.default,
+        };
+    }
+    return null;
+}
 
 const browser_description =
     "Drive a real Chrome browser: open pages, read them, click, fill and check your own work. The user watches the same browser in Emma's browser pane and can take the wheel, so what you do here is visible and what they do is yours to read.\n" ++
@@ -100,8 +146,10 @@ pub const browser = ToolSpec{
     .executor_kind = .emma,
     .activity_kind = .command,
     .requires_approval = false,
-    .action_label = "Using the browser",
-    .completed_action_label = "Used the browser",
+    .action_label = "Using",
+    .completed_action_label = "Used",
+    .label_arg_default = "the browser",
+    .presentation_fn = presentation,
     .permission_target_kind = .none,
     .decode = bridge.decode,
     .validate = bridge.validate,
@@ -113,7 +161,6 @@ pub const browser = ToolSpec{
 pub const all = [_]ToolSpec{browser};
 
 test "browser advertises every action agent-browser can be driven with" {
-    const std = @import("std");
     const expected = [_][]const u8{
         "open", "snapshot", "click",      "fill", "type", "press",   "hover",  "scroll",
         "get",  "eval",     "screenshot", "wait", "back", "forward", "reload", "close",
@@ -123,6 +170,23 @@ test "browser advertises every action agent-browser can be driven with" {
         const values = property.shape.?.enum_values;
         try std.testing.expectEqual(expected.len, values.len);
         for (expected, values) |want, got| try std.testing.expectEqualStrings(want, got);
+        return;
+    }
+    return error.ActionPropertyMissing;
+}
+
+test "every browser action says what it is doing" {
+    for (browser.gateway_schema.input_schema.properties) |property| {
+        if (!std.mem.eql(u8, property.name, "action")) continue;
+        for (property.shape.?.enum_values) |action| {
+            var buf: [64]u8 = undefined;
+            const json = try std.fmt.bufPrint(&buf, "{{\"action\":\"{s}\"}}", .{action});
+            var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+            defer parsed.deinit();
+            const shown = presentation(parsed.value.object) orelse return error.ActionUnlabelled;
+            try std.testing.expect(shown.action_label.len > 0);
+            try std.testing.expect(shown.label_arg_kind != .none or shown.label_arg_default.len > 0);
+        }
         return;
     }
     return error.ActionPropertyMissing;

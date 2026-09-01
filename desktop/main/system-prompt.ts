@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { platform, release } from "node:os";
 import path from "node:path";
@@ -7,15 +8,12 @@ import { MAX_SYSTEM_PROMPT_CHARS, systemPromptBlock } from "../shared/settings";
 import { toolDefinitions } from "./tools";
 import type { PermissionMode } from "../shared/permissions";
 import { lessonBlock, type AppliedImprovements, type Arm } from "../shared/improvement";
-import { connectionsBlock } from "./connections";
 import type { TurnRequest } from "./agent-loop";
 import { GOAL_BLOCKED_TURNS, GOAL_LABELS, MAX_GOAL_TURNS, goalTokensLeft, type Goal } from "../shared/goal";
 
 let prompt = "";
 let presets: PromptPreset[] = [];
-let connections = "";
 let written: string | undefined;
-let writtenPrompt: string | undefined;
 let improvements: AppliedImprovements = { kept: { instructions: "", verifier: "" } };
 
 export function setSystemPrompt(value: string) {
@@ -24,10 +22,6 @@ export function setSystemPrompt(value: string) {
 
 export function setPrompts(value: readonly PromptPreset[]) {
   presets = [...value];
-}
-
-export function setConnections(ids: readonly string[]) {
-  void connectionsBlock(ids).then((block) => { connections = block; }).catch(() => { connections = ""; });
 }
 
 export interface PromptContext {
@@ -49,14 +43,13 @@ function promptVariables(context: PromptContext): PromptVariables {
     os: `${platform()} ${release()}`,
     date: new Date().toISOString().slice(0, 10),
     mode,
-    connections: connections || "none",
   };
 }
 
 const promptBlock = (context: PromptContext) =>
   systemPromptBlock(resolvePrompt(prompt, presets, context.model ?? "", promptVariables(context)));
 
-const settingsBlock = () => [connections, improvements.kept.instructions].filter(Boolean).join("\n\n");
+const settingsBlock = () => improvements.kept.instructions;
 
 export const systemPrompt = () => prompt;
 
@@ -136,14 +129,15 @@ export function withGoal(turn: TurnRequest, goal: Goal | undefined): TurnRequest
   return { ...turn, params: { ...turn.params, skillContext: mergeSkillContext(goalBlock(goal), turn.params?.skillContext ?? "") } };
 }
 
-export function writeHarnessPrompt(home: string, context: PromptContext = {}) {
+export const harnessPromptFile = (home: string, key: string) =>
+  path.join(home, ".fx", `system-prompt-${createHash("sha256").update(key).digest("hex").slice(0, 16)}.md`);
+
+export function writeHarnessPrompt(home: string, context: PromptContext = {}, file = path.join(home, ".fx", "system-prompt.md")) {
   const resolved = promptBlock(context);
   const block = settingsBlock();
-  if (written === block && writtenPrompt === resolved) return;
   const directory = path.join(home, ".fx");
   mkdirSync(directory, { recursive: true });
-  if (writtenPrompt !== resolved) writeFileSync(path.join(directory, "system-prompt.md"), resolved ? `${resolved}\n` : "");
+  writeFileSync(file, resolved ? `${resolved}\n` : "");
   if (written !== block) writeFileSync(path.join(directory, "AGENTS.md"), block ? `${block}\n` : "");
   written = block;
-  writtenPrompt = resolved;
 }

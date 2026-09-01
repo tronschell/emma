@@ -58,7 +58,6 @@ require.cache[electronPath] = {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { ComputerUseRuntime, computerAction, computerTools, MAX_RUN_STEPS }: typeof import("../main/computer") = require("../main/computer");
 
-const darwinOnly = { skip: process.platform !== "darwin" && "computer use is macOS only" };
 const thread = "1755000000-1a2b-3c4d5e6f-0";
 const runtimes: InstanceType<typeof ComputerUseRuntime>[] = [];
 const runtime = (progress?: (value: ComputerRunProgress) => void) => {
@@ -85,7 +84,7 @@ afterEach(() => {
 
 const cursor: ComputerCursor = { windowId: 42, bounds: { x: -100, y: 20, width: 500, height: 400 }, x: 120, y: 80 };
 
-test("cursor events describe approved mutations without becoming tool results", darwinOnly, async () => {
+test("cursor events describe approved mutations without becoming tool results", async () => {
   const progress: ComputerRunProgress[] = [];
   let settled = false;
   const computer = runtime((value) => {
@@ -108,7 +107,7 @@ test("cursor events describe approved mutations without becoming tool results", 
   assert.equal(progress.filter((value) => value.cursor).length, 1);
 });
 
-test("native invalidation hides the cue without settling or replacing the action result", darwinOnly, async () => {
+test("native invalidation hides the cue without settling or replacing the action result", async () => {
   const progress: ComputerRunProgress[] = [];
   let settled = false;
   const computer = runtime((value) => {
@@ -125,7 +124,7 @@ test("native invalidation hides the cue without settling or replacing the action
   assert.equal(spawned.at(-1)!.child.killed, false);
 });
 
-test("malformed, duplicate and read-only cursor events close the helper", darwinOnly, async () => {
+test("malformed, duplicate and read-only cursor events close the helper", async () => {
   for (const events of [
     [{ event: "cursor", cursor: { ...cursor, x: NaN } }],
     [{ event: "cursor", cursor, extra: true }],
@@ -151,7 +150,7 @@ test("malformed, duplicate and read-only cursor events close the helper", darwin
   }
 });
 
-test("stopping at a cursor event discards the action reply and kills its helper", darwinOnly, async () => {
+test("stopping at a cursor event discards the action reply and kills its helper", async () => {
   const computer = runtime((value) => { if (value.cursor) computer.abort(); });
   const snapshot = token(await computer.execute(thread, state(), allow));
   cursorEvents = () => [{ event: "cursor", cursor }];
@@ -174,7 +173,7 @@ test("computer accepts only bounded app-scoped commands", () => {
   assert.deepEqual(computerTools[0].inputSchema.properties.action.enum, ["list_apps", "get_app_state", "click", "set_value", "type_text", "key", "scroll"]);
 });
 
-test("discovery exposes app metadata without reading UI or asking", darwinOnly, async () => {
+test("discovery exposes app metadata without reading UI or asking", async () => {
   apps.push({ ...target, id: "com.test.Emma", pid: process.pid });
   const computer = runtime();
   const listed = await computer.execute(thread, { action: "list_apps" }, async () => { throw new Error("No approval needed to list metadata"); });
@@ -185,7 +184,7 @@ test("discovery exposes app metadata without reading UI or asking", darwinOnly, 
   assert.equal(captures, 0);
 });
 
-test("the user approves each exact app once, with no global input", darwinOnly, async () => {
+test("the user approves each exact app once, with no global input", async () => {
   const computer = runtime();
   const asks: ComputerApp[] = [];
   const approve = async (app: ComputerApp) => { assert.equal(sent.filter((item) => item.app.id === app.id).length, 0); asks.push(app); return true; };
@@ -200,7 +199,7 @@ test("the user approves each exact app once, with no global input", darwinOnly, 
   assert.equal(captures, 0);
 });
 
-test("denial stays denied for this turn, including concurrent retries", darwinOnly, async () => {
+test("denial stays denied for this turn, including concurrent retries", async () => {
   const computer = runtime();
   let asks = 0;
   const deny = async () => { asks++; return false; };
@@ -214,7 +213,7 @@ test("denial stays denied for this turn, including concurrent retries", darwinOn
   assert.ok(sent.every((item) => item.app.id === other.id));
 });
 
-test("snapshots are single-use and bound to their approved app", darwinOnly, async () => {
+test("snapshots are single-use and bound to their approved app", async () => {
   const computer = runtime();
   const first = token(await computer.execute(thread, state(), allow));
   await computer.execute(thread, click(first), allow);
@@ -225,7 +224,7 @@ test("snapshots are single-use and bound to their approved app", darwinOnly, asy
   assert.equal(sent.filter((item) => item.action.action === "click").length, 1);
 });
 
-test("an unrelated thread cannot borrow or end a granted run", darwinOnly, async () => {
+test("an unrelated thread cannot borrow or end a granted run", async () => {
   const computer = runtime();
   await computer.execute(thread, state(), allow);
   computer.end("another-thread");
@@ -234,7 +233,7 @@ test("an unrelated thread cannot borrow or end a granted run", darwinOnly, async
   assert.throws(() => computer.start("another-thread"), /cannot restart or be borrowed/);
 });
 
-test("stopping during approval cannot create a helper or restart the run", darwinOnly, async () => {
+test("stopping during approval cannot create a helper or restart the run", async () => {
   const computer = runtime();
   let answer!: (allowed: boolean) => void;
   let signal!: AbortSignal;
@@ -252,7 +251,7 @@ test("stopping during approval cannot create a helper or restart the run", darwi
   assert.equal(spawned.length, 1);
 });
 
-test("ending during discovery rejects late results", darwinOnly, async () => {
+test("ending during discovery rejects late results", async () => {
   const computer = runtime();
   let deliver!: (value: ComputerApp[]) => void;
   enumerate = () => new Promise((resolve) => { deliver = resolve; });
@@ -264,7 +263,7 @@ test("ending during discovery rejects late results", darwinOnly, async () => {
   assert.equal(spawned.length, 0);
 });
 
-test("abort during throttling prevents the queued input", darwinOnly, async () => {
+test("abort during throttling prevents the queued input", async () => {
   const computer = runtime();
   const first = token(await computer.execute(thread, state(), allow));
   const result = computer.execute(thread, click(first), allow);
@@ -275,7 +274,7 @@ test("abort during throttling prevents the queued input", darwinOnly, async () =
   assert.ok(spawned.every((item) => item.child.killed));
 });
 
-test("relaunches and app changes during approval do not inherit a grant", darwinOnly, async () => {
+test("relaunches and app changes during approval do not inherit a grant", async () => {
   const computer = runtime();
   await computer.execute(thread, state(), allow);
   apps = [{ ...target, launchedAt: target.launchedAt + 1000 }, other];
@@ -289,7 +288,7 @@ test("relaunches and app changes during approval do not inherit a grant", darwin
   }), /instance changed/);
 });
 
-test("ambiguous app names need an exact PID and self control is refused", darwinOnly, async () => {
+test("ambiguous app names need an exact PID and self control is refused", async () => {
   const computer = runtime();
   apps.push({ ...target, pid: 23456 });
   await assert.rejects(computer.execute(thread, state(), allow), /Several instances/);
@@ -298,7 +297,7 @@ test("ambiguous app names need an exact PID and self control is refused", darwin
   await assert.rejects(computer.execute(thread, { ...state(), pid: process.pid }, allow), /Emma itself/);
 });
 
-test("the step ceiling revokes access and the next turn asks again", darwinOnly, async () => {
+test("the step ceiling revokes access and the next turn asks again", async () => {
   const computer = runtime();
   for (let step = 0; step < MAX_RUN_STEPS; step++) await computer.execute(thread, { action: "list_apps" }, allow);
   await assert.rejects(computer.execute(thread, state(), allow), /step limit/);

@@ -1,28 +1,42 @@
 # Getting started
 
-Emma requires macOS 12 or later on Apple silicon. For a published version,
-download its zip from [GitHub Releases](https://github.com/tronschell/emma/releases),
-extract it, and move `Emma.app` to Applications. No build toolchains are needed.
-The rest of this page covers building from source; see [releases.md](releases.md)
-for how a prepared version reaches the download page.
+Emma targets macOS 12 or later on Apple silicon and Windows 10 version 1809 or
+later on x64. Published downloads currently contain the macOS zip; Windows x64
+is the supported distributable/public target and is packaged in CI. Public
+signed Windows x64 publication is pending release-workflow authorization. No build
+toolchains are needed for a published macOS build. The rest of this page covers building from
+source; see [releases.md](releases.md) for how a prepared version reaches the
+download page.
 
 ## Prerequisites
 
 | Tool | Version | Pinned in | Needed by |
 | --- | --- | --- | --- |
-| Xcode Command Line Tools | any current | — | `clang`, for the four native helpers; full Xcode is required for packaging |
+| Xcode Command Line Tools | any current | — | macOS native helpers; full Xcode is required for macOS packaging |
+| LLVM `clang`/`clang++` and Windows SDK | current | — | Windows native helpers and x64 packaging |
 | Rust | 1.97.1 | [rust-toolchain.toml](../rust-toolchain.toml) | `crates/core`, `crates/host` |
 | Zig | 0.16.0 | [harness/build.zig.zon](../harness/build.zig.zon) and CI | `harness/` |
 | Node | 24.x | [desktop/package.json](../desktop/package.json) (`@types/node` 24.10.1) | everything in `desktop/` |
 | Electron | 43.4.0 | installed by npm | — |
+
+On macOS, install the command-line tools and Zig:
 
 ```bash
 xcode-select --install
 brew install zig
 ```
 
+On Windows, install Node 24, the Rust toolchain selected by
+`rust-toolchain.toml`, Zig 0.16.0, LLVM `clang`/`clang++`, and the Windows SDK
+with its import libraries.
+The `windows-2025` (x64) CI runner runs `package:win` on promotion pull
+requests. x64 is the supported distributable/public target. The current release
+workflow does not sign or publish Windows artifacts; public signed Windows x64
+publication is pending release-workflow authorization.
+
 `rustup` reads `rust-toolchain.toml` and installs 1.97.1 the first time you run
-`cargo` here. The first `start`, `package:mac`, or `vendor:ripgrep` run downloads
+`cargo` here. The first `start`, `package:mac`, `package:win`, or
+`vendor:ripgrep` run downloads
 [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 from GitHub and checks it
 against a pinned SHA-256 ([vendor-ripgrep.mjs](../desktop/scripts/vendor-ripgrep.mjs)),
 so it needs network once.
@@ -37,14 +51,15 @@ npm run dev
 ```
 
 Every JavaScript dependency lives under `desktop/`; the root `package.json`
-forwards to it. The first run builds Rust, Zig, the native helpers and the main
-process — a few minutes. Later runs reuse the caches.
+forwards to it. The first run builds Rust, Zig, the platform-native helpers and
+the main process — a few minutes. Later runs reuse the caches.
 
 ### `npm run dev` vs `npm --prefix desktop start`
 
 `npm run dev` runs [dev.mjs](../desktop/scripts/dev.mjs), which stops at the
 first failing step: `build:host` (cargo `emma-host`, then `zig build`) →
-`build:native` (clang) → `build:main` (tsc) → Vite, then Electron 800 ms later.
+`build:native` (the platform native toolchain) → `build:main` (tsc) → Vite, then
+Electron 800 ms later.
 Quitting Electron `SIGTERM`s Vite, so one Ctrl-C cleans up both.
 
 | | `npm run dev` | `npm --prefix desktop start` |
@@ -68,8 +83,8 @@ resolved from the inherited `PATH`, so without either the vendored copy or a
 ## First launch
 
 Emma takes a single-instance lock, so a second launch focuses the first window
-instead of opening one. A packaged `Emma.app` and a dev run share that lock —
-see [troubleshooting.md](troubleshooting.md).
+instead of opening one. A packaged app and a dev run share Electron's `userData`
+lock — see [troubleshooting.md](troubleshooting.md).
 
 A six-step walkthrough opens once (**Emma · Model · Quick Ask · Permissions ·
 Knowledge · Agents**), gated on `emma.setupSeen.v1` in `localStorage`. Skip any
@@ -79,22 +94,30 @@ Step 5 picks your **vault** — an Obsidian vault or any plain folder. Emma writ
 one Markdown note per save into `<vault>/knowledge-base`; there is no second
 copy. See [data.md](data.md) for the layout.
 
-## macOS permissions
+## Platform permissions
 
 One table drives both the walkthrough and the pane each button opens:
-[shared/setup.ts](../desktop/shared/setup.ts). Microphone is the only grant Emma
-can raise itself (`askForMediaAccess`); every other row opens System Settings and
-re-checks when Emma comes back to the front.
+[shared/setup.ts](../desktop/shared/setup.ts). On macOS, microphone is the only
+grant Emma can raise itself (`askForMediaAccess`); other rows open System Settings
+and re-check when Emma comes back to the front. Windows rows open Windows Settings
+where the operating system exposes a setting.
 
 | Grant | Why, exactly | Status Emma can read |
 | --- | --- | --- |
 | Accessibility | `NSEvent addGlobalMonitorForEventsMatchingMask` only reports other apps' key presses to a trusted process — that is the left-Option double-tap. The same grant lets [computer.m](../desktop/native/computer.m) read and operate approved apps' accessibility controls; each app still needs separate approval. **Relaunch Emma after granting.** | `isTrustedAccessibilityClient` |
 | Screen Recording | The separate ▣ screen-context orb and ✎ annotation sheet capture the display; the app-scoped `computer` tool does not take screenshots. [captureDisplay](../desktop/main/computer.ts) checks this grant before capturing. **Relaunch after granting.** | `getMediaAccessStatus("screen")` |
 | Microphone | Dictation into the composer. | `getMediaAccessStatus("microphone")` |
-| Speech Recognition | Only the `macOS · built in` dictation engine, through the `emma-transcribe` helper. A local Whisper server needs neither. | none — row reads `[--]` |
+| Speech Recognition | The built-in dictation engine: macOS Speech.framework or Windows SAPI, through the platform `emma-transcribe` helper. A local speech server needs neither. | macOS has no direct status query; Windows has no per-app grant and reports the built-in capability |
 | Files & Folders | Writing notes into the vault folder you chose. Checked by writing `.emma-write-check` and deleting it ([vault.ts:106](../desktop/main/vault.ts#L106)), because TCC has no query API. | write probe |
-| Automation | Reading the front browser tab, which is how "save this page" works without a screenshot ([clip.ts](../desktop/main/clip.ts)). | none — macOS reports Apple Events grants to nobody |
-| Notifications | One banner when a run lands or stops on a permission ask. Unsigned builds are never prompted, so Emma bounces the Dock icon instead. | `Notification.isSupported()` |
+| Automation | On macOS, reading the front browser tab uses Apple Events; on Windows, UI Automation reads supported browser windows. This is how "save this page" works without a screenshot ([clip.ts](../desktop/main/clip.ts)). | none — macOS reports Apple Events grants to nobody |
+| Notifications | One banner when a run lands or stops on a permission ask. Unsigned macOS builds are never prompted, so Emma bounces the Dock icon instead. | `Notification.isSupported()` |
+
+Windows does not use the macOS TCC permission prompts. Accessibility and
+Automation are not required there; the setup dialog marks them **Not required**
+and excludes them from its meter. Speech Recognition is a built-in SAPI capability,
+not a per-app grant. A real Windows x64 host still needs checks for
+SmartScreen, native helper access, display geometry, and Squirrel installation
+and updates once signed publication is authorized.
 
 ## Point it at a model
 
@@ -114,9 +137,10 @@ on the next harness spawn; saving one closes every idle harness.
   in `userData/workspaces/<threadId>`.
 - **Pick a permission mode** in the composer. Four modes, default `ask` —
   [permissions.md](permissions.md).
-- **Try Quick Ask.** Double-tap the **left** Option key (key code 58, under
-  0.35 s apart, [quick_ask.m:28](../desktop/native/quick_ask.m#L28)). The island
-  unfolds over whatever app is in front. The right Option key does nothing.
+- **Try Quick Ask.** On macOS, double-tap the **left** Option key (key code 58,
+  under 0.35 s apart, [quick_ask.m:28](../desktop/native/quick_ask.m#L28)); on
+  Windows, double-tap the **left** Alt key. The right Option or Alt key does
+  nothing. Windows uses Ctrl where macOS uses Command in shortcut labels.
 
 Then type.
 
@@ -139,6 +163,18 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 
 Visible or platform work is not done until the real app has been launched and
 the changed interaction exercised.
+
+To build the current native Windows x64 package from a Windows shell:
+
+```powershell
+npm --prefix desktop run package:win
+```
+
+Local packaging omits signing credentials and produces an unsigned structure
+check for the current host architecture; it does not establish Authenticode
+trust. The current release workflow does not sign or publish Windows artifacts,
+and public signed Windows x64 publication is pending release-workflow
+authorization. Windows ARM64 has no CI lane and is not a supported target.
 
 ## Credits
 

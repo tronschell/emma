@@ -1,9 +1,9 @@
-//! FX_RECORD tape writer and replay reader.
-
 const std = @import("std");
+const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
+const windows_acl = if (builtin.os.tag == .windows) @import("../shared/windows_acl.zig") else struct {};
 
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
@@ -112,17 +112,28 @@ fn configureAutomatic(
     } else null;
     const root = if (home) |value|
         try profile_paths.recordingsDir(alloc, value)
-    else
-        try std.fs.path.join(alloc, &.{ io_mod.getenv("TMPDIR") orelse "/tmp", "fx-recordings" });
+    else if (comptime @import("builtin").os.tag == .windows) blk: {
+        const temp_root = try io_mod.runtimeTempPathAlloc(alloc);
+        defer alloc.free(temp_root);
+        break :blk try std.fs.path.join(alloc, &.{ temp_root, "fx-recordings" });
+    } else try std.fs.path.join(alloc, &.{ io_mod.getenv("TMPDIR") orelse "/tmp", "fx-recordings" });
     defer alloc.free(root);
     try io_mod.makeDirRecursive(root);
+    if (comptime builtin.os.tag == .windows) {
+        var root_dir = try io_mod.openDirAbsoluteNoFollow(root, .{ .iterate = true });
+        defer root_dir.close(io_mod.getIo());
+        try windows_acl.applyHandle(root_dir.handle);
+        if (!(try windows_acl.matchesHandle(root_dir.handle))) return error.PrivateStatePermissionsUnsupported;
+    }
 
     var attempts: u8 = 0;
     while (attempts < 8) : (attempts += 1) {
         var random_bytes: [6]u8 = undefined;
         io_mod.getIo().random(&random_bytes);
         const random_hex = std.fmt.bytesToHex(random_bytes, .lower);
-        const path = try std.fmt.allocPrint(alloc, "{s}/fx-record-{d}-{s}.fxtape", .{ root, nowMs(), random_hex });
+        const filename = try std.fmt.allocPrint(alloc, "fx-record-{d}-{s}.fxtape", .{ nowMs(), random_hex });
+        defer alloc.free(filename);
+        const path = try std.fs.path.join(alloc, &.{ root, filename });
         defer alloc.free(path);
 
         configureWithOptions(alloc, path, initial_cols, initial_rows, app_version_string, true, true) catch |err| switch (err) {
@@ -153,6 +164,12 @@ fn configureWithOptions(
 
     const file = try openTape(path, exclusive, private);
     errdefer file.close(zio);
+    if (comptime builtin.os.tag == .windows) {
+        if (private) {
+            try windows_acl.applyHandle(file.handle);
+            if (!(try windows_acl.matchesHandle(file.handle))) return error.PrivateStatePermissionsUnsupported;
+        }
+    }
 
     const owned_path = try alloc.dupe(u8, path);
     errdefer alloc.free(owned_path);
@@ -162,7 +179,6 @@ fn configureWithOptions(
     if (header.version_tail.len > 0) {
         try file.writeStreamingAll(zio, header.version_tail);
     }
-
     const now = nowMs();
     state = .{
         .enabled = true,
@@ -181,7 +197,7 @@ fn openTape(path: []const u8, exclusive: bool, private: bool) !std.Io.File {
             return std.Io.Dir.createFileAbsolute(zio, path, .{
                 .truncate = !exclusive,
                 .exclusive = exclusive,
-                .permissions = .fromMode(0o600),
+                .permissions = io_mod.permissionsFromMode(0o600),
             });
         }
         return std.Io.Dir.createFileAbsolute(zio, path, .{ .truncate = !exclusive, .exclusive = exclusive });
@@ -190,7 +206,7 @@ fn openTape(path: []const u8, exclusive: bool, private: bool) !std.Io.File {
         return std.Io.Dir.cwd().createFile(zio, path, .{
             .truncate = !exclusive,
             .exclusive = exclusive,
-            .permissions = .fromMode(0o600),
+            .permissions = io_mod.permissionsFromMode(0o600),
         });
     }
     return std.Io.Dir.cwd().createFile(zio, path, .{ .truncate = !exclusive, .exclusive = exclusive });
@@ -674,7 +690,7 @@ test "requested recording creates a private tape under home" {
             defer file.close(io_mod.getIo());
             if (@import("builtin").os.tag != .windows) {
                 const stat = try file.stat(io_mod.getIo());
-                try testing.expectEqual(@as(std.posix.mode_t, 0), stat.permissions.toMode() & 0o077);
+                try testing.expectEqual(@as(std.posix.mode_t, 0), io_mod.permissionsMode(stat.permissions) & 0o077);
             }
         },
         else => return error.TestExpectedActiveRecording,
@@ -699,7 +715,12 @@ test "requested recording uses the temporary fallback when HOME is empty" {
     defer status.deinit(alloc);
     switch (status) {
         .active => |path| {
-            try testing.expect(std.mem.startsWith(u8, path, "/tmp/fx-recordings/"));
+            if (comptime @import("builtin").os.tag == .windows) {
+                try testing.expect(std.mem.find(u8, path, "\\fx-recordings\\") != null or
+                    std.mem.find(u8, path, "/fx-recordings/") != null);
+            } else {
+                try testing.expect(std.mem.startsWith(u8, path, "/tmp/fx-recordings/"));
+            }
             shutdown();
             if (std.fs.path.isAbsolute(path)) {
                 std.Io.Dir.deleteFileAbsolute(io_mod.getIo(), path) catch {};

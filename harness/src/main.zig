@@ -3,6 +3,10 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
 const lsp_pool = @import("core/lsp/pool.zig");
+const windows_console = if (builtin.os.tag == .windows)
+    @import("ui/terminal/windows_console.zig")
+else
+    struct {};
 
 pub const version = "0.0.4";
 
@@ -184,8 +188,8 @@ const default_max_agent_steps: usize = agent_steps.default_max_agent_steps;
 const native_gateway_provider = builtin_gateway.provider;
 const max_history_turns: usize = 8;
 const max_list_entries: usize = 100;
-const max_read_file_bytes: usize = 50 * 1024;
-const max_read_file_lines: usize = 400;
+const max_read_file_bytes: usize = 200 * 1024;
+const max_read_file_lines: usize = 2000;
 const max_read_file_line_len: usize = 2000;
 const max_command_output_bytes: usize = 64 * 1024;
 const input_escape_timeout_ms: i64 = 30;
@@ -535,8 +539,6 @@ const App = struct {
     statusline_sandbox: bool = false,
     statusline_context: bool = false,
     statusline_session: bool = false,
-    /// Resolved display title for the active session. App owns these bytes;
-    /// empty means no title has been derived or restored yet.
     session_title: std.ArrayList(u8) = .empty,
     total_input_tokens: u64 = 0,
     total_output_tokens: u64 = 0,
@@ -645,8 +647,6 @@ const App = struct {
     }
 
     pub fn configureNotifications(self: *App) !void {
-        // Register herdr hooks before NotificationAppRuntime.configure freezes
-        // the lifecycle runtime (its call to freeze() is the sole freeze site).
         try HerdrAppRuntime.configure(self, SessionAppRuntime.activeSessionId(self));
         try NotificationAppRuntime.configure(self);
     }
@@ -719,8 +719,6 @@ const App = struct {
         NotificationAppRuntime.dispatchAttentionRequired(self, turn_id, kind);
     }
 
-    /// Must be called after init() returns so the AutoUpgrade thread
-    /// captures a pointer to the final App location (not a temporary).
     pub fn startAutoUpgrade(self: *App) void {
         if (self.auto_upgrade_enabled) {
             self.upgrader.start(self.alloc, currentBuild());
@@ -756,7 +754,6 @@ const App = struct {
         _ = self.deinitImpl(false);
     }
 
-    /// Returns an owned handoff only after all interactive state is torn down.
     pub fn deinitWithResumeHandoff(self: *App) ?app_session_runtime.ResumeHandoff {
         return self.deinitImpl(true);
     }
@@ -774,7 +771,6 @@ const App = struct {
     }
 
     fn deinitImpl(self: *App, capture_resume_handoff: bool) ?app_session_runtime.ResumeHandoff {
-        // Client.deinit releases the herdr pane (clear agent + label) when enabled.
         self.herdr.deinit();
         self.stopStream();
 
@@ -895,8 +891,6 @@ const App = struct {
         try SessionAppRuntime.suspendToJobControl(self, footer_rows);
     }
 
-    /// Emma injects the credential through the environment, so admission is a
-    /// re-read rather than a sign-in prompt.
     pub fn ensurePromptCredential(self: *App) !bool {
         if (self.auth.apiKey() != null) return true;
         _ = try self.auth.reselectByPrecedence(self.alloc);
@@ -1748,9 +1742,6 @@ const App = struct {
         return self.model_cache.resolveForRequest(model, &self.worker.worker_cancel_requested);
     }
 
-    /// Must be called after init() returns so the loader thread captures
-    /// a pointer to the final App location (not a temporary). Same hazard
-    /// as `startAutoUpgrade` above.
     pub fn startFileIndex(self: *App) void {
         WorkspaceAppRuntime.startFileIndex(self);
     }
@@ -2416,8 +2407,6 @@ const App = struct {
         const now_ms = io_mod.milliTimestamp();
         self.terminal_input_runtime.terminal_theme_monitor.poll(now_ms);
 
-        // FX_THEME forces colors via detectTheme; keep owning protocol bytes
-        // (monitor started) but never query or apply live theme updates.
         if (ui_render.explicitThemeOverride() != null) {
             _ = self.terminal_input_runtime.terminal_theme_monitor.takeSettledUpdate();
             return;
@@ -2511,8 +2500,6 @@ const App = struct {
         }
         try self.terminal_takeover.collect(App, self);
 
-        // Terminal width changed with the modal open, so the footer
-        // panel needs to re-wrap labels and descriptions.
         if (self.question_prompt.isActive() and cols_before_resize != self.shell.layout.cols) {
             self.shell.render_requests.request(.modal);
         }
@@ -2763,11 +2750,7 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
     if (comptime terminal_host.isSupported()) {
         if (terminal_tmux_session.isCaptureModeRaw(raw_args)) {
             io_mod.setRawEnviron(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(processAllocator(), .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = environBlockFromRaw(raw_env) },
-            });
+            var threaded = initThreaded(processAllocator(), raw_args, raw_env);
             defer threaded.deinit();
             io_mod.setIo(threaded.io());
             try terminal_tmux_session.runCapture(raw_args);
@@ -2775,11 +2758,7 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
         }
         if (terminal_tmux_session.isLauncherModeRaw(raw_args)) {
             io_mod.setRawEnviron(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(processAllocator(), .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = environBlockFromRaw(raw_env) },
-            });
+            var threaded = initThreaded(processAllocator(), raw_args, raw_env);
             defer threaded.deinit();
             io_mod.setIo(threaded.io());
             try terminal_tmux_session.runLauncher(
@@ -2791,11 +2770,7 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
         }
         if (terminal_native_session.isControlModeRaw(raw_args)) {
             io_mod.setRawEnviron(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(processAllocator(), .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = environBlockFromRaw(raw_env) },
-            });
+            var threaded = initThreaded(processAllocator(), raw_args, raw_env);
             defer threaded.deinit();
             io_mod.setIo(threaded.io());
             try terminal_native_session.runControlMarker(raw_args);
@@ -2803,11 +2778,7 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
         }
         if (terminal_native_session.isLauncherModeRaw(raw_args)) {
             io_mod.setRawEnviron(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(processAllocator(), .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = environBlockFromRaw(raw_env) },
-            });
+            var threaded = initThreaded(processAllocator(), raw_args, raw_env);
             defer threaded.deinit();
             io_mod.setIo(threaded.io());
             try terminal_native_session.runLauncher(processAllocator());
@@ -2815,11 +2786,7 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
         }
         if (terminal_host.isInternalModeRaw(raw_args)) {
             io_mod.setRawEnviron(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(processAllocator(), .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = environBlockFromRaw(raw_env) },
-            });
+            var threaded = initThreaded(processAllocator(), raw_args, raw_env);
             defer threaded.deinit();
             io_mod.setIo(threaded.io());
             defer debug_trace.shutdown();
@@ -2845,11 +2812,7 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
     const cli_args = if (raw_args.len <= 1) &.{} else try cliArgsFromRaw(raw_args, &cli_arg_buf);
     if (sandbox.isForegroundSessionInvocation(cli_args)) {
         io_mod.setRawEnviron(raw_env);
-        const process_args = argsFromRaw(raw_args);
-        var threaded = std.Io.Threaded.init(processAllocator(), .{
-            .argv0 = .init(process_args),
-            .environ = .{ .block = environBlockFromRaw(raw_env) },
-        });
+        var threaded = initThreaded(processAllocator(), raw_args, raw_env);
         defer threaded.deinit();
         io_mod.setIo(threaded.io());
         try sandbox.runForegroundSessionBootstrap(cli_args);
@@ -2895,24 +2858,14 @@ fn runNonBenchmark(raw_args: []const [*:0]const u8, raw_env: RawEnviron, cli_arg
     var early_threaded: ?std.Io.Threaded = null;
     defer if (early_threaded) |*threaded| threaded.deinit();
     if (needsEarlyThreadedIo(cli_args)) {
-        const env_block = environBlockFromRaw(raw_env);
-        const process_args = argsFromRaw(raw_args);
-        early_threaded = std.Io.Threaded.init(alloc, .{
-            .argv0 = .init(process_args),
-            .environ = .{ .block = env_block },
-        });
+        early_threaded = initThreaded(alloc, raw_args, raw_env);
         if (early_threaded) |*threaded| io_mod.setIo(threaded.io());
     }
 
     const before = try app_entry_runtime.runBeforeInteractive(alloc, cli_args, cfg);
     switch (before) {
         .interactive => |launch| {
-            const env_block = environBlockFromRaw(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(alloc, .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = env_block },
-            });
+            var threaded = initThreaded(alloc, raw_args, raw_env);
             defer threaded.deinit();
             io_mod.setIo(threaded.io());
 
@@ -2940,10 +2893,28 @@ fn rawArgs(c_argc: c_int, c_argv: [*][*:0]c_char) []const [*:0]const u8 {
 }
 
 fn argsFromRaw(raw_args: []const [*:0]const u8) std.process.Args {
-    return .{ .vector = raw_args };
+    return switch (builtin.os.tag) {
+        .windows => .{ .vector = &[_]u16{} },
+        else => .{ .vector = raw_args },
+    };
+}
+
+fn initThreaded(
+    alloc: std.mem.Allocator,
+    raw_args: []const [*:0]const u8,
+    raw_env: RawEnviron,
+) std.Io.Threaded {
+    return std.Io.Threaded.init(alloc, .{
+        .argv0 = if (comptime builtin.os.tag == .windows)
+            .empty
+        else
+            .init(argsFromRaw(raw_args)),
+        .environ = .{ .block = environBlockFromRaw(raw_env) },
+    });
 }
 
 fn environBlockFromRaw(raw_env: RawEnviron) std.process.Environ.Block {
+    if (comptime builtin.os.tag == .windows) return .global;
     var count: usize = 0;
     while (raw_env[count] != null) : (count += 1) {}
     return .{ .slice = raw_env[0..count :null] };
@@ -2999,12 +2970,19 @@ fn topLevelHelpStyleForValues(is_terminal: bool, no_color: bool, dumb_terminal: 
 }
 
 fn stdoutIsTerminal() bool {
-    if (comptime builtin.os.tag == .windows or !builtin.link_libc) return false;
+    if (comptime builtin.os.tag == .windows) {
+        return windows_console.isConsole(std.Io.File.stdout().handle);
+    }
+    if (comptime !builtin.link_libc) return false;
     return std.c.isatty(std.posix.STDOUT_FILENO) != 0;
 }
 
 fn stdoutTerminalColumns() ?usize {
-    if (comptime builtin.os.tag == .windows or !builtin.link_libc) return null;
+    if (comptime builtin.os.tag == .windows) {
+        const size = windows_console.windowSize(std.Io.File.stdout().handle) catch return null;
+        return size.cols;
+    }
+    if (comptime !builtin.link_libc) return null;
 
     var ws: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
     const req: c_int = @intCast(std.c.T.IOCGWINSZ);
@@ -3199,7 +3177,7 @@ fn fullEntryConfig() app_entry_runtime.Config {
         .default_agent_step_limit = default_max_agent_steps,
         .models_path = builtin_gateway.models_path,
         .gateway_retry_count = builtin_gateway.retry_count,
-        .gateway_chat_url = builtin_gateway.default_chat_url,
+        .gateway_chat_url = builtin_gateway.defaultChatUrl(),
         .gateway_provider = native_gateway_provider,
         .background_process_provider = background_process.provider,
         .url_opener = url_opener.native_opener,
@@ -3233,7 +3211,7 @@ fn localEntryConfig() app_entry_runtime.Config {
         .default_agent_step_limit = default_max_agent_steps,
         .models_path = builtin_gateway.models_path,
         .gateway_retry_count = builtin_gateway.retry_count,
-        .gateway_chat_url = builtin_gateway.default_chat_url,
+        .gateway_chat_url = builtin_gateway.defaultChatUrl(),
         .gateway_provider = native_gateway_provider,
         .background_process_provider = background_process.provider,
         .url_opener = url_opener.native_opener,
@@ -3301,10 +3279,10 @@ fn handleSigWinchWeb() callconv(.c) void {
     resize_interlock.noteResizeSignal();
 }
 
-const handle_sigwinch: app_lifecycle.ResizeHandler = if (host_target.is_wasm)
-    handleSigWinchWeb
-else
-    handleSigWinchNative;
+const handle_sigwinch: app_lifecycle.ResizeHandler = switch (builtin.os.tag) {
+    .wasi, .windows => handleSigWinchWeb,
+    else => handleSigWinchNative,
+};
 
 test "interactive startup does not begin with synthetic resize pending" {
     try std.testing.expect(!resize_interlock.resizePending());

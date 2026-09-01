@@ -366,7 +366,7 @@ pub const FakeGateway = struct {
         request.attempt_evidence.network_failure = gateway_client.networkFailureEvidence(
             err,
             request.delivery.load(),
-        );
+        ) orelse agent_stream_provider.responseFailureEvidence(err, request.delivery.load());
     }
 };
 

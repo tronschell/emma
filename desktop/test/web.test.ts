@@ -45,13 +45,16 @@ test("a URL the model chose cannot reach anything on this network", () => {
 
 test("the search provider round-trips, and picks up its own default endpoint", () => {
   assert.deepEqual(validateWebSearch(undefined), defaultWebSearch);
-  assert.equal(validateWebSearch({}).provider, "fourget");
-  assert.equal(validateWebSearch({ provider: "searxng", endpoint: "" }).endpoint, "http://127.0.0.1:8888");
-  assert.equal(validateWebSearch({ provider: "exa", credentialEnv: "EXA_API_KEY" }).credentialEnv, "EXA_API_KEY");
-  assert.equal(validateWebSearch({ provider: "askjeeves" }).provider, "fourget");
-  assert.throws(() => validateWebSearch({ endpoint: "http://searx.example.com" }), /https, or http on this Mac/);
-  assert.throws(() => validateWebSearch({ endpoint: "not a url" }), /must be a URL/);
-  assert.throws(() => validateWebSearch({ credentialEnv: "not a name" }), /environment variable name/);
+  assert.deepEqual(defaultWebSearch.providers.map((item) => item.provider), ["tinyfish", "fourget"]);
+  assert.deepEqual(validateWebSearch({}), defaultWebSearch);
+  assert.equal(validateWebSearch({ provider: "searxng", endpoint: "" }).providers[0].endpoint, "http://127.0.0.1:8888");
+  assert.equal(validateWebSearch({ provider: "exa", credentialEnv: "EXA_API_KEY" }).providers[0].credentialEnv, "EXA_API_KEY");
+  assert.deepEqual(validateWebSearch({ provider: "askjeeves" }), defaultWebSearch);
+  assert.throws(() => validateWebSearch({ providers: [{ provider: "searxng", endpoint: "http://searx.example.com" }] }), /https, or http on this computer/);
+  assert.throws(() => validateWebSearch({ providers: [{ provider: "tinyfish", endpoint: "not a url" }] }), /must be a URL/);
+  assert.throws(() => validateWebSearch({ providers: [{ provider: "tinyfish", credentialEnv: "not a name" }] }), /environment variable name/);
+  assert.throws(() => validateWebSearch({ providers: [] }), /fallback list/);
+  assert.throws(() => validateWebSearch({ providers: [defaultWebSearch.providers[0], defaultWebSearch.providers[0]] }), /only appear once/);
   for (const provider of WEB_SEARCH_PROVIDERS) assert.ok(provider.keyless || provider.endpoint.startsWith("https://"), provider.id);
 });
 

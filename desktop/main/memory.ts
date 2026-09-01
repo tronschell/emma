@@ -1,26 +1,11 @@
-/* Anthropic's memory tool, client-side, against a real directory on this Mac.
- *
- * The model addresses everything as `/memories/...`; that prefix is a fiction this
- * file maps onto `<userData>/memories`, exactly as the spec intends. The command
- * set, the return strings and the error strings are the ones the tool description
- * shipped inside the model already promises, so they are reproduced verbatim
- * rather than reworded — the model reads its own tool result and expects them.
- *
- * Nothing here is Electron, so the whole thing is testable without a window.
- */
-
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathInside, samePath } from "./platform";
 
-/** The one prefix the model may address. Anything outside it is refused, resolved or not. */
 export const MEMORY_ROOT = "/memories";
-/** Per file, so one runaway note cannot fill the disk or a context window. */
 export const MAX_MEMORY_FILE_BYTES = 256 * 1024;
-/** Files under the root, so a listing stays readable and a loop cannot spawn thousands. */
 export const MAX_MEMORY_FILES = 256;
-/** What `view` returns of a text file before the model has to page with view_range. */
 const MAX_VIEW_CHARS = 16_000;
-/** The spec's own ceiling; a file past it is a mistake, not a memory. */
 const MAX_LINES = 999_999;
 
 export type MemoryCommand =
@@ -33,33 +18,27 @@ export type MemoryCommand =
 
 export const MEMORY_COMMANDS = ["view", "create", "str_replace", "insert", "delete", "rename"] as const;
 
-/**
- * Resolves one `/memories/...` path onto disk, or throws.
- *
- * Two checks, not one: the literal prefix rejects `/etc/passwd` before any I/O,
- * and the resolved-prefix check rejects `/memories/../../secrets.env`, which
- * passes the first. A symlink inside the root that points out of it is still a
- * hole — see the note on `realpath` below.
- */
 export function resolveMemoryPath(root: string, value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw new Error("The memory path must be a non-empty string.");
   if (value.length > 1024) throw new Error("The memory path is too long.");
   if (value !== MEMORY_ROOT && !value.startsWith(`${MEMORY_ROOT}/`)) {
     throw new Error(`Memory paths must start with ${MEMORY_ROOT}. The path ${value} does not exist. Please provide a valid path.`);
   }
-  // Decoded first, so %2e%2e%2f is caught by the same resolve every other traversal is.
-  let decoded = value;
-  try { decoded = decodeURIComponent(value); } catch { /* not encoded; the raw value is what it is */ }
+  let decoded: string;
+  try { decoded = decodeURIComponent(value); } catch { decoded = value; }
   if (decoded.includes("\0")) throw new Error("The memory path is invalid.");
   const relative = decoded.slice(MEMORY_ROOT.length).replace(/^\/+/, "");
   const resolved = path.resolve(root, relative);
-  const base = path.resolve(root);
-  if (resolved !== base && !resolved.startsWith(`${base}${path.sep}`)) throw new Error("The memory path is outside the memory directory.");
+  if (!pathInside(root, resolved)) throw new Error("The memory path is outside the memory directory.");
   return resolved;
 }
 
-/** True for the memory root itself, which may be viewed but never deleted or renamed. */
-const isRoot = (root: string, resolved: string) => path.resolve(root) === resolved;
+const isRoot = (root: string, resolved: string) => samePath(root, resolved);
+
+const virtualPath = (root: string, absolute: string) => {
+  const relative = path.relative(path.resolve(root), absolute).split(path.sep).join("/");
+  return relative ? `${MEMORY_ROOT}/${relative}` : MEMORY_ROOT;
+};
 
 const clampText = (value: unknown, field: string): string => {
   if (typeof value !== "string") throw new Error(`The "${field}" argument must be a string.`);
@@ -67,17 +46,10 @@ const clampText = (value: unknown, field: string): string => {
   return value;
 };
 
-/** 6 characters, right-aligned, tab, content — the format the tool description promises. */
 const numbered = (lines: string[], from = 1) => lines.map((line, index) => `${String(from + index).padStart(6, " ")}\t${line}`).join("\n");
 
 const humanSize = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}M` : `${Math.max(1, Math.round(bytes / 1024 * 10) / 10)}K`;
 
-/**
- * Runs one memory command and returns the text that goes back to the model.
- *
- * Every path is resolved through `resolveMemoryPath` first, so the traversal
- * check cannot be skipped by adding a command later.
- */
 export async function runMemoryCommand(root: string, command: MemoryCommand): Promise<string> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   switch (command.command) {
@@ -115,9 +87,8 @@ async function view(root: string, command: Extract<MemoryCommand, { command: "vi
   return `Here's the content of ${command.path} with line numbers:\n${numbered(lines.slice(start - 1, last), start)}`;
 }
 
-/** Two levels deep, sizes first, hidden entries and node_modules skipped. */
 async function listing(root: string, directory: string, depth = 0): Promise<string[]> {
-  const shown = (absolute: string) => `${MEMORY_ROOT}${absolute.slice(path.resolve(root).length)}` || MEMORY_ROOT;
+  const shown = (absolute: string) => virtualPath(root, absolute);
   const self = await stat(directory);
   const rows = [`${humanSize(self.size)}\t${shown(directory)}`];
   if (depth >= 2) return rows;
@@ -139,9 +110,6 @@ async function create(root: string, command: Extract<MemoryCommand, { command: "
   if (isRoot(root, target)) throw new Error(`Error: ${MEMORY_ROOT} is a directory, not a file.`);
   const text = clampText(command.file_text, "file_text");
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  // Overwrite rather than refuse: the model's own tool description says `create`
-  // "creates or overwrites", and the spec names overwriting a valid choice. The
-  // alternative is an error the model was never told to expect on every rewrite.
   await writeFile(target, text, { encoding: "utf8", mode: 0o600 });
   return `File created successfully at: ${command.path}`;
 }
@@ -198,11 +166,6 @@ async function move(root: string, command: Extract<MemoryCommand, { command: "re
   return `Successfully renamed ${command.old_path} to ${command.new_path}`;
 }
 
-/**
- * The instruction the Anthropic API adds to the system prompt whenever the memory
- * tool is in `tools`. Emma advertises the tool over an OpenAI-compatible route
- * where nothing adds it for us, so it is sent with the turn instead.
- */
 export const MEMORY_PROTOCOL = [
   "IMPORTANT: ALWAYS VIEW YOUR MEMORY DIRECTORY BEFORE DOING ANYTHING ELSE.",
   "MEMORY PROTOCOL:",
@@ -232,7 +195,7 @@ export async function listMemories(root: string): Promise<MemoryNote[]> {
       if (!info) continue;
       if (info.isDirectory()) { await walk(absolute, depth + 1); continue; }
       const text = info.size > MAX_MEMORY_FILE_BYTES ? "" : await readFile(absolute, "utf8").catch(() => "");
-      notes.push({ path: `${MEMORY_ROOT}${absolute.slice(base.length)}`, bytes: info.size, updatedAt: info.mtimeMs, text });
+      notes.push({ path: virtualPath(root, absolute), bytes: info.size, updatedAt: info.mtimeMs, text });
     }
   };
   await walk(base, 0);

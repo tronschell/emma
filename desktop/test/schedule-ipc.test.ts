@@ -6,7 +6,7 @@ import ts from "typescript";
 import { validateRequest } from "../main/ipc";
 import type { TurnRequest } from "../main/agent-loop";
 import { asPermissionMode } from "../shared/permissions";
-import { providerChatUrl, routerChain, routerIdFor } from "../shared/settings";
+import { CODEX_PREFIX, codexSlug, providerChatUrl, routerChain, routerIdFor } from "../shared/settings";
 import { packVariables, parseVariables, parseWorkflow, runWorkflow } from "../shared/workflow";
 
 const source = ts.createSourceFile("App.tsx", readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -80,7 +80,7 @@ test("scheduled workflows use Emma's selected model unless the job pins a model"
         providers: [{ id: "local", modelId: "local-model", baseUrl: "http://127.0.0.1:1234/v1", credentialEnv: "" }],
         routers: [{ id: "chosen", models: ["vendor/model", "vendor/other"] }],
         modelCatalog: { ids: () => ["vendor/model", "vendor/other"] },
-        process: { env: {} }, providerChatUrl, routerChain, routerIdFor,
+        process: { env: {} }, providerChatUrl, routerChain, routerIdFor, CODEX_PREFIX, codexSlug,
         asPermissionMode, packVariables, parseVariables, parseWorkflow, runWorkflow,
         resolveMentions: async (prompt: string) => prompt,
         driveTurn: async (turn: TurnRequest) => { turns.push(turn); },

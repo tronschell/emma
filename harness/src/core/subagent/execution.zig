@@ -54,8 +54,6 @@ pub const TurnPreferences = struct {
     effort: types.ReasoningEffort,
 };
 
-/// Resolves child overrides without allocating. The returned model is borrowed
-/// from either the control record or ordinary session metadata.
 pub fn resolveTurnPreferences(
     configuration: domain.Configuration,
     persisted: session_codec.DurableSessionPreferences,
@@ -106,8 +104,6 @@ pub const TransitionError = error{
     InvalidCancellationReason,
 };
 
-/// Finds the next FIFO item. Interrupted or approval-blocked work is eligible
-/// only after an explicit retry/resume request.
 pub fn nextRunnableIndex(
     queue: []const domain.QueuedMessage,
     retry_interrupted: bool,
@@ -123,7 +119,6 @@ pub fn nextRunnableIndex(
     return null;
 }
 
-/// Pure admission reduction over an owned record value.
 pub fn admitWork(
     alloc: Allocator,
     record: *control_store.Record,
@@ -155,8 +150,6 @@ pub fn admitWork(
     };
 }
 
-/// Pure completion reduction. A durable cancellation always wins over a late
-/// worker result and is never rewritten as success.
 pub fn finishWork(
     alloc: Allocator,
     record: *control_store.Record,
@@ -242,8 +235,6 @@ fn finishWorkWithFailureReason(
     return .committed;
 }
 
-/// Pure cancellation reduction over an owned record. Allocation failures leave
-/// the caller-owned candidate disposable; the shell never publishes it.
 pub fn cancelWork(
     alloc: Allocator,
     record: *control_store.Record,
@@ -293,8 +284,6 @@ pub const RestartRecovery = struct {
     completed: usize = 0,
 };
 
-/// Pure restart reduction. No work becomes runnable and no model/tool callback
-/// is involved. The caller commits the candidate under the control lock.
 pub fn recoverAfterRestart(
     alloc: Allocator,
     record: *control_store.Record,
@@ -467,8 +456,6 @@ pub const LiveToolActivity = struct {
     }
 };
 
-/// Allocator-owned copy of presentation that has not entered canonical
-/// history. It exists only while the corresponding execution slot is live.
 pub const LivePresentation = struct {
     work_id: []u8,
     revision: u64,
@@ -523,8 +510,6 @@ const LivePresentationSink = struct {
     }
 };
 
-/// One live ordinary child session. It is never shared with the main App or a
-/// sibling child and is destroyed immediately when the child queue goes idle.
 pub const TurnContext = struct {
     alloc: Allocator,
     runtime: session.SessionRuntime,
@@ -563,8 +548,6 @@ pub const TurnContext = struct {
         self.* = undefined;
     }
 
-    /// Retains the first bounded, model-safe diagnostic for the current child
-    /// turn. Durable publication remains owned by the completion reducer.
     pub fn setFailureDiagnostic(
         self: *TurnContext,
         code: []const u8,
@@ -611,14 +594,10 @@ pub const TurnContext = struct {
         return &self.worker;
     }
 
-    /// Presentation-only output. Allocation pressure never changes execution
-    /// semantics; the bounded live owner records truncation instead.
     pub fn appendLiveText(self: *TurnContext, text: []const u8) void {
         if (self.live_presentation) |sink| sink.appendText(text);
     }
 
-    /// Presentation-only event. The execution owner retains a bounded clone,
-    /// while the caller keeps ownership of the supplied worker event.
     pub fn appendLiveEvent(
         self: *TurnContext,
         event: worker_runtime.WorkerEvent,
@@ -626,9 +605,6 @@ pub const TurnContext = struct {
         if (self.live_presentation) |sink| sink.appendEvent(event);
     }
 
-    /// Returns an owned current authority snapshot. Normal-agent permission,
-    /// availability, sandbox, and integration adapters call this for every
-    /// child tool action rather than retaining the admission-time copy.
     pub fn resolveLiveAuthority(
         self: *TurnContext,
         alloc: Allocator,
@@ -729,8 +705,6 @@ pub const TurnContext = struct {
             target,
             target_kind,
         );
-        // LiveToolAuthority is returned by value, so its state header cannot
-        // point at the local snapshot even though the rule storage uses alloc.
         const permission_state = try alloc.create(session_permission_state.State);
         permission_state.* = snapshot.permission_state;
         return .{
@@ -809,8 +783,6 @@ pub const TurnContext = struct {
         if (appended == .appended) try store.save(self.alloc, ledger);
     }
 
-    /// Registers one canonical unresolved request using authenticated runtime
-    /// child/work/root identity. Model fields cannot select any of these IDs.
     pub fn registerApproval(
         self: *TurnContext,
         alloc: Allocator,
@@ -966,8 +938,6 @@ pub const TurnContext = struct {
     }
 };
 
-/// The production adapter uses the same orchestrator as interactive, ask, and
-/// ACP execution. Host-specific dependency assembly stays outside the manager.
 pub const NormalAgentError = error{
     OutOfMemory,
     Cancelled,
@@ -1366,8 +1336,6 @@ pub const ChildWaiter = struct {
     }
 };
 
-/// Manager-owned live execution owner. Callers must not move an Owner after the
-/// first `start`; child threads retain its address until `join`/`deinit`.
 pub const Owner = struct {
     alloc: Allocator,
     sessions: *session_store.Store,
@@ -1375,16 +1343,11 @@ pub const Owner = struct {
     services: Services,
     child_store_options: session_child_store.Options = .{},
     communication_store_options: session_child_store.Options = .{},
-    /// Canonical session-resume controls. Production keeps the store defaults;
-    /// lock-contention tests inject an immediate deadline.
     session_resume_options: session_store.ResumeOptions = .{},
-    /// Borrowed and must outlive all started child threads.
     live_authority: ?*authority_mod.Resolver = null,
-    /// Borrowed and must outlive all started child threads.
     approval_registry: ?*approval_registry_mod.Registry = null,
     notification_clock: ?NotificationClock = null,
     notification_poller: ?NotificationPoller = null,
-    /// Borrowed from the host and valid until `deinit` joins the reaper.
     retirement_root_id: ?[]const u8 = null,
     retirement_cursor: ?[]u8 = null,
     retirement_scan_pending: bool = false,
@@ -1496,10 +1459,6 @@ pub const Owner = struct {
         self.scheduleRetirementSweepLocked(timestamp_ms);
     }
 
-    /// Returns the latest in-memory execution outcome without consuming it.
-    /// Durable child lifecycle remains authoritative for every other state;
-    /// this narrow observation exists for outcomes such as external writer
-    /// contention that cannot be committed to the child control record.
     pub fn lastResult(self: *Owner, child_id: []const u8) ?ChildResult {
         self.mutex.lockUncancelable(io_mod.getIo());
         defer self.mutex.unlock(io_mod.getIo());
@@ -1515,8 +1474,6 @@ pub const Owner = struct {
         return null;
     }
 
-    /// Returns whether this process has observed another live session writer
-    /// for the child, either through local execution or restart recovery.
     pub fn externalBusy(self: *Owner, child_id: []const u8) bool {
         self.mutex.lockUncancelable(io_mod.getIo());
         defer self.mutex.unlock(io_mod.getIo());
@@ -1563,8 +1520,6 @@ pub const Owner = struct {
         unreachable;
     }
 
-    /// Returns a deep copy of active, uncommitted presentation. Completed
-    /// slots deliberately have no transcript cache.
     pub fn snapshotLivePresentation(
         self: *Owner,
         alloc: Allocator,
@@ -1577,8 +1532,6 @@ pub const Owner = struct {
         return slot.live.clone(alloc);
     }
 
-    /// Commits cancellation under `subagent-control.lock` before signaling the
-    /// child worker. Late success observes the durable cancelled item and loses.
     pub fn cancel(
         self: *Owner,
         child_id: []const u8,
@@ -1590,9 +1543,6 @@ pub const Owner = struct {
         return count;
     }
 
-    /// Completes the live side of an already committed cancellation. The live
-    /// worker and waiters are signaled before fallible approval cleanup so a
-    /// durable cancellation can never leave the child running.
     pub fn completeCommittedCancellation(
         self: *Owner,
         child_id: []const u8,
@@ -1622,8 +1572,6 @@ pub const Owner = struct {
         }
     }
 
-    /// Commits the approved Part 1 archive transition before cancelling and
-    /// joining live work. The returned manager result is allocator-owned.
     pub fn close(
         self: *Owner,
         alloc: Allocator,
@@ -1663,8 +1611,6 @@ pub const Owner = struct {
         self.stopNotificationPolicies(child_id, timestamp_ms);
     }
 
-    /// Detaches through the durable manager, then removes periodic policy only
-    /// after its stopped state is committed.
     pub fn detach(
         self: *Owner,
         alloc: Allocator,
@@ -1683,7 +1629,6 @@ pub const Owner = struct {
         return result;
     }
 
-    /// Reconciles unfinished durable work without starting any child thread.
     pub fn recover(self: *Owner, timestamp_ms: i64) RecoveryError!RecoveryReport {
         var ids = self.sessions.listSubagentControlSessionIds(self.alloc) catch |err| {
             return switch (err) {
@@ -1702,10 +1647,6 @@ pub const Owner = struct {
         return report;
     }
 
-    /// Reconciles only canonical descendants of `root_id`. Relationship-index
-    /// traversal is authoritative; ordinary chats outside the tree are never
-    /// opened or replayed. Concurrent relationship changes restart the bounded
-    /// traversal without duplicating durable effects.
     pub fn recoverTree(
         self: *Owner,
         root_id: []const u8,
@@ -1794,8 +1735,6 @@ pub const Owner = struct {
 
         if (reaper_thread) |thread| thread.join();
 
-        // Process teardown does not invent a user cancellation. Unfinished
-        // durable state is reconciled after a later writer proves ownership.
         self.mutex.lockUncancelable(io_mod.getIo());
         while (self.slots.items.len != 0) {
             var selected: ?usize = null;
@@ -2312,8 +2251,6 @@ pub const Owner = struct {
         child_id: []const u8,
         timestamp_ms: i64,
     ) ControlError!RestartRecovery {
-        // Ordinary chats share the session namespace. Prove this session owns
-        // subagent control state before a writable resume can rebind it.
         {
             var read_capability = self.sessions.openSubagentControlCapabilityReadOnly(
                 self.alloc,
@@ -2579,7 +2516,6 @@ pub const Owner = struct {
         }
     }
 
-    /// Returns true only when another automatic bounded attempt is warranted.
     fn tryRetireOneOff(self: *Owner, child_id: []const u8) bool {
         _ = relationship_index.migrateLegacyPage(
             self.alloc,
@@ -5652,8 +5588,6 @@ fn expectOwnerStartAllocationFailure(fail_index: usize) !void {
 }
 
 test "owner start and reaping clean every failing-allocation path" {
-    // Slot allocation, child-id ownership, and live-slot registration are the
-    // three owner-shell allocations before a worker can observe the slot.
     for (0..3) |fail_index| try expectOwnerStartAllocationFailure(fail_index);
 }
 
@@ -5687,7 +5621,6 @@ test "session-backed owner keeps child histories settings and FIFO isolated then
     try std.testing.expectEqual(ChildResult.completed, try owner.join("child-once"));
     try std.testing.expect(fake.worker_active_seen.load(.seq_cst));
 
-    // A direct ordinary resume proves the child owner released session.lock.
     var child_a = try env.store.resumeForWrite(alloc, "child-a");
     defer child_a.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 2), child_a.state.history.len);
@@ -7304,6 +7237,7 @@ test "provider and admission failures release resources and persist typed work s
 }
 
 test "process-held session lock preserves queue until explicit exactly-once retry" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
     defer env.deinit(alloc);
@@ -7501,6 +7435,7 @@ fn runExternalExecutionProcess(
 }
 
 fn waitExternalExecutionProcess(pid: std.c.pid_t) !u8 {
+    if (comptime builtin.os.tag == .windows) return error.ProcessWaitFailed;
     var status: c_int = 0;
     while (true) {
         const waited = std.c.waitpid(pid, &status, 0);
@@ -7516,6 +7451,7 @@ fn waitExternalExecutionProcess(pid: std.c.pid_t) !u8 {
 }
 
 test "recovery skips execution owned by another live process" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (comptime !@hasDecl(std.c, "fork")) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
@@ -7639,6 +7575,7 @@ test "recovery does not classify a locally owned child as externally busy" {
 }
 
 test "shutdown joins while control locking and control writes are unavailable" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
     defer env.deinit(alloc);
@@ -8461,8 +8398,6 @@ fn runProductionActionGenerationCase(
     defer gateway.deinit();
     var fixture = agent_test_support.PromptFixture{ .workspace_root = env.workspace };
     var job = fixture.job();
-    // This fixture exercises live human-approval revalidation, not automatic
-    // recovery. Start it in ask mode so the initial approval is intentional.
     job.permission_mode = .ask;
     var config = fixture.config();
     config.origin = .subagent;
@@ -8654,8 +8589,6 @@ fn runProductionSandboxGenerationCase(
     defer gateway.deinit();
     var fixture = agent_test_support.PromptFixture{ .workspace_root = env.workspace };
     var job = fixture.job();
-    // This fixture exercises human-approved sandbox revalidation. Keep it in
-    // ask mode so automatic recovery does not intentionally bypass the prompt.
     job.permission_mode = .ask;
     var config = fixture.config();
     config.origin = .subagent;

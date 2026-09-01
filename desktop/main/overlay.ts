@@ -93,6 +93,7 @@ export function hotspotLayout(display: DisplayGeometry, notch: NotchGeometry) {
   const height = Math.max(menuBar, notch.height);
   return {
     bounds: { x: notch.x - HOTSPOT_PAD, y: display.bounds.y, width: notch.width + HOTSPOT_PAD * 2, height: height + HOTSPOT_DROP },
+    hot: { x: notch.x, y: display.bounds.y, width: notch.width, height },
     notch: { left: HOTSPOT_PAD, width: notch.width, height },
   };
 }

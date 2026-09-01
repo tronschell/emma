@@ -46,6 +46,10 @@ export type RecordedTurn = {
   durationMilliseconds: string;
   outputTokens: string;
   inputTokens: string;
+  cacheInputTokens?: string;
+  cacheReadTokens?: string;
+  cacheWriteTokens?: string;
+  costMicroUsd?: string;
   model: string;
 };
 

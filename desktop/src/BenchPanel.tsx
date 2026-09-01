@@ -106,9 +106,10 @@ export default function BenchPanel({ snapshot, busy, openThread, mode, model, tr
       });
   };
 
-  const harvest = () => {
+  const harvest = async () => {
     setError("");
-    const thread = harvestable.find((row) => row.id === pick);
+    const summary = harvestable.find((row) => row.id === pick);
+    const thread = summary ? await window.emma.request<{ id: string; title: string; messages: { role: string; content: string }[] }>("thread", { threadId: pick }).catch(() => undefined) : undefined;
     const prompt = thread?.messages.find((message) => message.role === "user")?.content.trim() ?? "";
     const folderId = thread ? threadFolders(thread.id)[0] ?? "" : "";
     if (!thread || !prompt) { setError("That thread has no prompt."); return; }
@@ -141,7 +142,7 @@ export default function BenchPanel({ snapshot, busy, openThread, mode, model, tr
   return <>
     <section className="evidence-table">
       <header>
-        <div><span>Bench · your own cases, replayed</span><div className="agent-head"><h3>Proof by replay</h3><InfoDot>A case is one prompt from one of your threads, replayed under both arms back to back so each pair cancels the day it ran on. The verdict needs a paired t-test and a sign test to agree, and it needs {MIN_BENCH_PAIRS} pairs: below six one-way cases the exact sign-test p is 2/2^m, which cannot reach 0.05 however clean the result. A run declares its cases and its metric up front and is read only under that metric, once it is over, so there is nothing to stop early for and nothing to shop for afterwards. Re-running a trial does not replace the last attempt; every attempt is listed, because the fourth try clearing at p=0.05 is one run in twenty, not proof. Cases, runs and verdicts stay on this Mac.</InfoDot></div></div>
+        <div><span>Bench · your own cases, replayed</span><div className="agent-head"><h3>Proof by replay</h3><InfoDot>A case is one prompt from one of your threads, replayed under both arms back to back so each pair cancels the day it ran on. The verdict needs a paired t-test and a sign test to agree, and it needs {MIN_BENCH_PAIRS} pairs: below six one-way cases the exact sign-test p is 2/2^m, which cannot reach 0.05 however clean the result. A run declares its cases and its metric up front and is read only under that metric, once it is over, so there is nothing to stop early for and nothing to shop for afterwards. Re-running a trial does not replace the last attempt; every attempt is listed, because the fourth try clearing at p=0.05 is one run in twenty, not proof. Cases, runs and verdicts stay on this computer.</InfoDot></div></div>
       </header>
 
       <div className="agent-metrics">
@@ -158,7 +159,7 @@ export default function BenchPanel({ snapshot, busy, openThread, mode, model, tr
           <option value="">Pick a thread</option>
           {harvestable.map((thread) => <option key={thread.id} value={thread.id} disabled={saved(thread.id)}>{thread.title}{saved(thread.id) ? " · saved" : ""}</option>)}
         </select>
-        <button type="button" disabled={busy || !pick || !!live || full} onClick={harvest}>Save as case</button>
+        <button type="button" disabled={busy || !pick || !!live || full} onClick={() => void harvest()}>Save as case</button>
         {full && <small>{store.cases.length}/{MAX_BENCH_CASES} · remove one first</small>}
       </div>
 

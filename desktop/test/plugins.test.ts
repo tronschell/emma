@@ -3,11 +3,20 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { hookRuns, matchesPluginQuery, parseHooksFile, parseHostedApps, parseMarketplace, parseMarketplaceSource, parsePluginInterface, parsePluginManifest, pluginCategories, type HookEvent } from "../shared/plugins";
 import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
 import { loadImportedSkill, mirrorSkillsToHarness, parseMcpConfig, searchImportedSkills } from "../main/capabilities";
+
+test("the plugins route stays lazy without making activity eager", () => {
+  const app = readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8");
+  const activity = readFileSync(path.join(__dirname, "../../src/ActivityView.tsx"), "utf8");
+  assert.doesNotMatch(app, /import\s+\{\s*PluginsView\s*\}\s+from\s+["']\.\/plugins["']/);
+  assert.match(app, /const PluginsView = lazy\(\(\) => import\(["']\.\/plugins["']\)/);
+  assert.match(app, /view === "plugins" \? <Suspense[\s\S]*?<PluginsView\b/);
+  assert.doesNotMatch(activity, /from\s+["']\.\/plugins["']/);
+});
 
 test("a marketplace source is a GitHub repo, a Git URL, or a folder — and nothing else", () => {
   assert.deepEqual(parseMarketplaceSource("openai/plugins"), { kind: "git", url: "https://github.com/openai/plugins.git", ref: "", sparse: [] });

@@ -16,8 +16,8 @@ Emma found, or any folder.
 | Stored at | `<userData>/vault.json`, mode `0600`, written to `.tmp` then renamed |
 | Notes | `<root>/<folder>` — `folder` defaults to `knowledge-base` (`DEFAULT_VAULT_FOLDER`) |
 | Attachments | `<root>/<folder>/attachments` (`ATTACHMENT_FOLDER`) |
-| Obsidian vaults | read from `~/Library/Application Support/obsidian/obsidian.json` |
-| Folder picker starts at | `~/Documents` (`defaultVaultRoot`, [`desktop/main/setup.ts`](../desktop/main/setup.ts)) |
+| Obsidian vaults | read from `%APPDATA%/obsidian/obsidian.json` on Windows or `~/Library/Application Support/obsidian/obsidian.json` on macOS |
+| Folder picker starts at | `%USERPROFILE%/Documents` on Windows or `~/Documents` on macOS (`defaultVaultRoot`, [`desktop/main/setup.ts`](../desktop/main/setup.ts)) |
 
 `validVaultFolder` accepts a relative path of at most 128 characters with no
 `..`, no `\`, and no segment that is empty, `.`, or dot-leading. Every note and
@@ -27,9 +27,9 @@ Choosing a vault also grants its root to Emma's file tools as a connected
 folder. That grant is hidden from the folder list and **Forget folder** refuses
 it — *"Your vault stays connected; change it from Settings."*
 
-`vaultWritable` probes by writing and removing `.emma-write-check`, because
-macOS Files & Folders has no query; a failed probe is what setup reports as not
-yet granted.
+`vaultWritable` probes by writing and removing `.emma-write-check`; on macOS
+this is also the practical check because Files & Folders has no query. A failed
+probe is what setup reports as not yet granted.
 
 ## What a save writes
 
@@ -78,6 +78,32 @@ It is written into `attachments/` under the note's own stem, `jpeg` renamed to
 known `kind`, and sorts newest first. A note whose `saved` will not parse falls
 back to the file's mtime, so a note you wrote by hand still lists.
 
+## Saving the screen
+
+⧉ in the island saves the screen itself, in three steps you watch happen in the
+transcript.
+
+| Step | What it is | Where |
+|---|---|---|
+| Screenshot | The display under the pointer, captured with Emma's own surfaces hidden and compressed on this Mac | `emma:capture-screen-context`, [`desktop/main/computer.ts`](../desktop/main/computer.ts) |
+| Read | The picture goes to **Settings → Models → Vision** with the app, window and URL beside it, and comes back as the note's body | `describeScreen`, [`desktop/main/vision.ts`](../desktop/main/vision.ts) |
+| Keep | One `screenshot` note: the picture in `attachments/`, the description under it, the URL and app in its front matter | `keepScreen`, [`desktop/main/main.ts`](../desktop/main/main.ts) |
+
+The shot appears in the island as it is taken, so what was saved is the frame you
+saw, not a page fetched again a second later. Who the screen belonged to is asked
+of the Mac, never of the model: `frontmostApplication` for the app and its window
+title, `frontmostTab` for the address of the tab that app has in front. The
+capture is the note's source of truth, so a scroll position, a paywalled page, a
+video frame or a native app all keep exactly as they looked.
+
+With no vision model set the note is still written, picture and source and all,
+with no description under it. A failed read keeps nothing: the screenshot stays
+attached to the island and the reason is shown, so you can retry or ask about it
+instead.
+
+Screen Recording is what the capture needs; the tab's address additionally needs
+Automation, and without it the note keeps the app and window alone.
+
 ## Titles and tags
 
 Right after the note lands, [`desktop/main/vault-tags.ts`](../desktop/main/vault-tags.ts)
@@ -111,13 +137,15 @@ by [`harness/src/builtins/emma/knowledge.zig`](../harness/src/builtins/emma/know
 herself."* With no vault chosen, the call fails telling the user to pick one.
 
 With a `page` and no text, Emma clips it first
-([`desktop/main/clip.ts`](../desktop/main/clip.ts)): AppleScript asks the front
-browser for the tab's URL and title, then Emma fetches the page herself and runs
-its own readability pass — at most 5 redirects, a 20 s timeout, and 32 KiB of
-text (`MAX_CLIP_TEXT_BYTES`). Browsers it can ask: Google Chrome (+ Beta,
-Canary), Chromium, Brave (+ Beta), Microsoft Edge, Arc, Dia, Vivaldi, Opera,
-Comet, Safari and Safari Technology Preview. Anything else fails by name.
-Reading the front tab needs Automation; the fetch does not.
+([`desktop/main/clip.ts`](../desktop/main/clip.ts)): on macOS, AppleScript asks
+the front browser for the tab's URL and title; on Windows, UI Automation inspects
+the front browser window. Emma then fetches the page itself and runs its own
+readability pass — at most 5 redirects, a 20 s timeout, and 32 KiB of text
+(`MAX_CLIP_TEXT_BYTES`). Browsers it can ask: Google Chrome (+ Beta, Canary),
+Chromium, Brave (+ Beta), Microsoft Edge, Arc, Dia, Vivaldi, Opera, Comet,
+Safari and Safari Technology Preview. Anything else fails by name. Reading the
+front tab needs macOS Automation or the Windows UI Automation path; the fetch
+does not.
 
 Asked from the island, Emma hides the overlay for 150 ms first so the browser is
 frontmost, then shows it again.
@@ -127,7 +155,7 @@ frontmost, then shows it again.
 | Surface | What it does |
 |---|---|
 | Knowledge base page | Lists every note — kind, title, saved date, tags, source, filename. **Open ↗** opens `obsidian://open?vault=…&file=…` for an Obsidian vault, otherwise reveals the file in Finder |
-| Island | ⧉ **Save page** keeps the page in front, as one turn in the quick thread |
+| Island | ⧉ **Save screen** keeps what you are looking at — see [Saving the screen](#saving-the-screen) |
 | A turn | The agent calls `keep` |
 | Setup step 3 | Picks the vault and the folder inside it |
 
@@ -151,12 +179,13 @@ vault root is a connected folder.
 They are your files — edit, move or delete them in place. `[[attachments/…]]`
 is Obsidian's wiki-link syntax and renders there; other readers show the link.
 Obsidian is [obsidian.md](https://obsidian.md), and setup offers
-`brew install --cask obsidian` when Homebrew is installed.
+`brew install --cask obsidian` on macOS when Homebrew is installed or
+`winget install --id Obsidian.Obsidian --exact` on Windows.
 
 ## See also
 
 - [tools.md](tools.md) — every tool a turn can call
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer
 - [notch.md](notch.md) — the island and its quick commands
 - [data.md](data.md) — every file on disk and every environment variable
 - [models.md](models.md) — providers, credentials, the categorizer model

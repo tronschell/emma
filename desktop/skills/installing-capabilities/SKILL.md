@@ -21,7 +21,7 @@ skill and it survives.
 | A procedure or lesson remembered next time | `write_skill` | immediately |
 | A command sequence you keep repeating, or a tool the user asked you to build | `write_tool` | immediately |
 | A tool that talks to a service — GitHub, Linear, a database, a browser | `install_mcp` | next turn |
-| A skill that already exists somewhere on this Mac or on the web | `terminal` to fetch, then `write_skill` | immediately |
+| A skill that already exists somewhere on this computer or on the web | `terminal` to fetch, then `write_skill` | immediately |
 | Several skills that belong together, packaged to keep or share | `write_plugin` | next turn |
 | A published plugin, or a catalog of them | tell them: Plugins → Add marketplace | when they install |
 | Everything from the user's other agents at once | tell them: Settings → Imports & plugins | after they pick |
@@ -102,7 +102,7 @@ from any thread afterwards.
 - **It runs in the thread's connected folder** when there is one, so a tool that
   works on the project needs no path argument.
 - **Same name replaces it.** That is how a tool that turned out wrong gets fixed.
-- **It will ask before it runs.** `run_tool` is arbitrary code on the user's Mac,
+- **It will ask before it runs.** `run_tool` is arbitrary code on the user's computer,
   so it sits where `terminal` does — writing one never asks, running it does.
 
 Reach for this when the user says "write a tool that…", and when you catch

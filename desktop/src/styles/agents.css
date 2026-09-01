@@ -296,7 +296,13 @@
 .diff .added { color: var(--lime); background: color-mix(in srgb, var(--lime) 10%, transparent); }
 .diff .removed { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 
-.permission-dialog > header { align-items: flex-start; }
+.permission-inline { width: 100%; max-width: min(var(--content-column), calc(100% - 2 * var(--content-gutter))); margin: 0 auto var(--s-4); border: 1px solid var(--border-strong); background: var(--bg); }
+.permission-inline > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); }
+.permission-inline > header > div { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; }
+.permission-inline > header span { color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.permission-inline h2 { margin: 0; color: var(--text); font: var(--fs-sm)/1.3 var(--font-mono); font-weight: 400; overflow-wrap: anywhere; }
+.permission-inline .permission-detail { max-height: 160px; margin: var(--s-3) var(--s-4); }
+.composer.asking { display: none; }
 .permission-detail { max-height: 200px; margin: 0 var(--s-5); overflow: auto; padding: var(--s-3); border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: var(--font-code); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-word; }
 
 .inspector-subject { display: flex; align-items: center; gap: var(--s-2); width: 100%; min-height: 24px; margin: 0 calc(var(--s-4) * -1); padding: var(--s-1) var(--s-4); color: var(--text-2); border: 0; border-bottom: 1px solid var(--border); background: var(--surface-2); font: var(--fs-2xs)/1.4 var(--font-mono); text-align: left; }

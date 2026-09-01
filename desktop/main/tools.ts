@@ -6,9 +6,12 @@ import { parseVisual, type Visual } from "../shared/visualize";
 import { CLI_IDS } from "../shared/cli";
 import type { WrittenPlugin } from "../shared/plugins";
 import { MAX_PLAN_BYTES, MAX_PLAN_TITLE_CHARS, PLAN_STATUSES, type PlanStatus } from "../shared/plan";
+import { MAX_TASK_LIST_BYTES, MAX_TASK_LIST_TITLE_CHARS, TASK_LIST_STATUSES, type TaskListStatus } from "../shared/task-list";
 import { GOAL_ACTIONS, GOAL_UPDATE_STATUSES, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, type GoalAction, type GoalUpdateStatus } from "../shared/goal";
 import { KEEP_KINDS, MAX_NOTE_BYTES, isKeepKind, keepKindLabel, type KeepKind } from "../shared/vault";
 import { toolGate, type PermissionMode } from "../shared/permissions";
+import { MAX_QUICK_ACTION_LABEL_CHARS, MAX_QUICK_ACTION_PROMPT_CHARS, type ShortcutRequest } from "../shared/settings";
+import { isWindows } from "./platform";
 
 export const MAX_COMMAND_CHARS = 4096;
 export const MAX_TASK_PROMPT_CHARS = 8192;
@@ -18,6 +21,13 @@ export const MAX_ARTIFACT_CONTENT_CHARS = MAX_ARTIFACT_BYTES;
 export const MAX_WORKFLOW_NODE_CHARS = 32 * 1024;
 
 export const MAX_TOOL_OUTPUT_BYTES = 16 * 1024;
+
+const LOCAL_DEVICE = isWindows ? "PC" : "Mac";
+const LOCAL_PATH = isWindows ? "C:\\Users\\me\\notes" : "/Users/me/notes";
+const SECRET_COMMANDS = isWindows
+  ? "Get-ChildItem Env:, Get-Content .env, op read op://vault/item/field, vault kv get secret/app"
+  : "printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github";
+const TOOL_INTERPRETERS = isWindows ? "#! powershell, node, python" : "#!/usr/bin/env bash, python3, node";
 
 export type ToolAvailability = {
   folders: boolean;
@@ -38,6 +48,10 @@ export const GOAL_VERBS: Record<GoalAction, string> = { set: "setting", get: "ch
 export const PLAN_ACTIONS = ["read", "write", "run", "update", "delete"] as const;
 export type PlanAction = (typeof PLAN_ACTIONS)[number];
 const PLAN_VERBS: Record<PlanAction, string> = { read: "reading", write: "writing", run: "running", update: "updating", delete: "deleting" };
+
+export const TASK_LIST_ACTIONS = ["read", "write", "update", "delete"] as const;
+export type TaskListAction = (typeof TASK_LIST_ACTIONS)[number];
+const TASK_LIST_VERBS: Record<TaskListAction, string> = { read: "reading", write: "writing", update: "updating", delete: "deleting" };
 
 export const BROWSER_NAVIGATIONS = ["back", "forward", "reload", "close"] as const;
 export type BrowserNavigation = (typeof BROWSER_NAVIGATIONS)[number];
@@ -75,11 +89,11 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "cli",
     needs: "folders",
     description:
-      "Run another coding CLI on this Mac — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n" +
+      `Run another coding CLI on this ${LOCAL_DEVICE} — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n` +
       "action \"run\" starts a conversation with a CLI and returns its run id once the first turn finishes; \"send\" gives an existing run the next prompt, continuing the same session with everything it already knows.\n" +
       "Check first with cli_runs {} which CLIs are installed — running one that is not there is the common failure.\n" +
       "Say everything the CLI needs in prompt: it does not see this conversation, only the folder. Prefer it over doing the work yourself when the user names a CLI, when they want a second agent's answer on the same code, or when that CLI is set up for this project and Emma is not.\n" +
-      "unattended passes that CLI's own skip-approvals flag, so it edits and runs commands without stopping. It is the difference between a real run and one that stalls on a question nobody sees — but it is the user's Mac, so leave it off unless they asked for a hands-off run.",
+      `unattended passes that CLI's own skip-approvals flag, so it edits and runs commands without stopping. It is the difference between a real run and one that stalls on a question nobody sees — but it is the user's ${LOCAL_DEVICE}, so leave it off unless they asked for a hands-off run.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -97,7 +111,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "cli_runs",
     needs: "always",
     description:
-      "Look after the CLI runs started with cli: call it with no arguments to see which CLIs are installed on this Mac and list every run and its state, with an id to read that run's terminal output, or with stop to kill the turn it is working on. A run stays readable between turns — that is how you check whether one has finished before sending it more.",
+      `Look after the CLI runs started with cli: call it with no arguments to see which CLIs are installed on this ${LOCAL_DEVICE} and list every run and its state, with an id to read that run's terminal output, or with stop to kill the turn it is working on. A run stays readable between turns — that is how you check whether one has finished before sending it more.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -109,6 +123,22 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
   },
   { ...computerTools[0], needs: "computer", inputSchema: computerTools[0].inputSchema as unknown as Record<string, unknown> },
   { ...computerTools[1], needs: "always", inputSchema: computerTools[1].inputSchema as unknown as Record<string, unknown> },
+  {
+    name: "shortcut",
+    needs: "always",
+    description:
+      `Create or replace a global shortcut that runs a Quick Action prompt when the user presses it anywhere on this ${LOCAL_DEVICE}. Use it whenever the user asks in natural language to make, bind, or set up a keyboard shortcut. The result appears in Settings → Keybinds and works immediately. Emma has three Quick Action slots; matching the same label or combination updates that slot.\n` +
+      "Write accelerator in Electron form: Command, Control, Alt (the Option key), and Shift joined with +, followed by one key. Examples: Command+Alt+K, Control+Shift+Space. label is the short name shown in Settings; prompt is the complete instruction Emma runs when the shortcut fires.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        accelerator: { type: "string", description: "The key combination in Electron form, such as Command+Alt+K. Use Alt for the Option key." },
+        label: { type: "string", description: "Short name shown for this shortcut in Settings." },
+        prompt: { type: "string", description: "The complete natural-language instruction Emma runs when the shortcut fires." },
+      },
+      required: ["accelerator", "label", "prompt"],
+    },
+  },
   {
     name: "browser",
     needs: "always",
@@ -184,15 +214,15 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     needs: "always",
     description:
       "Look at an image through a vision model and get an answer back in words. Use it whenever the work involves a picture: a screenshot, a photo, a mockup, a chart, a scanned page, a diagram — including when you cannot see images at all, which is most of the time.\n" +
-      "Name the image with path (a file in a connected folder, or the absolute path of one the user attached to their message) or url (a public image URL), and ask one specific question. Specific questions get specific answers: \"what error is in this dialog, quoted exactly\" beats \"what is this\".\n" +
+      `Name the image with path (a file in a connected folder, or the absolute path of any image on this ${LOCAL_DEVICE} — an attachment, a screenshot, a file a tool just wrote) or url (a public image URL), and ask one specific question. Specific questions get specific answers: "what error is in this dialog, quoted exactly" beats "what is this".\n` +
       "It can identify what is in the image, read the text in it, and locate things — ask for a bounding box and you get [x0, y0, x1, y1] in pixels with the image size, which is what you need before clicking anything.\n" +
       "Ask again with a narrower question rather than assuming: the model that looked is not you, and it can misread. Never state as fact something it said it could not tell.",
     inputSchema: {
       type: "object",
       properties: {
         question: { type: "string", description: "What you want to know about the image. One specific question; name the boxes, the text or the objects you want back." },
-        path: { type: "string", description: "Image file relative to a connected folder's root, e.g. screenshots/error.png — or the absolute path an attached image was given." },
-        url: { type: "string", description: "Public URL of the image, when it is not on this Mac. Use path for a local file." },
+        path: { type: "string", description: `Image file relative to a connected folder's root, e.g. screenshots/error.png — or any absolute path on this ${LOCAL_DEVICE}, such as one a tool just wrote.` },
+        url: { type: "string", description: `Public URL of the image, when it is not on this ${LOCAL_DEVICE}. Use path for a local file.` },
         ...FOLDER_FIELD,
       },
       required: ["question"],
@@ -203,7 +233,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     needs: "always",
     description:
       "Read something secret through the model the user picked for their secrets, without any of it entering this conversation. Keys, tokens, passwords, .env files, vault entries, whatever the user keeps private.\n" +
-      "command runs on this Mac in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: printenv, cat .env, op read op://vault/item/field, vault kv get secret/app, security find-generic-password -w -s github.\n" +
+      `command runs on this ${LOCAL_DEVICE} in the thread's folder, and its output goes only to that model, with your question. You get the answer back and never the output: ${SECRET_COMMANDS}.\n` +
       "Use it whenever the work touches a secret — which keys are set, why a request comes back unauthorised, whether two tokens differ, what is in a credentials file. Do it here rather than reading the file yourself: whatever you read has been sent to the model running you and stays in this thread, and that model is not the one the user chose for this.\n" +
       "Ask one specific question: \"which of these are empty\" beats \"what is in here\". Never ask for a value in full — ask only what you need to know to carry on.",
     inputSchema: {
@@ -226,6 +256,26 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
       type: "object",
       properties: {
         compact: { type: "boolean", description: "Fold the earlier turns into one summary, from the next turn onward. Omit to only read the window." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "task_list",
+    needs: "always",
+    description:
+      "Keep one complex job's execution checklist in a durable Markdown file. Tasks can contain nested subtasks. Use this before starting work that needs several meaningful steps when you will do the work yourself; keep it current as tasks start, finish, or block. Use plan instead when independent parts should run in parallel subagents, and skip both for simple work.\n" +
+      "Actions: read lists or one file; write creates or replaces the nested shape while preserving statuses for ids that remain; update changes one task's status; delete removes a finished list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: [...TASK_LIST_ACTIONS], description: "read, write, update or delete. Defaults to read." },
+        id: { type: "string", description: "Task list id from read. Omit on a new write or to list all." },
+        title: { type: "string", description: "Task list title. Required by write." },
+        goal: { type: "string", description: "What completing the whole list achieves." },
+        tasks: { type: "string", description: 'Nested task array as a JSON string: [{"id":"inspect","title":"Inspect the flow","subtasks":[{"id":"callers","title":"Trace callers"}]}].' },
+        task: { type: "string", description: "Task id to update." },
+        status: { type: "string", enum: [...TASK_LIST_STATUSES], description: "New task state." },
       },
       required: [],
     },
@@ -397,14 +447,14 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "install_mcp",
     needs: "always",
     description:
-      "Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, a binary on this Mac). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.",
+      `Install an MCP server into Emma's own configuration. The harness connects it when the next turn starts, and its tools are found from then on with mcp_search_tools — not in the turn that installs it. Take the stdio command straight from the server's own README (npx, uvx, a binary on this ${LOCAL_DEVICE}). Installing a name that already exists replaces it, which is how a wrong command gets fixed. Prefer this over telling the user to edit a config file by hand.`,
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Short name for the server: letters, digits, dot, dash or underscore." },
         command: { type: "string", description: "The executable to run, e.g. npx." },
-        args: { type: "array", items: { type: "string" }, description: 'Its arguments, e.g. ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"].' },
-        env: { type: "object", description: "Environment variables the server needs. Values are stored on this Mac and appear in this transcript, so ask the user before putting a secret here." },
+        args: { type: "array", items: { type: "string" }, description: `Its arguments, e.g. ["-y", "@modelcontextprotocol/server-filesystem", "${LOCAL_PATH}"].` },
+        env: { type: "object", description: `Environment variables the server needs. Values are stored on this ${LOCAL_DEVICE} and appear in this transcript, so ask the user before putting a secret here.` },
       },
       required: ["name", "command"],
     },
@@ -471,8 +521,8 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     description:
       "Build and look after the user's scheduled tasks — the workflows in the Scheduled tasks section. Call it with no arguments to list them, or set action to get, save, delete, run or test.\n" +
       "A task is a trigger plus a graph of nodes. trigger is a five-field UTC cron expression (\"0 9 * * 1\"), \"manual\", \"after <job-id>\" to run when another task finishes, or an app event: \"on launch\" when Emma starts, or \"on note-kept\" when a note is kept, which arrives with {{title}} and {{tags}}. Those two are the only events there are.\n" +
-      "nodes is a JSON array. Each node has an id, a kind, and text: kind \"agent\" runs text as a full turn and can saveAs a variable; kind \"set\" stores text in saveAs without running anything; kind \"if\" reads text as a condition and goes to next when it holds, otherwise to otherwise.\n" +
-      "Templates: {{name}} anywhere in text becomes that variable. {{last}} is the previous agent step's answer. A task triggered \"after\" another starts with that task's saved variables.\n" +
+      "nodes is a JSON array. Each node has an id, a kind, and text: kind \"agent\" runs text as a full turn; kind \"script\" runs the fixed absolute path in text from a connected folder, with optional templated input sent on stdin; kind \"set\" stores text in saveAs without running anything; kind \"if\" reads text as a condition and goes to next when it holds, otherwise to otherwise. Python, JavaScript, sh and zsh files have built-in runners; other executable scripts use their shebang.\n" +
+      "Templates: {{name}} in agent, set and script input becomes that variable. saveAs keeps agent or script output for later nodes. {{last}} is the previous agent step's answer. A task triggered \"after\" another starts with that task's saved variables. Script paths are fixed, never templates.\n" +
       "Conditions: <value> is|is not|contains|does not contain <value>, <value> is empty|is not empty, or a numeric >, <, >= or <=.\n" +
       "Flow: a step with no next falls through to the next node in the array; \"next\": \"end\" finishes the run. A branch must say where both sides go.\n" +
       "Always test before saving something the clock will run unattended: test walks the graph and reports the path it takes without running any turn.",
@@ -496,7 +546,9 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "visualize",
     needs: "always",
     description:
-      "Draw a picture inline in this conversation, where you are answering. Reach for it whenever something lands better seen than read — a trend, a breakdown, a comparison, a diagram, a small table.\n" +
+      "Draw a picture inline in this conversation, where you are answering.\n" +
+      "Draw only when it makes a relationship materially easier to see than prose would: several exact mappings or repeated-field comparisons; one thing feeding three or more downstream branches; three or more dependent steps, or state changing across a sequence; hierarchy, ownership or layout; a bug whose parts do not explain linearly. Not merely because an answer has parts. A single fact, one step, or anything a short paragraph already settles stays prose.\n" +
+      "Draw the smallest thing that carries it — a table for mappings and comparisons, a flow or timeline for sequence and change, a tree for hierarchy and branching, a wireframe for layout, a chart for magnitude and trend.\n" +
       "html is one whole self-contained document, and it can hold as many charts, panels and widgets as the answer needs. Write your own <style> and <script>; draw with inline SVG, canvas or CSS. There is no network: no CDN, no web fonts, no images by URL. The page is dark and Emma's palette arrives as CSS variables — --bg, --text, --text-2, --text-3, --border, --accent, and --rose, --orange, --lime, --teal, --blue, --violet for series. Use those, not your own.\n" +
       "title is a short name for what it shows.\n" +
       "Not an artifact: nothing is saved and it dies with this conversation, though the user can export a PNG or keep it from the buttons on it. Use artifact when they should keep what you made.\n" +
@@ -548,8 +600,8 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     needs: "always",
     description:
       "Write a tool of your own: an executable script kept in Emma's own data folder and callable by name from any thread afterwards, with run_tool. Use it whenever the user asks you to build or write a tool, and whenever you notice yourself repeating the same fiddly sequence of commands — write it once, then call it.\n" +
-      "code is the whole script and must start with a #! line naming its interpreter (#!/usr/bin/env bash, python3, node). It is run with one argument — the input string run_tool was called with — and whatever it prints, on stdout or stderr, is the tool's result.\n" +
-      "Writing a name that already exists replaces it, which is how a tool gets fixed. Nothing is installed on this Mac and nothing is added to the user's project: it is one file in Emma's own folder. Say what you wrote and check it with a real run_tool call before reporting it works.",
+      `code is the whole script and must start with a #! line naming its interpreter (${TOOL_INTERPRETERS}). It is run with one argument — the input string run_tool was called with — and whatever it prints, on stdout or stderr, is the tool's result.\n` +
+      `Writing a name that already exists replaces it, which is how a tool gets fixed. Nothing is installed on this ${LOCAL_DEVICE} and nothing is added to the user's project: it is one file in Emma's own folder. Say what you wrote and check it with a real run_tool call before reporting it works.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -591,6 +643,7 @@ export type ToolArgs =
   | { name: "cli"; action: CliAction; cli?: string; id?: string; prompt?: string; unattended: boolean; folder?: string }
   | { name: "cli_runs"; id?: string; stop: boolean }
   | { name: "computer"; args: Record<string, unknown> }
+  | ({ name: "shortcut" } & ShortcutRequest)
   | { name: "browser"; action: BrowserAction; url?: string; selector?: string; text?: string; key?: string; field?: BrowserField; direction?: BrowserDirection; amount?: number; attribute?: string; js?: string; interactive: boolean }
   | { name: "write_skill"; skill: string; instructions: string }
   | { name: "write_tool"; tool: string; description: string; code: string }
@@ -599,6 +652,7 @@ export type ToolArgs =
   | { name: "memory"; command: MemoryCommand }
   | { name: "vision"; question: string; path?: string; url?: string; folder?: string }
   | { name: "secret"; question: string; command: string }
+  | { name: "task_list"; action: TaskListAction; id?: string; title?: string; goal?: string; tasks?: string; task?: string; status?: TaskListStatus }
   | { name: "plan"; action: PlanAction; id?: string; title?: string; goal?: string; steps?: string; step?: string; status?: PlanStatus; result?: string; check?: number }
   | { name: "goal"; action: GoalAction; objective?: string; tokenBudget?: number; status?: GoalUpdateStatus; evidence?: string; reason?: string; extraTokens?: number }
   | { name: "context"; compact: boolean }
@@ -669,6 +723,13 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop") };
     case "computer":
       return { name, args: computerAction(args) };
+    case "shortcut":
+      return {
+        name,
+        accelerator: requiredText(args.accelerator, "accelerator", 64).trim(),
+        label: requiredText(args.label, "label", MAX_QUICK_ACTION_LABEL_CHARS).trim(),
+        prompt: requiredText(args.prompt, "prompt", MAX_QUICK_ACTION_PROMPT_CHARS).trim(),
+      };
     case "browser": {
       const action = BROWSER_ACTIONS.find((candidate) => candidate === args.action);
       if (!action) throw new Error(`action must be one of ${BROWSER_ACTIONS.join(", ")}.`);
@@ -733,6 +794,27 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
     }
     case "secret":
       return { name, question: requiredText(args.question, "question", 2048), command: requiredText(args.command, "command", MAX_COMMAND_CHARS) };
+    case "task_list": {
+      const action = TASK_LIST_ACTIONS.find((candidate) => candidate === (args.action ?? "read"));
+      if (!action) throw new Error(`action must be one of ${TASK_LIST_ACTIONS.join(", ")}.`);
+      const status = args.status === undefined || args.status === null ? undefined : TASK_LIST_STATUSES.find((candidate) => candidate === args.status);
+      if (args.status !== undefined && args.status !== null && !status) throw new Error(`status must be one of ${TASK_LIST_STATUSES.join(", ")}.`);
+      const parsed = {
+        name,
+        action,
+        id: optionalText(args.id, "id", 96),
+        title: optionalText(args.title, "title", MAX_TASK_LIST_TITLE_CHARS),
+        goal: optionalText(args.goal, "goal", 4096),
+        tasks: optionalText(args.tasks, "tasks", MAX_TASK_LIST_BYTES),
+        task: optionalText(args.task, "task", 64),
+        status,
+      } as const;
+      if (action !== "read" && action !== "write" && !parsed.id) throw new Error('The "id" argument is required. List task lists with task_list {"action":"read"}.');
+      if (action === "write" && !parsed.title) throw new Error('The "title" argument is required to write a task list.');
+      if (action === "write" && !parsed.tasks) throw new Error('The "tasks" argument is required: a JSON array of nested tasks, as a string.');
+      if (action === "update" && (!parsed.task || !parsed.status)) throw new Error('An update needs both "task" and "status".');
+      return parsed;
+    }
     case "plan": {
       const action = PLAN_ACTIONS.find((candidate) => candidate === (args.action ?? "read"));
       if (!action) throw new Error(`action must be one of ${PLAN_ACTIONS.join(", ")}.`);
@@ -1028,6 +1110,7 @@ export function describeToolCall(args: AnyToolArgs): string {
     case "cli": return args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`;
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
     case "computer": return `${String(args.args.action).replace(/_/g, " ")}${args.args.app ? ` in ${args.args.app}` : ""}`;
+    case "shortcut": return `binding ${args.accelerator} to ${args.label}`;
     case "browser": {
       if (args.action === "get") return `reading the page's ${args.field ?? "text"}`;
       const target = args.action === "open" ? args.url : args.action === "press" ? args.key : args.selector;
@@ -1041,6 +1124,10 @@ export function describeToolCall(args: AnyToolArgs): string {
     case "advisor": return "asking the advisor";
     case "vision": return `looking at ${(args.path ?? args.url ?? "an image").slice(0, 64)}`;
     case "secret": return `asking the secrets model about ${args.command.slice(0, 64)}`;
+    case "task_list":
+      if (args.action === "read" && !args.id) return "listing task lists";
+      if (args.action === "update") return `marking ${args.task} ${args.status} in ${args.id}`;
+      return `${TASK_LIST_VERBS[args.action]} the task list ${args.title ?? args.id ?? ""}`.trim();
     case "plan":
       if (args.action === "run") return `starting the next wave of ${args.id ?? "the plan"}`;
       if (args.action === "update") return `marking ${args.step} in ${args.id ?? "the plan"}`;

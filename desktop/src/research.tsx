@@ -18,6 +18,7 @@ const pct = (value: number | null) => value === null ? "—" : `${value > 0 ? "+
 const cash = (micro: number) => `$${(micro / 1_000_000).toFixed(micro > 0 && micro < 10_000 ? 4 : 2)}`;
 const clock = (seconds: number) => seconds < 60 ? `${Math.round(seconds)}s` : seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h ${String(Math.round(seconds % 3600 / 60)).padStart(2, "0")}m`;
 const OUTCOMES = { keep: "◆ kept", discard: "◇ discarded", crash: "✕ crashed" };
+const PROJECT_PLACEHOLDER = typeof window !== "undefined" && window.emma?.platform === "win32" ? "C:\\Users\\you\\code\\nanochat" : "/Users/you/code/nanochat";
 
 const baselineOf = (job: ResearchJob) => job.iterations.find((item) => item.value !== null)?.value ?? null;
 const bestOf = (job: ResearchJob) => [...job.iterations].reverse().find((item) => item.best !== null)?.best ?? null;
@@ -229,7 +230,7 @@ function ResearchForm({ job, act, busy, onSaved }: { job?: ResearchJob; act: Act
     <p className={`research-frozen ${frozen ? "" : "research-warn"}`} id={frozenId}>{frozen ? "The metric and the project folder cannot be changed on a saved experiment — every iteration was measured against them. Create a new experiment for a different metric." : "Choose carefully: the metric kind, name, direction and project folder are fixed once this experiment is created. Everything else can be edited while it runs."}</p>
     <div className="task-fields">
       <label><span>Title</span><input value={title} maxLength={128} disabled={busy} onChange={(event) => setTitle(event.target.value)} placeholder="Shrink val_bpb on nanochat" /></label>
-      <label><span>Project folder (git)</span><input value={projectDir} maxLength={1024} spellCheck={false} readOnly={frozen} aria-describedby={frozen ? frozenId : undefined} disabled={busy} onChange={(event) => setProjectDir(event.target.value)} placeholder="/Users/you/code/nanochat" /></label>
+      <label><span>Project folder (git)</span><input value={projectDir} maxLength={1024} spellCheck={false} readOnly={frozen} aria-describedby={frozen ? frozenId : undefined} disabled={busy} onChange={(event) => setProjectDir(event.target.value)} placeholder={PROJECT_PLACEHOLDER} /></label>
       <label><span>Metric name</span><input value={metricName} maxLength={64} spellCheck={false} readOnly={frozen} aria-describedby={frozen ? frozenId : undefined} disabled={busy} onChange={(event) => setMetricName(event.target.value)} placeholder="val_bpb" /></label>
       <label><span>Better is</span><select value={direction} disabled={busy || frozen} aria-describedby={frozen ? frozenId : undefined} onChange={(event) => setDirection(event.target.value as "lower" | "higher")}><option value="lower">lower</option><option value="higher">higher</option></select></label>
       <label className="task-wide"><span>Eval command</span><input value={evalCommand} maxLength={4096} spellCheck={false} disabled={busy} onChange={(event) => setEvalCommand(event.target.value)} placeholder={kind === "grep" ? "uv run train.py 2>&1" : "npm test"} /></label>

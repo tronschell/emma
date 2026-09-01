@@ -39,4 +39,5 @@ test("updateOrigin keeps an https origin and loopback http, and discards the res
 
 test("updateFeedUrl names the running build", () => {
   assert.equal(updateFeedUrl(DEFAULT_UPDATE_ORIGIN, "darwin", "arm64", "0.1.0"), "https://update.electronjs.org/tronschell/emma/darwin-arm64/0.1.0");
+  assert.equal(updateFeedUrl(DEFAULT_UPDATE_ORIGIN, "win32", "x64", "0.1.0"), "https://update.electronjs.org/tronschell/emma/win32-x64/0.1.0");
 });

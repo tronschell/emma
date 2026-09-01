@@ -3,6 +3,10 @@ const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const servers = @import("servers.zig");
+const windows_job = if (builtin.os.tag == .windows)
+    @import("../permissions/windows_job.zig")
+else
+    struct {};
 
 const Allocator = std.mem.Allocator;
 
@@ -55,6 +59,7 @@ pub const Client = struct {
     child_id: std.process.Child.Id,
     stdin: ?std.Io.File,
     stdout: ?std.Io.File,
+    job: if (builtin.os.tag == .windows) ?windows_job.Job else void,
     reader_thread: ?std.Thread = null,
     mutex: std.Io.Mutex = .init,
     write_mutex: std.Io.Mutex = .init,
@@ -84,27 +89,65 @@ pub const Client = struct {
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
+            .start_suspended = builtin.os.tag == .windows,
         }) catch return error.LspSpawnFailed;
 
+        var detached = false;
+        var stdin: ?std.Io.File = null;
+        var stdout: ?std.Io.File = null;
+
+        var job: if (builtin.os.tag == .windows) ?windows_job.Job else void =
+            if (comptime builtin.os.tag == .windows) null else {};
+        errdefer {
+            if (detached) {
+                if (stdin) |file| file.close(io_mod.getIo());
+                if (stdout) |file| file.close(io_mod.getIo());
+            }
+            if (comptime builtin.os.tag == .windows) {
+                if (job) |*owned_job| owned_job.deinit();
+            }
+            if (child.id != null) child.kill(io_mod.getIo());
+        }
+
         const child_id = child.id orelse return error.LspSpawnFailed;
-        const stdin = child.stdin orelse return error.LspSpawnFailed;
-        const stdout = child.stdout orelse return error.LspSpawnFailed;
-        child.stdin = null;
-        child.stdout = null;
+        stdin = child.stdin orelse return error.LspSpawnFailed;
+        stdout = child.stdout orelse return error.LspSpawnFailed;
+        if (comptime builtin.os.tag == .windows) {
+            job = windows_job.Job.init(child_id, true) catch |err| {
+                debug_trace.logf(
+                    "lsp",
+                    "failed to assign language server to a Windows job err={s}",
+                    .{@errorName(err)},
+                );
+                return error.LspSpawnFailed;
+            };
+            windows_job.Job.resumeThread(child.thread_handle) catch |err| {
+                debug_trace.logf(
+                    "lsp",
+                    "failed to resume language server after Windows job assignment err={s}",
+                    .{@errorName(err)},
+                );
+                return error.LspSpawnFailed;
+            };
+        }
 
         const self = try alloc.create(Client);
         errdefer alloc.destroy(self);
         const owned_root = try alloc.dupe(u8, root);
         errdefer alloc.free(owned_root);
 
+        child.stdin = null;
+        child.stdout = null;
+        detached = true;
         self.* = .{
             .alloc = alloc,
             .server = server,
             .root = owned_root,
             .child = child,
             .child_id = child_id,
-            .stdin = stdin,
-            .stdout = stdout,
+            .stdin = stdin.?,
+            .stdout = stdout.?,
+            .job = job,
             .pending = std.AutoHashMap(i64, *Pending).init(alloc),
             .diagnostics = std.StringHashMap(Diagnostics).init(alloc),
         };
@@ -119,12 +162,25 @@ pub const Client = struct {
             self.notify("exit", "null") catch {};
         }
         self.closeStdin();
+        if (comptime builtin.os.tag == .windows) {
+            if (self.job) |*job| {
+                job.terminate();
+            } else {
+                terminateChild(self.child_id);
+            }
+        }
         if (self.reader_thread) |thread| {
             thread.join();
             self.reader_thread = null;
         }
-        terminateChild(self.child_id);
+        if (comptime builtin.os.tag != .windows) {
+            terminateChild(self.child_id);
+        }
         _ = self.child.wait(io_mod.getIo()) catch {};
+        if (comptime builtin.os.tag == .windows) {
+            if (self.job) |*job| job.deinit();
+            self.job = null;
+        }
         self.closeStdout();
 
         var diagnostics = self.diagnostics.iterator();
@@ -589,7 +645,17 @@ fn deadlineExpired(io: std.Io, deadline: std.Io.Clock.Timestamp) bool {
 }
 
 fn terminateChild(child_id: std.process.Child.Id) void {
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
+    if (comptime builtin.os.tag == .windows) {
+        const Native = struct {
+            extern "kernel32" fn TerminateProcess(
+                process: std.os.windows.HANDLE,
+                exit_code: u32,
+            ) callconv(.winapi) std.os.windows.BOOL;
+        };
+        _ = Native.TerminateProcess(child_id, 1);
+        return;
+    }
+    if (builtin.os.tag == .wasi) return;
     std.posix.kill(child_id, .TERM) catch |err| switch (err) {
         error.ProcessNotFound => {},
         else => debug_trace.logf(

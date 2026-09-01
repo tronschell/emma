@@ -46,12 +46,14 @@ The composer never blocks: Enter always queues, and
 [`runs.ts`](../desktop/src/runs.ts) drains the queue one turn at a time, so a
 second message waits for the first turn to end.
 
-⤳ **steers.** The text goes over `session/steer` and the running turn reads it
-at its next model step — after the tool call in flight finishes, not instead of
-it. It arrives as a `<user_steering>` system message on that step alone, and is
-dropped only once a request carrying it may have reached the model, so a step
-that never got there projects it again rather than swallowing it. At most 8
-messages, 4096 characters each, and there has to be a turn running.
+⤳ **steers.** ⌘Enter in the composer, or `steer` on a queued line, sends the
+text over `session/steer`, and it cuts in: the tool call or model stream in
+flight is aborted, the partial answer and the aborted call are written to
+history the way a stop writes them, and the same turn carries straight on with
+the text as its next user message. The turn never ends, so nothing queued behind
+it fires and the model keeps the work it had already done. At most 8 messages,
+4096 characters each, and there has to be a turn running. A stop that lands on
+the same turn wins.
 
 Esc, and ■ **stop.** The turn is cancelled — the partial answer, the tool call
 it was in, and what it had already finished are all written to history, so
@@ -142,9 +144,9 @@ filesystem at all. In the composer `/` names a capability and `@` names a file
 files, attachments and artifacts into one bounded block. Emma's own standing
 text goes to two files under the `HOME` she hands the harness: the resolved
 Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
-the agent's own built-in prompt, and the connections block to
-`<userData>/harness/.fx/AGENTS.md` under it. A notch capture travels as an image plus a note naming the app and
-window that were in front.
+the agent's own built-in prompt, and kept Agent-page improvements to
+`<userData>/harness/.fx/AGENTS.md` under it. A notch capture travels as an image
+plus a note naming the app and window that were in front.
 
 ## Inspector
 
@@ -191,6 +193,13 @@ hand-edited file. `MAX_PLAN_STEPS` 24, `MAX_STEP_TASKS` 100, `MAX_PLANS` 64,
 `MAX_PLAN_BYTES` 128 KiB. There is no `plan` permission mode — the modes are
 `ask`, `acceptEdits`, `auto`, `full` (see [Mode](#mode)).
 
+## Task list
+
+`task_list` is the durable checklist for complex work one agent is doing itself.
+Its Markdown record lives at `<userData>/task-lists/<id>.md`; every task has a
+stable id, status, and any number of nested subtasks. Rewriting the tree keeps
+the status of ids that remain. Use `plan` when the point is parallel subagents.
+
 ## Goal
 
 **One objective a thread keeps working at on its own.** Set one and Emma re-drives
@@ -220,8 +229,9 @@ it. Full matrix in [permissions.md](permissions.md).
 
 ## Workflow
 
-**A scheduled job's body: a graph of nodes, not a single prompt.** Three kinds —
-`agent` runs a turn, `set` computes a value, `if` branches — passing `{{name}}`
+**A scheduled job's body: a graph of nodes, not a single prompt.** Four kinds —
+`agent` runs a turn, `script` runs a fixed local file, `set` computes a value,
+`if` branches — passing `{{name}}`
 variables between them. The trigger is a five-field UTC cron expression,
 `manual`, `after <job-id>`, or `on <event>`. One implementation in
 [`shared/workflow.ts`](../desktop/shared/workflow.ts) serves three callers: main
@@ -232,7 +242,7 @@ open. See [jobs.md](jobs.md).
 
 ## Autoresearch
 
-**A long experiment loop against a git project on this Mac.** The agent proposes
+**A long experiment loop against a git project on this computer.** The agent proposes
 one change, Emma runs the eval command (`MAX_EVAL_MS` 15 minutes), reads the
 metric out of its output, and keeps or reverts the commit — until a time, token
 or spend budget stops it. The metric's name, kind and direction are immutable for
@@ -244,10 +254,10 @@ never runs one; the loop is in
 
 ## Computer use
 
-**Emma driving this Mac: the real pointer, the real keyboard, the screen.** The
-agent loop asks; Electron main executes, because it is the process that owns the
-screen. `computer` is an ordinary tool, so the thread's permission mode is the
-only gate — no separate approval flow. Every ceiling applies in *every* mode:
+**Emma operating an approved app on this computer.** The agent loop asks;
+Electron main executes, because it is the process that owns the screen. The
+`computer` tool requires a separate approval for the named running app in every
+permission mode. Every ceiling applies in *every* mode:
 `MAX_RUN_STEPS` 20, `MAX_RUN_ACTIONS` 400, `MIN_ACTION_INTERVAL_MS` 40,
 `MAX_RUN_MS` 10 minutes, `MAX_TYPED_CHARACTERS` 4096, `MAX_WAIT_SECONDS` 300,
 `MAX_KEY_REPEAT` 32, `HELPER_TIMEOUT_MS` 5000 — plus the always-on-top banner,

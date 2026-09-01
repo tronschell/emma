@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { catalogSeed } from "./catalog-seed";
-import { MODEL_ID, providerChatUrl, providerModelsUrl, type KeyBalance } from "../shared/settings";
+import { DEEPSEEK_BALANCE_URL, MODEL_ID, providerChatUrl, providerModelsUrl, type KeyBalance } from "../shared/settings";
 
 export interface CatalogModel {
   id: string;
@@ -41,8 +41,8 @@ const isModel = (value: unknown): value is CatalogModel => {
 /** The listing is public, so this request carries no credential — browsing models works before a key exists. */
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?supported_parameters=tools&sort=most-popular";
 const MAX_CATALOG_MODELS = 2048;
-/** The closed effort vocabulary, weakest first. A model may publish any subset. */
-const EFFORT_NAMES = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const EFFORT_NAMES = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+const EFFORT_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const MODALITIES = ["image", "file", "audio"];
 
 /** A price string in dollars per token, as micro-dollars per million tokens. Unreadable is 0. */
@@ -103,10 +103,10 @@ export async function fetchOpenRouterCatalog(timeoutMs = 30_000): Promise<Catalo
     if (!readable(id, name, contextLength, inputModalities) || seen.has(id)) continue;
     seen.add(id);
     const reasoning = row.reasoning as Record<string, unknown> | undefined;
-    const published = Array.isArray(reasoning?.supported_efforts) ? reasoning.supported_efforts : [];
-    let reasoningEfforts = EFFORT_NAMES.filter((effort) => published.includes(effort));
-    // `reasoning_effort` with no published list: OpenRouter's own three-stop default, so the
-    // knob is offered with the vendor default behind it rather than a value it would reject.
+    const published = Array.isArray(reasoning?.supported_efforts)
+      ? [...new Set(reasoning.supported_efforts.filter((effort): effort is string => typeof effort === "string" && EFFORT_NAME.test(effort)))]
+      : [];
+    let reasoningEfforts = [...EFFORT_NAMES.filter((effort) => published.includes(effort)), ...published.filter((effort) => !EFFORT_NAMES.includes(effort))];
     if (!reasoningEfforts.length && supportsParameter(row.supported_parameters, "reasoning_effort")) {
       reasoningEfforts = ["low", "medium", "high"];
     }
@@ -302,6 +302,34 @@ export async function fetchOpenRouterBalance(key: string, timeoutMs = 15_000): P
   } catch (reason) {
     return { ...blank, error: reason instanceof Error ? reason.message : String(reason) };
   }
+}
+
+export async function fetchDeepSeekBalance(key: string, timeoutMs = 15_000): Promise<KeyBalance> {
+  const blank: KeyBalance = { keyed: !!key, freeTier: false, remaining: null, usage: 0, error: "" };
+  if (!key) return blank;
+  try {
+    const response = await fetch(DEEPSEEK_BALANCE_URL, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(timeoutMs) });
+    if (response.status === 401 || response.status === 403) return { ...blank, error: "DeepSeek rejected that key." };
+    if (!response.ok) return { ...blank, error: `DeepSeek answered ${response.status} when asked about the key.` };
+    return readDeepSeekBalance(await response.json());
+  } catch (reason) {
+    return { ...blank, error: reason instanceof Error ? reason.message : String(reason) };
+  }
+}
+
+export function readDeepSeekBalance(body: unknown): KeyBalance {
+  const data = body as { is_available?: unknown; balance_infos?: unknown } | null;
+  const infos = Array.isArray(data?.balance_infos) ? data.balance_infos as Record<string, unknown>[] : [];
+  const info = infos.find((item) => item.currency === "USD") ?? infos[0];
+  const total = typeof info?.total_balance === "string" ? Number.parseFloat(info.total_balance) : null;
+  return {
+    keyed: true,
+    freeTier: false,
+    remaining: total !== null && Number.isFinite(total) ? total : null,
+    usage: 0,
+    error: data?.is_available === false && !total ? "DeepSeek reports this key cannot be used." : "",
+    currency: typeof info?.currency === "string" ? info.currency : undefined,
+  };
 }
 
 export async function probeProvider(baseUrl: string, key: string, model: string): Promise<ProviderProbe> {

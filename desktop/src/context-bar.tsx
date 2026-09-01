@@ -3,10 +3,11 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, typ
 import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { CONTEXT_METRICS, CONTEXT_WIDGETS, DEFAULT_METRICS, MAX_CONTEXT_PAGES, MAX_PAGE_NAME, nextPageId, widgetDefinition, type ContextMetric, type ContextPage, type ContextWidget, type ContextWidgetType, type WidgetOrientation } from "../shared/context-bar";
+import { cacheHitRate, cacheWriteTokens, CONTEXT_METRICS, CONTEXT_WIDGETS, costLabel, costPerTask, DEFAULT_METRICS, MAX_CONTEXT_PAGES, MAX_PAGE_NAME, nextPageId, widgetDefinition, type ContextMetric, type ContextPage, type ContextWidget, type ContextWidgetType, type WidgetOrientation } from "../shared/context-bar";
 import { charLabel, CHARS_PER_TOKEN, shareLabel, usageKey, type ContextUse } from "../shared/usage";
 import { agentColor, type LiveAgent } from "../shared/agents";
 import type { Plan } from "../shared/plan";
+import type { TaskList } from "../shared/task-list";
 import type { GitSnapshot } from "../shared/git";
 import { countCalls, decodeSpans, type TraceSpan } from "../shared/trace";
 import type { Message, Thread } from "./types";
@@ -18,6 +19,7 @@ import { BrandIcon, CaretIcon, ExpandIcon } from "./icons";
 import { GitPanel } from "./git";
 import { MachineGraph, MachineMeters, MachineStats } from "./machine";
 import { PlanRail } from "./plan";
+import { TaskListRail } from "./task-list";
 import { Timeline } from "./timeline";
 
 const tokenLabel = (chars: number): string => charLabel(Math.round(chars / CHARS_PER_TOKEN));
@@ -63,6 +65,18 @@ function metricCell(id: ContextMetric, ledger: Ledger, context: WidgetContext): 
     case "calls": return { value: `${calls}`, label: `tool ${plural(calls, "call")}` };
     case "rate": return { value: elapsed ? `${Math.round(tokens / elapsed * 1000)}` : "—", label: "avg tok/s" };
     case "output": return { value: tokens ? charLabel(tokens) : "—", label: `output ${plural(tokens, "token")}` };
+    case "cache": {
+      const rate = cacheHitRate(context.messages.flatMap((message) => message.generation ? [message.generation] : []));
+      return { value: rate === undefined ? "—" : `${Math.round(rate * 100)}%`, label: "cache hit rate" };
+    }
+    case "cacheWrites": {
+      const writes = cacheWriteTokens(context.messages.flatMap((message) => message.generation ? [message.generation] : []));
+      return { value: writes === undefined ? "—" : charLabel(writes), label: "cache writes" };
+    }
+    case "cost": {
+      const cost = costPerTask(context.messages.flatMap((message) => message.generation ? [message.generation] : []));
+      return { value: costLabel(cost), label: "cost/task" };
+    }
     case "elapsed": return { value: elapsed ? `${Math.round(elapsed / 1000)}s` : "—", label: "generating" };
     case "context": return { value: total ? tokenLabel(total) : "—", label: "context carried" };
     case "window": return { value: capacity ? tokenLabel(capacity) : "—", label: "context window" };
@@ -113,7 +127,7 @@ function ContextLedger({ ledger, messages: history, threadId, orientation }: { l
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (expanded && !dialog.current?.open) dialog.current?.showModal(); }, [expanded]);
   const dismiss = () => dialog.current?.close();
-  const grid = cells.length > 0 && <div className="context-grid" aria-hidden="true">{cells.map((key, index) => <i key={index} data-kind={kinds.get(key)} />)}</div>;
+  const grid = cells.length > 0 && <div className="context-grid" aria-hidden="true">{cells.map((cell) => <i key={cell.key} data-kind={kinds.get(cell.key)} style={{ flexGrow: cell.chars }} />)}</div>;
   return <section className="context-usage" data-orientation={orientation}>
     <span title={capacity ? "" : "This model states no context window, so the rows are shares of what this thread sent, not of a window"}><span className="context-title">{capacity ? "Context window" : "Context used"}<button type="button" className="context-expand" aria-haspopup="dialog" aria-label="Expand the context ledger" title="Expand the context ledger" onClick={() => setExpanded(true)}><ExpandIcon /></button></span><b>{tokenLabel(total)}{capacity ? ` / ${tokenLabel(capacity)}` : ""} {plural(Math.round(total / CHARS_PER_TOKEN), "token")}{capacity ? ` (${shareLabel(total, whole)})` : " sent · no stated window"}</b></span>
     {grid}
@@ -137,7 +151,7 @@ function ContextLedger({ ledger, messages: history, threadId, orientation }: { l
             <b>{tokenLabel(total)}</b>
             <span>{capacity ? `of ${tokenLabel(capacity)} tokens carried` : `tokens carried · no stated window`}</span>
             {capacity > 0 && <em>{shareLabel(total, whole)} used</em>}
-            <small>{total.toLocaleString()} characters measured on this Mac</small>
+            <small>{total.toLocaleString()} characters measured on this computer</small>
           </p>
           {grid}
           <dl>
@@ -175,7 +189,7 @@ function ContextLedger({ ledger, messages: history, threadId, orientation }: { l
             </tbody>
           </table>
         </div>
-        <p>Characters are counted on this Mac and divided by {CHARS_PER_TOKEN} to read as tokens, so every figure here is an estimate.</p>
+        <p>The total is the provider's own count for the last request it read. How that total splits across the rows is estimated: each segment is measured in characters on this computer and divided by {CHARS_PER_TOKEN}, and whatever the split does not reach lands in the last row.</p>
       </section>
     </dialog>}
   </section>;
@@ -284,6 +298,7 @@ export interface WidgetContext {
   onOpenGit: () => void;
   sampleTrace?: { label: string; spans: TraceSpan[] };
   samplePlans?: Plan[];
+  sampleTaskLists?: TaskList[];
 }
 
 function Widget({ widget, context }: { widget: ContextWidget; context: WidgetContext }): ReactNode {
@@ -291,6 +306,7 @@ function Widget({ widget, context }: { widget: ContextWidget; context: WidgetCon
   if (widget.type === "stats") return <ContextStats widget={widget} context={context} />;
   if (widget.type === "context") return <ContextLedger ledger={context.ledger} messages={context.messages} threadId={context.threadId} orientation={orientation} />;
   if (widget.type === "timeline") return <Timeline threadId={context.threadId} sending={context.sending} carriedTokens={context.ledger.carriedTokens} sample={context.sampleTrace} />;
+  if (widget.type === "tasklist") return <TaskListRail threadId={context.threadId} sample={context.sampleTaskLists} />;
   if (widget.type === "plan") return <PlanRail threadId={context.threadId} agents={context.subagents} sample={context.samplePlans} onOpen={context.onPick} />;
   if (widget.type === "subagents") return <SubagentRail agents={context.subagents} all={context.agents} active={context.tab} onPick={context.onPick} orientation={orientation} />;
   if (widget.type === "machine") return <MachineStats orientation={orientation} />;
@@ -343,8 +359,8 @@ const PAGE_KEY = "emma.contextPage.v1";
 export const readContextPage = (): string => localStorage.getItem(PAGE_KEY) ?? "";
 export const writeContextPage = (id: string): void => localStorage.setItem(PAGE_KEY, id);
 
-const sampleGeneration = (inputTokens: number, outputTokens: number, durationMilliseconds: number) =>
-  ({ inputTokens, outputTokens, durationMilliseconds, model: "anthropic/claude-sonnet-4.5" });
+const sampleGeneration = (inputTokens: number, outputTokens: number, durationMilliseconds: number, cacheReadTokens: number) =>
+  ({ inputTokens, outputTokens, durationMilliseconds, cacheInputTokens: inputTokens, cacheReadTokens, model: "anthropic/claude-sonnet-4.5" });
 
 const SAMPLE_THREAD: Thread = {
   id: "sample",
@@ -353,11 +369,11 @@ const SAMPLE_THREAD: Thread = {
   updatedAt: "2026-08-22T15:41:42.000Z",
   messages: [
     { role: "user", content: "x".repeat(1_200), timestamp: "2026-08-22T15:38:31.000Z" },
-    { role: "assistant", content: "x".repeat(14_000), timestamp: "2026-08-22T15:38:58.000Z", generation: sampleGeneration(9_400, 5_100, 41_000) },
+    { role: "assistant", content: "x".repeat(14_000), timestamp: "2026-08-22T15:38:58.000Z", generation: sampleGeneration(9_400, 5_100, 41_000, 0) },
     { role: "user", content: "x".repeat(900), timestamp: "2026-08-22T15:39:40.000Z" },
-    { role: "assistant", content: "x".repeat(11_500), timestamp: "2026-08-22T15:40:12.000Z", generation: sampleGeneration(21_800, 6_300, 62_000) },
+    { role: "assistant", content: "x".repeat(11_500), timestamp: "2026-08-22T15:40:12.000Z", generation: sampleGeneration(21_800, 6_300, 62_000, 14_600) },
     { role: "user", content: "x".repeat(700), timestamp: "2026-08-22T15:41:02.000Z" },
-    { role: "assistant", content: "x".repeat(18_000), timestamp: "2026-08-22T15:41:42.000Z", generation: sampleGeneration(43_100, 6_900, 79_000) },
+    { role: "assistant", content: "x".repeat(18_000), timestamp: "2026-08-22T15:41:42.000Z", generation: sampleGeneration(43_100, 6_900, 79_000, 37_800) },
   ],
 };
 
@@ -413,6 +429,25 @@ const SAMPLE_PLANS: Plan[] = [{
   ],
 }];
 
+const SAMPLE_TASK_LISTS: TaskList[] = [{
+  id: "ship-the-task-list",
+  title: "Ship the task list",
+  goal: "Add durable nested tasks without changing the plan tool's delegation role.",
+  threadId: "sample",
+  updatedAt: SAMPLE_THREAD.updatedAt,
+  tasks: [
+    { id: "inspect", title: "Inspect the plan flow", status: "completed", subtasks: [
+      { id: "store", title: "Trace Markdown storage", status: "completed", subtasks: [] },
+      { id: "widget", title: "Trace the plan widget", status: "completed", subtasks: [] },
+    ] },
+    { id: "build", title: "Build nested tasks", status: "in_progress", subtasks: [
+      { id: "tool", title: "Wire the tool", status: "completed", subtasks: [] },
+      { id: "surface", title: "Draw the widget", status: "in_progress", subtasks: [] },
+      { id: "checks", title: "Run the checks", status: "pending", subtasks: [] },
+    ] },
+  ],
+}];
+
 const SAMPLE_GIT: GitSnapshot = {
   branch: "main",
   head: "0000000",
@@ -445,6 +480,7 @@ function usePreviewContext(): WidgetContext {
     onOpenGit: () => undefined,
     sampleTrace,
     samplePlans: SAMPLE_PLANS,
+    sampleTaskLists: SAMPLE_TASK_LISTS,
   };
 }
 

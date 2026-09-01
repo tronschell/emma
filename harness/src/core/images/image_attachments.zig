@@ -7,6 +7,10 @@ const file_mutation_contract = @import("../tooling/file_mutation_contract.zig");
 const io_mod = @import("../shared/io.zig");
 const types = @import("../shared/types.zig");
 const pathing = @import("../workspace/pathing.zig");
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../shared/windows_paths.zig")
+else
+    struct {};
 
 pub const max_image_bytes: usize = 20 * 1024 * 1024;
 const max_encoded_image_bytes: usize = 5 * 1024 * 1024;
@@ -167,21 +171,29 @@ fn loadResolvedImageAttachment(
 }
 
 pub fn createTempSnapshotDir(alloc: std.mem.Allocator) ![]u8 {
-    const temp_root = try io_mod.realpathAlloc(alloc, "/tmp");
+    const temp_root = try io_mod.runtimeTempPathAlloc(alloc);
     defer alloc.free(temp_root);
+    const separator: []const u8 = if (temp_root.len > 0 and
+        (temp_root[temp_root.len - 1] == '/' or temp_root[temp_root.len - 1] == '\\'))
+        ""
+    else if (comptime builtin.os.tag == .windows)
+        "\\"
+    else
+        "/";
     for (0..16) |_| {
         var suffix: u64 = undefined;
         io_mod.getIo().random(std.mem.asBytes(&suffix));
         const path = try std.fmt.allocPrint(
             alloc,
-            "{s}/fx-image-snapshots-{x}",
-            .{ temp_root, suffix },
+            "{s}{s}fx-image-snapshots-{x}",
+            .{ temp_root, separator, suffix },
         );
         errdefer alloc.free(path);
+        errdefer cleanupSnapshotDir(path);
         std.Io.Dir.createDirAbsolute(
             io_mod.getIo(),
             path,
-            std.Io.File.Permissions.fromMode(0o700),
+            io_mod.permissionsFromMode(0o700),
         ) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 alloc.free(path);
@@ -189,6 +201,11 @@ pub fn createTempSnapshotDir(alloc: std.mem.Allocator) ![]u8 {
             },
             else => return err,
         };
+        if (comptime builtin.os.tag == .windows) {
+            var directory = try openDirectoryNoFollow(path);
+            defer directory.close(io_mod.getIo());
+            try io_mod.enforcePrivateDirectoryAcl(directory);
+        }
         return path;
     }
     return error.PathAlreadyExists;
@@ -333,9 +350,6 @@ pub const VisionRegularFile = struct {
     }
 };
 
-/// Opens a read-only Vision source without following the final symlink or
-/// blocking on a special file. Hard-linked regular files remain valid inputs.
-/// The caller owns the returned descriptor and must close it.
 pub fn openVisionRegularFile(canonical_path: []const u8) !VisionRegularFile {
     if (!std.fs.path.isAbsolute(canonical_path)) return error.InvalidPath;
 
@@ -517,7 +531,8 @@ fn captureImageSnapshotFromOpenFileWithBudget(
     };
 
     if (!fitsEncodedLimit(source_metadata.size_bytes)) {
-        if (comptime builtin.os.tag != .macos) return error.ImagePreparationFailed;
+        if (comptime builtin.os.tag != .macos and builtin.os.tag != .windows)
+            return error.ImagePreparationFailed;
 
         var candidate_suffix: u64 = undefined;
         io_mod.getIo().random(std.mem.asBytes(&candidate_suffix));
@@ -533,7 +548,7 @@ fn captureImageSnapshotFromOpenFileWithBudget(
             .{
                 .truncate = false,
                 .exclusive = true,
-                .permissions = std.Io.File.Permissions.fromMode(0o600),
+                .permissions = io_mod.permissionsFromMode(0o600),
                 .resolve_beneath = true,
             },
         );
@@ -550,7 +565,7 @@ fn captureImageSnapshotFromOpenFileWithBudget(
         );
         defer alloc.free(candidate_temp_path);
 
-        prepareImageCandidate(source_temp_path, candidate_temp_path, budget) catch |err| switch (err) {
+        prepareImageCandidate(alloc, source_temp_path, candidate_temp_path, budget) catch |err| switch (err) {
             error.FileNotFound => return error.ImagePreparationFailed,
             else => return err,
         };
@@ -624,7 +639,7 @@ fn streamSourceToFile(
         .{
             .truncate = false,
             .exclusive = true,
-            .permissions = std.Io.File.Permissions.fromMode(0o600),
+            .permissions = io_mod.permissionsFromMode(0o600),
             .resolve_beneath = true,
         },
     );
@@ -780,10 +795,37 @@ fn runImageNormalizerProcess(
 }
 
 fn prepareImageCandidate(
+    alloc: std.mem.Allocator,
     source_path: []const u8,
     candidate_path: []const u8,
     budget: CaptureBudget,
 ) !void {
+    if (comptime builtin.os.tag == .windows) {
+        var script: std.Io.Writer.Allocating = .init(alloc);
+        defer script.deinit();
+        try script.writer.writeAll("$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Drawing;" ++
+            "$source=[System.Drawing.Image]::FromFile(");
+        try writePowerShellPath(&script.writer, source_path);
+        try script.writer.writeAll(");try{$scale=[Math]::Min(1.0,[Math]::Min(2000.0/$source.Width,2000.0/$source.Height));" ++
+            "$width=[Math]::Max(1,[int][Math]::Round($source.Width*$scale));" ++
+            "$height=[Math]::Max(1,[int][Math]::Round($source.Height*$scale));" ++
+            "$bitmap=New-Object -TypeName System.Drawing.Bitmap -ArgumentList @($width,$height);" ++
+            "try{$graphics=[System.Drawing.Graphics]::FromImage($bitmap);" ++
+            "try{$graphics.InterpolationMode='HighQualityBicubic';" ++
+            "$graphics.DrawImage($source,0,0,$width,$height)}finally{$graphics.Dispose()};" ++
+            "$codec=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|" ++
+            "Where-Object {$_.MimeType -eq 'image/jpeg'}|Select-Object -First 1;" ++
+            "$parameters=New-Object -TypeName System.Drawing.Imaging.EncoderParameters -ArgumentList 1;" ++
+            "$quality=New-Object -TypeName System.Drawing.Imaging.EncoderParameter -ArgumentList @(" ++
+            "[System.Drawing.Imaging.Encoder]::Quality,[long]85);" ++
+            "try{$parameters.Param[0]=$quality;$bitmap.Save(");
+        try writePowerShellPath(&script.writer, candidate_path);
+        try script.writer.writeAll(
+            ",$codec,$parameters)}finally{$quality.Dispose();$parameters.Dispose()}}" ++
+                "finally{$bitmap.Dispose()}}finally{$source.Dispose()}",
+        );
+        return runPowerShellScript(alloc, script.written(), budget);
+    }
     const argv = [_][]const u8{
         "/usr/bin/sips",
         "-s",
@@ -797,6 +839,49 @@ fn prepareImageCandidate(
         source_path,
         "--out",
         candidate_path,
+    };
+    try runImageNormalizerProcess(&argv, budget);
+}
+
+fn writePowerShellPath(writer: *std.Io.Writer, path: []const u8) !void {
+    try writer.writeByte('\'');
+    for (path) |byte| {
+        if (byte == '\'') try writer.writeByte('\'');
+        try writer.writeByte(byte);
+    }
+    try writer.writeByte('\'');
+}
+
+fn runPowerShellScript(
+    alloc: std.mem.Allocator,
+    script: []const u8,
+    budget: CaptureBudget,
+) !void {
+    const utf16 = std.unicode.wtf8ToWtf16LeAlloc(alloc, script) catch |err| switch (err) {
+        error.InvalidWtf8 => return error.ImagePreparationFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer alloc.free(utf16);
+    const utf16_bytes = std.mem.sliceAsBytes(utf16);
+    const encoded = try alloc.alloc(u8, std.base64.standard.Encoder.calcSize(utf16_bytes.len));
+    defer alloc.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, utf16_bytes);
+
+    var executable_buffer: [32768]u8 = undefined;
+    const executable = windows_paths.system32ExecutableInto(
+        &executable_buffer,
+        "WindowsPowerShell\\v1.0\\powershell.exe",
+    ) catch return error.ImagePreparationFailed;
+    const argv = [_][]const u8{
+        executable,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-STA",
+        "-EncodedCommand",
+        encoded,
     };
     try runImageNormalizerProcess(&argv, budget);
 }
@@ -945,9 +1030,6 @@ fn openDirectoryNoFollow(path: []const u8) !std.Io.Dir {
     return dir;
 }
 
-/// Iteration is requested so the handle is a real descriptor. Linux returns an `O_PATH`
-/// descriptor otherwise, which serves `openat` and `renameat` but rejects the `fsync`
-/// this directory needs after the snapshot rename.
 const snapshot_dir_open_options: std.Io.Dir.OpenOptions = .{
     .iterate = true,
     .follow_symlinks = false,
@@ -970,7 +1052,7 @@ fn openOrCreateSnapshotDirectoryNoFollow(path: []const u8) !std.Io.Dir {
             parent.createDir(
                 io_mod.getIo(),
                 name,
-                std.Io.File.Permissions.fromMode(0o700),
+                io_mod.permissionsFromMode(0o700),
             ) catch |create_err| switch (create_err) {
                 error.PathAlreadyExists => {},
                 else => return unsafeSnapshotPathError(create_err),
@@ -1046,8 +1128,6 @@ pub fn loadVerifiedSnapshot(
     };
 }
 
-/// Returns a new attachment with independently owned snapshot bytes for `new_id`.
-/// The source snapshot remains owned by the caller.
 pub fn cloneVerifiedImageAttachment(
     alloc: std.mem.Allocator,
     attachment: types.ImageAttachment,
@@ -1114,7 +1194,7 @@ pub fn copyVerifiedImageAttachmentToDir(
         .{
             .truncate = false,
             .exclusive = true,
-            .permissions = std.Io.File.Permissions.fromMode(0o600),
+            .permissions = io_mod.permissionsFromMode(0o600),
             .resolve_beneath = true,
         },
     );
@@ -1349,8 +1429,6 @@ pub fn validate_image_ids(image_ids: []const usize) error{ EmptyImageIds, Invali
     }
 }
 
-/// Returns a caller-owned slice of pointers borrowed from `catalog`. The
-/// caller frees only the returned slice with `alloc`.
 pub fn resolve_authorized_images(
     alloc: std.mem.Allocator,
     catalog: []const types.ImageAttachment,
@@ -1392,9 +1470,6 @@ pub fn calculate_next_image_id(
     return .{ .maximum_id = null, .next_id = 1 };
 }
 
-/// Returns the placeholder span at `cursor` — either enclosing the cursor or
-/// with its closing `]` at `cursor - 1`. Used by backspace to delete the whole
-/// `[Image #N]` token atomically.
 pub fn findEnclosingImagePlaceholder(text: []const u8, cursor: usize) ?ImagePlaceholderSpan {
     var scan = cursor;
     while (scan > 0) {
@@ -1408,16 +1483,12 @@ pub fn findEnclosingImagePlaceholder(text: []const u8, cursor: usize) ?ImagePlac
     return null;
 }
 
-/// Returns the placeholder span starting at `byte_offset`, or null if no
-/// placeholder begins there. Used by cursor-right to skip the whole token.
 pub fn imagePlaceholderSpanStartingAt(text: []const u8, byte_offset: usize) ?ImagePlaceholderSpan {
     if (byte_offset >= text.len or text[byte_offset] != '[') return null;
     const match = matchImagePlaceholder(text, byte_offset) orelse return null;
     return .{ .start = byte_offset, .end = byte_offset + match.length, .id = match.id };
 }
 
-/// Returns the placeholder span ending exactly at `byte_offset`, or null if no
-/// placeholder ends there. Used by cursor-left to skip the whole token.
 pub fn imagePlaceholderSpanEndingAt(text: []const u8, byte_offset: usize) ?ImagePlaceholderSpan {
     if (byte_offset == 0 or byte_offset > text.len) return null;
     if (text[byte_offset - 1] != ']') return null;
@@ -1436,8 +1507,6 @@ pub fn imagePlaceholderSpanEndingAt(text: []const u8, byte_offset: usize) ?Image
 
 pub const ExpandWithBadgesResult = struct { cursor_out: ?usize, expanded_any: bool };
 
-/// Replaces known image placeholders with path-free badges keyed by attachment ID.
-/// Unknown placeholders pass through; `cursor_out` maps `cursor_in` to output bytes.
 pub fn expandPlaceholdersWithBadges(
     alloc: std.mem.Allocator,
     writer: *std.Io.Writer,
@@ -1715,7 +1784,43 @@ pub const ClipboardImageAttachment = struct {
 };
 
 pub fn loadClipboardImageAttachment(alloc: std.mem.Allocator) !ClipboardImageAttachment {
-    if (builtin.os.tag != .macos) return error.Unsupported;
+    if (comptime builtin.os.tag == .windows) {
+        const source_dir = try createTempSnapshotDir(alloc);
+        errdefer {
+            cleanupSnapshotDir(source_dir);
+            alloc.free(source_dir);
+        }
+        const temp_path = try std.fs.path.join(alloc, &.{ source_dir, "clipboard.png" });
+        defer alloc.free(temp_path);
+
+        var script: std.Io.Writer.Allocating = .init(alloc);
+        defer script.deinit();
+        try script.writer.writeAll("$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Drawing;" ++
+            "Add-Type -AssemblyName System.Windows.Forms;" ++
+            "$image=[System.Windows.Forms.Clipboard]::GetImage();" ++
+            "if($null -eq $image){exit 2};try{$image.Save(");
+        try writePowerShellPath(&script.writer, temp_path);
+        try script.writer.writeAll(
+            ",[System.Drawing.Imaging.ImageFormat]::Png)}finally{$image.Dispose()}",
+        );
+        runPowerShellScript(
+            alloc,
+            script.written(),
+            .{ .deadline = std.Io.Clock.Timestamp.fromNow(io_mod.getIo(), image_normalization_timeout) },
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.NoClipboardImage,
+        };
+        const attachment = loadImageAttachment(alloc, temp_path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.NoClipboardImage,
+        };
+        return .{
+            .attachment = attachment,
+            .source_dir = source_dir,
+        };
+    }
+    if (comptime builtin.os.tag != .macos) return error.Unsupported;
 
     const source_dir = try createTempSnapshotDir(alloc);
     errdefer {
@@ -2194,17 +2299,14 @@ test "authorized image lookup cleans up allocation failure" {
 
 test "findEnclosingImagePlaceholder spans the token at and after the cursor" {
     const text = "a [Image #5] b";
-    // cursor right after the closing ]
     const span_after = findEnclosingImagePlaceholder(text, 12).?;
     try std.testing.expectEqual(@as(usize, 2), span_after.start);
     try std.testing.expectEqual(@as(usize, 12), span_after.end);
     try std.testing.expectEqual(@as(usize, 5), span_after.id);
 
-    // cursor inside the token
     const span_inside = findEnclosingImagePlaceholder(text, 8).?;
     try std.testing.expectEqual(@as(usize, 5), span_inside.id);
 
-    // cursor far away
     try std.testing.expect(findEnclosingImagePlaceholder(text, 1) == null);
     try std.testing.expect(findEnclosingImagePlaceholder(text, 14) == null);
 }
@@ -2297,7 +2399,6 @@ test "expandPlaceholdersWithBadges maps cursor through badge expansion" {
         .{ .id = 1, .path = @constCast("/tmp/a.png"), .media_type = @constCast("image/png") },
     };
 
-    // cursor at byte 0 maps to byte 0
     {
         var out: std.Io.Writer.Allocating = .init(alloc);
         defer out.deinit();
@@ -2305,7 +2406,6 @@ test "expandPlaceholdersWithBadges maps cursor through badge expansion" {
         try std.testing.expectEqual(@as(?usize, 0), r.cursor_out);
     }
 
-    // cursor right after the placeholder lands right after the rendered badge
     {
         var out: std.Io.Writer.Allocating = .init(alloc);
         defer out.deinit();
@@ -2314,7 +2414,6 @@ test "expandPlaceholdersWithBadges maps cursor through badge expansion" {
         try std.testing.expectEqual(out.written().len - 1, r.cursor_out.?);
     }
 
-    // cursor at end maps to end of expanded text
     {
         var out: std.Io.Writer.Allocating = .init(alloc);
         defer out.deinit();
@@ -2475,7 +2574,7 @@ test "extractInlineImageAttachments preserves image-looking directories" {
     try tmp.dir.createDir(
         std.testing.io,
         "photos.png",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
     defer alloc.free(workspace);
@@ -3306,7 +3405,7 @@ test "verified snapshot loading rejects a symlinked directory" {
     try tmp.dir.createDir(
         std.testing.io,
         "owned",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     {
         var owned = try tmp.dir.openDir(std.testing.io, "owned", .{});

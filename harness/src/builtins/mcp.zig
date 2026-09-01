@@ -388,9 +388,6 @@ fn lineLiteral(alloc: Allocator, text: []const u8, reload: bool) !CommandResult 
     return .{ .display = .{ .line = try alloc.dupe(u8, text) }, .reload = reload };
 }
 
-// Non-generic on purpose: a comptime-format sibling stamps out one
-// formatter instantiation per call shape; every message here is a plain
-// string splice.
 fn lineParts(alloc: Allocator, parts: []const []const u8, reload: bool) !CommandResult {
     return .{ .display = .{ .line = try std.mem.concat(alloc, u8, parts) }, .reload = reload };
 }
@@ -1349,17 +1346,12 @@ test "saving MCP config replaces the file durably" {
     var fx_dir = try tmp.dir.openDir(io_mod.getIo(), "home/.fx", .{ .iterate = true });
     defer fx_dir.close(io_mod.getIo());
 
-    // Seed a group-readable mode so the 0600 assertion below cannot pass just
-    // because the developer's umask already produced it.
     {
         var seed = try fx_dir.openFile(io_mod.getIo(), "mcp.json", .{ .mode = .read_write });
         defer seed.close(io_mod.getIo());
-        try seed.setPermissions(io_mod.getIo(), std.Io.File.Permissions.fromMode(0o644));
+        try seed.setPermissions(io_mod.getIo(), io_mod.permissionsFromMode(0o644));
     }
 
-    // Hold the pre-save file open. A rename-over leaves this descriptor on the
-    // old, unlinked inode; an in-place truncate would empty it instead, which
-    // is the failure this save must not have.
     var held = try fx_dir.openFile(io_mod.getIo(), "mcp.json", .{});
     defer held.close(io_mod.getIo());
 
@@ -1376,7 +1368,7 @@ test "saving MCP config replaces the file durably" {
     try std.testing.expect(std.mem.find(u8, written, "stale") == null);
 
     const stat = try fx_dir.statFile(io_mod.getIo(), "mcp.json", .{ .follow_symlinks = false });
-    try std.testing.expectEqual(@as(u32, 0o600), stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(u32, 0o600), io_mod.permissionsMode(stat.permissions) & 0o777);
 
     var it = fx_dir.iterate();
     var entries: usize = 0;
@@ -1859,8 +1851,6 @@ test "saving MCP config refuses a symlinked target" {
     const path = try std.fs.path.join(alloc, &.{ std.fs.path.dirname(external_path).?, ".fx", "mcp.json" });
     defer alloc.free(path);
 
-    // The durable helper refuses a target that is not a plain private file, so
-    // a symlinked config fails the save rather than writing through the link.
     try std.testing.expectError(error.DurablePathUnsafe, saveConfigsToPath(alloc, path, &.{}));
 
     const untouched = try readFileForTest(alloc, external_path);
@@ -1884,8 +1874,6 @@ test "built-in MCP command reports a failed save instead of a missing server" {
     const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
     defer alloc.free(home);
 
-    // The server loads through the symlink, so this is a real entry whose
-    // removal cannot be persisted. It must not be reported as missing.
     var result = try handleCommand(alloc, "remove fs", request(home, &fixture));
     defer result.deinit(alloc);
     try expectLine(result, "Failed to remove MCP server 'fs': DurablePathUnsafe.", false);
@@ -1906,9 +1894,9 @@ test "adding an MCP server creates the profile directory privately" {
     try expectLine(result, "Saved MCP server 'fs'.", true);
 
     const dir_stat = try tmp.dir.statFile(io_mod.getIo(), "home/.fx", .{ .follow_symlinks = false });
-    try std.testing.expectEqual(@as(u32, 0o700), dir_stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(u32, 0o700), io_mod.permissionsMode(dir_stat.permissions) & 0o777);
     const file_stat = try tmp.dir.statFile(io_mod.getIo(), "home/.fx/mcp.json", .{ .follow_symlinks = false });
-    try std.testing.expectEqual(@as(u32, 0o600), file_stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(u32, 0o600), io_mod.permissionsMode(file_stat.permissions) & 0o777);
 }
 
 test "built-in MCP command preserves usage and missing-home notices" {

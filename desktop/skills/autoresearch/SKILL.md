@@ -113,7 +113,7 @@ Emma runs it, so the number can never be reported by the thing being measured.
 
 ```
 autoresearch {"action": "save", "title": "nanochat val_bpb",
-              "projectDir": "/Users/me/code/nanochat",
+              "projectDir": "<absolute-project-path>",
               "metricName": "val_bpb", "metricKind": "grep", "direction": "lower",
               "evalCommand": "uv run train.py 2>&1",
               "proposerModel": "anthropic/claude-sonnet-4.5",

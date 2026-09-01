@@ -2809,6 +2809,7 @@ fn processQueuedPromptLoop(
     defer interrupted_persisted_ptr.* = interrupted_persisted;
     var silent_tool_steps: usize = 0;
     var continuation_injected = false;
+    var tool_call_repair_injected = false;
     var last_step_ctx = finish_trace.ctx;
     var current_step_index: usize = 0;
     // What the previous step's response was billed for, and the context
@@ -2925,8 +2926,7 @@ fn processQueuedPromptLoop(
         );
         var gateway_messages = try runtime_prompt_context.buildGatewayMessages(overlay_arena, stable_prefix.items, ephemeral_overlay.items, history_messages.items, current_user_effective, within_turn_suffix.items);
         last_gateway_message_count = gateway_messages.items.len;
-        const history_start_index = stable_prefix.items.len + ephemeral_overlay.items.len;
-        const current_user_message_index = history_start_index + history_messages.items.len;
+        const current_user_message_index = stable_prefix.items.len + history_messages.items.len + ephemeral_overlay.items.len;
 
         debug_trace.logf("agent", "step start step={d} limit={d} messages={d}", .{ current_step_index, config.agent_step_limit, gateway_messages.items.len });
         debug_trace.eventf("agent", "step_begin", step_ctx, "step_index={d} step_limit={d} gateway_messages={d}", .{ current_step_index, config.agent_step_limit, gateway_messages.items.len });
@@ -3278,6 +3278,7 @@ fn processQueuedPromptLoop(
                     switch (evidence.cause) {
                         .transport_interrupted => .transport_interrupted,
                         .system_resumed => .system_resumed,
+                        .response_interrupted => .response_interrupted,
                     }
                 else
                     recovery_cause;
@@ -4341,7 +4342,12 @@ fn processQueuedPromptLoop(
         preserved_tool_evidence = .none;
 
         if (deps.report_usage) |report_fn| {
-            if (completion.usage.input_tokens != null or completion.usage.output_tokens != null) {
+            if (completion.usage.input_tokens != null or
+                completion.usage.output_tokens != null or
+                completion.usage.cache_read_tokens != null or
+                completion.usage.cache_write_tokens != null or
+                completion.usage.cost_micro_usd != null)
+            {
                 report_fn(deps.ctx, completion.usage);
             }
         }
@@ -4499,6 +4505,26 @@ fn processQueuedPromptLoop(
         if (completion.tool_calls.len == 0) {
             const has_content =
                 std.mem.trim(u8, partial_assistant, " \t\r\n").len > 0;
+            const lost_tool_call = if (disposition == .completed and !tool_call_repair_injected)
+                text_utils.orphanToolCallResidue(partial_assistant)
+            else
+                null;
+
+            if (lost_tool_call) |residue_start| {
+                tool_call_repair_injected = true;
+                const kept = std.mem.trimEnd(u8, partial_assistant[0..residue_start], " \t\r\n");
+                const repair_prompt = "Your last tool call did not reach me: the provider dropped it in transit and only fragments of its arguments arrived as text. Re-issue exactly that same tool call now, as a tool call.";
+                debug_trace.logf("agent", "repairing tool call lost in transport, keeping {d} of {d} bytes", .{ kept.len, partial_assistant.len });
+                if (kept.len > 0) {
+                    try within_turn_suffix.append(arena, .{
+                        .role = .assistant,
+                        .content = try arena.dupe(u8, kept),
+                    });
+                }
+                try within_turn_suffix.append(arena, .{ .role = .user, .content = repair_prompt });
+                continue;
+            }
+
             const needs_continuation =
                 disposition == .completed and
                 !continuation_injected and
@@ -5058,8 +5084,9 @@ fn processQueuedPromptLoop(
                         finish_trace.finish("interrupted");
                         return;
                     }
-                    if (try runtime_tool_admission.repeatedDynamicMcpFailure(
+                    if (try runtime_tool_admission.blockedRepeatedCall(
                         arena,
+                        deps.tool_registry,
                         within_turn_suffix.items,
                         parallel_call,
                         advertised_dynamic_tool_names,
@@ -5759,8 +5786,9 @@ fn processQueuedPromptLoop(
                     },
                 }
             }
-            if (try runtime_tool_admission.repeatedDynamicMcpFailure(
+            if (try runtime_tool_admission.blockedRepeatedCall(
                 arena,
+                deps.tool_registry,
                 within_turn_suffix.items,
                 tool_call,
                 advertised_dynamic_tool_names,

@@ -368,6 +368,10 @@ const missing_action_message =
     ", or send only a command and terminal runs it as exec. Actions: " ++ action_names ++ ".";
 const unknown_action_message =
     "terminal has no action by that name. Actions: " ++ action_names ++ ".";
+const duplicate_field_message =
+    "terminal arguments repeated a field with two different values, so the call was ambiguous. " ++
+    "Send one flat JSON object with each field named once, for example " ++ exec_example ++
+    ", and emit separate tool calls to run several commands.";
 const composite_arguments_message =
     "terminal object fields (shell, return_when, dimensions, initial_monitors, write, monitor) must be JSON objects, not strings holding JSON.";
 
@@ -384,7 +388,10 @@ pub fn decode(
         arena,
         normalized_arguments orelse args_json,
         .{ .allocate = .alloc_always },
-    ) catch {
+    ) catch |err| {
+        if (err == error.DuplicateField) {
+            return .{ .failure = try ctx.allocator.dupe(u8, duplicate_field_message) };
+        }
         return .{ .failure = try ctx.allocator.dupe(u8, unreadable_arguments_message) };
     };
     if (raw != .object) {
@@ -1802,6 +1809,9 @@ test "terminal decoder runs a bare command as exec" {
         "{\"request\":{\"command\":\"printf ok\"}}",
         "{\"action\":\"None\",\"command\":\"printf ok\"}",
         "{\"action\":\" exec \",\"command\":\"printf ok\",\"cwd\":\"none\"}",
+        "{\"request\":\"{\\\"action\\\":\\\"exec\\\",\\\"command\\\":\\\"printf ok\\\"}\"}",
+        "{\"request\":{\"command\":\"printf ok\"},\"request\":null}",
+        "{\"request\":{\"command\":\"printf ok\"},\"request\":{\"command\":\"printf ok\"}}",
     }) |arguments_json| {
         const decoded = try decode(.{ .allocator = alloc }, arguments_json);
         switch (decoded) {
@@ -1820,6 +1830,26 @@ test "terminal decoder runs a bare command as exec" {
     }
 }
 
+test "terminal decoder keeps a stray backslash in the command it was given" {
+    const alloc = std.testing.allocator;
+    const decoded = try decode(
+        .{ .allocator = alloc },
+        "{\"action\":\"exec\",\"command\":\"grep -n \\\"a\\|b\\\" f\"}",
+    );
+    switch (decoded) {
+        .failure => |message| {
+            defer alloc.free(message);
+            return error.TestUnexpectedResult;
+        },
+        .input => |input| {
+            defer input.deinit(alloc);
+            const parsed = input.as(OwnedInput).parsed.value;
+            try std.testing.expectEqual(Action.exec, parsed.action);
+            try std.testing.expectEqualStrings("grep -n \"a\\|b\" f", parsed.command.?);
+        },
+    }
+}
+
 test "terminal decoder names what an unusable call is missing" {
     const alloc = std.testing.allocator;
     const cases = [_]struct { arguments_json: []const u8, message: []const u8 }{
@@ -1829,6 +1859,10 @@ test "terminal decoder names what an unusable call is missing" {
         .{ .arguments_json = "{\"action\":null}", .message = missing_action_message },
         .{ .arguments_json = "{\"action\":\"run\",\"command\":\"printf ok\"}", .message = unknown_action_message },
         .{ .arguments_json = "{\"action\":7}", .message = unknown_action_message },
+        .{
+            .arguments_json = "{\"request\":{\"command\":\"a\"},\"request\":{\"command\":\"b\"}}",
+            .message = duplicate_field_message,
+        },
         .{
             .arguments_json = "{\"action\":\"exec\",\"command\":[\"printf\",\"ok\"]}",
             .message = "terminal exec arguments have a field with the wrong type. exec takes: action, command, cwd, profile.",

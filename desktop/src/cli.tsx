@@ -50,22 +50,25 @@ export function useTailScroll<T extends HTMLElement>(deps: unknown[], resetKey?:
   const pinned = useRef(true);
   const [end, setEnd] = useState({ key: resetKey, at: true });
   const atEnd = end.key === resetKey ? end.at : true;
-  useEffect(() => { pinned.current = true; }, [resetKey]);
-  useEffect(() => {
-    const element = node.current;
-    if (!element) return;
-    if (pinned.current) element.scrollTop = element.scrollHeight;
-    const settling = new ResizeObserver(() => { if (pinned.current) element.scrollTop = element.scrollHeight; });
-    for (const child of element.children) settling.observe(child);
-    return () => settling.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
   const onScroll = () => {
     const element = node.current;
     if (!element) return;
     pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
     setEnd({ key: resetKey, at: pinned.current });
   };
+  useEffect(() => { pinned.current = true; }, [resetKey]);
+  useEffect(() => {
+    const element = node.current;
+    if (!element) return;
+    if (pinned.current) element.scrollTop = element.scrollHeight;
+    const settling = new ResizeObserver(() => {
+      if (pinned.current) element.scrollTop = element.scrollHeight;
+      onScroll();
+    });
+    for (const child of element.children) settling.observe(child);
+    return () => settling.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
   const toEnd = () => {
     const element = node.current;
     if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });

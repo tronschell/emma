@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
-import { HANDSHAKE_BYTES, isBridgeMethod, KEY_BYTES, LABEL_MAC_TO_PHONE, LABEL_PHONE_TO_MAC, LABEL_RELAY_AUTH, MAX_FRAME_BYTES, NONCE_BYTES, TAG_BYTES } from "../shared/mobile-protocol";
+import { HANDSHAKE_BYTES, isBridgeMethod, KEY_BYTES, LABEL_MAC_TO_PHONE, LABEL_PHONE_TO_MAC, LABEL_BRIDGE_AUTH, MAX_FRAME_BYTES, NONCE_BYTES, TAG_BYTES } from "../shared/mobile-protocol";
 import type { BridgeFrame } from "../shared/mobile-protocol";
 
 export type FrameRole = "mac" | "phone";
@@ -18,8 +18,8 @@ function isFrame(value: unknown, role: FrameRole): value is BridgeFrame {
   return role === "phone" && (frame.k === "res" || frame.k === "evt");
 }
 
-export function relayAuth(key: Buffer): string {
-  return createHash("sha256").update(key).update(LABEL_RELAY_AUTH).digest("hex");
+export function bridgeAuth(key: Buffer): string {
+  return createHash("sha256").update(key).update(LABEL_BRIDGE_AUTH).digest("hex");
 }
 
 export class FrameCodec {
@@ -37,7 +37,7 @@ export class FrameCodec {
 
   constructor(key: Buffer, role: FrameRole) {
     if (key.length !== KEY_BYTES) throw new Error(`a bridge key is ${KEY_BYTES} bytes, not ${key.length}`);
-    this.auth = relayAuth(key);
+    this.auth = bridgeAuth(key);
     this.role = role;
     this.tx = subkey(key, role === "mac" ? LABEL_MAC_TO_PHONE : LABEL_PHONE_TO_MAC);
     this.rx = subkey(key, role === "mac" ? LABEL_PHONE_TO_MAC : LABEL_MAC_TO_PHONE);

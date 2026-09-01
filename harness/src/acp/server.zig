@@ -270,6 +270,7 @@ pub const ServerState = struct {
     steer_mutex: std.Io.Mutex = .init,
     pending_steers: std.ArrayListUnmanaged([]u8) = .empty,
     steers_in_flight: usize = 0,
+    steer_interject: std.atomic.Value(bool) = .init(false),
     skills: skill_runtime.Runtime = .{},
     context_snapshot: context_contract.GatheredContextSnapshot = .{},
     worker: worker_runtime.WorkerRuntime = .{},
@@ -1007,7 +1008,6 @@ fn serverAwakeMillis() i64 {
         std.math.maxInt(i64);
 }
 
-/// Permission compatibility wrapper over the shared outbound registry.
 pub fn beginPermissionRequest(state: *ServerState) ?u64 {
     return beginOutboundRequest(state, .permission) catch null;
 }
@@ -1393,13 +1393,18 @@ fn handleInitialize(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message
     try state.writer.writeResponse(alloc, msg.id, out.writer.buffered());
 }
 
-fn handleCancel(state: *ServerState) void {
+fn interruptActiveTurn(state: *ServerState, arm_steer: bool) void {
+    state.steer_interject.store(arm_steer, .seq_cst);
     if (state.active_session) |*session| {
-        debug_trace.eventf("interrupt", "cancel_requested", .{}, "source=acp active_tool_known=false", .{});
+        debug_trace.eventf("interrupt", "cancel_requested", .{}, "source=acp steer={}", .{arm_steer});
         session.cancel_flag.store(true, .seq_cst);
     }
     cancelPendingOutbound(state);
     clearPendingLegacyUrls(state);
+}
+
+fn handleCancel(state: *ServerState) void {
+    interruptActiveTurn(state, false);
 }
 
 pub fn cancelAndReapActivePrompt(state: *ServerState) void {
@@ -1611,10 +1616,6 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
     try state.writer.writeResponse(alloc, msg.id, out.writer.buffered());
 }
 
-/// `reinject_steps=15,prune_percent=70` and friends. One option rather than four
-/// because the client sets them together, before every prompt, over a pipe that
-/// answers one call at a time. An unknown key is ignored so an older harness
-/// answers a newer client instead of failing its turn; a missing key is off.
 fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
     var settings: context_experiments.Settings = .{};
     var pairs = std.mem.splitScalar(u8, value, ',');
@@ -1624,7 +1625,10 @@ fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
         const split = std.mem.indexOfScalar(u8, pair, '=') orelse return error.InvalidValue;
         const key = pair[0..split];
         const number = try std.fmt.parseInt(usize, pair[split + 1 ..], 10);
-        if (std.mem.eql(u8, key, "reinject_steps")) {
+        if (std.mem.eql(u8, key, "compact_percent")) {
+            if (number > 100) return error.InvalidValue;
+            settings.auto_compact_percent = number;
+        } else if (std.mem.eql(u8, key, "reinject_steps")) {
             settings.reinject_prompt_steps = number;
         } else if (std.mem.eql(u8, key, "reinject_percent")) {
             settings.reinject_prompt_percent = number;
@@ -1638,7 +1642,8 @@ fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
 }
 
 test "context experiment options parse into the settings the loop reads" {
-    const parsed = try parseContextExperiments("reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+    const parsed = try parseContextExperiments("compact_percent=80,reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+    try std.testing.expectEqual(@as(usize, 80), parsed.auto_compact_percent);
     try std.testing.expectEqual(@as(usize, 15), parsed.reinject_prompt_steps);
     try std.testing.expectEqual(@as(usize, 0), parsed.reinject_prompt_percent);
     try std.testing.expectEqual(@as(usize, 0), parsed.prune_tools_steps);
@@ -1650,6 +1655,7 @@ test "context experiment options parse into the settings the loop reads" {
     try std.testing.expect(!unknown.enabled());
     try std.testing.expectError(error.InvalidValue, parseContextExperiments("reinject_steps"));
     try std.testing.expectError(error.InvalidCharacter, parseContextExperiments("reinject_steps=often"));
+    try std.testing.expectError(error.InvalidValue, parseContextExperiments("compact_percent=101"));
 }
 
 /// `high;none,low,medium,high` — the stop the client's picker is on, then every stop
@@ -1788,20 +1794,12 @@ fn modelCommitFailureTerminatesConnection(err: anyerror) bool {
         err == error.SessionLogCompactionIndeterminate;
 }
 
-/// A message aimed at one running subagent, from whoever is driving this
-/// connection rather than from the model — the same path the TUI's child
-/// composer takes, so the message is queued on the child and arrives with its
-/// next turn instead of interrupting the call it is in the middle of.
-/// A steering message is read once, by the running turn, at its next model step.
 pub const max_steer_bytes = 16 * 1024;
 pub const max_pending_steers = 8;
 const steering_open = "<user_steering trusted_runtime_context=\"true\">\n" ++
     "The user sent this while you were working. Follow it from here.\n";
 const steering_close = "</user_steering>\n";
 
-/// Renders what is waiting without consuming it: only an acknowledged request
-/// clears the queue, so a step that never reached the model projects the same
-/// text again rather than swallowing it.
 pub fn takePendingSteering(state: *ServerState, arena: Allocator) !?[]const u8 {
     state.steer_mutex.lockUncancelable(io_mod.getIo());
     defer state.steer_mutex.unlock(io_mod.getIo());
@@ -1820,6 +1818,10 @@ pub fn takePendingSteering(state: *ServerState, arena: Allocator) !?[]const u8 {
     writer.writeAll(steering_close) catch return null;
     state.steers_in_flight = state.pending_steers.items.len;
     return writer.buffered();
+}
+
+pub fn takeSteerInterject(state: *ServerState) bool {
+    return state.steer_interject.swap(false, .seq_cst);
 }
 
 pub fn clearDeliveredSteering(state: *ServerState) void {
@@ -1888,6 +1890,7 @@ fn handleSteer(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message) !vo
         "bytes={d} pending={d}",
         .{ content.len, state.pending_steers.items.len },
     );
+    interruptActiveTurn(state, true);
     return state.writer.writeResponse(alloc, msg.id, "null");
 }
 
@@ -2152,6 +2155,31 @@ test "steering survives a step that never reached the model, and is dropped once
     try std.testing.expectEqualStrings(rendered, (try takePendingSteering(&state, arena)).?);
     clearDeliveredSteering(&state);
     try std.testing.expectEqual(@as(?[]const u8, null), try takePendingSteering(&state, arena));
+}
+
+test "a steer arms one interjection and a stop disarms it" {
+    const alloc = std.testing.allocator;
+    var state = ServerState{
+        .alloc = alloc,
+        .cfg = undefined,
+        .writer = jsonrpc.Writer.init(),
+    };
+    defer state.deinit();
+
+    try std.testing.expect(!takeSteerInterject(&state));
+
+    state.steer_interject.store(true, .seq_cst);
+    try std.testing.expect(takeSteerInterject(&state));
+    try std.testing.expect(!takeSteerInterject(&state));
+
+    state.steer_interject.store(true, .seq_cst);
+    handleCancel(&state);
+    try std.testing.expect(!takeSteerInterject(&state));
+
+    const parked = beginPermissionRequest(&state).?;
+    interruptActiveTurn(&state, true);
+    try std.testing.expect(takeSteerInterject(&state));
+    try std.testing.expectEqual(types.ToolPermissionDecision.deny, awaitPermissionDecision(&state, parked));
 }
 
 test "ACP initialize request validation requires a uint16 protocol version" {

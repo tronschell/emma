@@ -35,7 +35,7 @@ pub fn command_safer_alternative_for(command: []const u8) ?[]const u8 {
         return "safer: use list_files or glob_files for discovery";
     }
     if (is_pattern_matcher(base)) {
-        return "safer: use grep_files for exact local search";
+        return "safer: use grep_files for local pattern search";
     }
     if (std.mem.eql(u8, base, "find")) {
         return "safer: use glob_files or list_files for discovery";
@@ -567,7 +567,7 @@ test "command safer alternative explains risky commands" {
 test "command safer alternative maps shell inspection to dedicated tools" {
     try std.testing.expectEqualStrings("safer: use read_file for file inspection", command_safer_alternative_for("cat src/main.zig").?);
     try std.testing.expectEqualStrings("safer: use list_files or glob_files for discovery", command_safer_alternative_for("ls src").?);
-    try std.testing.expectEqualStrings("safer: use grep_files for exact local search", command_safer_alternative_for("rg needle src").?);
+    try std.testing.expectEqualStrings("safer: use grep_files for local pattern search", command_safer_alternative_for("rg needle src").?);
     try std.testing.expectEqualStrings("safer: use glob_files or list_files for discovery", command_safer_alternative_for("find src -name '*.zig'").?);
 }
 

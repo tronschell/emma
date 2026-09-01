@@ -1,9 +1,10 @@
 # App-scoped computer use
 
-Emma can read and operate a running macOS app in the background after you approve
-that specific app. It uses accessibility controls, not the global pointer, screen
-coordinates, or the clipboard. Apps with no usable accessibility interface are
-unsupported; there is no screenshot or canvas fallback.
+Emma can read and operate a running macOS or Windows app in the background after
+you approve that specific app. It uses macOS accessibility controls or Windows
+UI Automation, not the global pointer, screen coordinates, or the clipboard.
+Apps with no usable accessibility interface are unsupported; there is no
+screenshot or canvas fallback.
 
 ## Approval and scope
 
@@ -56,8 +57,8 @@ the snapshot is consumed even if that action fails. Snapshots expire after 60
 seconds. Get fresh app state after each action to inspect the result and obtain
 new indices; tokens from another app, an old state or a previous turn are refused.
 Element ownership, identity and protected status are checked again before mutation.
-The app's menu bar is excluded, including its Apple menu and system commands;
-use supported controls inside app windows instead.
+App and system menus are excluded; use supported controls inside app windows
+instead.
 
 `type_text` is not a general typing replacement: rich-text editors and text areas
 may be unsupported, and it needs a readable value and selection. Do not substitute
@@ -81,9 +82,11 @@ truncated. The `computer` tool takes no screenshots, reads no clipboard and has 
 image channel. The separate yellow-pen annotation capture and image attachment
 paths are unchanged; see [privacy.md](privacy.md).
 
-macOS Accessibility permission is required to read or act on controls. Enable Emma
-in System Settings → Privacy & Security → Accessibility, then relaunch. Screen
-Recording is not needed for this tool; it remains separate for screen annotation.
+On macOS, Accessibility permission is required to read or act on controls. Enable
+Emma in System Settings → Privacy & Security → Accessibility, then relaunch. On
+Windows, the helper uses UI Automation and has no equivalent macOS TCC grant.
+Screen Recording is not needed for this tool; it remains separate for screen
+annotation.
 
 Only one computer turn runs at a time. Limits are 20 tool calls and ten minutes per
 run, with at least 40 ms between app actions and a ten-second helper reply timeout.
@@ -114,12 +117,13 @@ visible for the remainder of the short cue lifetime. The run banner remains the
 continuous status and Stop control.
 
 Implementation: [computer.ts](../desktop/main/computer.ts) owns grants and helper
-lifetime; [computer.m](../desktop/native/computer.m) enforces app identity and
-accessibility actions; [main.ts](../desktop/main/main.ts) connects human approval,
-turn lifecycle and the banner. [harness.ts](../desktop/main/harness.ts) accepts
-computer calls only from the active parent turn's current tool-call IDs, never
-from delegated agents. Settings → Tools → Computer use can disable the tool in
-every mode. Non-macOS platforms are unsupported.
+lifetime; [computer.m](../desktop/native/computer.m) and
+[computer_win.cpp](../desktop/native/computer_win.cpp) enforce app identity and
+platform accessibility actions; [main.ts](../desktop/main/main.ts) connects human
+approval, turn lifecycle and the banner. [harness.ts](../desktop/main/harness.ts)
+accepts computer calls only from the active parent turn's current tool-call IDs,
+never from delegated agents. Settings → Tools → Computer use can disable the
+tool in every mode.
 
 ## Relationship to Codex
 
@@ -149,12 +153,12 @@ The actual cursor renderer was also exercised in an isolated Electron visual
 fixture: captured intermediate frames showed the glide in both directions and
 the arrival pulse. The background app workflow was repeated with the cursor build.
 This is not release certification: OS permission grant/denial prompts, the physical
-global Escape shortcut, lock/suspend behavior, VoiceOver, multiple displays,
-the system Reduce Motion setting, release signing and non-macOS behavior were not
+global Escape shortcut, lock/suspend behavior, VoiceOver, multiple displays, the
+system Reduce Motion setting, release signing and real Windows behavior were not
 manually verified.
 
 ## See also
 
 - [permissions.md](permissions.md) — modes, explicit app grants and cancellation
 - [tools.md](tools.md) — the tool catalogs and harness bridge
-- [privacy.md](privacy.md) — what leaves this Mac
+- [privacy.md](privacy.md) — what leaves this computer

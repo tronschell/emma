@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const compaction_summarizer = @import("gateway/compaction_summarizer.zig");
 pub const permission_reviewer = @import("gateway/permission_reviewer.zig");
 
 const agent_stream_provider_contract = @import("../core/agent/stream_provider.zig");
@@ -492,9 +493,7 @@ fn fetchCliModelCatalog(
 
 pub fn resolveChatUrl(fallback: []const u8, override: ?[]const u8) []const u8 {
     const candidate = override orelse return fallback;
-    // The chat URL carries the bearer token and full request payload; only a
-    // loopback HTTP override is trusted for local testing.
-    if (!gateway_client.isLoopbackHttpUrl(candidate)) return fallback;
+    if (!gateway_client.isLoopbackHttpUrl(candidate) and !gateway_client.isHttpsUrl(candidate)) return fallback;
     return candidate;
 }
 
@@ -1513,11 +1512,18 @@ test "built-in gateway chat url honors loopback override before fallback" {
     );
 }
 
+test "built-in gateway chat url honors https overrides for provider routes" {
+    try std.testing.expectEqualStrings(
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        resolveChatUrl("https://fallback.test/chat", "https://api.z.ai/api/coding/paas/v4/chat/completions"),
+    );
+}
+
 test "built-in gateway chat url ignores untrusted overrides and falls back" {
     const fallback = "https://openrouter.ai/api/v1/chat/completions";
     for ([_][]const u8{
-        "https://evil.example/chat",
         "http://evil.example/chat",
+        "https://user:pass@evil.example/chat",
         "http://127.0.0.1:8080@evil.example/chat",
         "ftp://evil.example/chat",
         "not a url",

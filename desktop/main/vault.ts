@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { isWindows, pathInside, samePath } from "./platform";
 import {
   ATTACHMENT_FOLDER,
   DEFAULT_VAULT_FOLDER,
@@ -15,17 +16,40 @@ import {
   keepKindLabel,
   noteFolder,
   noteSlug,
+  validNoteFolder,
   validTag,
   validVaultFolder,
   type KeepRequest,
   type KeptNote,
+  type NoteFolder,
   type VaultChoice,
 } from "../shared/vault";
 
 const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|webp|gif);base64,([A-Za-z0-9+/=\s]+)$/;
+const EMBED = /!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]|!\[[^\]]*\]\(([^)\s]+)\)/;
+const IMAGE_FILE = /\.(png|jpe?g|gif|bmp)$/i;
+const MAX_EXCERPT = 280;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
-const OBSIDIAN_CONFIG = ["Library", "Application Support", "obsidian", "obsidian.json"];
-const OBSIDIAN_APPS = ["/Applications/Obsidian.app", path.join(homedir(), "Applications", "Obsidian.app")];
+const OBSIDIAN_CONFIG = isWindows
+  ? path.join(process.env.APPDATA || path.join(homedir(), "AppData", "Roaming"), "obsidian", "obsidian.json")
+  : path.join(homedir(), "Library", "Application Support", "obsidian", "obsidian.json");
+const OBSIDIAN_APPS = isWindows ? (() => {
+  const local = process.env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local");
+  const programRoots = [process.env.ProgramFiles, process.env.ProgramW6432, process.env["ProgramFiles(x86)"], "C:\\Program Files"]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const candidates = [
+    path.join(local, "Programs", "Obsidian", "Obsidian.exe"),
+    path.join(local, "Obsidian", "Obsidian.exe"),
+    path.join(local, "Microsoft", "WindowsApps", "Obsidian.exe"),
+    ...programRoots.flatMap((root) => [path.join(root, "Obsidian", "Obsidian.exe"), path.join(root, "WindowsApps", "Obsidian.exe")]),
+  ];
+  for (const root of programRoots.map((value) => path.join(value, "WindowsApps"))) {
+    try {
+      for (const entry of readdirSync(root)) if (/^Obsidian\.Obsidian(?:_|$)/i.test(entry)) candidates.push(path.join(root, entry, "Obsidian.exe"));
+    } catch { continue; }
+  }
+  return [...new Set(candidates)];
+})() : ["/Applications/Obsidian.app", path.join(homedir(), "Applications", "Obsidian.app")];
 const BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 
 type Frontmatter = Record<string, string | string[]>;
@@ -62,15 +86,13 @@ function writeAtomic(file: string, data: string | Buffer, mode?: number): void {
 }
 
 function contains(folder: string, target: string): boolean {
-  const base = path.resolve(folder);
-  const resolved = path.resolve(target);
-  return resolved.startsWith(`${base}${path.sep}`);
+  return pathInside(folder, target);
 }
 
 function normalizeVault(value: unknown): VaultChoice {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pick the folder Emma should keep your notes in.");
   const choice = value as Partial<VaultChoice>;
-  const root = typeof choice.root === "string" ? choice.root.replace(/\/+$/, "") : "";
+  const root = typeof choice.root === "string" ? choice.root.trim() : "";
   if (!root || !path.isAbsolute(root)) throw new Error("Name your vault with a full path.");
   const folder = validVaultFolder(choice.folder) ? choice.folder : DEFAULT_VAULT_FOLDER;
   const kind = choice.kind === "obsidian" ? "obsidian" : "folder";
@@ -114,7 +136,7 @@ export function vaultWritable(vault: VaultChoice): boolean {
 export function detectObsidianVaults(): { name: string; path: string }[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path.join(homedir(), ...OBSIDIAN_CONFIG), "utf8"));
+    parsed = JSON.parse(readFileSync(OBSIDIAN_CONFIG, "utf8"));
   } catch {
     return [];
   }
@@ -124,8 +146,8 @@ export function detectObsidianVaults(): { name: string; path: string }[] {
   for (const entry of Object.values(vaults as Record<string, unknown>)) {
     const root = (entry as { path?: unknown } | null)?.path;
     if (typeof root !== "string" || !path.isAbsolute(root)) continue;
-    const cleaned = root.replace(/\/+$/, "");
-    if (!isDirectory(cleaned) || found.some((item) => item.path === cleaned)) continue;
+    const cleaned = path.resolve(root);
+    if (!isDirectory(cleaned) || found.some((item) => samePath(item.path, cleaned))) continue;
     found.push({ name: path.basename(cleaned), path: cleaned });
   }
   return found;
@@ -136,6 +158,7 @@ export function obsidianInstalled(): boolean {
 }
 
 export function obsidianInstallCommand(): string {
+  if (isWindows) return "winget install --id Obsidian.Obsidian --exact";
   return BREW.some((brew) => existsSync(brew)) ? "brew install --cask obsidian" : "";
 }
 
@@ -210,6 +233,28 @@ function writeAttachment(vault: VaultChoice, stem: string, image: string): strin
   return name;
 }
 
+function noteExcerpt(body: string): string {
+  const text = body
+    .replace(/!\[\[[^\]]*\]\]/g, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/^\s*(?:[>#*+-]+|\d+\.)\s*/gm, "")
+    .replace(/[`*_[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= MAX_EXCERPT) return text;
+  const cut = text.slice(0, MAX_EXCERPT);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > MAX_EXCERPT / 2 ? cut.slice(0, space) : cut).replace(/[,.;:]$/, "")}…`;
+}
+
+function noteImage(folder: string, body: string): string {
+  const match = EMBED.exec(body);
+  const name = (match?.[1] ?? match?.[2] ?? "").trim();
+  if (!name || !IMAGE_FILE.test(name) || name.includes("..") || /^[a-z][a-z0-9+.-]*:/i.test(name)) return "";
+  const file = path.join(folder, name);
+  return contains(folder, file) && existsSync(file) ? file : "";
+}
+
 function noteBody(request: KeepRequest, embed: string): string {
   const text = (request.text ?? "").trim();
   if (request.kind === "screenshot") return [embed, text].filter(Boolean).join("\n\n");
@@ -241,7 +286,9 @@ export async function keepNote(vault: VaultChoice, request: KeepRequest): Promis
     ...(sourceApplication ? { application: sourceApplication } : {}),
     tags: [],
   };
-  writeAtomic(file, `${serializeFrontmatter(fields)}\n${clampBytes(noteBody(request, embed), MAX_NOTE_BYTES)}\n`);
+  const body = clampBytes(noteBody(request, embed), MAX_NOTE_BYTES);
+  writeAtomic(file, `${serializeFrontmatter(fields)}\n${body}\n`);
+  const image = noteImage(folder, body);
   return {
     path: file,
     relative,
@@ -249,28 +296,37 @@ export async function keepNote(vault: VaultChoice, request: KeepRequest): Promis
     tags: [],
     savedAt,
     kind: request.kind,
+    excerpt: noteExcerpt(body),
+    ...(image ? { image } : {}),
     ...(sourceUrl ? { sourceUrl } : {}),
     ...(sourceApplication ? { sourceApplication } : {}),
   };
 }
 
-function readNote(folder: string, name: string): KeptNote | null {
-  const file = path.join(folder, name);
+function readNote(root: string, name: string): KeptNote | null {
+  const file = path.join(root, name);
   try {
-    const fields = parseFrontmatter(readFileSync(file, "utf8"));
+    const text = readFileSync(file, "utf8");
+    const fields = parseFrontmatter(text);
     const kind = fields?.kind;
     if (!fields || !isKeepKind(kind)) return null;
     const saved = typeof fields.saved === "string" ? fields.saved.trim() : "";
     const title = typeof fields.title === "string" ? fields.title.trim() : "";
     const source = typeof fields.source === "string" ? fields.source.trim() : "";
     const application = typeof fields.application === "string" ? fields.application.trim() : "";
+    const body = text.slice(FRONTMATTER.exec(text)?.[0].length ?? 0);
+    const image = noteImage(root, body);
+    const held = name.includes("/") ? name.slice(0, name.indexOf("/")) : "";
     return {
       path: file,
       relative: name,
+      ...(held ? { folder: held } : {}),
       title: title || name.replace(/\.md$/, ""),
       tags: (Array.isArray(fields.tags) ? fields.tags : []).filter(validTag).slice(0, MAX_TAGS),
       savedAt: Number.isNaN(Date.parse(saved)) ? statSync(file).mtime.toISOString() : saved,
       kind,
+      excerpt: noteExcerpt(body),
+      ...(image ? { image } : {}),
       ...(source ? { sourceUrl: source } : {}),
       ...(application ? { sourceApplication: application } : {}),
     };
@@ -279,25 +335,96 @@ function readNote(folder: string, name: string): KeptNote | null {
   }
 }
 
+function markdownIn(folder: string, prefix = ""): string[] {
+  try {
+    return readdirSync(folder, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+      .map((entry) => `${prefix}${entry.name}`);
+  } catch {
+    return [];
+  }
+}
+
+function subfolders(root: string): string[] {
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name !== ATTACHMENT_FOLDER && !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort((left, right) => left.localeCompare(right));
+  } catch {
+    return [];
+  }
+}
+
+function notesRoot(vault: VaultChoice): string {
+  return noteFolder(normalizeVault(vault));
+}
+
 export function listNotes(vault: VaultChoice): KeptNote[] {
-  let folder: string;
+  let root: string;
   try {
-    folder = noteFolder(normalizeVault(vault));
+    root = notesRoot(vault);
   } catch {
     return [];
   }
-  let names: string[];
-  try {
-    names = readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name);
-  } catch {
-    return [];
-  }
+  const names = [...markdownIn(root), ...subfolders(root).flatMap((name) => markdownIn(path.join(root, name), `${name}/`))];
   const notes: KeptNote[] = [];
   for (const name of names.slice(0, MAX_VAULT_NOTES * 2)) {
-    const note = readNote(folder, name);
+    const note = readNote(root, name);
     if (note) notes.push(note);
   }
   return notes.sort((left, right) => right.savedAt.localeCompare(left.savedAt)).slice(0, MAX_VAULT_NOTES);
+}
+
+export function listNoteFolders(vault: VaultChoice): NoteFolder[] {
+  let root: string;
+  try {
+    root = notesRoot(vault);
+  } catch {
+    return [];
+  }
+  return subfolders(root).map((name) => ({ name, changedAt: statSync(path.join(root, name)).mtime.toISOString() }));
+}
+
+export function createNoteFolder(vault: VaultChoice, value: unknown): NoteFolder {
+  const root = notesRoot(vault);
+  if (!validNoteFolder(value)) throw new Error("Name the folder without slashes, and keep it short.");
+  const name = value.trim();
+  const folder = path.join(root, name);
+  if (!contains(root, folder)) throw new Error("Emma will not write outside your knowledge folder.");
+  if (existsSync(folder)) throw new Error(`Your knowledge base already keeps a folder called ${name}.`);
+  mkdirSync(folder, { recursive: true });
+  return { name, changedAt: statSync(folder).mtime.toISOString() };
+}
+
+export function renameNoteFolder(vault: VaultChoice, current: unknown, next: unknown): NoteFolder {
+  const root = notesRoot(vault);
+  if (!validNoteFolder(current) || !validNoteFolder(next)) throw new Error("Name the folder without slashes, and keep it short.");
+  const name = next.trim();
+  const from = path.join(root, current.trim());
+  const to = path.join(root, name);
+  if (!contains(root, from) || !contains(root, to)) throw new Error("Emma will not write outside your knowledge folder.");
+  if (!isDirectory(from)) throw new Error(`Your knowledge base has no folder called ${current.trim()}.`);
+  if (to !== from) {
+    if (existsSync(to) && to.toLowerCase() !== from.toLowerCase()) throw new Error(`Your knowledge base already keeps a folder called ${name}.`);
+    renameSync(from, to);
+  }
+  return { name, changedAt: statSync(to).mtime.toISOString() };
+}
+
+export function moveNote(vault: VaultChoice, relative: string, into: unknown): string {
+  const root = notesRoot(vault);
+  const from = path.join(root, relative);
+  if (!contains(root, from) || !existsSync(from)) throw new Error("That note is not in your vault.");
+  const name = into === "" ? "" : validNoteFolder(into) ? into.trim() : null;
+  if (name === null) throw new Error("That is not a folder in your knowledge base.");
+  const folder = name ? path.join(root, name) : root;
+  if (!isDirectory(folder)) throw new Error(`Your knowledge base has no folder called ${name}.`);
+  const to = path.join(folder, path.basename(relative));
+  if (to === from) return path.relative(root, to);
+  if (!contains(root, to) || existsSync(to)) throw new Error("A note by that name is already filed there.");
+  renameSync(from, to);
+  return path.relative(root, to);
 }
 
 export function applyNoteTags(notePath: string, title: string, tags: readonly string[]): void {

@@ -112,8 +112,8 @@ handed an image; its advertisement is `.never`. Emma's image tool is therefore
 A native tool is registered process-wide, so Emma cannot hide one by omitting it
 from a per-turn list. `runEmmaTool` re-applies `toolGate(turn.mode, name,
 disabledTools)` before running anything, and `whyUnavailable` answers in words
-the model can read — "`cli` needs a connected folder", "`computer` controls this
-Mac, and this is not a Mac".
+the model can read — "`cli` needs a connected folder", or that computer use is
+not available on this platform.
 
 ### Discovery: two tools, then the rest
 
@@ -151,10 +151,10 @@ acp` once per workspace directory, at most `MAX_HARNESSES = 4` alive at once
 A call is abandoned after `MAX_IDLE_MS` — 30 minutes — of **silence**, not wall
 clock; any inbound message refreshes every pending timer.
 
-Those timers count only the time Emma was awake, which is why a closed lid needs
-its own path. macOS freezes the process and takes the model's socket with it, and
-neither end ever reads the end of that stream, so the turn would sit at
-"searching" for as long as the machine slept. On Electron's `resume`,
+Those timers count only the time Emma was awake, which is why suspend needs its
+own path. When the operating system suspends the process and takes the model's
+socket with it, neither end reads the end of that stream, so the turn would sit
+at "searching" for as long as the machine slept. On Electron's `resume`,
 `resumeAfterSleep` in [`main.ts`](../desktop/main/main.ts) waits `WAKE_GRACE_MS`
 — 45 seconds — for a connection that survived to say something, reading
 `Harness.silentFor` (wall clock, unlike the reaper). Whatever is still silent is
@@ -180,7 +180,7 @@ fourteen:
 | `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments` |
 | `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
 | `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
-| `session/steer` | Hands the running turn `content` for its next model step. Refused when no turn is running, over 16 KiB, or more than 8 deep |
+| `session/steer` | Cuts into the running turn: the tool call or model stream in flight is aborted, and the same turn carries on with `content` as its next user message. Refused when no turn is running, over 16 KiB, or more than 8 deep |
 | `session/steer_child` | Queues a message for one running subagent by `childId`, not queued behind the active prompt |
 | `session/cancel_child` | Stops one running subagent by `childId` |
 
@@ -367,7 +367,7 @@ the `HOME` Emma gives the child:
 | File | Is |
 | --- | --- |
 | `.fx/system-prompt.md` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. |
-| `.fx/AGENTS.md` | The connections block and any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
+| `.fx/AGENTS.md` | Any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
 
 Both are rewritten per turn, and only when they changed. The one thing that can
 live in neither is a per-turn A/B arm; that rides the turn's skill context.
@@ -401,12 +401,13 @@ npm --prefix desktop run build:harness   # the one script
 (cd harness && zig build test)           # the only Zig test suite in the repo
 ```
 
-`build:host` chains it after `emma-host`, and `package:mac` runs
+`build:host` chains it after `emma-host`, and the package scripts run
 `zig build -Doptimize=ReleaseSafe` inline. Nothing else builds `emma-cli` —
 `npm start`, `npm run build`, and `npm run check` do not, so a stale binary
-survives all three. A checkout uses `harness/zig-out/bin/emma-cli`
-(`DEV_BINARIES` in `main.ts`); a packaged app has it at
-`Emma.app/Contents/Resources/emma-cli`.
+survives all three. A checkout uses `harness/zig-out/bin/emma-cli` on macOS or
+`harness/zig-out/bin/emma-cli.exe` on Windows (`DEV_BINARIES` in `main.ts`); a
+packaged app has it in its resources directory (`Emma.app/Contents/Resources/`
+on macOS, `resources/` on Windows).
 
 ### Against a fake provider
 
@@ -421,6 +422,8 @@ EMMA_PROVIDER_API_KEY=anything \
 EMMA_PROVIDER_CHAT_URL=http://127.0.0.1:8099/v1/chat/completions \
   harness/zig-out/bin/emma-cli acp
 ```
+
+On Windows, use `harness/zig-out/bin/emma-cli.exe acp`.
 
 | Variable | Effect |
 | --- | --- |

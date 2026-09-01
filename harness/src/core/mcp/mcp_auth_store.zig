@@ -6,6 +6,7 @@ const io_mod = @import("../shared/io.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
 const secret = @import("../auth/secret.zig");
+const windows_protected = @import("../hosts/windows_protected_store.zig");
 
 const Allocator = std.mem.Allocator;
 const schema_version: i64 = 1;
@@ -16,6 +17,7 @@ const lock_deadline_ms: u64 = 2_000;
 const StorageBackend = enum {
     profile_file,
     macos_keychain,
+    windows_protected_file,
 };
 
 const ReadDecision = enum {
@@ -97,7 +99,10 @@ fn selectStorageBackend(
     os_tag: std.Target.Os.Tag,
     keychain_disabled: bool,
 ) StorageBackend {
-    if (os_tag == .macos and !keychain_disabled) return .macos_keychain;
+    if (!keychain_disabled) {
+        if (os_tag == .macos) return .macos_keychain;
+        if (os_tag == .windows) return .windows_protected_file;
+    }
     return .profile_file;
 }
 
@@ -115,6 +120,10 @@ fn selectReadDecision(
             .migrate_profile_file
         else
             .read_keychain,
+        .windows_protected_file => if (profile_file_present)
+            .migrate_profile_file
+        else
+            .use_profile_file,
     };
 }
 
@@ -448,6 +457,7 @@ fn openLockedDirForReadControlled(
     return switch (backend) {
         .profile_file => openExistingLockedDirControlled(cancel_flag),
         .macos_keychain => try openOrCreateLockedDirControlled(cancel_flag),
+        .windows_protected_file => try openOrCreateLockedDirControlled(cancel_flag),
     };
 }
 
@@ -467,16 +477,23 @@ fn openExistingPrivateChild(
 fn normalizeAndVerifyPrivateDir(dir: std.Io.Dir) !void {
     const initial = try dir.stat(io_mod.getIo());
     if (initial.kind != .directory) return error.DurablePathUnsafe;
-    if (initial.permissions.toMode() & 0o200 == 0) {
+    if (!io_mod.permissionsWritable(initial.permissions)) {
         return error.PrivateStatePermissionsUnsupported;
     }
-    try dir.setPermissions(
-        io_mod.getIo(),
-        std.Io.File.Permissions.fromMode(0o700),
-    );
-    const stat = try dir.stat(io_mod.getIo());
-    if (stat.kind != .directory or stat.permissions.toMode() & 0o777 != 0o700) {
-        return error.PrivateStatePermissionsUnsupported;
+    if (comptime builtin.os.tag == .windows) {
+        try io_mod.enforcePrivateDirectoryAcl(dir);
+        if (!(try io_mod.privateDirectoryAclMatches(dir))) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
+    } else {
+        try dir.setPermissions(
+            io_mod.getIo(),
+            io_mod.permissionsFromMode(0o700),
+        );
+        const stat = try dir.stat(io_mod.getIo());
+        if (stat.kind != .directory or !io_mod.permissionsMatch(stat.permissions, 0o700)) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
     }
 }
 
@@ -497,18 +514,22 @@ fn loadStoreControlled(
     cancel_flag: ?*const std.atomic.Value(bool),
 ) !Store {
     try checkCancellation(cancel_flag);
-    const from_file = try loadFromDir(alloc, dir);
+    const from_file = try loadFromDir(alloc, dir, backend);
     switch (selectReadDecision(backend, from_file != null)) {
         .use_profile_file => return from_file orelse .{},
         .migrate_profile_file => {
             var store = from_file.?;
             errdefer store.deinit(alloc);
-            try writeStoreToKeychainControlled(
-                alloc,
-                store,
-                keychain,
-                cancel_flag,
-            );
+            switch (backend) {
+                .macos_keychain => try writeStoreToKeychainControlled(
+                    alloc,
+                    store,
+                    keychain,
+                    cancel_flag,
+                ),
+                .windows_protected_file => try writeStoreToProtectedFile(alloc, dir, store),
+                .profile_file => unreachable,
+            }
             if (store.rejected_entries > 0) {
                 debug_trace.logf(
                     "mcp",
@@ -517,7 +538,7 @@ fn loadStoreControlled(
                 );
             }
             try checkCancellation(cancel_flag);
-            try deleteCredentialFile(dir);
+            if (backend == .macos_keychain) try deleteCredentialFile(dir);
             return store;
         },
         .read_keychain => {},
@@ -534,7 +555,11 @@ fn loadStoreControlled(
     return parseStore(alloc, bytes);
 }
 
-fn loadFromDir(alloc: Allocator, dir: *io_mod.VerifiedDir) !?Store {
+fn loadFromDir(
+    alloc: Allocator,
+    dir: *io_mod.VerifiedDir,
+    backend: StorageBackend,
+) !?Store {
     var file = dir.dir.openFile(
         io_mod.getIo(),
         profile_paths.mcp_credentials_file_name,
@@ -551,11 +576,29 @@ fn loadFromDir(alloc: Allocator, dir: *io_mod.VerifiedDir) !?Store {
     defer file.close(io_mod.getIo());
     const stat = try file.stat(io_mod.getIo());
     if (stat.kind != .file or stat.nlink != 1) return error.DurablePathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o600) {
+    if (comptime builtin.os.tag == .windows) {
+        if (!(try io_mod.privateFileAclMatches(file))) return error.PrivateStatePermissionsUnsupported;
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.PrivateStatePermissionsUnsupported;
     }
-    const bytes = try io_mod.readFileToEnd(alloc, &file, max_store_bytes);
-    defer secret.zeroAndFree(alloc, bytes);
+    const stored = try io_mod.readFileToEnd(
+        alloc,
+        &file,
+        if (backend == .windows_protected_file)
+            windows_protected.maxStoredBytes()
+        else
+            max_store_bytes,
+    );
+    defer secret.zeroAndFree(alloc, stored);
+    var decrypted: ?[]u8 = null;
+    if (backend == .windows_protected_file) {
+        decrypted = windows_protected.unprotect(alloc, stored) catch |err| switch (err) {
+            error.NotProtected => null,
+            else => return err,
+        };
+    }
+    defer if (decrypted) |value| secret.zeroAndFree(alloc, value);
+    const bytes = decrypted orelse stored;
     return try parseStore(alloc, bytes);
 }
 
@@ -686,6 +729,7 @@ fn writeStore(
     switch (backend) {
         .profile_file => try writeStoreToFile(alloc, dir, store),
         .macos_keychain => try writeStoreToKeychain(alloc, store, keychain),
+        .windows_protected_file => try writeStoreToProtectedFile(alloc, dir, store),
     }
 }
 
@@ -701,6 +745,23 @@ fn writeStoreToFile(
         dir,
         profile_paths.mcp_credentials_file_name,
         bytes,
+    );
+}
+
+fn writeStoreToProtectedFile(
+    alloc: Allocator,
+    dir: *io_mod.VerifiedDir,
+    store: Store,
+) !void {
+    const plain = try serializeStore(alloc, store);
+    defer secret.zeroAndFree(alloc, plain);
+    const protected = try windows_protected.protect(alloc, plain);
+    defer secret.zeroAndFree(alloc, protected);
+    try io_mod.durableReplaceVerified(
+        alloc,
+        dir,
+        profile_paths.mcp_credentials_file_name,
+        protected,
     );
 }
 
@@ -769,6 +830,7 @@ fn clearStore(
             _ = try keychain.delete(alloc);
             try deleteCredentialFile(dir);
         },
+        .windows_protected_file => try deleteCredentialFile(dir),
     }
 }
 
@@ -996,7 +1058,7 @@ test "credential backend selection is explicit and platform scoped" {
         selectStorageBackend(.linux, false),
     );
     try std.testing.expectEqual(
-        StorageBackend.profile_file,
+        StorageBackend.windows_protected_file,
         selectStorageBackend(.windows, false),
     );
 }
@@ -1383,7 +1445,7 @@ test "credential store is private atomic and supports restart deletion" {
     const root_stat = try root.stat(std.testing.io);
     try std.testing.expectEqual(
         @as(u32, 0o700),
-        root_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(root_stat.permissions) & 0o777,
     );
     var credentials_dir = try root.openDir(
         std.testing.io,
@@ -1394,7 +1456,7 @@ test "credential store is private atomic and supports restart deletion" {
     const dir_stat = try credentials_dir.stat(std.testing.io);
     try std.testing.expectEqual(
         @as(u32, 0o700),
-        dir_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(dir_stat.permissions) & 0o777,
     );
     const file_stat = try credentials_dir.statFile(
         std.testing.io,
@@ -1403,7 +1465,7 @@ test "credential store is private atomic and supports restart deletion" {
     );
     try std.testing.expectEqual(
         @as(u32, 0o600),
-        file_stat.permissions.toMode() & 0o777,
+        io_mod.permissionsMode(file_stat.permissions) & 0o777,
     );
 
     const deleted = try delete(

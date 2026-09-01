@@ -9,6 +9,8 @@ export const MAX_SCREEN_CONTEXT_CHARS = 96 * 1024;
 
 export const methods = [
   "snapshot",
+  "threadSummaries",
+  "thread",
   "createThread",
   "setThreadArchived",
   "renameThread",
@@ -26,6 +28,7 @@ export const methods = [
   "selectOpenRouterModel",
   "setThreadModel",
   "selectProviderModel",
+  "selectCodexModel",
   "selectFallbackModel",
   "setRouters",
 ] as const;
@@ -35,6 +38,8 @@ export type Request = { method: Method; params: Record<string, string> };
 
 const fields: Record<Method, readonly string[]> = {
   snapshot: [],
+  threadSummaries: [],
+  thread: ["threadId"],
   createThread: [],
   setThreadArchived: ["threadId", "archived"],
   renameThread: ["threadId", "title"],
@@ -52,6 +57,7 @@ const fields: Record<Method, readonly string[]> = {
   selectOpenRouterModel: ["modelId"],
   setThreadModel: ["threadId", "modelId"],
   selectProviderModel: ["providerId"],
+  selectCodexModel: ["modelId"],
   selectFallbackModel: [],
   setRouters: ["routers"],
 };
@@ -61,6 +67,7 @@ const optionalFields: Partial<Record<Method, readonly string[]>> = {
   listOpenRouterModels: ["force"],
   selectOpenRouterModel: ["effort"],
   selectProviderModel: ["effort"],
+  selectCodexModel: ["effort"],
   setThreadModel: ["effort"],
   saveScheduledJob: ["jobId", "nodes", "model"],
   runScheduledJob: ["variables"],

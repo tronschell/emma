@@ -10,6 +10,7 @@ const cursor_probe = @import("terminal/cursor_probe.zig");
 const resize_runtime = @import("resize_runtime.zig");
 const ui_terminal = @import("terminal/terminal.zig");
 const wasm_terminal = if (builtin.os.tag == .wasi) @import("terminal/wasm_terminal.zig") else struct {};
+const windows_console = if (builtin.os.tag == .windows) @import("terminal/windows_console.zig") else struct {};
 
 const Allocator = std.mem.Allocator;
 const Layout = types.Layout;
@@ -35,10 +36,10 @@ extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname(fd: c_int) ?[*:0]u8;
 
 pub const supports_resize_signal = resize_runtime.supports_resize_signal;
-pub const ResizeHandler = if (builtin.os.tag == .wasi)
-    *const fn () callconv(.c) void
-else
-    std.posix.Sigaction.handler_fn;
+pub const ResizeHandler = switch (builtin.os.tag) {
+    .wasi, .windows => *const fn () callconv(.c) void,
+    else => std.posix.Sigaction.handler_fn,
+};
 pub const ResizeApprovalInterlock = resize_runtime.ResizeApprovalInterlock;
 pub const RedrawMode = resize_runtime.RedrawMode;
 
@@ -64,7 +65,10 @@ pub const AlternateScreenOwner = enum {
 };
 
 pub const TerminalState = struct {
-    stdin_fd: std.posix.fd_t = std.posix.STDIN_FILENO,
+    stdin_fd: std.posix.fd_t = switch (builtin.os.tag) {
+        .windows => undefined,
+        else => std.posix.STDIN_FILENO,
+    },
     original_termios: std.posix.termios = undefined,
     raw_enabled: bool = false,
     alternate_screen_owner: AlternateScreenOwner = .none,
@@ -72,6 +76,8 @@ pub const TerminalState = struct {
     alternate_mouse_tracking_active: bool = false,
     signal_handler_installed: bool = false,
     old_winch_action: ?std.posix.Sigaction = null,
+    windows_console_mode: u32 = 0,
+    windows_console_mode_captured: bool = false,
 
     pub fn fileApprovalScreenActive(self: TerminalState) bool {
         return self.alternate_screen_owner == .file_approval;
@@ -94,18 +100,31 @@ pub const TerminalState = struct {
     }
 
     pub fn ensureInteractive(self: TerminalState) !void {
-        if (comptime builtin.os.tag == .wasi) return;
-        if (std.c.isatty(self.stdin_fd) == 0 or std.c.isatty(std.posix.STDOUT_FILENO) == 0) {
-            return error.NotATerminal;
-        }
+        return switch (builtin.os.tag) {
+            .wasi => {},
+            .windows => if (!windows_console.isConsole(self.stdin_fd) or
+                !windows_console.isConsole(std.Io.File.stdout().handle)) error.NotATerminal else {},
+            else => ensurePosixInteractive(self.stdin_fd),
+        };
     }
 
     pub fn captureOriginalTermios(self: *TerminalState) !void {
+        if (comptime builtin.os.tag == .windows) {
+            self.windows_console_mode = try windows_console.captureMode(self.stdin_fd);
+            self.windows_console_mode_captured = true;
+            return;
+        }
         if (comptime builtin.os.tag == .wasi) return;
         self.original_termios = try std.posix.tcgetattr(self.stdin_fd);
     }
 
     pub fn enableRawMode(self: *TerminalState) !void {
+        if (comptime builtin.os.tag == .windows) {
+            if (!self.windows_console_mode_captured) try self.captureOriginalTermios();
+            try windows_console.enableRawMode(self.stdin_fd, self.windows_console_mode);
+            self.raw_enabled = true;
+            return;
+        }
         if (comptime builtin.os.tag == .wasi) {
             self.raw_enabled = true;
             return;
@@ -139,7 +158,9 @@ pub const TerminalState = struct {
 
     pub fn disableRawMode(self: *TerminalState) void {
         if (!self.raw_enabled) return;
-        if (comptime builtin.os.tag != .wasi) {
+        if (comptime builtin.os.tag == .windows) {
+            if (self.windows_console_mode_captured) windows_console.restoreMode(self.stdin_fd, self.windows_console_mode);
+        } else if (comptime builtin.os.tag != .wasi) {
             std.posix.tcsetattr(self.stdin_fd, .FLUSH, self.original_termios) catch {};
         }
         self.raw_enabled = false;
@@ -177,8 +198,6 @@ pub const TerminalState = struct {
 
     pub fn queryCursorPosition(self: TerminalState) !CursorPosition {
         if (comptime builtin.os.tag == .wasi) {
-            // JavaScript hosts provide a fresh terminal surface rather than an
-            // existing shell viewport, so there are no launch rows to preserve.
             return .{ .row = 1, .col = 1 };
         }
         var stdout_file = std.Io.File.stdout();
@@ -248,35 +267,53 @@ pub const TerminalState = struct {
     }
 
     pub fn read(self: TerminalState, out: []u8) !usize {
-        if (comptime builtin.os.tag == .wasi) {
+        if (comptime builtin.os.tag == .wasi or builtin.os.tag == .windows) {
             return std.Io.File.stdin().readStreaming(io_mod.getIo(), &.{out});
         }
         return std.posix.read(self.stdin_fd, out);
     }
 
     pub fn pollInput(self: TerminalState, timeout_ms: i32) !PollResult {
-        if (comptime builtin.os.tag == .wasi) {
-            return switch (wasm_terminal.pollInput(timeout_ms)) {
+        return switch (builtin.os.tag) {
+            .wasi => switch (wasm_terminal.pollInput(timeout_ms)) {
                 1 => .{ .readable = true },
                 -1 => .{ .hung_up = true },
                 else => .{},
-            };
-        }
-        var fds = [_]std.posix.pollfd{.{
-            .fd = self.stdin_fd,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-
-        _ = try std.posix.poll(&fds, timeout_ms);
-        const revents = fds[0].revents;
-        return .{
-            .readable = (revents & std.posix.POLL.IN) != 0,
-            .hung_up = (revents & std.posix.POLL.HUP) != 0,
-            .has_error = (revents & std.posix.POLL.ERR) != 0,
+            },
+            .windows => blk: {
+                const result = windows_console.poll(self.stdin_fd, timeout_ms);
+                break :blk .{
+                    .readable = result.readable,
+                    .hung_up = result.hung_up,
+                    .has_error = result.has_error,
+                };
+            },
+            else => pollPosix(self.stdin_fd, timeout_ms),
         };
     }
 };
+
+fn ensurePosixInteractive(stdin_fd: std.posix.fd_t) !void {
+    if (std.c.isatty(stdin_fd) == 0 or std.c.isatty(std.posix.STDOUT_FILENO) == 0) {
+        return error.NotATerminal;
+    }
+}
+
+fn pollPosix(stdin_fd: std.posix.fd_t, timeout_ms: i32) !PollResult {
+    var fds = [_]std.posix.pollfd{.{
+        .fd = stdin_fd,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+
+    _ = try std.posix.poll(&fds, timeout_ms);
+    const revents = fds[0].revents;
+    return .{
+        .readable = (revents & std.posix.POLL.IN) != 0,
+        .hung_up = (revents & std.posix.POLL.HUP) != 0,
+        .has_error = (revents & std.posix.POLL.ERR) != 0,
+    };
+}
 
 fn clearTmuxHistoryForPane(alloc: Allocator, pane: []const u8) void {
     runTmuxHistoryClear(alloc, pane) catch |err| {
@@ -640,10 +677,6 @@ test "reconstructive paint re-emits a full transcript in order" {
 }
 
 test {
-    // Pull adjacent UI test files into the test binary. Declaring
-    // imports inside a test block keeps them out of release builds
-    // (`zig build`) but still lets `zig build test` discover and run
-    // their test blocks.
     _ = @import("render_engine/terminal_diff.zig");
     _ = @import("../core/terminal/engine.zig");
     _ = @import("resize_tests.zig");

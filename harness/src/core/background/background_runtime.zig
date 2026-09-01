@@ -667,7 +667,7 @@ pub const BackgroundRuntime = struct {
     ) !RegisteredBackground {
         if (prepared.consumed) return error.BackgroundLaunchAlreadyConsumed;
 
-        const process_token = captureSpawnedProcessToken(
+        const process_token = spawned.process_token orelse captureSpawnedProcessToken(
             self,
             alloc,
             spawned.pid,
@@ -2605,6 +2605,14 @@ const TestPreparedProcess = struct {
     }
 
     fn waitForOwnedChild(self: *TestPreparedProcess, timeout_ms: i64) bool {
+        if (comptime builtin.os.tag == .windows) {
+            const term = self.child.wait(io_mod.getIo()) catch return false;
+            _ = term;
+            self.child.id = null;
+            self.alloc.free(self.pid);
+            self.alloc.destroy(self);
+            return true;
+        }
         const started_ms = io_mod.milliTimestamp();
         while (true) {
             const pid = self.child.id orelse return true;
@@ -2692,7 +2700,7 @@ fn wrapTestPreparedProcess(
 ) !background_process_provider.PreparedProcess {
     const state = try alloc.create(TestPreparedProcess);
     errdefer alloc.destroy(state);
-    const pid = try std.fmt.allocPrint(alloc, "{d}", .{child.id.?});
+    const pid = try std.fmt.allocPrint(alloc, "{d}", .{io_mod.processIdValue(child.id.?)});
     state.* = .{
         .alloc = alloc,
         .child = child,
@@ -3110,6 +3118,7 @@ test "durable long lived persistence failure keeps the degraded release" {
 }
 
 test "identity-indeterminate process-local cleanup retains display reservation" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     blocked_wrapper_cleanup_timeout_ms_for_test = 10;
     defer blocked_wrapper_cleanup_timeout_ms_for_test = null;

@@ -3,6 +3,7 @@ const glob_pattern = @import("../../core/workspace/glob_pattern.zig");
 const grep_search = @import("../../core/workspace/grep_search.zig");
 const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
+const regex = @import("../../core/shared/regex.zig");
 const text_utils = @import("../../core/shared/text_utils.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_result_errors = @import("../../core/tooling/tool_result_errors.zig");
@@ -11,6 +12,7 @@ const Allocator = std.mem.Allocator;
 
 const output_cap = grep_search.output_cap;
 const context_lines_cap: usize = 5;
+const default_context_lines: usize = 2;
 const context_file_byte_cap: usize = 200 * 1024;
 
 const OutputMode = enum {
@@ -28,7 +30,7 @@ pub const Input = struct {
     mode: OutputMode = .matches,
     head_limit: usize,
     offset: usize,
-    context_lines: usize = 0,
+    context_lines: usize = default_context_lines,
 
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.pattern);
@@ -42,7 +44,7 @@ pub const Input = struct {
             .mode = .matches,
             .head_limit = output_cap,
             .offset = 0,
-            .context_lines = 0,
+            .context_lines = default_context_lines,
         };
     }
 };
@@ -84,7 +86,7 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
         .failure => |body| return .{ .failure = body },
     };
     const context_lines = switch (try parseOptionalInteger(ctx.allocator, parsed.value.object, "context_lines", 0, "non-negative")) {
-        .missing => 0,
+        .missing => default_context_lines,
         .value => |value| @min(value, context_lines_cap),
         .failure => |body| return .{ .failure = body },
     };
@@ -153,7 +155,20 @@ fn parseOptionalInteger(
     return .{ .value = @intCast(value.integer) };
 }
 
-pub fn validate(_: tool_dispatch.DispatchContext, _: tool_dispatch.ToolInput) tool_dispatch.DispatchError!?[]u8 {
+pub fn validate(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!?[]u8 {
+    const input = erased.as(Input);
+
+    var arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer arena_state.deinit();
+
+    _ = regex.compile(arena_state.allocator(), input.pattern, input.case_insensitive) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return try std.fmt.allocPrint(
+            ctx.allocator,
+            "grep_files pattern {s} is not a POSIX extended regular expression: {s}",
+            .{ input.pattern, regex.explain(err) },
+        );
+    };
     return null;
 }
 
@@ -242,7 +257,9 @@ fn callWithOps(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInp
         return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "Unable to stat grep search root: {s} ({s})", .{ absolute_root, @errorName(err) }) };
     };
 
-    return switch (try searchGrepRoot(ctx, arena, input, absolute_root, root_stat, include_pattern, ops)) {
+    const outcome = try searchGrepRoot(ctx, arena, input, absolute_root, root_stat, include_pattern, ops);
+
+    return switch (outcome) {
         .failure => |body| .{ .failure = body },
         .count => |count_result| .{ .success = try formatCount(ctx.allocator, input.pattern, count_result) },
         .matches => |search_result| switch (input.mode) {
@@ -265,18 +282,18 @@ fn searchGrepRoot(
     return switch (root_stat.kind) {
         .directory => switch (input.mode) {
             .count => .{ .count = ops.count_directory(arena, ctx.workspace_root, absolute_root, input.pattern, input.case_insensitive, ctx.ignored_list_entries, include_pattern) catch |err| {
-                return searchFailure(ctx.allocator, absolute_root, "walk grep search root", err);
+                return searchFailure(ctx.allocator, input.pattern, absolute_root, "walk grep search root", err);
             } },
             .matches, .files_with_matches => .{ .matches = ops.collect_directory(arena, ctx.workspace_root, absolute_root, input.pattern, input.case_insensitive, ctx.ignored_list_entries, include_pattern) catch |err| {
-                return searchFailure(ctx.allocator, absolute_root, "walk grep search root", err);
+                return searchFailure(ctx.allocator, input.pattern, absolute_root, "walk grep search root", err);
             } },
         },
         .file => switch (input.mode) {
             .count => .{ .count = ops.count_file(arena, ctx.workspace_root, absolute_root, input.pattern, input.case_insensitive, include_pattern) catch |err| {
-                return searchFailure(ctx.allocator, absolute_root, "scan grep file root", err);
+                return searchFailure(ctx.allocator, input.pattern, absolute_root, "scan grep file root", err);
             } },
             .matches, .files_with_matches => .{ .matches = ops.collect_file(arena, ctx.workspace_root, absolute_root, input.pattern, input.case_insensitive, include_pattern) catch |err| {
-                return searchFailure(ctx.allocator, absolute_root, "scan grep file root", err);
+                return searchFailure(ctx.allocator, input.pattern, absolute_root, "scan grep file root", err);
             } },
         },
         else => .{ .failure = try std.fmt.allocPrint(ctx.allocator, "Not a regular file or directory: {s}", .{absolute_root}) },
@@ -285,11 +302,15 @@ fn searchGrepRoot(
 
 fn searchFailure(
     alloc: Allocator,
+    pattern: []const u8,
     absolute_root: []const u8,
     action: []const u8,
     err: anyerror,
 ) tool_dispatch.DispatchError!SearchOutcome {
     if (err == error.OutOfMemory) return error.OutOfMemory;
+    if (err == error.RegexTooExpensive) {
+        return .{ .failure = try std.fmt.allocPrint(alloc, "grep_files gave up on pattern {s}: one line needed more than {d} backtracking steps; anchor the pattern or make it more specific", .{ pattern, regex.max_steps }) };
+    }
     if (tool_result_errors.isFilesystemAccessDenied(err)) {
         return .{ .failure = try tool_result_errors.filesystemAccessDeniedJson(alloc, "grep_files", absolute_root, err) };
     }
@@ -1048,7 +1069,7 @@ test "grep_files single-file search returns matching lines" {
     defer result.deinit(alloc);
 
     try std.testing.expectEqual(.success, result.status);
-    try std.testing.expectEqualStrings("[grep] 1 matches for needle\n - single.txt:2: needle here\n", result.body);
+    try std.testing.expectEqualStrings("[grep] 1 matches for needle\n   single.txt:1- one\n - single.txt:2: needle here\n", result.body);
 }
 
 test "grep_files single-file include applies to basename" {
@@ -1169,10 +1190,107 @@ test "grep_files paginates matching line output" {
     try std.testing.expectEqual(.success, result.status);
     try std.testing.expectEqualStrings(
         "[grep] 1 matches for needle (showing 2-2 of 3)\n" ++
+            "   matches.txt:1- needle one\n" ++
             " - matches.txt:2: needle two\n" ++
+            "   matches.txt:3- needle three\n" ++
             "... more matches available; use offset 2 to continue\n",
         result.body,
     );
+}
+
+test "grep_files matches an alternation of escaped terms" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try workspaceRoot(alloc, tmp);
+    defer alloc.free(workspace);
+    const path = try writeTempFile(alloc, &tmp, "alt.txt", "setSystemPrompt here\nsystemPrompt(x)\nunrelated line\n");
+    defer alloc.free(path);
+
+    var result = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"setSystemPrompt|systemPrompt\\\\(\",\"path\":\"alt.txt\",\"context_lines\":0}");
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqual(.success, result.status);
+    try std.testing.expect(std.mem.startsWith(u8, result.body, "[grep] 2 matches for "));
+    try std.testing.expect(std.mem.find(u8, result.body, "alt.txt:1: setSystemPrompt here") != null);
+    try std.testing.expect(std.mem.find(u8, result.body, "alt.txt:2: systemPrompt(x)") != null);
+    try std.testing.expect(std.mem.find(u8, result.body, "unrelated") == null);
+}
+
+test "grep_files rejects regex constructs POSIX ERE does not have" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try workspaceRoot(alloc, tmp);
+    defer alloc.free(workspace);
+
+    var shorthand = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"\\\\d+\"}");
+    defer shorthand.deinit(alloc);
+    try std.testing.expectEqual(.failure, shorthand.status);
+    try std.testing.expect(std.mem.find(u8, shorthand.body, "[[:digit:]]") != null);
+
+    var backreference = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"(a)\\\\1\"}");
+    defer backreference.deinit(alloc);
+    try std.testing.expectEqual(.failure, backreference.status);
+    try std.testing.expect(std.mem.find(u8, backreference.body, "backreference") != null);
+
+    var unbalanced = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"fn (\"}");
+    defer unbalanced.deinit(alloc);
+    try std.testing.expectEqual(.failure, unbalanced.status);
+    try std.testing.expect(std.mem.find(u8, unbalanced.body, "unbalanced parenthesis") != null);
+}
+
+test "grep_files matches anchors and character classes" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try workspaceRoot(alloc, tmp);
+    defer alloc.free(workspace);
+    const path = try writeTempFile(alloc, &tmp, "ere.txt", "pub fn one() void {\n    fn two() void {\n    const v9 = 1;\n");
+    defer alloc.free(path);
+
+    var anchored = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"^pub fn [a-z]+\\\\(\",\"path\":\"ere.txt\",\"context_lines\":0}");
+    defer anchored.deinit(alloc);
+    try std.testing.expectEqual(.success, anchored.status);
+    try std.testing.expect(std.mem.startsWith(u8, anchored.body, "[grep] 1 matches for "));
+    try std.testing.expect(std.mem.find(u8, anchored.body, "ere.txt:1: pub fn one() void {") != null);
+
+    var repeated = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"v[[:digit:]]{1,2} =\",\"path\":\"ere.txt\",\"context_lines\":0}");
+    defer repeated.deinit(alloc);
+    try std.testing.expectEqual(.success, repeated.status);
+    try std.testing.expect(std.mem.find(u8, repeated.body, "ere.txt:3:     const v9 = 1;") != null);
+}
+
+test "grep_files count mode counts alternation matches" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try workspaceRoot(alloc, tmp);
+    defer alloc.free(workspace);
+    const path = try writeTempFile(alloc, &tmp, "counted.txt", "alpha\nbeta\nalpha beta\n");
+    defer alloc.free(path);
+
+    var result = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"alpha|beta\",\"path\":\"counted.txt\",\"mode\":\"count\"}");
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqual(.success, result.status);
+    try std.testing.expect(std.mem.find(u8, result.body, "3 matching lines in 1 files") != null);
+}
+
+test "grep_files matches a line through either side of an alternation" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try workspaceRoot(alloc, tmp);
+    defer alloc.free(workspace);
+    const path = try writeTempFile(alloc, &tmp, "pipe.txt", "ls | wc\n");
+    defer alloc.free(path);
+
+    var result = try dispatchGrepFilesRaw(alloc, workspace, "{\"pattern\":\"ls | wc\",\"path\":\"pipe.txt\",\"context_lines\":0}");
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqual(.success, result.status);
+    try std.testing.expectEqualStrings("[grep] 1 matches for ls | wc\n - pipe.txt:1: ls | wc\n", result.body);
 }
 
 test "grep_files context_lines includes nearby lines around emitted matches" {

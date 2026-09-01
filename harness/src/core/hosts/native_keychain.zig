@@ -6,7 +6,6 @@ const secret = @import("../auth/secret.zig");
 
 const mcp_credentials_service_name = "FX_MCP_OAUTH_CREDENTIALS_V1";
 
-/// Backing store for a resolved account name. Must outlive any argv built from it.
 pub const AccountBuffer = [256]u8;
 
 const passwd_scratch_bytes = 2048;
@@ -21,6 +20,7 @@ const keychain_process_timeout: std.Io.Timeout = .{
 
 pub const Error = error{
     Cancelled,
+    OutOfMemory,
     UnsupportedPlatform,
     UserNotSet,
     KeychainItemNotFound,
@@ -38,10 +38,6 @@ pub fn isDisabled() bool {
     return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
 }
 
-/// Returns a slice borrowing `buf`. `USER` stays authoritative when set, because it
-/// is the only way to target a non-login account. ACP clients launched by GUI editors
-/// inherit a thinner environment than a shell, so the operating system supplies the
-/// account when `USER` is absent instead of failing the read.
 fn accountName(buf: *AccountBuffer) Error![]const u8 {
     if (io_mod.getenv("USER")) |user| {
         if (user.len > 0 and user.len <= buf.len) {
@@ -76,14 +72,14 @@ fn posixAccountName(buf: *AccountBuffer) ?[]const u8 {
     return buf[0..name.len];
 }
 
-pub fn loadMcpCredentials(alloc: std.mem.Allocator) !?[]u8 {
+pub fn loadMcpCredentials(alloc: std.mem.Allocator) Error!?[]u8 {
     return loadMcpValueMacControlled(alloc, mcp_credentials_service_name, null);
 }
 
 pub fn loadMcpCredentialsCancellable(
     alloc: std.mem.Allocator,
     cancel_flag: *const std.atomic.Value(bool),
-) !?[]u8 {
+) Error!?[]u8 {
     return loadMcpValueMacControlled(
         alloc,
         mcp_credentials_service_name,
@@ -91,10 +87,6 @@ pub fn loadMcpCredentialsCancellable(
     );
 }
 
-// `security add-generic-password -w` uses a 128-byte interactive buffer. MCP's
-// aggregate credential store is larger, so use the native Security API through
-// the stable system osascript host. Account and service are non-secret argv;
-// credential bytes travel only through stdin/stdout.
 const mcp_keychain_script =
     \\ObjC.import("Security");
     \\ObjC.import("Foundation");

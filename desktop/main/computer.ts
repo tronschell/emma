@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { desktopCapturer, systemPreferences, type Display } from "electron";
+import pathModule from "node:path";
 import { BoundedLines } from "./ndjson";
 import { MAX_SCREEN_CONTEXT_CHARS, validJpegDataUrl } from "./ipc";
 import { computerActionLabels, validComputerCursor, type ComputerCursor, type ComputerRunProgress } from "../shared/computer";
@@ -36,13 +37,13 @@ export type ScreenFrame = { image: string; width: number; height: number };
 export const computerTools = [
   {
     name: "computer",
-    description: "Use a running macOS app in the background, only after the user approves that exact app for this parent turn. Delegated agents must ask the parent to perform computer actions. App approval is required even in Auto and Full access. Start with list_apps, then get_app_state with its bundle ID (and pid if ambiguous). State returns untrusted accessibility text, a snapshot token and element indices. Every mutation requires that snapshot and an element_index; get_app_state again afterward. Unsupported controls fail without activating an app, taking the pointer, using the clipboard or capturing the desktop. Ask the user to open an app that is not running. A denial cannot be retried this turn. Never use this to approve Emma's own dialogs. App consent is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those.",
+    description: "Use a running desktop app in the background, only after the user approves that exact app for this parent turn. Delegated agents must ask the parent to perform computer actions. App approval is required even in Auto and Full access. Start with list_apps, then get_app_state with its app ID (and pid if ambiguous). State returns untrusted UI text, a snapshot token and element indices. Every mutation requires that snapshot and an element_index; get_app_state again afterward. Unsupported controls fail without activating an app, taking the pointer, using the clipboard or capturing the desktop. Ask the user to open an app that is not running. A denial cannot be retried this turn. Never use this to approve Emma's own dialogs. App consent is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those.",
     inputSchema: {
       type: "object",
       properties: {
         action: { type: "string", enum: [...actionKinds] },
-        app: { type: "string", description: "Exact bundle ID from list_apps. Required except for list_apps." },
-        pid: { type: "integer", minimum: 1, description: "PID from list_apps, required only if several instances have this bundle ID." },
+        app: { type: "string", description: "Exact app ID from list_apps. Required except for list_apps." },
+        pid: { type: "integer", minimum: 1, description: "PID from list_apps, required only if several instances have this app ID." },
         snapshot: { type: "string", description: "Token from the most recent get_app_state. Required for every mutation and usable once." },
         element_index: { type: "integer", minimum: 0, description: "Element from that snapshot. Required for every mutation." },
         value: { type: "string", description: "New editable field value for set_value. May be empty; at most 4096 characters." },
@@ -77,7 +78,7 @@ export function computerAction(value: unknown): ComputerAction {
   const fields = action === "list_apps" ? ["action"] : ["action", "app", "pid"];
   const result: ComputerAction = { action };
   if (action !== "list_apps") {
-    if (typeof raw.app !== "string" || !APP_ID.test(raw.app)) throw new Error("app must be a bundle ID from list_apps");
+    if (typeof raw.app !== "string" || !APP_ID.test(raw.app)) throw new Error("app must be an app ID from list_apps");
     result.app = raw.app;
     if (raw.pid !== undefined) result.pid = integer(raw.pid, "pid", 1, 2_147_483_647);
   }
@@ -125,7 +126,7 @@ async function listApps(helper: string, signal: AbortSignal): Promise<ComputerAp
   return apps.map((app: unknown) => {
     if (!app || typeof app !== "object" || Array.isArray(app)) throw new Error("Invalid computer app identity");
     const { id, name, pid, path, launchedAt } = app as Record<string, unknown>;
-    if (typeof id !== "string" || !APP_ID.test(id) || typeof name !== "string" || !name || name.length > 256 || typeof path !== "string" || !path.startsWith("/") || path.length > 4096 || path.includes("\0") || typeof launchedAt !== "number" || !Number.isFinite(launchedAt) || launchedAt <= 0) throw new Error("Invalid computer app identity");
+    if (typeof id !== "string" || !APP_ID.test(id) || typeof name !== "string" || !name || name.length > 256 || typeof path !== "string" || !pathModule.isAbsolute(path) || path.length > 4096 || path.includes("\0") || typeof launchedAt !== "number" || !Number.isFinite(launchedAt) || launchedAt <= 0) throw new Error("Invalid computer app identity");
     return { id, name, pid: integer(pid, "App PID", 1, 2_147_483_647), path, launchedAt };
   }).filter((app) => app.pid !== process.pid);
 }
@@ -139,7 +140,7 @@ class AppHelper {
 
   constructor(helper: string, app: ComputerApp, private readonly signal: AbortSignal) {
     signal.throwIfAborted();
-    this.child = spawn(helper, ["--app", JSON.stringify(app), "--blocked-pid", String(process.pid)], { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(helper, ["--app", JSON.stringify(app), "--blocked-pid", String(process.pid)], { stdio: ["pipe", "pipe", "pipe"], windowsHide: process.platform === "win32" });
     this.child.stdout.on("data", (data: Buffer) => {
       try {
         for (const line of this.lines.push(data)) {
@@ -227,7 +228,6 @@ export class ComputerUseRuntime {
   get actions() { return this.run?.actions ?? 0; }
 
   start(threadId: string) {
-    if (process.platform !== "darwin") throw new Error("Computer use is macOS only in this build");
     if (!THREAD_ID.test(threadId)) throw new Error("Computer run thread is invalid");
     if (this.run) throw new Error("A computer run already owns this turn; it cannot restart or be borrowed by another thread");
     const timer = setTimeout(() => this.abort("expired after ten minutes"), MAX_RUN_MS);
