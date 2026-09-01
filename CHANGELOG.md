@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/tronschell/emma/compare/v0.2.3...v0.3.0) (2026-09-01)
+
+
+### Features
+
+* **desktop:** chatgpt provider, terminal rework, and thread cache ([#19](https://github.com/tronschell/emma/issues/19)) ([0754431](https://github.com/tronschell/emma/commit/07544317ffe55868b6606037750f21d165e6e1cb))
+
 ## [0.2.3](https://github.com/tronschell/emma/compare/v0.2.2...v0.2.3) (2026-08-29)
 
 
