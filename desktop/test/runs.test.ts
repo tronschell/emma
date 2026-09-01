@@ -502,3 +502,16 @@ test("a steer is rebuilt from the trace at the point it cut into the answer", ()
   ]);
   assert.equal(blocks.every((block) => block.kind !== "notice" || block.steer), true);
 });
+
+test("a turn that ends refetches the thread, so the answer it wrote is drawn", async () => {
+  let reloads = 0;
+  request = (_method, params) => { sent.push(params.content); return new Promise<void>((resolve) => { release = resolve; }); };
+  sendTurn("quiet", turn("PING-G"), () => { reloads += 1; });
+  await settle();
+  assert.equal(reloads, 0);
+
+  release?.();
+  await settle();
+  assert.equal(runOf("quiet").sending, false);
+  assert.equal(reloads, 1);
+});

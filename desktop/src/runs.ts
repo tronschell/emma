@@ -464,7 +464,6 @@ async function drain(threadId: string, reload: () => unknown) {
       failed = true;
       write(threadId, { pending: null, blocks: [], draft: next.content });
       dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text: reasonText(reason) } }));
-      await reload();
     }
 
     write(threadId, (run) => ({
@@ -472,5 +471,6 @@ async function drain(threadId: string, reload: () => unknown) {
       queue: run.queue.slice(1),
       landed: failed || !run.blocks.length ? run.landed : [...run.landed, run.blocks],
     }));
+    await reload();
   }
 }
