@@ -1,10 +1,9 @@
 # Releasing Emma
 
 Emma currently targets **macOS 12 or later on Apple silicon** and **Windows 10
-version 1809 or later on x64**. GitHub Actions builds it on standard `macos-15`,
-`windows-2025` (x64), and `windows-11-vs2026-arm` (ARM64) runners. x64 is the
-supported distributable/public target; ARM64 is a CI compile/package rehearsal,
-not a public auto-update target. A personal computer or self-hosted runner is not required.
+version 1809 or later on x64**. GitHub Actions builds it on standard `macos-15`
+and `windows-2025` (x64) runners. x64 is the supported distributable/public
+target. A personal computer or self-hosted runner is not required.
 
 ## Branches
 
@@ -46,17 +45,18 @@ versions in feature PRs, or create or move release tags yourself.
    preparation and promotion.
 4. Open a `dev` → `main` PR with a conventional title such as
    `chore(release): promote dev`. Its full checks compile and test all layers,
-   then package unsigned macOS and Windows x64 candidates plus an ARM64
-   rehearsal without signing credentials. Merge it with
+   then package unsigned macOS and Windows x64 candidates without signing
+   credentials. Merge it with
    **Create a merge commit**, not
    squash. Keep the `dev` branch.
-5. The push to `main` automatically runs all checks, builds the tagged source,
-   signs every macOS executable, notarizes and staples the app, checks
-   Gatekeeper, and uploads the validated macOS assets. Windows CI has already
-   built the unsigned x64 target package and ARM64 rehearsal on the promotion PR,
-   but this release workflow does not sign or upload Windows artifacts. Public
-   signed Windows x64 publication is pending release-workflow authorization.
-   Only then is the draft published.
+5. The push to `main` automatically runs the macOS checks, builds the tagged
+   source, signs every macOS executable, notarizes and staples the app, checks
+   Gatekeeper, and uploads the validated macOS assets. The Windows lane runs on
+   pull requests only, so it cannot gate a macOS release; it has already built
+   the unsigned x64 target package on the promotion PR. This release workflow
+   does not sign or upload Windows artifacts. Public signed Windows x64
+   publication is pending release-workflow authorization. Only then is the draft
+   published.
 
 The promotion can be opened and merged with:
 
@@ -89,11 +89,10 @@ Published macOS assets appear in [GitHub Releases](https://github.com/tronschell
 - `Emma-vX.Y.Z-darwin-arm64.zip`
 - `Emma-vX.Y.Z-darwin-arm64.zip.sha256`
 
-Windows CI rehearsal artifacts include unsigned
-`Emma-X.Y.Z-win32-x64-Setup.exe` and `Emma-X.Y.Z-win32-arm64-Setup.exe`, plus
-matching `.nupkg`, `RELEASES`, and `SHA256SUMS` Squirrel assets. The x64 package
-is the supported distributable/public target; ARM64 artifacts are compile/package
-rehearsals and neither is a public release download yet.
+Windows CI rehearsal artifacts include the unsigned
+`Emma-X.Y.Z-win32-x64-Setup.exe` plus matching `.nupkg`, `RELEASES`, and
+`SHA256SUMS` Squirrel assets. The x64 package is the supported
+distributable/public target and is not a public release download yet.
 
 Extract the macOS zip and move `Emma.app` into Applications. The Windows
 rehearsal package installs `Emma.exe` with Squirrel. Either package includes its
@@ -103,8 +102,7 @@ dependency notices. End users do not need Node, Rust, Zig, or Xcode installed.
 The release title is exactly `vX.Y.Z`, matching the existing updater's version
 parser. The stable `darwin-arm64.zip` asset is the one the
 `update.electronjs.org` feed selects. Windows x64 signing, publication, and a
-public Squirrel feed are pending release-workflow authorization; ARM64 has no
-public feed. Drafts and
+public Squirrel feed are pending release-workflow authorization. Drafts and
 prereleases are not stable updates.
 
 On macOS, a packaged app checks the feed at launch and every six hours. Squirrel
@@ -156,7 +154,7 @@ Run the six checks in [`AGENTS.md`](../AGENTS.md), then:
 npm run package:mac
 ```
 
-On a native Windows x64 or ARM64 host, the unsigned package structure can be exercised with:
+On a native Windows x64 host, the unsigned package structure can be exercised with:
 
 ```powershell
 npm --prefix desktop run package:win
@@ -193,8 +191,7 @@ update installation on the manual verification checklist. A successful build
 does not verify those behaviors. On Windows, a real x64 host still needs manual
 validation of Setup installation, SmartScreen, native helpers, and upgrades
 between signed versions; the current workflow produces no signed public
-installer. ARM64 Windows is validated by CI compile/package checks only and is
-not a public installer or auto-update target.
+installer. Windows ARM64 has no CI lane and is not a supported target.
 
 The release-policy regression test also runs inside `npm run check`:
 
@@ -226,6 +223,5 @@ when a source change is necessary.
 
 The release workflow publishes only the supported macOS Apple-silicon assets.
 Windows x64 is the supported distributable/public target and is rehearsed
-unsigned in CI. Windows ARM64 is also packaged in CI for compile/package
-validation only and is not a public installer or auto-update target. Signed x64
-publication requires an authorized release workflow.
+unsigned on promotion pull requests. Signed x64 publication requires an
+authorized release workflow.

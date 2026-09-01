@@ -71,20 +71,12 @@ jobs:
         run: npm run package:mac
 
   check-windows:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-2025
-            arch: x64
-          - runner: windows-11-vs2026-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v5
@@ -110,7 +102,7 @@ jobs:
       - run: npm ci
         working-directory: desktop
 
-      - run: npm run check
+      - run: npm run test
         working-directory: desktop
 
       - name: probe Windows native toolchain
@@ -128,8 +120,6 @@ jobs:
       - run: npm run build:native
         working-directory: desktop
 
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace --locked --all-targets
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --locked --all-targets -- -D warnings
 
@@ -137,6 +127,6 @@ jobs:
         working-directory: harness
 
       - name: package the Windows release candidate without signing secrets
-        if: (github.event_name == 'pull_request' && github.base_ref == 'main') || github.event_name == 'workflow_call'
+        if: github.base_ref == 'main'
         run: npm run package:win
         working-directory: desktop
