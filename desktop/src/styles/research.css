@@ -55,7 +55,7 @@
 
 /* The floating card: one big number, then the receipts and what was tried. */
 .research-tip { display: grid; gap: var(--s-1); max-width: 320px; padding: var(--s-3); border: 1px solid var(--border-strong); background: var(--surface-2); box-shadow: var(--shadow-md); }
-.research-tip b { color: var(--orange); font: var(--fs-3xl)/1.1 var(--font-mono); font-weight: 400; }
+.research-tip b { color: var(--accent); font: var(--fs-3xl)/1.1 var(--font-mono); font-weight: 400; }
 .research-tip span { color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); }
 .research-tip time { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
 .research-tip p { margin-top: var(--s-1); padding-top: var(--s-2); border-top: 1px solid var(--border); color: var(--text-2); font: var(--fs-sm)/1.5 var(--font); }

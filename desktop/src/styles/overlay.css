@@ -111,6 +111,7 @@
 .radial button { position: absolute; display: grid; justify-items: center; gap: var(--s-2); width: 84px; padding: 0; color: var(--text-2); background: transparent; font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; translate: -50% -50%; overflow-wrap: anywhere; transition: color var(--t); }
 .radial button:hover { color: var(--text); }
 .radial .orb { width: 34px; height: 34px; }
+.radial .orb-label { padding: 1px var(--s-1); color: inherit; background: var(--bg); border: 1px solid var(--border-strong); overflow-wrap: anywhere; }
 .radial button.selected { color: var(--accent); }
 .radial button.selected .orb { border-color: var(--accent); background: var(--accent-soft); }
 

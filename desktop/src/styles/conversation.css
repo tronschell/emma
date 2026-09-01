@@ -220,7 +220,7 @@
 .message-model-mark { display: grid; place-items: center; flex: 0 0 auto; width: 12px; height: 12px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
 .message-model-mark.brand-image { object-fit: contain; }
 .message-model ~ time::before, .message-model ~ .generation-rate::before { color: var(--text-3); content: "· "; }
-.generation-rate { color: var(--orange); font-family: var(--font-mono); font-size: var(--fs-2xs); font-variant-numeric: tabular-nums; letter-spacing: var(--ls-caps); }
+.generation-rate { color: var(--accent); font-family: var(--font-mono); font-size: var(--fs-2xs); font-variant-numeric: tabular-nums; letter-spacing: var(--ls-caps); }
 
 .drop-veil { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 68%, transparent); backdrop-filter: blur(2px); pointer-events: none; }
 .drop-veil span { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3) var(--s-4); color: var(--text); border: 1px dashed var(--accent); background: var(--surface-3); box-shadow: var(--shadow-lg); font: var(--fs-sm)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
@@ -285,8 +285,8 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .slash-kind[data-kind="artifact"] { color: var(--lime); }
 .slash-kind[data-kind="page"] { color: var(--rose); }
 
-.composer-row { display: flex; align-items: center; gap: var(--s-1); padding: var(--s-2) var(--s-1); border-top: 1px solid var(--border); }
-.composer-tools { display: flex; align-items: center; flex: 1; gap: var(--s-1); min-width: 0; }
+.composer-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-1); padding: var(--s-2) var(--s-1); border-top: 1px solid var(--border); }
+.composer-tools { display: flex; align-items: center; flex: 1 1 auto; gap: var(--s-1); min-width: min-content; }
 
 .composer-row .source-trigger, .composer-row .model-button {
   display: flex; align-items: center; gap: var(--s-2); flex: 0 0 auto; height: 26px; padding: 0 var(--s-2);
@@ -298,7 +298,7 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .composer-row .source-trigger[aria-expanded="true"], .composer-row .model-button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
 .composer-row .source-trigger { justify-content: center; width: 26px; padding: 0; font-size: var(--fs-lg); line-height: 1; }
 
-.composer-row .model-button { flex: 0 1 auto; min-width: 0; color: var(--text); }
+.composer-row .model-button { flex: 0 1 auto; min-width: 88px; color: var(--text); }
 .composer-row .model-button .model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .composer-row .model-button .model-brand { display: grid; flex: 0 0 auto; place-items: center; width: 16px; height: 16px; padding: 2px; overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); }
 .composer-row .model-button > span[aria-hidden] { flex: 0 0 auto; color: var(--text-3); }
@@ -518,11 +518,11 @@ button.capability-row:hover:not(:disabled) { background: var(--surface-2); }
 }
 
 .model-cut { color: var(--text-3); animation: cut-in 260ms var(--ease, ease-out) both; }
-.model-cut b { color: var(--orange); font-weight: inherit; }
+.model-cut b { color: var(--accent); font-weight: inherit; }
 @keyframes cut-in { from { opacity: 0; transform: translateY(-4px); } }
 @media (prefers-reduced-motion: reduce) { .model-cut { animation: none; } }
 .model-cut-name { color: var(--accent); display: inline-flex; align-items: center; gap: var(--s-1); }
-.model-cut-mark { width: 13px; height: 13px; border-radius: var(--r-1); object-fit: contain; }
+.model-cut-mark { width: 13px; height: 13px; object-fit: contain; }
 .model-cut .brand-fallback { display: grid; place-items: center; font-size: 9px; }
 
 .quote-menu { position: fixed; z-index: 20; display: flex; gap: var(--s-1); padding: var(--s-1); background: var(--surface-4); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); transform: translate(-50%, calc(-100% - var(--s-2))); }

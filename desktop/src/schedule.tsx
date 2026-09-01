@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { buildTrigger, describeTrigger, MONTH_NAMES, parseTrigger, triggerProblem, WEEKDAY_NAMES, workflowEdges, workflowRows, type Trigger, type TriggerKind, type WorkflowNode } from "../shared/workflow";
 import { insertCommand, KIND_LABELS as SLASH_KINDS, matchCommands, MENU_MAX, slashQuery, type SlashCommand } from "../shared/slash";
+import { isWorkspaceWindow } from "./boot";
 import { atCommands, toolCommands } from "./context";
 import { edgePath, placeRows } from "./layout";
 import type { FolderFile, FolderGrant } from "../shared/folders";
@@ -136,10 +137,10 @@ export function useTaskCommands(disabledTools: readonly string[] = []) {
   const [artifacts, setArtifacts] = useState<ArtifactMeta[]>([]);
   useEffect(() => {
     let active = true;
-    void window.emma.searchImportedSkills({ query: "", limit: 64 })
+    if (isWorkspaceWindow) void window.emma.searchImportedSkills({ query: "", limit: 64 })
       .then((imported: ImportedSkill[]) => { if (active) setSkills(imported.map((item) => ({ id: item.id, name: item.name, kind: "skill" as const, detail: `${item.source} · skill` }))); })
       .catch(() => undefined);
-    void window.emma.listFolders().then((granted: FolderGrant[]) => {
+    if (isWorkspaceWindow) void window.emma.listFolders().then((granted: FolderGrant[]) => {
       if (!active) return;
       setFolders(granted);
       for (const folder of granted) {

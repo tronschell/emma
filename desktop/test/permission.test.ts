@@ -191,6 +191,24 @@ test("every direct stop route revokes an already-approved app grant once", async
   }
 });
 
+test("the time a turn sits on a permission prompt is not billed to the tool or to the turn", async () => {
+  const { runtime, asked } = fixture();
+  runtime.noteTool(application.threadId, "call-1", "Running date", { threadId: application.threadId, toolCallId: "call-1", title: "Running date", kind: "terminal", status: "in_progress", at: Date.now() });
+  const call = () => runtime.spans()[application.threadId].find((span) => span.id === "call:call-1")!;
+  const opened = call().startedAt;
+  const pending = runtime.question(application, { humanOnly: true });
+  assert.equal(runtime.list()[0].status, "waiting");
+  await new Promise((done) => setTimeout(done, 40));
+  runtime.answer(asked[0].id, true);
+  assert.equal(await pending, true);
+
+  const waited = runtime.awaited(application.threadId);
+  assert.ok(waited >= 30, `the wait was measured: ${waited}`);
+  assert.equal(call().startedAt - opened, waited);
+  runtime.finish(application.threadId);
+  assert.ok(runtime.list()[0].generationMs <= Date.now() - runtime.list()[0].startedAt - waited + 2, "the turn's own duration drops the human wait");
+});
+
 test("stopping a parent revokes descendant grants without touching unrelated runs", () => {
   const grant = new AbortController();
   const { runtime, stopped } = fixture("ask", undefined, (threadId) => {
