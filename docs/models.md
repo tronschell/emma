@@ -298,11 +298,28 @@ profile under **Providers** for anything you run at length.
 
 ### Choosing the route
 
-Pick the model, then choose who bills for it under the selected row. The provider
-control appears only for the current model when its id sits under a plan's
+**A plain click takes the route you already pay for.** `modelEntryRoute`
+([App.tsx](../desktop/src/App.tsx)) reads the row and the routes it has: a
+ChatGPT-plan route Codex can run wins, then a `subscription` plan whose profile
+already exists, and only otherwise the metered OpenRouter route. A metered plan —
+OpenAI, Anthropic, Gemini, DeepSeek, Mistral — never displaces OpenRouter, because
+both bill per token. Clicking the row you are already on keeps the route you are
+on rather than dropping back to OpenRouter. Every surface that picks a model goes
+through it: the composer picker, the stall notice's **Try another model**, the
+catalog's **Use**, and the second-model pickers for the verifier, advisor, vision
+and secrets.
+
+The metered route is then the one you ask for, under the selected row. The
+provider control appears for the current model when its id sits under a plan's
 `namespace`: **OpenRouter · API** or the plan's name and billing kind. The same
 control appears in the workspace, Quick Ask, scheduled tasks, conditional prompts,
 verifier, advisor, vision and secrets. Rows no plan covers keep their existing route.
+
+**Every route is labelled, the metered one included.** `modelKeyTag` gives
+`codex:` **Plan**, `provider:` **Direct**, `router:` **Router**, a free or absent
+model **Free**, and an `openrouter:` model **API** — so the per-token route is
+never the unmarked one. The tag rides the composer's model button, the Quick Ask
+one, and the closed second-model picker.
 
 The model id is derived, never typed. `planForModel` matches the namespace,
 `planModelId` strips it along with any `:free` suffix, and
@@ -552,7 +569,12 @@ An id must match `/^[A-Za-z0-9_-]{1,64}$/`, a name ≤ 64 chars, a model id ≤ 
 turns `provider:<id>` into a route with `providerChatUrl()`.
 
 **Favorites and the composer.** `MAX_FAVORITE_MODELS` is 6; favorites sort first
-in the composer's picker, which is capped at `MODEL_MENU_LIMIT` 30 entries. Each
+in the composer's picker, which is capped at `MODEL_MENU_LIMIT` 30 entries. A
+favorite is a route key, and a model's plan, ChatGPT and OpenRouter routes share
+one row, so `modelEntryFavorite` matches a starred key against every route of the
+row rather than against `openrouter:<id>` alone — a starred `provider:plan-zai` or
+`codex:gpt-5.6-luna` fills the star on its row, counts towards the ★ filter, and
+sorts with the rest. Each
 thread carries its own model — `threadModel(threadId)` supplies it per turn — and
 the model is recorded per turn in `recordTurn` rather than read off the picker at
 render time.

@@ -1377,6 +1377,7 @@ function TaskModelPicker({ model, onChange, busy, label = "The model this task r
     <button type="button" className="verifier-pick-trigger" disabled={busy} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
       <BrandIcon brand={model ? modelKeyBrand(settings, model) : undefined} className="model-brand" />
       <span>{model ? modelKeyLabel(settings, model) : inherit}</span>
+      {modelKeyTag(model) && <em className="model-route remote">{modelKeyTag(model)}</em>}
       <b aria-hidden="true">▾</b>
     </button>
     {open && <section className="source-popover model-menu" role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
@@ -2695,7 +2696,7 @@ function modelKeyRoute(settings: UserSettings, key: string): string {
   return "Unknown route";
 }
 
-const modelKeyTag = (key: string) => key.startsWith(CODEX_PREFIX) ? "Plan" : key.startsWith("provider:") ? "Direct" : routerIdFor(key) ? "Router" : key === "fallback" || isFreeModel(key) ? "Free" : "";
+const modelKeyTag = (key: string) => key.startsWith(CODEX_PREFIX) ? "Plan" : key.startsWith("provider:") ? "Direct" : routerIdFor(key) ? "Router" : key === "fallback" || isFreeModel(key) ? "Free" : key.startsWith("openrouter:") ? "API" : "";
 
 const selectedModelLabel = (settings: UserSettings) => modelKeyLabel(settings, settings.selectedModel);
 
@@ -3305,11 +3306,26 @@ function modelEntryCodexKey(entry: ModelEntry, slugs?: readonly string[]): strin
 
 function modelEntryCurrent(entry: ModelEntry, active: string, providers: readonly ProviderProfile[]): boolean {
   const profile = modelEntryPlanProfile(entry, providers);
-  return active === entry.key || modelEntryCodexKey(entry) === active || !!profile && `provider:${profile.id}` === active;
+  const codexKey = modelEntryCodexKey(entry);
+  return active === entry.key || (!!codexKey && codexKey === active) || !!profile && `provider:${profile.id}` === active;
 }
 
-function ModelProviderPicker({ entry, active, providers, busy, onPick }: { entry: ModelEntry; active: string; providers: readonly ProviderProfile[]; busy?: boolean; onPick: ModelPick }) {
-  const codexSlugs = useCodexSlugs();
+function modelEntryRoute(entry: ModelEntry, active: string, providers: readonly ProviderProfile[], slugs: readonly string[]): { key: string; plan?: ModelPlan } {
+  const codexKey = modelEntryCodexKey(entry, slugs);
+  if (codexKey && codexKey === active) return { key: codexKey };
+  const plan = modelEntryPlan(entry);
+  const profile = modelEntryPlanProfile(entry, providers);
+  if (profile && `provider:${profile.id}` === active) return { key: entry.key, plan };
+  if (active === entry.key) return { key: entry.key };
+  if (codexKey) return { key: codexKey };
+  return profile && plan?.billing === "subscription" ? { key: entry.key, plan } : { key: entry.key };
+}
+
+function modelEntryFavorite(entry: ModelEntry, favorites: readonly string[], providers: readonly ProviderProfile[]): string {
+  return favorites.find((key) => modelEntryCurrent(entry, key, providers)) ?? "";
+}
+
+function ModelProviderPicker({ entry, active, providers, busy, onPick, codexSlugs }: { entry: ModelEntry; active: string; providers: readonly ProviderProfile[]; busy?: boolean; onPick: ModelPick; codexSlugs: readonly string[] }) {
   const plan = modelEntryPlan(entry);
   if (!plan || !modelEntryCurrent(entry, active, providers)) return null;
   const profile = modelEntryPlanProfile(entry, providers);
@@ -3337,21 +3353,20 @@ function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, dra
   busy?: boolean;
   onPick: ModelPick;
   starred?: boolean;
-  onStar?: (key: string) => void;
+  onStar?: () => void;
   drag?: Record<string, unknown>;
 }) {
-  const plan = modelEntryPlan(entry);
-  const profile = modelEntryPlanProfile(entry, providers);
-  const direct = !!plan && !!profile && `provider:${profile.id}` === active;
+  const codexSlugs = useCodexSlugs();
+  const route = modelEntryRoute(entry, active, providers, codexSlugs);
   const current = modelEntryCurrent(entry, active, providers);
   return <div className={`model-row ${current ? "current" : ""}`} {...drag}>
-    <button type="button" className="model-row-pick" disabled={busy} aria-current={current} title={entry.detail} onClick={() => onPick(entry.key, direct ? plan : undefined)}>
+    <button type="button" className="model-row-pick" disabled={busy} aria-current={current} title={entry.detail} onClick={() => onPick(route.key, route.plan)}>
       <strong><span>{entry.name}</span>{modalityMarks(entry.modalities)}{entry.free ? priceBadge(true) : null}</strong>
       <small><BrandIcon brand={entry.brand} className="model-brand" /><span>{entry.brand?.label ?? entry.detail}</span></small>
     </button>
     <span className="model-context" title={entry.context ? `${entry.context.toLocaleString()}-token context window` : ""}>{entry.context ? contextMark.format(entry.context) : ""}</span>
-    {onStar && <button type="button" className="model-star" aria-pressed={starred} aria-label={`${starred ? "Unstar" : "Star"} ${entry.name}`} title={starred ? "Remove from the composer's picker" : "Show in the composer's picker"} onClick={() => onStar(entry.key)}>{starred ? "★" : "☆"}</button>}
-    <ModelProviderPicker entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} />
+    {onStar && <button type="button" className="model-star" aria-pressed={starred} aria-label={`${starred ? "Unstar" : "Star"} ${entry.name}`} title={starred ? "Remove from the composer's picker" : "Show in the composer's picker"} onClick={() => onStar()}>{starred ? "★" : "☆"}</button>}
+    <ModelProviderPicker entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} codexSlugs={codexSlugs} />
   </div>;
 }
 
@@ -3378,16 +3393,17 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const [railOrder, setRailOrder] = useState<string[]>(readMakerOrder);
   const starred = favorites ?? [];
+  const favorite = (entry: CatalogEntry) => modelEntryFavorite(entry, starred, providers);
   const listed = freeOnly ? entries.filter((entry) => entry.free === true || modelEntryCurrent(entry, active, providers)) : entries;
   const needle = query.trim().toLowerCase();
   const searched = listed.filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle));
-  const counts = new Map<string, number>([[STAR_MARK, searched.filter((entry) => starred.includes(entry.key)).length]]);
+  const counts = new Map<string, number>([[STAR_MARK, searched.filter((entry) => favorite(entry)).length]]);
   for (const entry of searched) counts.set(entry.maker, (counts.get(entry.maker) ?? 0) + 1);
   const filter = counts.get(maker) ? maker : "";
-  const matched = filter === STAR_MARK ? searched.filter((entry) => starred.includes(entry.key))
+  const matched = filter === STAR_MARK ? searched.filter((entry) => favorite(entry))
     : filter ? searched.filter((entry) => entry.maker === filter)
       : searched;
-  const weight = (entry: CatalogEntry) => modelEntryCurrent(entry, active, providers) ? -1 : starred.includes(entry.key) ? starred.indexOf(entry.key) : starred.length;
+  const weight = (entry: CatalogEntry) => modelEntryCurrent(entry, active, providers) ? -1 : favorite(entry) ? starred.indexOf(favorite(entry)) : starred.length;
   const shown = [...matched].sort((left, right) => weight(left) - weight(right)).slice(0, MODEL_MENU_LIMIT);
   const railRank = (id: string) => { const at = railOrder.indexOf(id); return at < 0 ? catalogMarks.findIndex(([mark]) => mark === id) + catalogMarks.length : at; };
   const marks = catalogMarks.filter(([id]) => listed.some((entry) => entry.maker === id)).sort((left, right) => railRank(left[0]) - railRank(right[0]));
@@ -3430,12 +3446,12 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
         {(routers ?? []).map(routerEntry).filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle)).map((entry) =>
           <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} />)}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={dropStar}>
-          <SortableContext items={shown.filter((entry) => starred.includes(entry.key)).map((entry) => entry.key)} strategy={verticalListSortingStrategy}>
-            {shown.map((entry) => onReorder && starred.includes(entry.key)
-              ? <Sortable key={entry.key} id={entry.key} className="model-row-sort">{(handle) =>
-                <ModelRow entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred onStar={onStar} drag={handle} />}
+          <SortableContext items={shown.map(favorite).filter(Boolean)} strategy={verticalListSortingStrategy}>
+            {shown.map((entry) => onReorder && favorite(entry)
+              ? <Sortable key={entry.key} id={favorite(entry)} className="model-row-sort">{(handle) =>
+                <ModelRow entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred onStar={onStar && (() => onStar(favorite(entry)))} drag={handle} />}
               </Sortable>
-              : <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred={starred.includes(entry.key)} onStar={onStar} />)}
+              : <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred={!!favorite(entry)} onStar={onStar && (() => onStar(favorite(entry) || entry.key))} />)}
           </SortableContext>
         </DndContext>
         {!shown.length && <p className="model-menu-note">Nothing matches “{query}”.</p>}
@@ -3471,8 +3487,8 @@ function ModelCatalog({ settings, onChange, act, busy }: { settings: UserSetting
   for (const entry of searched) counts.set(entry.maker, (counts.get(entry.maker) ?? 0) + 1);
   const filter = counts.has(maker) ? maker : "";
   const matched = filter ? searched.filter((entry) => entry.maker === filter) : searched;
-  const starWeight = (key: string) => settings.favoriteModels.includes(key) ? 0 : 1;
-  const ordered = [...matched].sort((left, right) => starWeight(left.key) - starWeight(right.key));
+  const favorite = (entry: CatalogEntry) => modelEntryFavorite(entry, settings.favoriteModels, settings.providers);
+  const ordered = [...matched].sort((left, right) => (favorite(left) ? 0 : 1) - (favorite(right) ? 0 : 1));
   const shown = ordered.slice(0, limit);
   const narrow = (next: () => void) => { setLimit(CATALOG_PAGE); next(); };
   const star = (key: string) => {
@@ -3561,16 +3577,18 @@ function ModelCatalog({ settings, onChange, act, busy }: { settings: UserSetting
       {settings.routers.length < MAX_ROUTERS && !needle && <button type="button" className="load-models" onClick={addRouter}>Add a router · {settings.routers.length} / {MAX_ROUTERS}</button>}
     </div>}
     <div className="model-list">{shown.map((entry) => {
-      const starred = settings.favoriteModels.includes(entry.key);
+      const favoriteKey = favorite(entry);
+      const starred = !!favoriteKey;
       const active = modelEntryCurrent(entry, settings.selectedModel, settings.providers);
+      const route = modelEntryRoute(entry, settings.selectedModel, settings.providers, codexSlugs);
       return <Fragment key={entry.key}>
         <div className={`catalog-row ${active ? "selected" : ""}`}>
           <BrandIcon brand={entry.brand} className="model-brand" />
           <span><span className="model-name"><strong>{entry.name}</strong>{entry.free === undefined ? null : priceBadge(entry.free)}{modalityMarks(entry.modalities)}</span><small>{entry.detail}</small></span>
-          <button type="button" className="catalog-star" aria-pressed={starred} aria-label={`${starred ? "Unstar" : "Star"} ${entry.name}`} title={starred ? "Remove from the model picker" : "Show in the model picker"} onClick={() => star(entry.key)}>{starred ? "★" : "☆"}</button>
-          <button type="button" className="catalog-use" disabled={busy || active} onClick={() => void use(entry.key)}>{active ? "Active" : "Use"}</button>
+          <button type="button" className="catalog-star" aria-pressed={starred} aria-label={`${starred ? "Unstar" : "Star"} ${entry.name}`} title={starred ? "Remove from the model picker" : "Show in the model picker"} onClick={() => star(favoriteKey || entry.key)}>{starred ? "★" : "☆"}</button>
+          <button type="button" className="catalog-use" disabled={busy || active} onClick={() => void use(route.key, route.plan)}>{active ? "Active" : "Use"}</button>
         </div>
-        <ModelProviderPicker entry={entry} active={settings.selectedModel} providers={settings.providers} busy={busy} onPick={(key, plan) => void use(key, plan)} />
+        <ModelProviderPicker entry={entry} active={settings.selectedModel} providers={settings.providers} busy={busy} onPick={(key, plan) => void use(key, plan)} codexSlugs={codexSlugs} />
       </Fragment>;
     })}</div>
     {!matched.length && !loading && <p className="local-model-empty">{needle ? `Nothing matches “${query}”.` : "No models under this maker."}</p>}
@@ -3865,6 +3883,7 @@ function SecondModelPicker({ label, off, draft, providers, routers, onChange, bu
       <button type="button" className="verifier-pick-trigger" disabled={busy} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
         <BrandIcon brand={picked === "custom" ? undefined : chosen?.brand} className="model-brand" />
         <span>{picked === "custom" ? draft.model || "Custom endpoint" : chosen?.name ?? (draft.model || off)}</span>
+        {modelKeyTag(picked) && <em className="model-route remote">{modelKeyTag(picked)}</em>}
         <b aria-hidden="true">▾</b>
       </button>
       {open && <section className="source-popover model-menu" role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
