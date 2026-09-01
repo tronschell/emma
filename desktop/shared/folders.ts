@@ -1,5 +1,6 @@
 export type FolderGrant = { id: string; path: string; name: string };
 export type FolderFile = { path: string; bytes: number };
+export type FolderListing = { files: FolderFile[]; total: number };
 
 export type EditorApp = { id: string; label: string; icon: string };
 

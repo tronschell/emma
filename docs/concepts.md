@@ -141,7 +141,11 @@ makes file and shell tools mean anything; a thread with no folder has no
 filesystem at all. In the composer `/` names a capability and `@` names a file
 ([`shared/slash.ts`](../desktop/shared/slash.ts)); `buildAttachedContext` in
 [`src/context.ts`](../desktop/src/context.ts) assembles folder listings, `@`
-files, attachments and artifacts into one bounded block. Emma's own standing
+files, attachments and artifacts into one bounded block. A listing is capped at
+`MAX_FOLDER_FILES` (400) per folder and six levels deep; `listFolderFiles`
+returns that page with the total it counted, so the Files picker reads
+`Showing 400 of N` instead of looking empty. Any file can still be read by path
+past the cap. Emma's own standing
 text goes to two files under the `HOME` she hands the harness: the resolved
 Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
 the agent's own built-in prompt, and kept Agent-page improvements to

@@ -143,7 +143,7 @@ export function useTaskCommands(disabledTools: readonly string[] = []) {
       if (!active) return;
       setFolders(granted);
       for (const folder of granted) {
-        void window.emma.listFolderFiles(folder.id).then((listing: FolderFile[]) => { if (active) setFiles((current) => ({ ...current, [folder.id]: listing })); }).catch(() => undefined);
+        void window.emma.listFolderFiles(folder.id).then((listing) => { if (active) setFiles((current) => ({ ...current, [folder.id]: listing.files })); }).catch(() => undefined);
       }
     }).catch(() => undefined);
     void window.emma.listNotes().then((list) => { if (active) setNotes(list); }).catch(() => undefined);
