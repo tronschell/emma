@@ -1,21 +1,6 @@
-//! Lazy discovery for the harness's own tools.
-//!
-//! `search_tools` and `select_tool` are the native twin of the MCP pair in
-//! `tool_mcp_dispatch.zig`. A registered tool marked `.on_select` never enters
-//! the base advertisement, so its schema costs nothing until the model asks for
-//! it by name. Search hands back names and descriptions only — the whole point
-//! is that two dozen input schemas stay out of every prompt — and select splices
-//! one schema in through the same sink MCP selection already uses.
-//!
-//! This is a prompt-cost mechanism, not a security boundary. A hidden tool is
-//! still registered and still runs under exactly the permission rules it would
-//! have had when advertised; search and select only decide what the model is
-//! told about.
-
 const std = @import("std");
 const model_context_encoding = @import("../shared/model_context_encoding.zig");
 const permissions = @import("../permissions/permissions.zig");
-const text_utils = @import("../shared/text_utils.zig");
 const types = @import("../shared/types.zig");
 const gateway_schema = @import("gateway_schema.zig");
 const tool_dispatch = @import("tool_dispatch.zig");
@@ -23,10 +8,9 @@ const tool_specs = @import("tool_specs.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// Matches the MCP search bounds so one door does not quietly cost more prompt
-/// than the other.
 const default_search_limit: usize = 8;
 const max_search_limit: usize = 20;
+const max_advertised_names: usize = 4;
 
 const SearchInput = struct {
     query: []u8,
@@ -139,8 +123,6 @@ pub fn callSelect(
     const input = erased.as(SelectInput);
     const spec = ctx.tool_registry.lookup(input.name) orelse
         return notFound(ctx, input.name);
-    // A denied tool is invisible to search, so it is not found here either.
-    // `.never` is reachable only by name and is never selectable.
     if (spec.advertisement == .never or
         permissions.rulesDenyAllTargetsForTool(ctx.mcp_permission_rules, input.name))
         return notFound(ctx, input.name);
@@ -171,8 +153,6 @@ pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return false;
 }
 
-/// Names and descriptions only. An input schema here would defeat the entire
-/// mechanism, since the model would pay for every hidden tool on every turn.
 fn renderSearch(
     alloc: Allocator,
     registry: tool_dispatch.Registry,
@@ -185,17 +165,27 @@ fn renderSearch(
         max_search_limit,
     );
 
+    var documents: std.ArrayList(Document) = .empty;
+    defer {
+        for (documents.items) |*document| document.deinit(alloc);
+        documents.deinit(alloc);
+    }
+    var advertised: std.ArrayList([]const u8) = .empty;
+    defer advertised.deinit(alloc);
+    for (registry.tools) |tool| {
+        if (permissions.rulesDenyAllTargetsForTool(rules, tool.name)) continue;
+        if (tool.advertisement == .always) {
+            if (advertised.items.len < max_advertised_names and queryNamesTool(query, tool.name))
+                try advertised.append(alloc, tool.name);
+            continue;
+        }
+        if (tool.advertisement != .on_select) continue;
+        try documents.append(alloc, try Document.init(alloc, tool));
+    }
+
     var ranked: std.ArrayList(Match) = .empty;
     defer ranked.deinit(alloc);
-    for (registry.tools) |tool| {
-        if (tool.advertisement != .on_select) continue;
-        if (permissions.rulesDenyAllTargetsForTool(rules, tool.name)) continue;
-        const score = matchScore(tool, query);
-        if (score == 0) continue;
-        try ranked.append(alloc, .{ .tool = tool, .score = score });
-    }
-    // Stable, so equally-scoring tools keep registry order — the order the
-    // advertisement itself would have used.
+    try rank(alloc, documents.items, query, &ranked);
     std.sort.insertion(Match, ranked.items, {}, Match.betterFirst);
 
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -208,61 +198,212 @@ fn renderSearch(
     }
     try out.writer.print("],\"count\":{d}", .{shown});
     if (ranked.items.len > shown) try out.writer.writeAll(",\"more_available\":true");
+    if (advertised.items.len > 0) {
+        try out.writer.writeAll(",\"already_advertised\":[");
+        for (advertised.items, 0..) |name, index| {
+            if (index > 0) try out.writer.writeByte(',');
+            try std.json.Stringify.value(name, .{}, &out.writer);
+        }
+        try out.writer.writeAll("],\"note\":\"Already in your schema. Call these directly; do not select them.\"");
+    }
     try out.writer.writeByte('}');
     return try out.toOwnedSlice();
 }
 
 const Match = struct {
     tool: tool_dispatch.Tool,
-    score: usize,
+    score: f64,
 
     fn betterFirst(_: void, a: Match, b: Match) bool {
         return a.score > b.score;
     }
 };
 
-/// Weight for a token found in the tool's name rather than its description. A
-/// name match is the strong signal: it is what the model is actually reaching
-/// for, and it has to outrank the filler words a written-out question sprinkles
-/// across every description in the registry.
-const name_match_weight: usize = 8;
-/// Below this, a token is a preposition or an article and matches nearly
-/// everything, so it says nothing about which tool was meant.
+const name_field_weight: f64 = 8;
+const body_field_weight: f64 = 1;
+const bm25_k1: f64 = 1.2;
+const bm25_b: f64 = 0.75;
 const min_scored_token_len: usize = 3;
+const indexed_schema_max_bytes: usize = 4096;
+const indexed_schema_max_depth: usize = 4;
 
-/// How well one tool answers a query: the sum over query tokens found in its
-/// name or description, case-insensitively. Zero means it is not a result.
-///
-/// This is scored rather than filtered, and that is the whole point. It used to
-/// require *every* token to appear, which is fine when search is an optional
-/// extra door onto a handful of MCP tools — but it is now the only way the model
-/// reaches any tool at all, and a written-out query like "list the threads in
-/// this workspace" matched nothing whatsoever, leaving the model with two tools
-/// and no way to find a third.
-///
-/// ponytail: substring matching with no stemming, so "thread" finds `threads`
-/// but "threading" does not. Real tokenisation only if that starts costing a
-/// model the tool it wanted.
-fn matchScore(tool: tool_dispatch.Tool, query: []const u8) usize {
-    var score: usize = 0;
+const TokenIterator = struct {
+    text: []const u8,
+    index: usize = 0,
+
+    fn next(self: *TokenIterator) ?[]const u8 {
+        while (self.index < self.text.len and !std.ascii.isAlphanumeric(self.text[self.index]))
+            self.index += 1;
+        const start = self.index;
+        while (self.index < self.text.len and std.ascii.isAlphanumeric(self.text[self.index]))
+            self.index += 1;
+        return if (self.index > start) self.text[start..self.index] else null;
+    }
+};
+
+const Document = struct {
+    tool: tool_dispatch.Tool,
+    body: []u8,
+    name_len: f64,
+    body_len: f64,
+
+    fn init(alloc: Allocator, tool: tool_dispatch.Tool) !Document {
+        var body: std.ArrayList(u8) = .empty;
+        errdefer body.deinit(alloc);
+        try appendIndexed(alloc, &body, tool.description);
+        try appendSchemaText(alloc, &body, tool.gateway_schema.input_schema, 0);
+        const owned = try body.toOwnedSlice(alloc);
+        return .{
+            .tool = tool,
+            .body = owned,
+            .name_len = @floatFromInt(tokenCount(tool.name)),
+            .body_len = @floatFromInt(tokenCount(owned)),
+        };
+    }
+
+    fn deinit(self: *Document, alloc: Allocator) void {
+        alloc.free(self.body);
+        self.* = undefined;
+    }
+};
+
+fn appendIndexed(alloc: Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+    if (text.len == 0 or out.items.len >= indexed_schema_max_bytes) return;
+    const room = indexed_schema_max_bytes - out.items.len;
+    try out.appendSlice(alloc, text[0..@min(text.len, room)]);
+    try out.append(alloc, ' ');
+}
+
+fn appendSchemaText(
+    alloc: Allocator,
+    out: *std.ArrayList(u8),
+    schema: gateway_schema.ObjectSchema,
+    depth: usize,
+) Allocator.Error!void {
+    if (depth > indexed_schema_max_depth or out.items.len >= indexed_schema_max_bytes) return;
+    for (schema.properties) |property| {
+        try appendIndexed(alloc, out, property.name);
+        try appendIndexed(alloc, out, property.description);
+        try appendIndexed(alloc, out, property.nullable_description);
+        if (property.shape) |shape| switch (shape.*) {
+            .enum_values => |values| for (values) |value| try appendIndexed(alloc, out, value),
+            .object => |nested| try appendSchemaText(alloc, out, nested.*, depth + 1),
+            .array_values => |array| for (array.enum_values) |value| try appendIndexed(alloc, out, value),
+            .array_objects => |nested| try appendSchemaText(alloc, out, nested.*, depth + 1),
+        };
+    }
+    for (schema.one_of) |alternative| try appendSchemaText(alloc, out, alternative, depth + 1);
+}
+
+fn singularToken(token: []const u8) []const u8 {
+    return if (token.len > min_scored_token_len and (token[token.len - 1] | 0x20) == 's')
+        token[0 .. token.len - 1]
+    else
+        token;
+}
+
+fn queryNamesTool(query: []const u8, name: []const u8) bool {
+    var named = false;
+    var name_tokens = TokenIterator{ .text = name };
+    while (name_tokens.next()) |name_token| {
+        if (name_token.len < min_scored_token_len) continue;
+        var query_tokens = TokenIterator{ .text = query };
+        var found = false;
+        while (query_tokens.next()) |query_token| {
+            if (std.ascii.eqlIgnoreCase(singularToken(name_token), singularToken(query_token))) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        named = true;
+    }
+    return named;
+}
+
+fn tokenCount(text: []const u8) usize {
+    var tokens = TokenIterator{ .text = text };
+    var count: usize = 0;
+    while (tokens.next()) |_| count += 1;
+    return count;
+}
+
+fn termFrequency(text: []const u8, term: []const u8) f64 {
+    var tokens = TokenIterator{ .text = text };
+    var count: usize = 0;
+    while (tokens.next()) |token| {
+        if (std.ascii.eqlIgnoreCase(token, term)) count += 1;
+    }
+    return @floatFromInt(count);
+}
+
+fn saturate(frequency: f64, length: f64, average_length: f64) f64 {
+    if (frequency == 0) return 0;
+    const normalized = if (average_length == 0) 1 else length / average_length;
+    return frequency * (bm25_k1 + 1) /
+        (frequency + bm25_k1 * (1 - bm25_b + bm25_b * normalized));
+}
+
+fn rank(
+    alloc: Allocator,
+    documents: []const Document,
+    query: []const u8,
+    ranked: *std.ArrayList(Match),
+) !void {
+    if (documents.len == 0) return;
+    const total: f64 = @floatFromInt(documents.len);
+
+    var average_name_len: f64 = 0;
+    var average_body_len: f64 = 0;
+    for (documents) |document| {
+        average_name_len += document.name_len;
+        average_body_len += document.body_len;
+    }
+    average_name_len /= total;
+    average_body_len /= total;
+
+    const scores = try alloc.alloc(f64, documents.len);
+    defer alloc.free(scores);
+    @memset(scores, 0);
+    const name_frequencies = try alloc.alloc(f64, documents.len);
+    defer alloc.free(name_frequencies);
+    const body_frequencies = try alloc.alloc(f64, documents.len);
+    defer alloc.free(body_frequencies);
+
     var scored_any = false;
-    var start: usize = 0;
-    var index: usize = 0;
-    while (index <= query.len) : (index += 1) {
-        if (index < query.len and isSearchByte(query[index])) continue;
-        const token = query[start..index];
-        start = index + 1;
-        if (token.len < min_scored_token_len) continue;
+    var terms = TokenIterator{ .text = query };
+    while (terms.next()) |term| {
+        if (term.len < min_scored_token_len) continue;
         scored_any = true;
-        if (text_utils.containsIgnoreCase(tool.name, token)) {
-            score += name_match_weight;
-        } else if (text_utils.containsIgnoreCase(tool.description, token)) {
-            score += 1;
+
+        var matched: f64 = 0;
+        for (documents, 0..) |document, index| {
+            name_frequencies[index] = termFrequency(document.tool.name, term);
+            body_frequencies[index] = termFrequency(document.body, term);
+            if (name_frequencies[index] + body_frequencies[index] > 0) matched += 1;
+        }
+        if (matched == 0) continue;
+
+        const inverse_document_frequency = @log(1 + (total - matched + 0.5) / (matched + 0.5));
+        for (scores, 0..) |*score, index| {
+            score.* += inverse_document_frequency *
+                (name_field_weight * saturate(
+                    name_frequencies[index],
+                    documents[index].name_len,
+                    average_name_len,
+                ) + body_field_weight * saturate(
+                    body_frequencies[index],
+                    documents[index].body_len,
+                    average_body_len,
+                ));
         }
     }
-    // Nothing worth scoring was asked, so everything is equally an answer. This
-    // is what makes an empty query list the whole searchable set.
-    return if (scored_any) score else 1;
+
+    for (documents, 0..) |document, index| {
+        const score = if (scored_any) scores[index] else 1;
+        if (score <= 0) continue;
+        try ranked.append(alloc, .{ .tool = document.tool, .score = score });
+    }
 }
 
 fn writeToolMetadataJson(
@@ -279,10 +420,6 @@ fn writeToolMetadataJson(
     try writer.writeByte('}');
 }
 
-fn isSearchByte(byte: u8) bool {
-    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-';
-}
-
 fn notFound(
     ctx: tool_dispatch.DispatchContext,
     name: []const u8,
@@ -291,6 +428,10 @@ fn notFound(
     defer out.deinit();
     out.writer.writeAll("Tool not found: ") catch return error.OutOfMemory;
     model_context_encoding.writeScalar(&out.writer, name) catch return error.OutOfMemory;
+    if (std.mem.startsWith(u8, name, "mcp_")) {
+        const hint = ". Use mcp_select_tool for a configured MCP server tool.";
+        out.writer.writeAll(hint) catch return error.OutOfMemory;
+    }
     return .{ .failure = out.toOwnedSlice() catch return error.OutOfMemory };
 }
 
@@ -306,14 +447,26 @@ fn selectInputDeinit(ptr: *anyopaque, alloc: Allocator) void {
     alloc.destroy(input);
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+const test_default_input_schema = gateway_schema.ObjectSchema{
+    .properties = &.{
+        .{ .name = "path", .json_type = .string, .description = "Target path." },
+    },
+    .required = &.{"path"},
+};
 
 fn testTool(
     name: []const u8,
     description: []const u8,
     advertisement: tool_dispatch.Advertisement,
+) tool_dispatch.Tool {
+    return testSchemaTool(name, description, advertisement, test_default_input_schema);
+}
+
+fn testSchemaTool(
+    name: []const u8,
+    description: []const u8,
+    advertisement: tool_dispatch.Advertisement,
+    input_schema: gateway_schema.ObjectSchema,
 ) tool_dispatch.Tool {
     return .{
         .name = name,
@@ -321,12 +474,7 @@ fn testTool(
         .gateway_schema = .{
             .name = name,
             .description = description,
-            .input_schema = .{
-                .properties = &.{
-                    .{ .name = "path", .json_type = .string, .description = "Target path." },
-                },
-                .required = &.{"path"},
-            },
+            .input_schema = input_schema,
         },
         .advertisement = advertisement,
         .executor_kind = .emma,
@@ -430,22 +578,16 @@ const test_tools = [_]tool_dispatch.Tool{
 test "native tool search matches tokens across name and description, case-insensitively" {
     const alloc = std.testing.allocator;
 
-    // Tokens split across name and description, in mixed case. All three tools
-    // are named `emma_*`, so the one that also answers `conversation` comes first.
     const both = try searchOutput(alloc, test_tools[0..], .{}, "{\"query\":\"EMMA conversation\"}");
     defer alloc.free(both);
     try std.testing.expect(std.mem.startsWith(u8, both, "{\"tools\":[{\"name\":\"emma_threads\""));
     try std.testing.expect(std.mem.find(u8, both, "\"count\":3") != null);
 
-    // A token nothing answers to costs nothing; the rest of the query still finds
-    // its tool. Requiring every token used to return the empty set here, which is
-    // the one answer that leaves the model with no way forward.
     const partial = try searchOutput(alloc, test_tools[0..], .{}, "{\"query\":\"threads sasquatch\"}");
     defer alloc.free(partial);
     try std.testing.expect(std.mem.startsWith(u8, partial, "{\"tools\":[{\"name\":\"emma_threads\""));
     try std.testing.expect(std.mem.find(u8, partial, "\"count\":1") != null);
 
-    // Nothing at all still means nothing at all.
     const nothing = try searchOutput(alloc, test_tools[0..], .{}, "{\"query\":\"sasquatch\"}");
     defer alloc.free(nothing);
     try std.testing.expectEqualStrings("{\"tools\":[],\"count\":0}", nothing);
@@ -453,9 +595,6 @@ test "native tool search matches tokens across name and description, case-insens
 
 test "native tool search ranks the tool a written-out question is asking for" {
     const alloc = std.testing.allocator;
-    // The query that made this necessary. Every filler word here appears in some
-    // description somewhere, so an all-tokens-must-match search returned nothing
-    // and a rank-free one buried the answer under whatever matched "the".
     const tools = [_]tool_dispatch.Tool{
         testTool("write_file", "Write the whole contents of a file in this workspace.", .on_select),
         testTool("knowledge", "Save a page in this workspace to the knowledge base.", .on_select),
@@ -466,8 +605,6 @@ test "native tool search ranks the tool a written-out question is asking for" {
     defer alloc.free(body);
     try std.testing.expect(std.mem.startsWith(u8, body, "{\"tools\":[{\"name\":\"threads\""));
 
-    // One-and-two letter tokens are dropped rather than scored: `in` and `a`
-    // appear inside half the words in the registry and say nothing about intent.
     const filler = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"in a to of\"}");
     defer alloc.free(filler);
     try std.testing.expect(std.mem.find(u8, filler, "\"count\":3") != null);
@@ -480,8 +617,6 @@ test "native tool search returns names and descriptions but never input schemas"
 
     try std.testing.expect(std.mem.find(u8, body, "\"name\":\"emma_threads\"") != null);
     try std.testing.expect(std.mem.find(u8, body, "Work with conversation threads.") != null);
-    // The context-cost contract: a schema here would put every hidden tool back
-    // into every prompt, which is the exact cost this pair exists to avoid.
     try std.testing.expect(std.mem.find(u8, body, "inputSchema") == null);
     try std.testing.expect(std.mem.find(u8, body, "properties") == null);
 }
@@ -501,7 +636,6 @@ test "native tool search caps at the default limit and reports more_available" {
     try std.testing.expect(std.mem.find(u8, capped, "\"more_available\":true") != null);
     try std.testing.expect(std.mem.find(u8, capped, "emma_tool_08") == null);
 
-    // An explicit limit is honoured up to the cap and no further.
     const explicit = try searchOutput(alloc, many[0..], .{}, "{\"query\":\"emma\",\"limit\":2}");
     defer alloc.free(explicit);
     try std.testing.expect(std.mem.find(u8, explicit, "\"count\":2") != null);
@@ -550,14 +684,78 @@ test "native tool search never returns an already advertised tool" {
     try std.testing.expect(std.mem.find(u8, body, "\"count\":1") != null);
 }
 
-test "native tool search with an empty query returns the whole searchable set" {
+test "native tool search with an empty query returns the whole searchable set in registry order" {
     const alloc = std.testing.allocator;
     const body = try searchOutput(alloc, test_tools[0..], .{}, "{\"query\":\"\"}");
     defer alloc.free(body);
     try std.testing.expect(std.mem.find(u8, body, "\"count\":3") != null);
+    var previous: usize = 0;
     for (test_tools) |tool| {
-        try std.testing.expect(std.mem.find(u8, body, tool.name) != null);
+        const at = std.mem.find(u8, body, tool.name) orelse return error.TestExpectedEqual;
+        try std.testing.expect(at >= previous);
+        previous = at;
     }
+}
+
+test "native tool search scores whole words, not substrings inside another word" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("emma_threads", "Work with conversation threads.", .on_select),
+        testTool("read_file", "Return the contents of one file.", .on_select),
+    };
+
+    const body = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"read a file\"}");
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.startsWith(u8, body, "{\"tools\":[{\"name\":\"read_file\""));
+    try std.testing.expect(std.mem.find(u8, body, "emma_threads") == null);
+    try std.testing.expect(std.mem.find(u8, body, "\"count\":1") != null);
+}
+
+test "native tool search splits compound names into their parts" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("emma_knowledge", "Save a page.", .on_select),
+        testTool("read_tool_result", "Page back through a stored payload.", .on_select),
+    };
+
+    const body = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"result\"}");
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.startsWith(u8, body, "{\"tools\":[{\"name\":\"read_tool_result\""));
+    try std.testing.expect(std.mem.find(u8, body, "\"count\":1") != null);
+}
+
+test "native tool search finds a term that appears only in the parameter schema" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("emma_knowledge", "Save a page into the knowledge base.", .on_select),
+        testSchemaTool("terminal", "Run a shell command.", .on_select, .{
+            .properties = &.{
+                .{
+                    .name = "detached",
+                    .json_type = .boolean,
+                    .description = "Keep the process running in the background after the call returns.",
+                },
+            },
+        }),
+    };
+
+    const body = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"run a command in the background\"}");
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.startsWith(u8, body, "{\"tools\":[{\"name\":\"terminal\""));
+    try std.testing.expect(std.mem.find(u8, body, "background") == null);
+}
+
+test "native tool search ranks a name hit above a description hit" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("emma_archive", "Store older notes for later.", .on_select),
+        testTool("emma_notes", "Store scratch text.", .on_select),
+    };
+
+    const body = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"notes\"}");
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.startsWith(u8, body, "{\"tools\":[{\"name\":\"emma_notes\""));
+    try std.testing.expect(std.mem.find(u8, body, "\"count\":2") != null);
 }
 
 test "native tool select reports the exact registry schema through the dynamic sink" {
@@ -575,7 +773,6 @@ test "native tool select reports the exact registry schema through the dynamic s
     const expected = try tool_specs.toolGatewaySchemaJson(alloc, test_tools[0]);
     defer alloc.free(expected);
     try std.testing.expectEqualStrings(expected, sink.schema_json orelse return error.TestExpectedEqual);
-    // The schema the sink carries is the executable one, unlike search output.
     try std.testing.expect(std.mem.find(u8, expected, "inputSchema") != null);
 }
 
@@ -599,6 +796,13 @@ test "native tool select rejects unknown, already advertised and never advertise
     defer advertised.deinit(alloc);
     try std.testing.expectEqualStrings("read_file is already available; call it directly.", advertised.failure);
 
+    const dynamic = try selectResult(alloc, tools[0..], .{}, null, "mcp_lightpanda_search");
+    defer dynamic.deinit(alloc);
+    try std.testing.expectEqualStrings(
+        "Tool not found: mcp_lightpanda_search. Use mcp_select_tool for a configured MCP server tool.",
+        dynamic.failure,
+    );
+
     var rules = [_]types.PermissionRule{
         .{
             .permission = @constCast("emma_threads"),
@@ -616,13 +820,57 @@ test "native tool select does not require a preceding search" {
     var sink = SelectSink{ .alloc = alloc };
     defer sink.deinit();
 
-    // No search has ever run against this context, and two unrelated selects
-    // follow each other. Selection is a by-name lookup with no search memory,
-    // exactly like the MCP pair it mirrors.
     for ([_][]const u8{ "emma_screen", "emma_knowledge" }) |name| {
         const result = try selectResult(alloc, test_tools[0..], .{}, &sink, name);
         defer result.deinit(alloc);
         try std.testing.expect(result == .success);
         try std.testing.expectEqualStrings(name, sink.name orelse return error.TestExpectedEqual);
     }
+}
+
+test "native tool search names the advertised tools the query is already asking for" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("emma_threads", "Work with conversation threads.", .on_select),
+        testTool("read_file", "Read one file from disk.", .always),
+        testTool("grep_files", "Search file contents.", .always),
+        testTool("terminal", "Run a shell command.", .always),
+    };
+
+    const asking = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"read a file and grep files\"}");
+    defer alloc.free(asking);
+    try std.testing.expect(
+        std.mem.find(u8, asking, "\"already_advertised\":[\"read_file\",\"grep_files\"]") != null,
+    );
+    try std.testing.expect(std.mem.find(u8, asking, "Call these directly") != null);
+    try std.testing.expect(std.mem.find(u8, asking, "\"count\":0") != null);
+
+    const unrelated = try searchOutput(alloc, tools[0..], .{}, "{\"query\":\"conversation threads\"}");
+    defer alloc.free(unrelated);
+    try std.testing.expect(std.mem.find(u8, unrelated, "already_advertised") == null);
+    try std.testing.expect(std.mem.find(u8, unrelated, "emma_threads") != null);
+}
+
+test "native tool search does not name an advertised tool denied by a rule" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("emma_threads", "Work with conversation threads.", .on_select),
+        testTool("terminal", "Run a shell command.", .always),
+    };
+    var rules = [_]types.PermissionRule{
+        .{
+            .permission = @constCast("terminal"),
+            .pattern = @constCast("*"),
+            .action = .deny,
+        },
+    };
+
+    const body = try searchOutput(
+        alloc,
+        tools[0..],
+        .{ .rules = &rules },
+        "{\"query\":\"terminal\"}",
+    );
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.find(u8, body, "already_advertised") == null);
 }

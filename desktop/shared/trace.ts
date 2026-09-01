@@ -10,7 +10,7 @@
    turn on the thread and read it back after a restart; `renderTrace` is what a
    model is given when it asks what a past turn did. */
 
-export type TraceStatus = "running" | "ok" | "failed";
+export type TraceStatus = "running" | "ok" | "failed" | "cancelled";
 
 export type TraceSpan = {
   id: string;
@@ -348,7 +348,7 @@ export function decodeSpans(text: string): TraceSpan[] {
       kind: typeof span.kind === "string" ? span.kind : "other",
       startedAt: span.startedAt,
       endedAt: typeof span.endedAt === "number" ? span.endedAt : undefined,
-      status: span.status === "failed" ? "failed" : span.status === "running" ? "running" : "ok",
+      status: span.status === "failed" ? "failed" : span.status === "running" ? "running" : span.status === "cancelled" ? "cancelled" : "ok",
       input: typeof span.input === "string" ? span.input : undefined,
       output: typeof span.output === "string" ? span.output : undefined,
       tokens: typeof span.tokens === "number" ? span.tokens : undefined,

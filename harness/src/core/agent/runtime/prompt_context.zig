@@ -24,6 +24,10 @@ pub fn historyContextBudgetTokensForCapabilities(capabilities: model_capabilitie
     );
 }
 
+pub const unfinished_tool_result_output =
+    "The turn was interrupted before this tool call reported a result. It may have partially run, " ++
+    "so check the current state before reissuing it.";
+
 pub fn buildGatewayMessages(
     alloc: Allocator,
     stable_prefix: []const ChatMessage,
@@ -36,11 +40,50 @@ pub fn buildGatewayMessages(
     errdefer messages.deinit(alloc);
 
     try messages.appendSlice(alloc, stable_prefix);
-    try appendEphemeralOverlayMessages(alloc, &messages, ephemeral_overlay);
     try messages.appendSlice(alloc, durable_history);
+    try appendEphemeralOverlayMessages(alloc, &messages, ephemeral_overlay);
     try messages.append(alloc, current_user_message);
     try messages.appendSlice(alloc, within_turn_suffix);
+    try ensureToolResultsPresent(alloc, &messages);
     return messages;
+}
+
+pub fn ensureToolResultsPresent(
+    alloc: Allocator,
+    messages: *std.ArrayList(ChatMessage),
+) !void {
+    var index: usize = 0;
+    while (index < messages.items.len) {
+        const assistant = messages.items[index];
+        if (assistant.role != .assistant or assistant.tool_calls.len == 0) {
+            index += 1;
+            continue;
+        }
+        var block_end = index + 1;
+        while (block_end < messages.items.len and
+            messages.items[block_end].role == .tool) : (block_end += 1)
+        {}
+        for (assistant.tool_calls) |call| {
+            if (hasToolResult(messages.items[index + 1 .. block_end], call.id)) continue;
+            try messages.insert(alloc, block_end, .{
+                .role = .tool,
+                .content = unfinished_tool_result_output,
+                .tool_call_id = call.id,
+                .tool_name = call.name,
+                .tool_result_status = .failure,
+            });
+            block_end += 1;
+        }
+        index = block_end;
+    }
+}
+
+fn hasToolResult(results: []const ChatMessage, call_id: []const u8) bool {
+    for (results) |result| {
+        const existing = result.tool_call_id orelse continue;
+        if (std.mem.eql(u8, existing, call_id)) return true;
+    }
+    return false;
 }
 
 fn appendEphemeralOverlayMessages(alloc: Allocator, messages: *std.ArrayList(ChatMessage), ephemeral_overlay: []const ChatMessage) !void {
@@ -137,7 +180,7 @@ test "budgeted history projection uses corrected Anthropic window while remainin
     try std.testing.expectEqualStrings(large_assistant, older_model_projection.items[older_model_projection.items.len - 1].content.?);
 }
 
-test "buildGatewayMessages orders transient overlay before history and current prompt" {
+test "buildGatewayMessages orders stable prefix history live delta and current prompt" {
     const alloc = std.testing.allocator;
     const stable_prefix = [_]ChatMessage{
         .{ .role = .system, .content = "stable system prompt" },
@@ -161,12 +204,24 @@ test "buildGatewayMessages orders transient overlay before history and current p
     try std.testing.expectEqual(@as(usize, 7), messages.items.len);
     try std.testing.expectEqualStrings("stable system prompt", messages.items[0].content.?);
     try std.testing.expectEqualStrings("stable project context", messages.items[1].content.?);
-    try std.testing.expectEqualStrings("volatile runtime overlay", messages.items[2].content.?);
-    try std.testing.expectEqualStrings("history user prompt", messages.items[3].content.?);
-    try std.testing.expectEqualStrings("history assistant answer", messages.items[4].content.?);
+    try std.testing.expectEqualStrings("history user prompt", messages.items[2].content.?);
+    try std.testing.expectEqualStrings("history assistant answer", messages.items[3].content.?);
+    try std.testing.expectEqualStrings("volatile runtime overlay", messages.items[4].content.?);
     try std.testing.expectEqualStrings("current user prompt", messages.items[5].content.?);
     try std.testing.expectEqualStrings("within turn assistant", messages.items[6].content.?);
-    try std.testing.expectEqual(types.ChatCachePolicy.no_cache, messages.items[2].cache_policy);
+    try std.testing.expectEqual(types.ChatRole.system, messages.items[4].role);
+    try std.testing.expectEqual(types.ChatCachePolicy.no_cache, messages.items[4].cache_policy);
+
+    const changed_overlay = [_]ChatMessage{
+        .{ .role = .system, .content = "different volatile runtime overlay" },
+    };
+    var changed_messages = try buildGatewayMessages(alloc, &stable_prefix, &changed_overlay, &history, current, &suffix);
+    defer changed_messages.deinit(alloc);
+    const before_prefix = try gateway_json.buildGatewayRequestBody(alloc, "[]", messages.items[0..4]);
+    defer alloc.free(before_prefix);
+    const after_prefix = try gateway_json.buildGatewayRequestBody(alloc, "[]", changed_messages.items[0..4]);
+    defer alloc.free(after_prefix);
+    try std.testing.expectEqualStrings(before_prefix, after_prefix);
 }
 
 test "buildGatewayMessages preserves one system prefix for projected session history" {
@@ -250,18 +305,15 @@ test "buildGatewayMessages preserves one system prefix for projected session his
     );
     defer messages.deinit(arena);
 
-    var saw_non_system = false;
     var leading_summary_count: usize = 0;
     var late_summary_count: usize = 0;
     var file_evidence_count: usize = 0;
     var background_count: usize = 0;
     var interruption_count: usize = 0;
-    for (messages.items) |entry| {
-        if (entry.role == .system) {
-            try std.testing.expect(!saw_non_system);
-        } else {
-            saw_non_system = true;
-        }
+    for (messages.items[0..stable_prefix.len]) |entry| {
+        try std.testing.expectEqual(types.ChatRole.system, entry.role);
+    }
+    for (messages.items[stable_prefix.len..]) |entry| {
         const content = entry.content orelse continue;
         if (std.mem.find(u8, content, "LEADING_SUMMARY_ONLY") != null) {
             try std.testing.expectEqual(types.ChatRole.system, entry.role);
@@ -286,6 +338,9 @@ test "buildGatewayMessages preserves one system prefix for projected session his
             interruption_count += 1;
         }
     }
+    const overlay_index = stable_prefix.len + projected_history.items.len;
+    try std.testing.expectEqual(types.ChatRole.system, messages.items[overlay_index].role);
+    try std.testing.expectEqual(types.ChatCachePolicy.no_cache, messages.items[overlay_index].cache_policy);
     try std.testing.expectEqual(@as(usize, 1), leading_summary_count);
     try std.testing.expectEqual(@as(usize, 1), late_summary_count);
     try std.testing.expectEqual(@as(usize, 1), file_evidence_count);
@@ -294,4 +349,125 @@ test "buildGatewayMessages preserves one system prefix for projected session his
     try std.testing.expectEqualStrings("current portable prompt", messages.items[messages.items.len - 2].content.?);
     try std.testing.expectEqualStrings("within-turn suffix", messages.items[messages.items.len - 1].content.?);
     try gateway_json.validateToolMessageHistory(arena, messages.items);
+}
+
+test "dangling tool call gains exactly one synthetic result in call position" {
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const calls = [_]types.ToolCall{
+        .{ .id = "call_done", .name = "read_file", .arguments_json = "{}" },
+        .{ .id = "call_dangling", .name = "run_command", .arguments_json = "{}" },
+    };
+    const suffix = [_]ChatMessage{
+        .{ .role = .assistant, .content = "working", .tool_calls = calls[0..] },
+        .{ .role = .tool, .content = "read", .tool_call_id = "call_done", .tool_name = "read_file", .tool_result_status = .success },
+    };
+
+    var messages = try buildGatewayMessages(
+        arena,
+        &.{},
+        &.{},
+        &.{},
+        .{ .role = .user, .content = "prompt" },
+        &suffix,
+    );
+
+    try std.testing.expectEqual(@as(usize, 4), messages.items.len);
+    try std.testing.expectEqualStrings("call_done", messages.items[2].tool_call_id.?);
+    try std.testing.expectEqual(types.ChatRole.tool, messages.items[3].role);
+    try std.testing.expectEqualStrings("call_dangling", messages.items[3].tool_call_id.?);
+    try std.testing.expectEqualStrings("run_command", messages.items[3].tool_name.?);
+    try std.testing.expectEqualStrings(unfinished_tool_result_output, messages.items[3].content.?);
+    try std.testing.expectEqual(types.PersistedToolStatus.failure, messages.items[3].tool_result_status.?);
+    try gateway_json.validateToolMessageHistory(arena, messages.items);
+
+    try ensureToolResultsPresent(arena, &messages);
+    try std.testing.expectEqual(@as(usize, 4), messages.items.len);
+}
+
+test "tool result repair leaves well formed history byte identical across independent runs" {
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const calls = [_]types.ToolCall{
+        .{ .id = "call_paired", .name = "read_file", .arguments_json = "{}" },
+    };
+    const paired = [_]ChatMessage{
+        .{ .role = .assistant, .content = "working", .tool_calls = calls[0..] },
+        .{ .role = .tool, .content = "read", .tool_call_id = "call_paired", .tool_name = "read_file", .tool_result_status = .success },
+    };
+    var untouched: std.ArrayList(ChatMessage) = .empty;
+    try untouched.appendSlice(arena, &paired);
+    const before = try gateway_json.buildGatewayRequestBodyWithOptions(arena, "[]", untouched.items, .{}, .auto);
+    try ensureToolResultsPresent(arena, &untouched);
+    const after = try gateway_json.buildGatewayRequestBodyWithOptions(arena, "[]", untouched.items, .{}, .auto);
+    try std.testing.expectEqualStrings(before, after);
+
+    const dangling = [_]ChatMessage{
+        .{ .role = .assistant, .content = "working", .tool_calls = calls[0..] },
+    };
+    var first: std.ArrayList(ChatMessage) = .empty;
+    try first.appendSlice(arena, &dangling);
+    try ensureToolResultsPresent(arena, &first);
+    var second: std.ArrayList(ChatMessage) = .empty;
+    try second.appendSlice(arena, &dangling);
+    try ensureToolResultsPresent(arena, &second);
+    try std.testing.expectEqualStrings(
+        try gateway_json.buildGatewayRequestBodyWithOptions(arena, "[]", first.items, .{}, .auto),
+        try gateway_json.buildGatewayRequestBodyWithOptions(arena, "[]", second.items, .{}, .auto),
+    );
+}
+
+test "mid stream cancellation during tool argument assembly leaves a repairable request" {
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const persisted_calls = [_]types.ToolCall{
+        .{ .id = "call_persisted", .name = "read_file", .arguments_json = "{}" },
+        .{ .id = "call_never_dispatched", .name = "run_command", .arguments_json = "{}" },
+    };
+    const persisted_results = [_]types.PersistedToolResult{
+        .{ .tool_call_id = @constCast("call_persisted"), .tool_name = @constCast("read_file"), .status = .success, .output = @constCast("read"), .output_bytes = 4, .stored_output_bytes = 4, .created_at_ms = 1 },
+    };
+    var steps = [_]types.ToolExecutionStep{.{
+        .assistant = @constCast("assembling"),
+        .tool_calls = @constCast(persisted_calls[0..]),
+        .tool_results = @constCast(persisted_results[0..]),
+    }};
+    const history = [_]HistoryTurn{.{ .interrupted = .{
+        .user = .{ .text = @constCast("do the thing") },
+        .execution = .{ .tool_steps = steps[0..] },
+    } }};
+
+    var history_messages: std.ArrayList(ChatMessage) = .empty;
+    try session_runtime.appendHistoryChatMessages(arena, &history_messages, &history);
+    try std.testing.expectError(
+        error.InvalidGatewayHistory,
+        gateway_json.validateToolMessageHistory(arena, history_messages.items),
+    );
+
+    const messages = try buildGatewayMessages(
+        arena,
+        &.{},
+        &.{},
+        history_messages.items,
+        .{ .role = .user, .content = "continue" },
+        &.{},
+    );
+    try gateway_json.validateToolMessageHistory(arena, messages.items);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(
+            u8,
+            try gateway_json.buildGatewayRequestBodyWithOptions(arena, "[]", messages.items, .{}, .auto),
+            unfinished_tool_result_output,
+        ),
+    );
 }

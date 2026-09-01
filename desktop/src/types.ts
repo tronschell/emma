@@ -3,7 +3,7 @@ import type { Artifact, ArtifactMeta } from "../shared/artifacts";
 import type { BuiltComponent, ComponentMeta, ComponentRequest } from "../shared/components";
 import type { CliModels, CliRun } from "../shared/cli";
 import type { EditorApp, FolderFile, FolderGrant } from "../shared/folders";
-import type { GitCommandResult, GitHistory, GitReady, GitSnapshot } from "../shared/git";
+import type { GitCommandResult, GitHistory, GitReady, GitSnapshot, WorktreeEntry } from "../shared/git";
 import type { MachineSample } from "../shared/machine";
 import type { HarnessLogLine, HarnessReport } from "../shared/harness-log";
 import type { Goal, GoalStatus } from "../shared/goal";
@@ -11,6 +11,7 @@ import type { Visual } from "../shared/visualize";
 import type { Arm, Improvements } from "../shared/improvement";
 import type { PermissionMode } from "../shared/permissions";
 import type { Plan } from "../shared/plan";
+import type { TaskList } from "../shared/task-list";
 import type { PluginCatalog, PluginDetail } from "../shared/plugins";
 import type { UsageRow } from "../shared/invocations";
 import type { FrontApplication } from "../shared/screen-context";
@@ -18,8 +19,8 @@ import type { LinkedPermission, SetupStatus } from "../shared/setup";
 import type { TerminalTab } from "../shared/terminal";
 import type { TraceSpan } from "../shared/trace";
 import type { VoiceStatus } from "../shared/voice";
-import type { HarnessExperiments, KeyBalance, ProviderProfile, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
-import type { KeepRequest, KeptNote, VaultChoice } from "../shared/vault";
+import type { HarnessExperiments, KeyBalance, ProviderProfile, ShortcutRequest, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
+import type { KeepRequest, KeptNote, NoteFolder, VaultChoice } from "../shared/vault";
 
 export interface MemoryNote {
   path: string;
@@ -38,7 +39,7 @@ export interface Message {
   role: ThreadRole;
   content: string;
   timestamp: string;
-  generation?: { outputTokens: number; durationMilliseconds: number; inputTokens: number; model: string } | null;
+  generation?: { outputTokens: number; durationMilliseconds: number; inputTokens: number; cacheInputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costMicroUsd?: number; model: string } | null;
 }
 
 export interface Thread {
@@ -51,8 +52,16 @@ export interface Thread {
   updatedAt: string;
   archivedAt?: string | null;
   messages: Message[];
+  messageCount?: number;
+  messageDates?: string[];
+  userMessageCount?: number;
+  displayTitle?: string;
+  labelPrompt?: string;
+  subagentBrief?: string;
   goal?: Goal | null;
 }
+
+export type ThreadSummary = Omit<Thread, "messages" | "messageCount"> & { messages: number; messageDates?: string[]; userMessageCount?: number };
 
 export interface ScheduledJob {
   id: string;
@@ -117,16 +126,59 @@ export interface Snapshot {
   warnings: string[];
 }
 
+export interface CompactSnapshot {
+  threads: ThreadSummary[];
+  scheduledJobs: ScheduledJob[];
+  researchJobs: ResearchJob[];
+  warnings: string[];
+}
+
+export const threadMessageCount = (thread: Thread) => thread.messageCount ?? thread.messages.length;
+export const threadUserMessageCount = (thread: Thread) => thread.userMessageCount ?? thread.messages.filter((message) => message.role === "user").length;
+export const threadMessageDates = (thread: Thread) => thread.messageDates ?? thread.messages.map((message) => message.timestamp);
+export const isCurrentThreadLoad = (requestedFor: string, selectedId: string, requestedId = selectedId, currentRequestId = requestedId) => requestedFor === selectedId && requestedId === currentRequestId;
+
 export type ModelModality = "image" | "file" | "audio";
+
+export interface RouteModelMetadata {
+  source: "openrouter" | "models.dev" | "codex" | "manual";
+  name?: string;
+  description?: string;
+  family?: string;
+  contextWindow?: number;
+  advertisedContextWindow?: number;
+  maximumContextWindow?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  reasoning?: boolean;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  toolCall?: boolean;
+  structuredOutput?: boolean;
+  temperature?: boolean;
+  knowledgeCutoff?: string;
+  releaseDate?: string;
+  updatedAt?: string;
+  fetchedAt?: string;
+  inputUsdPerMillion?: number;
+  outputUsdPerMillion?: number;
+  cacheReadUsdPerMillion?: number;
+}
 
 export interface OpenRouterCatalog {
   selectedModel?: string;
   models: { id: string; name: string; contextLength: number; inputModalities: ModelModality[]; reasoningEfforts?: string[]; reasoningMandatory?: boolean; free: boolean }[];
+  routes?: Record<string, RouteModelMetadata>;
   added?: string[];
   removed?: string[];
   fetchedAt?: string;
   stale?: boolean;
   error?: string;
+  metadataFetchedAt?: string;
+  metadataStale?: boolean;
+  metadataError?: string;
 }
 
 export interface AgentImportSource {
@@ -136,14 +188,6 @@ export interface AgentImportSource {
   skills: number;
   mcpConfigs: number;
   locations: string[];
-}
-
-export interface Connection {
-  id: string;
-  label: string;
-  detail: string;
-  formula: string;
-  binary: string;
 }
 
 export interface ImportedSkill {
@@ -206,10 +250,13 @@ export type OverlaySurface = "notch" | "pill" | "popout";
 declare global {
   interface Window {
     emma: {
+      platform: string;
       request<T>(method: string, params?: Record<string, string>): Promise<T>;
       setOverlayPreferences(value: unknown): void;
       setOverlayBusy(value: boolean): void;
       setKeybinds(value: unknown): Promise<string[]>;
+      onShortcutRequest(listener: (value: ShortcutRequest & { id: string }) => void): () => void;
+      completeShortcutRequest(value: { id: string; keybinds?: unknown; message?: string; error?: string }): Promise<string[]>;
       openOverlay(): void;
       setOverlayHeight(value: number): void;
       onOverlaySurface(listener: (value: OverlaySurface) => void): () => void;
@@ -230,6 +277,7 @@ declare global {
       onUpdateReady(listener: (value: string) => void): () => void;
       onDelta(listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void): () => void;
       onStep(listener: (value: ThreadStep) => void): () => void;
+      onCompacted(listener: (value: { threadId: string; removedTurns: number; summaryChars: number; modelWritten: boolean }) => void): () => void;
       onContextExperiment(listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void): () => void;
       onRoutedModel(listener: (value: { threadId: string; model: string; fellBack: boolean }) => void): () => void;
       onContextBreakdown(listener: (value: { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }) => void): () => void;
@@ -262,6 +310,8 @@ declare global {
       onArtifactsChanged(listener: () => void): () => void;
       listPlans(): Promise<Plan[]>;
       onPlansChanged(listener: () => void): () => void;
+      listTaskLists(): Promise<TaskList[]>;
+      onTaskListsChanged(listener: () => void): () => void;
       setGoal(value: { threadId: string; objective: string; tokenBudget?: number }): Promise<Thread>;
       updateGoal(value: { threadId: string; status?: GoalStatus; evidence?: string; reason?: string; extraTokens?: number }): Promise<Thread>;
       clearGoal(threadId: string): Promise<Thread>;
@@ -274,8 +324,13 @@ declare global {
       vaultStatus(): Promise<VaultChoice | null>;
       installObsidian(): Promise<{ installed: boolean; command: string }>;
       keep(request: KeepRequest): Promise<KeptNote>;
+      keepScreen(id: string): Promise<KeptNote>;
       listNotes(): Promise<KeptNote[]>;
       readNote(path: string): Promise<string>;
+      listNoteFolders(): Promise<NoteFolder[]>;
+      createNoteFolder(name: string): Promise<NoteFolder>;
+      renameNoteFolder(value: { folder: string; name: string }): Promise<NoteFolder>;
+      moveNote(value: { path: string; folder: string }): Promise<string>;
       openInObsidian(path: string): Promise<void>;
       onNotesChanged(listener: () => void): () => void;
       resetData(): Promise<void>;
@@ -305,6 +360,9 @@ declare global {
       listEditors(): Promise<EditorApp[]>;
       openInEditor(value: { folderId?: string; path: string; editorId: string }): Promise<void>;
       setWorktree(value: { folderId: string; name: string; on: boolean }): Promise<{ folders: FolderGrant[]; folderId: string }>;
+      worktreeList(folderId: string): Promise<WorktreeEntry[]>;
+      worktreeAdd(value: { folderId: string; prefix: string; name: string }): Promise<{ folders: FolderGrant[]; folderId: string }>;
+      worktreeRemove(value: { folderId: string; paths: string[] }): Promise<void>;
       setBranch(value: { folderId: string; branch: string; create: boolean; from?: string }): Promise<void>;
       readFolderFile(value: { folderId: string; path: string }): Promise<{ path: string; text: string }>;
       attachFiles(): Promise<HeldAttachment[]>;
@@ -312,9 +370,6 @@ declare global {
       readAttachment(id: string): Promise<HeldAttachment & { text?: string }>;
       clearThreadContext(threadId: string): Promise<void>;
       discoverAgentImports(): Promise<AgentImportSource[]>;
-      detectConnections(): Promise<Connection[]>;
-      outdatedConnections(): Promise<string[]>;
-      setUpConnection(value: { id: string; action: "install" | "upgrade" }): Promise<{ ok: boolean; message: string }>;
       importAgentSources(ids: string[]): Promise<string[]>;
       searchImportedSkills(value: { query: string; limit?: number }): Promise<ImportedSkill[]>;
       selectImportedSkill(value: { id: string; threadId: string }): Promise<ImportedSkill>;
@@ -343,7 +398,8 @@ declare global {
       listCliRuns(): Promise<CliRun[]>;
       readCliRun(id: string): Promise<{ run: CliRun; output: string } | null>;
       stopCliRun(id: string): Promise<boolean>;
-      installedClis(): Promise<{ id: string; label: string; bin: string; path: string }[]>;
+      installedClis(): Promise<{ id: string; label: string; bin: string; path: string; signedIn?: boolean }[]>;
+      signInCli(value: { signIn: string; columns: number; rows: number }): Promise<TerminalTab>;
       cliModels(value: { cli: string; refresh?: boolean }): Promise<CliModels>;
       setCliRunModel(value: { id: string; model: string }): Promise<CliRun>;
       sendCliRun(value: { id: string; prompt: string }): Promise<CliRun | null>;
@@ -389,6 +445,7 @@ declare global {
       setZeroRetention(value: boolean): Promise<void>;
       listCredentials(): Promise<CredentialSummary[]>;
       openRouterBalance(): Promise<KeyBalance>;
+      deepseekBalance(): Promise<KeyBalance>;
       saveCredential(value: { env: string; secret?: string }): Promise<CredentialSummary[]>;
       fetchUrl(url: string): Promise<{ title: string; text: string }>;
       loadUiPlugins(): Promise<UiPlugin[]>;

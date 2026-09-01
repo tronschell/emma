@@ -8,7 +8,7 @@
 
 It runs its own agent loop, drives the coding CLIs you already have, writes parts of its own interface, and benches its own changes before keeping them.
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20·%20Apple%20silicon-1c1c1c?style=flat-square&logo=apple&logoColor=white)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%20·%20Apple%20silicon%20%7C%20Windows%20x64-1c1c1c?style=flat-square&logo=apple&logoColor=white)](#requirements)
 [![Electron](https://img.shields.io/badge/Electron-43.4.0-2b2e3a?style=flat-square&logo=electron&logoColor=9feaf9)](desktop/package.json)
 [![Rust](https://img.shields.io/badge/Rust-1.97.1-2b2119?style=flat-square&logo=rust&logoColor=e6683c)](rust-toolchain.toml)
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-2e2416?style=flat-square&logo=zig&logoColor=f7a41d)](harness/build.zig.zon)
@@ -25,16 +25,18 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 - **A coding agent with the usual verbs.** Files, grep, shell, browser, screen, MCP tools, skills installed mid-turn, work fanned out to subagents.
 - **It drives the CLI you already use.** Claude Code, Codex, Pi, OpenCode, and Cursor run as workers in your working tree.
 - **Every turn is instrumented.** A span tree per run — model requests, tool calls, wall clock, token deltas — appended to the thread's Markdown.
-- **Plain Markdown records.** Threads and plans stay on disk; kept notes go into the vault folder you picked.
+- **Plain Markdown records.** Threads, task lists, and plans stay on disk; kept notes go into the vault folder you picked.
 
 ## Quickstart
 
-Published macOS builds are distributed through
-[GitHub Releases](https://github.com/tronschell/emma/releases). For a published
-version, unzip `Emma-vX.Y.Z-darwin-arm64.zip` and move `Emma.app` to Applications.
-Requires macOS 12 or later on Apple silicon. The toolchains below are only
-needed to build from source. If there is no published download yet, use the
-source instructions:
+Published macOS builds are distributed through [GitHub Releases](https://github.com/tronschell/emma/releases).
+For a published macOS version, unzip `Emma-vX.Y.Z-darwin-arm64.zip` and move
+`Emma.app` to Applications. Windows x64 is the supported distributable/public
+target and is packaged in CI; ARM64 is a CI compile/package rehearsal, not a
+public auto-update target. Public signed Windows x64 publication is pending
+release-workflow authorization. The x64 target is Windows 10 version 1809 or
+later. The toolchains below are only needed to build from source.
+If there is no published download yet, use the source instructions:
 
 ```bash
 git clone https://github.com/tronschell/emma.git
@@ -43,17 +45,24 @@ npm install --prefix desktop
 npm run dev
 ```
 
-Double-tap the physical **left Option** key to open Quick Ask. Pick a model in **Settings → Models**: any OpenAI-compatible endpoint, including a local one (Ollama, LM Studio, llama.cpp) for local inference. Optional tools and secondary models have their own routes; choosing a local chat model is not an app-wide offline switch. For hosted, `export OPENROUTER_API_KEY=…` or paste a key in Settings.
+On macOS, double-tap the physical **left Option** key to open Quick Ask; on
+Windows, double-tap the physical **left Alt** key. Windows uses **Ctrl** where
+macOS uses **Command** in shortcut labels. Pick a model in **Settings → Models**:
+any OpenAI-compatible endpoint, including a local one (Ollama, LM Studio,
+llama.cpp) for local inference. Optional tools and secondary models have their
+own routes; choosing a local chat model is not an app-wide offline switch. For
+hosted, `export OPENROUTER_API_KEY=…` or paste a key in Settings.
 
 ### Requirements
 
 | | |
 |---|---|
-| **OS** | macOS 12 or later on Apple silicon |
+| **OS** | macOS 12 or later on Apple silicon, or Windows 10 version 1809 or later on x64; ARM64 is a CI compile/package validation target |
 | **Node** | 24+ |
 | **Rust** | 1.97.1 (`rust-toolchain.toml` pins it) |
 | **Zig** | 0.16.0 |
-| **Xcode** | `clang` builds four native helpers; packaging also needs full Xcode's `actool` |
+| **Xcode** | macOS only: `clang` builds native helpers; packaging also needs full Xcode's `actool` |
+| **Windows toolchain** | Windows only: LLVM `clang`/`clang++` and Windows SDK import libraries build native helpers; CI builds an unsigned x64 package and an ARM64 compile/package rehearsal |
 
 New to the repo? **[docs/getting-started.md](docs/getting-started.md)**
 
@@ -92,7 +101,11 @@ The Agent page mines its own traces for repeat failures, drafts one change to th
 
 <img src="desktop/screenshots/notch-radial.png" alt="The radial command ring orbiting the cursor" width="420">
 
-Quick Ask wraps the real camera housing, measured per display; screens without one get a calibrated virtual notch. Three quick actions on `Command-1/2/3`, plus a radial ring at the cursor. Either surface can be switched off. → **[docs/notch.md](docs/notch.md)**
+On macOS, Quick Ask wraps the real camera housing, measured per display; screens
+without one get a calibrated virtual notch. On Windows it appears as a small
+pill near the top of the display. Three quick actions use `Command-1/2/3` on
+macOS and `Ctrl-1/2/3` on Windows, plus a radial ring at the cursor. Either
+surface can be switched off. → **[docs/notch.md](docs/notch.md)**
 
 ## Knowledge base
 
@@ -110,13 +123,15 @@ A job is one validated trigger (cron, `manual`, `after <job-id>`, or an app even
 
 <img src="desktop/screenshots/model-picker.png" alt="The model picker: the live OpenRouter catalog with context lengths and starred favourites, provider marks, and a thinking slider" width="900">
 
-Any OpenAI-compatible local or hosted endpoint. Keys are encrypted with the OS keychain and reach the harness through its spawn environment. **Private routing** requests no-training, zero-retention OpenRouter endpoints for the main agent loop and fails when none qualify. It does not cover secondary models, tools, or your provider account's logging settings. → **[docs/models.md](docs/models.md)** · **[docs/privacy.md](docs/privacy.md)**
+Any OpenAI-compatible local or hosted endpoint. Keys are encrypted with the OS secure credential store and reach the harness through its spawn environment. **Private routing** requests no-training, zero-retention OpenRouter endpoints for the main agent loop and fails when none qualify. It does not cover secondary models, tools, or your provider account's logging settings. → **[docs/models.md](docs/models.md)** · **[docs/privacy.md](docs/privacy.md)**
 
 ## In a terminal
 
 ```bash
 /Applications/Emma.app/Contents/Resources/emma-cli ask "explain this repository"
 ```
+
+On Windows, run `resources/emma-cli.exe` from the installed app directory.
 
 The same agent, headless. Bare `emma-cli` is a REPL in the current directory; `sessions`, `tasks`, and `permissions` are its other subcommands, gated on the tty under the same modes.
 
@@ -153,12 +168,13 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 (cd harness && zig build test)
 ```
 
-[`AGENTS.md`](AGENTS.md) is the source of truth for anyone — human or agent — changing this repo. `just check`, `just test`, and `just package` wrap the rest; `npm run package:mac` builds the app.
+[`AGENTS.md`](AGENTS.md) is the source of truth for anyone — human or agent — changing this repo. `just check`, `just test`, and `just package` wrap the rest; `npm run package:mac` builds macOS and `npm run package:win` builds the current native Windows x64 or ARM64 target.
 
 Release flow: feature branches → `dev` → `main`. PR titles drive the generated
-changelog and version; promoting a prepared release to `main` automatically
-checks, builds, signs, notarizes, and publishes the macOS app. Apple secret names
-are configured; the first signed GitHub release still needs end-to-end verification.
+changelog and version; promoting a prepared release to `main` checks, builds,
+signs, notarizes, and publishes the macOS release. Windows CI builds an unsigned
+x64 target package and an ARM64 compile/package rehearsal; public signed Windows
+x64 publication is pending release-workflow authorization.
 → **[Release guide](docs/releases.md)** · **[Development](docs/development.md)**
 
 ## Docs

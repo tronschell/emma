@@ -1,16 +1,17 @@
 # The command line
 
-Three unrelated things in Emma answer to "CLI":
+Two unrelated things in Emma answer to "CLI":
 
 - the **`cli` and `cli_runs` tools**, which drive *someone else's* coding CLI in a connected folder — most of this page;
-- **Settings → Connections**, which adds a line of system context per third-party tool you already have, and no tool at all;
 - **`emma-cli`**, the agent Emma itself runs, which also works from a terminal.
 
 ## `emma-cli` from a terminal
 
-The same binary that runs every Emma turn. A packaged app has it at
-`Emma.app/Contents/Resources/emma-cli`; a checkout builds it to
-`harness/zig-out/bin/emma-cli` with `npm --prefix desktop run build:harness`.
+The same binary that runs every Emma turn. A packaged macOS app has it at
+`Emma.app/Contents/Resources/emma-cli`; a Windows package keeps `emma-cli.exe`
+under its `resources/` directory. A checkout builds it to
+`harness/zig-out/bin/emma-cli` on macOS or `harness/zig-out/bin/emma-cli.exe`
+on Windows with `npm --prefix desktop run build:harness`.
 
 ```bash
 emma-cli ask "write a fizzbuzz in python"   # one shot
@@ -63,8 +64,8 @@ it.
 
 | | |
 | --- | --- |
-| Finding the binary | `/bin/bash -lc command -v <bin>`, cached. Electron inherits launchd's PATH, not yours — `claude` lives in `~/.local/bin`, `opencode` in `~/.opencode/bin`. The login `$PATH` is read once and handed to every child |
-| Spawning | `detached: true`, `stdio: ["ignore", "pipe", "pipe"]`, own process group, so Stop takes whatever the CLI forked. SIGTERM, then SIGKILL after 2 s |
+| Finding the binary | macOS uses `/bin/bash -lc command -v <bin>` and caches the result; Windows searches the inherited `PATH` with its executable extensions. The resolved path is handed to every child |
+| Spawning | `detached: true`, `stdio: ["ignore", "pipe", "pipe"]`, own process group, so Stop takes whatever the CLI forked. macOS uses SIGTERM then SIGKILL after 2 s; Windows uses `taskkill` for the process tree |
 | Pipes, not a pty | Every CLI here has a non-interactive mode. A pty would mean node-pty plus a terminal emulator in the renderer |
 | Output | stdout and stderr merged, capped at `MAX_OUTPUT` 256 KiB, oldest bytes dropped. `terminalText` strips CSI/OSC/two-byte ANSI escapes and applies carriage returns, so a spinner reads correctly. Not an emulator: a CLI that addresses the cursor to redraw a box needs a real one |
 | Repaints | coalesced to one every 120 ms (`NOTIFY_EVERY_MS`) |
@@ -185,9 +186,9 @@ strings that are not models.
 
 **The terminal** — the Terminal button starts that harness's own interactive CLI
 in Emma's pty ([main/terminal.ts](../desktop/main/terminal.ts) takes a `cli` id
-and runs `$SHELL -ilc <bin>` in place of a login shell, so the CLI resolves on the
-login PATH and gets a real TTY). Any terminal tab pops back out into a PIP with
-`⇱`, and docks again from the PIP.
+and runs the platform shell: `$SHELL -ilc <bin>` on macOS, or `%COMSPEC% /d /s /c
+<bin>` on Windows, so the CLI gets a real TTY). Any terminal tab pops back out
+into a PIP with `⇱`, and docks again from the PIP.
 
 **`CliPanel`** — that run's own tab: stats, the whole terminal, and a composer
 that gives it the next turn. The composer talks to main directly: typing into a
@@ -196,48 +197,6 @@ no dialog.
 
 Both scrollers pin to the bottom unless you have scrolled more than 24 px up
 (`useTailScroll`, which `run-block.tsx` reuses under a shell fence).
-
-## Settings → Connections
-
-[main/connections.ts](../desktop/main/connections.ts). **A connection is a line
-of system context and nothing else** — no wrapper, no schema, no process Emma
-owns, no new tool. The binary was already reachable through the shell; what the
-agent was missing is that it exists here and what it is for.
-
-| id | Label | Probes for | Homebrew formula | Project |
-| --- | --- | --- | --- | --- |
-| `obsidian` | Obsidian | `obsidian`, `obsidian-cli` | `yakitrak/yakitrak/obsidian-cli` | [Yakitrak/obsidian-cli](https://github.com/Yakitrak/obsidian-cli) |
-| `github` | GitHub | `gh` | `gh` | [cli/cli](https://github.com/cli/cli) |
-| `gitlab` | GitLab | `glab` | `glab` | [gitlab-org/cli](https://gitlab.com/gitlab-org/cli) |
-| `jira` | Jira | `jira` | `ankitpokhrel/jira-cli/jira-cli` | [ankitpokhrel/jira-cli](https://github.com/ankitpokhrel/jira-cli) |
-| `todoist` | Todoist | `todoist` | `sachaos/todoist/todoist` | [sachaos/todoist](https://github.com/sachaos/todoist) |
-
-Obsidian is the only entry with two candidate binaries; whichever is found first
-is what the agent is told to run.
-
-Everything a switched-on, installed connection adds to a turn:
-
-```
-Third-party command-line tools the user has connected on this Mac. Use them
-through the terminal tool, which needs a connected folder as its working
-directory:
-
-- GitHub — `gh`. Issues, pull requests, releases, CI. Run `gh --help` first if
-  you are unsure of its subcommands.
-```
-
-That is the whole feature.
-
-Detection is one `bash -lc` for the whole catalog — the same login shell the
-`terminal` tool runs under, so a binary on the agent's PATH is the one detected.
-The block is rebuilt when the selection changes, not per turn.
-
-Ids, binaries and formulae are interpolated into shell scripts, so the catalog is
-held to bare names and `assertCatalog` fails the tests if an entry strays:
-`^[a-z][a-z0-9-]{0,31}$` for ids and binaries, plus up to two `/` segments for a
-tapped formula. Homebrew is the only thing Emma installs or upgrades, and only on
-your click; `outdatedConnections` runs `brew outdated` separately from detection,
-because it walks every installed formula and the list has to draw first.
 
 ## See also
 

@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gitArgv, layoutHistory, matchesFilter, parseDiff, parseStatus, validateGitArgs, worktreeName, type GitCommit } from "../shared/git";
-import { addWorktree, cleanMessage, commit, discard, gitFailure, gitHistory, gitReady, gitSnapshot, initRepo, mainCheckout, NO_GIT, runGit, switchBranch, writeCommitMessage } from "../main/git";
+import { branchPrefixName, gitArgv, layoutHistory, matchesFilter, parseDiff, parseStatus, parseWorktrees, validateGitArgs, worktreeName, type GitCommit } from "../shared/git";
+import { addWorktree, cleanMessage, commit, discard, gitFailure, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, NO_GIT, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "../main/git";
 
 const DIFF = `diff --git a/src/one.ts b/src/one.ts
 index 111..222 100644
@@ -145,7 +145,62 @@ test("the commit writer sends the model a quoted diff and returns what it said",
   );
 });
 
-test("a thread moves onto a worktree of its repo and back to the main checkout", async () => {
+test("worktree porcelain records split on NULs and keep paths whole", () => {
+  const text = ["worktree /repo/main", "HEAD abc1234", "branch refs/heads/main", "", "worktree /repo/my trees/naïve", "HEAD def5678", "detached", "", "worktree /repo/locked-one", "branch refs/heads/feature", "locked reason goes here", "", "worktree /repo/stale", "prunable: junk on disk", "", ""].join("\0");
+  const rows = parseWorktrees(text, "/repo/main");
+  assert.deepEqual(rows, [
+    { path: "/repo/main", head: "abc1234", branch: "main", primary: true, bare: false, detached: false, locked: false, prunable: false, dirty: false },
+    { path: "/repo/my trees/naïve", head: "def5678", branch: "", primary: false, bare: false, detached: true, locked: false, prunable: false, dirty: false },
+    { path: "/repo/locked-one", head: "", branch: "feature", primary: false, bare: false, detached: false, locked: true, prunable: false, dirty: false },
+    { path: "/repo/stale", head: "", branch: "", primary: false, bare: false, detached: false, locked: false, prunable: true, dirty: false },
+  ]);
+  assert.deepEqual(parseWorktrees("", "/repo/main"), []);
+});
+
+test("a branch prefix joins onto a cleaned name and refuses an empty one", () => {
+  assert.equal(branchPrefixName("emma/", "happy otter"), "emma/happy-otter");
+  assert.equal(branchPrefixName("", "feature"), "feature");
+  assert.equal(branchPrefixName("anurag", "--weird--name--"), "anurag/weird-name");
+  assert.equal(branchPrefixName("emma/", "a/b"), "emma/a-b");
+  assert.throws(() => branchPrefixName("emma/", "   "), /name/);
+  assert.throws(() => branchPrefixName("emma/", "---"), /name/);
+});
+
+test("the worktree list reports dirty state and removal is refused for the primary and unknown paths", async () => {
+  const { root, repo, run } = makeRepo();
+  try {
+    write(repo, "one.txt", "hello\n");
+    run("add", "-A");
+    run("commit", "-q", "-m", "first");
+
+    const tree = await addWorktree(repo, "side");
+    const rows = await listWorktrees(repo);
+    assert.equal(rows.length, 2);
+    const main = rows.find((row) => row.primary);
+    const side = rows.find((row) => row.path === tree);
+    assert.equal(main?.branch, "main");
+    assert.equal(main?.dirty, false);
+    assert.equal(side?.branch, "side");
+    assert.equal(side?.dirty, false);
+
+    write(tree, "scratch.txt", "uncommitted\n");
+    const dirty = await listWorktrees(repo);
+    assert.equal(dirty.find((row) => row.path === tree)?.dirty, true);
+
+    await assert.rejects(removeWorktrees(repo, [repo]), /main checkout/);
+    await assert.rejects(removeWorktrees(repo, ["/nowhere/else"]), /Refresh and try again/);
+    await assert.rejects(removeWorktrees(repo, []), /Pick the worktrees/);
+    await assert.rejects(removeWorktrees(repo, [tree]), /--force/);
+    run("-C", tree, "clean", "-f", "scratch.txt");
+    await removeWorktrees(repo, [tree]);
+    const after = await listWorktrees(repo);
+    assert.deepEqual(after.map((row) => row.path), [repo]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+ test("a thread moves onto a worktree of its repo and back to the main checkout", async () => {
   const { root, repo, run } = makeRepo();
   try {
     write(repo, "one.txt", "hello\n");

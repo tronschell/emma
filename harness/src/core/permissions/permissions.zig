@@ -3230,11 +3230,15 @@ fn testWriteMutationInput(path: []const u8) file_mutation_contract.FileMutationI
     } };
 }
 
+var test_edit_entries = [_]file_mutation_contract.Edit{.{
+    .old_string = @constCast("a"),
+    .new_string = @constCast("b"),
+}};
+
 fn testEditMutationInput(path: []const u8) file_mutation_contract.FileMutationInput {
     return .{ .edit = .{
         .path = @constCast(path),
-        .old_string = @constCast("a"),
-        .new_string = @constCast("b"),
+        .edits = &test_edit_entries,
     } };
 }
 

@@ -24,8 +24,6 @@ const StorageTarget = union(enum) {
     managed: *session_child_store.SessionChildCapability,
 };
 
-/// Read-only, validated access to a persisted redacted tool result. The
-/// caller chooses bounded raw pages and owns each returned allocation.
 pub const ResultReader = struct {
     file: session_child_store.ManagedFile,
     size: usize,
@@ -343,8 +341,6 @@ pub fn statManaged(
     };
 }
 
-/// Opens a persisted redacted result for bounded read-only pages. This never
-/// materializes the full sidecar in memory.
 pub fn openReaderManaged(
     alloc: Allocator,
     capability: *session_child_store.SessionChildCapability,
@@ -926,7 +922,7 @@ test "managed result read only absence does not create route" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,

@@ -16,15 +16,13 @@ test("plain replies are left alone, and an unclosed block is all scratchpad", ()
 });
 
 test("a model's thinking stops are its own, and every model starts on its own default", () => {
-  // Stop zero is "" — the model's default — so a fresh pick asks for no effort at all.
   const three = { reasoningEfforts: ["max", "high", "low"], reasoningMandatory: false };
   assert.deepEqual(thinkingStops(three), ["", "off", "low", "high", "max"]);
   assert.equal(thinkingStops(three)[0], "");
 
-  // A mandatory reasoner offers no "off"; one that lists "none" already has its own.
   assert.deepEqual(thinkingStops({ reasoningEfforts: ["high", "medium", "low"], reasoningMandatory: true }), ["", "low", "medium", "high"]);
   assert.deepEqual(thinkingStops({ reasoningEfforts: ["none", "high"] }), ["", "none", "high"]);
+  assert.deepEqual(thinkingStops({ reasoningEfforts: ["future_mode", "ultra", "low"] }), ["", "off", "low", "ultra", "future_mode"]);
 
-  // No published efforts means no slider at all.
   assert.deepEqual(thinkingStops({}), []);
 });

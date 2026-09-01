@@ -775,7 +775,7 @@ fn jsonKindName(value: std.json.Value) []const u8 {
     };
 }
 
-fn findCacheBreakpoint(messages: []const ChatMessage) ?usize {
+pub fn findCacheBreakpoint(messages: []const ChatMessage) ?usize {
     if (messages.len < 3) return null;
     var i = messages.len - 2;
     while (i > 0) : (i -= 1) {
@@ -813,6 +813,8 @@ pub fn parseGatewayCompletion(alloc: std.mem.Allocator, body: []const u8) !Gatew
                 return error.InvalidGatewayResponse;
         }
     }
+
+    output.usage = parseGatewayUsage(root.object);
 
     if (message_value.object.get("tool_calls")) |tool_calls| {
         if (tool_calls == .array and tool_calls.array.items.len > 0) {
@@ -865,6 +867,91 @@ pub fn parseGatewayCompletion(alloc: std.mem.Allocator, body: []const u8) !Gatew
     }
 
     return output;
+}
+
+fn parseGatewayUsage(root: std.json.ObjectMap) types.Usage {
+    const usage_value = root.get("usage") orelse return .{};
+    if (usage_value != .object) return .{};
+    const usage = usage_value.object;
+    const input_value = usage.get("inputTokens") orelse
+        usage.get("promptTokens") orelse
+        usage.get("prompt_tokens");
+    const output_value = usage.get("outputTokens") orelse
+        usage.get("completionTokens") orelse
+        usage.get("completion_tokens");
+    const input_tokens = parseGatewayTokenValue(input_value);
+    const output_tokens = parseGatewayTokenValue(output_value);
+    var cache_read_tokens = parseGatewayTokenDetail(input_value, "cacheRead");
+    var cache_write_tokens = parseGatewayTokenDetail(input_value, "cacheWrite");
+    if (cache_read_tokens == null) {
+        cache_read_tokens = parseGatewayTokenDetail(
+            usage.get("promptTokensDetails") orelse usage.get("prompt_tokens_details"),
+            "cachedTokens",
+        );
+    }
+    if (cache_write_tokens == null) {
+        cache_write_tokens = parseGatewayTokenDetail(
+            usage.get("promptTokensDetails") orelse usage.get("prompt_tokens_details"),
+            "cacheCreationTokens",
+        );
+    }
+    if (input_tokens) |input| {
+        if (cache_read_tokens) |read| {
+            if (read > input) cache_read_tokens = null;
+        }
+        if (cache_write_tokens) |write| {
+            if (write > input) cache_write_tokens = null;
+        }
+    }
+
+    const gateway_cost = if (root.get("providerMetadata")) |metadata|
+        if (metadata == .object)
+            if (metadata.object.get("gateway")) |gateway|
+                if (gateway == .object) parseMicroDollarsValue(gateway.object.get("cost")) else null
+            else
+                null
+        else
+            null
+    else
+        null;
+    const usage_cost = parseMicroDollarsValue(usage.get("cost"));
+    return .{
+        .input_tokens = input_tokens,
+        .output_tokens = output_tokens,
+        .cache_read_tokens = cache_read_tokens,
+        .cache_write_tokens = cache_write_tokens,
+        .cost_micro_usd = gateway_cost orelse usage_cost,
+    };
+}
+
+fn parseGatewayTokenValue(value: ?std.json.Value) ?u64 {
+    const actual = value orelse return null;
+    return switch (actual) {
+        .integer => |number| if (number >= 0) std.math.cast(u64, number) else null,
+        .number_string => |text| std.fmt.parseInt(u64, text, 10) catch null,
+        .object => parseGatewayTokenValue(actual.object.get("total")),
+        else => null,
+    };
+}
+
+fn parseGatewayTokenDetail(value: ?std.json.Value, detail: []const u8) ?u64 {
+    const actual = value orelse return null;
+    if (actual != .object) return null;
+    return parseGatewayTokenValue(actual.object.get(detail));
+}
+
+fn parseMicroDollarsValue(value: ?std.json.Value) ?u64 {
+    const actual = value orelse return null;
+    return switch (actual) {
+        .string => |text| types.parseMicroDollars(text),
+        .number_string => |text| types.parseMicroDollars(text),
+        .integer => |number| if (number >= 0)
+            std.math.mul(u64, std.math.cast(u64, number) orelse return null, 1_000_000) catch null
+        else
+            null,
+        .object => parseMicroDollarsValue(actual.object.get("total")),
+        else => null,
+    };
 }
 
 pub fn freeGatewayCompletion(alloc: std.mem.Allocator, completion: GatewayCompletion) void {

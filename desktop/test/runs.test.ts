@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, compactionNotice, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import type { TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
@@ -37,6 +37,7 @@ let pushAgents: (value: LiveAgent[]) => void = () => undefined;
     request: (method: string, params: { content: string }) => request(method, params),
     onDelta: (listener: typeof pushDelta) => { pushDelta = listener; return () => undefined; },
     onStep: () => () => undefined,
+    onCompacted: () => () => undefined,
     onContextExperiment: () => () => undefined,
     onRoutedModel: () => () => undefined,
     onContextBreakdown: () => () => undefined,
@@ -376,8 +377,8 @@ test("a turn the host refuses hands its text back once", async () => {
   assert.equal(takeDraft("failed"), "");
 });
 
-const traceOf = (thread: string, startedAt: number, calls: [string, string, number?][]) => [
-  JSON.stringify({ v: 1, thread, model: "z-ai/glm-5.3-flash" }),
+const traceOf = (thread: string, startedAt: number, calls: [string, string, number?][], recovered = false) => [
+  JSON.stringify({ v: 1, thread, model: "z-ai/glm-5.3-flash", ...(recovered ? { recovered: "session" } : {}) }),
   JSON.stringify({ id: `agent:${thread}`, name: "This thread", kind: "agent", startedAt, endedAt: startedAt + 500, status: "ok" }),
   ...calls.map(([id, name, said], index) => JSON.stringify({
     id: `call:${id}`, parentId: `agent:${thread}`, name, kind: "read", startedAt: startedAt + index + 1, endedAt: startedAt + index + 2, status: "ok", input: "{}", output: "done", said,
@@ -408,6 +409,12 @@ test("a message with no trace of its own keeps reading as the stored string", ()
   assert.deepEqual(tracedBlocks("dither", messages, traces), {});
 });
 
+test("a recovered session trace tolerates the delay before its stopped message was saved", () => {
+  const messages: Message[] = [{ role: "assistant", content: "Recovered.", timestamp: "2026-08-27T21:11:28Z" }];
+  const traces = [{ timestamp: "2026-08-27T21:10:17Z", text: traceOf("dither", 1787865017000, [["old", "read old trace"]], true) }];
+  assert.equal(tracedBlocks("dither", messages, traces)[messages[0].timestamp][0].kind, "step");
+});
+
 test("a rebuilt turn puts each call back where the answer had reached", () => {
   const content = "Reading the styles now.\nThen writing them.\nDone.";
   const messages: Message[] = [{ role: "assistant", content, timestamp: "2026-08-27T21:11:28Z" }];
@@ -430,4 +437,37 @@ test("a call recorded before the answer was measured still reads in clock order"
   const traces = [{ timestamp: "2026-08-27T21:11:28Z", text: traceOf("dither", 1787865075384, [["one", "read"], ["two", "write"]]) }];
   const blocks = tracedBlocks("dither", messages, traces)[messages[0].timestamp];
   assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text), ["read", "write", "One answer, no offsets."]);
+});
+
+test("a compaction says how much history became a summary, and whether the model wrote it", () => {
+  assert.equal(compactionNotice(12, true), "Context compacted — 12 turns became a summary");
+  assert.equal(compactionNotice(1, false), "Context compacted — 1 turn became a rough summary the model did not write");
+});
+
+test("a call the turn never finished comes back as not executed, not as still working", () => {
+  const span = (status: TraceSpan["status"]): TraceSpan => ({ id: "call:c1", name: "bash", kind: "execute", startedAt: 1, status });
+  const statusOf = (status: TraceSpan["status"]) => {
+    const [block] = restoreBlocks("thread", [span(status)]);
+    return block.kind === "step" ? block.step.status : "";
+  };
+  assert.equal(statusOf("cancelled"), "cancelled");
+  assert.equal(statusOf("running"), "in_progress");
+  assert.equal(statusOf("ok"), "completed");
+});
+
+test("a steer is rebuilt from the trace at the point it cut into the answer", () => {
+  const content = "Reading the styles now.\nThen writing them.";
+  const messages: Message[] = [{ role: "assistant", content, timestamp: "2026-08-27T21:11:28Z" }];
+  const text = [
+    JSON.stringify({ v: 1, thread: "dither", model: "z-ai/glm-5.3-flash" }),
+    JSON.stringify({ id: "agent:dither", name: "This thread", kind: "agent", startedAt: 1787865075384, endedAt: 1787865075884, status: "ok" }),
+    JSON.stringify({ id: "steer:dither:1", parentId: "agent:dither", name: "steer", kind: "steer", startedAt: 1787865075385, endedAt: 1787865075385, status: "ok", input: "use the other palette", said: 23 }),
+  ].join("\n");
+  const blocks = tracedBlocks("dither", messages, [{ timestamp: "2026-08-27T21:11:28Z", text }])[messages[0].timestamp];
+  assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.kind === "notice" ? `steer:${block.text}` : block.text), [
+    "Reading the styles now.",
+    "steer:use the other palette",
+    "\nThen writing them.",
+  ]);
+  assert.equal(blocks.every((block) => block.kind !== "notice" || block.steer), true);
 });

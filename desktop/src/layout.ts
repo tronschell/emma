@@ -1,14 +1,7 @@
 import { DEFAULT_TERMINAL_HEIGHT, MAX_TERMINAL_HEIGHT, MIN_TERMINAL_HEIGHT } from "../shared/terminal";
 
-/** What one graph's boxes measure, and the room left around and between them. */
 export type GraphBox = { width: number; height: number; gapX: number; gapY: number; lane: number };
 
-/**
- * Boxes on a grid: one row per level, every row centred on the widest one, plus the
- * canvas that holds them. Pure geometry — which row an id is in is decided by
- * whoever owns the graph, which is `workflowRows` for a scheduled task and
- * `planRows` for a plan.
- */
 export function placeRows(rows: string[][], box: GraphBox): { placed: { id: string; x: number; y: number }[]; width: number; height: number } {
   const widest = Math.max(1, ...rows.map((row) => row.length));
   const span = widest * box.width + (widest - 1) * box.gapX;
@@ -19,14 +12,6 @@ export function placeRows(rows: string[][], box: GraphBox): { placed: { id: stri
   return { placed, width: span + box.lane * 2, height: Math.max(box.height, rows.length * (box.height + box.gapY) - box.gapY) };
 }
 
-/**
- * The line from one box to another, and where its label sits.
- *
- * Into the row below is a straight drop. Anything else — an edge that skips a row,
- * one that points back up — runs out to a side lane instead of cutting through the
- * boxes in between: past the row below it, a straight line would end up pointing at
- * the wrong box.
- */
 export function edgePath(from: { x: number; y: number }, to: { x: number; y: number }, box: GraphBox, canvasWidth: number) {
   const x1 = from.x + box.width / 2;
   const y1 = from.y + box.height;
@@ -54,7 +39,6 @@ export interface PaneLayout {
   browserOpen: boolean;
   terminalOpen: boolean;
   terminalHeight: number;
-  /* Section nav as one horizontal row of glyph tiles, Arc's pinned strip. */
   navIcons: boolean;
   navOrder: string[];
   projectOrder: string[];
@@ -74,12 +58,6 @@ export const defaultPaneLayout: PaneLayout = {
   projectOrder: [],
 };
 
-/**
- * The rows the user dragged, then everything else in its natural order. A stored
- * order is a preference, not the list: an id that has gone away is dropped and a
- * row that appeared since — a new section, a folder granted this morning — lands
- * at the end rather than vanishing because nobody has dragged it yet.
- */
 export function ordered<T extends { id: string }>(items: T[], order: string[]): T[] {
   const dragged = order.map((id) => items.find((item) => item.id === id)).filter((item) => item !== undefined);
   return [...dragged, ...items.filter((item) => !order.includes(item.id))];
@@ -115,9 +93,6 @@ export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITI
   const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200)
     + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260)
     + (layout.browserOpen ? layout.browserWidth - MIN_BROWSER_WIDTH : 0);
-  // A window that has not been laid out yet reports innerWidth 0. Treating that as
-  // a real viewport shrinks both panes to their minimums and the caller persists it,
-  // so an unmeasured window is no constraint at all.
   const width = viewportWidth > 0 ? viewportWidth : Number.POSITIVE_INFINITY;
   const ratio = requestedSlack ? Math.min(1, Math.max(0, (Math.floor(width) - fixedWidth) / requestedSlack)) : 1;
   if (!layout.sidebarCollapsed) layout.sidebarWidth = 200 + Math.floor((layout.sidebarWidth - 200) * ratio);

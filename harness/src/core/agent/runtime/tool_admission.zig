@@ -17,6 +17,7 @@ else
 const io_mod = @import("../../shared/io.zig");
 
 const runtime_deps = @import("deps.zig");
+const runtime_parallel_execution = @import("parallel_execution.zig");
 const runtime_tool_contracts = @import("tool_contracts.zig");
 
 const Allocator = std.mem.Allocator;
@@ -822,6 +823,65 @@ pub fn retainSessionGrant(hooks: *const AgentRuntimeDeps, arena: Allocator, loca
     try propagateGrant(hooks, grant);
 }
 
+pub const repeated_identical_call_limit: usize = 2;
+
+pub fn blockedRepeatedCall(
+    arena: Allocator,
+    registry: tool_dispatch.Registry,
+    current_turn_messages: []const types.ChatMessage,
+    call: ToolCall,
+    advertised_dynamic_tool_names: []const []const u8,
+) !?ToolExecutionResult {
+    if (try repeatedDynamicMcpFailure(
+        arena,
+        current_turn_messages,
+        call,
+        advertised_dynamic_tool_names,
+    )) |blocked| return blocked;
+    return try repeatedIdenticalCall(arena, registry, current_turn_messages, call);
+}
+
+fn repeatedIdenticalCall(
+    arena: Allocator,
+    registry: tool_dispatch.Registry,
+    messages: []const types.ChatMessage,
+    call: ToolCall,
+) !?ToolExecutionResult {
+    if (!runtime_parallel_execution.isReadOnlyCall(registry, call)) return null;
+    if (settledIdenticalCalls(registry, messages, call) < repeated_identical_call_limit) return null;
+    return .{
+        .status = .failure,
+        .model_output = try std.fmt.allocPrint(
+            arena,
+            "Repeated tool call blocked: {s} already ran {d} times this turn with these exact arguments, and nothing has changed since. Its output is already in this turn. Use what you have, ask for something different, or move on.",
+            .{ call.name, repeated_identical_call_limit },
+        ),
+    };
+}
+
+fn settledIdenticalCalls(
+    registry: tool_dispatch.Registry,
+    messages: []const types.ChatMessage,
+    current_call: ToolCall,
+) usize {
+    var matches: usize = 0;
+    for (messages) |message| {
+        if (message.role != .assistant) continue;
+        for (message.tool_calls) |prior_call| {
+            if (!runtime_parallel_execution.isReadOnlyCall(registry, prior_call)) {
+                matches = 0;
+                continue;
+            }
+            if (!std.mem.eql(u8, prior_call.name, current_call.name)) continue;
+            if (!std.mem.eql(u8, prior_call.arguments_json, current_call.arguments_json)) continue;
+            const status = completedResultStatus(messages, prior_call) orelse continue;
+            if (status != .success) continue;
+            matches += 1;
+        }
+    }
+    return matches;
+}
+
 pub fn repeatedDynamicMcpFailure(
     arena: Allocator,
     current_turn_messages: []const types.ChatMessage,
@@ -996,6 +1056,42 @@ test "third equivalent dynamic MCP failure is blocked from existing turn history
     defer std.testing.allocator.free(blocked.model_output);
     try std.testing.expectEqual(runtime_tool_contracts.ToolExecutionStatus.failure, blocked.status);
     try std.testing.expect(std.mem.find(u8, blocked.model_output, "two equivalent attempts") != null);
+}
+
+test "a third identical read is blocked, and a write in between clears the count" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{ test_builtin_tools.read_file, test_builtin_tools.write_file };
+    const registry: tool_dispatch.Registry = .{ .tools = &tools };
+    const args = "{\"path\":\"docs/design-system.md\",\"start_line\":90,\"line_count\":20}";
+    const current = ToolCall{ .id = "read-3", .name = "read_file", .arguments_json = args };
+
+    const first = [_]ToolCall{.{ .id = "read-1", .name = "read_file", .arguments_json = args }};
+    const second = [_]ToolCall{.{ .id = "read-2", .name = "read_file", .arguments_json = args }};
+    const wrote = [_]ToolCall{.{ .id = "write-1", .name = "write_file", .arguments_json = "{\"path\":\"docs/design-system.md\",\"content\":\"x\"}" }};
+
+    const looping = [_]types.ChatMessage{
+        .{ .role = .assistant, .tool_calls = first[0..] },
+        .{ .role = .tool, .tool_call_id = "read-1", .tool_name = "read_file", .tool_result_status = .success },
+        .{ .role = .assistant, .tool_calls = second[0..] },
+        .{ .role = .tool, .tool_call_id = "read-2", .tool_name = "read_file", .tool_result_status = .success },
+    };
+    const blocked = (try blockedRepeatedCall(alloc, registry, &looping, current, &.{})) orelse
+        return error.TestExpectedRepeatedCallBlocked;
+    defer alloc.free(blocked.model_output);
+    try std.testing.expectEqual(runtime_tool_contracts.ToolExecutionStatus.failure, blocked.status);
+    try std.testing.expect(std.mem.find(u8, blocked.model_output, "read_file already ran") != null);
+
+    try std.testing.expect((try blockedRepeatedCall(alloc, registry, looping[0..2], current, &.{})) == null);
+
+    const edited = [_]types.ChatMessage{
+        looping[0],
+        looping[1],
+        .{ .role = .assistant, .tool_calls = wrote[0..] },
+        .{ .role = .tool, .tool_call_id = "write-1", .tool_name = "write_file", .tool_result_status = .success },
+        looping[2],
+        looping[3],
+    };
+    try std.testing.expect((try blockedRepeatedCall(alloc, registry, &edited, current, &.{})) == null);
 }
 
 test "dynamic MCP retry containment resets on success shape tool and reselection" {

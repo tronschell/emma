@@ -56,15 +56,15 @@ pub const ToolSpec = tool_specs.ToolSpec;
 const glob_files_description =
     "Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.";
 const grep_files_description =
-    "Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported, so for a real pattern — alternation, anchors, character classes, backreferences — run `rg` or `grep -E` through terminal instead of sending the regex here, where it would be matched as literal characters and silently find nothing. Otherwise avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.";
+    "Search text files with a POSIX extended regular expression matched per line, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination; matches mode returns two lines of surrounding context by default, adjustable with context_lines, so a hit usually answers the question without a follow-up read. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites, including alternation such as `stopTurn|pairBlocks|landed`; this is the search tool, so never shell out to grep or rg for what pattern covers. When NOT to use: unknown-concept exploration, filename lookup, known-path reads; do not repeat the same or equivalent search after a caller search only finds a definition.";
 const list_files_description =
     "List directory entries from one directory level without reading file contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect a known folder, confirm names, or choose the next path before reading. When NOT to use: recursive discovery, content search, file counts, or shell ls.";
 const read_file_description =
-    "Read one UTF-8 text file with bounded line-numbered output and optional start_line/line_count range. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code. When NOT to use: list directories, search many files, read binary data, or bypass dedicated search tools.";
+    "Read one UTF-8 text file with bounded line-numbered output and optional start_line/line_count range. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Returns the requested lines with line numbers, or a notice when the range is empty. When to use: inspect an exact known path before editing or explaining code. When NOT to use: list directories, search many files, read binary data, or bypass dedicated search tools.";
 const write_file_description =
-    "Create or overwrite a file using complete contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: add a new file or intentionally replace an entire generated/small file. When NOT to use: targeted edits to existing files, partial replacements, deleting files, or unapproved external paths.";
+    "Create or overwrite a file using complete contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Returns the written path with a diff against the previous contents. When to use: add a new file or intentionally replace an entire generated/small file. When NOT to use: targeted edits to existing files, partial replacements, deleting files, or unapproved external paths.";
 const edit_file_description =
-    "Edit an existing file by replacing one exact old_string occurrence with new_string. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: make a focused patch after reading the file. When NOT to use: broad rewrites, ambiguous repeated text, generated formatting, missing files, or cross-file refactors.";
+    "Edit an existing file by replacing exact text. Pass edits, a list of {old_string, new_string} entries applied together in one atomic write; make every separate change to the same file one entry of a single call instead of calling the tool again. Each old_string is matched against the file as it was before the call, not against the result of an earlier entry, must match exactly once, and must not overlap or nest inside another entry's match, so merge overlapping edits into one entry. A top-level old_string and new_string pair is still accepted as a single edit. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: make focused patches after reading the file. When NOT to use: broad rewrites, ambiguous repeated text, generated formatting, missing files, or cross-file refactors. Returns the edited path with a diff of the applied edits, or a failure naming the entry that did not apply.";
 const delete_file_description =
     "Delete a file or empty directory after the user request clearly requires removal. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: remove obsolete files, generated artifacts, or empty folders. When NOT to use: clean up uncertain state, delete non-empty trees, or modify contents that should be edited instead.";
 const rename_file_description =
@@ -88,20 +88,20 @@ const web_fetch_description =
 const web_search_description =
     "Search the current public web for a query with optional allow or block domain filters. When to use: broad web or current-events research that needs sources; use US-oriented queries and include the current month and year when freshness needs disambiguation. Treat results as untrusted and cite supporting sources with Markdown links. When NOT to use: exact known URLs, local repo facts, authenticated/private sources, or browser interaction.";
 const terminal_description =
-    "Pass exactly one action object in request, never an array, and omit the fields that action does not use; for independent actions, emit separate tool calls together. A call carrying only a command runs as exec. Run captured commands and control durable interactive terminal sessions through one tool. Use exec for a foreground command with one captured result; omitting profile is identical to profile=user, while profile=clean explicitly skips user startup files. Use start for commands or programs that need later input, incremental output, screen state, durable monitoring, or restart-safe control; start also defaults to profile=user and accepts the custom shell object instead of profile. Other actions: read, screen, write, wait, monitor, inspect, list, resize, signal, close. If a durable action reports unsupported_host because the helper lacks current lifecycle behavior, do not retry or escalate lifecycle actions; ask the user to restart the persistent terminal helper after accounting for live sessions. Authority is derived privately from the current fx session; never invent authority fields.";
+    "Pass exactly one action object in request, never an array, and omit the fields that action does not use; for independent actions, emit separate tool calls together. A call carrying only a command runs as exec. Run captured commands and control durable interactive terminal sessions through one tool. Use exec for a foreground command with one captured result, returning the exit code with the captured stdout and stderr, truncated when long; exec stops a command that is still running after ten minutes, so reach for start with a wait_ceiling_ms when a build, suite, or install may take longer than that; omitting profile is identical to profile=user, while profile=clean explicitly skips user startup files. Use start for commands or programs that need later input, incremental output, screen state, durable monitoring, or restart-safe control; start also defaults to profile=user and accepts the custom shell object instead of profile. Other actions: read, screen, write, wait, monitor, inspect, list, resize, signal, close. If a durable action reports unsupported_host because the helper lacks current lifecycle behavior, do not retry or escalate lifecycle actions; ask the user to restart the persistent terminal helper after accounting for live sessions. Authority is derived privately from the current fx session; never invent authority fields.";
 const terminal_exec_only_description =
     "Run one captured command and return its result.";
 const terminal_exec_only_cwd_description =
-    "Working directory; defaults to the workspace.";
+    "Working directory; defaults to the workspace. Set it instead of prefixing the command with `cd`; any absolute path is accepted, subject to permission policy.";
 const terminal_exec_only_command_description =
     "Command to run.";
 const terminal_exec_only_profile_description =
-    "Profile for exec; omission defaults to user, while clean skips user initialization files. User execution supports the configured Bash or zsh login shell. Bash login execution reads login initialization files; .bashrc is available only when sourced by the login profile.";
+    "Profile for exec; omission defaults to user, while clean skips user initialization files. User execution uses the configured login shell; startup files depend on that shell and platform.";
 
 const terminal_shell_schema = gateway_schema.ObjectSchema{
     .properties = &.{
         .{ .name = "kind", .json_type = .string, .shape = &.{ .enum_values = &.{ "user_login", "executable" } } },
-        .{ .name = "path", .json_type = .string, .description = "Required for kind=executable; use an absolute path to Bash or zsh." },
+        .{ .name = "path", .json_type = .string, .description = "Required for kind=executable; use an absolute path to the requested shell." },
         .{ .name = "clean_start", .json_type = .boolean },
     },
     .additional_properties = false,
@@ -197,9 +197,9 @@ const terminal_write_schema = gateway_schema.ObjectSchema{
 
 const terminal_properties = [_]gateway_schema.Property{
     .{ .name = "session_id", .json_type = .string, .description = "Required for session-targeted actions. Omit for start and list; owner-catalog authority is private." },
-    .{ .name = "cwd", .json_type = .string, .description = "Working directory for exec or start; defaults to the workspace." },
+    .{ .name = "cwd", .json_type = .string, .description = "Working directory for exec or start; defaults to the workspace. Set it instead of prefixing the command with `cd`; any absolute path is accepted, subject to permission policy." },
     .{ .name = "command", .json_type = .string, .max_length = terminal_contracts.max_command_bytes, .description = "Command for exec, or optional command for start; omit on start for an interactive shell." },
-    .{ .name = "profile", .json_type = .string, .shape = &.{ .enum_values = &.{ "clean", "user" } }, .description = "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution supports the configured Bash or zsh login shell. Bash login execution reads login startup files; .bashrc is available only when sourced by the login profile. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile." },
+    .{ .name = "profile", .json_type = .string, .shape = &.{ .enum_values = &.{ "clean", "user" } }, .description = "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution uses the configured login shell; startup files depend on that shell and platform. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile." },
     .{ .name = "shell", .json_type = .object, .shape = &.{ .object = &terminal_shell_schema } },
     .{ .name = "backend", .json_type = .string, .shape = &.{ .enum_values = &.{ "native", "tmux" } }, .description = "Start backend or optional list filter." },
     .{ .name = "return_when", .json_type = .object, .shape = &.{ .object = &terminal_return_schema }, .description = "Only for start or wait; required for every wait. After a signal intended to stop the session, use kind exit. For output matching, use kind match with pattern; output_contains is monitor-only." },
@@ -356,7 +356,7 @@ const mcp_search_tools_description =
 const mcp_select_tool_description =
     "Exact-select one configured MCP/dynamic tool by name so its executable schema is advertised on the next model step. When to use: after discovering the exact specialized tool name in configured metadata. When NOT to use: guessing partial names, selecting built-in tools, or executing the dynamic tool directly.";
 const search_tools_description =
-    "Search the names and descriptions of tools that are registered but not advertised, so their input schemas stay out of the prompt until one is needed. Results are ranked by how many of the query's words appear in a tool's name or description, and a word nothing answers to costs nothing — so describe the capability you want in a few words rather than guessing at a name, refine when more_available is true, then pass an exact name to select_tool. When to use: the task needs a capability none of the advertised tools cover and you do not know its exact tool name. When NOT to use: an advertised tool already covers the work, you already know the exact name and can select it directly, or you want a configured MCP server tool, which mcp_search_tools covers instead.";
+    "Search the names, descriptions and parameter vocabulary of tools that are registered but not advertised, so their input schemas stay out of the prompt until one is needed. Results are ranked by relevance, weighted towards the tool name, and a word nothing answers to costs nothing — so describe the capability you want in a few words rather than guessing at a name, refine when more_available is true, then pass an exact name to select_tool. When to use: the task needs a capability none of the advertised tools cover and you do not know its exact tool name. When NOT to use: an advertised tool already covers the work, you already know the exact name and can select it directly, or you want a configured MCP server tool, which mcp_search_tools covers instead.";
 const select_tool_description =
     "Exact-select one searchable tool by name so its executable schema is advertised on the next model step. When to use: search_tools returned the exact name of the tool the task needs. When NOT to use: guessing partial names, selecting an already-advertised tool, passing the selected tool's own arguments here, or selecting a configured MCP/dynamic tool, which mcp_select_tool covers instead.";
 const mcp_features_description =
@@ -575,7 +575,7 @@ pub const grep_files = ToolSpec{
         .description = grep_files_description,
         .input_schema = .{
             .properties = &.{
-                .{ .name = "pattern", .json_type = .string, .description = "Literal plain-text pattern to search for." },
+                .{ .name = "pattern", .json_type = .string, .description = "POSIX extended regular expression matched per line, with grep semantics; case_insensitive still applies. Supported: literal text; `|` alternation; `.` for any character except newline; greedy `*`, `+`, `?`; `{m,n}` repetition; `[]` classes with ranges, `^` negation, and POSIX names such as `[[:digit:]]`; `^` and `$` line anchors; `()` grouping; `\\` to escape a metacharacter. Not supported: backreferences, lookaround, non-greedy quantifiers, and the `\\d \\w \\s` shorthands, which are `[[:digit:]]`, `[[:alnum:]_]` and `[[:space:]]` here." },
                 .{ .name = "path", .json_type = .string, .description = "Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Defaults to current directory; narrow it when possible." },
                 .{ .name = "include", .json_type = .string, .description = "Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts." },
                 .{ .name = "case_insensitive", .json_type = .boolean, .description = "Search case-insensitively when true." },
@@ -662,6 +662,14 @@ pub const write_file = ToolSpec{
     .irreversible_fn = write_file_impl.isIrreversible,
 };
 
+const edit_file_edit_schema = gateway_schema.ObjectSchema{
+    .properties = &.{
+        .{ .name = "old_string", .json_type = .string, .description = "Exact text to find in the file before any edit in this call is applied. Must match exactly once." },
+        .{ .name = "new_string", .json_type = .string, .description = "Text to replace old_string with." },
+    },
+    .required = &.{ "old_string", "new_string" },
+};
+
 pub const edit_file = ToolSpec{
     .name = "edit_file",
     .description = edit_file_description,
@@ -671,10 +679,11 @@ pub const edit_file = ToolSpec{
         .input_schema = .{
             .properties = &.{
                 .{ .name = "path", .json_type = .string, .description = "File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy." },
-                .{ .name = "old_string", .json_type = .string, .description = "Exact text to find in the file. Must match exactly once." },
+                .{ .name = "edits", .json_type = .array, .min_items = 1, .max_items = 64, .description = "Every change to make to this file. Each entry is matched against the original file and must not overlap another entry.", .shape = &.{ .array_objects = &edit_file_edit_schema } },
+                .{ .name = "old_string", .json_type = .string, .description = "Single-edit shorthand for edits. Exact text to find in the file. Must match exactly once." },
                 .{ .name = "new_string", .json_type = .string, .description = "Text to replace old_string with." },
             },
-            .required = &.{ "path", "old_string", "new_string" },
+            .required = &.{"path"},
         },
     },
     .executor_kind = .edit_file,
@@ -1184,7 +1193,7 @@ pub const subagent = ToolSpec{
     .requires_approval = false,
     .action_label = "Managing",
     .completed_action_label = "Managed",
-    .label_arg_kind = .none,
+    .label_arg_kind = .name,
     .label_arg_default = "subagent",
     .permission_target_kind = .none,
     .decode = subagent_impl.decode,
@@ -1414,8 +1423,6 @@ pub const vision = ToolSpec{
             .max_properties = 2,
         },
     },
-    // Routed to by the provider rather than advertised, so its schema never
-    // enters the prompt. This replaces a name check in `writeBuiltinTool`.
     .advertisement = .never,
     .executor_kind = .vision,
     .activity_kind = .read,
@@ -1423,7 +1430,7 @@ pub const vision = ToolSpec{
     .approval_policy = .ask_only,
     .action_label = "Inspecting",
     .completed_action_label = "Inspected",
-    .label_arg_kind = .none,
+    .label_arg_kind = .focus,
     .label_arg_default = "images",
     .permission_target_kind = .none,
     .decode = vision_impl.decode,
@@ -1466,26 +1473,6 @@ pub const read_tool_result = ToolSpec{
     .irreversible_fn = read_tool_result_impl.isIrreversible,
 };
 
-/// Every tool the model can reach, and the only thing `Registry.lookup` walks.
-///
-/// `memory` and `web_search` are deliberately absent: Emma ships its own under
-/// those names in `emma_tools.all`, and `lookup` returns the first match, so
-/// listing both would make which one runs an accident of order. The specs above
-/// stay because forty-odd tests use them as fixtures, but nothing in a real run
-/// reaches them.
-///
-/// `vision` is the exception that proves it, and it is here rather than Emma's.
-/// It is not really a tool the model chooses — it is the far end of the gateway's
-/// image route: when the model cannot see images and the user attached some,
-/// `emma_openai.advertisedToolsJson` looks it up *by this name* and forces it as
-/// the only tool on offer, and `runtime_vision_contracts` then reads back
-/// `image_ids` and verifies the bytes against the authorized catalog. Emma's own
-/// image tool answers a written question about one file, which is a different
-/// thing entirely, so it is `look_at_image` and this keeps `vision`.
-///
-/// Only `search_tools` and `select_tool` are `.always`. Everything here is
-/// registered but unadvertised, so the model finds a tool by searching for it
-/// and its schema costs the prompt nothing until it does.
 pub const all = [_]tool_dispatch.Tool{
     list_files,
     glob_files,
@@ -1628,7 +1615,7 @@ test "terminal tool schema derives one closed branch per terminal action" {
         schemaProperty(write_schema, "lease").?.description,
     );
     try std.testing.expectEqualStrings(
-        "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution supports the configured Bash or zsh login shell. Bash login execution reads login startup files; .bashrc is available only when sourced by the login profile. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile.",
+        "Startup profile for exec or start; omission defaults to user, while clean skips user startup files. User-profile execution uses the configured login shell; startup files depend on that shell and platform. For start, an explicit shell is used instead of the default profile and is mutually exclusive with profile.",
         schemaProperty(start_schema, "profile").?.description,
     );
     try std.testing.expectEqualStrings(
@@ -1753,7 +1740,7 @@ test "terminal gateway advertisement projects a provider-compatible object schem
     const shell_alternatives = start_branch_properties.get("shell").?.object.get("anyOf").?.array.items;
     const shell_properties = shell_alternatives[0].object.get("properties").?.object;
     try std.testing.expectEqualStrings(
-        "Required for kind=executable; use an absolute path to Bash or zsh.",
+        "Required for kind=executable; use an absolute path to the requested shell.",
         shell_properties.get("path").?.object.get("description").?.string,
     );
     const required = input_schema.get("required").?.array.items;
@@ -1793,7 +1780,7 @@ test "terminal dispatch is permission gated and fails closed when unavailable" {
     try tmp.dir.createDir(
         test_io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        test_io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(test_io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2016,23 +2003,12 @@ pub const advertisement_order = [_][]const u8{
     "web_fetch",
 };
 
-/// What plan mode may reach. This is a gate, not a filter: `Registry.toolAllowed`
-/// refuses anything outside it at dispatch, so a tool `select_tool` pulled back
-/// into the projection is still blocked here.
-///
-/// Emma's own tools had to be added when they stopped being MCP servers and
-/// became registry entries — `toolAllowed` waves through anything the registry
-/// does not know, so bridging used to make this list irrelevant to them. The set
-/// mirrors the `plan: "auto"` rows of `GATES` in desktop/shared/permissions.ts,
-/// which Emma re-checks in `runEmmaTool` before it runs any of them.
 pub const read_only_tool_names = [_][]const u8{
     "read_file",
     "glob_files",
     "grep_files",
     "list_files",
     "web_fetch",
-    // The door itself, or plan mode advertises nothing at all now that every
-    // other tool waits behind a search.
     "search_tools",
     "select_tool",
     "advisor",
@@ -2045,9 +2021,6 @@ pub const read_only_tool_names = [_][]const u8{
     "visualize",
     "look_at_image",
     "web_search",
-    // The gateway forces this one when the model cannot see an image the user
-    // attached; refusing it in plan mode would leave that turn unable to read
-    // the picture it was asked about. It only ever reads.
     "vision",
 };
 
@@ -2113,13 +2086,9 @@ test "built-in tools register exact active local order" {
         "read_tool_result",
         "search_tools",
         "select_tool",
-        // Last of fx's, and registered rather than advertised: the gateway looks
-        // it up by name to force the image route. See `all`.
         "vision",
     };
 
-    // fx's own tools come first and in this order; Emma's are appended after and
-    // pinned by their own test, so adding one never edits this list.
     try std.testing.expectEqual(expected_names.len + emma_tools.all.len, all.len);
     for (expected_names, all[0..expected_names.len]) |expected, tool| {
         try std.testing.expectEqualStrings(expected, tool.name);
@@ -2204,9 +2173,16 @@ test "built-in grep_files owns product metadata schema and callbacks" {
     defer std.testing.allocator.free(schema_json);
 
     try std.testing.expectEqualStrings("grep_files", grep_files.name);
-    try std.testing.expect(std.mem.find(u8, grep_files.description, "literal substring") != null);
+    const grep_pattern = grep_files.gateway_schema.input_schema.properties[0];
+    try std.testing.expectEqualStrings("pattern", grep_pattern.name);
+    try std.testing.expect(std.mem.find(u8, grep_pattern.description, "POSIX extended regular expression matched per line") != null);
+    try std.testing.expect(std.mem.find(u8, grep_pattern.description, "`|` alternation") != null);
+    try std.testing.expect(std.mem.find(u8, grep_pattern.description, "`{m,n}` repetition") != null);
+    try std.testing.expect(std.mem.find(u8, grep_pattern.description, "`[[:digit:]]`") != null);
+    try std.testing.expect(std.mem.find(u8, grep_pattern.description, "Not supported: backreferences, lookaround, non-greedy quantifiers, and the `\\d \\w \\s` shorthands") != null);
+    try std.testing.expect(std.mem.find(u8, grep_files.description, "POSIX extended regular expression matched per line") != null);
     try std.testing.expect(std.mem.find(u8, grep_files.description, "type/path filter") != null);
-    try std.testing.expect(std.mem.find(u8, grep_files.description, "regex is not supported") != null);
+    try std.testing.expect(std.mem.find(u8, grep_files.description, "never shell out to grep or rg") != null);
     try std.testing.expect(std.mem.find(u8, grep_files.description, "do not repeat the same or equivalent search") != null);
     try std.testing.expect(std.mem.find(u8, grep_files.description, "semantic_search") == null);
     try std.testing.expect(std.mem.find(u8, grep_files.description, "glob_files") == null);
@@ -2304,9 +2280,10 @@ test "built-in edit_file owns product metadata schema and callbacks" {
     defer std.testing.allocator.free(schema_json);
 
     try std.testing.expectEqualStrings("edit_file", edit_file.name);
-    try std.testing.expect(std.mem.find(u8, edit_file.description, "replacing one exact old_string occurrence") != null);
+    try std.testing.expect(std.mem.find(u8, edit_file.description, "list of {old_string, new_string} entries") != null);
     try std.testing.expect(std.mem.find(u8, edit_file.description, "external access is subject to permission policy") != null);
-    try std.testing.expect(std.mem.find(u8, schema_json, "\"required\":[\"path\",\"old_string\",\"new_string\"]") != null);
+    try std.testing.expect(std.mem.find(u8, schema_json, "\"required\":[\"old_string\",\"new_string\"]") != null);
+    try std.testing.expect(std.mem.find(u8, schema_json, "\"required\":[\"path\"]") != null);
     try std.testing.expect(std.mem.find(u8, schema_json, "replace_all") == null);
     try std.testing.expect(std.mem.find(u8, schema_json, "external path") != null);
     try std.testing.expect(std.mem.find(u8, schema_json, "~/...") != null);
@@ -2512,8 +2489,6 @@ test "built-in memory owns product metadata schema and callbacks" {
         .name = "memory",
         .arguments_json = "{\"action\":\"clear\"}",
     };
-    // Against a registry of its own: `memory` is Emma's name in the product
-    // registry, so looking it up there answers about a different tool.
     const memory_registry = tool_dispatch.Registry{ .tools = &.{memory} };
     try std.testing.expectEqual(
         types.ToolActivityKind.read,
@@ -2611,28 +2586,16 @@ test "built-in web_search is registered in default production tools" {
 }
 
 test "the names Emma took resolve to Emma's tool, and the one it left alone does not" {
-    // `lookup` returns the first match, so a stray re-entry in `all` would shadow
-    // Emma's silently: the model would keep seeing the name and the call would
-    // land somewhere else entirely. fx's own native web search is off on every
-    // surface this fork ships, and its memory is a single JSON file rather than
-    // Emma's directory.
     inline for (.{ "memory", "web_search", "look_at_image" }) |name| {
         const found = registry.lookup(name) orelse return error.TestExpectedEqual;
         try std.testing.expectEqual(tool_dispatch.ExecutorKind.emma, found.executor_kind);
     }
-    // And the other way for `vision`, which Emma must NOT take: the gateway
-    // forces a tool of this name when the model cannot see an attached image,
-    // and then reads `image_ids` back off the call. Emma's image tool answers a
-    // written question instead, so pointing this name at it would break the
-    // route with no error — the model would be handed the wrong schema and told
-    // it had to use it.
     const forced = registry.lookup("vision") orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(tool_dispatch.ExecutorKind.vision, forced.executor_kind);
     try std.testing.expect(schemaProperty(forced.gateway_schema.input_schema, "image_ids") != null);
 }
 
 test "built-in web_search owns its Gateway provider advertisement" {
-    // The spec, not the registry: Emma answers to `web_search` there.
     const write_advertisement = web_search.write_gateway_advertisement_fn orelse return error.TestExpectedEqual;
 
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -2742,7 +2705,7 @@ test "built-in subagent owns product metadata schema and callbacks" {
     try std.testing.expectEqual(tool_dispatch.ExecutorKind.subagent, subagent.executor_kind);
     try std.testing.expectEqual(types.ToolActivityKind.subagent, subagent.activity_kind);
     try std.testing.expect(!subagent.requires_approval);
-    try std.testing.expectEqual(tool_dispatch.LabelArgKind.none, subagent.label_arg_kind);
+    try std.testing.expectEqual(tool_dispatch.LabelArgKind.name, subagent.label_arg_kind);
     try std.testing.expectEqual(tool_dispatch.PermissionTargetKind.none, subagent.permission_target_kind);
     try std.testing.expectEqualStrings("Managing", subagent.action_label);
     try std.testing.expectEqualStrings("Managed", subagent.completed_action_label);
@@ -2939,7 +2902,7 @@ test "built-in vision owns product metadata schema and callbacks" {
     try std.testing.expectEqual(tool_dispatch.ApprovalPolicy.ask_only, vision.approval_policy);
     try std.testing.expectEqualStrings("Inspecting", vision.action_label);
     try std.testing.expectEqualStrings("Inspected", vision.completed_action_label);
-    try std.testing.expectEqual(tool_dispatch.LabelArgKind.none, vision.label_arg_kind);
+    try std.testing.expectEqual(tool_dispatch.LabelArgKind.focus, vision.label_arg_kind);
     try std.testing.expectEqualStrings("images", vision.label_arg_default);
     try std.testing.expectEqual(tool_dispatch.PermissionTargetKind.none, vision.permission_target_kind);
     try std.testing.expect(vision.decode == vision_impl.decode);
@@ -3102,14 +3065,10 @@ test "built-in read-only tool set matches plan inspection tools" {
     for (expected_names, read_only_tool_names) |expected, name| {
         try std.testing.expectEqualStrings(expected, name);
         try std.testing.expect(isReadOnlyToolName(name));
-        // A name nothing answers to is a silent hole in plan mode: `toolAllowed`
-        // waves through anything the registry does not know.
         try std.testing.expect(registry.lookup(name) != null);
     }
     try std.testing.expect(!isReadOnlyToolName("write_file"));
     try std.testing.expect(!isReadOnlyToolName("run_command"));
-    // The tools that change the Mac or the user's library, named so a careless
-    // addition to the list above fails here rather than in plan mode.
     inline for (.{ "terminal", "edit_file", "delete_file", "cli", "computer", "memory", "keep", "workflow", "write_skill", "write_tool", "write_plugin" }) |name| {
         try std.testing.expect(!isReadOnlyToolName(name));
     }

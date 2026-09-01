@@ -6,33 +6,44 @@ every run opens its own thread you can read afterwards.
 The interface says **tasks**, the code says **jobs** (`workflow` tool,
 `ScheduledJob` in the store). Same thing.
 
-The grammar lives in [workflow.ts](../desktop/shared/workflow.ts) and has three
+The grammar lives in [workflow.ts](../desktop/shared/workflow.ts) and has four
 callers: main runs it for real, the `workflow` tool dry-runs it, the workspace
 draws it and refuses a bad edit. `crates/core` stores the JSON and never looks
 inside it.
 
 ## Nodes
 
-Three kinds. Leave the graph empty and the job is one `agent` step on its prompt.
+Four kinds. Leave the graph empty and the job is one `agent` step on its prompt.
 
 | Kind | What it does | Fields it uses |
 | --- | --- | --- |
 | `agent` | Runs `text` as a full agent turn on the run's thread. The answer becomes `{{last}}`. | `text`, `saveAs`, `next` |
+| `script` | Runs the fixed absolute file in `text` from a connected folder. Optional templated `input` is sent on stdin. | `text`, `input`, `saveAs`, `next` |
 | `set` | Stores `text` in a variable. Nothing runs. | `text`, `saveAs` (required), `next` |
 | `if` | Reads `text` as a condition. True takes `next`, false takes `otherwise`. | `text`, `next`, `otherwise` |
 
 | Field | Rule |
 | --- | --- |
 | `id` | `/^[a-z0-9][a-z0-9-]{0,31}$/`, unique in the graph |
-| `kind` | `agent`, `set` or `if` |
-| `text` | Prompt, value or condition. A template. ≤ 8192 characters |
+| `kind` | `agent`, `script`, `set` or `if` |
+| `text` | Prompt, fixed script path, value or condition. ≤ 8192 characters |
+| `input` | `script` only. A template sent on stdin. ≤ 8192 characters |
 | `saveAs` | `/^[a-z][a-z0-9_]{0,31}$/`. Not allowed on `if` |
 | `next` | A node id, or `end` |
 | `otherwise` | The false branch. `if` only |
 
-**Variables.** `{{name}}` anywhere in `text` expands to that variable, or to an
-empty string if it was never set. `{{last}}` is the previous `agent` answer.
-Every stored value is cut at `MAX_VARIABLE_CHARS` (8192).
+**Variables.** `{{name}}` in ordinary node `text` or script `input` expands to
+that variable, or to an empty string if it was never set. `{{last}}` is the
+previous `agent` answer. Every stored value is cut at `MAX_VARIABLE_CHARS`
+(8192).
+
+**Scripts.** A script path cannot contain a template and must resolve inside a
+folder connected to Emma. Python, JavaScript, sh and zsh files run through their
+matching interpreter without a shell command; any other file runs directly and
+therefore needs an executable bit and shebang. Stdout is the result, stderr is
+labelled alongside it, and non-zero exits or the 120-second timeout are appended
+to the result. `saveAs` makes that result available to a later agent node:
+`{"id":"analyze","kind":"agent","text":"Analyze {{script_output}}"}`.
 
 **Conditions.** Operators are matched longest first, so `is not empty` is never
 read as `is`. Anything `parseCondition` cannot read evaluates to **false** — a
@@ -99,7 +110,8 @@ event that cannot reach the store is logged and dropped.
 reads them back as a tool result, you read them under the editor. The rules:
 valid unique `id`; a known `kind`; non-empty `text` of at most 8192 characters; a
 `saveAs` that matches the variable pattern and is absent on `if`; `set` must have
-a `saveAs`; `otherwise` only on `if`; a readable condition on `if`; and every
+a `saveAs`; `input` only on `script`; a fixed absolute path on `script`;
+`otherwise` only on `if`; a readable condition on `if`; and every
 `next`/`otherwise` must name a node or `end`. Over 24 nodes, or not a non-empty
 JSON array, and nothing else is checked.
 
@@ -140,13 +152,15 @@ occurrence twice. `hand_out_run` then creates a thread, tags it with the job id,
 saves it, and pushes a `dueJob` event to Electron. Core never drives a model.
 
 In Electron, `runScheduledWorkflow` ([main.ts](../desktop/main/main.ts)) parses
-the graph and walks it. Each `agent` node resolves its `/skill` and `@thing`
-tokens the way the composer would, then runs an ordinary turn. At the end,
+the graph and walks it. Each `script` node runs locally first; each `agent` node
+resolves its `/skill` and `@thing` tokens the way the composer would, then runs
+an ordinary turn. At the end,
 `finishScheduledJob` stores the packed variables and fires anything triggered
 `after` this job.
 
 **Jobs run only while Emma is open.** The tick is a thread inside the running
-app: nothing is installed in `launchd`, nothing wakes the Mac. Miss four Mondays
+app: nothing is installed in the operating system scheduler, nothing wakes the
+computer. Miss four Mondays
 and you get **one** run when Emma next starts — a past-due `nextRunAt` fires once
 and is rebooked from now.
 
@@ -159,7 +173,7 @@ is special about it except the `scheduledJobId` tag.
 - On `ask` and `acceptEdits` a gated tool (`run_tool`, `cli`, `computer`,
   `browser`, `install_mcp`, `workflow`, `autoresearch`, plus the harness's own
   file mutations, which `acceptEdits` lets through) still raises the dialog in
-  the main window. Answer it if you are at the Mac. Unanswered it times out after
+  the main window. Answer it if you are at the computer. Unanswered it times out after
   `MAX_ASK_MS` (10 minutes) and counts as a refusal, and the job sits on that
   step until then.
 - A harness tool call that reaches outside the connected folder is refused in
@@ -196,7 +210,7 @@ nothing fires.
 | Button | Does |
 | --- | --- |
 | **Save** / **Create task** | Writes the job. Disabled until title, prompt, trigger and graph are all valid |
-| **Test** | Walks the graph with every turn stood in for — real path, real branches, real variables, no model call, no thread |
+| **Test** | Walks the graph with every agent turn and script stood in for — validates script paths, no model call, no process, no thread |
 | **Run now** | Fires it immediately, at depth 0, with no starting variables. Works on a paused job |
 | **Pause** / **Resume** | Flips `enabled`. A paused job is skipped by the tick and by `after`/`on` |
 | **Delete** | Two presses; the second reads "Delete for good" |
@@ -228,7 +242,7 @@ On disk each job is one Markdown file with front matter
 
 - [permissions.md](permissions.md) — the four modes; a job may be saved as three of them
 - [tools.md](tools.md) — the `workflow` tool and everything else a job can call
-- [computer-use.md](computer-use.md) — what an unattended run can do to the Mac
+- [computer-use.md](computer-use.md) — what an unattended run can do to the computer
 - [autoresearch.md](autoresearch.md) — the other automation loop, no clock involved
 - [data.md](data.md) — where jobs, threads and outputs live
 - [troubleshooting.md](troubleshooting.md) — when a job did not fire

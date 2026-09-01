@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const approval_persistence = @import("approval_persistence.zig");
 const authority = @import("authority.zig");
 const auto_classifier_context = @import("../permissions/auto_classifier_context.zig");
@@ -470,7 +471,6 @@ pub const Manager = struct {
     sessions: *session_store.Store,
     options: Options = .{},
 
-    /// Returns an allocator-owned, bounded page of the canonical child tree.
     pub fn snapshot(
         self: *Manager,
         alloc: Allocator,
@@ -1189,8 +1189,6 @@ pub const Manager = struct {
         }
     }
 
-    /// Reads the caller's canonical direct relationship. Presentation paging
-    /// is deliberately not involved in authorization decisions.
     pub fn isDirectParent(
         self: *Manager,
         alloc: Allocator,
@@ -10106,7 +10104,7 @@ test "exact relationship replay repairs a failed resume-index marker" {
     try sessions.dir.createDir(
         io_mod.getIo(),
         "index.pending",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var blocker_present = true;
     defer if (blocker_present) {
@@ -10151,7 +10149,7 @@ test "exact relationship replay repairs a failed resume-index marker" {
     try sessions.dir.createDir(
         io_mod.getIo(),
         "index.pending",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     blocker_present = true;
     var detach = try domain.validateCommand(alloc, .{ .relationship = .{
@@ -10202,7 +10200,7 @@ test "exact relationship replay repairs a failed resume-index marker" {
     try sessions.dir.createDir(
         io_mod.getIo(),
         "index.pending",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     blocker_present = true;
     var reparent = try domain.validateCommand(alloc, .{ .relationship = .{
@@ -10251,6 +10249,7 @@ noinline fn resumablePageContains(
 }
 
 test "control queue admission remains available while another process owns session lock" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
     defer env.deinit(alloc);
@@ -11360,6 +11359,7 @@ fn runProcessMutationPair(
 }
 
 test "competing processes converge while recovering one pending relationship transaction" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (comptime !@hasDecl(std.c, "fork")) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
@@ -11428,6 +11428,7 @@ test "competing processes converge while recovering one pending relationship tra
 }
 
 test "competing process interval polls append one durable delivery" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (comptime !@hasDecl(std.c, "fork")) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
@@ -11470,6 +11471,7 @@ test "competing process interval polls append one durable delivery" {
 }
 
 test "competing process policy admissions cannot cross the capacity budget" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (comptime !@hasDecl(std.c, "fork")) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
@@ -11755,6 +11757,7 @@ test "delivery projections release ordered locks on every allocation failure" {
 }
 
 test "independent process delivery queries cannot cross detach or reparent" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (comptime !@hasDecl(std.c, "fork")) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);
@@ -11872,6 +11875,7 @@ test "independent process delivery queries cannot cross detach or reparent" {
 }
 
 test "independent processes preserve messages and reject inverse relationship cycles" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (comptime !@hasDecl(std.c, "fork")) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);

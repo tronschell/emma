@@ -209,7 +209,7 @@ export function PromptField({ value, onChange, commands, atItems, disabled, rows
       {matches.map((item, index) => <button type="button" role="option" aria-selected={index === active} className={`slash-row ${index === active ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setPick(index)} onClick={() => choose(item)}>
         <strong>{slash.sigil}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{SLASH_KINDS[item.kind]}</em><small>{item.detail}</small>
       </button>)}
-      {!matches.length && <p className="slash-empty">Nothing matches “{slash.query}”. {slash.sigil === "@" ? "Artifacts, saved notes and the files of granted folders appear here." : "Built-in tools and imported skills appear here — use /import in a thread to scan this Mac."}</p>}
+      {!matches.length && <p className="slash-empty">Nothing matches “{slash.query}”. {slash.sigil === "@" ? "Artifacts, saved notes and the files of granted folders appear here." : "Built-in tools and imported skills appear here — use /import in a thread to scan this computer."}</p>}
     </section>}
   </div>;
 }
@@ -220,8 +220,8 @@ const GAP_X = 36;
 const GAP_Y = 64;
 const LANE = 40;
 const GRAPH_BOX = { width: NODE_WIDTH, height: NODE_HEIGHT, gapX: GAP_X, gapY: GAP_Y, lane: LANE };
-const KIND_HUE = { agent: "var(--blue)", set: "var(--text-3)", if: "var(--orange)" } as const;
-const GLYPHS = { agent: "◆", set: "◇", if: "◈" } as const;
+const KIND_HUE = { agent: "var(--blue)", script: "var(--teal)", set: "var(--text-3)", if: "var(--orange)" } as const;
+const GLYPHS = { agent: "◆", script: "▶", set: "◇", if: "◈" } as const;
 const END_ID = "end";
 
 type Placed = { node?: WorkflowNode; id: string; x: number; y: number };

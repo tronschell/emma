@@ -20,19 +20,6 @@ export const MAX_USES = 32;
    round. Swap in a tokenizer if the estimate ever misleads. */
 export const CHARS_PER_TOKEN = 4;
 
-/**
- * The mass of a turn that the renderer never wrote and cannot measure: the
- * system prompt, the tool schemas, skills injected by the harness, knowledge the
- * host retrieved, an attached screen capture.
- *
- * It is a residual, not an estimate — the provider's own input count for the
- * turn, minus the segments this side did measure. Zero when no usage was
- * reported, or when the measured segments already account for the whole input.
- */
-export function systemChars(inputTokens: number, measuredChars: number): number {
-  return Math.max(0, inputTokens * CHARS_PER_TOKEN - measuredChars);
-}
-
 export function usageKey(use: { kind: UsageKind; label: string }): string {
   return `${use.kind}:${use.label}`;
 }
@@ -46,33 +33,6 @@ export function mergeUses(current: ContextUse[], added: Omit<ContextUse, "turns"
     return { ...use, turns: (previous?.turns ?? 0) + 1 };
   });
   return [...touched, ...kept.values()].slice(0, MAX_USES);
-}
-
-/** Lay the segments out over a fixed cell count, largest first, every segment
-    worth at least one cell. Largest-remainder, so the grid is always full. */
-export function allocateCells(items: { key: string; chars: number }[], cells: number): string[] {
-  const ranked = items.filter((item) => item.chars > 0).sort((left, right) => right.chars - left.chars).slice(0, cells);
-  const total = ranked.reduce((sum, item) => sum + item.chars, 0);
-  if (!total) return [];
-  const shares = ranked.map((item) => {
-    const exact = item.chars / total * cells;
-    return { key: item.key, count: Math.max(1, Math.floor(exact)), remainder: exact - Math.floor(exact) };
-  });
-  let spare = cells - shares.reduce((sum, share) => sum + share.count, 0);
-  for (const share of [...shares].sort((left, right) => right.remainder - left.remainder)) {
-    if (spare <= 0) break;
-    share.count += 1;
-    spare -= 1;
-  }
-  // The min-one floor can overshoot when one segment dwarfs the rest; take the
-  // cells back off the biggest blocks, never off a segment's last cell.
-  while (spare < 0) {
-    const biggest = shares.reduce((left, right) => (right.count > left.count ? right : left));
-    if (biggest.count <= 1) break;
-    biggest.count -= 1;
-    spare += 1;
-  }
-  return shares.flatMap((share) => Array.from({ length: share.count }, () => share.key));
 }
 
 /* Where the speed curve starts. Every bucket after it is a doubling — 4K, 8K,

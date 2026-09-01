@@ -112,12 +112,8 @@ export function parseBlocks(markdown: string): Block[] {
      joining them would reflow shell output and addresses into a run-on. */
   const flush = () => {
     if (paragraph.length) {
-      // Markup a model forgot to fence is still markup: it reads as code, so it
-      // is shown as code rather than as a paragraph of angle brackets.
-      // ponytail: tags only. Widen the test when a model ships an unfenced
-      // function body often enough to be worth the false positives on prose.
       const body = paragraph.join("\n");
-      if (/^<[A-Za-z!/]/.test(body) && body.includes(">")) blocks.push({ kind: "code", language: "html", text: body });
+      if (/^<[A-Za-z!]/.test(body) && body.includes(">")) blocks.push({ kind: "code", language: "html", text: body });
       else blocks.push({ kind: "paragraph", spans: inlineSpans(body) });
     }
     if (quote.length) blocks.push({ kind: "quote", spans: inlineSpans(quote.join("\n")) });

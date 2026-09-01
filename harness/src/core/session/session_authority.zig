@@ -57,10 +57,6 @@ pub const AuthorityTransition = struct {
     }
 };
 
-/// Shared front half of the two `classifyAuthority*` entry points: rejects a
-/// pending authority fence, then returns `.schema_v3` when a valid marker is
-/// present, or `null` when none is (caller decides legacy vs. orphan).
-/// Returns `error.InvalidSessionFormat` if the marker names a different session.
 fn classifyMarker(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -79,9 +75,6 @@ fn classifyMarker(
     return null;
 }
 
-/// Classifies a session as schema-v3 or legacy. A directory with no marker but
-/// a complete prepared schema-v3 manifest is a creation orphan and reported as
-/// `error.SessionNotFound` (it must not be read as legacy).
 pub fn classifyAuthority(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -96,9 +89,6 @@ pub fn classifyAuthority(
     return .legacy;
 }
 
-/// Like `classifyAuthority` but treats a marker-less directory as legacy without
-/// the creation-orphan check, so an oversized legacy snapshot can still be
-/// migrated under an explicit `allow_large` request.
 pub fn classifyAuthorityAllowingLargeLegacy(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -154,9 +144,6 @@ fn isPreparedCreationOrphan(
     return true;
 }
 
-/// Reads and validates `authority.json` if present. Returns null when absent;
-/// `error.InvalidSessionFormat` on a malformed or wrong-schema marker. Caller
-/// owns the returned marker.
 pub fn loadAuthorityMarkerOptional(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -196,9 +183,6 @@ pub fn loadAuthorityMarkerOptional(
     };
 }
 
-/// Fails with `error.SessionAuthorityBoundaryUnavailable` if an in-flight
-/// `authority.pending.json` transition exists for this session (the "fence"),
-/// so read paths refuse a directory mid-migration.
 pub fn requireAuthorityFenceAbsent(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -216,8 +200,6 @@ pub fn requireAuthorityFenceAbsent(
     return error.SessionAuthorityBoundaryUnavailable;
 }
 
-/// Reads and exact-parses `authority.pending.json` if present, returning null
-/// when absent. Caller owns the returned transition.
 pub fn loadAuthorityTransitionOptional(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -335,8 +317,6 @@ fn parseProposedPosition(value: std.json.Value) error{InvalidSessionFormat}!sess
     };
 }
 
-/// Returns the object only if it has exactly `expected_keys` and no others,
-/// rejecting unknown/missing keys with `error.InvalidSessionFormat`.
 pub fn exactJsonObject(
     value: std.json.Value,
     expected_keys: []const []const u8,
@@ -387,7 +367,6 @@ fn legacyFingerprintMatches(
     return std.mem.eql(u8, &digest, &expected.primary_sha256);
 }
 
-/// Asserts a parsed transition names `session_id`; otherwise `error.InvalidSessionFormat`.
 pub fn requireAuthorityTransitionSession(
     transition: AuthorityTransition,
     session_id: []const u8,
@@ -432,10 +411,6 @@ fn removeSessionEntryIfPresent(
     };
 }
 
-/// Rolls an interrupted migration back to its legacy snapshot: restores the
-/// fingerprint-matched primary from the stable copy, removes the v3 marker, and
-/// clears the intent. Inconsistent on-disk state yields
-/// `error.LegacySessionMigrationIndeterminate`.
 pub fn restoreLegacyAuthority(
     alloc: Allocator,
     writable: *session_log.WritableSessionDir,
@@ -483,9 +458,6 @@ pub fn restoreLegacyAuthority(
         return error.SessionAuthorityIntentCleanupPending;
 }
 
-/// Reads an in-session file fully, capped at `max_bytes`. Returns null if the
-/// file is absent; read/parse failures collapse to `error.InvalidSessionFormat`
-/// (except `OutOfMemory`). Caller owns the returned bytes.
 pub fn readOptionalSessionFile(
     alloc: Allocator,
     session_dir: *io_mod.VerifiedDir,
@@ -503,8 +475,6 @@ pub fn readOptionalSessionFile(
     };
 }
 
-/// Opens an in-session file with symlink/escape protections, rejecting
-/// non-regular or hard-linked targets as `error.SessionPathUnsafe`.
 pub fn openSessionFile(
     session_dir: *io_mod.VerifiedDir,
     name: []const u8,
@@ -531,8 +501,6 @@ fn verifyOpenedSessionFile(
     if (stat.kind != .file or stat.nlink > 1) {
         return error.SessionPathUnsafe;
     }
-    // Atomic replacement can unlink the old inode after a read-only open but
-    // before fstat. The descriptor remains a safe, immutable snapshot.
     if (mode == .writable and stat.nlink != 1) {
         return error.SessionPathUnsafe;
     }
@@ -555,8 +523,6 @@ test "read-only session files accept an atomically unlinked descriptor" {
     );
 }
 
-/// Reports whether `name` exists directly under the session dir, mapping
-/// unsafe link/dir shapes to `error.SessionPathUnsafe`.
 pub fn entryExistsRelative(
     session_dir: *io_mod.VerifiedDir,
     name: []const u8,
@@ -571,10 +537,6 @@ pub fn entryExistsRelative(
     return true;
 }
 
-/// Resolves the containing device id for `name`, which the projection layer
-/// folds into its stat fingerprint. The OS-specific syscall path (Linux
-/// `statx`, Apple `fstatat`, 0 elsewhere) is isolated here so `eventFileStat`
-/// stays platform-agnostic. Syscall failures map to `error.InvalidSessionFormat`.
 fn statFileDevice(session_dir: *io_mod.VerifiedDir, name: []const u8) !u64 {
     var path_buffer: [std.c.PATH_MAX]u8 = undefined;
     const path_z = std.fmt.bufPrintZ(&path_buffer, "{s}", .{name}) catch
@@ -623,9 +585,6 @@ fn statFileDevice(session_dir: *io_mod.VerifiedDir, name: []const u8) !u64 {
     };
 }
 
-/// Stats a session's event log into the `EventFileStat` fingerprint the
-/// projection layer compares against. Rejects non-regular or hard-linked files
-/// as `error.SessionPathUnsafe`; a missing log is `error.InvalidSessionFormat`.
 pub fn eventFileStat(
     session_dir: *io_mod.VerifiedDir,
     name: []const u8,
@@ -643,7 +602,7 @@ pub fn eventFileStat(
         .device = device,
         .inode = @intCast(stat.inode),
         .kind = .regular,
-        .mode = stat.permissions.toMode(),
+        .mode = io_mod.permissionsMode(stat.permissions),
         .link_count = @intCast(stat.nlink),
         .size = stat.size,
         .mtime_ns = stat.mtime.nanoseconds,
@@ -651,8 +610,6 @@ pub fn eventFileStat(
     };
 }
 
-/// Parses the top-level `schema_version` from manifest/snapshot bytes.
-/// Any parse problem is `error.InvalidSessionFormat`.
 pub fn manifestSchemaVersion(alloc: Allocator, bytes: []const u8) !u64 {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{
         .parse_numbers = false,
@@ -684,7 +641,6 @@ pub fn jsonU64(object: std.json.ObjectMap, key: []const u8) error{InvalidSession
     };
 }
 
-/// Parses a 32-hex-char canonical identifier, rejecting non-canonical forms.
 pub fn parseIdentifier(raw: []const u8) error{InvalidSessionFormat}!session_event.Identifier {
     if (raw.len != 32) return error.InvalidSessionFormat;
     var result: session_event.Identifier = undefined;
@@ -694,7 +650,6 @@ pub fn parseIdentifier(raw: []const u8) error{InvalidSessionFormat}!session_even
     return result;
 }
 
-/// Structural equality of two commit positions.
 pub fn positionsEqual(
     left: session_log.CommitPosition,
     right: session_log.CommitPosition,
@@ -705,8 +660,6 @@ pub fn positionsEqual(
         left.through_event_log_bytes == right.through_event_log_bytes;
 }
 
-/// Structural equality of two parsed transitions, including the optional prior
-/// legacy fingerprint.
 pub fn authorityTransitionsEqual(
     left: AuthorityTransition,
     right: AuthorityTransition,
@@ -732,7 +685,6 @@ pub fn authorityTransitionsEqual(
     return true;
 }
 
-/// Deletes an in-session file and fsyncs the directory so the removal is durable.
 pub fn deleteSessionEntry(
     session_dir: *io_mod.VerifiedDir,
     name: []const u8,
@@ -741,7 +693,6 @@ pub fn deleteSessionEntry(
     try io_mod.syncVerifiedDir(session_dir.dir);
 }
 
-/// Reads exactly `size` bytes (+1 guard) of a legacy file into an owned slice.
 pub fn readExactLegacyFile(
     alloc: Allocator,
     file: *std.Io.File,
@@ -752,8 +703,6 @@ pub fn readExactLegacyFile(
     return io_mod.readFileToEnd(alloc, file, max_bytes);
 }
 
-/// Normalizes a canonical-replay `OutOfMemory` into
-/// `error.SessionReplayResourceExhausted`; passes every other error through.
 pub fn mapReplayError(err: anyerror) anyerror {
     return switch (err) {
         error.OutOfMemory => error.SessionReplayResourceExhausted,

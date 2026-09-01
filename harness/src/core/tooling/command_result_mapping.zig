@@ -85,9 +85,9 @@ pub const Foreground = struct {
         started_ms: ?i64,
     ) !ToolExecutionResult {
         const output = if (timeout_ms) |ms|
-            try std.fmt.allocPrint(arena, "timeout=true\ntimeout_ms={d}\ncommand timed out and was terminated\n", .{ms})
+            try std.fmt.allocPrint(arena, "timeout=true\ntimeout_ms={d}\ncommand timed out and was terminated\nIf the command needs longer than this, re-run it with terminal action:\"start\" and a wait_ceiling_ms so it keeps running across tool calls.\n", .{ms})
         else
-            try arena.dupe(u8, "timeout=true\ncommand timed out and was terminated\n");
+            try arena.dupe(u8, "timeout=true\ncommand timed out and was terminated\nIf the command needs longer than this, re-run it with terminal action:\"start\" and a wait_ceiling_ms so it keeps running across tool calls.\n");
         return .{
             .status = .failure,
             .model_output = output,
@@ -445,7 +445,7 @@ test "command result mapping preserves timeout and headless sandbox JSON" {
     defer alloc.free(timeout.model_output);
     defer alloc.free(timeout.command_result_json.?);
     try std.testing.expectEqualStrings(
-        "timeout=true\ntimeout_ms=5\ncommand timed out and was terminated\n",
+        "timeout=true\ntimeout_ms=5\ncommand timed out and was terminated\nIf the command needs longer than this, re-run it with terminal action:\"start\" and a wait_ceiling_ms so it keeps running across tool calls.\n",
         timeout.model_output,
     );
     try expectContains(timeout.command_result_json.?, "\"timed_out\":true");

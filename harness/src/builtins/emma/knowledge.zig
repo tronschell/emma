@@ -285,7 +285,9 @@ pub const workflow = ToolSpec{
 };
 
 const visualize_description =
-    "Draw a picture inline in this conversation, where you are answering. Reach for it whenever something lands better seen than read — a trend, a breakdown, a comparison, a diagram, a small table.\n" ++
+    "Draw a picture inline in this conversation, where you are answering.\n" ++
+    "Draw only when it makes a relationship materially easier to see than prose would: several exact mappings or repeated-field comparisons; one thing feeding three or more downstream branches; three or more dependent steps, or state changing across a sequence; hierarchy, ownership or layout; a bug whose parts do not explain linearly. Not merely because an answer has parts. A single fact, one step, or anything a short paragraph already settles stays prose.\n" ++
+    "Draw the smallest thing that carries it — a table for mappings and comparisons, a flow or timeline for sequence and change, a tree for hierarchy and branching, a wireframe for layout, a chart for magnitude and trend.\n" ++
     "html is one whole self-contained document, and it can hold as many charts, panels and widgets as the answer needs. Write your own <style> and <script>; draw with inline SVG, canvas or CSS. There is no network: no CDN, no web fonts, no images by URL. The page is dark and Emma's palette arrives as CSS variables — --bg, --text, --text-2, --text-3, --border, --accent, and --rose, --orange, --lime, --teal, --blue, --violet for series. Use those, not your own.\n" ++
     "title is a short name for what it shows.\n" ++
     "Not an artifact: nothing is saved and it dies with this conversation, though the user can export a PNG or keep it from the buttons on it. Use artifact when they should keep what you made.\n" ++

@@ -113,6 +113,7 @@ const harness = () => new Harness({
   onDelta: () => {},
   onThought: () => {},
   onToolCall: () => {},
+  onCompacted: () => {},
   onContextExperiment: () => {},
   onRoutedModel: () => {},
   onContextBreakdown: () => {},

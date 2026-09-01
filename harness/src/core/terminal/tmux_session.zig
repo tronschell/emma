@@ -3,6 +3,10 @@ const builtin = @import("builtin");
 const contracts = @import("contracts.zig");
 const host_capabilities = @import("../hosts/host.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_acl = if (builtin.os.tag == .windows)
+    @import("../shared/windows_acl.zig")
+else
+    struct {};
 const debug_trace = @import("../shared/debug_trace.zig");
 const process_supervisor = @import("../background/process_supervisor.zig");
 const background_process_provider = @import(
@@ -26,7 +30,10 @@ const max_launcher_config_bytes: usize = contracts.max_command_bytes * 6 +
 const max_lifecycle_bytes: usize = 8 * 5;
 const control_nonce_len: usize = 32;
 const marker_frame_len: usize = control_nonce_len + 1;
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
+const private_file_permissions = if (builtin.os.tag == .windows)
+    std.Io.File.Permissions.default_file
+else
+    io_mod.permissionsFromMode(0o600);
 const poll_ns: u64 = 5 * std.time.ns_per_ms;
 const cleanup_settle_deadline_ms: i64 = 500;
 const capture_accept_deadline_ms: i64 = 2_000;
@@ -156,6 +163,9 @@ pub const Paths = struct {
         transport_root: []const u8,
         backend_identity: []const u8,
     ) !Paths {
+        if (comptime builtin.os.tag == .windows) {
+            return error.TerminalHostUnsupported;
+        }
         if (!validBackendIdentity(backend_identity)) {
             return error.InvalidTmuxBackendIdentity;
         }
@@ -359,6 +369,9 @@ pub const Backend = struct {
         dimensions: contracts.Dimensions,
         config: LauncherConfig,
     ) !Backend {
+        if (comptime builtin.os.tag == .windows) {
+            return error.TerminalHostUnsupported;
+        }
         try probe(alloc);
         var paths = try Paths.init(
             alloc,
@@ -405,12 +418,7 @@ pub const Backend = struct {
             killSessionAt(alloc, paths.socket, paths.session_name);
             cleanupSocketIfUnused(alloc, paths.socket);
         }
-        try std.Io.Dir.cwd().setFilePermissions(
-            io_mod.getIo(),
-            paths.socket,
-            private_file_permissions,
-            .{ .follow_symlinks = false },
-        );
+        try enforcePrivatePathPermissions(paths.socket);
         if (!try privateSocketExists(paths.socket)) {
             return error.TmuxSocketMissing;
         }
@@ -477,6 +485,9 @@ pub const Backend = struct {
         backend_identity: []const u8,
         executable: []const u8,
     ) !Backend {
+        if (comptime builtin.os.tag == .windows) {
+            return error.TerminalHostUnsupported;
+        }
         try probe(alloc);
         var paths = try Paths.init(
             alloc,
@@ -556,6 +567,9 @@ pub const Backend = struct {
     }
 
     pub fn beginCapture(self: *Backend) !void {
+        if (comptime builtin.os.tag == .windows) {
+            return error.TerminalHostUnsupported;
+        }
         self.closeCaptureServer();
         std.Io.Dir.deleteFileAbsolute(
             io_mod.getIo(),
@@ -564,12 +578,7 @@ pub const Backend = struct {
         const address = try std.Io.net.UnixAddress.init(self.paths.capture_socket);
         self.capture_server = try address.listen(io_mod.getIo(), .{});
         errdefer self.closeCaptureServer();
-        try std.Io.Dir.cwd().setFilePermissions(
-            io_mod.getIo(),
-            self.paths.capture_socket,
-            private_file_permissions,
-            .{ .follow_symlinks = false },
-        );
+        try enforcePrivatePathPermissions(self.paths.capture_socket);
         const quoted_executable = try quoteShellWord(self.alloc, self.executable);
         defer self.alloc.free(quoted_executable);
         const quoted_socket = try quoteShellWord(self.alloc, self.paths.capture_socket);
@@ -659,8 +668,6 @@ pub const Backend = struct {
             .mouse_tracking = pane.mouse_tracking,
             .application_cursor_keys = pane.application_cursor_keys,
             .application_keypad = pane.application_keypad,
-            // tmux 3.2+ does not expose bracketed paste, focus tracking,
-            // keyboard protocol, or synchronized-update state.
             .exact_modes_available = false,
         };
     }
@@ -969,6 +976,7 @@ pub fn runLauncher(
     process_provider: background_process_provider.Provider,
     raw_args: []const [*:0]const u8,
 ) !void {
+    if (comptime builtin.os.tag == .windows) return error.TerminalHostUnsupported;
     if (comptime !supported()) return error.TerminalHostUnsupported;
     if (!isLauncherModeRaw(raw_args)) return error.InvalidTmuxLauncher;
     defer debug_trace.shutdown();
@@ -1018,18 +1026,16 @@ pub fn runLauncher(
         io_mod.getIo(),
         parsed.value.control_path,
     ) catch {};
-    try std.Io.Dir.cwd().setFilePermissions(
-        io_mod.getIo(),
-        parsed.value.control_path,
-        private_file_permissions,
-        .{ .follow_symlinks = false },
-    );
+    try enforcePrivatePathPermissions(parsed.value.control_path);
     try waitForSignal(parsed.value.manifest_ready_path);
     try writeLifecycle(parsed.value.lifecycle_path, .prepared, 0);
     try waitForSignal(parsed.value.release_path);
 
     const terminal_file = std.Io.File{
-        .handle = std.posix.STDOUT_FILENO,
+        .handle = if (comptime builtin.os.tag == .windows)
+            std.Io.File.stdout().handle
+        else
+            std.posix.STDOUT_FILENO,
         .flags = .{ .nonblocking = false },
     };
     var child = std.process.spawn(io_mod.getIo(), .{
@@ -1038,7 +1044,7 @@ pub fn runLauncher(
         .stdout = .{ .file = terminal_file },
         .stderr = .{ .file = terminal_file },
         .cwd = .{ .path = parsed.value.cwd },
-        .pgid = 0,
+        .pgid = if (comptime builtin.os.tag == .windows) null else 0,
     }) catch {
         try writeLifecycle(
             parsed.value.lifecycle_path,
@@ -1050,23 +1056,25 @@ pub fn runLauncher(
     var child_owned = true;
     errdefer if (child_owned) terminateAndReapChild(&child);
     const child_pid = child.id orelse return error.ChildIdentityMissing;
-    if (!assignForegroundProcessGroup(std.posix.STDOUT_FILENO, child_pid)) {
+    if (!assignForegroundProcessGroup(terminal_file.handle, child_pid)) {
         debug_trace.logf(
             "terminal_host",
             "tmux foreground handoff failed pid={d}",
-            .{child_pid},
+            .{io_mod.processIdValue(child_pid)},
         );
         terminateAndReapChild(&child);
         child_owned = false;
         try writeLifecycle(parsed.value.lifecycle_path, .startup_failed, 3);
         return;
     }
-    signalLauncherProcessGroup(child_pid, std.c.SIG.CONT) catch {
-        terminateAndReapChild(&child);
-        child_owned = false;
-        try writeLifecycle(parsed.value.lifecycle_path, .startup_failed, 3);
-        return;
-    };
+    if (comptime builtin.os.tag != .windows) {
+        signalLauncherProcessGroup(child_pid, std.c.SIG.CONT) catch {
+            terminateAndReapChild(&child);
+            child_owned = false;
+            try writeLifecycle(parsed.value.lifecycle_path, .startup_failed, 3);
+            return;
+        };
+    }
     if (parsed.value.interactive_source) |source| {
         writeTmuxBuffer(
             alloc,
@@ -1138,6 +1146,7 @@ pub fn runLauncher(
 }
 
 pub fn runCapture(raw_args: []const [*:0]const u8) !void {
+    if (comptime builtin.os.tag == .windows) return error.TerminalHostUnsupported;
     if (comptime !supported()) return error.TerminalHostUnsupported;
     if (!isCaptureModeRaw(raw_args)) return error.InvalidTmuxCapture;
     const socket_path = std.mem.sliceTo(raw_args[2], 0);
@@ -1178,7 +1187,7 @@ pub fn runCapture(raw_args: []const [*:0]const u8) !void {
     try writeAll(stream.socket.handle, backend_identity);
     var buffer: [64 * 1024]u8 = undefined;
     while (true) {
-        const count = try std.posix.read(std.posix.STDIN_FILENO, &buffer);
+        const count = try readStdin(&buffer);
         if (count == 0) return;
         try writeAll(stream.socket.handle, buffer[0..count]);
     }
@@ -1187,9 +1196,16 @@ pub fn runCapture(raw_args: []const [*:0]const u8) !void {
 fn waitForCaptureStop() !void {
     var buffer: [256]u8 = undefined;
     while (true) {
-        const count = try std.posix.read(std.posix.STDIN_FILENO, &buffer);
+        const count = try readStdin(&buffer);
         if (count == 0) return;
     }
+}
+
+fn readStdin(buffer: []u8) !usize {
+    if (comptime builtin.os.tag == .windows) {
+        return std.Io.File.stdin().readStreaming(io_mod.getIo(), &.{buffer});
+    }
+    return std.posix.read(std.posix.STDIN_FILENO, buffer);
 }
 
 const LauncherControl = struct {
@@ -1212,7 +1228,7 @@ const LauncherControl = struct {
             debug_trace.logf(
                 "terminal_host",
                 "tmux launcher control failed pid={d} err={s}",
-                .{ self.child_pid, @errorName(err) },
+                .{ io_mod.processIdValue(self.child_pid), @errorName(err) },
             );
         };
     }
@@ -1290,7 +1306,7 @@ const LauncherControl = struct {
                 try writeLifecycle(
                     self.config.lifecycle_path,
                     .shell_ready,
-                    @intCast(self.child_pid),
+                    @intCast(io_mod.processIdValue(self.child_pid)),
                 );
                 self.phase = .shell_ready;
             },
@@ -1304,7 +1320,7 @@ const LauncherControl = struct {
                 try writeLifecycle(
                     self.config.lifecycle_path,
                     .command_started,
-                    @intCast(self.child_pid),
+                    @intCast(io_mod.processIdValue(self.child_pid)),
                 );
                 try waitForSignalBeforeDeadline(
                     self.config.command_release_path,
@@ -1319,12 +1335,14 @@ const LauncherControl = struct {
 };
 
 fn supported() bool {
+    if (comptime builtin.os.tag == .windows) return false;
     return host_capabilities.terminalSupportForOs(builtin.os.tag).isSupported();
 }
 
-test "tmux implementation guard follows canonical platform support" {
+test "tmux backend support excludes Windows" {
     try std.testing.expectEqual(
-        host_capabilities.terminalSupportForOs(builtin.os.tag).isSupported(),
+        builtin.os.tag != .windows and
+            host_capabilities.terminalSupportForOs(builtin.os.tag).isSupported(),
         supported(),
     );
 }
@@ -1624,7 +1642,6 @@ fn runTmuxNoOutput(
     alloc.free(output);
 }
 
-/// Returns owned stdout; caller frees with `alloc`.
 fn runTmux(
     alloc: Allocator,
     socket: []const u8,
@@ -1682,6 +1699,11 @@ fn cleanupSocketIfUnusedChecked(alloc: Allocator, socket: []const u8) !void {
 }
 
 fn privateSocketHasListener(socket: []const u8) !bool {
+    if (comptime builtin.os.tag == .windows) return false;
+    return privateSocketHasListenerPosix(socket);
+}
+
+fn privateSocketHasListenerPosix(socket: []const u8) !bool {
     if (socket.len >= @sizeOf(@FieldType(std.c.sockaddr.un, "path"))) {
         return error.InvalidTmuxSocketPath;
     }
@@ -1721,12 +1743,33 @@ fn privateSocketExists(socket: []const u8) !bool {
         error.FileNotFound => return false,
         else => return err,
     };
-    if (stat.kind != .unix_domain_socket or
-        stat.permissions.toMode() & 0o777 != 0o600)
-    {
+    if (stat.kind != .unix_domain_socket) {
+        return error.PrivateTmuxEndpointRequired;
+    }
+    if (comptime builtin.os.tag == .windows) {
+        const path = try io_mod.realpathAlloc(std.heap.page_allocator, socket);
+        defer std.heap.page_allocator.free(path);
+        if (!(try windows_acl.matches(path))) return error.PrivateTmuxEndpointRequired;
+    } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.PrivateTmuxEndpointRequired;
     }
     return true;
+}
+
+fn enforcePrivatePathPermissions(path: []const u8) !void {
+    if (comptime builtin.os.tag == .windows) {
+        try windows_acl.apply(path);
+        if (!(try windows_acl.matches(path))) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
+        return;
+    }
+    try std.Io.Dir.cwd().setFilePermissions(
+        io_mod.getIo(),
+        path,
+        private_file_permissions,
+        .{ .follow_symlinks = false },
+    );
 }
 
 fn cleanupPrivateSocket(socket: []const u8) void {
@@ -1954,7 +1997,7 @@ fn writeShellIdentity(
     pid: std.posix.pid_t,
 ) !void {
     var pid_buffer: [32]u8 = undefined;
-    const pid_text = try std.fmt.bufPrint(&pid_buffer, "{d}", .{pid});
+    const pid_text = try std.fmt.bufPrint(&pid_buffer, "{d}", .{io_mod.processIdValue(pid)});
     const token = try process_provider.captureToken(
         alloc,
         pid_text,
@@ -1962,7 +2005,7 @@ fn writeShellIdentity(
     var output: std.Io.Writer.Allocating = .init(alloc);
     defer output.deinit();
     try std.json.Stringify.value(ShellIdentityWire{
-        .pid = @intCast(pid),
+        .pid = @intCast(io_mod.processIdValue(pid)),
         .process_token = token.view(),
     }, .{}, &output.writer);
     try writePrivateFile(path, output.written(), true);
@@ -1980,9 +2023,8 @@ fn loadShellIdentity(alloc: Allocator, path: []const u8) !ShellIdentity {
         .{ .allocate = .alloc_always },
     );
     defer parsed.deinit();
-    const pid = std.math.cast(std.posix.pid_t, parsed.value.pid) orelse
+    const pid = io_mod.processIdFromValue(parsed.value.pid) orelse
         return error.MalformedTmuxShellIdentity;
-    if (pid <= 0) return error.MalformedTmuxShellIdentity;
     return .{
         .pid = pid,
         .process_token = process_supervisor.ProcessInstanceToken.parse(
@@ -2198,6 +2240,10 @@ fn acceptBeforeDeadline(
     deadline: PeerDeadline,
     cancelled: ?*const std.atomic.Value(bool),
 ) !std.Io.net.Stream {
+    if (comptime builtin.os.tag == .windows) {
+        if (cancelled) |value| if (value.load(.acquire)) return error.TmuxPeerCancelled;
+        return server.accept(io_mod.getIo());
+    }
     var poll_fds = [_]std.posix.pollfd{.{
         .fd = server.socket.handle,
         .events = std.posix.POLL.IN,
@@ -2254,11 +2300,12 @@ fn receiveBeforeDeadline(
     }
 }
 
-fn assignForegroundProcessGroup(fd: c_int, pgrp: std.posix.pid_t) bool {
+fn assignForegroundProcessGroup(fd: std.posix.fd_t, pgrp: std.posix.pid_t) bool {
+    if (comptime builtin.os.tag == .windows) return true;
     if (io_mod.getenv("FX_TERMINAL_TEST_TMUX_TCSETPGRP_FAILURE") != null) {
         return false;
     }
-    return tcsetpgrp(fd, pgrp) == 0;
+    return tcsetpgrp(@intCast(fd), pgrp) == 0;
 }
 
 fn signalLauncherProcessGroup(pid: std.c.pid_t, signal: std.c.SIG) !void {
@@ -2281,6 +2328,7 @@ fn launcherStatusToTerm(raw_status: u32) std.process.Child.Term {
 }
 
 fn waitLauncherChild(child: *std.process.Child) !std.process.Child.Term {
+    if (comptime builtin.os.tag == .windows) return child.wait(io_mod.getIo());
     const pid = child.id orelse return error.ChildIdentityMissing;
     var observe_stops = true;
     while (true) {
@@ -2303,7 +2351,7 @@ fn waitLauncherChild(child: *std.process.Child) !std.process.Child.Term {
                     debug_trace.logf(
                         "terminal_host",
                         "resumed terminal child after foreground race pid={d}",
-                        .{pid},
+                        .{io_mod.processIdValue(pid)},
                     );
                 } else {
                     observe_stops = false;
@@ -2322,6 +2370,17 @@ fn waitLauncherChild(child: *std.process.Child) !std.process.Child.Term {
 }
 
 fn requestChildTermination(child_pid: std.posix.pid_t) void {
+    if (comptime builtin.os.tag == .windows) {
+        switch (std.os.windows.ntdll.NtTerminateProcess(child_pid, @enumFromInt(1))) {
+            .SUCCESS, .PROCESS_IS_TERMINATING, .ACCESS_DENIED => {},
+            else => |status| debug_trace.logf(
+                "terminal_host",
+                "tmux child termination failed status={any}",
+                .{status},
+            ),
+        }
+        return;
+    }
     const group_kill_succeeded =
         io_mod.getenv("FX_TERMINAL_TEST_TMUX_GROUP_KILL_FAILURE") == null and
         std.c.kill(-child_pid, std.c.SIG.KILL) == 0;
@@ -2331,7 +2390,7 @@ fn requestChildTermination(child_pid: std.posix.pid_t) void {
     debug_trace.logf(
         "terminal_host",
         "tmux child group termination failed pid={d} direct_kill_succeeded={any}",
-        .{ child_pid, direct_kill_succeeded },
+        .{ io_mod.processIdValue(child_pid), direct_kill_succeeded },
     );
 }
 
@@ -2357,6 +2416,7 @@ fn writeAll(fd: std.posix.fd_t, bytes: []const u8) !void {
 extern "c" fn tcsetpgrp(fd: c_int, pgrp: std.posix.pid_t) c_int;
 
 test "tmux launcher wait status classifies terminal results before stops" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expectEqual(
         std.process.Child.Term{ .exited = 23 },
         launcherStatusToTerm(23 << 8),
@@ -2385,6 +2445,7 @@ test "tmux launcher wait status classifies terminal results before stops" {
 }
 
 test "tmux marker arrival deadlines follow authenticated phase transitions" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expectEqual(@as(i64, 60_000), marker_shell_start_deadline_ms);
     try std.testing.expectEqual(
         marker_acknowledgement_timeout_ms - marker_acknowledgement_delivery_margin_ms,
@@ -2425,12 +2486,13 @@ test "tmux marker arrival deadlines follow authenticated phase transitions" {
 }
 
 test "tmux peer deadline bounds accept receive partial frames and cancellation" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     if (!supported()) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const socket_path = try std.fmt.allocPrint(
         alloc,
         "/tmp/fx-peer-deadline-{d}.sock",
-        .{std.c.getpid()},
+        .{io_mod.currentProcessId()},
     );
     defer alloc.free(socket_path);
     std.Io.Dir.deleteFileAbsolute(std.testing.io, socket_path) catch {};

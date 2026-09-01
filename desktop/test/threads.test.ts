@@ -9,7 +9,7 @@ const stored = new Map<string, string>();
 (globalThis as unknown as { dispatchEvent: unknown }).dispatchEvent = () => true;
 
 import { nested, newest, since, spawnedAgents, spawnedByTurn, threadAt, threadDepth, threadLabel } from "../src/threads";
-import { handTags, pinnedThreads, setThreadPinned, setThreadTag, threadTags } from "../src/context";
+import { handTags, pinnedThreads, setThreadPinned, setThreadTag, setThreadUnread, threadTags, unreadThreads } from "../src/context";
 import type { Thread } from "../src/types";
 import { AGENT_COLORS, type LiveAgent } from "../shared/agents";
 
@@ -101,6 +101,7 @@ test("⌘1 – ⌘9 index the project the open thread is filed under", () => {
 });
 
 test("pinning a thread keeps the newest pin first and unpinning forgets it", () => {
+  stored.clear();
   setThreadPinned("a", true);
   setThreadPinned("b", true);
   assert.deepEqual(pinnedThreads(), ["b", "a"]);
@@ -110,6 +111,16 @@ test("pinning a thread keeps the newest pin first and unpinning forgets it", () 
 
   setThreadPinned("a", false);
   assert.deepEqual(pinnedThreads(), ["b"]);
+});
+
+test("marking a thread unread is durable and reversible", () => {
+  stored.clear();
+  setThreadUnread("a", true);
+  setThreadUnread("b", true);
+  setThreadUnread("a", true);
+  assert.deepEqual(unreadThreads(), ["a", "b"]);
+  setThreadUnread("a", false);
+  assert.deepEqual(unreadThreads(), ["b"]);
 });
 
 test("a subagent chip lands on the turn that spawned it, live ones on the turn still running", () => {

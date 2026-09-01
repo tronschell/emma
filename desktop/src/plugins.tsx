@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Bars } from "./bars";
 import { hookRuns, matchesPluginQuery, pluginCategories, type InstalledPlugin, type Marketplace, type MarketplacePlugin, type PluginCatalog, type PluginDetail, type PluginHookState } from "../shared/plugins";
 import { byUse, lastUsed, recentDays, rowSeries, rowTotal, usageSeries, type UsageRow } from "../shared/invocations";
 import type { ToolSettings } from "../shared/settings";
@@ -91,7 +92,7 @@ export function PluginsView({ busy, tools, onTools }: { busy: boolean; tools: To
     {!loading && !catalog.marketplaces.length && <div className="content-empty">
       <Mark />
       <h2>No marketplaces yet</h2>
-      <p>A marketplace is a catalog of plugins: a GitHub repo, a Git URL, or a folder on this Mac. Emma files the ones she writes here too.</p>
+      <p>A marketplace is a catalog of plugins: a GitHub repo, a Git URL, or a folder on this computer. Emma files the ones she writes here too.</p>
       <button type="button" className="plugin-add" disabled={working} onClick={() => setAdding(true)}>Add plugin marketplace</button>
     </div>}
 
@@ -100,7 +101,7 @@ export function PluginsView({ busy, tools, onTools }: { busy: boolean; tools: To
     {listings.map(({ marketplace, plugins }) => <section key={marketplace.id} className="plugin-source">
       <header>
         <div>
-          <span>{marketplace.local ? "Folder on this Mac" : marketplace.origin}{marketplace.ref ? ` · ${marketplace.ref}` : ""}{marketplace.sparse.length ? ` · ${marketplace.sparse.join(", ")}` : ""}</span>
+          <span>{marketplace.local ? "Folder on this computer" : marketplace.origin}{marketplace.ref ? ` · ${marketplace.ref}` : ""}{marketplace.sparse.length ? ` · ${marketplace.sparse.join(", ")}` : ""}</span>
           <h3>{marketplace.displayName}</h3>
         </div>
         {!marketplace.local && <button type="button" disabled={working} onClick={() => void run(marketplace.id, () => window.emma.refreshMarketplace(marketplace.id))}>{pending === marketplace.id ? "Updating…" : "Update"}</button>}
@@ -162,19 +163,14 @@ export function PluginsView({ busy, tools, onTools }: { busy: boolean; tools: To
   </section>;
 }
 
-export function Bars({ values, labels, className }: { values: number[]; labels: string[]; className: string }) {
-  const peak = Math.max(1, ...values);
-  return <div className={className} aria-hidden="true">
-    {values.map((count, index) => <span key={labels[index]} title={`${labels[index]} · ${count}`}><i style={{ height: `${Math.round((count / peak) * 100)}%` }} /></span>)}
-  </div>;
-}
+export { Bars };
 
 const PANELS = {
   skills: {
     field: "disabledSkills" as const,
     noun: "Skills",
     empty: "No skills yet",
-    hint: <>Install a plugin, or run <b>/import</b> to find the ones already on this Mac.</>,
+    hint: <>Install a plugin, or run <b>/import</b> to find the ones already on this computer.</>,
     counts: <>One bar a day. A skill counts the moment its instructions are handed to a turn — attached in the composer, typed as <code>/name</code>, or picked for you. Days older than 90 are dropped.</>,
     switches: <>A skill that is off never reaches the model, and cannot be attached to a thread. Same switch as <b>Settings → Tools</b>.</>,
   },
@@ -322,7 +318,7 @@ function PluginHooksDialog({ plugin, busy, close, trust }: {
       <header>
         <div>
           <span>{plugin.displayName}</span>
-          <h2 id="plugin-hooks-title">Lifecycle hooks<InfoDot>Each command below runs on this Mac, at that moment in a turn, with <code>PLUGIN_ROOT</code> and <code>PLUGIN_DATA</code> in its environment. Trust is pinned to the exact text you see: change a hook on disk and it stops running until you review it again. Nothing runs in Plan.</InfoDot></h2>
+          <h2 id="plugin-hooks-title">Lifecycle hooks<InfoDot>Each command below runs on this computer, at that moment in a turn, with <code>PLUGIN_ROOT</code> and <code>PLUGIN_DATA</code> in its environment. Trust is pinned to the exact text you see: change a hook on disk and it stops running until you review it again. Nothing runs in Plan.</InfoDot></h2>
         </div>
         <button type="button" onClick={close} aria-label="Close">×</button>
       </header>
@@ -391,7 +387,7 @@ function PluginDetailDialog({ plugin, marketplace, installed, busy, close, insta
           {!!face?.capabilities.length && <div><dt>Capabilities</dt><dd>{face.capabilities.join(", ")}</dd></div>}
           {!!face?.defaultPrompt.length && <div><dt>Prompts</dt><dd><ul className="plugin-prompts">{face.defaultPrompt.map((prompt) => <li key={prompt}>{prompt}</li>)}</ul></dd></div>}
           {!!links.length && <div><dt>Links</dt><dd className="plugin-links">{links.map(([label, url]) => <a key={label} href={url} target="_blank" rel="noreferrer">{label} ↗</a>)}</dd></div>}
-          {!!detail?.apps.length && <div><dt>Connections</dt><dd>{detail.apps.map((hosted) => <span key={hosted.id} className="plugin-hosted">Carries a ChatGPT-hosted connection Emma cannot run · {hosted.id}</span>)}</dd></div>}
+          {!!detail?.apps.length && <div><dt>Hosted apps</dt><dd>{detail.apps.map((hosted) => <span key={hosted.id} className="plugin-hosted">Carries a ChatGPT-hosted app Emma cannot run · {hosted.id}</span>)}</dd></div>}
         </dl>
       </div>
       <div className="plugin-dialog-actions">
@@ -426,7 +422,7 @@ function AddMarketplaceDialog({ busy, close, add }: { busy: boolean; close: () =
     <section className="agent-dialog marketplace-dialog">
       <header>
         <div>
-          <span>GitHub repo, Git URL, or a folder on this Mac</span>
+          <span>GitHub repo, Git URL, or a folder on this computer</span>
           <h2 id="add-marketplace-title">Add plugin marketplace</h2>
         </div>
         <button type="button" onClick={close} aria-label="Cancel">×</button>

@@ -44,24 +44,25 @@ pub fn normalizedTerminalArguments(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const root = std.json.parseFromSliceLeaky(
-        std.json.Value,
-        arena,
-        args_json,
-        .{ .allocate = .alloc_always },
-    ) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
+    var changed = false;
+    const root = root_blk: {
+        if (try parsedJsonValue(arena, args_json)) |value| break :root_blk value;
+        changed = true;
+        if (try mergedDuplicateFields(arena, args_json)) |value| break :root_blk value;
+        const repaired = (try repairedJsonEscapes(arena, args_json)) orelse return null;
+        if (try parsedJsonValue(arena, repaired)) |value| break :root_blk value;
+        if (try mergedDuplicateFields(arena, repaired)) |value| break :root_blk value;
+        return null;
     };
     if (root != .object) return null;
 
     var object = root.object;
-    var changed = false;
     if (object.count() == 1) {
-        const request = object.get("request") orelse .null;
-        if (request == .object) {
-            object = request.object;
-            changed = true;
+        if (object.get("request")) |request| {
+            if (try unwrappedRequestObject(arena, request)) |inner| {
+                object = inner;
+                changed = true;
+            }
         }
     }
     if (impliesCapturedExec(object)) {
@@ -78,6 +79,125 @@ pub fn normalizedTerminalArguments(
         &out.writer,
     ) catch return error.OutOfMemory;
     return try out.toOwnedSlice();
+}
+
+fn parsedJsonValue(
+    arena: std.mem.Allocator,
+    text: []const u8,
+) std.mem.Allocator.Error!?std.json.Value {
+    return parsedJsonValueOptions(arena, text, .{ .allocate = .alloc_always });
+}
+
+fn parsedJsonValueOptions(
+    arena: std.mem.Allocator,
+    text: []const u8,
+    options: std.json.ParseOptions,
+) std.mem.Allocator.Error!?std.json.Value {
+    return std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        text,
+        options,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
+}
+
+fn unwrappedRequestObject(
+    arena: std.mem.Allocator,
+    request: std.json.Value,
+) std.mem.Allocator.Error!?std.json.ObjectMap {
+    switch (request) {
+        .object => |value| return value,
+        .string => |text| {
+            const inner = (try parsedJsonValue(arena, text)) orelse
+                (try mergedDuplicateFields(arena, text)) orelse return null;
+            if (inner != .object) return null;
+            return inner.object;
+        },
+        else => return null,
+    }
+}
+
+fn mergedDuplicateFields(
+    arena: std.mem.Allocator,
+    text: []const u8,
+) std.mem.Allocator.Error!?std.json.Value {
+    const first = (try parsedJsonValueOptions(arena, text, .{
+        .allocate = .alloc_always,
+        .duplicate_field_behavior = .use_first,
+    })) orelse return null;
+    const last = (try parsedJsonValueOptions(arena, text, .{
+        .allocate = .alloc_always,
+        .duplicate_field_behavior = .use_last,
+    })) orelse return null;
+    if (first != .object or last != .object) return null;
+
+    var merged = first.object;
+    for (last.object.keys(), last.object.values()) |key, value| {
+        const existing = merged.get(key) orelse {
+            try merged.put(arena, key, value);
+            continue;
+        };
+        if (isNullPlaceholder(value)) continue;
+        if (isNullPlaceholder(existing)) {
+            try merged.put(arena, key, value);
+            continue;
+        }
+        const equal = try jsonValuesEqual(arena, existing, value);
+        if (!equal) return null;
+    }
+    return std.json.Value{ .object = merged };
+}
+
+fn jsonValuesEqual(
+    arena: std.mem.Allocator,
+    left: std.json.Value,
+    right: std.json.Value,
+) std.mem.Allocator.Error!bool {
+    var left_text: std.Io.Writer.Allocating = .init(arena);
+    std.json.Stringify.value(left, .{}, &left_text.writer) catch return error.OutOfMemory;
+    var right_text: std.Io.Writer.Allocating = .init(arena);
+    std.json.Stringify.value(right, .{}, &right_text.writer) catch return error.OutOfMemory;
+    return std.mem.eql(u8, left_text.written(), right_text.written());
+}
+
+const valid_json_escapes: []const u8 = "\"\\/bfnrtu";
+
+fn repairedJsonEscapes(
+    arena: std.mem.Allocator,
+    text: []const u8,
+) std.mem.Allocator.Error!?[]u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    var in_string = false;
+    var repaired = false;
+    var index: usize = 0;
+    while (index < text.len) : (index += 1) {
+        const byte = text[index];
+        if (!in_string) {
+            if (byte == '"') in_string = true;
+            out.writer.writeByte(byte) catch return error.OutOfMemory;
+            continue;
+        }
+        if (byte != '\\') {
+            if (byte == '"') in_string = false;
+            out.writer.writeByte(byte) catch return error.OutOfMemory;
+            continue;
+        }
+        if (index + 1 >= text.len) return null;
+        const escaped = text[index + 1];
+        if (std.mem.indexOfScalar(u8, valid_json_escapes, escaped) == null) {
+            out.writer.writeAll("\\\\") catch return error.OutOfMemory;
+            repaired = true;
+        } else {
+            out.writer.writeByte(byte) catch return error.OutOfMemory;
+        }
+        out.writer.writeByte(escaped) catch return error.OutOfMemory;
+        index += 1;
+    }
+    if (!repaired) return null;
+    return out.written();
 }
 
 fn impliesCapturedExec(object: std.json.ObjectMap) bool {
@@ -202,6 +322,58 @@ test "terminal argument normalization fills in the captured exec action" {
     )).?;
     defer alloc.free(nested_bare);
     try std.testing.expectEqualStrings("{\"command\":\"pwd\",\"action\":\"exec\"}", nested_bare);
+}
+
+test "terminal argument normalization recovers request strings, repeated fields and stray escapes" {
+    const alloc = std.testing.allocator;
+
+    const request_string = (try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":\"{\\\"action\\\":\\\"exec\\\",\\\"command\\\":\\\"pwd\\\"}\"}",
+    )).?;
+    defer alloc.free(request_string);
+    try std.testing.expectEqualStrings("{\"action\":\"exec\",\"command\":\"pwd\"}", request_string);
+
+    const stray_escape = (try normalizedTerminalArguments(
+        alloc,
+        "{\"action\":\"exec\",\"command\":\"grep -n \\\"a\\|b\\\" f\"}",
+    )).?;
+    defer alloc.free(stray_escape);
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"exec\",\"command\":\"grep -n \\\"a\\\\|b\\\" f\"}",
+        stray_escape,
+    );
+
+    const repeated = (try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":{\"action\":\"exec\",\"command\":\"pwd\"},\"request\":{\"action\":\"exec\",\"command\":\"pwd\"}}",
+    )).?;
+    defer alloc.free(repeated);
+    try std.testing.expectEqualStrings("{\"action\":\"exec\",\"command\":\"pwd\"}", repeated);
+
+    const repeated_null = (try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":{\"action\":\"exec\",\"command\":\"pwd\"},\"request\":null}",
+    )).?;
+    defer alloc.free(repeated_null);
+    try std.testing.expectEqualStrings("{\"action\":\"exec\",\"command\":\"pwd\"}", repeated_null);
+}
+
+test "terminal argument normalization refuses ambiguous repeats and leaves valid escapes alone" {
+    const alloc = std.testing.allocator;
+
+    try std.testing.expect(try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":{\"action\":\"exec\",\"command\":\"a\"},\"request\":{\"action\":\"exec\",\"command\":\"b\"}}",
+    ) == null);
+    try std.testing.expect(try normalizedTerminalArguments(
+        alloc,
+        "{\"action\":\"exec\",\"command\":\"echo a\\\\|b\"}",
+    ) == null);
+    try std.testing.expect(try normalizedTerminalArguments(
+        alloc,
+        "{\"request\":\"not json at all\"}",
+    ) == null);
 }
 
 test "terminal argument normalization leaves complete and unreadable calls alone" {

@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cliHarness } from "../shared/cli";
+import { cliPlan } from "../shared/settings";
 import { MAX_TERMINAL_COLUMNS, MAX_TERMINAL_SCROLLBACK, MAX_TERMINAL_TABS, terminalTitle, type TerminalTab } from "../shared/terminal";
+import { isWindows, shellArguments, shellBinary, terminateProcessTree } from "./platform";
 
 const SIGKILL_AFTER_MS = 2000;
 
@@ -27,6 +29,7 @@ const size = (value: number, fallback: number) =>
 
 export class Terminals {
   private tabs = new Map<string, Entry>();
+  private stopping = new Map<string, Promise<void>>();
 
   constructor(
     private readonly binary: () => string,
@@ -34,7 +37,7 @@ export class Terminals {
     private readonly onChange: () => void,
   ) {}
 
-  open(request: { threadId: string; cwd: string; columns: number; rows: number; cli?: string }): TerminalTab {
+  open(request: { threadId: string; cwd: string; columns: number; rows: number; cli?: string; signIn?: string }): TerminalTab {
     if (this.list(request.threadId).length >= MAX_TERMINAL_TABS) {
       throw new Error(`A thread keeps at most ${MAX_TERMINAL_TABS} terminals open.`);
     }
@@ -42,17 +45,21 @@ export class Terminals {
     const rows = size(request.rows, 24);
     const harness = request.cli ? cliHarness(request.cli) : undefined;
     if (request.cli && !harness) throw new Error("Emma does not know that CLI.");
-    const shell = process.env.SHELL || "/bin/zsh";
-    const login = harness ? [shell, "-ilc", harness.bin] : [shell, "-il"];
+    const plan = request.signIn ? cliPlan(request.signIn) : undefined;
+    if (request.signIn && !plan) throw new Error("Emma does not know that plan.");
+    const shell = isWindows ? shellBinary() : process.env.SHELL || "/bin/zsh";
+    const command = plan?.signIn ?? harness?.bin;
+    const login = command ? [shell, ...shellArguments(command)] : (isWindows ? [shell, "/d"] : [shell, "-il"]);
     const child = spawn(this.binary(), [String(columns), String(rows), ...login], {
       cwd: request.cwd,
       env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     const entry: Entry = {
       id: `terminal-${randomUUID()}`,
       threadId: request.threadId,
-      title: harness ? harness.label : terminalTitle(request.cwd),
+      title: plan ? `Sign in to ${plan.label}` : harness ? harness.label : terminalTitle(request.cwd),
       cwd: request.cwd,
       cli: harness?.id,
       running: true,
@@ -107,19 +114,34 @@ export class Terminals {
     return entry ? { data: Buffer.concat(entry.chunks), at: entry.written } : { data: Buffer.alloc(0), at: 0 };
   }
 
-  stopAll() {
-    for (const entry of this.tabs.values()) {
-      if (entry.running) this.stop(entry);
-    }
-    this.tabs.clear();
+  stopAll(): Promise<void> {
+    const stopping = [...this.tabs.values()].filter((entry) => entry.running).map((entry) => this.stop(entry));
+    return Promise.all(stopping).then(() => {
+      this.tabs.clear();
+    });
   }
 
-  private stop(entry: Entry) {
+  private stop(entry: Entry): Promise<void> {
+    const existing = this.stopping.get(entry.id);
+    if (existing) return existing;
+    if (!entry.running || entry.child.pid === undefined) return Promise.resolve();
     entry.running = false;
-    entry.child.kill("SIGHUP");
-    const forced = setTimeout(() => entry.child.kill("SIGKILL"), SIGKILL_AFTER_MS);
-    entry.child.once("exit", () => clearTimeout(forced));
-    forced.unref();
+    const pid = entry.child.pid;
+    const stopping = (async () => {
+      if (isWindows) await terminateProcessTree(pid, "SIGTERM", false);
+      else entry.child.kill("SIGHUP");
+      if (entry.child.exitCode !== null || entry.child.signalCode !== null) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, SIGKILL_AFTER_MS);
+        if (!isWindows) timer.unref();
+      });
+      if (entry.child.exitCode !== null || entry.child.signalCode !== null) return;
+      if (isWindows) await terminateProcessTree(pid, "SIGKILL", false);
+      else entry.child.kill("SIGKILL");
+    })();
+    this.stopping.set(entry.id, stopping);
+    void stopping.then(() => this.stopping.delete(entry.id), () => this.stopping.delete(entry.id));
+    return stopping;
   }
 
   private ended(entry: Entry, code: number | null) {

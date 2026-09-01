@@ -3,23 +3,94 @@ const file_mutation_contract = @import("../../core/tooling/file_mutation_contrac
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 
 const Allocator = std.mem.Allocator;
+const Edit = file_mutation_contract.Edit;
 const max_content_bytes: usize = 4 * 1024 * 1024;
 
-/// Typed input for the core edit_file tool.
 pub const Input = struct {
     path: []u8,
-    old_string: []u8,
-    new_string: []u8,
+    edits: []Edit,
 
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.path);
-        alloc.free(self.old_string);
-        alloc.free(self.new_string);
-        self.* = .{ .path = &.{}, .old_string = &.{}, .new_string = &.{} };
+        freeEdits(alloc, self.edits);
+        self.* = .{ .path = &.{}, .edits = &.{} };
     }
 };
 
-/// Decodes edit_file JSON into an owned Input released by ToolInput.deinit.
+fn freeEdits(alloc: Allocator, edits: []Edit) void {
+    for (edits) |item| {
+        alloc.free(item.old_string);
+        alloc.free(item.new_string);
+    }
+    alloc.free(edits);
+}
+
+const CollectResult = union(enum) {
+    edits: []Edit,
+    failure: []const u8,
+};
+
+fn collectEdits(alloc: Allocator, object: std.json.ObjectMap) Allocator.Error!CollectResult {
+    var collected: std.ArrayList(Edit) = .empty;
+    errdefer {
+        freeEdits(alloc, collected.items);
+        collected.items = &.{};
+        collected.deinit(alloc);
+    }
+
+    if (object.get("edits")) |edits_value| {
+        if (edits_value != .array) {
+            return .{ .failure = "edit_file field \"edits\" must be an array" };
+        }
+        if (edits_value.array.items.len == 0) {
+            return .{ .failure = "edit_file field \"edits\" must not be empty" };
+        }
+        for (edits_value.array.items) |entry| {
+            if (entry != .object) {
+                freeEdits(alloc, try collected.toOwnedSlice(alloc));
+                return .{ .failure = "edit_file field \"edits\" entries must be objects" };
+            }
+            const old_value = entry.object.get("old_string") orelse .null;
+            const new_value = entry.object.get("new_string") orelse .null;
+            if (old_value != .string or new_value != .string) {
+                freeEdits(alloc, try collected.toOwnedSlice(alloc));
+                return .{ .failure = "edit_file field \"edits\" entries require string fields \"old_string\" and \"new_string\"" };
+            }
+            const owned_old = try alloc.dupe(u8, old_value.string);
+            errdefer alloc.free(owned_old);
+            const owned_new = try alloc.dupe(u8, new_value.string);
+            errdefer alloc.free(owned_new);
+            try collected.append(alloc, .{
+                .old_string = owned_old,
+                .new_string = owned_new,
+            });
+        }
+        return .{ .edits = try collected.toOwnedSlice(alloc) };
+    }
+
+    const old_value = object.get("old_string") orelse {
+        return .{ .failure = "edit_file requires string field \"old_string\"" };
+    };
+    if (old_value != .string) {
+        return .{ .failure = "edit_file field \"old_string\" must be a string" };
+    }
+    const new_value = object.get("new_string") orelse {
+        return .{ .failure = "edit_file requires string field \"new_string\"" };
+    };
+    if (new_value != .string) {
+        return .{ .failure = "edit_file field \"new_string\" must be a string" };
+    }
+    const owned_old = try alloc.dupe(u8, old_value.string);
+    errdefer alloc.free(owned_old);
+    const owned_new = try alloc.dupe(u8, new_value.string);
+    errdefer alloc.free(owned_new);
+    try collected.append(alloc, .{
+        .old_string = owned_old,
+        .new_string = owned_new,
+    });
+    return .{ .edits = try collected.toOwnedSlice(alloc) };
+}
+
 pub fn decode(
     ctx: tool_dispatch.DispatchContext,
     args_json: []const u8,
@@ -57,45 +128,16 @@ pub fn decode(
         ) };
     }
 
-    const old_value = parsed.value.object.get("old_string") orelse {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "edit_file requires string field \"old_string\"",
-        ) };
+    const edits = switch (try collectEdits(ctx.allocator, parsed.value.object)) {
+        .failure => |reason| return .{ .failure = try ctx.allocator.dupe(u8, reason) },
+        .edits => |edits| edits,
     };
-    if (old_value != .string) {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "edit_file field \"old_string\" must be a string",
-        ) };
-    }
-
-    const new_value = parsed.value.object.get("new_string") orelse {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "edit_file requires string field \"new_string\"",
-        ) };
-    };
-    if (new_value != .string) {
-        return .{ .failure = try ctx.allocator.dupe(
-            u8,
-            "edit_file field \"new_string\" must be a string",
-        ) };
-    }
+    errdefer freeEdits(ctx.allocator, edits);
 
     const input = try ctx.allocator.create(Input);
     errdefer ctx.allocator.destroy(input);
     const owned_path = try ctx.allocator.dupe(u8, path_value.string);
-    errdefer ctx.allocator.free(owned_path);
-    const owned_old = try ctx.allocator.dupe(u8, old_value.string);
-    errdefer ctx.allocator.free(owned_old);
-    const owned_new = try ctx.allocator.dupe(u8, new_value.string);
-    errdefer ctx.allocator.free(owned_new);
-    input.* = .{
-        .path = owned_path,
-        .old_string = owned_old,
-        .new_string = owned_new,
-    };
+    input.* = .{ .path = owned_path, .edits = edits };
     return .{ .input = .{ .ptr = input, .deinit_fn = inputDeinit } };
 }
 
@@ -112,8 +154,7 @@ pub fn takeFileMutationInput(
     const input = tool_input.as(Input);
     const moved = file_mutation_contract.EditInput{
         .path = input.path,
-        .old_string = input.old_string,
-        .new_string = input.new_string,
+        .edits = input.edits,
     };
     alloc.destroy(input);
     return .{ .edit = moved };
@@ -130,17 +171,19 @@ pub fn validate(
             "file mutation preparation failed: path exceeds the preparation limit",
         );
     }
-    if (input.old_string.len > max_content_bytes) {
-        return try ctx.allocator.dupe(
-            u8,
-            "edit_file failed: old_string exceeds the 4 MiB preparation limit",
-        );
-    }
-    if (input.new_string.len > max_content_bytes) {
-        return try ctx.allocator.dupe(
-            u8,
-            "edit_file failed: new_string exceeds the 4 MiB preparation limit",
-        );
+    for (input.edits) |item| {
+        if (item.old_string.len > max_content_bytes) {
+            return try ctx.allocator.dupe(
+                u8,
+                "edit_file failed: old_string exceeds the 4 MiB preparation limit",
+            );
+        }
+        if (item.new_string.len > max_content_bytes) {
+            return try ctx.allocator.dupe(
+                u8,
+                "edit_file failed: new_string exceeds the 4 MiB preparation limit",
+            );
+        }
     }
     return null;
 }
@@ -155,12 +198,10 @@ pub fn call(
     ) };
 }
 
-/// Reports that edit_file mutates filesystem state.
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
     return false;
 }
 
-/// Reports that edit_file can destroy prior file content.
 pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return true;
 }
@@ -180,6 +221,13 @@ test "edit_file decodes invalid argument shapes as failures" {
         .{ .json = "{\"path\":\"/tmp/x\",\"old_string\":1,\"new_string\":\"b\"}", .reason = "edit_file field \"old_string\" must be a string" },
         .{ .json = "{\"path\":\"/tmp/x\",\"old_string\":\"a\"}", .reason = "edit_file requires string field \"new_string\"" },
         .{ .json = "{\"path\":\"/tmp/x\",\"old_string\":\"a\",\"new_string\":1}", .reason = "edit_file field \"new_string\" must be a string" },
+        .{ .json = "{\"path\":\"/tmp/x\",\"edits\":{}}", .reason = "edit_file field \"edits\" must be an array" },
+        .{ .json = "{\"path\":\"/tmp/x\",\"edits\":[]}", .reason = "edit_file field \"edits\" must not be empty" },
+        .{ .json = "{\"path\":\"/tmp/x\",\"edits\":[1]}", .reason = "edit_file field \"edits\" entries must be objects" },
+        .{
+            .json = "{\"path\":\"/tmp/x\",\"edits\":[{\"old_string\":\"a\",\"new_string\":\"b\"},{\"old_string\":\"c\"}]}",
+            .reason = "edit_file field \"edits\" entries require string fields \"old_string\" and \"new_string\"",
+        },
     };
 
     for (cases) |case| {
@@ -215,11 +263,31 @@ test "edit_file decodes owned typed input" {
     defer erased.deinit(std.testing.allocator);
     const input = erased.as(Input);
     try std.testing.expectEqualStrings("file.txt", input.path);
-    try std.testing.expectEqualStrings("old", input.old_string);
-    try std.testing.expectEqualStrings("new", input.new_string);
+    try std.testing.expectEqual(@as(usize, 1), input.edits.len);
+    try std.testing.expectEqualStrings("old", input.edits[0].old_string);
+    try std.testing.expectEqualStrings("new", input.edits[0].new_string);
     try std.testing.expect(
         try validate(.{ .allocator = std.testing.allocator }, erased) == null,
     );
+}
+
+test "edit_file decodes an edits array" {
+    const decoded = try decode(
+        .{ .allocator = std.testing.allocator },
+        "{\"path\":\"file.txt\",\"edits\":[{\"old_string\":\"a\",\"new_string\":\"A\"},{\"old_string\":\"b\",\"new_string\":\"B\"}]}",
+    );
+    const erased = switch (decoded) {
+        .input => |input| input,
+        .failure => |reason| {
+            defer std.testing.allocator.free(reason);
+            return error.TestExpectedDecodedInput;
+        },
+    };
+    defer erased.deinit(std.testing.allocator);
+    const input = erased.as(Input);
+    try std.testing.expectEqual(@as(usize, 2), input.edits.len);
+    try std.testing.expectEqualStrings("a", input.edits[0].old_string);
+    try std.testing.expectEqualStrings("B", input.edits[1].new_string);
 }
 
 test "edit_file validation enforces independent preparation limits" {
@@ -231,32 +299,33 @@ test "edit_file validation enforces independent preparation limits" {
     defer alloc.free(oversized_value);
     @memset(oversized_value, 'x');
 
+    var default_edits = [_]Edit{.{
+        .old_string = @constCast("old"),
+        .new_string = @constCast("new"),
+    }};
+    var oversized_old = [_]Edit{.{
+        .old_string = oversized_value,
+        .new_string = @constCast("new"),
+    }};
+    var oversized_new = [_]Edit{.{
+        .old_string = @constCast("old"),
+        .new_string = oversized_value,
+    }};
+
     const cases = [_]struct {
         input: Input,
         reason: []const u8,
     }{
         .{
-            .input = .{
-                .path = oversized_path,
-                .old_string = @constCast("old"),
-                .new_string = @constCast("new"),
-            },
+            .input = .{ .path = oversized_path, .edits = &default_edits },
             .reason = "file mutation preparation failed: path exceeds the preparation limit",
         },
         .{
-            .input = .{
-                .path = @constCast("file.txt"),
-                .old_string = oversized_value,
-                .new_string = @constCast("new"),
-            },
+            .input = .{ .path = @constCast("file.txt"), .edits = &oversized_old },
             .reason = "edit_file failed: old_string exceeds the 4 MiB preparation limit",
         },
         .{
-            .input = .{
-                .path = @constCast("file.txt"),
-                .old_string = @constCast("old"),
-                .new_string = oversized_value,
-            },
+            .input = .{ .path = @constCast("file.txt"), .edits = &oversized_new },
             .reason = "edit_file failed: new_string exceeds the 4 MiB preparation limit",
         },
     };

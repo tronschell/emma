@@ -76,6 +76,76 @@ fn compiled_host_preserves_large_snapshots_and_accepts_the_next_request() {
     writeln!(
         input,
         "{}",
+        json!({"id":"summaries", "method":"threadSummaries", "params":{}})
+    )
+    .unwrap();
+    let mut summaries = String::new();
+    let mut summary_sequence = 0;
+    let mut line = String::new();
+    assert!(output.read_line(&mut line).unwrap() > 0);
+    let mut frame: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(frame["id"], "summaries");
+    if frame["chunk"].is_string() {
+        loop {
+            assert_eq!(frame["sequence"], summary_sequence);
+            summaries.push_str(frame["chunk"].as_str().unwrap());
+            summary_sequence += 1;
+            if frame["end"] == true {
+                break;
+            }
+            line.clear();
+            assert!(output.read_line(&mut line).unwrap() > 0);
+            let next: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(next["id"], "summaries");
+            frame = next;
+        }
+    } else {
+        summaries = line;
+    }
+    let summary_response: Value = serde_json::from_str(&summaries).unwrap();
+    assert_eq!(summary_response["ok"], true);
+    let summary = &summary_response["result"]["threads"][0];
+    assert_eq!(summary["messages"], 16);
+    assert_eq!(summary["userMessageCount"], 8);
+    assert_eq!(summary["messageDates"].as_array().unwrap().len(), 16);
+    assert!(summary["messages"].is_number());
+    assert!(summary["messages"].as_array().is_none());
+    assert!(summary["content"].is_null());
+    let selected_id = expected.keys().next().unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"id":"thread", "method":"thread", "params":{"threadId":selected_id}})
+    )
+    .unwrap();
+    let mut thread_response = String::new();
+    let mut thread_sequence = 0;
+    let mut line = String::new();
+    assert!(output.read_line(&mut line).unwrap() > 0);
+    let mut frame: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(frame["id"], "thread");
+    if frame["chunk"].is_string() {
+        loop {
+            assert_eq!(frame["sequence"], thread_sequence);
+            thread_response.push_str(frame["chunk"].as_str().unwrap());
+            thread_sequence += 1;
+            if frame["end"] == true {
+                break;
+            }
+            line.clear();
+            assert!(output.read_line(&mut line).unwrap() > 0);
+            frame = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["id"], "thread");
+        }
+    } else {
+        thread_response = line;
+    }
+    let thread_response: Value = serde_json::from_str(&thread_response).unwrap();
+    assert_eq!(thread_response["ok"], true);
+    assert_eq!(thread_response["result"], expected[selected_id]);
+    writeln!(
+        input,
+        "{}",
         json!({"id":"next", "method":"createThread", "params":{"title":"Still healthy"}})
     )
     .unwrap();

@@ -14,7 +14,7 @@ tool, whose widgets land in the context bar. See [components.md](components.md).
 
 ## Imports
 
-Settings → **Imports & plugins** scans this Mac for skills and MCP configs
+Settings → **Imports & plugins** scans this computer for skills and MCP configs
 already set up for another agent and records their **paths** in
 `<userData>/imports.json`. Nothing is copied, and no secret is read.
 
@@ -38,9 +38,9 @@ JSON `mcpServers` / `mcp_servers` / `servers` / `mcp` shapes and the Codex-style
 is parsed and only stdio is passed on — there is no remote MCP transport.
 
 An imported skill is an inactive reference until a thread attaches it; its
-`SKILL.md` is loaded only on attachment. An imported MCP server is launched by
-the harness when it builds a session, but its tools stay behind
-`mcp_search_tools` until the model asks for one.
+`SKILL.md` is loaded only on attachment. An imported MCP server is registered
+when the harness builds a session, then launched only when the model first
+searches for or calls an MCP tool.
 
 Configs and environment values stay in the main process. The renderer receives
 bounded metadata, redacted arguments, and environment **key names** only.
@@ -64,7 +64,7 @@ Both capability files are synthesized into the manifest as an implicit `emma`
 source, so they need no import step. Enumeration re-reads them on every call and
 writing either calls `toolsChanged()`, which drops the harness's sessions — a
 skill or server installed mid-turn is usable on the next turn with nothing to
-relaunch. An MCP server connects when that session is built.
+relaunch. An MCP server connects on its first MCP use in that session.
 
 Writing an existing slug replaces it. That is how a wrong lesson, tool, or
 command gets fixed.
@@ -90,7 +90,7 @@ Emma's own folder. The code it writes reaches the network only through
 component declared — so there is no arbitrary-code gate to place on it.
 
 The two halves of a tool are gated apart on purpose: writing a file into Emma's
-own folder never asks, while running one is arbitrary code on the user's Mac and
+own folder never asks, while running one is arbitrary code on the user's computer and
 sits exactly where `cli` does. `run_tool` runs the script with the connected
 folder as its working directory, hands the call's `input` as its single
 argument, and returns what it printed. A `#!` line is required, and the script
@@ -211,8 +211,9 @@ definition, recorded in `<userData>/plugin-hooks.json`; change the text on disk
 and the hook is untrusted again. Uninstalling the plugin, or removing its
 marketplace, forgets its hashes.
 
-**What a hook gets.** `/bin/sh -c <command>`, the connected folder as working
-directory, the payload as JSON on stdin, and a hand-built environment: `PATH`,
+**What a hook gets.** A platform shell (`/bin/sh -c <command>` on macOS or
+`cmd.exe /c <command>` on Windows), the connected folder as working directory,
+the payload as JSON on stdin, and a hand-built environment: `PATH`,
 `HOME`, `PLUGIN_ROOT`, `PLUGIN_DATA`, and `CLAUDE_PLUGIN_ROOT` /
 `CLAUDE_PLUGIN_DATA` aliases. Emma's own environment, provider keys included, is
 not inherited. The two paths are passed as variables rather than substituted
@@ -238,7 +239,7 @@ A JSON catalog at `.agents/plugins/marketplace.json`,
 
 | Field | Accepts |
 | --- | --- |
-| Source | `owner/repo`, `owner/repo@ref`, an `https://` / `ssh://` / `git@…` URL, or an absolute path on this Mac |
+| Source | `owner/repo`, `owner/repo@ref`, an `https://` / `ssh://` / `git@…` URL, or an absolute path on this computer |
 | Git ref | A branch or tag to pin. Overrides `@ref`. Git sources only |
 | Sparse paths | One per line, checked out with `git sparse-checkout`. Git sources only |
 
@@ -278,7 +279,7 @@ declares `preinstall`. The tarball is gunzipped in-process and piped to the
 system `tar`, so Emma counts decompressed bytes as they go and aborts past
 256 MB. `tar` reads from stdin, refuses `..` members, and strips leading `/`.
 The `package/` directory is the plugin root, `realpath`-checked like every other
-path. Emma runs `npm` but never installs it; a Mac without it gets a sentence,
+path. Emma runs `npm` but never installs it; a computer without it gets a sentence,
 not an `ENOENT`. Registry auth is whatever `npm` itself is configured with —
 Emma reads no token and writes no `.npmrc`. The checkout lands in
 `<userData>/marketplaces/.remote/<marketplace>/<plugin>/`.
@@ -318,7 +319,9 @@ format.
 
 ## UI plugins
 
-`~/Library/Application Support/Emma/plugins/<id>/plugin.json`:
+`<userData>/plugins/<id>/plugin.json` (normally
+`%APPDATA%/Emma/plugins/<id>/plugin.json` on Windows or
+`~/Library/Application Support/Emma/plugins/<id>/plugin.json` on macOS):
 
 ```json
 { "id": "my-emma-ui", "name": "My Emma UI", "version": "1.0.0", "uiStylesheet": "theme.css" }

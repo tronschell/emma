@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { buildAttachedContext } from "../src/context";
-import { canSteer, dropQueued, queuedTurns, runOf, sendTurn, stopTurn, takeDraft } from "../src/runs";
+import { canSteer, queuedTurns, runOf, sendTurn, steerQueued, steerRunning, stopTurn, takeDraft } from "../src/runs";
 
 const source = ts.createSourceFile("App.tsx", readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const view = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "ThreadView");
@@ -12,9 +12,11 @@ assert.ok(view);
 let handler = "";
 let steerHandler = "";
 let steerDisabled = "";
+let keysHandler = "";
 function visit(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && node.name.getText(source) === "send") handler = node.initializer!.getText(source);
-  else if (ts.isVariableDeclaration(node) && node.name.getText(source) === "steerQueued") steerHandler = node.initializer!.getText(source);
+  else if (ts.isVariableDeclaration(node) && node.name.getText(source) === "steerNow") steerHandler = node.initializer!.getText(source);
+  else if (ts.isVariableDeclaration(node) && node.name.getText(source) === "composerKeys") keysHandler = node.initializer!.getText(source);
   else if (ts.isJsxOpeningElement(node) && node.attributes.properties.some((property) => ts.isJsxAttribute(property) && property.name.getText(source) === "className" && property.initializer?.getText(source) === '"steering"')) {
     const disabled = node.attributes.properties.find((property) => ts.isJsxAttribute(property) && property.name.getText(source) === "disabled") as ts.JsxAttribute;
     steerDisabled = (disabled.initializer as ts.JsxExpression).expression!.getText(source);
@@ -31,11 +33,11 @@ Object.assign(globalThis, {
 });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const attachment = (id: string) => ({ kind: "attachment", id, name: `${id}.txt`, path: `/tmp/${id}.txt` });
-function composer(threadId: string, build = buildAttachedContext) {
+function composer(threadId: string, build = buildAttachedContext, folderIds: string[] = []) {
   const state = { message: "first", picks: [attachment("first")], skill: { id: "first-skill", source: "local", name: "first" } as { id: string; source: string; name: string } | null };
   const remembered: unknown[][] = [];
   const environment = {
-    locked: false, folderIds: [], folders: [], folderFiles: {}, thread: { id: threadId, messages: [] },
+    locked: false, folderIds, folders: [], folderFiles: {}, thread: { id: threadId, messages: [] },
     setMessage: (value: string) => { state.message = value; },
     setPicks: (value: typeof state.picks) => { state.picks = value; },
     setSkill: (value: typeof state.skill) => { state.skill = value; },
@@ -143,19 +145,25 @@ test("stopping during preparation never sends the canceled prompt", async () => 
 });
 
 
-test("queued context cannot be steered before preparation but plain text can", async () => {
+test("queued context cannot be steered before preparation but plain text cuts into the running turn", async () => {
   assert.ok(steerHandler);
   assert.ok(steerDisabled);
   let release!: () => void;
   const sent: Record<string, string>[] = [];
-  const steered: string[] = [];
+  const stopped: string[] = [];
   const reads: string[] = [];
+  const steered: { threadId: string; text: string }[] = [];
+  let refuse = false;
   Object.assign(globalThis, { window: { emma: {
     request: async (_method: string, params: Record<string, string>) => {
       sent.push(params);
       if (params.content === "active") await new Promise<void>((resolve) => { release = resolve; });
     },
-    steerAgent: async (params: { text: string }) => { steered.push(params.text); },
+    steerAgent: async (value: { threadId: string; text: string }) => {
+      steered.push(value);
+      if (refuse) throw new Error("nothing is running there");
+    },
+    stopAgent: (threadId: string) => { stopped.push(threadId); },
     readAttachment: async (id: string) => { reads.push(id); return { name: `${id}.txt`, path: `/tmp/${id}.txt`, text: `content of ${id}` }; },
   } } });
   sendTurn("steering", { content: "active", after: 0, params: {} }, () => undefined);
@@ -169,17 +177,20 @@ test("queued context cannot be steered before preparation but plain text can", a
   const queued = queuedTurns(runOf("steering"));
   const disabled = Function("turn", "canSteer", `return ${steerDisabled};`);
   assert.deepEqual(queued.map((turn) => disabled(turn, canSteer)), [true, true, false]);
-  const environment = { queued, canSteer, dropQueued, sendTurn, thread: { id: "steering" }, setRunError() {}, setSteered() {}, reload() {} };
-  const code = ts.transpile(`const steerQueued = ${steerHandler}`, { target: ts.ScriptTarget.ES2022 });
-  const steer = Function(...Object.keys(environment), `${code}; return steerQueued;`)(...Object.values(environment));
+  const environment = { queued, canSteer, steerQueued, thread: { id: "steering" }, setRunError() {} };
+  const code = ts.transpile(`const steerNow = ${steerHandler}`, { target: ts.ScriptTarget.ES2022 });
+  const steer = Function(...Object.keys(environment), `${code}; return steerNow;`)(...Object.values(environment));
   steer(0);
   steer(1);
-  assert.equal(steered.length, 0);
+  assert.deepEqual(steered, []);
   assert.equal(queuedTurns(runOf("steering")).length, 3);
   assert.equal(reads.length, 0);
   steer(2);
-  assert.deepEqual(steered, ["plain"]);
-  assert.equal(queuedTurns(runOf("steering")).length, 2);
+  await settle();
+  assert.deepEqual(steered, [{ threadId: "steering", text: "plain" }]);
+  assert.deepEqual(stopped, []);
+  assert.deepEqual(queuedTurns(runOf("steering")).map((turn) => turn.content), ["attachment", "skill"]);
+  assert.equal(reads.length, 0);
   release();
   await settle();
   assert.deepEqual(sent.map((turn) => turn.content), ["active", "attachment", "skill"]);
@@ -187,4 +198,77 @@ test("queued context cannot be steered before preparation but plain text can", a
   assert.equal(sent[2].skillAttachmentId, "queued-skill");
   assert.deepEqual(reads, ["first"]);
   assert.equal(runOf("steering").sending, false);
+
+  refuse = true;
+  sendTurn("refused-steer", { content: "active", after: 0, params: {} }, () => undefined);
+  sendTurn("refused-steer", { content: "cut in", after: 0, params: {} }, () => undefined);
+  steerQueued("refused-steer", 0);
+  await settle();
+  assert.deepEqual(steered.at(-1), { threadId: "refused-steer", text: "cut in" });
+  assert.deepEqual(stopped, ["refused-steer"]);
+  assert.deepEqual(queuedTurns(runOf("refused-steer")).map((turn) => turn.content), ["cut in"]);
+});
+
+test("cmd+enter with an empty composer steers the queue oldest first", async () => {
+  const steered: { threadId: string; text: string }[] = [];
+  let release!: () => void;
+  const holding = new Promise<void>((resolve) => { release = resolve; });
+  Object.assign(globalThis, { window: { emma: {
+    request: async () => { await holding; },
+    steerAgent: async (value: { threadId: string; text: string }) => { steered.push(value); },
+    stopAgent: () => undefined,
+  } } });
+
+  const id = "fifo-steer";
+  for (const content of ["active", "one", "two", "three"]) sendTurn(id, { content, after: 0, params: {} }, () => undefined);
+  assert.deepEqual(queuedTurns(runOf(id)).map((turn) => turn.content), ["one", "two", "three"]);
+
+  const steerCode = ts.transpile(`const steerNow = ${steerHandler}`, { target: ts.ScriptTarget.ES2022 });
+  const keysCode = ts.transpile(`const composerKeys = ${keysHandler}`, { target: ts.ScriptTarget.ES2022 });
+  const press = () => {
+    const queued = queuedTurns(runOf(id));
+    const base = { queued, canSteer, steerQueued, thread: { id }, setRunError() {} };
+    const steerNow = Function(...Object.keys(base), `${steerCode}; return steerNow;`)(...Object.values(base));
+    const scope = {
+      ...base, steerNow, steerRunning, reasonText: (reason: unknown) => String(reason),
+      slashOpen: false, slashMatches: [], slashActive: 0, setSlashPick() {}, setSlashDismissed() {}, pickCommand() {},
+      sending: true, confirmStop: false, interrupt() {}, setConfirmStop() {},
+      history: -1, past: [], historyDraft: { current: "" }, message: "", setHistory() {}, setMessage() {},
+      input: { current: null }, setCaret() {},
+    };
+    const keys = Function(...Object.keys(scope), `${keysCode}; return composerKeys;`)(...Object.values(scope));
+    keys({
+      key: "Enter", metaKey: true, ctrlKey: false, shiftKey: false,
+      nativeEvent: { isComposing: false }, preventDefault() {},
+      currentTarget: { value: "", selectionStart: 0, selectionEnd: 0, form: { requestSubmit() { throw new Error("cmd+enter must not submit"); } } },
+    });
+  };
+
+  press();
+  await settle();
+  assert.deepEqual(steered.map((turn) => turn.text), ["one"]);
+  assert.deepEqual(queuedTurns(runOf(id)).map((turn) => turn.content), ["two", "three"]);
+
+  press();
+  await settle();
+  assert.deepEqual(steered.map((turn) => turn.text), ["one", "two"]);
+  assert.deepEqual(queuedTurns(runOf(id)).map((turn) => turn.content), ["three"]);
+  release();
+});
+
+test("a plain message on a thread with a connected folder is still steerable", async () => {
+  Object.assign(globalThis, { window: { emma: { request: async () => new Promise(() => undefined) } } });
+  const current = composer("folder-steer", buildAttachedContext, ["emma-folder"]);
+  Object.assign(current.state, { message: "active", picks: [], skill: null });
+  current.send();
+  Object.assign(current.state, { message: "cut in while a folder is attached", picks: [], skill: null });
+  current.send();
+
+  const queued = queuedTurns(runOf("folder-steer"));
+  assert.deepEqual(queued.map((turn) => turn.content), ["cut in while a folder is attached"]);
+  assert.ok(queued[0].prepare, "a connected folder still builds attached context on delivery");
+  assert.equal(canSteer(queued[0]), true);
+
+  const disabled = Function("turn", "canSteer", `return ${steerDisabled};`);
+  assert.equal(disabled(queued[0], canSteer), false);
 });

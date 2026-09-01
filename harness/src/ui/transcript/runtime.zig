@@ -120,8 +120,6 @@ pub const MeasuredResizeProjection = union(enum) {
 const CommittedTranscriptAnchor = struct {
     selection: ViewportSelection,
     visual_offset: u32,
-    // Footer reflow can move the logical tail without advancing rows into
-    // terminal history. The committed grid projection resumes from this offset.
     history_visual_offset: u32,
     total_visual_rows: u32,
     flow: []u8,
@@ -133,10 +131,6 @@ const CommittedTranscriptAnchor = struct {
     measured_history_origin: ?transcript_painter.MeasuredHistoryOrigin = null,
     row_provenance: []transcript_blocks.RowProvenance = &.{},
     normal_buffer_recovery_pending: bool = false,
-    /// Stable-anchor settlement obligation. It is preserved while final rows
-    /// remain ahead of history and cleared once history reaches the viewport.
-    /// The offset gap alone is insufficient because footer displacement can
-    /// create the same shape without content debt.
     history_catchup_pending: bool = false,
 
     fn deinit(self: *CommittedTranscriptAnchor, alloc: Allocator) void {
@@ -163,7 +157,6 @@ const TranscriptRecoveryReceipt = struct {
     materialized_flow_len: ?usize = null,
     remaining_resize_reflow_rows: u16 = 0,
     remaining_semantic_rows: u32 = 0,
-    // Only this remaining semantic suffix may advance the current projection.
     remaining_semantic_progress_rows: u32 = 0,
     remaining_unplanned_scroll_rows: u16 = 0,
     attempt_cols: u16 = 0,
@@ -233,11 +226,6 @@ pub const TranscriptScrollFacts = struct {
     recovery_progress_compatible: bool = false,
     recovery_tracks_semantic_progress: bool = false,
     recovery_projection_deferred: bool = false,
-    /// The finality floor withheld release this frame (mutable rows above
-    /// the viewport top), or final rows remain to settle beyond what this
-    /// frame planned. Routes into history_catchup_pending at commit so the
-    /// existing catch-up machinery settles the debt; footer displacement
-    /// (visual ahead of history with nothing to settle) stays unflagged.
     finality_hold: bool = false,
 };
 
@@ -313,11 +301,7 @@ const MaterializedEndpoint = struct {
 pub const TranscriptTransition = struct {
     scroll_plan: render_engine.frame_scroll_plan.FrameScrollPlan,
     document_append: render_engine.frame_scroll_plan.FrameDocumentAppend,
-    /// Final rows exist beyond materialized history that this frame could
-    /// not release; consuming the transition requests a follow-up frame so
-    /// the debt settles promptly instead of waiting for outside activity.
     history_settle_pending: bool = false,
-    /// Owns `document_append.bytes` when append preparation allocates wire bytes.
     document_append_bytes: []u8 = &.{},
     resize_reflow_rows: u16 = 0,
     semantic_rows: u32 = 0,
@@ -343,7 +327,6 @@ pub const TranscriptTransition = struct {
     source_endpoint_visual_offset: u32 = 0,
     total_visual_rows: u32,
     materialized: MaterializedEndpoint = .{},
-    // The exact transcript endpoint if this frame appends no transcript bytes.
     materialized_without_append: MaterializedEndpoint,
     cursor_row: u16,
     cursor_col: u16,
@@ -533,8 +516,6 @@ fn lifecycleTerminalLine(
     return lifecycleLine(alloc, normalized);
 }
 
-/// Pure formatter shared by live lifecycle presentation and detached resume
-/// projection. The caller owns the returned line.
 pub fn formatHistoricalToolStatusLine(
     alloc: Allocator,
     kind: types.ToolOutcomeKind,
@@ -2543,7 +2524,7 @@ test "historical command detail keeps artifact handles after command block attac
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -4117,74 +4098,32 @@ fn sameFullDiffResolver(
 }
 
 pub const TranscriptRuntime = struct {
-    stdout_file: std.Io.File = std.Io.File.stdout(),
+    stdout_file: std.Io.File = undefined,
     sync_updates_enabled: bool = true,
     history_reset_uses_ris: bool = false,
     layout: Layout = undefined,
     cursor_row: u16 = 1,
     cursor_col: u16 = 1,
-    /// Top terminal row owned by fx. Rows above this contain pre-fx scrollback
-    /// and must not be touched by fx repaint logic.
-    /// Initialized to the cursor row captured at `initViewport`, and
-    /// decreased as the transcript scrolls until it reaches row 1.
     viewport_top_row: u16 = 1,
-    /// First row fx is allowed to clear or repaint. This is set after
-    /// launch-time reservation has created fx-owned rows. Rows above it
-    /// belong to pre-fx terminal content and must not be touched by
-    /// resize/layout repair.
     owned_top_row: u16 = 1,
-    /// Set when a resize leaves no drawable rows below `owned_top_row`.
-    /// The next successful repaint uses natural terminal scroll to
-    /// compact older visible rows into scrollback before drawing the
-    /// latest fx frame.
     pending_scroll_compact: bool = false,
-    /// Minimum body rows fx should keep available for the visible
-    /// viewport. Startup sets this to the welcome banner height so a
-    /// later resize cannot leave the renderer with a partial banner
-    /// band and stale resize-reflow cells above it.
     min_visible_viewport_rows: u16 = 0,
-    /// Resize-only guard rows to clear above `viewport_top_row` on the
-    /// next replay. Real terminals can reflow old fx cells just above
-    /// the logical band during a drag; this lets the settled pass erase
-    /// that residue without widening normal streaming paints.
     reflow_clear_guard_rows: u16 = 0,
-    /// Signed cursor displacement measured across the current settled
-    /// resize. Positive rows entered history; negative rows returned.
     resize_history_row_delta: ?i32 = null,
-    /// Pre-paint cursor evidence retained from live geometry through the
-    /// matching canonical reset commit.
     pending_resize_observation: ?ResizeObservation = null,
-    /// Forces the next viewport diff paint to start from a real terminal
-    /// clear. This is reserved for resize/reflow repair; normal streamed
-    /// token paints must diff in place so cleared frames do not enter
-    /// terminal scrollback.
     viewport_clear_pending: bool = false,
-    /// A settled terminal resize needs a canonical repaint from row one.
-    /// It remains pending until the reset frame commits successfully.
     terminal_reset_pending: bool = false,
-    /// A committed resize reset established terminal-bottom ownership that
-    /// the next cancellation projection must preserve.
     resize_bottom_anchor_pending: bool = false,
     render_requests: render_request.RenderRequestState = .{},
     maxxing_mode: presentation_mode.MaxxingMode = presentation_mode.MaxxingMode.default,
-    /// Set after the frame commit path has successfully written and fed
-    /// a frame. Resize-time invalid terminal dimensions before this point
-    /// still use the startup error path.
     has_committed_frame: bool = false,
     committed_frame_layout: render_engine.frame_layout.CommittedLayoutSnapshot = .{},
     transcript_commit_state: TranscriptCommitState = .invalid,
-    /// True while the terminal reports zero, unreadable, or too-small
-    /// dimensions after the first committed frame. Normal painters stay
-    /// idle until a valid resize clears this flag.
     terminal_dimensions_invalid: bool = false,
     transcript: std.ArrayList(u8) = .empty,
-    /// Complete historical flow and its immutable line index, retained until
-    /// the first successful terminal publication.
     pending_resume_source: ?TranscriptPreparationSource = null,
     folded_command_blocks: std.ArrayList(FoldedCommandBlock) = .empty,
     command_output_blocks: std.ArrayList(CommandOutputBlock) = .empty,
-    /// Viewer state used only while Ctrl-O owns the alternate screen.
-    /// The compact transcript keeps its independent viewport selection.
     full_transcript: transcript_presentation.State = .{},
     full_transcript_open_content_revision: ?u64 = null,
     full_transcript_open_cols: u16 = 0,
@@ -4194,51 +4133,19 @@ pub const TranscriptRuntime = struct {
     full_transcript_content_revision: u64 = 0,
     full_transcript_review_revision: u64 = 0,
     compact_transcript_source_cache: CompactTranscriptSourceCache = .{},
-    /// Structured-entry store used to regenerate transcript bytes at the
-    /// current width while retaining the raw byte buffer for append paths
-    /// that still write pre-rendered transcript content.
     entries: std.ArrayList(TranscriptEntry) = .empty,
     lifecycle_state: activity_runtime.ToolActivityState = .{},
     worker_status: worker_status.State = .none,
-    /// Core-owned producer state and policy for native-history release.
     transcript_release: transcript_release.State = .{},
-    /// Sorted by entry id so exact lookup stays bounded as history grows.
     tool_details: std.ArrayList(ToolDetailRecord) = .empty,
-    /// Monotonically increasing id stamped onto each new entry by the
-    /// `append*Entry` helpers. Starts at 1 so 0 can be reserved as a
-    /// sentinel. Never reset on `clearTranscript` — even after a wipe,
-    /// subsequent ids remain unique within the session, which keeps
-    /// debug traces unambiguous across transcript resets.
     next_entry_id: u32 = 1,
-    /// Cols at which the transcript byte buffer was last regenerated from
-    /// entries. A cache-origin proof is valid only at this width.
-    /// Zero before the first prepared transcript frame.
     last_rendered_cols: u16 = 0,
-    /// True only when the visible cache was rebuilt from an untrimmed,
-    /// canonical entry source at `last_rendered_cols`.
     transcript_cache_origin_untrimmed: bool = false,
-    /// Visible byte-cache cap. This bounds `transcript.items`, which is
-    /// the rendered tail used by viewport paint. Structured entries and
-    /// folded command output are bounded separately by
-    /// `max_retained_transcript_bytes` below.
     max_transcript_bytes: usize = 256 * 1024,
-    /// Structured retention cap for raw/user/assistant entries plus
-    /// folded command output lines. This model is the source of truth
-    /// for reconstructive paint, resize, and diff restyling, so it gets
-    /// its own conservative budget instead of borrowing the smaller
-    /// visible byte-cache limit.
     max_retained_transcript_bytes: usize = default_max_retained_transcript_bytes,
     painting: bool = false,
     paint_test_mode: PaintTestModeField = if (@import("builtin").is_test) .none else {},
-    /// Renderer-local cache state set by transcript mutations. The same
-    /// mutation must request `.transcript`; this flag never authorizes a
-    /// frame on its own.
     transcript_band_dirty: bool = false,
-    /// False until the first non-empty viewport paint has established
-    /// fx's transcript band. Before that point transcript writes are
-    /// model updates only: emitting scroll newlines would move pre-fx
-    /// shell rows before the renderer has had a chance to respect
-    /// `viewport_top_row`.
     has_painted_transcript: bool = false,
     footer_viewport: footer_viewport_runtime.FooterViewport = .{},
     extra_input_rows: u16 = 0,
@@ -4259,24 +4166,14 @@ pub const TranscriptRuntime = struct {
     last_visible_transcript_last_row_blank: bool = false,
     last_visible_transcript_tail_kind: ?TranscriptBlockKind = null,
     last_viewport_selection: ?ViewportSelection = null,
-    /// Detached alternate-screen views may request the ordinary compact
-    /// transcript at a stable distance from its tail. Inline chat leaves this
-    /// unset and keeps the existing viewport policy.
     tail_viewport_request: ?viewport_selection.TailViewportPolicy = null,
     tail_viewport_resolution: ?viewport_selection.TailOffsetResolution = null,
     last_paint_bottom_reserved_rows: u16 = 0,
     replaceable_last_line: bool = false,
     replaceable_row: u16 = 1,
     replaceable_start: usize = 0,
-    /// In-process terminal shadow used as the previous state for cell diffs.
-    /// Bootstrap enables it unconditionally; FX_TRACE dumps it at synchronized
-    /// update boundaries.
     shadow_vt: ?*vt_emulator.Grid = null,
     shadow_vt_alloc: ?Allocator = null,
-    /// Detached presentations share a physical terminal shadow with their
-    /// owning surface, but retain independent transcript commit state.
-    /// This allocator releases that commit state without claiming ownership
-    /// of the shared shadow grid.
     detached_commit_alloc: ?Allocator = null,
     ui_observer: render_engine.ui_observer.UiObserver = .{},
 
@@ -5819,10 +5716,6 @@ pub const TranscriptRuntime = struct {
         return transcript_store.retainedStructuredBytes(self);
     }
 
-    /// Append a raw-bytes entry. Takes ownership of `bytes` — the slice
-    /// must have been allocated by `alloc` and must not be freed by the
-    /// caller; the entry is freed on `clearTranscript` or `deinit`.
-    /// Returns the stamped entry id.
     pub fn appendRawBytesEntry(self: *TranscriptRuntime, alloc: Allocator, bytes: []const u8) !u32 {
         return transcript_store.appendRawBytesEntry(self, alloc, bytes);
     }
@@ -5935,9 +5828,6 @@ pub const TranscriptRuntime = struct {
         return entry_id;
     }
 
-    /// Swap the bytes of the `raw_bytes` entry with `entry_id` to a dup of
-    /// `new_bytes` and regenerate the transcript byte buffer. Returns false
-    /// when no such entry exists (e.g. cleared by `clearTranscript`).
     pub fn updateRawBytesEntry(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -5955,9 +5845,6 @@ pub const TranscriptRuntime = struct {
         return transcript_store.rawEntryClass(self, entry_id);
     }
 
-    /// Renders and records one borrowed user turn as a single transcript
-    /// mutation. The caller retains ownership of `user` and `skill_tokens`
-    /// on success and error.
     pub fn writeUserPromptCard(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -5976,9 +5863,6 @@ pub const TranscriptRuntime = struct {
         );
     }
 
-    /// Consumes `turn` regardless of outcome. All owned slices must use `alloc`;
-    /// the entry owns them on success and this method frees them on failure.
-    /// Returns the stamped entry id.
     pub fn appendUserTurnOwned(self: *TranscriptRuntime, alloc: Allocator, turn: types.UserTurn) !u32 {
         return transcript_store.appendUserTurnOwned(self, alloc, turn);
     }
@@ -5992,16 +5876,10 @@ pub const TranscriptRuntime = struct {
         return transcript_store.appendUserTurnOwnedWithSkillTokens(self, alloc, turn, skill_tokens);
     }
 
-    /// Open a new assistant-turn entry and return its id. Callers that
-    /// need to extend the segments text should re-resolve the pointer
-    /// with `lookupAssistantSegments(id)` immediately before each use;
-    /// a raw segments pointer held across any subsequent `entries`
-    /// append is invalidated by ArrayList realloc.
     pub fn appendAssistantTurnEntry(self: *TranscriptRuntime, alloc: Allocator) !u32 {
         return transcript_store.appendAssistantTurnEntry(self, alloc);
     }
 
-    /// Takes ownership of `table` only when it returns successfully.
     pub fn appendAssistantTableOwned(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -6010,7 +5888,6 @@ pub const TranscriptRuntime = struct {
         return transcript_store.appendAssistantTableOwned(self, alloc, table);
     }
 
-    /// Takes ownership of `block` only when it returns successfully.
     pub fn appendAssistantCodeBlockOwned(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -6023,26 +5900,14 @@ pub const TranscriptRuntime = struct {
         return transcript_store.appendAssistantThematicRule(self, alloc);
     }
 
-    /// Walk `entries` and return a pointer to the segments of the
-    /// assistant-turn entry with `id`, or null if no such entry exists
-    /// (including when `id` belongs to a `raw_bytes` or `user_turn`
-    /// entry). The returned pointer is stable only until the next
-    /// `entries` append; resolve immediately before use.
     pub fn lookupAssistantSegments(self: *TranscriptRuntime, id: u32) ?*AssistantTurnSegments {
         return transcript_store.lookupAssistantSegments(self, id);
     }
 
-    /// Return a pointer to the trailing entry's segments if that entry
-    /// is an assistant turn; otherwise null. Used by the pacer to
-    /// append to the in-progress response instead of opening a new
-    /// turn when mid-stream.
     pub fn tailAssistantSegments(self: *TranscriptRuntime) ?*AssistantTurnSegments {
         return transcript_store.tailAssistantSegments(self);
     }
 
-    /// Appends paced text to the trailing assistant entry, creating one if needed,
-    /// and mirrors it into the transcript buffer. Using `writeTranscript` here
-    /// would also create raw entries and double-count content during reflow.
     pub fn streamAssistantChunk(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -6365,11 +6230,6 @@ pub const TranscriptRuntime = struct {
         self.reflow_clear_guard_rows = 0;
         self.resize_history_row_delta = null;
         self.viewport_clear_pending = false;
-        // Job-control resume (and other full resets) reanchor at row 1. Drop
-        // pending clears recorded against the pre-reset footer geometry —
-        // e.g. eraseCurrentFrame at owned_top mid-scrollback — or the first
-        // post-reset plan validates them against the new compact bands and
-        // aborts with InvalidInvalidationRange.
         self.render_requests.clearPendingInvalidations();
         self.footer_viewport.has_frame = false;
         self.footer_viewport.clearExternalInvalidation();
@@ -6740,11 +6600,6 @@ pub const TranscriptRuntime = struct {
         return self.planTranscriptScrollForFrame(prepared, false, false);
     }
 
-    /// Selects the finality floor in flow bytes from the prepared paint's
-    /// activity-independent candidates plus the frame-fresh producer facts
-    /// (lifecycle watermark, assistant-tail writability, replaceable tail).
-    /// Null means the whole flow is final. Pure over its inputs, so repeated
-    /// calls within one frame agree.
     fn finalityFloorBytes(
         self: *const TranscriptRuntime,
         prepared: *const transcript_painter.PreparedTranscriptSurfacePaint,
@@ -6756,9 +6611,6 @@ pub const TranscriptRuntime = struct {
         );
     }
 
-    /// Visual rows contributed by the flow prefix [0..flow_offset). The
-    /// prefix boundary always lands on an entry start, which is a hard-line
-    /// start; a mid-line offset rounds down to its line, the safe direction.
     fn preparedVisualRowsForFlowOffset(
         prepared: *const transcript_painter.PreparedTranscriptSurfacePaint,
         flow_offset: usize,
@@ -6778,9 +6630,6 @@ pub const TranscriptRuntime = struct {
         return rows;
     }
 
-    /// The largest visual offset whose rows are all backed by final entries,
-    /// clamped to the frame's target offset. Release permission never
-    /// extends past this value.
     fn finalityReleasableOffset(
         self: *const TranscriptRuntime,
         prepared: *const transcript_painter.PreparedTranscriptSurfacePaint,
@@ -6860,8 +6709,6 @@ pub const TranscriptRuntime = struct {
                 const candidate_semantic_rows = retained_semantic_rows + growth_rows;
                 const candidate_semantic_progress_rows =
                     retained_semantic_progress_rows + growth_rows;
-                // Retained debt repairs the attempted frame. Only source
-                // growth is a new content release that needs finality.
                 const semantic_rows, const semantic_progress_rows = if (self.finalityFloorBytes(prepared) != null) bounded: {
                     const releasable_offset = self.finalityReleasableOffset(
                         prepared,
@@ -6944,7 +6791,6 @@ pub const TranscriptRuntime = struct {
                 };
             },
             .invalid => {
-                // Materialize authoritative pre-viewport rows into native scrollback.
                 if (self.pendingResumeFlow().len > 0) {
                     const semantic_rows: u32 = frameInlineScrollBudget(0, target_offset);
                     return .{
@@ -6995,12 +6841,6 @@ pub const TranscriptRuntime = struct {
         const recovery_rebase = (!source_compatible and !geometry_rebase) or
             !width_stable or
             self.resize_history_row_delta != null;
-        // Release requires two independent facts: permission (the rows are
-        // final, expressed by the finality floor) and ability (this frame
-        // materializes their exact bytes, which an incompatible frame
-        // cannot). Either fact missing forces zero release; the frame
-        // re-anchors on the new flow and the derived history debt settles
-        // on the next compatible frame through the existing replay.
         const releasable_offset = self.finalityReleasableOffset(prepared, target_offset);
         const releasable_advance = releasable_offset -| anchor.history_visual_offset;
         const committed_projection_offset = committedProjectionVisualOffset(anchor);
@@ -7010,25 +6850,14 @@ pub const TranscriptRuntime = struct {
             target_offset -| anchor.history_visual_offset
         else
             0;
-        // Geometry displacement (footer growth over transcript rows) keeps
-        // its pre-existing semantics: displaced rows are preserved into
-        // history even when mutable, because inline rendering has nowhere
-        // else to keep them. The finality clamp governs content-driven
-        // release only.
         const semantic_rows: u32 = if (geometry_rebase)
             geometry_history_rows
         else if (!recovery_rebase)
-            // Normal-buffer recovery restores rows the takeover already
-            // displaced into scrollback; that restore is display repair,
-            // not a content release, so the finality clamp does not apply.
             if (anchor.normal_buffer_recovery_pending)
                 target_offset -| anchor.history_visual_offset
             else if (anchor.history_catchup_pending)
                 releasable_advance
             else
-                // Rows leaving the screen top are [visual..visual+scroll);
-                // the floor clamps that range, so the budget is measured
-                // from the committed viewport, not from history.
                 releasable_offset -| anchor.visual_offset
         else if (self.compatibleCommittedHistoryReplayRange(
             prepared,
@@ -7039,10 +6868,6 @@ pub const TranscriptRuntime = struct {
             releasable_advance
         else
             0;
-        // A finality hold is either the floor sitting below the viewport
-        // (mutable rows above the top) or a same-geometry incompatible frame
-        // that had permission to release but no ability to materialize;
-        // geometry-driven recovery (resize, reflow) owns its own debt.
         const finality_hold = releasable_offset < target_offset or
             (recovery_rebase and
                 width_stable and
@@ -7183,9 +7008,6 @@ pub const TranscriptRuntime = struct {
         history_catchup_pending: bool = false,
         staged_flow_end: ?usize = null,
         projection_staged: bool = false,
-        // The frame slides the viewport past withheld release with an
-        // in-place repaint. Any document append is bounded separately to
-        // the rows the frame may release.
         hold_staged: bool = false,
 
         fn init(
@@ -7442,11 +7264,6 @@ pub const TranscriptRuntime = struct {
                 target.normal_buffer_recovery_pending =
                     anchor.normal_buffer_recovery_pending;
                 target.history_catchup_pending = anchor.history_catchup_pending;
-                // A retained body advances only by the released rows. When
-                // the finality clamp withholds release from the plan itself
-                // (as opposed to a partial acceptance, which the recovery
-                // debt machinery owns), the viewport must still follow the
-                // flow, so the frame repaints instead of retaining.
                 const plan_covers_advance =
                     scroll_facts.target_visual_offset -|
                     committedProjectionVisualOffset(anchor) <=
@@ -7513,10 +7330,6 @@ pub const TranscriptRuntime = struct {
                         scroll_facts.semantic_rows and
                     scroll_facts.target_visual_offset >= target.history_visual_offset)
                 {
-                    // The viewport advanced further than the plan may
-                    // release: slide the window with an in-place repaint at
-                    // the target offset. The rows passed over stay
-                    // unreleased and settle later through the replay.
                     var projection_layout = self.layout;
                     projection_layout.content_bottom = target_layout.transcript_area.bottom;
                     try target.stagePreparedProjection(
@@ -7560,9 +7373,6 @@ pub const TranscriptRuntime = struct {
                 } else if (target.history_visual_offset >= target.visual_offset) {
                     target.history_catchup_pending = false;
                 } else if (scroll_facts.finality_hold) {
-                    // Finality withheld release. Preserve the obligation on
-                    // stable anchors until history catches the viewport;
-                    // footer displacement alone never creates one.
                     target.history_catchup_pending = true;
                 }
             },
@@ -8288,9 +8098,6 @@ pub const TranscriptRuntime = struct {
                         base_visual_end,
                     ) orelse break :held null;
                 if (target_base_flow_end < base.flow_len) break :held null;
-                // Target growth can terminate the committed line at its byte
-                // endpoint. Charge that cursor movement before advancing into
-                // the final rows this frame may release.
                 const drift = walkText(
                     1,
                     base.cursor_col,
@@ -8809,15 +8616,11 @@ pub const TranscriptRuntime = struct {
             transition.folded_summary_indices = &.{};
         }
         if (transition.history_settle_pending) {
-            // Final rows remain unmaterialized past this commit; guarantee a
-            // follow-up frame so the debt settles without external activity.
             self.render_requests.request(.transcript);
         }
         transition.consumed = true;
     }
 
-    /// Writes only to the byte buffer for callers that separately append a
-    /// structured entry. Use `writeTranscript` when raw-entry mirroring is needed.
     pub fn writeTranscriptBytes(self: *TranscriptRuntime, alloc: Allocator, metrics: *Metrics, text: []const u8, record: bool) !void {
         return transcript_writer.writeTranscriptBytes(self, alloc, metrics, text, record);
     }
@@ -8884,8 +8687,6 @@ pub const TranscriptRuntime = struct {
         );
     }
 
-    /// Writes to the byte buffer and mirrors the content as a raw entry.
-    /// Structured writers must use `writeTranscriptBytes` to avoid duplication.
     pub fn writeTranscript(self: *TranscriptRuntime, alloc: Allocator, metrics: *Metrics, text: []const u8, record: bool) !void {
         return transcript_writer.writeTranscript(self, alloc, metrics, text, record);
     }
@@ -8956,9 +8757,6 @@ pub const TranscriptRuntime = struct {
         );
     }
 
-    /// Rebuild the transcript cache at the current width and request a
-    /// diagnostic full-frame repaint. Terminal mutation remains owned
-    /// by the frame commit path.
     pub fn reconstructivePaint(self: *TranscriptRuntime, alloc: Allocator, metrics: *Metrics) !void {
         return transcript_writer.reconstructivePaint(self, alloc, metrics);
     }
@@ -8981,8 +8779,6 @@ pub const TranscriptRuntime = struct {
         return transcript_store.replaceTrailingTranscriptLine(self, alloc, metrics, text);
     }
 
-    /// Returns the id of the mirrored `raw_bytes` entry, or `0` when
-    /// `text` is empty (sentinel: `next_entry_id` starts at 1).
     pub fn appendReplaceableTranscriptLineSilent(self: *TranscriptRuntime, alloc: Allocator, text: []const u8) !u32 {
         return transcript_store.appendReplaceableTranscriptLineSilent(self, alloc, text);
     }
@@ -9971,10 +9767,6 @@ pub const TranscriptRuntime = struct {
         }
     }
 
-    /// Updates the capped terminal cursor and returns the uncapped text walk.
-    /// Scroll calculations must use `result.end_row`, not `self.cursor_row`,
-    /// which cannot represent overflow below the viewport. Wrap-exact walks may
-    /// return `layout.cols + 1` in `end_col`.
     pub fn advanceCursor(self: *TranscriptRuntime, text: []const u8) WalkResult {
         const result = walkText(@as(u32, self.cursor_row), self.cursor_col, text, self.layout.cols);
         self.cursor_col = result.end_col;

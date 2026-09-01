@@ -7,7 +7,7 @@ They are different lists with different names; do not conflate them.
 
 ## Emma's tools
 
-The 26 names in `AGENT_TOOLS`. Schemas are in
+The 27 names in `AGENT_TOOLS`. Schemas are in
 [tools.ts](../desktop/main/tools.ts); `runEmmaTool` in
 [main.ts](../desktop/main/main.ts) checks the gate and dispatches. Gate column:
 `ask` means a dialog in `ask`/`acceptEdits`, the verifier in `auto`, and through
@@ -20,7 +20,7 @@ for each running app per turn, in every mode. Full matrix in
 | `browser` | Drives a real Chrome, mirrored in the browser pane. `snapshot` returns an accessibility tree with `@e1` refs; later actions take a ref or a CSS selector. | ask | [browser.ts](../desktop/main/browser.ts) |
 | `cli` | Runs Claude Code, Codex, Pi, OpenCode or Cursor in a connected folder and takes turns with it. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
 | `cli_runs` | Lists installed CLIs and every run, reads one run's output, or stops its turn. | auto | [cli.ts](../desktop/main/cli.ts) |
-| `computer` | Reads and operates approved running macOS apps through accessibility, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
+| `computer` | Reads and operates approved running macOS or Windows apps through accessibility or UI Automation, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
 | `write_skill` | Records a durable lesson as `<userData>/skills/<slug>/SKILL.md`. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_tool` | Writes an executable script into Emma's data folder, callable later by name. `code` must start with a `#!` line. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_plugin` | Packages skills as a ChatGPT/Codex plugin and installs it on the Plugins page. | auto | [marketplace.ts](../desktop/main/marketplace.ts) |
@@ -28,8 +28,9 @@ for each running app per turn, in every mode. Full matrix in
 | `memory` | Emma's own `/memories` directory, carried between conversations. Commands: `view`, `create`, `str_replace`, `insert`, `delete`, `rename`. | auto | [memory.ts](../desktop/main/memory.ts) |
 | `advisor` | Forwards the whole transcript to a stronger model and returns its answer. Takes no arguments — the agent chooses when, never what it sees. | auto | [advisor.ts](../desktop/main/advisor.ts) |
 | `vision` | Asks a vision model one question about one image, by `path` or `url`. **Advertised to the model as `look_at_image`.** | auto | [vision.ts](../desktop/main/vision.ts) |
-| `secret` | Runs `command` on this Mac and sends its output to the model set in Settings → Models under Secrets, with one question. Only that model's answer comes back; the output never enters the thread. | ask | [secret.ts](../desktop/main/secret.ts) |
+| `secret` | Runs `command` on this computer and sends its output to the model set in Settings → Models under Secrets, with one question. Only that model's answer comes back; the output never enters the thread. | ask | [secret.ts](../desktop/main/secret.ts) |
 | `web_search` | Query out to the configured provider; returns ranked titles, links and snippets. | auto | [web-search.ts](../desktop/main/web-search.ts) |
+| `task_list` | Tracks one complex job as a durable Markdown tree of tasks and subtasks. Actions: `read`, `write`, `update`, `delete`. | auto | [task-lists.ts](../desktop/main/task-lists.ts) |
 | `plan` | Breaks a job into steps in a durable markdown file and hands each to its own subagent; independent steps run at once. Actions: `read`, `write`, `run`, `update`, `delete`. | auto | [plans.ts](../desktop/main/plans.ts) |
 | `goal` | The one objective this thread keeps working at, and the ledger under it. Actions: `set`, `get`, `update`, `extend`, `clear`. A subagent's call acts on its parent's goal. See [goals.md](goals.md). | auto | [main.ts](../desktop/main/main.ts) |
 | `threads` | Emma's threads: `spawn`, `list`, `read`, `message`, `rename`. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
@@ -47,9 +48,9 @@ for each running app per turn, in every mode. Full matrix in
 ### Availability, beyond the gate
 
 `toolNeeds` marks two tools conditional. `cli` needs a connected folder; without
-one the call answers *"cli needs a connected folder."* `computer` needs macOS;
-elsewhere it answers *"computer controls this Mac, and this is not a Mac."* Both
-are checked in `whyUnavailable` after the gate.
+one the call answers *"cli needs a connected folder."* `computer` needs a
+supported macOS or Windows host; elsewhere it answers that computer use is not
+available on this platform. Both are checked in `whyUnavailable` after the gate.
 
 Settings → Tools can switch any tool off, which makes it `hidden` in every mode.
 `run_tool` is finer-grained: a single written tool is disabled by the key
@@ -73,6 +74,9 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
   `[{"id":"survey","title":"…","brief":"…","tasks":["src/net"],"needs":[]}]`.
   `needs` is the shape; two steps with the same `needs` run together. Rewriting
   keeps status and ticks for steps that keep their id.
+- `task_list` `tasks` is a nested **JSON array inside a string**:
+  `[{"id":"build","title":"Build it","subtasks":[{"id":"test","title":"Test it"}]}]`.
+  Rewriting keeps the status of every task whose id remains.
 - `workflow` `trigger` is a five-field UTC cron, `manual`, `after <job-id>`, or
   `on <event>`. `permissionMode` offers `ask` | `acceptEdits` | `full` only.
 - `autoresearch` — `metricName`, `metricKind`, `direction` and `projectDir` are
@@ -130,7 +134,7 @@ file, search and shell tools — Emma has none of her own.
 | `list_files` | One directory level, no contents. |
 | `glob_files` | Paths matching a glob; `mode=count` for counts without listing. |
 | `open_file` | Open a file in the OS default app for the user. |
-| `grep_files` | **Literal substring** search, not regex — for a real pattern, run `rg` or `grep -E` through `terminal`. Modes for lines, files-with-matches or counts, with `head_limit`/`offset`. |
+| `grep_files` | POSIX extended regular expression, matched per line: alternation, character classes, anchors, groups, `{m,n}`. No backreferences, lookaround, lazy quantifiers or the `\d`/`\w`/`\s` shorthands. Modes for lines, files-with-matches or counts, with `head_limit`/`offset`. |
 | `semantic_search` | Lexical keyword ranking over workspace files. Not embeddings, despite the name. |
 | `lsp` | Diagnostics, definition, references, hover, symbols from an installed language server. |
 | `terminal` | Runs captured commands and drives durable interactive sessions, with monitors on exit, output, ports, paths. This is the shell. |
@@ -191,4 +195,4 @@ come back over ACP to `onPermission` in [main.ts](../desktop/main/main.ts).
 - [harness.md](harness.md) — `emma-cli`, ACP, and the fork
 - [knowledge.md](knowledge.md) — `keep` and the vault
 - [plugins.md](plugins.md) · [cli.md](cli.md) · [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md)
-- [privacy.md](privacy.md) — what each tool sends off this Mac
+- [privacy.md](privacy.md) — what each tool sends off this computer

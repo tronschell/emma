@@ -115,8 +115,7 @@ Which means, concretely:
   `<link>` stylesheet. They fail silently and the page renders unstyled.
   Everything is inline: one `<style>`, one `<script>`.
 - **No webfonts.** `font-src data:` — Geist, Inter and the rest are not there.
-  Use the system stack; on this machine that is SF, which is the right
-  neutral anyway.
+  Use the system UI font stack.
 - **No images off the network.** `img-src data:` only. Draw with inline SVG
   instead of reaching for an image.
 - **No fetch, no storage.** Opaque origin: `localStorage` throws. For an `html`
@@ -170,9 +169,6 @@ at most 16 of them, 512 KB each. Split when the page is genuinely two things; a
 
 An app still starts on screen in the first 150px. Query on load, render what
 came back, and leave the empty state saying what to type — not how it works.
-
-The frame's backdrop is a warm off-white, so **artifacts are light**. Do not
-build a dark mode or a theme toggle for one.
 
 The card in the transcript clips to **150px**, the Artifacts page to 190px.
 Whatever the artifact is *for* goes in that first 150px — a title bar and a
@@ -249,10 +245,71 @@ it in front of them rather than writing a perfect one blind.
 
 ## House style
 
-Unless the user asks for something else, build to this. It is
-[shadcn/ui](https://ui.shadcn.com)'s system, which is monochrome, hairline-bordered
-and quiet — it reads as an instrument rather than a landing page, and it is
-almost impossible to make ugly.
+Two artifacts made a week apart should not look like the same artifact. The
+failure this section exists to prevent is a page that is technically well made
+and indistinguishable from the last one: same grey card, same stat row, same
+24px heading, nothing about it belonging to its subject.
+
+So **choose the design before you write the CSS**. Four decisions, made
+deliberately, and made differently from the last one you built.
+
+**1. A stance.** What kind of object is this — instrument, brief, dashboard,
+poster, receipt, notebook, terminal, field guide, timeline, gallery? The stance
+decides the layout. A reading brief and a live tracker have no business sharing
+a shell.
+
+**2. An accent the subject earns.** One hue, occasionally two: departure-board
+amber for flights, ledger green for money, alarm red for an incident, ink blue
+for research, sun yellow for a weather page. Neutrals still carry the page; the
+accent lands on three or four things and lands consistently — the figure that
+matters, the active state, one rule under a heading. If the subject genuinely
+suggests nothing, go achromatic *on purpose*. That is a choice, not a default.
+
+**3. A voice for the type.** No webfonts cross the frame, but four system
+families do and they read nothing alike:
+
+| family | reads as | use for |
+|---|---|---|
+| `ui-sans-serif` | neutral, current | the default when nothing argues otherwise |
+| `ui-serif` | New York — considered, editorial | briefs, essays, anything meant to be read |
+| `ui-monospace` | SF Mono — technical, exact | trackers, logs, tables, anything numeric |
+| `ui-rounded` | SF Rounded — warm, personal | habits, checklists, anything domestic |
+
+One for the page, at most one more for contrast, then hold them.
+
+**4. One structural device.** The thing that makes it *this* page and not a
+column of cards: a full-bleed hero figure, a two-column split with a sticky
+rail, a timeline down the left edge, a table that *is* the page, alternating
+full-width bands, a numbered spread, tiles at two sizes. Pick it before you
+start — cards in a column is what you get when you didn't pick.
+
+### Depth
+
+Flat is the other half of "they all look the same". One tone and one border
+weight gives the eye nothing to climb. Take two or three of these — chosen, not
+all of them and not none:
+
+- **tonal layering**: page → section → card, two or three steps apart, so the
+  stack reads with no border at all
+- **a hairline** where an edge must be exact; **a shadow** where something
+  should feel lifted:
+  `0 1px 3px rgb(0 0 0 / .1), 0 1px 2px -1px rgb(0 0 0 / .1)`
+- **an accent-tinted surface** — the accent at 6–10% behind the one block that
+  matters
+- **a scale jump** — the headline figure at 56–72px against 14px body. Size
+  contrast is depth for free
+- **a full-bleed band** in a darker tone, edge to edge, breaking the column
+- **inline SVG behind the content** at low opacity: a grid, a contour, a route,
+  the chart the page is about
+- **a sticky header** that condenses on scroll
+
+Gradients, tinted shadows and glass are allowed and usually wrong. One of them
+is a decision; three is a theme nobody asked for.
+
+### The base to vary from
+
+Neutrals for a light page. `--accent` is the token that changes per artifact;
+the rest hold unless the stance argues.
 
 ```css
 :root {
@@ -260,44 +317,38 @@ almost impossible to make ugly.
   --paper:  #ffffff;   /* cards, popovers, filled surfaces */
   --alt:    #fafafa;   /* sidebars, subtle card variant */
   --ink:    #0a0a0a;   /* text, headings, icon strokes */
-  --ink-2:  #171717;   /* filled button and badge backgrounds */
   --muted:  #737373;   /* helper text, placeholders, captions */
   --line:   #e5e5e5;   /* every border */
-  --ember:  #e7000b;   /* destructive only */
+  --accent: #0a0a0a;   /* the decision that changes per artifact */
+  --danger: #e7000b;   /* destructive only, never decoration */
 
   --font: ui-sans-serif, -apple-system, system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 ```
 
-The rules that make it hold together:
+Light is the default because the frame's backdrop is a warm off-white
+(`#e8e6df`) that shows through whatever the page does not paint. A dark
+artifact is right when the subject is — a terminal, a star chart, a player —
+but then paint `html` and `body` edge to edge and commit to it. Never a theme
+toggle: an artifact has one look.
 
-- **Achromatic by default.** Colour is absence, not expression. One hue,
-  `--ember`, and it means *destructive* — never decoration, never branding.
-  A chart is the one exception; it may carry its own restrained scale.
-- **Radius is hierarchy.** 18px on everything interactive — buttons, inputs,
-  badges — so they are true pills; 24px on containers. 6px only on things
-  nested inside something already rounded. Nothing square, nothing in between.
-- **Three surfaces, no dividers.** canvas → alt → paper. Layer by tone, and
-  let the 1px `--line` do the edges. Cards get the hairline *and* a whisper of
-  shadow, never shadow alone:
-  `0 0 0 1px rgb(23 23 23 / .05), 0 1px 3px rgb(0 0 0 / .1), 0 1px 2px -1px rgb(0 0 0 / .1)`
-- **Type is compact and tight.** 14px/1.43 body, 12px uppercase captions at
-  `+0.05em`, headings 24–48px at weight 600 with tracking going *negative* as
-  they grow (−0.025em at 24–30px, −0.05em at 48px). Never below 14px for body,
-  never lighter than `--muted`.
-- **4px base unit.** 4/8/12/16/20/24/48 and nothing off the grid. 20px card
-  padding, 8px between elements, 48–80px between sections, 1280px max width.
-- **No gradients, no coloured shadows, no glass.** Every surface is one solid
-  tone.
+### What holds whatever you chose
 
-A primary button is `--ink` on `--paper`, 14px/500, 18px radius, ~36px tall, no
-shadow. The secondary is the same button filled `--canvas`. An input rests on
-`--canvas` with no border and takes a 1px `--line` ring on focus.
+- **One radius scale per page, everywhere.** Pill (18px on controls, 24px on
+  containers), soft (8/12), or square (0/2). Three families that look nothing
+  alike; mixing them is the actual ugly.
+- **A 4px grid.** 4/8/12/16/24/32/48/80 and nothing between. 1280px max width.
+- **Type that stays readable.** Body never under 14px and never lighter than
+  `--muted`; line-height 1.4–1.65; tracking goes negative as headings grow
+  (−0.025em at 24–30px, −0.05em at 48px+); 12px uppercase captions at +0.05em.
+- **Legible contrast.** Body on its surface at 4.5:1 or better. The accent is
+  for emphasis, not for small text on a tinted ground.
 
 ## Two that came out well
 
-**A tracker** — an `html` page. One `<h1>`, then the numbers, immediately: a
+**A tracker** — an `html` page. Stance: instrument. Type: mono throughout.
+Accent: the amber of a departure board, on the one fare that moved. One `<h1>`, then the numbers, immediately: a
 row of stat blocks, label in 12px uppercase `--muted` above a 36px/600 figure,
 no card chrome around them, because the type scale alone is the hierarchy. The
 rows below it are a plain table on `--paper` with `--line` between rows and the
@@ -313,9 +364,12 @@ answers the question on its own, then sections that each hold one idea, then a
 table where there is anything to compare. Links go inline. If it opens with
 "Introduction", it is a document nobody reads.
 
-The pattern under both: **decide what the artifact is for, put that in the first
-screen, and let everything else be structure.** The failure mode is not ugliness,
-it is a beautiful shell with the substance three scrolls down.
+Note how little those two share: one is mono, dense, numeric and coloured; the
+other has no CSS at all. Both are right for what they are, and that is the
+point — the pattern under both is **decide what the artifact is for, put that in
+the first screen, and let everything else be structure.** The failure mode is
+not ugliness, it is a beautiful shell with the substance three scrolls down —
+or a fifth page that looks exactly like the four before it.
 
 ## Habits worth having
 

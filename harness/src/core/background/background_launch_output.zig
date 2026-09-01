@@ -1,9 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const background_process_provider = @import(
     "../execution/background_process_provider.zig",
 );
 const io_mod = @import("../shared/io.zig");
 const session_child_store = @import("../session/session_child_store.zig");
+const windows_acl = if (builtin.os.tag == .windows) @import("../shared/windows_acl.zig") else struct {};
 
 const Allocator = std.mem.Allocator;
 
@@ -118,20 +120,26 @@ pub fn prepareManaged(
 }
 
 pub fn prepareExternal(alloc: Allocator) !Output {
-    const root = io_mod.getenv("TMPDIR") orelse "/tmp";
+    var owned_root: ?[]u8 = null;
+    const root = if (comptime builtin.os.tag == .windows) blk: {
+        const path = io_mod.runtimeTempPathAlloc(alloc) catch return error.RuntimeDirectoryUnsafe;
+        owned_root = path;
+        break :blk path;
+    } else io_mod.getenv("TMPDIR") orelse "/tmp";
+    defer if (owned_root) |path| alloc.free(path);
     var attempt: usize = 0;
     while (attempt < 16) : (attempt += 1) {
         const name = try randomLogName(alloc);
         defer alloc.free(name);
         const path = try std.fs.path.join(alloc, &.{ root, name });
-        const file = std.Io.Dir.createFileAbsolute(
+        var file = std.Io.Dir.createFileAbsolute(
             io_mod.getIo(),
             path,
             .{
                 .read = true,
                 .truncate = false,
                 .exclusive = true,
-                .permissions = std.Io.File.Permissions.fromMode(0o600),
+                .permissions = io_mod.permissionsFromMode(0o600),
             },
         ) catch |err| switch (err) {
             error.PathAlreadyExists => {
@@ -143,6 +151,17 @@ pub fn prepareExternal(alloc: Allocator) !Output {
                 return err;
             },
         };
+        errdefer file.close(io_mod.getIo());
+        errdefer std.Io.Dir.deleteFileAbsolute(io_mod.getIo(), path) catch {};
+        errdefer alloc.free(path);
+        if (comptime builtin.os.tag == .windows) {
+            windows_acl.applyHandle(file.handle) catch {
+                return error.PrivateStatePermissionsUnsupported;
+            };
+            if (!(try io_mod.privateFileAclMatches(file))) {
+                return error.PrivateStatePermissionsUnsupported;
+            }
+        }
         return .{ .external = .{ .file = file, .path = path } };
     }
     return error.BackgroundIdentityUnavailable;
@@ -177,6 +196,13 @@ test "background launch output removes external log on cancellation" {
     );
 }
 
+test "background launch output protects external logs on Windows" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var output = try prepareExternal(std.testing.allocator);
+    defer output.deinit(std.testing.allocator, true);
+    try std.testing.expect(try io_mod.privateFileAclMatches(output.external.file));
+}
+
 test "background launch output removes managed log on cancellation" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -185,7 +211,7 @@ test "background launch output removes managed log on cancellation" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     const display_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(display_path);

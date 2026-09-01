@@ -4,6 +4,8 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const collections = @import("../shared/collections.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_stdio = @import("../shared/windows_stdio.zig");
+const windows_job = @import("../permissions/windows_job.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const mcp_contract = @import("mcp_contract.zig");
 const mcp_auth = @import("mcp_auth.zig");
@@ -2872,9 +2874,6 @@ const ServerAccessPrecommit = struct {
     }
 };
 
-/// Owns one current live-authority snapshot for an MCP operation. It is
-/// resolved before catalog or connection locks are acquired and may be
-/// refreshed after preliminary effects before returning a result.
 const OperationAccessGuard = struct {
     alloc: Allocator,
     access: tool_mcp_runtime.Access,
@@ -3914,9 +3913,6 @@ pub const McpRuntime = struct {
         debug_trace.logf("mcp", "runtime lease released active_users={d}", .{active_users});
     }
 
-    /// Prevents new users, publishes cancellation to active interactions, and
-    /// waits without holding an app/catalog lock. The owner may deinit/destroy
-    /// the runtime after this returns.
     pub fn retireAndWait(self: *McpRuntime) void {
         self.retiring.store(true, .release);
         self.discovery_cancel_requested.store(true, .release);
@@ -4078,8 +4074,6 @@ pub const McpRuntime = struct {
                 .runtime_generation = completion.runtime_generation,
                 .connection_generation = completion.connection_generation,
                 .client_generation = completion.client_generation,
-                // The notification has no catalog generation. The retained
-                // originating snapshot is revalidated before retrying.
                 .catalog_generation = waiter.binding.catalog_generation,
                 .auth_generation = completion.auth_generation,
             });
@@ -4878,7 +4872,6 @@ pub const McpRuntime = struct {
         return .{ .captured_at_ms = captured_at_ms, .servers = items };
     }
 
-    /// Returns an owned model-safe catalog snapshot. The caller releases it with `deinit`.
     pub fn snapshotModelCatalog(
         self: *McpRuntime,
         alloc: Allocator,
@@ -5056,9 +5049,6 @@ pub const McpRuntime = struct {
         self.discovery_state.store(.complete, .seq_cst);
     }
 
-    /// Connects only required profile servers before a one-shot Ask reaches the
-    /// Gateway. Optional servers remain dormant until Ask uses MCP directly or
-    /// captures MCP authority for a child.
     pub fn connectRequiredForAsk(
         self: *McpRuntime,
         tool_registry: tool_dispatch.Registry,
@@ -5074,8 +5064,6 @@ pub const McpRuntime = struct {
         self.discovery_state.store(.complete, .seq_cst);
     }
 
-    /// Activates optional one-shot Ask servers exactly once. Concurrent MCP
-    /// operations wait for the active loader instead of launching duplicates.
     pub fn connectDeferredForAsk(
         self: *McpRuntime,
         tool_registry: tool_dispatch.Registry,
@@ -5673,7 +5661,6 @@ pub const McpRuntime = struct {
         );
     }
 
-    /// Returns owned names for every currently ready tool not revoked by policy.
     pub fn snapshotToolNames(
         self: *McpRuntime,
         alloc: Allocator,
@@ -6055,9 +6042,6 @@ pub const McpRuntime = struct {
         );
     }
 
-    /// Captures only continuation identity while holding the catalog lock.
-    /// Callers perform all transport writes and user waiting after this
-    /// returns; no runtime-owned pointer escapes the lock.
     pub fn inputIdentityWitness(
         self: *McpRuntime,
         server_name: []const u8,
@@ -10011,22 +9995,50 @@ fn spawnStdioServer(alloc: Allocator, server: *McpServer, argv: []const []const 
     const generation = server.next_generation;
     server.next_generation = std.math.add(u64, generation, 1) catch
         return error.McpGenerationExhausted;
-    const child = try std.process.spawn(io_mod.getIo(), .{
-        .argv = argv,
+    var prepared = try windows_stdio.prepare(alloc, argv);
+    defer prepared.deinit(alloc);
+    var child = try std.process.spawn(io_mod.getIo(), .{
+        .argv = prepared.argv,
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .ignore,
         .environ_map = if (server.env_map != null) &server.env_map.? else null,
         .pgid = if (builtin.os.tag == .windows) null else 0,
+        .start_suspended = builtin.os.tag == .windows,
     });
+    var job: ?windows_job.Job = null;
+    var child_transferred = false;
+    errdefer if (!child_transferred) {
+        if (job) |*owned_job| {
+            owned_job.terminate();
+            owned_job.deinit();
+        } else {
+            child.kill(io_mod.getIo());
+        }
+        _ = child.wait(io_mod.getIo()) catch {};
+    };
+    if (comptime builtin.os.tag == .windows) {
+        const child_id = child.id orelse return error.McpProcessNotStarted;
+        job = windows_job.Job.init(child_id, true) catch return error.McpTransportUnavailable;
+        windows_job.Job.resumeThread(child.thread_handle) catch
+            return error.McpTransportUnavailable;
+    }
 
-    server.dispatcher = try stdio_dispatcher.StdioDispatcher.create(
+    const dispatcher = stdio_dispatcher.StdioDispatcher.createWithJob(
         alloc,
         std.heap.c_allocator,
         child,
         generation,
         mcp_discovery_response_frame_cap_bytes,
-    );
+        job,
+    ) catch |err| {
+        child_transferred = true;
+        job = null;
+        return err;
+    };
+    child_transferred = true;
+    job = null;
+    server.dispatcher = dispatcher;
 }
 
 fn connectServerLegacy(
@@ -10212,9 +10224,6 @@ fn discoverServerTools(
 }
 
 fn mcpResponseFrameCap(max_tool_result_bytes: usize) usize {
-    // JSON-RPC and MCP content wrappers add bytes around the model-facing result.
-    // Keep the transport cap close to the configured result cap while allowing
-    // normal envelope overhead before the model-facing truncation pass runs.
     return std.math.add(usize, max_tool_result_bytes, mcp_response_frame_overhead_bytes) catch std.math.maxInt(usize);
 }
 
@@ -11659,8 +11668,6 @@ fn buildToolCallRequestForProtocol(
     try out.writer.writeAll("\"name\":");
     try std.json.Stringify.value(original_name, .{}, &out.writer);
     try out.writer.writeAll(",\"arguments\":");
-    // Models may pretty-print arguments; a raw newline would split the NDJSON
-    // frame, so compact them onto a single line before framing.
     try mcp_json.write_compact(&out.writer, arguments_json);
     if (continuation) |value| {
         try out.writer.writeAll(",\"inputResponses\":");
@@ -14392,14 +14399,10 @@ test "legacy URL completions require an established unique candidate before repl
     );
     defer direct.deinit();
 
-    // A valid-looking completion is still unknown until the corresponding
-    // request or URL-required response establishes its id.
     routeLegacyCompletionNotification(&runtime, source, direct.value);
     try std.testing.expectEqual(@as(usize, 0), runtime.early_legacy_url_completions.items.len);
     try std.testing.expectEqual(@as(usize, 0), runtime.legacy_url_completion_candidates.items.len);
 
-    // HTTP response and notification streams can race. A bounded operation
-    // window retains the frame only until the exact response candidate arrives.
     const window_generation = try runtime.beginLegacyUrlCompletionWindow(
         source,
         runtime.legacy_url_runtime_generation,
@@ -14444,8 +14447,6 @@ test "legacy URL completions require an established unique candidate before repl
         runtime.legacy_url_completion_candidates.items[0].status,
     );
 
-    // Late duplicates cannot create replayable state, and the server-context
-    // uniqueness rule prevents the id from being issued again.
     routeLegacyCompletionNotification(&runtime, source, direct.value);
     try std.testing.expectEqual(@as(usize, 0), runtime.early_legacy_url_completions.items.len);
     try std.testing.expectError(
@@ -14535,7 +14536,6 @@ test "legacy URL completions require an established unique candidate before repl
         .deadline_ms = std.math.maxInt(i64),
     }, "url-required"));
 
-    // Candidate tombstones are never evicted by transient early-frame pressure.
     var id_buffer: [64]u8 = undefined;
     var candidate_index: usize = runtime.legacy_url_completion_candidates.items.len;
     while (candidate_index < max_legacy_url_completion_candidates) : (candidate_index += 1) {
@@ -16104,6 +16104,7 @@ fn expectResourceText(result: ResourceReadResult, expected: []const u8) !void {
 }
 
 fn expectTestProcessExited(pid: std.posix.pid_t) !void {
+    if (comptime builtin.os.tag == .windows) return error.ProcessIdentityUnsupported;
     for (0..200) |_| {
         std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
             error.ProcessNotFound => return,
@@ -16129,6 +16130,7 @@ fn testProcessIsZombie(pid: std.posix.pid_t) bool {
 }
 
 test "connectServer completes NDJSON handshake against a real stdio server" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const shell_server =
         \\trap '' TERM
@@ -18643,8 +18645,6 @@ test "tool call request compacts pretty-printed arguments into a single line" {
     const request = try buildToolCallRequest(alloc, 7, "raw/tool", pretty);
     defer alloc.free(request);
 
-    // The frame must not contain any raw newline; the escaped "\n" inside the
-    // string value must be preserved.
     try std.testing.expect(std.mem.find(u8, request, "\n") == null);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"raw/tool\",\"arguments\":{\"path\":\"/tmp/a\",\"note\":\"line one\\nline two\"}}}",

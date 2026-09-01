@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { diffLines, diffStat, tokensPerSecond, type BackgroundTask, type FileChange, type LiveAgent, type PermissionAsk } from "../shared/agents";
 import { PERMISSION_MODES, permissionModeGlyphs, permissionModeHints, permissionModeNames, type PermissionMode } from "../shared/permissions";
 import { isThinkingLevel, THINKING_LABELS } from "../shared/settings";
@@ -85,38 +85,42 @@ export function ModePicker({ mode, setMode, disabled }: { mode: PermissionMode; 
   </div>;
 }
 
-export function PermissionPrompt({ agents }: { agents: LiveAgent[] }) {
-  const [queue, setQueue] = useState<PermissionAsk[]>([]);
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => window.emma.onPermissionAsk((ask) => setQueue((current) => [...current, ask])), []);
-  useEffect(() => window.emma.onPermissionResolved(({ id }) => setQueue((current) => current.filter((ask) => ask.id !== id))), []);
-  const ask = queue[0];
-  useEffect(() => {
-    const element = dialog.current;
-    if (!ask || !element) return;
-    if (!element.open) element.showModal();
-    return () => element.close();
-  }, [ask]);
-  if (!ask) return null;
+let askQueue: PermissionAsk[] = [];
+const askListeners = new Set<() => void>();
+let permissionEventsWired = false;
+const publishAsks = (next: PermissionAsk[]) => { askQueue = next; for (const listener of askListeners) listener(); };
+const subscribeAsks = (listener: () => void) => {
+  if (!permissionEventsWired) {
+    permissionEventsWired = true;
+    window.emma.onPermissionAsk((ask) => publishAsks([...askQueue, ask]));
+    window.emma.onPermissionResolved(({ id }) => publishAsks(askQueue.filter((ask) => ask.id !== id)));
+  }
+  askListeners.add(listener);
+  return () => { askListeners.delete(listener); };
+};
+
+export function usePermissionAsk(threadId: string, agents: LiveAgent[]): PermissionAsk | undefined {
+  const queue = useSyncExternalStore(subscribeAsks, () => askQueue);
+  return queue.find((ask) => ask.threadId === threadId || agents.some((agent) => agent.threadId === ask.threadId && agent.parentThreadId === threadId));
+}
+
+export function PermissionPrompt({ ask, agents }: { ask: PermissionAsk; agents: LiveAgent[] }) {
   const from = agents.find((agent) => agent.threadId === ask.threadId);
   const answer = (allowed: boolean) => {
     window.emma.answerPermission({ id: ask.id, allowed });
-    dialog.current?.close();
-    setQueue((current) => current.filter((item) => item.id !== ask.id));
+    publishAsks(askQueue.filter((item) => item.id !== ask.id));
   };
-  return <dialog key={ask.id} ref={dialog} className="modal-backdrop" aria-labelledby="permission-title" onCancel={(event) => { event.preventDefault(); answer(false); }}>
-    <section className="agent-dialog permission-dialog">
-      <header>
-        <div><span>{from ? from.title : "Emma"} · {permissionModeNames[from?.mode ?? "ask"]}</span><h2 id="permission-title">{ask.summary}</h2></div>
-        {from && <i className="agent-dot" style={{ background: from.color }} aria-hidden="true" />}
-      </header>
-      <pre className="permission-detail">{ask.detail}</pre>
-      <div className="computer-dialog-actions">
-        <button type="button" autoFocus={ask.tool === "computer"} onClick={() => answer(false)}>Don&apos;t</button>
-        <button type="button" className="capability-action" autoFocus={ask.tool !== "computer"} onClick={() => answer(true)}>{ask.tool === "computer" ? "Allow for this turn" : "Allow once"}</button>
-      </div>
-    </section>
-  </dialog>;
+  return <section className="permission-inline" aria-labelledby="permission-title" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); answer(false); } }}>
+    <header>
+      <div><span>{from ? from.title : "Emma"} · {permissionModeNames[from?.mode ?? "ask"]}</span><h2 id="permission-title">{ask.summary}</h2></div>
+      {from && <i className="agent-dot" style={{ background: from.color }} aria-hidden="true" />}
+    </header>
+    <pre className="permission-detail">{ask.detail}</pre>
+    <div className="computer-dialog-actions">
+      <button type="button" autoFocus={ask.tool === "computer"} onClick={() => answer(false)}>Don&apos;t</button>
+      <button type="button" className="capability-action" autoFocus={ask.tool !== "computer"} onClick={() => answer(true)}>{ask.tool === "computer" ? "Allow for this turn" : "Allow once"}</button>
+    </div>
+  </section>;
 }
 
 export function AgentRail({ agents, active, onPick }: { agents: LiveAgent[]; active?: string; onPick: (agent: LiveAgent) => void }) {
@@ -149,11 +153,16 @@ export function BackgroundRail() {
   useEffect(() => { reload(); return window.emma.onBackground(reload); }, []);
   useEffect(() => {
     if (!open) return;
-    const read = () => void window.emma.readBackground(open).then((found) => setOutput(found?.output ?? "")).catch(() => undefined);
+    let live = true;
+    const read = () => void window.emma.readBackground(open).then((found) => {
+      if (!live) return;
+      setOutput(found?.output ?? "");
+      if (!found || found.task.status === "exited") clearInterval(timer);
+    }).catch(() => undefined);
     read();
     const timer = setInterval(read, 2000);
-    return () => clearInterval(timer);
-  }, [open, tasks]);
+    return () => { live = false; clearInterval(timer); };
+  }, [open]);
   if (!tasks.length) return null;
   const running = tasks.filter((task) => task.status === "running").length;
   return <div className="sidebar-agents sidebar-background">
@@ -261,7 +270,7 @@ export function ThreadCard({ id, title, onOpen }: { id: string; title: string; o
     if (!text) return;
     setMessage("");
     setError("");
-    setSent(live ? "Queued — it arrives with that agent's next tool results." : "Sent; this thread is working on it.");
+    setSent(live ? "Sent into the run already going there." : "Sent; this thread is working on it.");
     const delivery = live
       ? window.emma.steerAgent({ threadId: id, text })
       : window.emma.request<unknown>("sendMessage", { threadId: id, content: text });

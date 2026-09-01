@@ -1,7 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const debug_trace = @import("../core/shared/debug_trace.zig");
 const io_mod = @import("../core/shared/io.zig");
+const windows_paths = if (builtin.os.tag == .windows)
+    @import("../core/shared/windows_paths.zig")
+else
+    struct {};
 const skill_commands = @import("../core/skills/skill_commands.zig");
 const skill_contract = @import("../core/skills/skill_contract.zig");
 
@@ -9,9 +14,6 @@ const Allocator = std.mem.Allocator;
 
 const RootSpec = skill_contract.RootSpec;
 
-/// Roots scanned at the workspace root and each ancestor directory below
-/// home, in precedence order. `.fx/skills` and `skills/` belong to the product;
-/// the rest are compatibility roots for other agent installs.
 const workspace_roots = [_]RootSpec{
     .{ .source = .workspace_fx, .path = ".fx/skills" },
     .{ .source = .workspace_shared, .path = "skills" },
@@ -22,7 +24,6 @@ const workspace_roots = [_]RootSpec{
     .{ .source = .workspace_claw, .path = ".claw/skills" },
 };
 
-/// Home-relative compatibility roots scanned after the managed install root.
 const global_roots = [_]RootSpec{
     .{ .source = .global_opencode, .path = ".config/opencode/skills" },
     .{ .source = .global_codex, .path = ".codex/skills" },
@@ -243,14 +244,27 @@ pub fn createSkillTemplate(alloc: Allocator, skills_dir: []const u8, name: []con
 fn installFromGitHub(alloc: Allocator, skills_dir: []const u8, url: []const u8, filter: ?[]const u8) !InstallResult {
     try ensureDir(skills_dir);
 
-    const tmp_dir = try std.fmt.allocPrint(alloc, "/tmp/fx-skill-install-{d}", .{io_mod.milliTimestamp()});
+    const temp_root = try io_mod.runtimeTempPathAlloc(alloc);
+    defer alloc.free(temp_root);
+    const tmp_name = try std.fmt.allocPrint(
+        alloc,
+        "fx-skill-install-{d}",
+        .{io_mod.milliTimestamp()},
+    );
+    defer alloc.free(tmp_name);
+    const tmp_dir = try std.fs.path.join(alloc, &.{ temp_root, tmp_name });
     defer alloc.free(tmp_dir);
-    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), tmp_dir) catch {};
+    defer deleteAbsoluteTree(tmp_dir) catch {};
 
     const git_url = try cloneUrlForSource(alloc, url);
     defer alloc.free(git_url);
 
-    const argv = [_][]const u8{ "git", "clone", "--depth", "1", git_url, tmp_dir };
+    var git_path: [32768]u8 = undefined;
+    const git_executable = if (comptime builtin.os.tag == .windows)
+        windows_paths.gitExecutableInto(&git_path) catch return error.SkillInstallFailed
+    else
+        "git";
+    const argv = [_][]const u8{ git_executable, "clone", "--depth", "1", git_url, tmp_dir };
     var child = try std.process.spawn(io_mod.getIo(), .{
         .argv = &argv,
         .stderr = .pipe,
@@ -270,6 +284,14 @@ fn installFromGitHub(alloc: Allocator, skills_dir: []const u8, url: []const u8, 
     }
 
     return installFromDirectory(alloc, skills_dir, tmp_dir, extractRepoName(url), filter);
+}
+
+fn deleteAbsoluteTree(path: []const u8) !void {
+    const parent_path = std.fs.path.dirname(path) orelse return error.InvalidSkillInstallSource;
+    const basename = std.fs.path.basename(path);
+    var parent = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), parent_path, .{});
+    defer parent.close(io_mod.getIo());
+    try parent.deleteTree(io_mod.getIo(), basename);
 }
 
 fn installFromLocalDirectory(alloc: Allocator, skills_dir: []const u8, source: []const u8, filter: ?[]const u8) !?InstallResult {

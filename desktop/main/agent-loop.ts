@@ -115,7 +115,6 @@ export type LoopDeps = {
 
 type Run = Omit<LiveAgent, "tool"> & {
   goal: string;
-  review?: VerifierReview;
   stopped: boolean;
   depth: number;
   changes: FileChange[];
@@ -174,6 +173,7 @@ export class AgentRuntime {
     const run = this.runs.get(threadId);
     if (run?.stopped) return false;
     if (!run || run.status === "done") return true;
+    run.activity = "thinking";
     if (!thinking) run.said += text.length;
     run.outputTokens += Math.ceil(text.length / CHARS_PER_TOKEN);
     run.generationMs = Date.now() - run.startedAt;
@@ -238,6 +238,24 @@ export class AgentRuntime {
       .join("\n");
   }
 
+  noteSteer(threadId: string, text: string): void {
+    const run = this.runs.get(threadId);
+    if (!run || !run.spans.length) return;
+    const at = Date.now();
+    run.spans.push({
+      id: `steer:${run.threadId}:${run.spans.length}`,
+      parentId: run.spans[0].id,
+      name: "steer",
+      kind: "steer",
+      startedAt: at,
+      endedAt: at,
+      status: "ok",
+      input: text,
+      said: run.said,
+    });
+    this.deps.changed();
+  }
+
   steer(threadId: string, _text: string) {
     if (!this.runs.has(threadId)) throw new Error("That agent is no longer running.");
     throw new Error("Emma could not reach the turn that is running on this thread. Wait for it to finish, then send it again.");
@@ -271,6 +289,11 @@ export class AgentRuntime {
 
   answer(id: string, allowed: boolean) {
     this.asks.get(id)?.settle(allowed);
+  }
+
+  dropAsks(threadId: string) {
+    const run = this.runs.get(threadId);
+    if (run) this.dismissAsks(run);
   }
 
   private dismissAsks(run: Run) {
@@ -390,6 +413,14 @@ export class AgentRuntime {
     this.open(turn).adopted = true;
   }
 
+  /** What the turn is waiting on while nothing has streamed yet — startup, hooks, the model. */
+  noteActivity(threadId: string, activity: string): void {
+    const run = this.runs.get(threadId);
+    if (!run || run.status === "done" || run.activity === activity) return;
+    run.activity = activity;
+    this.deps.changed();
+  }
+
   noteUsage(threadId: string, usage: { inputTokens: number; outputTokens: number }): void {
     const run = this.runs.get(threadId);
     if (!run) return;
@@ -425,8 +456,8 @@ export class AgentRuntime {
       span.output = step.output;
       span.tokens = Math.ceil(step.output.length / CHARS_PER_TOKEN);
     }
-    if (step?.status === "completed" || step?.status === "failed") {
-      span.status = step.status === "failed" ? "failed" : "ok";
+    if (step?.status === "completed" || step?.status === "failed" || step?.status === "cancelled") {
+      span.status = step.status === "completed" ? "ok" : step.status;
       span.endedAt = Math.max(step.at, span.startedAt);
     }
     this.deps.changed();
@@ -446,7 +477,11 @@ export class AgentRuntime {
     this.dismissAsks(run);
     run.generationMs = Math.max(run.generationMs, run.endedAt - run.startedAt, 1);
     this.closeRun(run, error ? "failed" : "ok", error);
-    for (const span of run.spans) if (span.endedAt === undefined && span.status === "running") span.endedAt = run.endedAt;
+    for (const span of run.spans) {
+      if (span.endedAt !== undefined || span.status !== "running") continue;
+      span.endedAt = run.endedAt;
+      if (span.id.startsWith("call:")) span.status = "cancelled";
+    }
     this.flushTrace(run);
     this.deps.changed();
   }
@@ -630,41 +665,38 @@ export class AgentRuntime {
       summary: ask.summary,
       detail: ask.detail,
     };
+    const authorized = this.authorization(run.threadId);
+    const startedAt = Date.now();
+    const review = await this.deps.verify(request, run.threadId);
+    if (review.verdict?.allow || !authorized()) return review;
     this.verifications += 1;
     const toolCallId = `verify:${run.threadId}:${this.verifications}`;
-    const span: TraceSpan = {
+    const title = review.verdict ? "auto agent blocked" : "auto agent could not answer";
+    const output = review.error ? `${review.error}${review.reply ? `\n\n${review.reply}` : ""}` : review.reply;
+    const endedAt = Date.now();
+    run.spans.push({
       id: `call:${toolCallId}`,
       parentId: run.spans[0].id,
-      name: "auto agent · reviewing",
+      name: `${title} · ${ask.summary}`,
       kind: "verifier",
-      startedAt: Date.now(),
-      status: "running",
+      startedAt,
+      endedAt,
+      status: "failed",
       said: run.said,
-      input: "",
-    };
-    run.spans.push(span);
-    this.deps.changed();
-    const authorized = this.authorization(run.threadId);
-    const review = await this.deps.verify(request, run.threadId);
-    if (!authorized()) return review;
-    const title = review.verdict?.allow ? "auto agent approved" : review.verdict ? "auto agent blocked" : "auto agent could not answer";
-    span.name = `${title} · ${ask.summary}`;
-    span.input = review.prompt;
-    span.output = review.error ? `${review.error}${review.reply ? `\n\n${review.reply}` : ""}` : review.reply;
-    span.status = review.verdict?.allow ? "ok" : "failed";
-    span.endedAt = Date.now();
+      input: review.prompt,
+      output,
+    });
     this.deps.step({
       threadId: ask.threadId,
       toolCallId,
       title,
       kind: "verifier",
-      status: review.verdict?.allow ? "completed" : "failed",
+      status: "failed",
       input: review.prompt,
-      output: span.output,
-      at: span.endedAt,
+      output,
+      at: endedAt,
     });
     this.deps.changed();
-    run.review = review;
     return review;
   }
 

@@ -3,7 +3,7 @@ use std::{
     fmt,
     fs::{self, OpenOptions},
     io::{self, Write},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -58,32 +58,20 @@ impl fmt::Display for ResearchJobId {
     }
 }
 
-/// A measurement is an `f64`, so the job it belongs to cannot be `Eq` — which is
-/// only a problem for tests, and `assert_eq!` needs no more than `PartialEq`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchJob {
     pub id: ResearchJobId,
     pub title: String,
-    /// The git repository the loop edits. Core never touches it; the app runs the
-    /// eval command with this as its working directory.
     pub project_dir: String,
-    /// The four fields that make a job's numbers comparable to each other: what is
-    /// measured, how it is read, the rubric a judge scores against, and which way
-    /// is better. Once iterations exist, changing any of them is refused.
     pub metric_name: String,
     pub metric_kind: String,
     pub metric_prompt: String,
     pub direction: String,
     pub eval_command: String,
-    /// Free text the user steers the proposer with, in the composer's own grammar:
-    /// "/skill" and "@file" tokens are resolved by the app on every iteration.
-    /// Empty is normal — the loop has its own instructions without one.
     pub prompt: String,
     pub proposer_model: String,
     pub permission_mode: String,
-    /// Each budget is a ceiling, `0` meaning none. The app checks them before an
-    /// iteration and pauses the job when one is spent.
     pub max_seconds: u64,
     pub max_tokens: u64,
     pub max_micro_dollars: u64,
@@ -102,9 +90,6 @@ pub struct ResearchJob {
 pub struct ResearchIteration {
     pub index: u32,
     pub at: Timestamp,
-    /// The measurement, and the best measurement after it. A crashed run has
-    /// neither a value nor any claim on the best, which is what makes the graph's
-    /// line flat across a crash instead of broken.
     pub value: Option<f64>,
     pub best: Option<f64>,
     pub outcome: String,
@@ -116,8 +101,6 @@ pub struct ResearchIteration {
     pub micro_dollars: u64,
 }
 
-/// Far more attempts than any real experiment needs, and a hard stop for the one
-/// that has run away: a job with a file this long is a job nobody is watching.
 pub const MAX_RESEARCH_ITERATIONS: usize = 1000;
 
 impl ResearchJob {
@@ -144,8 +127,6 @@ impl ResearchJob {
         validate_text("autoresearch eval command", &eval_command, true)?;
         validate_text("autoresearch model", &proposer_model, true)?;
         validate_text("autoresearch prompt", &prompt, false)?;
-        // A judge has nothing to score against without a rubric, and a grep metric
-        // reads a number out of the output, so a rubric there would be ignored.
         validate_text(
             "autoresearch metric prompt",
             &metric_prompt,
@@ -174,9 +155,12 @@ impl ResearchJob {
                 "autoresearch direction must be \"lower\" or \"higher\"",
             ));
         }
-        // The app resolves nothing: the folder it is handed is the folder it runs
-        // the eval command in, so a relative or climbing path is refused here.
-        if !project_dir.starts_with('/') || project_dir.split('/').any(|part| part == "..") {
+        let project_path = Path::new(&project_dir);
+        if !project_path.is_absolute()
+            || project_path
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
             return Err(ValidationError::new(
                 "autoresearch project folder must be an absolute path without \"..\"",
             ));
@@ -204,7 +188,6 @@ impl ResearchJob {
             spent_seconds: 0,
             spent_tokens: 0,
             spent_micro_dollars: 0,
-            // Saving a job does not start it; the user presses play.
             status: "paused".into(),
             status_note: String::new(),
             thread_id: None,
@@ -213,9 +196,6 @@ impl ResearchJob {
         })
     }
 
-    /// Re-saving a job. Everything the loop reads on its next pass may change, but
-    /// the metric may not: a job whose numbers were measured two different ways is
-    /// a graph of two unrelated experiments.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_edit(
         &mut self,
@@ -241,8 +221,6 @@ impl ResearchJob {
                 "an autoresearch metric cannot be changed — create a new job for a different metric",
             ));
         }
-        // Validating an edit is validating the job it produces, so build that job
-        // and keep its fields rather than repeating every bound here.
         let edited = Self::new(
             title,
             project_dir,
@@ -270,9 +248,6 @@ impl ResearchJob {
         Ok(())
     }
 
-    /// What the app reports about one attempt. The index, the best-so-far and the
-    /// three running totals are core's to work out — the app knows what happened,
-    /// not what it adds up to.
     #[allow(clippy::too_many_arguments)]
     pub fn record_iteration(
         &mut self,
@@ -340,8 +315,6 @@ impl ResearchJob {
         Ok(())
     }
 
-    /// Wall clock spent, across every run of the job — a resumed job keeps the time
-    /// its earlier runs already spent.
     pub fn add_seconds(&mut self, seconds: u64) {
         self.spent_seconds = self.spent_seconds.saturating_add(seconds);
     }
@@ -394,8 +367,6 @@ impl ResearchJob {
     pub fn from_markdown(markdown: &str) -> Result<Self, ValidationError> {
         let mut lines = markdown.lines();
         exact(&mut lines, "---")?;
-        // Version 1 is every job saved before the steering prompt existed: it reads
-        // back with an empty one and is rewritten as 2 the next time it is saved.
         let version = prefixed(&mut lines, "emma-research-format: ")?;
         if !matches!(version, "1" | "2") {
             return Err(ValidationError::new(
@@ -575,7 +546,6 @@ impl ResearchJobStore {
         Ok(job)
     }
 
-    /// Deleting a job that is already gone is a success: the caller wanted it gone.
     pub fn delete(&self, id: &ResearchJobId) -> Result<(), ResearchJobStoreError> {
         match fs::remove_file(self.path_for(id)) {
             Ok(()) => Ok(()),
@@ -674,8 +644,6 @@ fn number(output: &mut String, name: &str, value: u64) {
     output.push('\n');
 }
 
-/// A measurement on the way out. Rust prints the shortest text that parses back to
-/// the same `f64`, so the round-trip is exact and a missing value is just empty.
 fn measurement(value: Option<f64>) -> String {
     value.map_or_else(String::new, |value| value.to_string())
 }
@@ -722,10 +690,18 @@ fn measurement_value(
 mod tests {
     use super::*;
 
+    fn project_dir(name: &str) -> String {
+        if cfg!(windows) {
+            format!(r"C:\Users\me\{name}")
+        } else {
+            format!("/Users/me/{name}")
+        }
+    }
+
     fn job(direction: &str) -> ResearchJob {
         ResearchJob::new(
             "Lower the loss".into(),
-            "/Users/me/nanochat".into(),
+            project_dir("nanochat"),
             "val_bpb".into(),
             "grep".into(),
             String::new(),
@@ -767,7 +743,6 @@ mod tests {
         job.add_seconds(42);
         assert_eq!(ResearchJob::from_markdown(&job.to_markdown()).unwrap(), job);
         assert!(ResearchJob::from_markdown(&(job.to_markdown() + "extra\n")).is_err());
-        // A job saved before the steering prompt existed still loads, without one.
         let older = job
             .to_markdown()
             .replace("emma-research-format: 2", "emma-research-format: 1")
@@ -796,14 +771,14 @@ mod tests {
             )
         };
         assert_eq!(
-            edit(&mut job, "val_loss", "/Users/me/nanochat").unwrap_err(),
+            edit(&mut job, "val_loss", &project_dir("nanochat")).unwrap_err(),
             ValidationError::new(
                 "an autoresearch metric cannot be changed — create a new job for a different metric"
             )
         );
-        assert!(edit(&mut job, "val_bpb", "/Users/me/elsewhere").is_err());
+        assert!(edit(&mut job, "val_bpb", &project_dir("elsewhere")).is_err());
         assert_eq!(job.title, "Lower the loss");
-        edit(&mut job, "val_bpb", "/Users/me/nanochat").unwrap();
+        edit(&mut job, "val_bpb", &project_dir("nanochat")).unwrap();
         assert_eq!(job.title, "Lower the loss, harder");
         assert_eq!(job.proposer_model, "openai/gpt-5");
         assert_eq!(job.prompt, "Stay inside @train.py");
@@ -900,7 +875,12 @@ mod tests {
 
     #[test]
     fn a_project_folder_cannot_be_relative_or_climb() {
-        for folder in ["/Users/me/../../etc", "nanochat", "~/nanochat", ".."] {
+        let climbing = if cfg!(windows) {
+            r"C:\Users\me\..\..\etc"
+        } else {
+            "/Users/me/../../etc"
+        };
+        for folder in [climbing, "nanochat", "~/nanochat", ".."] {
             assert!(
                 ResearchJob::new(
                     "x".into(),

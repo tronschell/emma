@@ -18,8 +18,8 @@ const session_usage_sidecar = @import("session_usage_sidecar.zig");
 
 const Allocator = std.mem.Allocator;
 const Identifier = session_event.Identifier;
-const private_dir_permissions = std.Io.File.Permissions.fromMode(0o700);
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
+const private_dir_permissions = io_mod.permissionsFromMode(0o700);
+const private_file_permissions = io_mod.permissionsFromMode(0o600);
 const lock_deadline_ms: u64 = 2000;
 const authority_max_bytes: usize = 16 * 1024;
 const authority_intent_max_bytes: usize = 32 * 1024;
@@ -274,16 +274,12 @@ pub const WritableSessionDir = struct {
         return self.writer_lock == null;
     }
 
-    /// Release `session.lock` while keeping the session directory open for a
-    /// later `unpark` in the same process (idle job-control suspend).
     pub fn park(self: *WritableSessionDir) void {
         const lock = &(self.writer_lock orelse return);
         lock.release();
         self.writer_lock = null;
     }
 
-    /// Reacquire `session.lock` after `park`. Fails with `SessionBusy` when
-    /// another process already owns the writer lock.
     pub fn unpark(self: *WritableSessionDir) !void {
         if (self.writer_lock != null) return;
         self.writer_lock = acquireLock(&self.dir, session_lock_file, true) catch |err| {
@@ -343,8 +339,6 @@ pub const ReadBoundary = struct {
     }
 };
 
-/// Loads the exact manifest boundary while deliberately ignoring a corrupt
-/// commit watermark. The source directory remains unchanged.
 pub fn recoverManifestBoundary(
     alloc: Allocator,
     writable: *WritableSessionDir,
@@ -548,8 +542,6 @@ pub const LoadedWritableSession = struct {
     migration_source_bytes: ?u64 = null,
     usage_sidecar_reseal_pending: bool = false,
     resume_view_stale: bool = false,
-    /// Runtime-only provenance installed by subagent resume admission. These
-    /// fields are never written into the session event log.
     external_prompt_origin: ExternalPromptOrigin = .root,
     external_root_user_messages: [][]u8 = &.{},
     external_root_user_evidence_complete: bool = false,
@@ -587,7 +579,6 @@ pub const LoadedWritableSession = struct {
         );
     }
 
-    /// Returns a borrowed address that remains stable until deinit.
     pub fn childCapability(
         self: *LoadedWritableSession,
     ) !*session_child_store.SessionChildCapability {
@@ -865,8 +856,6 @@ pub const LoadedWritableSession = struct {
         );
     }
 
-    /// Repairs only a corrupt watermark whose writer authority, complete
-    /// event log, and in-memory state prove the same exact boundary.
     pub fn repairResumeBoundary(
         self: *LoadedWritableSession,
         alloc: Allocator,
@@ -1049,8 +1038,13 @@ pub const Root = struct {
         };
         defer durable_home.close(zio);
         if (mode == .writable) {
-            durable_home.setPermissions(zio, private_dir_permissions) catch
-                return error.PrivateStatePermissionsUnsupported;
+            if (comptime builtin.os.tag == .windows) {
+                io_mod.enforcePrivateDirectoryAcl(durable_home) catch
+                    return error.PrivateStatePermissionsUnsupported;
+            } else {
+                durable_home.setPermissions(zio, private_dir_permissions) catch
+                    return error.PrivateStatePermissionsUnsupported;
+            }
         }
         try verifyPrivateDir(durable_home, mode);
 
@@ -1081,8 +1075,13 @@ pub const Root = struct {
         };
         errdefer sessions_dir.close(zio);
         if (mode == .writable) {
-            sessions_dir.setPermissions(zio, private_dir_permissions) catch
-                return error.PrivateStatePermissionsUnsupported;
+            if (comptime builtin.os.tag == .windows) {
+                io_mod.enforcePrivateDirectoryAcl(sessions_dir) catch
+                    return error.PrivateStatePermissionsUnsupported;
+            } else {
+                sessions_dir.setPermissions(zio, private_dir_permissions) catch
+                    return error.PrivateStatePermissionsUnsupported;
+            }
         }
         try verifyPrivateDir(sessions_dir, mode);
         const display_root = try io_mod.dirRealpathAlloc(alloc, sessions_dir, ".");
@@ -1400,16 +1399,28 @@ fn validateLeaf(name: []const u8) !void {
 fn verifyPrivateDir(dir: std.Io.Dir, mode: OpenMode) !void {
     const stat = try dir.stat(io_mod.getIo());
     if (stat.kind != .directory) return error.SessionPathUnsafe;
-    if (mode == .writable and stat.permissions.toMode() & 0o777 != 0o700) {
-        return error.PrivateStatePermissionsUnsupported;
+    if (mode == .writable) {
+        if (comptime builtin.os.tag == .windows) {
+            if (!(try io_mod.privateDirectoryAclMatches(dir))) {
+                return error.PrivateStatePermissionsUnsupported;
+            }
+        } else if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
     }
 }
 
 fn verifyManagedFile(file: std.Io.File, mode: OpenMode) !void {
     const stat = try file.stat(io_mod.getIo());
     if (stat.kind != .file or stat.nlink != 1) return error.SessionPathUnsafe;
-    if (mode == .writable and stat.permissions.toMode() & 0o777 != 0o600) {
-        return error.PrivateStatePermissionsUnsupported;
+    if (mode == .writable) {
+        if (comptime builtin.os.tag == .windows) {
+            if (!(try io_mod.privateFileAclMatches(file))) {
+                return error.PrivateStatePermissionsUnsupported;
+            }
+        } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
+            return error.PrivateStatePermissionsUnsupported;
+        }
     }
 }
 
@@ -1428,8 +1439,13 @@ fn openSessionDir(
     };
     errdefer dir.close(io_mod.getIo());
     if (mode == .writable) {
-        dir.setPermissions(io_mod.getIo(), private_dir_permissions) catch
-            return error.PrivateStatePermissionsUnsupported;
+        if (comptime builtin.os.tag == .windows) {
+            io_mod.enforcePrivateDirectoryAcl(dir) catch
+                return error.PrivateStatePermissionsUnsupported;
+        } else {
+            dir.setPermissions(io_mod.getIo(), private_dir_permissions) catch
+                return error.PrivateStatePermissionsUnsupported;
+        }
     }
     try verifyPrivateDir(dir, mode);
     return .{ .dir = dir };
@@ -1471,8 +1487,13 @@ fn createManagedFile(
         else => return err,
     };
     errdefer file.close(io_mod.getIo());
-    file.setPermissions(io_mod.getIo(), private_file_permissions) catch
-        return error.PrivateStatePermissionsUnsupported;
+    if (comptime builtin.os.tag == .windows) {
+        io_mod.enforcePrivateFileAcl(file) catch
+            return error.PrivateStatePermissionsUnsupported;
+    } else {
+        file.setPermissions(io_mod.getIo(), private_file_permissions) catch
+            return error.PrivateStatePermissionsUnsupported;
+    }
     try verifyManagedFile(file, .writable);
     return file;
 }
@@ -3970,8 +3991,6 @@ fn writeManifestProjection(
 
     var display = try displayMetadataForProjection(alloc, loaded);
     defer display.metadata.deinit(alloc);
-    // A present sidecar is frozen and already durable; only first derivations
-    // (or repairs after a failed read) are written.
     if (display.metadata.present and !display.from_sidecar) {
         if (display.metadata.origin_workspace_root == null) {
             display.metadata.origin_workspace_root = try alloc.dupe(u8, loaded.state.origin_workspace_root);
@@ -4023,7 +4042,7 @@ fn eventStat(
         .device = try eventDevice(file),
         .inode = @intCast(stat.inode),
         .kind = .regular,
-        .mode = stat.permissions.toMode(),
+        .mode = io_mod.permissionsMode(stat.permissions),
         .link_count = @intCast(stat.nlink),
         .size = stat.size,
         .mtime_ns = stat.mtime.nanoseconds,
@@ -4382,9 +4401,30 @@ fn cleanupOrphansImpl(
             report.ignored += 1;
             continue;
         };
-        if (stat.kind != .file or stat.nlink != 1 or
-            stat.permissions.toMode() & 0o777 != 0o600)
-        {
+        if (stat.kind != .file or stat.nlink != 1) {
+            report.ignored += 1;
+            continue;
+        }
+        if (comptime builtin.os.tag == .windows) {
+            var candidate = io_mod.openExistingRegularFile(
+                loaded.log.dir.dir,
+                entry.name,
+                .read_only,
+            ) catch {
+                report.ignored += 1;
+                continue;
+            };
+            const private = io_mod.privateFileAclMatches(candidate) catch {
+                candidate.close(io_mod.getIo());
+                report.ignored += 1;
+                continue;
+            };
+            candidate.close(io_mod.getIo());
+            if (!private) {
+                report.ignored += 1;
+                continue;
+            }
+        } else if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
             report.ignored += 1;
             continue;
         }
@@ -4588,7 +4628,7 @@ const TempRoot = struct {
     fn init(alloc: Allocator) !TempRoot {
         var tmp = std.testing.tmpDir(.{});
         errdefer tmp.cleanup();
-        try tmp.dir.createDir(io_mod.getIo(), "home", std.Io.File.Permissions.fromMode(0o700));
+        try tmp.dir.createDir(io_mod.getIo(), "home", io_mod.permissionsFromMode(0o700));
         const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
         errdefer alloc.free(home);
         var root = try Root.initFromHome(alloc, home, .writable);
@@ -5152,7 +5192,7 @@ test "unwritable usage sidecar keeps canonical usage resumable and incomplete" {
     try loaded.log.dir.dir.createDir(
         io_mod.getIo(),
         session_usage_sidecar.sidecar_file,
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
 
     var usage = session_usage.Usage.initFresh();

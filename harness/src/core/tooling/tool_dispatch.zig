@@ -46,6 +46,11 @@ pub const default_max_list_entries: usize = 100;
 pub const default_max_read_file_bytes: usize = 50 * 1024;
 pub const default_max_read_file_lines: usize = 400;
 pub const default_max_read_file_line_len: usize = 2000;
+pub const default_command_timeout_ms: usize = 10 * std.time.ms_per_min;
+
+pub fn resolveCommandTimeoutMs(configured: ?usize) usize {
+    return configured orelse default_command_timeout_ms;
+}
 
 pub const web_search_unavailable_message = "web_search is unavailable: no local runtime with a configured Gateway transport policy is installed";
 pub const web_fetch_unavailable_message = "web_fetch is unavailable: no local WebFetch runtime is installed";
@@ -385,6 +390,8 @@ pub const LabelArgKind = enum {
     action,
     query,
     selector,
+    focus,
+    key,
 };
 
 pub const PermissionTargetKind = core_permissions.PermissionTargetKind;
@@ -631,6 +638,8 @@ fn labelValueForKind(kind: LabelArgKind, args: std.json.ObjectMap) ?[]const u8 {
         .action => optionalStringArg(args, "action"),
         .query => optionalStringArg(args, "query"),
         .selector => optionalStringArg(args, "selector"),
+        .focus => optionalStringArg(args, "focus"),
+        .key => optionalStringArg(args, "key"),
     };
 }
 
@@ -1539,4 +1548,10 @@ test "terminal tool capability facts follow the host support matrix" {
             capabilities.terminalAvailable(),
         );
     }
+}
+
+test "command timeout falls back to the default and yields to an explicit value" {
+    try std.testing.expectEqual(default_command_timeout_ms, resolveCommandTimeoutMs(null));
+    try std.testing.expectEqual(@as(usize, 250), resolveCommandTimeoutMs(250));
+    try std.testing.expectEqual(@as(usize, 0), resolveCommandTimeoutMs(0));
 }

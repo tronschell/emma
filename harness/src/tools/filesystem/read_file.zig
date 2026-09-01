@@ -10,30 +10,24 @@ const write_file_impl = @import("write_file.zig");
 
 const Allocator = std.mem.Allocator;
 
-// Allow freshness snapshots for files larger than read_file can show the model.
 const max_snapshot_file_bytes: usize = 10 * 1024 * 1024;
-// Keep one tool result under common model input limits without a tokenizer.
 const max_model_output_bytes: usize = 256 * 1024;
-// Bound tiny-line files so one read cannot dominate a turn.
 const max_line_count: usize = 2000;
 const line_truncated_suffix = "... (line truncated)";
 
 const whitespace = " \t\r\n";
 
-/// Typed input for the built-in read_file tool.
 pub const Input = struct {
     path: []u8,
     start_line: usize = 1,
     line_count: usize = tool_dispatch.default_max_read_file_lines,
 
-    /// Frees the owned normalized path.
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.path);
         self.* = .{ .path = &.{} };
     }
 };
 
-/// Decodes read_file JSON into an owned Input released by ToolInput.deinit.
 pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
     var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, args_json, .{}) catch {
         return .{ .failure = try ctx.allocator.dupe(u8, "read_file arguments must be valid JSON") };
@@ -92,7 +86,6 @@ fn inputDeinit(ptr: *anyopaque, alloc: Allocator) void {
     alloc.destroy(input);
 }
 
-/// Normalizes and validates the owned Input before permission checks.
 pub fn validate(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!?[]u8 {
     const input = erased.as(Input);
     const trimmed = std.mem.trim(u8, input.path, whitespace);
@@ -115,7 +108,6 @@ fn replaceOwnedPath(alloc: Allocator, input: *Input, owned: []u8) void {
     input.path = owned;
 }
 
-/// Reads the validated file and returns an owned tool result body.
 pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     const input = erased.as(Input);
 
@@ -171,12 +163,13 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     const scan = try selectLinesFromContent(arena, text, &selected, ctx.max_read_file_line_len, &records);
     const snapshot_covers_full_file = !truncated_by_size and actual_len == stat.size;
     const model_view_covers_full_file = snapshot_covers_full_file and modelViewCoversFullFile(&selected, scan, records.items.len);
+    const repeats_full_read = !model_view_covers_full_file and priorFullFileRead(ctx, target, scan.content_hash);
     try recordSuccessfulRead(ctx, target, stat, scan.content_hash, model_view_covers_full_file, snapshot_covers_full_file);
     tool_dispatch.reportToolResultMemory(ctx, .{
         .model_view_covers_full_file = model_view_covers_full_file,
     });
 
-    return .{ .success = try formatReadOutput(ctx.allocator, rel, &selected, records.items, scan, snapshot_covers_full_file) };
+    return .{ .success = try formatReadOutput(ctx.allocator, rel, &selected, records.items, scan, snapshot_covers_full_file, repeats_full_read) };
 }
 
 fn readFileFailure(alloc: Allocator, err: anyerror, path: []const u8) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
@@ -193,7 +186,7 @@ fn readFileFailure(alloc: Allocator, err: anyerror, path: []const u8) tool_dispa
             .tool_name = "read_file",
             .message = "read_file requires a regular file",
             .details = &details,
-            .suggestion = "Run file_info to inspect the path, then choose a regular file.",
+            .suggestion = "If the path is a directory, run list_files on it instead; otherwise run file_info and pick a regular file. Retrying read_file on this path will fail again.",
         }) };
     }
     const details = [_]tool_result_errors.Detail{
@@ -321,6 +314,17 @@ fn modelViewCoversFullFile(input: *const Input, scan: ReadScan, returned_lines: 
     return !scan.display_truncated and input.start_line == 1 and returned_lines == scan.total_lines;
 }
 
+fn priorFullFileRead(
+    ctx: tool_dispatch.DispatchContext,
+    path: []const u8,
+    content_hash: read_tracker.ContentHash,
+) bool {
+    const tracker = ctx.read_tracker orelse return false;
+    const prior = tracker.lookup(path) orelse return false;
+    return prior.model_view_covers_full_file and
+        std.mem.eql(u8, &prior.content_hash, &content_hash);
+}
+
 fn recordSuccessfulRead(
     ctx: tool_dispatch.DispatchContext,
     path: []const u8,
@@ -345,6 +349,7 @@ fn formatReadOutput(
     records: []const LineRecord,
     scan: ReadScan,
     snapshot_covers_full_file: bool,
+    repeats_full_read: bool,
 ) tool_dispatch.DispatchError![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
@@ -359,6 +364,12 @@ fn formatReadOutput(
     const include_sentinel = !modelViewCoversFullFile(input, scan, records.len) or !snapshot_covers_full_file;
     if (include_sentinel and (records.len > 0 or scan.display_truncated)) {
         writeTruncationSentinel(&out.writer, records.len, scan.total_lines, snapshot_covers_full_file) catch return error.OutOfMemory;
+    }
+    if (repeats_full_read) {
+        out.writer.print(
+            "... [all {d} lines of this file were already read earlier and it has not changed since; this range adds nothing new]\n",
+            .{scan.total_lines},
+        ) catch return error.OutOfMemory;
     }
     out.writer.writeAll("</content>") catch return error.OutOfMemory;
     return try out.toOwnedSlice();
@@ -404,12 +415,10 @@ fn digitCount(value: usize) usize {
     return count;
 }
 
-/// Reports that read_file only observes filesystem state.
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
     return true;
 }
 
-/// Reports that read_file has no irreversible side effects.
 pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return false;
 }
@@ -629,6 +638,7 @@ test "read_file non-regular paths return structured recovery" {
             try std.testing.expect(std.mem.find(u8, body, "read_file requires a regular file") != null);
             try std.testing.expect(std.mem.find(u8, body, "NotRegularFile") != null);
             try std.testing.expect(std.mem.find(u8, body, "file_info") != null);
+            try std.testing.expect(std.mem.find(u8, body, "run list_files on it instead") != null);
         },
         .success => |body| {
             defer alloc.free(body);
@@ -846,6 +856,44 @@ test "read_file records display-truncated reads with complete snapshot when poss
     try std.testing.expect(!record.model_view_covers_full_file);
     try std.testing.expect(record.snapshot_covers_full_file);
     try std.testing.expectEqualSlices(u8, &read_tracker.contentHash(content), &record.content_hash);
+}
+
+test "a narrowed re-read says the whole file was already read" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "one\ntwo\nthree\nfour\n";
+    {
+        var file = try tmp.dir.createFile(std.testing.io, "reread.txt", .{});
+        defer file.close(io_mod.getIo());
+        try file.writeStreamingAll(io_mod.getIo(), content);
+    }
+    const path = try tmpPath(alloc, tmp, "reread.txt");
+    defer alloc.free(path);
+    const whole_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    defer alloc.free(whole_args);
+    const range_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"start_line\":2,\"line_count\":2}}", .{path});
+    defer alloc.free(range_args);
+    var tracker = read_tracker.ReadTracker.init(alloc);
+    defer tracker.deinit();
+
+    const cold = try dispatchReadFileWithTracker(alloc, range_args, &tracker);
+    defer cold.deinit(alloc);
+    try std.testing.expectEqual(.success, cold.status);
+    try std.testing.expect(std.mem.find(u8, cold.body, "already read earlier") == null);
+
+    const whole = try dispatchReadFileWithTracker(alloc, whole_args, &tracker);
+    defer whole.deinit(alloc);
+    try std.testing.expectEqual(.success, whole.status);
+
+    const repeat = try dispatchReadFileWithTracker(alloc, range_args, &tracker);
+    defer repeat.deinit(alloc);
+    try std.testing.expectEqual(.success, repeat.status);
+    try std.testing.expect(std.mem.find(u8, repeat.body, "already read earlier") != null);
+
+    const again = try dispatchReadFileWithTracker(alloc, whole_args, &tracker);
+    defer again.deinit(alloc);
+    try std.testing.expect(std.mem.find(u8, again.body, "already read earlier") == null);
 }
 
 test "read_file records full coverage for files within both caps" {

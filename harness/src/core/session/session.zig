@@ -40,9 +40,6 @@ const compact_summary_chars_per_line: usize = 50;
 const compact_summary_max_lines: usize = 24;
 const compact_summary_max_line_chars: usize = 160;
 
-/// How full the model's context window gets before history is compacted on tokens
-/// rather than on turn count. Well short of the wall: the turn about to be sent
-/// still has to fit alongside everything kept.
 const compact_token_trigger_percent: usize = 70;
 
 /// What one compaction may spend, derived from the model's context window.
@@ -1627,6 +1624,36 @@ pub const WebFetchArtifactState = union(enum) {
     unavailable: anyerror,
 };
 
+const CompactionCache = struct {
+    prefix: []u8 = &.{},
+    max_chars: usize = 0,
+    max_lines: usize = 0,
+    summary: ?CompactedSummaryHistoryTurn = null,
+
+    fn deinit(self: *@This()) void {
+        if (self.prefix.len > 0) std.heap.c_allocator.free(self.prefix);
+        if (self.summary) |summary| {
+            freeHistoryTurn(std.heap.c_allocator, .{ .compacted_summary = summary });
+        }
+        self.* = .{};
+    }
+
+    fn matches(self: *const @This(), prefix: []const u8, budget: CompactionBudget) bool {
+        return self.summary != null and
+            self.max_chars == budget.max_chars and
+            self.max_lines == budget.max_lines and
+            std.mem.eql(u8, self.prefix, prefix);
+    }
+
+    fn replace(self: *@This(), prefix: []u8, summary: CompactedSummaryHistoryTurn, budget: CompactionBudget) void {
+        self.deinit();
+        self.prefix = prefix;
+        self.max_chars = budget.max_chars;
+        self.max_lines = budget.max_lines;
+        self.summary = summary;
+    }
+};
+
 pub const SessionRuntime = struct {
     history: std.ArrayList(HistoryTurn) = .empty,
     context_notice_hashes: std.AutoHashMapUnmanaged(u64, void) = .empty,
@@ -1638,12 +1665,13 @@ pub const SessionRuntime = struct {
     profile_usage: profile_usage_runtime.Runtime = .{},
     permission_state_lock: std.Io.Mutex = .init,
     permission_state: session_permission_state.State = .{},
-    /// Count limit for owned model-context snapshots; canonical history is not truncated.
     max_history_turns: usize,
-    /// The selected model's context window, when the host knows it. Zero means
-    /// unknown, and compaction falls back to the turn-count rule alone.
     context_window_tokens: usize = 0,
+    projection_compaction_percent: usize = compact_token_trigger_percent,
     context_history_start: usize = 0,
+    summarizer: ?Summarizer = null,
+    compaction_observer: ?CompactionObserver = null,
+    compaction_cache: CompactionCache = .{},
 
     pub fn init(
         max_history_turns: usize,
@@ -1868,6 +1896,7 @@ pub const SessionRuntime = struct {
         }
         self.history.clearRetainingCapacity();
         self.context_history_start = 0;
+        self.compaction_cache.deinit();
     }
 
     pub fn historyLen(self: *const SessionRuntime) usize {
@@ -1915,12 +1944,17 @@ pub const SessionRuntime = struct {
     }
 
     pub fn snapshotContextHistory(self: *const SessionRuntime, alloc: Allocator) ![]HistoryTurn {
-        return snapshotOwnedContextHistory(
+        const runtime: *SessionRuntime = @constCast(self);
+        return snapshotOwnedContextHistoryWithTokenTrigger(
             alloc,
             self.history.items,
             self.context_history_start,
             self.max_history_turns,
             self.context_window_tokens,
+            self.projection_compaction_percent,
+            self.summarizer,
+            self.compaction_observer,
+            &runtime.compaction_cache,
         );
     }
 
@@ -2029,7 +2063,18 @@ pub const SessionRuntime = struct {
 
     pub fn forceCompaction(self: *SessionRuntime) void {
         if (self.history.items.len <= 1) return;
-        self.context_history_start = self.history.items.len - 1;
+        const next = self.history.items.len - 1;
+        if (self.context_history_start == next) return;
+        self.context_history_start = next;
+        self.compaction_cache.deinit();
+    }
+
+    pub fn shouldAutoCompact(self: *const SessionRuntime, trigger_percent: usize) bool {
+        if (trigger_percent == 0 or self.context_window_tokens == 0 or self.history.items.len <= 1) return false;
+        const start = @min(self.context_history_start, self.history.items.len);
+        var estimated_tokens = if (start > 0) CompactionBudget.forWindow(self.context_window_tokens).max_chars / 4 else 0;
+        for (self.history.items[start..]) |turn| estimated_tokens +|= estimateHistoryTurnTokens(turn);
+        return estimated_tokens *| 100 >= self.context_window_tokens *| trigger_percent;
     }
 
     fn setConversationLanguage(self: *SessionRuntime, language: ConversationLanguage) void {
@@ -2051,13 +2096,38 @@ fn appendHistoryCopies(
     }
 }
 
-/// Builds an independently owned prompt-history snapshot from canonical history.
 pub fn snapshotOwnedContextHistory(
     alloc: Allocator,
     canonical_history: []const HistoryTurn,
     context_history_start: usize,
     max_history_turns: usize,
     context_window_tokens: usize,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
+) ![]HistoryTurn {
+    return snapshotOwnedContextHistoryWithTokenTrigger(
+        alloc,
+        canonical_history,
+        context_history_start,
+        max_history_turns,
+        context_window_tokens,
+        compact_token_trigger_percent,
+        summarizer,
+        observer,
+        null,
+    );
+}
+
+fn snapshotOwnedContextHistoryWithTokenTrigger(
+    alloc: Allocator,
+    canonical_history: []const HistoryTurn,
+    context_history_start: usize,
+    max_history_turns: usize,
+    context_window_tokens: usize,
+    token_trigger_percent: usize,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
+    cache: ?*CompactionCache,
 ) ![]HistoryTurn {
     var copy: std.ArrayList(HistoryTurn) = .empty;
     errdefer {
@@ -2073,9 +2143,21 @@ pub fn snapshotOwnedContextHistory(
         &copy,
         canonical_history[0..start],
         context_window_tokens,
+        summarizer,
+        observer,
+        cache,
     );
     try appendHistoryCopies(alloc, &copy, canonical_history[start..]);
-    _ = try compactHistory(&copy, alloc, max_history_turns, context_window_tokens);
+    _ = try compactHistoryWithCache(
+        &copy,
+        alloc,
+        max_history_turns,
+        context_window_tokens,
+        token_trigger_percent,
+        summarizer,
+        observer,
+        cache,
+    );
     return copy.toOwnedSlice(alloc);
 }
 
@@ -2084,6 +2166,9 @@ fn appendCompactedPrefix(
     destination: *std.ArrayList(HistoryTurn),
     history: []const HistoryTurn,
     context_window_tokens: usize,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
+    cache: ?*CompactionCache,
 ) !void {
     if (history.len == 0) return;
 
@@ -2095,11 +2180,15 @@ fn appendCompactedPrefix(
         return;
     }
 
-    const summary = try buildCompactedSummaryTurn(
+    const summary = try compactedSummaryTurnForPrefix(
         alloc,
+        history,
         existing_summary,
         removed,
         CompactionBudget.forWindow(context_window_tokens),
+        summarizer,
+        observer,
+        cache,
     );
     errdefer freeHistoryTurn(alloc, .{ .compacted_summary = summary });
     try destination.append(alloc, .{ .compacted_summary = summary });
@@ -2268,7 +2357,6 @@ pub fn appendAssistantTurnWithExecution(
     return next;
 }
 
-/// Appends a finished turn to an owned prompt-context projection and reapplies its turn limit.
 pub fn appendHistoryTurnToOwnedContext(
     alloc: Allocator,
     current: []HistoryTurn,
@@ -2296,7 +2384,7 @@ pub fn appendHistoryTurnToOwnedContext(
 
     try list.append(alloc, duplicate);
     owns_duplicate = false;
-    _ = try compactHistory(&list, alloc, max_history_turns, context_window_tokens);
+    _ = try compactHistory(&list, alloc, max_history_turns, context_window_tokens, compact_token_trigger_percent, null, null);
     return try list.toOwnedSlice(alloc);
 }
 
@@ -3035,17 +3123,11 @@ fn formatInterruptedPartialAssistantClosedContent(alloc: Allocator, assistant: [
     return std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ assistant, interrupted_before_completion_output });
 }
 
-/// Whether history is over the token trigger for a known context window.
-///
-/// Turn count alone is a poor proxy: twenty one-line turns and three turns that
-/// each read a large file are the same number and nowhere near the same context
-/// cost. A zero window means the caller does not know it, and only the turn-count
-/// rule applies — which is exactly the behaviour every caller had before this.
-fn historyOverTokenBudget(history: []const HistoryTurn, context_window_tokens: usize) bool {
-    if (context_window_tokens == 0) return false;
+fn historyOverTokenBudget(history: []const HistoryTurn, context_window_tokens: usize, trigger_percent: usize) bool {
+    if (context_window_tokens == 0 or trigger_percent == 0) return false;
     var total: usize = 0;
-    for (history) |turn| total += estimateHistoryTurnTokens(turn);
-    return total * 100 > context_window_tokens * compact_token_trigger_percent;
+    for (history) |turn| total +|= estimateHistoryTurnTokens(turn);
+    return total *| 100 >= context_window_tokens *| trigger_percent;
 }
 
 fn compactHistory(
@@ -3053,10 +3135,35 @@ fn compactHistory(
     alloc: Allocator,
     max_history_turns: usize,
     context_window_tokens: usize,
+    token_trigger_percent: usize,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
+) !bool {
+    return compactHistoryWithCache(
+        history,
+        alloc,
+        max_history_turns,
+        context_window_tokens,
+        token_trigger_percent,
+        summarizer,
+        observer,
+        null,
+    );
+}
+
+fn compactHistoryWithCache(
+    history: *std.ArrayList(HistoryTurn),
+    alloc: Allocator,
+    max_history_turns: usize,
+    context_window_tokens: usize,
+    token_trigger_percent: usize,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
+    cache: ?*CompactionCache,
 ) !bool {
     if (max_history_turns == 0) return false;
-    const over_turns = history.items.len > max_history_turns;
-    const over_tokens = historyOverTokenBudget(history.items, context_window_tokens);
+    const over_turns = context_window_tokens == 0 and history.items.len > max_history_turns;
+    const over_tokens = historyOverTokenBudget(history.items, context_window_tokens, token_trigger_percent);
     if (!over_turns and !over_tokens) return false;
 
     if (max_history_turns <= 1) {
@@ -3077,7 +3184,16 @@ fn compactHistory(
 
     const budget = CompactionBudget.forWindow(context_window_tokens);
     const existing_summary = if (existing_summary_len == 1) history.items[0].compacted_summary else null;
-    const next_summary = try buildCompactedSummaryTurn(alloc, existing_summary, removed, budget);
+    const next_summary = try compactedSummaryTurnForPrefix(
+        alloc,
+        history.items[0..keep_from],
+        existing_summary,
+        removed,
+        budget,
+        summarizer,
+        observer,
+        cache,
+    );
     errdefer freeHistoryTurn(alloc, .{ .compacted_summary = next_summary });
 
     const preserved_len = history.items.len - keep_from;
@@ -3100,21 +3216,356 @@ fn compactHistory(
     return true;
 }
 
+pub const SummaryRequest = struct {
+    conversation: []const u8,
+    previous_summary: ?[]const u8 = null,
+    max_chars: usize = compact_summary_max_chars,
+};
+
+pub const CompactionEvent = struct {
+    removed_turns: usize,
+    summary_chars: usize,
+    model_written: bool,
+};
+
+pub const CompactionObserver = struct {
+    context: *anyopaque,
+    notify_fn: *const fn (*anyopaque, CompactionEvent) void,
+
+    pub fn notify(self: CompactionObserver, event: CompactionEvent) void {
+        self.notify_fn(self.context, event);
+    }
+};
+
+pub const Summarizer = struct {
+    context: *anyopaque,
+    summarize_fn: *const fn (*anyopaque, Allocator, SummaryRequest) anyerror![]u8,
+
+    pub fn summarize(self: Summarizer, alloc: Allocator, request: SummaryRequest) anyerror![]u8 {
+        return self.summarize_fn(self.context, alloc, request);
+    }
+};
+
+pub const compact_summary_system_prompt =
+    "You are summarizing a software engineering conversation into a structured handoff note. " ++
+    "Do NOT continue the conversation. Do NOT respond to any questions in the conversation. " ++
+    "ONLY output the structured summary.";
+
+const compact_summary_goal_header = "## Goal";
+
+const compact_summary_skeleton =
+    "## Goal\n" ++
+    "[the user's current objective]\n\n" ++
+    "## Constraints & Preferences\n" ++
+    "- [constraint or stated preference]\n\n" ++
+    "## Progress\n" ++
+    "### Done\n" ++
+    "- [x] [completed item]\n" ++
+    "### In Progress\n" ++
+    "- [ ] [item still underway]\n" ++
+    "### Blocked\n" ++
+    "- [blocker and what it needs]\n\n" ++
+    "## Key Decisions\n" ++
+    "- **[Decision]**: [rationale]\n\n" ++
+    "## Next Steps\n" ++
+    "1. [next action]\n\n" ++
+    "## Critical Context\n" ++
+    "- [anything else required to resume]\n";
+
+const compact_summary_fresh_instruction =
+    "Summarize the conversation below using exactly this structure:\n\n" ++
+    compact_summary_skeleton ++
+    "\nKeep each section concise. Preserve exact file paths, function names, and error messages.\n\n" ++
+    "Conversation:\n";
+
+const compact_summary_update_instruction =
+    "Update the existing summary so it also covers the new conversation, keeping exactly this structure:\n\n" ++
+    compact_summary_skeleton ++
+    "\nRules:\n" ++
+    "- PRESERVE all existing information from the previous summary.\n" ++
+    "- ADD new progress, decisions, and context from the new messages.\n" ++
+    "- UPDATE the Progress section: move items from 'In Progress' to 'Done' when completed.\n" ++
+    "- UPDATE 'Next Steps' based on what was accomplished.\n" ++
+    "- PRESERVE exact file paths, function names, and error messages.\n" ++
+    "- If something is no longer relevant, you may remove it.\n" ++
+    "- Rewrite in your own words; do not paste the conversation back.\n" ++
+    "Keep each section concise.\n\n";
+
+pub fn buildCompactionUserMessage(alloc: Allocator, request: SummaryRequest) ![]u8 {
+    if (request.previous_summary) |previous| {
+        return std.fmt.allocPrint(
+            alloc,
+            "{s}Previous summary:\n{s}\n\nNew conversation:\n{s}\n",
+            .{ compact_summary_update_instruction, previous, request.conversation },
+        );
+    }
+    return std.fmt.allocPrint(
+        alloc,
+        "{s}{s}\n",
+        .{ compact_summary_fresh_instruction, request.conversation },
+    );
+}
+
+const compact_flatten_tool_result_limit: usize = 2000;
+
+fn flattenBoundedOutput(text: []const u8) []const u8 {
+    if (text.len <= compact_flatten_tool_result_limit) return text;
+    var end = compact_flatten_tool_result_limit;
+    while (end > 0 and text[end] & 0xc0 == 0x80) end -= 1;
+    return text[0..end];
+}
+
+fn flattenTurnBody(
+    writer: *std.Io.Writer,
+    user: UserTurn,
+    assistant: ?[]const u8,
+    execution: core_types.ExecutionMemory,
+) !void {
+    if (user.text.len > 0) try writer.print("[User]: {s}\n", .{user.text});
+    for (execution.tool_steps) |step| {
+        if (step.assistant) |text| {
+            if (text.len > 0) try writer.print("[Assistant]: {s}\n", .{text});
+        }
+        if (step.tool_calls.len > 0) {
+            try writer.writeAll("[Assistant tool calls]:");
+            for (step.tool_calls) |call| try writer.print(" {s}", .{call.name});
+            try writer.writeByte('\n');
+        }
+        for (step.tool_results) |result| {
+            const bounded = flattenBoundedOutput(result.output);
+            try writer.print("[Tool result] {s}: {s}{s}\n", .{
+                result.tool_name,
+                bounded,
+                if (bounded.len < result.output.len) " ...[truncated]" else "",
+            });
+        }
+    }
+    if (assistant) |text| {
+        if (text.len > 0) try writer.print("[Assistant]: {s}\n", .{text});
+    }
+}
+
+pub fn flattenTurnsForSummary(alloc: Allocator, turns: []const HistoryTurn) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    for (turns) |turn| switch (turn) {
+        .compacted_summary => |entry| try out.writer.print("[Previous summary]: {s}\n", .{entry.summary}),
+        .assistant => |entry| try flattenTurnBody(&out.writer, entry.user, entry.assistant, entry.execution),
+        .background_command => |entry| {
+            try flattenTurnBody(&out.writer, entry.user, entry.assistant, entry.execution);
+            try out.writer.print("[Background command] log: {s}\n", .{entry.log_path});
+        },
+        .interrupted => |entry| {
+            try flattenTurnBody(&out.writer, entry.user, entry.assistant, entry.execution);
+            try out.writer.writeAll("[Turn interrupted before completion]\n");
+        },
+    };
+    return out.toOwnedSlice();
+}
+
+const TrackedFileSection = enum { read, modified };
+
+fn trackedFileSection(action: core_types.FileEvidenceAction) ?TrackedFileSection {
+    return switch (action) {
+        .read => .read,
+        .write, .edit, .delete, .rename, .copy => .modified,
+        .search, .list, .unknown => null,
+    };
+}
+
+fn turnExecution(turn: HistoryTurn) core_types.ExecutionMemory {
+    return switch (turn) {
+        .assistant => |entry| entry.execution,
+        .background_command => |entry| entry.execution,
+        .interrupted => |entry| entry.execution,
+        .compacted_summary => .{},
+    };
+}
+
+fn appendTaggedBlockLines(
+    arena: Allocator,
+    paths: *std.ArrayList([]const u8),
+    summary: []const u8,
+    open: []const u8,
+    close: []const u8,
+) !void {
+    const start = std.mem.indexOf(u8, summary, open) orelse return;
+    const body_start = start + open.len;
+    const end = std.mem.indexOfPos(u8, summary, body_start, close) orelse return;
+    var iter = std.mem.splitScalar(u8, summary[body_start..end], '\n');
+    while (iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        try paths.append(arena, trimmed);
+    }
+}
+
+fn appendTrackedFileLines(
+    arena: Allocator,
+    lines: *std.ArrayList([]const u8),
+    existing: ?CompactedSummaryHistoryTurn,
+    removed: []const HistoryTurn,
+) !void {
+    const blocks = [_]struct {
+        section: TrackedFileSection,
+        open: []const u8,
+        close: []const u8,
+    }{
+        .{ .section = .read, .open = "<read-files>", .close = "</read-files>" },
+        .{ .section = .modified, .open = "<modified-files>", .close = "</modified-files>" },
+    };
+
+    for (blocks) |block| {
+        var paths: std.ArrayList([]const u8) = .empty;
+        if (existing) |entry| {
+            try appendTaggedBlockLines(arena, &paths, entry.summary, block.open, block.close);
+        }
+        for (removed) |turn| {
+            for (turnExecution(turn).files) |file| {
+                const section = trackedFileSection(file.action) orelse continue;
+                if (section != block.section) continue;
+                try paths.append(arena, file.path);
+            }
+        }
+        if (paths.items.len == 0) continue;
+        try lines.append(arena, block.open);
+        try lines.appendSlice(arena, paths.items);
+        try lines.append(arena, block.close);
+    }
+}
+
+fn acceptModelSummary(
+    alloc: Allocator,
+    raw: []const u8,
+    existing: ?CompactedSummaryHistoryTurn,
+    removed: []const HistoryTurn,
+    budget: CompactionBudget,
+) ![]u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.EmptyCompactionSummary;
+    if (std.mem.indexOf(u8, trimmed, compact_summary_goal_header) == null) {
+        return error.MalformedCompactionSummary;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var lines: std.ArrayList([]const u8) = .empty;
+    var iter = std.mem.splitScalar(u8, trimmed, '\n');
+    while (iter.next()) |line| try lines.append(arena, line);
+    try appendTrackedFileLines(arena, &lines, existing, removed);
+
+    return compressSummaryLines(alloc, lines.items, budget);
+}
+
+fn modelCompactedSummaryText(
+    alloc: Allocator,
+    existing: ?CompactedSummaryHistoryTurn,
+    removed: []const HistoryTurn,
+    budget: CompactionBudget,
+    summarizer: Summarizer,
+) ![]u8 {
+    const conversation = try flattenTurnsForSummary(alloc, removed);
+    defer alloc.free(conversation);
+
+    const raw = try summarizer.summarize(alloc, .{
+        .conversation = conversation,
+        .previous_summary = if (existing) |entry| entry.summary else null,
+        .max_chars = budget.max_chars,
+    });
+    defer alloc.free(raw);
+
+    return acceptModelSummary(alloc, raw, existing, removed, budget);
+}
+
+const CompactedSummaryText = struct {
+    summary: []u8,
+    model_written: bool,
+};
+
+fn compactedSummaryText(
+    alloc: Allocator,
+    existing: ?CompactedSummaryHistoryTurn,
+    removed: []const HistoryTurn,
+    budget: CompactionBudget,
+    summarizer: ?Summarizer,
+) !CompactedSummaryText {
+    if (summarizer) |active| {
+        if (modelCompactedSummaryText(alloc, existing, removed, budget, active)) |text| {
+            return .{ .summary = text, .model_written = true };
+        } else |err| {
+            debug_trace.logf(
+                "session",
+                "event=compaction_summary result=fallback reason={s}",
+                .{@errorName(err)},
+            );
+        }
+    }
+    return .{ .summary = try buildCompactedSummaryText(alloc, existing, removed, budget), .model_written = false };
+}
+
 fn buildCompactedSummaryTurn(
     alloc: Allocator,
     existing: ?CompactedSummaryHistoryTurn,
     removed: []const HistoryTurn,
     budget: CompactionBudget,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
 ) !CompactedSummaryHistoryTurn {
-    return .{
-        .summary = try buildCompactedSummaryText(alloc, existing, removed, budget),
-        .removed_turn_count = (if (existing) |entry| entry.removed_turn_count else 0) + removed.len,
-        .compaction_count = (if (existing) |entry| entry.compaction_count else 0) + 1,
+    const text = try compactedSummaryText(alloc, existing, removed, budget, summarizer);
+    const entry: CompactedSummaryHistoryTurn = .{
+        .summary = text.summary,
+        .removed_turn_count = (if (existing) |previous| previous.removed_turn_count else 0) + removed.len,
+        .compaction_count = (if (existing) |previous| previous.compaction_count else 0) + 1,
         .root_user_messages = &.{},
         .root_user_messages_complete = false,
         .permission_feedback = &.{},
         .permission_feedback_complete = false,
     };
+    if (observer) |active| active.notify(.{
+        .removed_turns = entry.removed_turn_count,
+        .summary_chars = entry.summary.len,
+        .model_written = text.model_written,
+    });
+    return entry;
+}
+
+fn compactedSummaryTurnForPrefix(
+    alloc: Allocator,
+    canonical_prefix: []const HistoryTurn,
+    existing: ?CompactedSummaryHistoryTurn,
+    removed: []const HistoryTurn,
+    budget: CompactionBudget,
+    summarizer: ?Summarizer,
+    observer: ?CompactionObserver,
+    cache: ?*CompactionCache,
+) !CompactedSummaryHistoryTurn {
+    if (cache) |entry| {
+        const prefix = try flattenTurnsForSummary(std.heap.c_allocator, canonical_prefix);
+        var owns_prefix = true;
+        defer if (owns_prefix) std.heap.c_allocator.free(prefix);
+
+        if (entry.matches(prefix, budget)) {
+            const copy = try dupeHistoryTurn(alloc, .{ .compacted_summary = entry.summary.? });
+            return copy.compacted_summary;
+        }
+
+        const summary = try buildCompactedSummaryTurn(
+            std.heap.c_allocator,
+            existing,
+            removed,
+            budget,
+            summarizer,
+            observer,
+        );
+        entry.replace(prefix, summary, budget);
+        owns_prefix = false;
+        const copy = try dupeHistoryTurn(alloc, .{ .compacted_summary = entry.summary.? });
+        return copy.compacted_summary;
+    }
+
+    return buildCompactedSummaryTurn(alloc, existing, removed, budget, summarizer, observer);
 }
 
 test "the original request survives repeated compaction" {
@@ -3130,7 +3581,7 @@ test "the original request survives repeated compaction" {
             .assistant = @constCast("switched to streaming"),
         } },
     };
-    const first = try buildCompactedSummaryTurn(alloc, null, &first_batch, .{});
+    const first = try buildCompactedSummaryTurn(alloc, null, &first_batch, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = first });
     try std.testing.expect(std.mem.indexOf(u8, first.summary, original_request_header) != null);
     try std.testing.expect(std.mem.indexOf(u8, first.summary, "port the parser") != null);
@@ -3147,7 +3598,7 @@ test "the original request survives repeated compaction" {
             .user = .{ .text = @constCast("keep going") },
             .assistant = @constCast("did some more unrelated work that fills the summary budget"),
         } }};
-        const next = try buildCompactedSummaryTurn(alloc, carried, &later, .{});
+        const next = try buildCompactedSummaryTurn(alloc, carried, &later, .{}, null, null);
         if (owned) |entry| freeHistoryTurn(alloc, .{ .compacted_summary = entry });
         owned = next;
         carried = next;
@@ -3228,9 +3679,26 @@ test "the token trigger only speaks when the window is known" {
         .user = .{ .text = @constCast("a" ** 400) },
         .assistant = @constCast("b" ** 400),
     } }};
-    try std.testing.expect(!historyOverTokenBudget(&history, 0));
-    try std.testing.expect(historyOverTokenBudget(&history, 100));
-    try std.testing.expect(!historyOverTokenBudget(&history, 1_000_000));
+    try std.testing.expect(!historyOverTokenBudget(&history, 0, compact_token_trigger_percent));
+    try std.testing.expect(!historyOverTokenBudget(&history, 100, 0));
+    try std.testing.expect(historyOverTokenBudget(&history, 100, compact_token_trigger_percent));
+    try std.testing.expect(!historyOverTokenBudget(&history, 1_000_000, compact_token_trigger_percent));
+}
+
+test "automatic compaction waits for a configured high-water mark" {
+    const alloc = std.testing.allocator;
+    var runtime: SessionRuntime = .{ .max_history_turns = 64 };
+    defer runtime.deinit(alloc);
+    for (0..4) |_| try runtime.appendAssistantHistoryTurn(alloc, "x" ** 400, "y" ** 400);
+
+    try std.testing.expect(!runtime.shouldAutoCompact(70));
+    runtime.context_window_tokens = 1_000;
+    try std.testing.expect(!runtime.shouldAutoCompact(0));
+    try std.testing.expect(!runtime.shouldAutoCompact(81));
+    try std.testing.expect(runtime.shouldAutoCompact(80));
+
+    runtime.forceCompaction();
+    try std.testing.expect(!runtime.shouldAutoCompact(70));
 }
 
 test "token pressure compacts a history that is under the turn limit" {
@@ -3250,10 +3718,44 @@ test "token pressure compacts a history that is under the turn limit" {
         ));
     }
 
-    // Six turns against a limit of 64 is nowhere near the turn rule, so this can
-    // only be the token trigger firing.
-    const compacted = try compactHistory(&history, alloc, 64, 100);
+    const compacted = try compactHistory(&history, alloc, 64, 100, compact_token_trigger_percent, null, null);
     try std.testing.expect(compacted);
+    try std.testing.expect(history.items[0] == .compacted_summary);
+}
+
+test "known context windows prefer token pressure to the turn fallback" {
+    const alloc = std.testing.allocator;
+    var history: std.ArrayList(HistoryTurn) = .empty;
+    defer {
+        for (history.items) |turn| freeHistoryTurn(alloc, turn);
+        history.deinit(alloc);
+    }
+
+    for (0..9) |index| {
+        const user = try std.fmt.allocPrint(alloc, "request {d}", .{index});
+        defer alloc.free(user);
+        try history.append(alloc, try makeAssistantTurn(alloc, user, "reply"));
+    }
+
+    try std.testing.expect(!try compactHistory(
+        &history,
+        alloc,
+        8,
+        100_000,
+        compact_token_trigger_percent,
+        null,
+        null,
+    ));
+    try std.testing.expectEqual(@as(usize, 9), history.items.len);
+    try std.testing.expect(try compactHistory(
+        &history,
+        alloc,
+        8,
+        0,
+        compact_token_trigger_percent,
+        null,
+        null,
+    ));
     try std.testing.expect(history.items[0] == .compacted_summary);
 }
 
@@ -3268,7 +3770,7 @@ test "history compaction discards root-user authority text" {
             .user = .{ .text = @constCast("second exact request") },
         } },
     };
-    const first = try buildCompactedSummaryTurn(alloc, null, &removed, .{});
+    const first = try buildCompactedSummaryTurn(alloc, null, &removed, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = first });
     try std.testing.expectEqual(@as(usize, 0), first.root_user_messages.len);
     try std.testing.expect(!first.root_user_messages_complete);
@@ -3277,7 +3779,7 @@ test "history compaction discards root-user authority text" {
         .user = .{ .text = @constCast("third exact request") },
         .assistant = @constCast("third response"),
     } }};
-    const second = try buildCompactedSummaryTurn(alloc, first, &later, .{});
+    const second = try buildCompactedSummaryTurn(alloc, first, &later, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = second });
     try std.testing.expectEqual(@as(usize, 0), second.root_user_messages.len);
     try std.testing.expect(!second.root_user_messages_complete);
@@ -3296,7 +3798,7 @@ test "repeated compaction keeps historical authority discarded" {
         .user = .{ .text = @constCast("newer exact request") },
         .assistant = @constCast("response"),
     } }};
-    const first = try buildCompactedSummaryTurn(alloc, legacy, &first_removed, .{});
+    const first = try buildCompactedSummaryTurn(alloc, legacy, &first_removed, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = first });
     try std.testing.expect(!first.root_user_messages_complete);
     try std.testing.expect(!first.permission_feedback_complete);
@@ -3305,7 +3807,7 @@ test "repeated compaction keeps historical authority discarded" {
     const second_removed = [_]HistoryTurn{.{ .interrupted = .{
         .user = .{ .text = @constCast("latest exact request") },
     } }};
-    const second = try buildCompactedSummaryTurn(alloc, first, &second_removed, .{});
+    const second = try buildCompactedSummaryTurn(alloc, first, &second_removed, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = second });
     try std.testing.expect(!second.root_user_messages_complete);
     try std.testing.expect(!second.permission_feedback_complete);
@@ -3330,7 +3832,7 @@ test "repeated compaction discards historical permission feedback" {
         .assistant = @constCast("I need to write a file."),
         .execution = .{ .tool_steps = &first_steps },
     } }};
-    const first = try buildCompactedSummaryTurn(alloc, null, &first_removed, .{});
+    const first = try buildCompactedSummaryTurn(alloc, null, &first_removed, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = first });
     try std.testing.expect(!first.permission_feedback_complete);
     try std.testing.expectEqual(@as(usize, 0), first.permission_feedback.len);
@@ -3350,10 +3852,369 @@ test "repeated compaction discards historical permission feedback" {
         .user = .{ .text = @constCast("Continue with the report.") },
         .execution = .{ .tool_steps = &second_steps },
     } }};
-    const repeated = try buildCompactedSummaryTurn(alloc, first, &later, .{});
+    const repeated = try buildCompactedSummaryTurn(alloc, first, &later, .{}, null, null);
     defer freeHistoryTurn(alloc, .{ .compacted_summary = repeated });
     try std.testing.expect(!repeated.permission_feedback_complete);
     try std.testing.expectEqual(@as(usize, 0), repeated.permission_feedback.len);
+}
+
+const FakeSummarizer = struct {
+    tracking: Allocator,
+    reply: []const u8 = "## Goal\nfinish the tokenizer port\n## Next Steps\n1. run the suite\n",
+    fail: bool = false,
+    calls: usize = 0,
+    last_previous: ?[]u8 = null,
+    last_conversation: ?[]u8 = null,
+
+    fn call(raw: *anyopaque, alloc: Allocator, request: SummaryRequest) anyerror![]u8 {
+        const self: *FakeSummarizer = @ptrCast(@alignCast(raw));
+        self.calls += 1;
+        if (self.last_previous) |value| self.tracking.free(value);
+        self.last_previous = if (request.previous_summary) |previous|
+            try self.tracking.dupe(u8, previous)
+        else
+            null;
+        if (self.last_conversation) |value| self.tracking.free(value);
+        self.last_conversation = try self.tracking.dupe(u8, request.conversation);
+        if (self.fail) return error.CompactionGatewayStatus;
+        return alloc.dupe(u8, self.reply);
+    }
+
+    fn handle(self: *FakeSummarizer) Summarizer {
+        return .{ .context = @ptrCast(self), .summarize_fn = FakeSummarizer.call };
+    }
+
+    fn deinit(self: *FakeSummarizer) void {
+        if (self.last_previous) |value| self.tracking.free(value);
+        if (self.last_conversation) |value| self.tracking.free(value);
+    }
+};
+
+fn summarizerTestTurns() [2]HistoryTurn {
+    return .{
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("port the parser to the new tokenizer") },
+            .assistant = @constCast("starting on the tokenizer"),
+        } },
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("use the streaming variant") },
+            .assistant = @constCast("switched to streaming"),
+        } },
+    };
+}
+
+test "model compaction falls back to the deterministic summary when the model call fails" {
+    const alloc = std.testing.allocator;
+    const removed = summarizerTestTurns();
+
+    const cases = [_]FakeSummarizer{
+        .{ .tracking = alloc, .fail = true },
+        .{ .tracking = alloc, .reply = "   \n  " },
+        .{ .tracking = alloc, .reply = "here is a plain paragraph with no skeleton at all" },
+    };
+
+    for (cases) |seed| {
+        var fake = seed;
+        defer fake.deinit();
+        const turn = try buildCompactedSummaryTurn(alloc, null, &removed, .{}, fake.handle(), null);
+        defer freeHistoryTurn(alloc, .{ .compacted_summary = turn });
+        try std.testing.expectEqual(@as(usize, 1), fake.calls);
+        try std.testing.expect(std.mem.indexOf(u8, turn.summary, "Conversation summary:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, turn.summary, "port the parser") != null);
+        try std.testing.expectEqual(@as(usize, 2), turn.removed_turn_count);
+        try std.testing.expectEqual(@as(usize, 1), turn.compaction_count);
+    }
+}
+
+test "model compaction feeds the previous summary back for an iterative update" {
+    const alloc = std.testing.allocator;
+    var fake = FakeSummarizer{ .tracking = alloc };
+    defer fake.deinit();
+
+    const first_batch = summarizerTestTurns();
+    const first = try buildCompactedSummaryTurn(alloc, null, &first_batch, .{}, fake.handle(), null);
+    defer freeHistoryTurn(alloc, .{ .compacted_summary = first });
+    try std.testing.expect(fake.last_previous == null);
+    try std.testing.expect(std.mem.indexOf(u8, first.summary, "## Goal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.summary, "finish the tokenizer port") != null);
+
+    fake.reply = "## Goal\nfinish the tokenizer port\n## Progress\n### Done\n- [x] streaming variant\n";
+    const later = [_]HistoryTurn{.{ .assistant = .{
+        .user = .{ .text = @constCast("keep going") },
+        .assistant = @constCast("did more work"),
+    } }};
+    const second = try buildCompactedSummaryTurn(alloc, first, &later, .{}, fake.handle(), null);
+    defer freeHistoryTurn(alloc, .{ .compacted_summary = second });
+
+    try std.testing.expectEqual(@as(usize, 2), fake.calls);
+    try std.testing.expect(fake.last_previous != null);
+    try std.testing.expectEqualStrings(first.summary, fake.last_previous.?);
+    try std.testing.expect(std.mem.indexOf(u8, fake.last_conversation.?, "keep going") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second.summary, "streaming variant") != null);
+    try std.testing.expectEqual(@as(usize, 3), second.removed_turn_count);
+    try std.testing.expectEqual(@as(usize, 2), second.compaction_count);
+}
+
+test "SessionRuntime reuses and invalidates a canonical prefix summary" {
+    const alloc = std.testing.allocator;
+    var fake = FakeSummarizer{ .tracking = alloc };
+    defer fake.deinit();
+    var runtime: SessionRuntime = .{ .max_history_turns = 8, .summarizer = fake.handle() };
+    defer runtime.deinit(alloc);
+
+    try runtime.appendAssistantHistoryTurn(alloc, "first request", "first reply");
+    try runtime.appendAssistantHistoryTurn(alloc, "second request", "second reply");
+    try runtime.appendAssistantHistoryTurn(alloc, "latest request", "latest reply");
+    runtime.forceCompaction();
+
+    const first = try runtime.snapshotContextHistory(alloc);
+    defer freeHistoryTurnSlice(alloc, first);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+
+    const second = try runtime.snapshotContextHistory(alloc);
+    defer freeHistoryTurnSlice(alloc, second);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+    try std.testing.expectEqualStrings(
+        first[0].compacted_summary.summary,
+        second[0].compacted_summary.summary,
+    );
+
+    try runtime.appendAssistantHistoryTurn(alloc, "follow-up request", "follow-up reply");
+    const continued = try runtime.snapshotContextHistory(alloc);
+    defer freeHistoryTurnSlice(alloc, continued);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+
+    runtime.history.items[0].assistant.user.text[0] = 'F';
+    const changed = try runtime.snapshotContextHistory(alloc);
+    defer freeHistoryTurnSlice(alloc, changed);
+    try std.testing.expectEqual(@as(usize, 2), fake.calls);
+}
+
+test "SessionRuntime reuses a cached turn-limit summary" {
+    const alloc = std.testing.allocator;
+    var fake = FakeSummarizer{ .tracking = alloc };
+    defer fake.deinit();
+    var runtime: SessionRuntime = .{ .max_history_turns = 8, .summarizer = fake.handle() };
+    defer runtime.deinit(alloc);
+
+    for (0..10) |index| {
+        const user = try std.fmt.allocPrint(alloc, "request {d}", .{index});
+        defer alloc.free(user);
+        try runtime.appendAssistantHistoryTurn(alloc, user, "reply");
+    }
+
+    const first = try runtime.snapshotContextHistory(alloc);
+    defer freeHistoryTurnSlice(alloc, first);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+    const second = try runtime.snapshotContextHistory(alloc);
+    defer freeHistoryTurnSlice(alloc, second);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+    try std.testing.expectEqualStrings(
+        first[0].compacted_summary.summary,
+        second[0].compacted_summary.summary,
+    );
+}
+
+test "model compaction clamps the model output to the compaction budget" {
+    const alloc = std.testing.allocator;
+    var long: [4000]u8 = undefined;
+    @memset(&long, 'x');
+    const reply = try std.fmt.allocPrint(alloc, "## Goal\n{s}\n", .{long});
+    defer alloc.free(reply);
+
+    var fake = FakeSummarizer{ .tracking = alloc, .reply = reply };
+    defer fake.deinit();
+    const removed = summarizerTestTurns();
+    const turn = try buildCompactedSummaryTurn(alloc, null, &removed, .{}, fake.handle(), null);
+    defer freeHistoryTurn(alloc, .{ .compacted_summary = turn });
+    try std.testing.expect(turn.summary.len <= compact_summary_max_chars);
+}
+
+test "model compaction carries read and modified files across compactions" {
+    const alloc = std.testing.allocator;
+    var files = [_]core_types.FileEvidence{
+        .{
+            .path = @constCast("src/core/session/session.zig"),
+            .tool_call_id = @constCast("call-1"),
+            .tool_name = @constCast("read_file"),
+            .action = .read,
+        },
+        .{
+            .path = @constCast("src/main.zig"),
+            .tool_call_id = @constCast("call-2"),
+            .tool_name = @constCast("edit_file"),
+            .action = .edit,
+        },
+    };
+    const removed = [_]HistoryTurn{.{ .assistant = .{
+        .user = .{ .text = @constCast("touch some files") },
+        .assistant = @constCast("done"),
+        .execution = .{ .files = files[0..] },
+    } }};
+
+    var fake = FakeSummarizer{ .tracking = alloc };
+    defer fake.deinit();
+    const first = try buildCompactedSummaryTurn(alloc, null, &removed, .{}, fake.handle(), null);
+    defer freeHistoryTurn(alloc, .{ .compacted_summary = first });
+    try std.testing.expect(std.mem.indexOf(u8, first.summary, "<read-files>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.summary, "src/core/session/session.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.summary, "<modified-files>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.summary, "src/main.zig") != null);
+
+    const later = [_]HistoryTurn{.{ .assistant = .{
+        .user = .{ .text = @constCast("keep going") },
+        .assistant = @constCast("more"),
+    } }};
+    const second = try buildCompactedSummaryTurn(alloc, first, &later, .{}, fake.handle(), null);
+    defer freeHistoryTurn(alloc, .{ .compacted_summary = second });
+    try std.testing.expect(std.mem.indexOf(u8, second.summary, "src/core/session/session.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second.summary, "src/main.zig") != null);
+}
+
+test "flattening a conversation labels roles and bounds tool results" {
+    const alloc = std.testing.allocator;
+    var long_output: [compact_flatten_tool_result_limit + 500]u8 = undefined;
+    @memset(&long_output, 'y');
+
+    var calls = [_]core_types.ToolCall{.{
+        .id = "call-1",
+        .name = "grep_files",
+        .arguments_json = "{}",
+    }};
+    var results = [_]core_types.PersistedToolResult{.{
+        .tool_call_id = @constCast("call-1"),
+        .tool_name = @constCast("grep_files"),
+        .status = .success,
+        .output = &long_output,
+        .output_bytes = long_output.len,
+        .stored_output_bytes = long_output.len,
+    }};
+    var steps = [_]core_types.ToolExecutionStep{.{
+        .assistant = @constCast("looking for it"),
+        .tool_calls = calls[0..],
+        .tool_results = results[0..],
+    }};
+    const turns = [_]HistoryTurn{
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("find the caller") },
+            .assistant = @constCast("here it is"),
+            .execution = .{ .tool_steps = steps[0..] },
+        } },
+        .{ .interrupted = .{ .user = .{ .text = @constCast("stop") } } },
+    };
+
+    const flat = try flattenTurnsForSummary(alloc, &turns);
+    defer alloc.free(flat);
+
+    try std.testing.expect(std.mem.indexOf(u8, flat, "[User]: find the caller") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "[Assistant]: looking for it") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "[Assistant tool calls]: grep_files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "[Tool result] grep_files:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "[Assistant]: here it is") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "[Turn interrupted before completion]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "...[truncated]") != null);
+    try std.testing.expect(flat.len < long_output.len + 1000);
+}
+
+test "the compaction prompt asks for a summary and never a continuation" {
+    const alloc = std.testing.allocator;
+    const fresh = try buildCompactionUserMessage(alloc, .{ .conversation = "[User]: hello" });
+    defer alloc.free(fresh);
+    try std.testing.expect(std.mem.indexOf(u8, fresh, "## Goal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fresh, "## Critical Context") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fresh, "Preserve exact file paths, function names, and error messages") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fresh, "Previous summary:") == null);
+
+    const update = try buildCompactionUserMessage(alloc, .{
+        .conversation = "[User]: hello",
+        .previous_summary = "## Goal\nolder goal",
+    });
+    defer alloc.free(update);
+    try std.testing.expect(std.mem.indexOf(u8, update, "PRESERVE all existing information from the previous summary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, update, "older goal") != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, compact_summary_system_prompt, "Do NOT continue the conversation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, compact_summary_system_prompt, "ONLY output the structured summary") != null);
+}
+
+test "model compaction keeps the recent turns verbatim and the existing triggers" {
+    const alloc = std.testing.allocator;
+    var fake = FakeSummarizer{ .tracking = alloc };
+    defer fake.deinit();
+
+    var history: std.ArrayList(HistoryTurn) = .empty;
+    defer {
+        for (history.items) |turn| freeHistoryTurn(alloc, turn);
+        history.deinit(alloc);
+    }
+    var index: usize = 0;
+    while (index < 10) : (index += 1) {
+        const user = try std.fmt.allocPrint(alloc, "request {d}", .{index});
+        defer alloc.free(user);
+        try history.append(alloc, try makeAssistantTurn(alloc, user, "reply"));
+    }
+
+    try std.testing.expect(try compactHistory(&history, alloc, 8, 0, 0, fake.handle(), null));
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+    try std.testing.expectEqual(@as(usize, preservedRecentTurnCount(8) + 1), history.items.len);
+    try std.testing.expect(history.items[0] == .compacted_summary);
+    try std.testing.expect(std.mem.indexOf(u8, history.items[0].compacted_summary.summary, "## Goal") != null);
+    try std.testing.expectEqualStrings("request 9", history.items[history.items.len - 1].assistant.user.text);
+    try std.testing.expectEqualStrings("request 6", history.items[1].assistant.user.text);
+
+    var under: std.ArrayList(HistoryTurn) = .empty;
+    defer {
+        for (under.items) |turn| freeHistoryTurn(alloc, turn);
+        under.deinit(alloc);
+    }
+    try under.append(alloc, try makeAssistantTurn(alloc, "only request", "reply"));
+    try std.testing.expect(!try compactHistory(&under, alloc, 8, 0, 0, fake.handle(), null));
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+}
+
+const RecordingObserver = struct {
+    calls: usize = 0,
+    last: CompactionEvent = .{ .removed_turns = 0, .summary_chars = 0, .model_written = false },
+
+    fn call(context: *anyopaque, event: CompactionEvent) void {
+        const self: *RecordingObserver = @ptrCast(@alignCast(context));
+        self.calls += 1;
+        self.last = event;
+    }
+
+    fn handle(self: *RecordingObserver) CompactionObserver {
+        return .{ .context = @ptrCast(self), .notify_fn = RecordingObserver.call };
+    }
+};
+
+test "automatic compaction reports its counts once, and flags the deterministic fallback" {
+    const alloc = std.testing.allocator;
+
+    const cases = [_]bool{ true, false };
+    for (cases) |model_written| {
+        var fake = FakeSummarizer{ .tracking = alloc, .fail = !model_written };
+        defer fake.deinit();
+        var observer = RecordingObserver{};
+
+        var history: std.ArrayList(HistoryTurn) = .empty;
+        defer {
+            for (history.items) |turn| freeHistoryTurn(alloc, turn);
+            history.deinit(alloc);
+        }
+        var index: usize = 0;
+        while (index < 10) : (index += 1) {
+            const user = try std.fmt.allocPrint(alloc, "request {d}", .{index});
+            defer alloc.free(user);
+            try history.append(alloc, try makeAssistantTurn(alloc, user, "reply"));
+        }
+
+        try std.testing.expect(try compactHistory(&history, alloc, 8, 0, 0, fake.handle(), observer.handle()));
+        try std.testing.expectEqual(@as(usize, 1), observer.calls);
+        try std.testing.expectEqual(history.items[0].compacted_summary.removed_turn_count, observer.last.removed_turns);
+        try std.testing.expectEqual(history.items[0].compacted_summary.summary.len, observer.last.summary_chars);
+        try std.testing.expectEqual(model_written, observer.last.model_written);
+        try std.testing.expect(observer.last.removed_turns > 0);
+    }
 }
 
 const original_request_header = "- Original request:";
@@ -5738,6 +6599,8 @@ fn checkPromptHistorySnapshotAllocationFailures(alloc: Allocator) !void {
         context_history_start,
         8,
         0,
+        null,
+        null,
     ) catch |err| {
         try expectCanonicalHistoryFixtureUnchanged(
             &canonical,
@@ -5858,6 +6721,8 @@ test "prompt history cleanup is independent after snapshot creation" {
         0,
         8,
         0,
+        null,
+        null,
     );
     defer freeHistoryTurnSlice(alloc, prompt_history);
 
@@ -5892,6 +6757,8 @@ test "owned prompt history selection matches SessionRuntime context snapshot" {
         runtime.context_history_start,
         runtime.max_history_turns,
         runtime.context_window_tokens,
+        runtime.summarizer,
+        runtime.compaction_observer,
     );
     defer freeHistoryTurnSlice(alloc, direct);
     const through_runtime = try runtime.snapshotContextHistory(alloc);
@@ -6138,7 +7005,7 @@ test "full image catalog retains history excluded from budgeted context" {
         } },
     };
 
-    const budgeted = try snapshotOwnedContextHistory(alloc, &history, 0, 1, 0);
+    const budgeted = try snapshotOwnedContextHistory(alloc, &history, 0, 1, 0, null, null);
     defer freeHistoryTurnSlice(alloc, budgeted);
     try std.testing.expectEqual(@as(usize, 1), budgeted.len);
     try std.testing.expectEqual(@as(usize, 0), budgeted[0].assistant.user.images.len);

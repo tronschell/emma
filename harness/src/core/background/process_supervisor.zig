@@ -30,12 +30,12 @@ pub const ProcessInstanceToken = struct {
         var parts = std.mem.splitScalar(u8, text, ':');
         const platform = parts.next() orelse
             return error.InvalidProcessInstanceToken;
-        const boot_id = parts.next() orelse
-            return error.InvalidProcessInstanceToken;
-        if (!isLowerHex(boot_id, 32)) {
-            return error.InvalidProcessInstanceToken;
-        }
         if (std.mem.eql(u8, platform, "linux")) {
+            const boot_id = parts.next() orelse
+                return error.InvalidProcessInstanceToken;
+            if (!isLowerHex(boot_id, 32)) {
+                return error.InvalidProcessInstanceToken;
+            }
             const start_ticks = parts.next() orelse
                 return error.InvalidProcessInstanceToken;
             if (parts.next() != null or
@@ -44,6 +44,11 @@ pub const ProcessInstanceToken = struct {
                 return error.InvalidProcessInstanceToken;
             }
         } else if (std.mem.eql(u8, platform, "macos")) {
+            const boot_id = parts.next() orelse
+                return error.InvalidProcessInstanceToken;
+            if (!isLowerHex(boot_id, 32)) {
+                return error.InvalidProcessInstanceToken;
+            }
             const start_sec = parts.next() orelse
                 return error.InvalidProcessInstanceToken;
             const start_usec = parts.next() orelse
@@ -52,6 +57,12 @@ pub const ProcessInstanceToken = struct {
                 !isCanonicalDecimal(start_sec) or
                 !isCanonicalDecimal(start_usec))
             {
+                return error.InvalidProcessInstanceToken;
+            }
+        } else if (std.mem.eql(u8, platform, "windows")) {
+            const creation = parts.next() orelse
+                return error.InvalidProcessInstanceToken;
+            if (parts.next() != null or !isLowerHex(creation, 16)) {
                 return error.InvalidProcessInstanceToken;
             }
         } else {
@@ -69,6 +80,39 @@ pub const ProcessInstanceToken = struct {
 
     pub fn eql(self: ProcessInstanceToken, other: ProcessInstanceToken) bool {
         return std.mem.eql(u8, self.view(), other.view());
+    }
+
+    pub fn windowsCreationTime(self: ProcessInstanceToken) !u64 {
+        const value = self.view();
+        const prefix = "windows:";
+        if (!std.mem.startsWith(u8, value, prefix)) {
+            return error.InvalidProcessInstanceToken;
+        }
+        const digits = value[prefix.len..];
+        if (!isLowerHex(digits, 16)) return error.InvalidProcessInstanceToken;
+        var result: u64 = 0;
+        for (digits) |digit| {
+            result = (result << 4) | switch (digit) {
+                '0'...'9' => digit - '0',
+                'a'...'f' => digit - 'a' + 10,
+                else => unreachable,
+            };
+        }
+        return result;
+    }
+
+    pub fn fromWindowsCreationTime(creation: u64) !ProcessInstanceToken {
+        var token_buf: [25]u8 = undefined;
+        const prefix = "windows:";
+        @memcpy(token_buf[0..prefix.len], prefix);
+        const digits = "0123456789abcdef";
+        var shift: u6 = 60;
+        for (0..16) |index| {
+            token_buf[prefix.len + index] = digits[@intCast((creation >> shift) & 0xf)];
+            if (shift == 0) break;
+            shift -= 4;
+        }
+        return parse(token_buf[0 .. prefix.len + 16]);
     }
 };
 
@@ -1018,6 +1062,12 @@ test "process instance tokens are canonical and require exact match" {
         ProcessInstanceToken.parse(
             "linux:00112233445566778899AABBCCDDEEFF:12345",
         ),
+    );
+    const windows = try ProcessInstanceToken.parse("windows:0123456789abcdef");
+    try std.testing.expectEqualStrings("windows:0123456789abcdef", windows.view());
+    try std.testing.expectError(
+        error.InvalidProcessInstanceToken,
+        ProcessInstanceToken.parse("windows:1234"),
     );
 }
 

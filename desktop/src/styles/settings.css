@@ -24,19 +24,19 @@
 
 .settings-lines, .notch-settings, .orb-settings,
 .model-catalog, .local-model-settings, .provider-keys,
-.import-sources, .connection-list { border: 1px solid var(--border-strong); }
+.import-sources { border: 1px solid var(--border-strong); }
 
 .settings-lines > header, .settings-lines > section, .quick-action-row,
 .model-catalog > header, .catalog-search, .catalog-marks, .catalog-row,
 .local-model-settings > header, .local-model-form, .local-model-row,
 .provider-keys > header, .provider-key-row, .provider-key-add,
-.import-list > label, .import-sources footer, .connection-row,
+.import-list > label, .import-sources footer,
 .local-model-empty, .local-model-error, .local-model-status, .import-status {
   padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border);
 }
 .settings-lines > section:last-child, .quick-action-row:last-child,
 .local-model-row:last-child, .provider-key-add,
-.import-sources > :last-child, .connection-list > :last-child,
+.import-sources > :last-child,
 .local-model-list > :last-child { border-bottom: 0; }
 
 .settings-view input:not([type="checkbox"]),
@@ -56,13 +56,13 @@
 .settings-view ::placeholder, .setup-grants ::placeholder { color: var(--text-3); opacity: 1; }
 .settings-view input:disabled, .settings-view select:disabled, .settings-view textarea:disabled { color: var(--text-2); background: transparent; border-color: var(--border); }
 
-.settings-view button, .import-sources button, .connection-row button {
+.settings-view button, .import-sources button {
   min-height: 26px; padding: 0 var(--s-3);
   color: var(--text-2); background: transparent; border: 1px solid var(--border-strong);
   font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase;
   transition: color var(--t), background-color var(--t), border-color var(--t);
 }
-.settings-view button:hover:not(:disabled):not(.accent-swatch, .nav-hue), .import-sources button:hover:not(:disabled), .connection-row button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
+.settings-view button:hover:not(:disabled):not(.accent-swatch, .nav-hue), .import-sources button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
 .settings-view .save-settings, .local-model-form button, .provider-key-row button:not(:last-child), .import-sources footer button {
   color: var(--accent); border-color: var(--accent);
 }
@@ -70,7 +70,7 @@
 .provider-key-row button:not(:last-child):hover:not(:disabled), .import-sources footer button:hover:not(:disabled) {
   color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
 }
-.settings-view button:disabled, .import-sources button:disabled, .connection-row button:disabled { opacity: 1; color: var(--text-3); border-color: var(--border); background: transparent; }
+.settings-view button:disabled, .import-sources button:disabled { opacity: 1; color: var(--text-3); border-color: var(--border); background: transparent; }
 .settings-view .reset-data { justify-self: start; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .settings-view .reset-data:hover:not(:disabled) { color: var(--danger); background: var(--danger-surface); border-color: var(--danger); }
 
@@ -107,8 +107,6 @@
 .settings-view .accent-swatch.active { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--bg); }
 .settings-view .accent-custom { position: relative; cursor: pointer; background: conic-gradient(var(--orange), var(--lime), var(--teal), var(--blue), var(--violet), var(--rose), var(--orange)); }
 .settings-view .accent-custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-/* Section marks: the real mark, in the hue it is drawn in, over a hidden colour
-   well — the swatch is the icon rather than a square standing in for it. */
 .settings-lines .nav-hues { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); min-width: 0; }
 .settings-view .nav-hue { position: relative; display: grid; place-items: center; padding: 0; width: 26px; height: 26px; color: var(--swatch); border: 1px solid var(--border); cursor: pointer; }
 .settings-view .nav-hue:hover { border-color: var(--border-strong); }
@@ -254,6 +252,7 @@
 .settings-view .catalog-star:hover { color: var(--text); background: var(--surface-3); border: 0; }
 .settings-view .catalog-star[aria-pressed="true"] { color: #ffd60a; }
 .settings-view .catalog-use { min-height: 26px; }
+.settings-view .model-provider-picker { grid-template-columns: auto; grid-auto-columns: minmax(120px, 220px); }
 .catalog-row.selected .catalog-use { opacity: 1; color: var(--accent); border-color: var(--accent); }
 .catalog-row.router { grid-template-columns: 20px minmax(0, 1fr) auto auto auto; }
 .settings-view .catalog-drop { display: grid; place-items: center; width: 26px; height: 26px; min-height: 26px; padding: 0; color: var(--text-3); background: transparent; border: 0; transition: color var(--t), background-color var(--t); }
@@ -286,6 +285,24 @@
 
 .local-model-form { display: grid; grid-template-columns: repeat(4, minmax(96px, 1fr)) auto auto; gap: var(--s-3); align-items: end; }
 .local-model-form > label.check { grid-column: 1 / -1; }
+.web-search-rank { display: grid; list-style: none; }
+.web-search-rank > li { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
+.web-search-rank > li > b { padding-top: 2px; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; }
+.web-search-source { display: grid; gap: var(--s-2); min-width: 0; }
+.web-search-source > div:first-child { display: flex; align-items: baseline; gap: var(--s-2); }
+.web-search-source strong { font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; }
+.web-search-source em { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.web-search-source em.free { color: var(--teal); }
+.web-search-source > small { color: var(--text-2); font: var(--fs-xs)/1.5 var(--font); }
+.web-search-fields { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(140px, 1fr); gap: var(--s-3); }
+.web-search-fields label, .web-search-actions label { display: grid; gap: var(--s-1); min-width: 0; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.web-search-order { display: grid; grid-template-columns: repeat(2, 28px); gap: var(--s-1); }
+.settings-view .web-search-order button { width: 28px; min-height: 28px; padding: 0; }
+.settings-view .web-search-order button:last-child { grid-column: 1 / -1; width: auto; padding-inline: var(--s-2); }
+.web-search-actions { display: flex; align-items: end; gap: var(--s-2); padding: var(--s-3) var(--s-4); }
+.web-search-actions label { min-width: 200px; }
+.settings-view .web-search-actions button { min-height: 28px; }
+.web-search-actions .save-settings { margin-left: auto; }
 .provider-presets { display: flex; flex-wrap: wrap; gap: var(--s-2); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); }
 .settings-view .provider-presets button { min-height: 26px; white-space: nowrap; }
 .provider-dot { display: inline-block; width: 7px; height: 7px; margin-right: var(--s-1); border-radius: 50%; background: var(--text-3); }
@@ -343,25 +360,6 @@
 .settings-view .import-sources footer button, .import-sources footer button { flex: 0 0 auto; min-height: 30px; margin-left: auto; }
 .import-status { color: var(--accent); font: var(--fs-sm)/1.5 var(--font-mono); }
 
-.connection-list { display: grid; }
-.connection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-3) var(--s-4); min-height: 44px; }
-.connection-row > label { display: grid; grid-template-columns: auto 20px minmax(0, 1fr); align-items: center; gap: var(--s-3); min-width: 0; cursor: pointer; }
-.connection-row.unavailable > label { color: var(--text-3); cursor: default; }
-.connection-row > label > div { display: grid; gap: 1px; min-width: 0; }
-.connection-row strong { font: var(--fs-sm)/1.4 var(--font-mono); font-weight: 400; }
-.connection-row small { color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); }
-.connection-row.unavailable strong, .connection-row.unavailable small { color: inherit; }
-.connection-row > code { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.connection-row > em { color: var(--text-3); font: var(--fs-2xs)/1 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.connection-row button { min-height: 26px; }
-.connection-row:not(.unavailable) button { color: var(--accent); border-color: var(--accent); }
-.connection-row:not(.unavailable) button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
-.connection-row:hover:not(.unavailable) { background: var(--surface-2); }
-@media (width < 640px) {
-.connection-row { grid-template-columns: minmax(0, 1fr) auto; }
-  .connection-row > code { grid-column: 1 / -1; }
-}
-
 .import-dialog { width: min(640px, 100%); max-height: 85vh; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); }
 .import-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); padding: var(--s-4); border-bottom: 1px solid var(--border); }
 .import-dialog > header span { display: block; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
@@ -378,8 +376,6 @@
 .setup-dialog > header { align-items: center; }
 .setup-dialog > header button { width: 30px; height: 30px; }
 .setup-crest { width: 30px; }
-/* The app icon, drawn from the same pixel grid the tile is baked from: a squircle
-   plate with the bow inked in the accent, so the window wears what the Dock does. */
 .setup-plate { display: grid; place-items: center; aspect-ratio: 1; flex: 0 0 auto; color: var(--accent); background: var(--surface-2); border: 1px solid var(--border); border-radius: 22%; }
 .setup-plate .mark { width: 62%; height: 62%; color: inherit; }
 .setup-art { margin: 0; color: var(--text-3); font: var(--fs-sm)/1.35 var(--font-mono); white-space: pre; overflow-x: auto; }
@@ -395,8 +391,6 @@
 .setup-hero { width: 132px; }
 .setup-intro .setup-plate { box-shadow: var(--shadow-lg); }
 .setup-intro dl, .setup-notch-step dl { display: grid; gap: var(--s-3); width: 100%; }
-/* Each line centres as a unit — key beside its sentence — so the column of them
-   sits under the drawing above it instead of hugging the left rule. */
 .setup-intro dl > div, .setup-notch-step dl > div { display: flex; justify-content: center; gap: var(--s-4); align-items: baseline; }
 .setup-intro dt, .setup-notch-step dt { color: var(--text); font: var(--fs-2xs)/1.6 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .setup-intro dd, .setup-notch-step dd { margin: 0; max-width: 62ch; color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); text-align: center; }
@@ -432,8 +426,6 @@
 .setup-notch-step > .setup-choices { justify-content: center; }
 
 .setup-notch-step { display: grid; gap: var(--s-6); padding: var(--s-5) var(--s-4); }
-/* Two caps, lit one per tap. The gesture is the lesson — nothing here explains it
-   in a paragraph, and the island above lights when the second tap lands. */
 .key-lesson { display: grid; justify-items: center; gap: var(--s-4); }
 .keycaps { display: flex; gap: var(--s-5); }
 .keycaps kbd { display: grid; justify-items: center; gap: var(--s-2); width: 96px; padding: var(--s-3) var(--s-2); color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border-strong); box-shadow: 0 3px 0 var(--border-strong); font: var(--fs-2xl)/1 var(--font-mono); transition: color var(--t), background-color var(--t), border-color var(--t), box-shadow var(--t), translate var(--t); }
@@ -479,6 +471,8 @@
   .provider-key-row { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: var(--s-2); }
   .provider-key-row label { grid-column: 1 / -1; }
   .local-model-form button { grid-column: 1 / -1; justify-self: start; }
+  .web-search-fields { grid-template-columns: minmax(0, 1fr); }
+  .web-search-actions { flex-wrap: wrap; }
 }
 
 .local-model-form .verifier-rules { grid-column: 1 / -1; }
@@ -555,3 +549,18 @@
 }
 
 .workspace-key kbd { justify-self: start; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-code); }
+
+.plan-row { grid-template-columns: 20px minmax(248px, 1.5fr) minmax(120px, 1fr) minmax(72px, 0.7fr) auto auto; }
+.plan-row.set small { color: var(--lime); }
+.plan-model { overflow: hidden; color: var(--text-3); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.plan-model.live { color: var(--accent); }
+.cli-plan-row { grid-template-columns: 20px minmax(0, 1fr) auto auto auto; }
+.cli-plan-row .warn { color: var(--text-3); }
+.cli-plan-terminal { position: relative; grid-column: 1 / -1; margin-top: var(--s-3); height: 280px; border: 1px solid var(--border); border-radius: var(--r-2); overflow: hidden; background: var(--surface-2); }
+.model-plans .provider-key-balance { display: flex; gap: var(--s-2); align-items: baseline; margin-top: 1px; }
+.model-plans .provider-key-balance a { flex: none; }
+
+.model-plans .plan-spend { display: flex; gap: var(--s-2); font-weight: 400; font-style: normal; }
+.model-plans .plan-spend span { color: var(--text-3); }
+.model-plans .plan-spend .plan-spend-week { opacity: 0.6; }
+.model-plans .plan-spend .warn { color: var(--accent); }

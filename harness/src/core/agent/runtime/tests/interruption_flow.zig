@@ -78,13 +78,13 @@ fn expectGatewayPromptRoleContentKinds(gateway: *const FakeGateway, index: usize
         const role = entry.object.get("role") orelse return error.TestExpectedPromptRoleMissing;
         try std.testing.expect(role == .string);
         const content = entry.object.get("content") orelse return error.TestExpectedPromptMessageMissing;
-        if (std.mem.eql(u8, role.string, "system") or
-            std.mem.eql(u8, role.string, "assistant") or
+        if (std.mem.eql(u8, role.string, "system")) {
+            try std.testing.expect(content == .string or content == .array);
+        } else if (std.mem.eql(u8, role.string, "assistant") or
             std.mem.eql(u8, role.string, "tool"))
         {
             try std.testing.expect(content == .string);
         } else if (std.mem.eql(u8, role.string, "user")) {
-            // Only an attachment-carrying prompt is split into content parts.
             try std.testing.expect(content == .string or content == .array);
         } else {
             return error.TestUnexpectedPromptRole;

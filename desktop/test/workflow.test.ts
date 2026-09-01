@@ -16,12 +16,16 @@ test("a broken graph is refused with the reason, not silently half-run", () => {
     { id: "two", kind: "branch", text: "x" },
     { id: "three", kind: "if", text: "{{x}}" },
     { id: "four", kind: "set", text: "5" },
+    { id: "five", kind: "script", text: "relative.py", input: "x" },
+    { id: "six", kind: "agent", text: "explain", input: "x" },
   ]));
   assert.ok(errors.some((error) => error.includes('points its next at "nowhere"')), errors.join("; "));
   assert.ok(errors.some((error) => error.includes('repeats the id "one"')), errors.join("; "));
-  assert.ok(errors.some((error) => error.includes("kind of agent, set or if")), errors.join("; "));
+  assert.ok(errors.some((error) => error.includes("kind of agent, script, set or if")), errors.join("; "));
   assert.ok(errors.some((error) => error.includes("condition Emma cannot read")), errors.join("; "));
   assert.ok(errors.some((error) => error.includes("no variable to save it in")), errors.join("; "));
+  assert.ok(errors.some((error) => error.includes("fixed absolute script path")), errors.join("; "));
+  assert.ok(errors.some((error) => error.includes("not a script, so it has no input")), errors.join("; "));
 });
 
 test("conditions read the way they are written, and refuse what they cannot read", () => {
@@ -34,7 +38,6 @@ test("conditions read the way they are written, and refuse what they cannot read
   assert.equal(evaluate("{{digest}} is not empty", variables), true);
   assert.equal(evaluate("{{missing}} is not empty", variables), false);
   assert.equal(evaluate("{{digest}} is Two papers on sleep", variables), true);
-  // Nonsense is false rather than a guess, and an unset variable expands to nothing.
   assert.equal(evaluate("{{digest}} rhymes with sheep", variables), false);
   assert.equal(expand("read {{missing}} now", variables), "read  now");
 });
@@ -57,12 +60,30 @@ test("a run branches, carries variables between steps, and stops at the step cei
   assert.equal(run.variables.last, "Three papers on sleep");
   assert.deepEqual(run.steps.map((step) => step.nodeId), ["collect", "check", "mail"]);
 
-  // A branch pointing backwards is a loop; it runs out of steps instead of forever.
   const loop = parseWorkflow(JSON.stringify([
     { id: "again", kind: "set", text: "{{n}}x", saveAs: "n", next: "again" },
   ])).nodes;
   const spun = await runWorkflow(loop, {}, async () => "");
   assert.equal(spun.steps.length, MAX_WORKFLOW_STEPS);
+});
+
+test("script output becomes deterministic input to a later agent step", async () => {
+  const nodes = parseWorkflow(JSON.stringify([
+    { id: "calculate", kind: "script", text: "/Users/me/calculate.py", input: "{{source}}", saveAs: "numbers" },
+    { id: "analyze", kind: "agent", text: "Analyze {{numbers}}", saveAs: "summary" },
+  ])).nodes;
+  const calls: { kind: string; text: string; input: string }[] = [];
+  const run = await runWorkflow(nodes, { source: "4,9" }, async (text, node, input) => {
+    calls.push({ kind: node.kind, text, input });
+    return node.kind === "script" ? "13" : "The total is 13.";
+  });
+  assert.deepEqual(calls, [
+    { kind: "script", text: "/Users/me/calculate.py", input: "4,9" },
+    { kind: "agent", text: "Analyze 13", input: "" },
+  ]);
+  assert.equal(run.variables.numbers, "13");
+  assert.equal(run.variables.summary, "The total is 13.");
+  assert.equal(run.variables.last, "The total is 13.");
 });
 
 test("stored variables survive a round trip and anything else is ignored", () => {
@@ -78,9 +99,6 @@ test("a run that produced too much keeps every variable and loses the tails", ()
   assert.equal(read.flag, "yes");
   assert.ok(read.huge.length > 1000);
 });
-
-/* The trigger picker: every preset is a cron line, and reading one back has to
-   land on the preset that wrote it or editing a saved task rewrites its trigger. */
 
 test("every preset round-trips through cron", () => {
   const cases = [
@@ -105,7 +123,6 @@ test("a hand-written trigger stays hand-written, and Sunday is always 0", () => 
   assert.equal(parseTrigger("0 9 1-5 * *").kind, "cron");
   assert.equal(buildTrigger(parseTrigger("0 9 1-5 * *")), "0 9 1-5 * *");
   assert.deepEqual(parseTrigger("0 9 * * 7").weekdays, [0]);
-  // A weekly trigger with no day picked would never fire, so it means every day.
   assert.equal(buildTrigger({ ...parseTrigger("0 9 * * 1"), weekdays: [] }), "0 9 * * *");
 });
 
@@ -129,7 +146,6 @@ test("the drawn edges are the jumps the runner would take", () => {
     { from: "check", to: "end", label: "no" },
     { from: "write", to: "end" },
   ]);
-  // One row per level, and a step nothing reaches still gets drawn.
   assert.deepEqual(workflowRows(nodes, edges), [["collect"], ["check"], ["write"]]);
   const orphaned = parseWorkflow(JSON.stringify([
     { id: "one", kind: "agent", text: "a", next: "end" },

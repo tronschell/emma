@@ -134,6 +134,14 @@ pub fn callSelect(
     ctx: tool_dispatch.DispatchContext,
     erased: tool_dispatch.ToolInput,
 ) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
+    const input = erased.as(SelectInput);
+    if (ctx.tool_registry.lookup(input.name)) |spec| {
+        if (spec.advertisement == .always) return .{ .failure = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s} is already available; call it directly.",
+            .{spec.name},
+        ) };
+    }
     const runtime_context = ctx.mcp_ctx orelse return semanticFailure(
         ctx,
         "No MCP runtime is available.",
@@ -142,7 +150,6 @@ pub fn callSelect(
         ctx,
         "No MCP runtime is available.",
     );
-    const input = erased.as(SelectInput);
     const schema_result = (tool_schema(
         runtime_context,
         ctx.allocator,
@@ -214,4 +221,56 @@ fn semanticFailure(
     message: []const u8,
 ) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     return .{ .failure = try ctx.allocator.dupe(u8, message) };
+}
+
+fn advertisedTestTool(name: []const u8) tool_dispatch.Tool {
+    return .{
+        .name = name,
+        .description = "Already in the base advertisement.",
+        .gateway_schema = .{ .name = name, .description = "Already in the base advertisement." },
+        .advertisement = .always,
+        .decode = decodeSelect,
+        .call = callSelect,
+        .reads_only_fn = readsOnly,
+        .irreversible_fn = isIrreversible,
+    };
+}
+
+fn mcpSelectResult(
+    alloc: Allocator,
+    tools: []const tool_dispatch.Tool,
+    name: []const u8,
+) !tool_dispatch.ToolResult {
+    const ctx = tool_dispatch.DispatchContext{
+        .allocator = alloc,
+        .tool_registry = .{ .tools = tools },
+    };
+    const args = try std.fmt.allocPrint(alloc, "{{\"name\":\"{s}\"}}", .{name});
+    defer alloc.free(args);
+    const decoded = try decodeSelect(ctx, args);
+    const input = switch (decoded) {
+        .input => |value| value,
+        .failure => |body| {
+            alloc.free(body);
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer input.deinit(alloc);
+    return try callSelect(ctx, input);
+}
+
+test "mcp tool select refuses a name the model already has advertised" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{advertisedTestTool("read_file")};
+
+    const advertised = try mcpSelectResult(alloc, tools[0..], "read_file");
+    defer advertised.deinit(alloc);
+    try std.testing.expectEqualStrings(
+        "read_file is already available; call it directly.",
+        advertised.failure,
+    );
+
+    const dynamic = try mcpSelectResult(alloc, tools[0..], "mcp_fs_read");
+    defer dynamic.deinit(alloc);
+    try std.testing.expectEqualStrings("No MCP runtime is available.", dynamic.failure);
 }

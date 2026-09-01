@@ -19,6 +19,7 @@
 @import "./styles/context-bar.css";
 @import "./styles/overlay.css";
 @import "./styles/built.css";
+@import "./styles/worktrees.css";
 
 @font-face {
 font-family: "Departure Mono";
@@ -39,48 +40,20 @@ body { background: transparent; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; cursor: pointer; }
 button:disabled { cursor: default; opacity: .45; }
-/* Every focusable thing, not a list of tag names. The allowlist this replaces
-   missed <summary> and every tabindex="-1" popover, so those fell through to
-   Chromium's stock ring — light blue, rounded, the only curve and the only blue
-   in the product. A region that wants a different offset or none at all still
-   outranks this with one class. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* Text fields are the exception: a box around a box: the ring traced an edge the
-   field already draws, and every autofocused one opened wearing it. Focus moves
-   into the field's own border instead, alongside the caret. Checkbox, range and
-   file keep the ring: no caret, no border of their own to colour. */
 :is(input:not([type="checkbox"], [type="range"], [type="file"]), textarea):focus-visible { border-color: var(--accent); outline: none; }
 
-/* One control language, defined once. Regions own layout (size, margin, grid
-   placement); the control's own chrome lives here so no region can ship a stock
-   Aqua widget. The base selector is (0,1,1) and each state variant only adds
-   pseudo-classes, so any region rule that adds one class outranks its
-   counterpart here — settings.css and .import-list both still win.
-   Text inputs and textareas are deliberately absent: every one of them is
-   already owned by a region file, and a global box here would fight them. */
 input[type="range"] { accent-color: var(--accent); }
 input[type="checkbox"] { appearance: none; display: grid; place-items: center; flex: 0 0 auto; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; cursor: pointer; background: none; border: 1px solid var(--border-strong); transition: background-color var(--t), border-color var(--t); }
 input[type="checkbox"]:hover:not(:disabled) { border-color: var(--text-3); }
 input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
-/* The tick is the bottom-right corner of a box, rotated: no glyph, no image. */
 input[type="checkbox"]:checked::after { content: ""; width: 4px; height: 8px; margin-top: -2px; border: solid var(--fg-invert); border-width: 0 2px 2px 0; rotate: 45deg; }
 input[type="checkbox"]:disabled { cursor: default; background: var(--surface); border-color: var(--border); }
 input[type="checkbox"]:disabled:checked { background: var(--text-3); border-color: var(--text-3); }
-/* Blink draws the select box from the author's background/border/radius but the
-   chevron from the UA; appearance:none would delete the chevron and any
-   background-image replacement loses to the region `background:` shorthands.
-   So the box stays region-owned and only the missing affordance is filled. */
 select:not(:disabled) { cursor: pointer; }
-/* A button is a label inside an outline, never a filled pill: mono, small caps,
-   and the fill arrives only on hover. */
 ::file-selector-button { min-height: 24px; margin-right: var(--s-2); padding: var(--s-1) var(--s-3); color: var(--text); background: none; border: 1px solid var(--border-strong); font-family: var(--font-mono); font-size: var(--fs-sm); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; transition: background-color var(--t), border-color var(--t); }
 ::file-selector-button:hover { background: var(--surface-3); }
 
-/* Scrollbars are chrome like everything else: a 1px-rule idiom, not a floating
-   grey pill. Chromium's stock bar was the only rounded, opaque, light-grey
-   shape left in the product. The track is empty paper; the thumb is a square
-   ink block on the same warm ramp as the text. Regions that hide their scrollbar
-   keep doing so — `scrollbar-width` outranks these pseudo-elements in Blink. */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border: 3px solid transparent; background-clip: padding-box; }
@@ -91,43 +64,11 @@ p, h1, h2, h3, dl, dd { margin: 0; }
 :is(.scheduled-view, .tasks-view, .artifacts-view, .plugins-view, .research-view) > header > h2:first-child, .agent-view > header > .agent-head > h2:first-child { margin-top: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .skip-link { position: fixed; z-index: 100; left: var(--s-5); top: -60px; padding: var(--s-2) var(--s-4); color: var(--fg-invert); background: var(--solid); font-family: var(--font-mono); font-size: var(--fs-sm); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-/* Below the 46px titlebar: at var(--s-4) the focused link landed square on the
-   macOS traffic lights, hiding the window controls while it had focus. */
 .skip-link:focus { top: calc(var(--s-8) + var(--s-5)); }
-/* The mark: a pixel bow on its own, no tile around it. It draws in `currentColor`,
-   so colour is the only thing that varies — lime reads good, orange bad, yellow
-   unresolved. The wiggle is opt-in per context; a mark at rest holds still. */
 .mark { display: grid; place-items: center; width: 24px; height: 24px; flex: 0 0 auto; color: var(--text-3); }
 .mark svg { width: 100%; height: 100%; transform-origin: 50% 45%; }
 @keyframes mark-wiggle { 0%, 100% { rotate: -4deg; scale: 1 1; } 50% { rotate: 4deg; scale: .94 1; } }
-/* The status pip is a filled cell, not a bullet. At 6px on a 2x pixel grid a circle
-   renders as a lumpy anti-aliased blob, and it was the last curve in a chrome drawn
-   entirely from square 1px rules; the square lands on the same grid as the type.
-   No halo either — a soft glow is glass, not a rule, and two of the five places a
-   pip appears were already switching it off by hand.
-   `:empty` because the pip is the shape of `<i />` and nothing else: an `<i>`
-   with text in it is a count, a delta or a mark, and painting a 6px orange
-   square over the glyph is how `1×`, `-3` and `[ok]` all turned into tofu.
-   `:where` because this is a default, not a rule: every region file is
-   @imported above, so a plain `i:empty` here ties `.context-grid i` and
-   `.trace-track i` on specificity and wins on order — which is how every
-   ledger cell, legend swatch and waterfall bar turned into the same orange
-   6px square. At zero specificity the region's own hue wins again. */
 :where(i:empty) { display: inline-block; width: 6px; height: 6px; background: var(--accent); }
-/* Ink lives in the asset, not here. Marks arrive through <img>, so CSS colour
-   cannot reach inside one — the `brightness(0) invert(1)` this replaces was the
-   only lever while simple-icons shipped fill-less (and so black, invisible on
-   this ground). Each file now carries its own fill: #fff where the mark is black
-   in the brand, the real brand colour where it isn't. A blanket filter here
-   would flatten the ones that are meant to be coloured.
-   Each asset is fitted to its own full viewBox, so the breathing room is this
-   padding and the size of the box the mark sits in — never whitespace baked
-   into the file, which would make each vendor optically a different size.
-   The inset is absolute, not a percentage: percentage padding resolves against
-   the containing block's width, not the mark's own box, so a 12px mark in a
-   200px row got 20px of padding a side — a box four times its size with a
-   zero-width content area, which paints nothing at all. Every mark here is
-   12–20px, so 2px reads the same at any of those sizes. */
 .brand-image { padding: 2px; object-fit: contain; }
 
 .emma-mark { position: relative; display: block; flex: 0 0 auto; line-height: 0; }

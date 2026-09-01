@@ -396,9 +396,6 @@ const ProjectionMeasurementPrefix = struct {
     anchor_row: ?u32,
 };
 
-/// A width-rendered Ctrl-O document. Static transcript bytes and retained
-/// command fallbacks are owned by the projection; stored-result handles remain
-/// borrowed and are read through the session capability only on demand.
 pub const Projection = struct {
     segments: std.ArrayList(Segment) = .empty,
     anchor_segment_index: ?usize = null,
@@ -634,8 +631,6 @@ pub const ProjectionMeasurement = struct {
     item_rows: []const transcript_presentation.ItemRow = &.{},
 };
 
-/// Owns the in-progress static writer while composing a Projection, so every
-/// build-time segment boundary transfers through one place.
 const ProjectionBuilder = struct {
     alloc: Allocator,
     projection: Projection,
@@ -1584,9 +1579,6 @@ test "stored result projection streams terminal-safe head middle and tail pages"
     try std.testing.expect(std.mem.indexOf(u8, tail, "TAIL-SENTINEL") != null);
     try std.testing.expect(std.mem.indexOf(u8, tail, "after") != null);
 
-    // Every physical row reserves the two-cell result prefix. Escaping ESC
-    // adds three cells while the four-byte emoji occupies two, so the marker
-    // begins one content cell past its raw byte offset.
     const middle_marker_row = @as(u32, 1) +
         @as(u32, @intCast((half_result_bytes + 1) / (24 - 2)));
     const middle = try renderProjectionViewportSource(
@@ -2089,8 +2081,6 @@ test "viewport selector sees the degraded measurement when a stored segment is u
     });
     defer alloc.free(selected);
 
-    // The unreadable segment degrades during the measure walk, so the selector
-    // must be handed the post-degrade totals, not the pre-degrade document.
     const post_degrade = try measureProjection(alloc, &projection, null, 80);
     try std.testing.expectEqual(@as(u32, 1), recorder.calls);
     try std.testing.expectEqual(post_degrade.total_rows, recorder.measurement.?.total_rows);
@@ -2278,9 +2268,6 @@ test "a window walk degrade re-selects the offset in the same frame" {
     });
     defer alloc.free(selected);
 
-    // Deleting the stored result between the measure and window walks forces
-    // the window walk to degrade; the pipeline must re-measure and re-select
-    // rather than emit a window at the stale offset.
     try std.testing.expectEqual(@as(u32, 2), saboteur.calls);
     try std.testing.expectEqual(@as(?u16, 8), saboteur.visible_rows);
     const post_degrade = try measureProjection(alloc, &projection, &capability, 80);
@@ -2504,7 +2491,7 @@ test "full projection prefers ordered replay and omits command envelopes and inp
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2599,7 +2586,7 @@ test "review command replay emits three logical lines and the exact remainder" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2722,7 +2709,7 @@ test "head-pruned command replay fills absolute prefix and suffix ranges once" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -2982,7 +2969,7 @@ test "corrupt required replay keeps a safe fallback and permanent marker" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3290,7 +3277,7 @@ test "bounded command source rejects a truncated absolute record range" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3341,7 +3328,7 @@ test "oversized newline-free replay stays paged through measurement and tail ren
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3431,7 +3418,7 @@ test "oversized replay keeps shared orphan wrapping in the paged record" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3523,7 +3510,7 @@ test "oversized zero width replay has bounded measurement and visible output" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3624,7 +3611,7 @@ test "oversized interleaved replay preserves more than sixty four record ordinal
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3927,7 +3914,7 @@ test "missing command artifact uses the retained tool result sidecar" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -3983,7 +3970,7 @@ test "paged command result removes an envelope split across source pages" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -4068,7 +4055,7 @@ test "resumed command detail pages its exact result handle without replay" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
@@ -4156,7 +4143,6 @@ test "projection measurement continues across a stored segment boundary" {
     );
     defer capability.deinit();
 
-    // Envelope trimming leaves the stored segment ending mid-row.
     const handle = try result_store.storeLargeResultManaged(
         alloc,
         &capability,
@@ -4182,8 +4168,6 @@ test "projection measurement continues across a stored segment boundary" {
     } });
     try projection.segments.append(alloc, .{ .static = try alloc.dupe(u8, "\nafter\n") });
 
-    // before / ALPHA / BRAVO / after: the newline opening the final static
-    // segment terminates BRAVO's row rather than counting as a row of its own.
     const measurement = try measureProjection(alloc, &projection, &capability, 80);
     try std.testing.expectEqual(@as(u32, 4), measurement.total_rows);
 
@@ -4236,7 +4220,6 @@ test "projection window applies the carriage return column reset measurement use
     const measurement = try measureProjection(alloc, &projection, null, 10);
     try std.testing.expectEqual(@as(u32, 1), measurement.total_rows);
 
-    // The overwritten tail must not wrap onto a row past the measured document.
     const row = try renderProjectionViewportSource(alloc, &projection, null, 10, 1, 0);
     defer alloc.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "BB") != null);
@@ -4448,8 +4431,6 @@ pub fn buildProjectionForDepthWithEntryActionsInterruptible(
     return builder.finish();
 }
 
-/// Counts the visual document without materializing stored sidecars. A valid
-/// handle is scanned in fixed-size raw pages through the terminal-safe encoder.
 fn measureProjection(
     alloc: Allocator,
     projection: *Projection,
@@ -4582,7 +4563,6 @@ fn walkProjectionSegments(
             else
                 appendStoredResultContent(alloc, walker, capability, projection.styles, stored.*) catch |err| {
                     if (err == error.InputPending) return err;
-                    // Rows walked so far are stale once the segment degrades.
                     _ = degradeStoredResult(stored, err);
                     projection.invalidateMeasurement();
                     return error.StoredSegmentDegraded;
@@ -4603,9 +4583,6 @@ fn walkProjectionSegments(
     return anchor_row;
 }
 
-/// Single row-geometry walk (wrap rules of `visualRowsForLine`) behind both
-/// measurement and window extraction, so scroll bounds cannot disagree with
-/// the rows the window yields. A window captures rows [start_row, end_row).
 const ProjectionRowWalker = struct {
     cols: u16,
     row: u32 = 0,
@@ -4687,7 +4664,6 @@ const ProjectionRowWalker = struct {
         self.* = undefined;
     }
 
-    /// Rows the walked content occupies so far; a final partial row counts.
     fn totalRows(self: *const ProjectionRowWalker) u32 {
         return self.row +| @intFromBool(self.row_has_bytes);
     }
@@ -4703,7 +4679,6 @@ const ProjectionRowWalker = struct {
         }
     }
 
-    /// Returns false once the armed window is fully captured.
     fn append(self: *ProjectionRowWalker, bytes: []const u8) !bool {
         return self.appendWithSoftWrapPrefix(bytes, "");
     }
@@ -4985,9 +4960,6 @@ const CommandFrameReader = union(enum) {
         return source;
     }
 
-    // noinline keeps the comptime-known error returns behind a call
-    // boundary; inlined into a `!CommandFrameReader` result location they
-    // each materialize a union-sized (~8KB) error-union constant.
     noinline fn initInto(
         out: *CommandFrameReader,
         alloc: Allocator,
@@ -5059,7 +5031,6 @@ fn appendCommandStoredResultContent(
     return appendMergedCommandSource(alloc, walker, capability, styles, stored);
 }
 
-/// Returns null when canonical content exceeds the bounded scratch budget.
 fn appendBoundedCommandSource(
     alloc: Allocator,
     walker: *ProjectionRowWalker,
@@ -5881,8 +5852,6 @@ fn contentEnvelopeStart(body: []const u8) ?usize {
     return start;
 }
 
-/// Writes terminal-safe tool detail while retaining LF as the line boundary.
-/// Other controls still go through the shared terminal-safe encoder.
 const TerminalSafeIndentedWriter = struct {
     encoder: text_utils.IncrementalTerminalSafeEncoder = .{},
     line_start: bool = true,
@@ -6403,9 +6372,6 @@ fn openStoredResultReader(
     return reader;
 }
 
-// noinline keeps the comptime-known error returns behind a call boundary;
-// inlined into a `!StoredResultReader` result location they each materialize
-// a union-sized (~8KB) error-union constant.
 noinline fn openStoredResultReaderInto(
     out: *StoredResultReader,
     alloc: Allocator,
@@ -6473,8 +6439,6 @@ fn activateStoredResultFallback(stored: *StoredResult, err: anyerror) bool {
 
 const StoredResultDegradation = enum { retry, unavailable };
 
-/// One-way (command artifact, then retained tool result, then unavailable),
-/// which bounds the measurement retry and the render restart.
 fn degradeStoredResult(stored: *StoredResult, err: anyerror) StoredResultDegradation {
     if (activateStoredResultFallback(stored, err)) return .retry;
     stored.unavailable = true;
@@ -6518,11 +6482,6 @@ fn logStoredResultUnavailable(handle: []const u8, err: anyerror) void {
     );
 }
 
-/// Reads the selected Ctrl-O visual window as normal terminal source bytes.
-/// The caller sends these bytes through the same prepared-transcript painter
-/// that renders compact inline output; this helper never constructs a grid.
-/// The window emits only rows the document reaches, so an offset at or past
-/// the document end yields an empty window.
 fn renderProjectionViewportSource(
     alloc: Allocator,
     projection: *Projection,
@@ -6565,10 +6524,6 @@ pub fn renderProjectionViewportSourceInterruptible(
     );
 }
 
-/// Measures the projection, lets the selector pick the scroll offset against
-/// that same-walk measurement, and reads the selected window. A stored segment
-/// degrading during the window walk restarts the whole pipeline, so the
-/// emitted window always matches the document the offset was selected for.
 fn renderProjectionViewportSourceWithSelector(
     alloc: Allocator,
     projection: *Projection,
@@ -7070,8 +7025,6 @@ fn commandLineRecordOrdinal(
     line_index: usize,
 ) usize {
     const ordinal = block.lines.items[line_index].record_ordinal;
-    // Hand-built legacy/test blocks predate explicit ordinals and leave every
-    // line at the default zero. Runtime-ingested records are strictly ordered.
     if (line_index > 0 and ordinal == 0) return line_index;
     return ordinal;
 }

@@ -96,7 +96,7 @@ pub fn capture(
         return .{ .invalid = @errorName(err) };
     };
     if (initial.kind != .file or initial.nlink != 1 or
-        initial.permissions.toMode() & 0o777 != 0o600)
+        !io_mod.permissionsMatch(initial.permissions, 0o600))
     {
         return .{ .invalid = "unsafe_initial_shape" };
     }
@@ -117,7 +117,7 @@ pub fn capture(
     const verified = file.stat(io_mod.getIo()) catch |err|
         return .{ .invalid = @errorName(err) };
     if (verified.kind != .file or verified.nlink != 1 or
-        verified.permissions.toMode() & 0o777 != 0o600)
+        !io_mod.permissionsMatch(verified.permissions, 0o600))
     {
         return .{ .invalid = "unsafe_verified_shape" };
     }
@@ -239,9 +239,6 @@ fn markContinuityGapIfNeeded(
     continuity_at_ms: i64,
 ) !void {
     if (durable.next_sequence <= 1) return;
-    // Missing or unreadable rich state is indistinguishable from a rollback
-    // binary advancing billable usage without updating the sidecar. Preserve
-    // canonical totals, but qualifies rolling reports that include this gap.
     try session_usage.appendIncidentOwned(alloc, durable, .{
         .occurred_at_ms = @max(continuity_at_ms, 0),
         .completeness = .incomplete,

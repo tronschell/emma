@@ -149,8 +149,8 @@ function text(value: unknown, max: number): string {
 function relativePath(value: unknown, fallback = ""): string {
   const raw = text(value, 512) || fallback;
   if (!raw) return "";
-  const cleaned = raw.replace(/^\.\//, "").replace(/\/+$/, "");
-  if (!cleaned || cleaned.startsWith("/") || cleaned.startsWith("~") || cleaned.split("/").includes("..")) throw new Error(`"${raw}" is not a path inside the plugin`);
+  const cleaned = raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  if (!cleaned || cleaned.startsWith("/") || cleaned.startsWith("~") || /^[A-Za-z]:/.test(cleaned) || cleaned.split("/").includes("..")) throw new Error(`"${raw}" is not a path inside the plugin`);
   return cleaned;
 }
 
@@ -161,12 +161,12 @@ export function parseSparsePaths(value: unknown): string[] {
 
 export function parseMarketplaceSource(raw: unknown, ref: unknown = "", sparse: unknown = []): MarketplaceSource {
   const value = text(raw, 1024);
-  if (!value) throw new Error("Give a GitHub repo, a Git URL, or a folder on this Mac.");
+  if (!value) throw new Error("Give a GitHub repo, a Git URL, or a folder on this computer.");
   const paths = parseSparsePaths(sparse);
   const pinned = text(ref, 128);
   if (pinned && (pinned.startsWith("-") || /[\s~^:?*[\\]/.test(pinned))) throw new Error(`"${pinned}" is not a Git ref.`);
-  if (value.startsWith(".")) throw new Error("Give the folder's full path, starting with / or ~.");
-  if (value.startsWith("/") || value.startsWith("~")) {
+  if (value.startsWith(".")) throw new Error("Give the folder's full path, starting with /, ~, or a Windows drive or UNC path.");
+  if (value.startsWith("/") || value.startsWith("~") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\")) {
     if (paths.length) throw new Error("Sparse paths only apply to Git marketplaces.");
     return { kind: "local", path: value };
   }

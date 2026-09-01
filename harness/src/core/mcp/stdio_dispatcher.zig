@@ -3,6 +3,11 @@ const host_target = @import("../hosts/target.zig");
 const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_process = if (builtin.os.tag == .windows)
+    @import("../shared/windows_process.zig")
+else
+    struct {};
+const windows_job = @import("../permissions/windows_job.zig");
 const mcp_contract = @import("mcp_contract.zig");
 const operation_control = @import("operation_control.zig");
 
@@ -168,9 +173,6 @@ const Pending = struct {
 const ChangeSignal = struct {
     event: std.Io.Event = .unset,
 
-    /// The request owner calls this while holding `state_mutex`, before it
-    /// inspects pending state. Producers notify under the same mutex, so a
-    /// change cannot be lost between inspection and waiting.
     fn prepareLocked(self: *ChangeSignal) void {
         self.event.reset();
     }
@@ -238,6 +240,7 @@ pub const StdioDispatcher = struct {
     shared_allocator: Allocator,
     child: std.process.Child,
     child_id: std.process.Child.Id,
+    job: ?windows_job.Job,
     stdin: ?std.Io.File,
     stdout: ?std.Io.File,
     reader_thread: ?std.Thread = null,
@@ -261,18 +264,37 @@ pub const StdioDispatcher = struct {
         generation: u64,
         initial_max_frame_bytes: usize,
     ) !*StdioDispatcher {
+        return createWithJob(
+            owner_allocator,
+            shared_allocator,
+            child_value,
+            generation,
+            initial_max_frame_bytes,
+            null,
+        );
+    }
+
+    pub fn createWithJob(
+        owner_allocator: Allocator,
+        shared_allocator: Allocator,
+        child_value: std.process.Child,
+        generation: u64,
+        initial_max_frame_bytes: usize,
+        job_value: ?windows_job.Job,
+    ) !*StdioDispatcher {
         if (comptime host_target.is_wasm) return error.McpTransportUnavailable;
         var child = child_value;
         const child_id = child.id orelse return error.McpProcessNotStarted;
+        var job = job_value;
         const stdin = child.stdin orelse {
-            terminateChild(child_id);
+            terminateOwnedChild(child_id, &job);
             _ = child.wait(io_mod.getIo()) catch {};
             return error.McpStdinClosed;
         };
         const stdout = child.stdout orelse {
             stdin.close(io_mod.getIo());
             child.stdin = null;
-            terminateChild(child_id);
+            terminateOwnedChild(child_id, &job);
             _ = child.wait(io_mod.getIo()) catch {};
             return error.McpStdoutClosed;
         };
@@ -282,7 +304,7 @@ pub const StdioDispatcher = struct {
         const self = owner_allocator.create(StdioDispatcher) catch |err| {
             stdin.close(io_mod.getIo());
             stdout.close(io_mod.getIo());
-            terminateChild(child_id);
+            terminateOwnedChild(child_id, &job);
             _ = child.wait(io_mod.getIo()) catch {};
             return err;
         };
@@ -291,15 +313,17 @@ pub const StdioDispatcher = struct {
             .shared_allocator = shared_allocator,
             .child = child,
             .child_id = child_id,
+            .job = job,
             .stdin = stdin,
             .stdout = stdout,
             .pending = std.AutoHashMap(u64, *Pending).init(shared_allocator),
             .generation = generation,
             .max_frame_bytes = .init(initial_max_frame_bytes),
         };
+        job = null;
         errdefer {
             self.closePipes();
-            terminateChild(self.child_id);
+            terminateOwnedChild(self.child_id, &self.job);
             _ = self.child.wait(io_mod.getIo()) catch {};
             self.pending.deinit();
             owner_allocator.destroy(self);
@@ -326,6 +350,7 @@ pub const StdioDispatcher = struct {
 
     fn destroy(self: *StdioDispatcher) void {
         self.pending.deinit();
+        if (self.job) |*job| job.deinit();
         const owner_allocator = self.owner_allocator;
         owner_allocator.destroy(self);
     }
@@ -340,8 +365,6 @@ pub const StdioDispatcher = struct {
         return self.state == .running;
     }
 
-    /// The caller must retain while the dispatcher is still protected by its
-    /// server publication lock. Shutdown drains this lease before destruction.
     pub fn retainPublished(self: *StdioDispatcher) void {
         self.state_mutex.lockUncancelable(io_mod.getIo());
         defer self.state_mutex.unlock(io_mod.getIo());
@@ -470,7 +493,7 @@ pub const StdioDispatcher = struct {
             else => {
                 if (write_outcome.phase == .waiting) return err;
                 self.failConnection(err);
-                terminateChild(self.child_id);
+                terminateOwnedChild(self.child_id, &self.job);
             },
         };
         if (write_outcome.phase == .committed) {
@@ -567,7 +590,7 @@ pub const StdioDispatcher = struct {
             if (taint_connection and !connection_tainted) {
                 connection_tainted = true;
                 self.failConnection(error.McpWriteInterrupted);
-                terminateChild(self.child_id);
+                terminateOwnedChild(self.child_id, &self.job);
             }
             if (send_cancel) {
                 self.sendCancellation(request_id, @errorName(pending.failure.?));
@@ -625,7 +648,7 @@ pub const StdioDispatcher = struct {
                 (err != error.McpRequestTimedOut and err != error.Cancelled))
             {
                 self.failConnection(err);
-                terminateChild(self.child_id);
+                terminateOwnedChild(self.child_id, &self.job);
             }
             return err;
         };
@@ -819,7 +842,7 @@ pub const StdioDispatcher = struct {
                 "stdio dispatcher forcing child termination generation={d}",
                 .{self.generation},
             );
-            terminateChild(self.child_id);
+            terminateOwnedChild(self.child_id, &self.job);
         }
 
         if (self.reader_thread) |thread| {
@@ -933,7 +956,7 @@ pub const StdioDispatcher = struct {
         if (!stopping) {
             const err = terminal_error orelse error.McpConnectionClosed;
             self.failConnection(err);
-            terminateChild(self.child_id);
+            terminateOwnedChild(self.child_id, &self.job);
         }
         _ = self.child.wait(io_mod.getIo()) catch |err| {
             debug_trace.logf(
@@ -998,7 +1021,7 @@ pub const StdioDispatcher = struct {
                         self.shared_allocator.free(frame);
                         self.state_mutex.unlock(io_mod.getIo());
                         self.failConnection(error.McpResponseFrameTooLarge);
-                        terminateChild(self.child_id);
+                        terminateOwnedChild(self.child_id, &self.job);
                         return;
                     } else {
                         pending.response = frame;
@@ -1245,8 +1268,6 @@ pub const StdioDispatcher = struct {
         thread.detach();
     }
 
-    /// A legacy direct request has no parent request id. It is safe to route
-    /// only when exactly one outstanding operation has declared an owner.
     fn acquireServerRequestLease(self: *StdioDispatcher) ?ServerRequestLease {
         self.state_mutex.lockUncancelable(io_mod.getIo());
         defer self.state_mutex.unlock(io_mod.getIo());
@@ -1378,7 +1399,7 @@ pub const StdioDispatcher = struct {
                 "stdio dispatcher interrupting active writer generation={d}",
                 .{self.generation},
             );
-            terminateChild(self.child_id);
+            terminateOwnedChild(self.child_id, &self.job);
             self.write_mutex.lockUncancelable(io_mod.getIo());
         }
         defer self.write_mutex.unlock(io_mod.getIo());
@@ -1659,15 +1680,9 @@ fn jsonNumber(value: std.json.Value) !f64 {
 fn terminateChild(child_id: std.process.Child.Id) void {
     switch (builtin.os.tag) {
         .windows => {
-            const windows = std.os.windows;
-            switch (windows.ntdll.NtTerminateProcess(child_id, @enumFromInt(1))) {
-                .SUCCESS, .PROCESS_IS_TERMINATING, .ACCESS_DENIED => {},
-                else => |status| debug_trace.logf(
-                    "mcp",
-                    "failed to terminate stdio child status={any}",
-                    .{status},
-                ),
-            }
+            const process_id = windows_process.id(child_id);
+            const creation_time = windows_process.creationTime(child_id) catch return;
+            _ = windows_job.Job.terminateForProcess(process_id, creation_time);
         },
         .wasi => {},
         else => std.posix.kill(-child_id, .KILL) catch |group_err| {
@@ -1681,6 +1696,19 @@ fn terminateChild(child_id: std.process.Child.Id) void {
             };
         },
     }
+}
+
+fn terminateOwnedChild(
+    child_id: std.process.Child.Id,
+    job: *?windows_job.Job,
+) void {
+    if (job.*) |*owned_job| {
+        owned_job.terminate();
+        owned_job.deinit();
+        job.* = null;
+        return;
+    }
+    terminateChild(child_id);
 }
 
 test "classifyInbound separates responses notifications progress and requests" {

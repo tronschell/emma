@@ -8,7 +8,7 @@
     "build:harness": "(cd ../harness && zig build)",
     "build:renderer": "vite build",
     "build:main": "node -e \"require('node:fs').rmSync('dist-main', { recursive: true, force: true })\" && tsc -p tsconfig.main.json",
-    "build:native": "mkdir -p dist-native && clang -O2 -mmacosx-version-min=12.0 -fobjc-arc -framework AppKit -framework ApplicationServices native/quick_ask.m -o dist-native/emma-option-tap && dist-native/emma-option-tap --self-test && clang -Wall -Wextra -Werror -O2 -mmacosx-version-min=12.0 -fobjc-arc -framework AppKit -framework ApplicationServices native/computer.m -o dist-native/emma-computer && dist-native/emma-computer --self-test && clang -O2 -mmacosx-version-min=12.0 -fobjc-arc -framework Foundation -framework Speech native/transcribe.m -o dist-native/emma-transcribe && clang -O2 -mmacosx-version-min=12.0 native/pty.c -o dist-native/emma-pty && dist-native/emma-pty --self-test",
+    "build:native": "node scripts/build-native.mjs",
     "build": "npm run build:main && npm run build:renderer",
     "vendor:ripgrep": "node scripts/vendor-ripgrep.mjs",
     "dev": "node scripts/dev.mjs",
@@ -18,7 +18,8 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "lint": "eslint . --max-warnings 0",
     "check": "npm run test && npm run typecheck && npm run lint && npm run build:renderer",
-    "package:mac": "node scripts/package-mac.mjs"
+    "package:mac": "node scripts/package-mac.mjs",
+    "package:win": "node scripts/package-windows.mjs"
   },
   "devDependencies": {
     "@dnd-kit/core": "6.3.1",
@@ -31,11 +32,13 @@
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.1.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/xterm": "6.0.0",
     "electron": "43.4.0",
+    "electron-winstaller": "5.4.4",
     "eslint": "10.0.1",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-refresh": "0.5.4",
@@ -49,5 +52,8 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "vite": "8.2.2"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
   }
 }

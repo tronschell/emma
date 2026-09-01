@@ -1,6 +1,6 @@
 # Autoresearch
 
-A long-running experiment loop against a git project on this Mac. The agent
+A long-running experiment loop against a git project on this computer. The agent
 proposes one change, Emma measures the metric, the change is kept if the number
 improved and reverted if it did not, and the loop repeats until a budget runs out
 or you pause it.

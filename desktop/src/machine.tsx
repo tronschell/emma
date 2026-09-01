@@ -8,7 +8,7 @@ let sampling = false;
 const listeners = new Set<(samples: MachineSample[]) => void>();
 
 async function tick() {
-  if (sampling) return;
+  if (sampling || document.hidden) return;
   sampling = true;
   try {
     const sample = await window.emma.machineSample();
@@ -21,19 +21,36 @@ async function tick() {
   }
 }
 
+const stop = () => {
+  if (timer === undefined) return;
+  clearInterval(timer);
+  timer = undefined;
+};
+
+const start = () => {
+  if (timer !== undefined || document.hidden || !listeners.size) return;
+  void tick();
+  timer = setInterval(() => void tick(), MACHINE_TICK_MS);
+};
+
+const visibilityChanged = () => {
+  if (document.hidden) stop();
+  else start();
+};
+
 export function useMachine(): MachineSample[] {
   const [samples, setSamples] = useState(history);
   useEffect(() => {
     listeners.add(setSamples);
-    if (!timer) {
-      void tick();
-      timer = setInterval(() => void tick(), MACHINE_TICK_MS);
+    if (listeners.size === 1) {
+      document.addEventListener("visibilitychange", visibilityChanged);
+      start();
     }
     return () => {
       listeners.delete(setSamples);
       if (!listeners.size) {
-        clearInterval(timer);
-        timer = undefined;
+        stop();
+        document.removeEventListener("visibilitychange", visibilityChanged);
       }
     };
   }, []);
@@ -61,9 +78,9 @@ interface Series {
 }
 
 const SERIES: Series[] = [
-  { id: "cpu", label: "CPU", hue: "var(--teal)", read: (sample) => sample.cpu, value: (sample) => share(sample.cpu), title: (sample) => `${share(sample.cpu)} of every core on this Mac` },
+  { id: "cpu", label: "CPU", hue: "var(--teal)", read: (sample) => sample.cpu, value: (sample) => share(sample.cpu), title: (sample) => `${share(sample.cpu)} of every core on this computer` },
   { id: "memory", label: "Memory", hue: "var(--violet)", read: (sample) => sample.memory, value: (sample) => share(sample.memory), title: (sample) => `${sizeLabel(sample.memoryUsedBytes)} of ${sizeLabel(sample.memoryTotalBytes)} — active, wired and compressed` },
-  { id: "gpu", label: "GPU", hue: "var(--lime)", read: (sample) => sample.gpu ?? 0, value: (sample) => sample.gpu === null ? "—" : share(sample.gpu), title: (sample) => sample.gpu === null ? "This Mac reports no GPU utilisation" : `${share(sample.gpu)} device utilisation` },
+  { id: "gpu", label: "GPU", hue: "var(--lime)", read: (sample) => sample.gpu ?? 0, value: (sample) => sample.gpu === null ? "—" : share(sample.gpu), title: (sample) => sample.gpu === null ? "This computer reports no GPU utilisation" : `${share(sample.gpu)} device utilisation` },
   { id: "network", label: "Network", hue: "var(--blue)", read: (sample) => sample.rxBytes + sample.txBytes, value: (sample) => `${sizeLabel(sample.rxBytes + sample.txBytes)}/s`, title: traffic },
 ];
 
@@ -72,7 +89,7 @@ const peakOf = (series: Series, samples: MachineSample[]) => Math.max(...samples
 const points = (series: Series, samples: MachineSample[], peak: number) =>
   samples.map((sample, index) => `${samples.length > 1 ? index / (samples.length - 1) * 100 : 0},${(1 - Math.min(1, series.read(sample) / peak)) * 24}`);
 
-const HOLD = "Reading this Mac…";
+const HOLD = "Reading this computer…";
 
 export function MachineStats({ orientation }: { orientation: WidgetOrientation }) {
   const samples = useMachine();

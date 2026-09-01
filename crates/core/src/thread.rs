@@ -105,7 +105,7 @@ impl FromStr for ThreadKind {
     }
 }
 
-const THREAD_FORMAT: u64 = 13;
+const THREAD_FORMAT: u64 = 15;
 
 pub const MAX_THREAD_MESSAGES: usize = 1_024;
 pub const MAX_THREAD_TRACES: usize = 64;
@@ -253,6 +253,14 @@ pub struct GenerationTelemetry {
     pub output_tokens: u64,
     pub duration_milliseconds: u64,
     pub input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_micro_usd: Option<u64>,
     pub model: String,
 }
 
@@ -283,8 +291,45 @@ impl GenerationTelemetry {
             output_tokens,
             duration_milliseconds,
             input_tokens,
+            cache_read_tokens: None,
+            cache_input_tokens: None,
+            cache_write_tokens: None,
+            cost_micro_usd: None,
             model,
         })
+    }
+
+    pub fn with_cache_usage(
+        self,
+        cache_read_tokens: Option<u64>,
+        cache_input_tokens: Option<u64>,
+    ) -> Result<Self, ValidationError> {
+        self.with_provider_usage(cache_read_tokens, cache_input_tokens, None, None)
+    }
+
+    pub fn with_provider_usage(
+        mut self,
+        cache_read_tokens: Option<u64>,
+        cache_input_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        cost_micro_usd: Option<u64>,
+    ) -> Result<Self, ValidationError> {
+        match (cache_read_tokens, cache_input_tokens) {
+            (None, None) => {}
+            (Some(read), Some(input)) if read <= input => {}
+            _ => return Err(ValidationError::new("generation cache usage is invalid")),
+        }
+        if let Some(write) = cache_write_tokens {
+            let input = cache_input_tokens.unwrap_or(self.input_tokens);
+            if write > input {
+                return Err(ValidationError::new("generation cache usage is invalid"));
+            }
+        }
+        self.cache_read_tokens = cache_read_tokens;
+        self.cache_input_tokens = cache_input_tokens;
+        self.cache_write_tokens = cache_write_tokens;
+        self.cost_micro_usd = cost_micro_usd;
+        Ok(self)
     }
 }
 
@@ -649,6 +694,38 @@ impl Thread {
                     generation.duration_milliseconds
                 ));
                 output.push_str(&format!("Input-Tokens: {}\n", generation.input_tokens));
+                field(
+                    &mut output,
+                    "Cache-Read-Tokens",
+                    &generation
+                        .cache_read_tokens
+                        .map(|tokens| tokens.to_string())
+                        .unwrap_or_default(),
+                );
+                field(
+                    &mut output,
+                    "Cache-Input-Tokens",
+                    &generation
+                        .cache_input_tokens
+                        .map(|tokens| tokens.to_string())
+                        .unwrap_or_default(),
+                );
+                field(
+                    &mut output,
+                    "Cache-Write-Tokens",
+                    &generation
+                        .cache_write_tokens
+                        .map(|tokens| tokens.to_string())
+                        .unwrap_or_default(),
+                );
+                field(
+                    &mut output,
+                    "Cost-Micro-Usd",
+                    &generation
+                        .cost_micro_usd
+                        .map(|cost| cost.to_string())
+                        .unwrap_or_default(),
+                );
                 field(&mut output, "Model", &generation.model);
             } else {
                 output.push_str("Generation: none\n");
@@ -773,20 +850,54 @@ impl Thread {
             } else {
                 let generation = match parser.prefixed("Generation: ")? {
                     "none" => None,
-                    "present" => Some(GenerationTelemetry::measured(
-                        parser.number("Output-Tokens")?,
-                        parser.number("Duration-Milliseconds")?,
-                        if format < 7 {
+                    "present" => {
+                        let output_tokens = parser.number("Output-Tokens")?;
+                        let duration_milliseconds = parser.number("Duration-Milliseconds")?;
+                        let input_tokens = if format < 7 {
                             0
                         } else {
                             parser.number("Input-Tokens")?
-                        },
-                        if format < 11 {
+                        };
+                        let cache_read_tokens = if format < 14 {
+                            None
+                        } else {
+                            parser.optional_number("Cache-Read-Tokens")?
+                        };
+                        let cache_input_tokens = if format < 14 {
+                            None
+                        } else {
+                            parser.optional_number("Cache-Input-Tokens")?
+                        };
+                        let cache_write_tokens = if format < 15 {
+                            None
+                        } else {
+                            parser.optional_number("Cache-Write-Tokens")?
+                        };
+                        let cost_micro_usd = if format < 15 {
+                            None
+                        } else {
+                            parser.optional_number("Cost-Micro-Usd")?
+                        };
+                        let model = if format < 11 {
                             String::new()
                         } else {
                             parser.field("Model")?
-                        },
-                    )?),
+                        };
+                        Some(
+                            GenerationTelemetry::measured(
+                                output_tokens,
+                                duration_milliseconds,
+                                input_tokens,
+                                model,
+                            )?
+                            .with_provider_usage(
+                                cache_read_tokens,
+                                cache_input_tokens,
+                                cache_write_tokens,
+                                cost_micro_usd,
+                            )?,
+                        )
+                    }
                     _ => return Err(ValidationError::new("unknown generation telemetry state")),
                 };
                 parser.exact("")?;
@@ -872,6 +983,16 @@ impl ThreadStore {
         &self.root
     }
 
+    #[cfg(test)]
+    pub(crate) fn cached_len(&self) -> usize {
+        self.parsed.borrow().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_cache_for_test(&self) {
+        self.parsed.borrow_mut().clear();
+    }
+
     fn take_parsed(&self, id: &ThreadId, stamp: (SystemTime, u64)) -> Option<Arc<Thread>> {
         self.parsed
             .borrow()
@@ -949,24 +1070,28 @@ impl ThreadStore {
         if let Some(thread) = stamp.and_then(|stamp| self.take_parsed(id, stamp)) {
             return Ok(thread);
         }
-        let markdown = fs::read_to_string(&path)?;
+        let thread = Self::parse_file(&path, id)?;
+        if let Some(stamp) = stamp {
+            self.keep_parsed(stamp, Arc::clone(&thread));
+        }
+        Ok(thread)
+    }
+
+    fn parse_file(path: &Path, id: &ThreadId) -> Result<Arc<Thread>, ThreadStoreError> {
+        let markdown = fs::read_to_string(path)?;
         let thread = Thread::from_markdown(&markdown).map_err(|error| {
             ThreadStoreError::Malformed(MalformedThread {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 reason: error.to_string(),
             })
         })?;
         if &thread.id != id {
             return Err(ThreadStoreError::Malformed(MalformedThread {
-                path,
+                path: path.to_path_buf(),
                 reason: "thread ID does not match filename".into(),
             }));
         }
-        let thread = Arc::new(thread);
-        if let Some(stamp) = stamp {
-            self.keep_parsed(stamp, Arc::clone(&thread));
-        }
-        Ok(thread)
+        Ok(Arc::new(thread))
     }
 
     pub fn delete(&self, id: &ThreadId) -> Result<(), ThreadStoreError> {
@@ -978,10 +1103,23 @@ impl ThreadStore {
     }
 
     pub fn list(&self) -> Result<ThreadListing, ThreadStoreError> {
+        self.list_with_cache(true)
+    }
+
+    pub(crate) fn list_uncached(&self) -> Result<ThreadListing, ThreadStoreError> {
+        let listing = self.list_with_cache(false);
+        self.parsed.borrow_mut().clear();
+        listing
+    }
+
+    fn list_with_cache(&self, cache_threads: bool) -> Result<ThreadListing, ThreadStoreError> {
         let mut listing = ThreadListing::default();
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(listing),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.parsed.borrow_mut().clear();
+                return Ok(listing);
+            }
             Err(error) => return Err(ThreadStoreError::Io(error)),
         };
         for entry in entries {
@@ -1006,7 +1144,12 @@ impl ThreadStore {
                     continue;
                 }
             };
-            match self.cached(&id) {
+            let loaded = if cache_threads {
+                self.cached(&id)
+            } else {
+                Self::parse_file(&path, &id)
+            };
+            match loaded {
                 Ok(thread) => listing.threads.push(thread),
                 Err(ThreadStoreError::Malformed(thread)) => listing.malformed.push(thread),
                 Err(ThreadStoreError::Io(error)) => return Err(ThreadStoreError::Io(error)),
@@ -1162,6 +1305,17 @@ impl<'a> Parser<'a> {
     fn number(&mut self, name: &str) -> Result<u64, ValidationError> {
         self.prefixed(&format!("{name}: "))?
             .parse()
+            .map_err(|_| ValidationError::new(format!("field {name} is not a number")))
+    }
+
+    fn optional_number(&mut self, name: &str) -> Result<Option<u64>, ValidationError> {
+        let value = self.field(name)?;
+        if value.is_empty() {
+            return Ok(None);
+        }
+        value
+            .parse()
+            .map(Some)
             .map_err(|_| ValidationError::new(format!("field {name} is not a number")))
     }
 }

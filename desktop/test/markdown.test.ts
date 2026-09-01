@@ -84,5 +84,11 @@ test("a picture the model points at is drawn, and a remote one is not", () => {
 test("markup a model forgot to fence is shown as code, not as prose", () => {
   const [block] = parseBlocks("<div class=\"card\">\n  <p>hi</p>\n</div>");
   assert.equal(block.kind === "code" && block.language, "html");
+  assert.equal(parseBlocks("<!DOCTYPE html>\n<title>x</title>")[0].kind, "code");
   assert.equal(parseBlocks("a < b and b > c").map((one) => one.kind).join(), "paragraph");
+});
+
+test("a tag with no opener is a fragment, not a page to render as code", () => {
+  assert.equal(parseBlocks("</arg_value></tool_call>").map((one) => one.kind).join(), "paragraph");
+  assert.equal(parseBlocks("</div>").map((one) => one.kind).join(), "paragraph");
 });

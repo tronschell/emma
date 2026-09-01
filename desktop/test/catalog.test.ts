@@ -169,7 +169,7 @@ test("the OpenRouter listing is parsed, priced, and filtered to models Emma can 
       id: "vendor/free-thinker",
       name: "Free Thinker",
       pricing: { prompt: "0", completion: "0" },
-      reasoning: { supported_efforts: ["low", "max"], mandatory: true },
+      reasoning: { supported_efforts: ["low", "max", "future_mode"], mandatory: true },
     }),
     row({
       id: "vendor/default-stops",
@@ -192,11 +192,9 @@ test("the OpenRouter listing is parsed, priced, and filtered to models Emma can 
 
     const thinker = models.find((entry) => entry.id === "vendor/free-thinker")!;
     assert.equal(thinker.free, true);
-    // Published efforts come back weakest-first, whatever order the vendor listed them in.
-    assert.deepEqual(thinker.reasoningEfforts, ["low", "max"]);
+    assert.deepEqual(thinker.reasoningEfforts, ["low", "max", "future_mode"]);
     assert.equal(thinker.reasoningMandatory, true);
 
-    // `reasoning_effort` with no published list gets OpenRouter's own three stops.
     assert.deepEqual(models.find((entry) => entry.id === "vendor/default-stops")!.reasoningEfforts, ["low", "medium", "high"]);
   } finally { restore(); }
 

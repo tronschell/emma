@@ -140,7 +140,7 @@ for (const cancel of ["none", "parent", "child", "parent-of-child"] as const) {
     const client = new Harness({
       binaryPath: process.execPath, args: [path.join(process.cwd(), "test/fake-acp-agent.mjs")], home, cwd: tmpdir(),
       mcpServers: async () => [], onDelta() {}, onThought() {}, onToolCall() {}, onUsage() {}, onPlan() {},
-      onContextExperiment() {}, onRoutedModel() {}, onContextBreakdown() {},
+      onCompacted() {}, onContextExperiment() {}, onRoutedModel() {}, onContextBreakdown() {},
       onChildStart: async () => "child", onChildEnd() {}, onToolRequest: async () => "inert",
       onPermission: async () => { entered.resolve(); return await decision.promise; }, onLog: (line) => logs.push(line),
     });
@@ -190,7 +190,7 @@ for (const child of [false, true]) {
     const client = new Harness({
       binaryPath: process.execPath, args: [path.join(process.cwd(), "test/fake-acp-agent.mjs")], home, cwd: tmpdir(),
       mcpServers: async () => [], onDelta() {}, onThought() {}, onToolCall() {}, onUsage() {}, onPlan() {},
-      onContextExperiment() {}, onRoutedModel() {}, onContextBreakdown() {},
+      onCompacted() {}, onContextExperiment() {}, onRoutedModel() {}, onContextBreakdown() {},
       onChildStart: async () => "child", onChildEnd() {}, onToolRequest: async () => "inert",
       onPermission: async (ask) => {
         if (ask.id !== "pending-approval") return "allow_once";

@@ -38,6 +38,12 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     sessions += 1;
     active = `sess_${sessions}_${params.cwd.split("/").pop()}`;
     send({ jsonrpc: "2.0", id, result: { sessionId: active } });
+    if ((process.env.HOME ?? "").includes("stale-recovery")) {
+      notify(active, {
+        sessionUpdate: "session_info_update",
+        _meta: { fx: { modelResponseRecovery: { state: "paused", message: "⚠ Network interrupted · NetworkInterrupted · recovery paused after 1/10 attempts", attempt: 1, attemptLimit: 10 } } },
+      });
+    }
     return;
   }
   if (method === "session/resume") {

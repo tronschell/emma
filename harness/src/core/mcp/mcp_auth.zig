@@ -3,6 +3,10 @@ const host_target = @import("../hosts/target.zig");
 const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_console = if (builtin.os.tag == .windows)
+    @import("../../ui/terminal/windows_console.zig")
+else
+    struct {};
 const operation_control = @import("operation_control.zig");
 const secret = @import("../auth/secret.zig");
 
@@ -310,7 +314,6 @@ pub const AuthorizationResponse = struct {
     }
 };
 
-/// Returns all WWW-Authenticate field values as one owned challenge list.
 pub fn collectAuthenticateHeader(
     alloc: Allocator,
     head: std.http.Client.Response.Head,
@@ -963,7 +966,7 @@ pub fn authorizeInteractive(
     alloc: Allocator,
     options: InteractiveAuthorizationOptions,
 ) !AuthorizationResult {
-    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+    if (comptime builtin.os.tag == .wasi) {
         return error.InteractiveMcpAuthorizationUnsupported;
     }
     var address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
@@ -1210,6 +1213,25 @@ fn waitForInteractiveCallback(
     listener: *std.Io.net.Server,
     cancellation: operation_control.CancellationSources,
 ) !void {
+    if (comptime builtin.os.tag == .windows) {
+        var remaining_ms = interactive_callback_timeout_ms;
+        while (remaining_ms > 0) {
+            try checkAuthorizationCancellation(cancellation);
+            const wait_ms = @min(remaining_ms, interactive_callback_poll_ms);
+            const result = windows_console.pollSocketWithInterest(
+                listener.socket.handle,
+                wait_ms,
+                true,
+                false,
+            );
+            if (result.has_error or result.hung_up) {
+                return error.McpAuthorizationCallbackTimedOut;
+            }
+            if (result.readable) return;
+            remaining_ms -= wait_ms;
+        }
+        return error.McpAuthorizationCallbackTimedOut;
+    }
     var fds = [_]std.posix.pollfd{.{
         .fd = listener.socket.handle,
         .events = std.posix.POLL.IN,
@@ -1253,7 +1275,13 @@ fn requestInteractiveAuthorization(
     var reader = stream.reader(io_mod.getIo(), &socket_buffer);
     var request_bytes: [16 * 1024]u8 = undefined;
     var request_len: usize = 0;
+    const read_deadline_ms = io_mod.milliTimestamp() + interactive_callback_timeout_ms;
     while (request_len < request_bytes.len) {
+        try waitForInteractiveSocket(
+            stream.socket.handle,
+            ctx.cancellation,
+            read_deadline_ms,
+        );
         request_bytes[request_len] = reader.interface.takeByte() catch |err| switch (err) {
             error.EndOfStream => return error.InvalidAuthorizationCallback,
             else => return err,
@@ -1285,6 +1313,32 @@ fn requestInteractiveAuthorization(
     );
     try writer.interface.flush();
     return parseAuthorizationRedirect(alloc, target);
+}
+
+fn waitForInteractiveSocket(
+    socket: std.posix.socket_t,
+    cancellation: operation_control.CancellationSources,
+    deadline_ms: i64,
+) !void {
+    if (comptime builtin.os.tag != .windows) {
+        try checkAuthorizationCancellation(cancellation);
+        return;
+    }
+    while (true) {
+        try checkAuthorizationCancellation(cancellation);
+        const remaining = deadline_ms - io_mod.milliTimestamp();
+        if (remaining <= 0) return error.McpAuthorizationCallbackTimedOut;
+        const result = windows_console.pollSocketWithInterest(
+            socket,
+            @intCast(@min(remaining, @as(i64, interactive_callback_poll_ms))),
+            true,
+            false,
+        );
+        if (result.has_error or result.hung_up) {
+            return error.InvalidAuthorizationCallback;
+        }
+        if (result.readable) return;
+    }
 }
 
 fn validateRedirectTarget(location: []const u8, redirect_uri: []const u8) !void {
@@ -1817,8 +1871,8 @@ fn validateJsonContentType(content_type: ?[]const u8) !void {
 }
 
 fn setSocketTimeouts(socket: std.posix.socket_t, seconds: i64) void {
-    if (comptime host_target.is_wasm) return;
-    const timeout = std.posix.timeval{ .sec = seconds, .usec = 0 };
+    if (comptime host_target.is_wasm or builtin.os.tag == .windows) return;
+    const timeout = std.posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
     const bytes = std.mem.asBytes(&timeout);
     std.posix.setsockopt(
         socket,

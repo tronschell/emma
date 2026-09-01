@@ -95,6 +95,6 @@ test("drawing is offered in every mode, since it reaches nothing outside the tra
   assert.equal(toolGate("full", "visualize"), "auto");
   assert.ok(toolDefinitions("ask", { folders: false, computer: false }).some((tool) => tool.name === "visualize"));
   const drawn = toolDefinitions("full", everything).find((tool) => tool.name === "visualize")!;
-  assert.ok(Buffer.byteLength(drawn.description) <= 1024, `description is ${Buffer.byteLength(drawn.description)} bytes`);
+  assert.ok(Buffer.byteLength(drawn.description) <= 4 * 1024, `description is ${Buffer.byteLength(drawn.description)} bytes, over the gateway_schema.zig ceiling`);
   assert.ok(!toolDefinitions("full", everything, ["visualize"]).some((tool) => tool.name === "visualize"));
 });

@@ -3,6 +3,10 @@ const builtin = @import("builtin");
 const host = @import("host.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
+const windows_clipboard = if (builtin.os.tag == .windows)
+    @import("../shared/windows_clipboard.zig")
+else
+    struct {};
 
 pub const clipboard = host.Clipboard{
     .copy_fn = copyToClipboard,
@@ -10,6 +14,10 @@ pub const clipboard = host.Clipboard{
 };
 
 fn copyToClipboard(_: ?*anyopaque, text: []const u8) host.ClipboardError!bool {
+    if (comptime builtin.os.tag == .windows) {
+        windows_clipboard.copyText(std.heap.page_allocator, text) catch return error.CopyFailed;
+        return true;
+    }
     const argv = clipboardCommand(builtin.os.tag) orelse return false;
     const io = io_mod.getIo();
     var child = std.process.spawn(io, .{
@@ -166,9 +174,11 @@ fn run_clipboard_process(
     };
 }
 
-// Publish eager file representations so the pasteboard server owns them after
-// this short-lived process exits.
 fn copy_file_to_clipboard(_: ?*anyopaque, alloc: std.mem.Allocator, path: []const u8) host.ClipboardError!bool {
+    if (comptime builtin.os.tag == .windows) {
+        windows_clipboard.copyFile(alloc, path) catch return error.CopyFailed;
+        return true;
+    }
     if (comptime builtin.os.tag != .macos) return false;
 
     const script =
@@ -227,6 +237,7 @@ fn clipboardCommand(os_tag: std.Target.Os.Tag) ?[]const []const u8 {
     return switch (os_tag) {
         .macos => &.{"pbcopy"},
         .linux => &.{ "xclip", "-selection", "clipboard" },
+        .windows => null,
         else => null,
     };
 }
@@ -259,6 +270,7 @@ test "native clipboard selects the platform command" {
 }
 
 test "native clipboard accepts only a successful exit" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.expect(copySucceeded(.{ .exited = 0 }));
     try std.testing.expect(!copySucceeded(.{ .exited = 1 }));
     try std.testing.expect(!copySucceeded(.{ .signal = .TERM }));

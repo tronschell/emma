@@ -225,10 +225,6 @@ pub fn applyToolResultMemory(
         prepared.output_handle == null;
 }
 
-/// Consumes a tentative interactive command capture after ordinary result
-/// storage has selected the exact source that completed Ctrl-O and resume will
-/// read. Exact round trips delete the candidate; every unprovable case keeps a
-/// private tagged replay descriptor.
 pub fn finalizeCommandReplay(
     arena: Allocator,
     tool_call: ToolCall,
@@ -447,7 +443,7 @@ test "exact command sources delete replay and missing handles retain it" {
     try tmp.dir.createDir(
         io_mod.getIo(),
         "session",
-        std.Io.File.Permissions.fromMode(0o700),
+        io_mod.permissionsFromMode(0o700),
     );
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,

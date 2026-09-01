@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { agentName, AGENT_NAMES, collapseChanges, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
+import { agentName, AGENT_NAMES, collapseChanges, diffHunks, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
 import { asPermissionMode, toolGate } from "../shared/permissions";
 import { browserArgv, describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
 import { AgentRuntime, bounded, type LoopDeps } from "../main/agent-loop";
@@ -58,6 +58,10 @@ test("tool arguments are validated before anything runs", () => {
   assert.deepEqual(parse("keep", {}), { name: "keep", kind: "page", title: undefined, text: undefined, url: undefined });
   assert.equal(describeToolCall(parse("keep", {})), "keeping the page in front");
   assert.equal(describeToolCall(parse("keep", { url: "https://example.com/a" })), "keeping https://example.com/a");
+  assert.deepEqual(parse("shortcut", { accelerator: "Command+Alt+K", label: "Focus", prompt: "Summarize my work." }), { name: "shortcut", accelerator: "Command+Alt+K", label: "Focus", prompt: "Summarize my work." });
+  assert.equal(describeToolCall(parse("shortcut", { accelerator: "Command+Alt+K", label: "Focus", prompt: "Summarize my work." })), "binding Command+Alt+K to Focus");
+  assert.equal(toolGate("ask", "shortcut"), "auto");
+  assert.ok(toolDefinitions("full", everything).some((tool) => tool.name === "shortcut"));
 });
 
 test("a browser call becomes agent-browser's own command line, in its own argument order", () => {
@@ -105,6 +109,13 @@ test("a diff marks only the lines that moved", () => {
   assert.equal(kinds("a\nb\nc", "a\nB\nc"), " -+ ");
   assert.ok(!kinds("same\n", "same\n").includes("+"));
   assert.ok(diffLines("", "one\ntwo").every((line) => line.kind === "+"));
+});
+
+test("an inline edit shows the changed lines with context, numbered as the file now reads", () => {
+  const before = ["one", "two", "three", "four", "five", "six", "seven", "eight"].join("\n");
+  const hunks = diffHunks(before, before.replace("five", "FIVE"));
+  assert.deepEqual(hunks.map((line) => `${line.line}${line.kind}${line.text}`), ["3 three", "4 four", "5-five", "5+FIVE", "6 six", "7 seven"]);
+  assert.ok(!hunks.some((line) => line.text === "one"));
 });
 
 test("many writes to one file collapse to a single before-and-after", () => {
@@ -231,6 +242,21 @@ test("an adopted run times the model from the tokens coming back", () => {
   assert.ok(stored.length > 0, "the finished turn recorded no trace at all");
   assert.ok(stored.every((span) => span.endedAt !== undefined), "a finished turn leaves nothing open");
   assert.equal(stored.find((span) => span.kind === "agent")?.status, "ok");
+});
+
+test("a steer is kept in the turn's trace at the point the answer had reached", () => {
+  const recorded: string[] = [];
+  const agents = runtime({ request: async (method, params) => { if (method === "recordTrace") recorded.push(params.trace); return {}; } });
+  agents.adopt({ threadId: "t1", content: "build it", mode: "full", title: "Build it" });
+  agents.noteDelta("t1", "Reading the styles.");
+  agents.noteSteer("t1", "stop, use the other palette");
+  const live = agents.spans().t1.find((span) => span.kind === "steer");
+  assert.equal(live?.input, "stop, use the other palette");
+  assert.equal(live?.said, "Reading the styles.".length);
+  agents.finish("t1");
+  const stored = decodeSpans(recorded.at(-1) ?? "").find((span) => span.kind === "steer");
+  assert.equal(stored?.input, "stop, use the other palette", "the steer did not survive into the stored trace");
+  assert.equal(stored?.parentId, "agent:t1");
 });
 
 test("a truncated tool result still fits the host's byte ceiling", () => {

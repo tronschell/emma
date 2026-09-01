@@ -27,23 +27,13 @@ pub const pruned_notice =
 pub const reinject_prefix =
     "[reminder] This is the request you are working on, repeated unchanged so it stays in view:\n\n";
 
-/// Zero means off, for every field. A step trigger fires on every Nth step; a
-/// percent trigger fires on every step from the point the projection is that
-/// full. Set both and either one fires.
 pub const Settings = struct {
+    auto_compact_percent: usize = 70,
     reinject_prompt_steps: usize = 0,
     reinject_prompt_percent: usize = 0,
     prune_tools_steps: usize = 0,
     prune_tools_percent: usize = 0,
-    /// The window the percent triggers are a percent *of*. The harness's own
-    /// capability table only knows a handful of model prefixes, so Emma sends
-    /// the real number; zero leaves the percent triggers inert.
     context_window_tokens: usize = 0,
-    /// What the previous step's response was billed for, straight off
-    /// `GatewayBilling`, and the only observation of the prompt cache the loop
-    /// has in hand. Zero input means no observation — the first step of a turn,
-    /// a model that does not cache, missing billing metadata — and every
-    /// unknown reads as a cold cache, so pruning behaves as it always has.
     previous_cache_read_tokens: u64 = 0,
     previous_input_tokens: u64 = 0,
 

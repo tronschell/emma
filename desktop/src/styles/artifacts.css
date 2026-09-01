@@ -28,6 +28,7 @@
 .step > .artifact-card { flex: 1 0 100%; min-width: 0; }
 
 .artifact-clip { position: relative; max-height: 190px; overflow: hidden; min-width: 0; }
+.artifact-clip-lazy { min-height: 190px; }
 .artifact-clip::after { content: ""; position: absolute; inset: auto 0 0; height: var(--s-7); background: linear-gradient(to bottom, transparent, var(--surface)); }
 .artifact-card-inline .artifact-clip { max-height: 150px; }
 .artifact-clip .artifact-frame { height: 190px; }
