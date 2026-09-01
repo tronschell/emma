@@ -77,7 +77,7 @@ import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
 import { isPin, MAX_ASK_MS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
-import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
+import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
@@ -256,7 +256,8 @@ function namedPath(value: unknown): string | undefined {
 }
 
 function pathGrant(file: string) {
-  const grant = folders!.list().find((folder) => pathInside(folder.path, file));
+  const real = realPath(file);
+  const grant = real ? folders!.list().find((folder) => realPathInside(folder.path, real)) : undefined;
   return { grant, attached: !grant && attachments!.holds(file) };
 }
 
