@@ -4,14 +4,14 @@
 .browser-tab-strip { display: flex; align-items: center; gap: var(--s-1); min-width: 0; flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
 .browser-tab-strip::-webkit-scrollbar { display: none; }
 
-.browser-tab { display: flex; align-items: center; min-width: 0; max-width: 200px; border-radius: var(--r-2); transition: background-color var(--t); }
+.browser-tab { display: flex; align-items: center; min-width: 0; max-width: 200px; transition: background-color var(--t); }
 .browser-tab[data-active="true"] { background: var(--surface-3); }
 .browser-tab:not([data-active="true"]):hover { background: var(--surface-2); }
 .browser-tab > button:first-child { display: flex; align-items: center; gap: var(--s-2); min-width: 0; flex: 1 1 auto; height: 28px; padding: 0 var(--s-1) 0 var(--s-2); color: var(--text-2); background: transparent; font: var(--fs-sm)/1 var(--font); }
 .browser-tab[data-active="true"] > button:first-child { color: var(--text); }
 .browser-tab > button:first-child > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.browser-favicon { width: 14px; height: 14px; flex: 0 0 auto; border-radius: var(--r-1); object-fit: contain; }
+.browser-favicon { width: 14px; height: 14px; flex: 0 0 auto; object-fit: contain; }
 .browser-favicon-blank { border: 1px solid var(--border-strong); }
 
 .browser-tab-close { display: grid; place-items: center; flex: 0 0 auto; width: 20px; height: 20px; margin-right: var(--s-1); border-radius: var(--r-full); color: var(--text-3); background: transparent; transition: color var(--t), background-color var(--t); }
@@ -19,7 +19,7 @@
 
 .browser-window-controls { display: flex; align-items: center; gap: var(--s-1); flex: 0 0 auto; }
 
-.browser-icon { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; border-radius: var(--r-2); color: var(--text-2); background: transparent; transition: color var(--t), background-color var(--t); }
+.browser-icon { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; color: var(--text-2); background: transparent; transition: color var(--t), background-color var(--t); }
 .browser-icon:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 .browser-icon:disabled { color: var(--text-3); opacity: 0.45; }
 
@@ -39,10 +39,10 @@
 .browser-stage { position: relative; display: grid; place-items: center; flex: 1 1 auto; min-height: 0; background: var(--bg); }
 .browser-empty { display: grid; justify-items: center; gap: var(--s-3); }
 .browser-empty p { color: var(--text-3); font: var(--fs-sm)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-.browser-empty button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); border-radius: var(--r-2); color: var(--text-2); background: transparent; font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t); }
+.browser-empty button { min-height: 28px; padding: 0 var(--s-3); border: 1px solid var(--border); color: var(--text-2); background: transparent; font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: color var(--t), border-color var(--t); }
 .browser-empty button:hover { color: var(--text); border-color: var(--border-strong); }
 
-.browser-clips { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 38%; margin: 0 var(--s-2) var(--s-2); padding: 0; overflow-y: auto; list-style: none; border: 1px solid var(--border); border-radius: var(--r-2); background: var(--surface-2); }
+.browser-clips { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 38%; margin: 0 var(--s-2) var(--s-2); padding: 0; overflow-y: auto; list-style: none; border: 1px solid var(--border); background: var(--surface-2); }
 .browser-clips li + li { border-top: 1px solid var(--border); }
 .browser-clips button { display: block; width: 100%; min-height: 26px; padding: 0 var(--s-2); overflow: hidden; color: var(--text-2); background: transparent; font: var(--fs-xs)/26px var(--font-mono); text-align: left; text-overflow: ellipsis; white-space: nowrap; transition: color var(--t), background-color var(--t); }
 .browser-clips button:hover { color: var(--text); background: var(--surface-3); }

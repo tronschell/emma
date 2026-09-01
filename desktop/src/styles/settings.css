@@ -176,7 +176,7 @@
 .keybind-capture { justify-content: center; min-height: 30px; }
 .keybind-capture kbd { font: var(--fs-xs)/1.4 var(--font-code); }
 .keybind-capture.recording { border-color: var(--accent, var(--border-strong)); color: var(--text); }
-.keybind-problem { color: var(--warn, var(--text-2)); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.keybind-problem { color: var(--danger); font: var(--fs-2xs)/1.4 var(--font-mono); }
 .keybind-builtin { color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); }
 .keybind-duration { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s-2); align-items: center; }
 
@@ -556,7 +556,7 @@
 .plan-model.live { color: var(--accent); }
 .cli-plan-row { grid-template-columns: 20px minmax(0, 1fr) auto auto auto; }
 .cli-plan-row .warn { color: var(--text-3); }
-.cli-plan-terminal { position: relative; grid-column: 1 / -1; margin-top: var(--s-3); height: 280px; border: 1px solid var(--border); border-radius: var(--r-2); overflow: hidden; background: var(--surface-2); }
+.cli-plan-terminal { position: relative; grid-column: 1 / -1; margin-top: var(--s-3); height: 280px; border: 1px solid var(--border); overflow: hidden; background: var(--surface-2); }
 .model-plans .provider-key-balance { display: flex; gap: var(--s-2); align-items: baseline; margin-top: 1px; }
 .model-plans .provider-key-balance a { flex: none; }
 

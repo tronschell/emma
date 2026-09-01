@@ -4731,7 +4731,7 @@ function OrbRing({ commands, settings, selected, onPick, radius = 88 }: { comman
       const style = { left: `calc(50% + ${Math.round(Math.cos(angle) * radius)}px)`, top: `calc(50% + ${Math.round(Math.sin(angle) * radius)}px)` } as CSSProperties;
       const label = orbLabel(command, settings);
       const glyph = /^[012]$/.test(command) ? `${MODIFIER_LABEL}${Number(command) + 1}` : cursorCommandGlyphs[command];
-      return <button type="button" key={index} role="menuitem" className={selected === index ? "selected" : ""} style={style} title={label} onClick={() => onPick(index)}><span className="orb" aria-hidden="true"><kbd>{glyph}</kbd></span>{label}</button>;
+      return <button type="button" key={index} role="menuitem" className={selected === index ? "selected" : ""} style={style} title={label} onClick={() => onPick(index)}><span className="orb" aria-hidden="true"><kbd>{glyph}</kbd></span><span className="orb-label">{label}</span></button>;
     })}
   </div>;
 }

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 
 const read = (file: string) => readFileSync(path.resolve(__dirname, "../../..", file), "utf8");
+const styles = () => {
+  const directory = path.resolve(__dirname, "../../../desktop/src/styles");
+  return readdirSync(directory).filter((name) => name.endsWith(".css")).map((name) => ({ name, css: readFileSync(path.join(directory, name), "utf8") }));
+};
 
 type Node = { type: string; props: Record<string, unknown>; children: unknown[] };
 
@@ -85,4 +89,36 @@ test("the composer chip row wraps and every chip keeps a floor instead of overla
 test("collapsing the rail takes focus out of the sidebar so the peek does not stick open", () => {
   const app = read("desktop/src/App.tsx");
   assert.match(app, /aria-expanded=\{!layout\.sidebarCollapsed\} onClick=\{\(event\) => \{ event\.currentTarget\.focus\(\); pane\(\{ sidebarCollapsed: !layout\.sidebarCollapsed \}\); \}\}/);
+});
+
+test("no rule asks for a radius or a warning colour the token file never defines", () => {
+  const asked = styles().flatMap((sheet) => [...sheet.css.matchAll(/var\(\s*(--r-1|--r-2|--warn)\b/g)].map(([, name]) => `${sheet.name}: ${name}`));
+  assert.deepEqual(asked, []);
+});
+
+test("a settings failure is painted as a failure, not as body ink", () => {
+  const css = read("desktop/src/styles/settings.css");
+  assert.match(css, /\.keybind-problem \{ color: var\(--danger\);/);
+  assert.ok(!/--warn/.test(css));
+});
+
+test("every figure meant to read as a quantity follows the chosen accent", () => {
+  for (const rule of [
+    /\.agent-metrics b \{[^}]*color: var\(--accent\)/,
+    /\.evidence-table summary b \{ color: var\(--accent\)/,
+    /\.rate-curve i \{[^}]*background: var\(--accent\)/,
+    /\.agent-arm i \{[^}]*background: var\(--accent\)/,
+  ]) assert.match(read("desktop/src/styles/panels.css"), rule);
+  assert.match(read("desktop/src/styles/conversation.css"), /\.generation-rate \{ color: var\(--accent\)/);
+  assert.match(read("desktop/src/styles/conversation.css"), /\.model-cut b \{ color: var\(--accent\)/);
+  assert.match(read("desktop/src/styles/research.css"), /\.research-tip b \{ color: var\(--accent\)/);
+});
+
+test("the cursor ring's labels sit on a ground of their own", () => {
+  assert.match(read("desktop/src/App.tsx"), /<span className="orb-label">\{label\}<\/span>/);
+  assert.match(read("desktop/src/styles/overlay.css"), /\.radial \.orb-label \{[^}]*background: var\(--bg\)/);
+});
+
+test("a mermaid diagram is given the width it asks for", () => {
+  assert.match(read("desktop/src/styles/artifacts.css"), /\.artifact-mermaid \{[^}]*justify-items: stretch/);
 });
