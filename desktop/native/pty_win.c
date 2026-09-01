@@ -318,20 +318,6 @@ static int run_pty(int columns, int rows, wchar_t **argv, int argc, HANDLE input
   return (int)status;
 }
 
-typedef struct {
-  HANDLE handle;
-  const char *text;
-} primed_input;
-
-static DWORD WINAPI write_primed_input(void *value) {
-  primed_input *job = (primed_input *)value;
-  Sleep(2000);
-  DWORD written = 0;
-  WriteFile(job->handle, job->text, (DWORD)strlen(job->text), &written, NULL);
-  close_handle(job->handle);
-  return 0;
-}
-
 static int self_test(void) {
   SECURITY_ATTRIBUTES security = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
   HANDLE input_read = NULL;
@@ -358,11 +344,12 @@ static int self_test(void) {
     close_handle(resize_write);
     return 1;
   }
-  static const char input[] = "Emma\r\n";
+  const char input[] = "Emma\r\n";
   const char resize[] = "100 30\n";
+  const DWORD input_length = (DWORD)strlen(input);
   const DWORD resize_length = (DWORD)strlen(resize);
   DWORD written = 0;
-  if (!WriteFile(resize_write, resize, resize_length, &written, NULL) || written != resize_length) {
+  if (!WriteFile(input_write, input, input_length, &written, NULL) || written != input_length || !WriteFile(resize_write, resize, resize_length, &written, NULL) || written != resize_length) {
     close_handle(input_read);
     close_handle(input_write);
     close_handle(output_read);
@@ -371,20 +358,10 @@ static int self_test(void) {
     close_handle(resize_write);
     return 1;
   }
+  close_handle(input_write);
   close_handle(resize_write);
-  primed_input job = { input_write, input };
-  HANDLE primer = CreateThread(NULL, 0, write_primed_input, &job, 0, NULL);
-  if (!primer) {
-    close_handle(input_read);
-    close_handle(input_write);
-    close_handle(output_read);
-    close_handle(output_write);
-    close_handle(resize_read);
-    return 1;
-  }
   wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"& { $value=[Console]::ReadLine(); Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$value+':'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
   const int status = run_pty(80, 24, command, 7, input_read, output_write, resize_read);
-  wait_thread(primer);
   close_handle(input_read);
   close_handle(output_write);
   close_handle(resize_read);
