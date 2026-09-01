@@ -75,6 +75,14 @@ test("desktop refreshes summaries and keeps targeted reads read-only", () => {
   const main = readFileSync(resolve(__dirname, "../../main/main.ts"), "utf8");
   assert.match(app, /const SNAPSHOT_REFRESH_MS = 60_000/);
   assert.match(app, /setInterval\(refreshVisible, SNAPSHOT_REFRESH_MS\)/);
-  assert.match(main, /if \(request\.method === "thread"\) return this\.send\(request\);/);
+  assert.match(main, /if \(request\.method === "thread" \|\| request\.method === "readTrace"\) return this\.send\(request\);/);
   assert.match(main, /new Set\(\["snapshot", "threadSummaries", "thread", "listOpenRouterModels"\]\)/);
+});
+
+test("a window takes every store change, frontmost or not, and a mid-turn write is one of them", () => {
+  const app = readFileSync(resolve(__dirname, "../../src/App.tsx"), "utf8");
+  const main = readFileSync(resolve(__dirname, "../../main/main.ts"), "utf8");
+  assert.match(app, /const listener = window\.emma\.onChanged\(refresh\);/);
+  assert.doesNotMatch(app, /onChanged\(refreshVisible\)/);
+  assert.match(main, /this\.storeChanged\(\);\s+const written = this\.send\(request\);\s+void written\.then\(\(\) => changed\(\), \(\) => undefined\);/);
 });
