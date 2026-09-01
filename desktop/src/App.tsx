@@ -2508,7 +2508,6 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
         {streaming === null && spawned.loose.length > 0 && <SubagentChips spawned={spawned.loose} onOpen={openSubagentTab} />}
         {sending && streaming === null && <p className="waiting" role="status"><Mark /> {agents.find((agent) => agent.threadId === thread.id)?.activity || "getting started"}…</p>}
         {sending && run.activeAt > 0 && <Stalled since={run.activeAt} working={stepRunning(run.blocks)} onSwap={() => { setStallSwap(true); setModelsOpen(true); }} />}
-        {!sending && run.stopped && <p className="waiting stopped" role="status">Agent stopped. Ask Emma to continue where it left off.</p>}
         </RunContext.Provider>
       </div>
       <SelectionQuote scroller={transcript} onQuote={addContext} onThread={(quote) => newThread(`${quote}\n\n`)} />

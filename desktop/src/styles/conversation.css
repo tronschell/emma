@@ -204,8 +204,6 @@
 .project-rules > button:hover { color: var(--text); }
 .project-rules > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.waiting.stopped { color: var(--text-2); }
-
 .message-meta { display: flex; align-items: baseline; gap: var(--s-3); margin-top: var(--s-2); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.4; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .message-meta > :first-child { margin-right: auto; }
 .message-meta > span:first-child { color: var(--text-2); }
