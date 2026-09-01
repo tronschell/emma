@@ -2,9 +2,8 @@
 
 Emma targets macOS 12 or later on Apple silicon and Windows 10 version 1809 or
 later on x64. Published downloads currently contain the macOS zip; Windows x64
-is the supported distributable/public target and is packaged in CI. ARM64 is a
-CI compile/package rehearsal, not a public auto-update target. Public signed
-Windows x64 publication is pending release-workflow authorization. No build
+is the supported distributable/public target and is packaged in CI. Public
+signed Windows x64 publication is pending release-workflow authorization. No build
 toolchains are needed for a published macOS build. The rest of this page covers building from
 source; see [releases.md](releases.md) for how a prepared version reaches the
 download page.
@@ -14,7 +13,7 @@ download page.
 | Tool | Version | Pinned in | Needed by |
 | --- | --- | --- | --- |
 | Xcode Command Line Tools | any current | — | macOS native helpers; full Xcode is required for macOS packaging |
-| LLVM `clang`/`clang++` and Windows SDK | current | — | Windows native helpers, x64 packaging, and the ARM64 compile/package rehearsal |
+| LLVM `clang`/`clang++` and Windows SDK | current | — | Windows native helpers and x64 packaging |
 | Rust | 1.97.1 | [rust-toolchain.toml](../rust-toolchain.toml) | `crates/core`, `crates/host` |
 | Zig | 0.16.0 | [harness/build.zig.zon](../harness/build.zig.zon) and CI | `harness/` |
 | Node | 24.x | [desktop/package.json](../desktop/package.json) (`@types/node` 24.10.1) | everything in `desktop/` |
@@ -30,11 +29,10 @@ brew install zig
 On Windows, install Node 24, the Rust toolchain selected by
 `rust-toolchain.toml`, Zig 0.16.0, LLVM `clang`/`clang++`, and the Windows SDK
 with its import libraries.
-The `windows-2025` (x64) and `windows-11-vs2026-arm` (ARM64) CI runners both run
-`package:win`. x64 is the supported distributable/public target; ARM64 is a
-compile/package rehearsal. The current release workflow does not sign or publish
-Windows artifacts; public signed Windows x64 publication is pending
-release-workflow authorization.
+The `windows-2025` (x64) CI runner runs `package:win` on promotion pull
+requests. x64 is the supported distributable/public target. The current release
+workflow does not sign or publish Windows artifacts; public signed Windows x64
+publication is pending release-workflow authorization.
 
 `rustup` reads `rust-toolchain.toml` and installs 1.97.1 the first time you run
 `cargo` here. The first `start`, `package:mac`, `package:win`, or
@@ -166,7 +164,7 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 Visible or platform work is not done until the real app has been launched and
 the changed interaction exercised.
 
-To build the current native Windows x64 or ARM64 package from a Windows shell:
+To build the current native Windows x64 package from a Windows shell:
 
 ```powershell
 npm --prefix desktop run package:win
@@ -176,8 +174,7 @@ Local packaging omits signing credentials and produces an unsigned structure
 check for the current host architecture; it does not establish Authenticode
 trust. The current release workflow does not sign or publish Windows artifacts,
 and public signed Windows x64 publication is pending release-workflow
-authorization. Windows ARM64 is validated by CI compile/package checks only and
-is not a public installer or auto-update target.
+authorization. Windows ARM64 has no CI lane and is not a supported target.
 
 ## Credits
 
