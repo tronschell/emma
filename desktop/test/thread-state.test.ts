@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { resolve } from "node:path";
 import { isCurrentThreadLoad, threadMessageCount, threadMessageDates, threadUserMessageCount, type Thread } from "../src/types";
-import { spawnedAgents, threadLabel } from "../src/threads";
+import { spawnedAgents, threadLabel, threadTitle } from "../src/threads";
 
 const compact = (over: Partial<Thread> = {}): Thread => ({
   id: "thread-123456789012",
@@ -77,6 +77,16 @@ test("desktop refreshes summaries and keeps targeted reads read-only", () => {
   assert.match(app, /setInterval\(refreshVisible, SNAPSHOT_REFRESH_MS\)/);
   assert.match(main, /if \(request\.method === "thread" \|\| request\.method === "readTrace"\) return this\.send\(request\);/);
   assert.match(main, /new Set\(\["snapshot", "threadSummaries", "thread", "listOpenRouterModels"\]\)/);
+});
+
+test("the sidebar filter searches the full name the host sends, not the truncated one", () => {
+  const app = readFileSync(resolve(__dirname, "../../src/App.tsx"), "utf8");
+  const host = readFileSync(resolve(__dirname, "../../../crates/host/src/main.rs"), "utf8");
+  assert.match(app, /group\.threads\.filter\(\(item\) => threadTitle\(item\)\.toLowerCase\(\)\.includes\(search\)/);
+  assert.match(host, /\.filter\(\|content\| content\.encode_utf16\(\)\.count\(\) > 48\)\s+\.map\(\|content\| utf16_prefix\(content, SEARCHABLE_TITLE_UNITS\)\)/);
+  const buried = "Draft a one page memo for the pricing committee on semiconductor supply";
+  assert.equal(threadLabel(compact({ labelPrompt: buried })).includes("semiconductor"), false);
+  assert.equal(threadTitle(compact({ labelPrompt: buried })).includes("semiconductor"), true);
 });
 
 test("a window takes every store change, frontmost or not, and a mid-turn write is one of them", () => {

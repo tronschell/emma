@@ -247,6 +247,8 @@ fn normalized_prompt(content: &str) -> String {
         .join(" ")
 }
 
+const SEARCHABLE_TITLE_UNITS: usize = 200;
+
 fn display_title(content: &str) -> String {
     if content.encode_utf16().count() <= 48 {
         return content.to_owned();
@@ -263,21 +265,6 @@ fn display_title(content: &str) -> String {
     }
     title.push('…');
     title
-}
-
-fn needs_renderer_prompt(content: &str) -> bool {
-    if content.encode_utf16().count() <= 48 {
-        return false;
-    }
-    let mut units = 0;
-    for character in content.chars() {
-        let width = character.len_utf16();
-        if units + width > 47 {
-            return width == 2;
-        }
-        units += width;
-    }
-    false
 }
 
 fn utf16_prefix(content: &str, limit: usize) -> String {
@@ -312,8 +299,8 @@ impl From<&Thread> for ThreadSummary {
         let label_prompt = if default_title {
             first_user_message
                 .as_deref()
-                .filter(|content| needs_renderer_prompt(content))
-                .map(|content| utf16_prefix(content, 50))
+                .filter(|content| content.encode_utf16().count() > 48)
+                .map(|content| utf16_prefix(content, SEARCHABLE_TITLE_UNITS))
         } else {
             None
         };
@@ -927,6 +914,15 @@ mod tests {
         );
         let split = format!("{emoji}x");
         assert!(summary(&split).label_prompt.is_some());
+        let buried = "Draft a one page memo for the pricing committee on semiconductor supply";
+        let summarised = summary(buried);
+        assert!(!summarised.display_title.unwrap().contains("semiconductor"));
+        assert_eq!(summarised.label_prompt.as_deref(), Some(buried));
+        let long = "word ".repeat(80);
+        assert_eq!(
+            summary(&long).label_prompt.unwrap().encode_utf16().count(),
+            SEARCHABLE_TITLE_UNITS
+        );
         assert_eq!(
             summary("[thread short! messaged]\nhello")
                 .display_title

@@ -18,6 +18,14 @@ Ceilings: `MAX_THREAD_MESSAGES` 1024, `MAX_THREAD_TRACES` 64,
 `MAX_TRACE_BYTES` 16 KiB. `traces` is `#[serde(skip)]`, so it never rides a
 snapshot.
 
+An untitled thread is named after the first thing asked in it. The host sends
+two forms of that name on every summary: `display_title`, cut to 48 UTF-16 units
+with an ellipsis, which is what the sidebar row shows, and `label_prompt`, the
+first `SEARCHABLE_TITLE_UNITS` (**200**) units, which is what the sidebar's
+search box matches against — so a word buried past the visible cut still finds
+its thread. Neither reaches into the conversation body; searching message text
+would need an index the compact snapshot does not carry.
+
 A thread can be **pinned**: right-click the row, or use the pin that appears on
 hover. Pinned threads leave their project group and stand in a `Pinned` section
 above every project, each row prefixed with the name of the folder it is filed
