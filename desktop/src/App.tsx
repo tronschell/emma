@@ -652,6 +652,7 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
   const [revision, setRevision] = useState(0);
   const booted = useRef(takeBootSnapshot());
   const skipped = useRef(false);
+  const owned = useRef(false);
   const latest = useRef(0);
   const load = useCallback(async () => {
     const ticket = ++latest.current;
@@ -668,10 +669,14 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
       setRevision((current) => current + 1);
       onLoad?.(next);
       setLoaded(true);
-      setError("");
+      if (owned.current) {
+        owned.current = false;
+        setError("");
+      }
     } catch (reason) {
       if (ticket !== latest.current) return;
       setLoaded(true);
+      owned.current = true;
       setError(reasonText(reason));
     }
   }, [onLoad]);
@@ -691,7 +696,11 @@ function useSnapshot(onLoad?: (snapshot: Snapshot) => void) {
       window.emma.offChanged(listener);
     };
   }, [load]);
-  return { snapshot, load, error, setError, revision, loading: !loaded };
+  const notify = useCallback((text: string) => {
+    owned.current = false;
+    setError(text);
+  }, []);
+  return { snapshot, load, error, setError: notify, revision, loading: !loaded };
 }
 
 function Workspace() {

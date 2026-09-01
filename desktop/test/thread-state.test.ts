@@ -96,3 +96,11 @@ test("a window takes every store change, frontmost or not, and a mid-turn write 
   assert.doesNotMatch(app, /onChanged\(refreshVisible\)/);
   assert.match(main, /this\.storeChanged\(\);\s+const written = this\.send\(request\);\s+void written\.then\(\(\) => changed\(\), \(\) => undefined\);/);
 });
+
+test("a successful refresh clears only the error the refresh itself raised", () => {
+  const app = readFileSync(resolve(__dirname, "../../src/App.tsx"), "utf8");
+  assert.match(app, /if \(owned\.current\) \{\s+owned\.current = false;\s+setError\(""\);\s+\}/);
+  assert.match(app, /owned\.current = true;\s+setError\(reasonText\(reason\)\);/);
+  assert.match(app, /const notify = useCallback\(\(text: string\) => \{\s+owned\.current = false;\s+setError\(text\);\s+\}, \[\]\);/);
+  assert.match(app, /return \{ snapshot, load, error, setError: notify, revision, loading: !loaded \};/);
+});
