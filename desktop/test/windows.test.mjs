@@ -85,16 +85,19 @@ test("Windows command shims round-trip hostile argv without executing it", async
   const values = ["spaces here", "a&b", "x|y", "%PATH%", "!bang!", "^caret^", "(paren)", "quote\"value", "trailing\\", `& echo injected > ${marker}`];
   await writeFile(shim, `@echo off\r\n"${process.execPath}" -e "process.stdout.write(JSON.stringify(process.argv.slice(1)))" %*\r\n`, "utf8");
   try {
-    const children = [
-      spawnCommand(shim, values, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }),
-      spawn(process.env.ComSpec ?? "cmd.exe", packageCommandShimArguments(shim, values), { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: false, windowsVerbatimArguments: true }),
-    ];
-    for (const child of children) {
+    const settle = (child) => {
       let stdout = "";
       let stderr = "";
       child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
       child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
-      const [code] = await once(child, "close");
+      return once(child, "close").then(([code]) => ({ code, stdout, stderr }));
+    };
+    const runs = [
+      settle(spawnCommand(shim, values, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })),
+      settle(spawn(process.env.ComSpec ?? "cmd.exe", packageCommandShimArguments(shim, values), { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: false, windowsVerbatimArguments: true })),
+    ];
+    for (const run of runs) {
+      const { code, stdout, stderr } = await run;
       assert.equal(code, 0, stderr);
       assert.deepEqual(JSON.parse(stdout), values);
     }
