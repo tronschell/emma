@@ -1308,9 +1308,13 @@ function previewImage(file: string): string | null {
   return (frame.getSize().width > PREVIEW_IMAGE_WIDTH ? frame.resize({ width: PREVIEW_IMAGE_WIDTH }) : frame).toDataURL();
 }
 
+function grantedImage(threadId: string, named: string | undefined, given: string): string {
+  if (attachments!.holds(given)) return given;
+  return folders!.fileWithin(grantFor(threadId, named), given);
+}
+
 function folderImage(threadId: string, named: string | undefined, relative: string): string {
-  const grant = path.isAbsolute(relative) || attachments!.holds(relative) ? undefined : grantFor(threadId, named);
-  const frame = nativeImage.createFromPath(grant ? path.join(folders!.directory(grant), folders!.within(grant, relative)) : relative);
+  const frame = nativeImage.createFromPath(grantedImage(threadId, named, relative));
   if (frame.isEmpty()) throw new Error(`Emma could not read ${relative} as an image. PNG, JPEG, GIF and BMP work; a PDF, an SVG or a missing file does not.`);
   try {
     return compressScreenFrame(frame).image;
@@ -4122,9 +4126,7 @@ if (primaryInstance) app.whenReady().then(() => {
       return;
     }
     const folderId = boundedCapabilityId(request.folderId, "Folder");
-    const root = folders!.directory(folderId);
-    const relative = folders!.within(folderId, boundedCapabilityId(request.path, "File path"));
-    await openInEditor(editorId, path.join(root, relative));
+    await openInEditor(editorId, folders!.fileWithin(folderId, boundedCapabilityId(request.path, "File path")));
   });
   ipcMain.handle("emma:set-branch", async (event, value: unknown) => {
     mainWindowSender(event);
