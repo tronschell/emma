@@ -4866,7 +4866,7 @@ function Overlay() {
   }, [message]);
   useEffect(() => {
     let active = true;
-    void window.emma.listImportedMcpServers()
+    if (isWorkspaceWindow) void window.emma.listImportedMcpServers()
       .then((imported: ImportedMcpServer[]) => { if (active) setServers(imported.map((item) => ({ id: item.id, name: item.name, kind: "mcp" as const, detail: `${item.source} · MCP server` }))); })
       .catch(() => undefined);
     return () => { active = false; };
@@ -5129,11 +5129,11 @@ function Overlay() {
       </section>}
       <div className="island-thread" ref={transcript}>
         {turns.map((turn, index) => <Fragment key={index}>
-          <p className={turn.role}><b>{turn.role === "assistant" ? "Emma" : "You"}</b>{turn.content}</p>
+          <p className={turn.role}><b>{turn.role === "assistant" ? "Emma" : "You"}</b>{turn.role === "assistant" ? splitThinking(turn.content).answer : turn.content}</p>
           {turn.steps?.length ? <Steps steps={turn.steps} /> : null}
           {turn.choices?.length ? <div className="turn-choices">{turn.choices.map((choice) => <button type="button" key={choice.label} disabled={busy} onClick={choice.run}>{choice.label}</button>)}</div> : null}
         </Fragment>)}
-        {busy && <><p className="assistant"><b>Emma</b>{stream.text || "···"}</p><Steps steps={stream.steps} /></>}
+        {busy && <><p className="assistant"><b>Emma</b>{splitThinking(stream.text).answer || "···"}</p><Steps steps={stream.steps} /></>}
         {turns.length >= MIGRATE_AFTER && <button type="button" className="island-migrate" onClick={() => window.emma.openWorkspace()}>Getting long — continue in the full app →</button>}
       </div>
       {modelsOpen && <ModelMenu ref={modelMenu} close={() => setModelsOpen(false)} act={act} busy={busy} onSettingsChanged={setSettings} onManage={() => window.emma.openWorkspace()} pinned={settings.notchModel ? { key: settings.notchModel, onPick: pickModel } : undefined} />}

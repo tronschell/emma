@@ -88,6 +88,18 @@ test("markup a model forgot to fence is shown as code, not as prose", () => {
   assert.equal(parseBlocks("a < b and b > c").map((one) => one.kind).join(), "paragraph");
 });
 
+test("a task list is read as boxes, not as literal brackets", () => {
+  const [list] = parseBlocks("- [x] Complete the markdown formatting\n- [ ] Review the rendered layout\n- plain");
+  assert.equal(list.kind, "list");
+  if (list.kind !== "list") return;
+  assert.deepEqual(list.items.map((item) => item.checked), [true, false, undefined]);
+  assert.deepEqual(list.items.map((item) => text(item.spans)), ["Complete the markdown formatting", "Review the rendered layout", "plain"]);
+  const [nested] = parseBlocks("- parent\n  - [X] nested and done");
+  assert.equal(nested.kind === "list" && nested.items[0].sub?.items[0].checked, true);
+  const [ordered] = parseBlocks("1. [x] a numbered line is not a task box");
+  assert.equal(ordered.kind === "list" && ordered.items[0].checked, undefined);
+});
+
 test("a tag with no opener is a fragment, not a page to render as code", () => {
   assert.equal(parseBlocks("</arg_value></tool_call>").map((one) => one.kind).join(), "paragraph");
   assert.equal(parseBlocks("</div>").map((one) => one.kind).join(), "paragraph");

@@ -22,7 +22,7 @@ export interface Span {
   image?: true;
 }
 
-export interface Item { spans: Span[]; sub?: List }
+export interface Item { spans: Span[]; sub?: List; checked?: boolean }
 export interface List { ordered: boolean; items: Item[] }
 export type Row = Span[][];
 
@@ -45,6 +45,7 @@ const FENCE = /^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
 const BULLET = /^(\s*)(?:[-*+]|(\d+)[.)])\s+(.*)$/;
+const TASK = /^\[([ xX])\]\s+(.*)$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
 const DELIMITER = /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*(?::?-+:?\s*)?$/;
 
@@ -163,20 +164,19 @@ export function parseBlocks(markdown: string): Block[] {
     if (bullet) {
       flush();
       const ordered = bullet[2] !== undefined;
-      const spans = inlineSpans(bullet[3]);
+      const task = ordered ? null : TASK.exec(bullet[3]);
+      const made: Item = task ? { spans: inlineSpans(task[2]), checked: task[1] !== " " } : { spans: inlineSpans(bullet[3]) };
       const previous = blocks[blocks.length - 1];
       if (previous?.kind === "list") {
         const item = previous.items[previous.items.length - 1];
-        // ponytail: one level of nesting, by indent alone. Deeper indents fold
-        // into that level; give each item a depth if a model ever needs three.
         if (bullet[1].length >= 2) {
-          if (item.sub?.ordered === ordered) item.sub.items.push({ spans });
-          else item.sub = { ordered, items: [{ spans }] };
+          if (item.sub?.ordered === ordered) item.sub.items.push(made);
+          else item.sub = { ordered, items: [made] };
           continue;
         }
-        if (previous.ordered === ordered) { previous.items.push({ spans }); continue; }
+        if (previous.ordered === ordered) { previous.items.push(made); continue; }
       }
-      blocks.push({ kind: "list", ordered, items: [{ spans }] });
+      blocks.push({ kind: "list", ordered, items: [made] });
       continue;
     }
 

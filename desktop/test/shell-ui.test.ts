@@ -122,3 +122,21 @@ test("the cursor ring's labels sit on a ground of their own", () => {
 test("a mermaid diagram is given the width it asks for", () => {
   assert.match(read("desktop/src/styles/artifacts.css"), /\.artifact-mermaid \{[^}]*justify-items: stretch/);
 });
+
+test("a task item is drawn as a box", () => {
+  assert.match(read("desktop/src/markdown.tsx"), /item\.checked !== undefined && <input type="checkbox" checked=\{item\.checked\} disabled/);
+  assert.match(read("desktop/src/styles/markdown.css"), /\.md-task \{/);
+});
+
+test("the island folds a reasoning model's scratchpad away instead of printing it", () => {
+  const app = read("desktop/src/App.tsx");
+  assert.match(app, /turn\.role === "assistant" \? splitThinking\(turn\.content\)\.answer : turn\.content/);
+  assert.match(app, /\{splitThinking\(stream\.text\)\.answer \|\| "···"\}/);
+});
+
+test("an overlay surface does not call the IPC the main process reserves for the workspace window", () => {
+  assert.match(read("desktop/src/App.tsx"), /if \(isWorkspaceWindow\) void window\.emma\.listImportedMcpServers\(\)/);
+  const hook = read("desktop/src/schedule.tsx");
+  assert.match(hook, /if \(isWorkspaceWindow\) void window\.emma\.searchImportedSkills\(/);
+  assert.match(hook, /if \(isWorkspaceWindow\) void window\.emma\.listFolders\(\)/);
+});

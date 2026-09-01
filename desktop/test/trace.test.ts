@@ -114,6 +114,9 @@ test("durations read the way a span label should", () => {
   assert.equal(formatDuration(888), "888ms");
   assert.equal(formatDuration(3870), "3.87s");
   assert.equal(formatDuration(124_000), "2m 04s");
+  assert.equal(formatDuration(59_996), "1m 00s");
+  assert.equal(formatDuration(119_996), "2m 00s");
+  assert.equal(formatDuration(59_499), "59.50s");
 });
 
 test("the lifecycle summary counts work, not the frame around it", () => {
