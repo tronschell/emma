@@ -68,6 +68,13 @@ jobs:
           $clangpp = Get-Command clang++.exe -ErrorAction Stop
           & $clang.Source --version
           & $clangpp.Source --version
+      - name: diagnose the pty self-test environment
+        shell: pwsh
+        run: |
+          Write-Output ("resolved " + (Get-Command powershell.exe).Source)
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -Command 'Write-Output ("count=" + $args.Count + " ver=" + $PSVersionTable.PSVersion + " first=" + $args[0])' 'ABC'
+          Write-Output "---- with the unicode argument"
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -Command 'Write-Output ("count=" + $args.Count + " code=" + [int][char]$args[0][0])' $([char]0x6771 + [char]0x4EAC)
       - run: npm run build:native
         working-directory: desktop
       - run: cargo test --workspace --locked
