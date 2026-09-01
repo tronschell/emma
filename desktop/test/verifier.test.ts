@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import { defaultVerifier, defaultVerifierSystem, OPENROUTER_CHAT_ENDPOINT, routerKey, validateVerifier, verifierFromKey, verifierKey } from "../shared/settings";
 import { toolGate } from "../shared/permissions";
@@ -216,3 +218,11 @@ function harness({ verify, answer }: { verify: (request: VerifierRequest) => Pro
   const gate = () => runtime.question({ threadId: "t1", tool: "terminal", summary: "running npm test", detail: "npm test" });
   return { runtime, gate, asked, live, traced };
 }
+
+test("a second model picker never offers the ChatGPT plan, which it cannot express", () => {
+  const app = readFileSync(resolve(__dirname, "../../src/App.tsx"), "utf8");
+  assert.match(app, /const slugs = useCodexSlugs\(\);\s+const codexSlugs = codex \? slugs : \[\];/);
+  assert.match(app, /onPick=\{pick\} codex=\{false\}/);
+  assert.doesNotMatch(app, /<ModelRow(?![^>]*codex=)[^>]*\/>/);
+  assert.equal(verifierFromKey("codex:gpt-5.6-luna", [], "rules").model, "");
+});

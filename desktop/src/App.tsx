@@ -3375,7 +3375,7 @@ function ModelProviderPicker({ entry, active, providers, busy, onPick, codexSlug
   </div>;
 }
 
-function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, drag }: {
+function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, drag, codex = true }: {
   entry: ModelEntry;
   active: string;
   providers: readonly ProviderProfile[];
@@ -3384,8 +3384,10 @@ function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, dra
   starred?: boolean;
   onStar?: () => void;
   drag?: Record<string, unknown>;
+  codex?: boolean;
 }) {
-  const codexSlugs = useCodexSlugs();
+  const slugs = useCodexSlugs();
+  const codexSlugs = codex ? slugs : [];
   const route = modelEntryRoute(entry, active, providers, codexSlugs);
   const current = modelEntryCurrent(entry, active, providers);
   return <div className={`model-row ${current ? "current" : ""}`} {...drag}>
@@ -3399,7 +3401,7 @@ function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, dra
   </div>;
 }
 
-function ModelPicker({ entries, active, onPick, busy, providers = [], favorites, onStar, onReorder, label, lead, routers, children }: {
+function ModelPicker({ entries, active, onPick, busy, providers = [], favorites, onStar, onReorder, label, lead, routers, children, codex = true }: {
   entries: CatalogEntry[];
   active: string;
   onPick: ModelPick;
@@ -3412,6 +3414,7 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
   label: string;
   lead?: ModelEntry;
   children?: ReactNode;
+  codex?: boolean;
 }) {
   const [maker, setMaker] = useState("");
   const [query, setQuery] = useState("");
@@ -3471,16 +3474,16 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
         <button type="button" className="model-free-only" aria-pressed={freeOnly} title="Only the models the catalog lists as free" onClick={() => showFree(!freeOnly)}>Free only</button>
       </div>
       <div className="model-rows">
-        {lead && <ModelRow entry={lead} active={active} providers={providers} busy={busy} onPick={onPick} />}
+        {lead && <ModelRow entry={lead} active={active} providers={providers} busy={busy} onPick={onPick} codex={codex} />}
         {(routers ?? []).map(routerEntry).filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle)).map((entry) =>
-          <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} />)}
+          <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} codex={codex} />)}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={dropStar}>
           <SortableContext items={shown.map(favorite).filter(Boolean)} strategy={verticalListSortingStrategy}>
             {shown.map((entry) => onReorder && favorite(entry)
               ? <Sortable key={entry.key} id={favorite(entry)} className="model-row-sort">{(handle) =>
-                <ModelRow entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred onStar={onStar && (() => onStar(favorite(entry)))} drag={handle} />}
+                <ModelRow entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred onStar={onStar && (() => onStar(favorite(entry)))} drag={handle} codex={codex} />}
               </Sortable>
-              : <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred={!!favorite(entry)} onStar={onStar && (() => onStar(favorite(entry) || entry.key))} />)}
+              : <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} starred={!!favorite(entry)} onStar={onStar && (() => onStar(favorite(entry) || entry.key))} codex={codex} />)}
           </SortableContext>
         </DndContext>
         {!shown.length && <p className="model-menu-note">Nothing matches “{query}”.</p>}
@@ -3916,7 +3919,7 @@ function SecondModelPicker({ label, off, draft, providers, routers, onChange, bu
         <b aria-hidden="true">▾</b>
       </button>
       {open && <section className="source-popover model-menu" role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
-        <ModelPicker label={label} entries={entries} active={picked} busy={busy} providers={pickerProviders} routers={routers} onPick={pick} lead={{ key: "", name: off, detail: "Off" }}>
+        <ModelPicker label={label} entries={entries} active={picked} busy={busy} providers={pickerProviders} routers={routers} onPick={pick} codex={false} lead={{ key: "", name: off, detail: "Off" }}>
           <div className="model-menu-foot"><button type="button" className="model-menu-row quiet" aria-current={picked === "custom"} onClick={() => pick("custom")}><span>Custom endpoint…</span><b aria-hidden="true">↗</b></button></div>
         </ModelPicker>
       </section>}
