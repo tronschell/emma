@@ -371,7 +371,9 @@ static int self_test(void) {
   while (length + 1 < sizeof(output) && ReadFile(output_read, output + length, (DWORD)(sizeof(output) - length - 1), &got, NULL) && got > 0) length += got;
   close_handle(output_read);
   output[length] = 0;
-  return status == 0 && strstr(output, "received:100x30:26481") != NULL ? 0 : 1;
+  if (status == 0 && strstr(output, "received:100x30:26481") != NULL) return 0;
+  fprintf(stderr, "pty self-test failed: status %d\n", status);
+  return 1;
 }
 
 int wmain(int argc, wchar_t **argv) {
