@@ -159,10 +159,13 @@ filesystem at all. In the composer `/` names a capability and `@` names a file
 ([`shared/slash.ts`](../desktop/shared/slash.ts)); `buildAttachedContext` in
 [`src/context.ts`](../desktop/src/context.ts) assembles folder listings, `@`
 files, attachments and artifacts into one bounded block. A listing is capped at
-`MAX_FOLDER_FILES` (400) per folder and six levels deep; `listFolderFiles`
-returns that page with the total it counted, so the Files picker reads
-`Showing 400 of N` instead of looking empty. Any file can still be read by path
-past the cap. Emma's own standing
+`MAX_FOLDER_FILES` (400) per folder and six levels deep; the walk itself stops
+once it has counted `MAX_FOLDER_COUNT` (2000) attachable files, so a large grant
+costs a bounded walk rather than a full one. `listFolderFiles` returns that page
+with the count and whether the walk was cut short, so the Files picker reads
+`Showing 400 of N files` — or `of 2000+` when the count is a floor rather than a
+total. The count admits exactly what the listing admits, so an oversized file is
+neither shown nor counted. Any file can still be read by path past the cap. Emma's own standing
 text goes to two files under the `HOME` she hands the harness: the resolved
 Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
 the agent's own built-in prompt, and kept Agent-page improvements to
