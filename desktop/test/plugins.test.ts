@@ -375,7 +375,7 @@ test("an npm package that unpacks larger than its ceiling is stopped before it f
 const sessionStart = (command: string, matcher = "startup|resume", extra: Record<string, unknown> = {}) =>
   ({ SessionStart: [{ matcher, hooks: [{ type: "command", command, statusMessage: "Waking up", ...extra }] }] });
 
-test("a plugin's hooks stay off until they are reviewed, run once trusted, and lose that trust the moment the definition changes", async () => {
+test("a plugin's hooks stay off until they are reviewed, run once trusted, and lose that trust the moment the definition changes", { skip: process.platform === "win32" && "the hook commands are POSIX shell" }, async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-hooks-")));
   try {
     const userData = path.join(home, "user-data");
@@ -430,7 +430,7 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
   }
 });
 
-test("a plugin root that reads like a shell command is expanded as a value, never as a second command", async () => {
+test("a plugin root that reads like a shell command is expanded as a value, never as a second command", { skip: process.platform === "win32" && "the injection payload is not a legal Windows path" }, async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-hook-escape-")));
   try {
     const userData = path.join(home, "user-data");

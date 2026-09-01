@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { Harness, escapesRoot } from '../dist-main/main/harness.js';
 import { pathInside, samePath } from '../dist-main/main/platform.js';
-import { FolderStore } from '../dist-main/main/folders.js';
+import { FolderStore, grantRelative } from '../dist-main/main/folders.js';
 
 const source = ts.createSourceFile('main.ts', fs.readFileSync(new URL('../main/main.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
 const node = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'noteHarnessChange');
@@ -17,7 +17,7 @@ try {
   const folders = new FolderStore(path.join(cwd, 'profile'));
   const [grant] = folders.add(cwd);
   const note = vm.runInNewContext(ts.transpileModule('(' + node.getText(source) + ')', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
-    escapesRoot, folders, path, pathInside, samePath,
+    escapesRoot, folders, grantRelative, path, pathInside, samePath,
     readFileSync: (...args) => { reads.push(args[0]); return fs.readFileSync(...args); },
     harnessBefore: snapshots, agents: { noteChange: (threadId, change) => captured.push({ threadId, ...change }) }, changed() {},
   });

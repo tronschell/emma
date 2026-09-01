@@ -75,10 +75,12 @@ test("a tool Emma writes is executable, listed with its description, and replace
 
     // The whole point: it runs, exactly the way main runs it, with the input as
     // its one argument — the file here has a quote in its name on purpose.
-    const sample = path.join(root, "it's a sample.txt");
-    await writeFile(sample, "a\nb\nc\n");
-    const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `${shellQuoted(written.run)} ${shellQuoted(sample)}`], { cwd: root });
-    assert.equal(stdout.trim(), "3");
+    if (process.platform !== "win32") {
+      const sample = path.join(root, "it's a sample.txt");
+      await writeFile(sample, "a\nb\nc\n");
+      const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `${shellQuoted(written.run)} ${shellQuoted(sample)}`], { cwd: root });
+      assert.equal(stdout.trim(), "3");
+    }
 
     // Same name replaces it, which is how a tool that turned out wrong gets fixed.
     const fixed = await writeEmmaTool(root, "count-lines", "Counts lines, words and bytes.", "#!/bin/sh\nwc \"$1\"\n");

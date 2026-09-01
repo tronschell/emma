@@ -13,7 +13,7 @@ test("a background command returns straight away, keeps printing, and stops on r
   assert.match(commands.output(started.id, 1024)!.output, /up/);
   assert.equal(commands.list()[0].status, "running");
   assert.equal(commands.stop(started.id), true);
-  await settle(300);
+  await settle(process.platform === "win32" ? 4000 : 300);
   assert.equal(commands.list()[0].status, "exited");
   assert.equal(commands.stop(started.id), false);
   assert.equal(commands.output("bg99", 10), undefined);

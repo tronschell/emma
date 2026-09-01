@@ -4,7 +4,7 @@ import path from "node:path";
 import { chatCompletion, type ChatMessage } from "./verifier";
 import { defaultTagger, type TaggerSettings } from "../shared/settings";
 import { fileState, parseHistory, parseStatus, parseWorktrees, validateGitArgs, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot, type WorktreeEntry } from "../shared/git";
-import { findExecutable, isWindows } from "./platform";
+import { findExecutable, isWindows, samePath } from "./platform";
 
 const MAX_DIFF_BYTES = 512 * 1024;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -240,7 +240,18 @@ async function gitDirs(cwd: string): Promise<[string, string]> {
 
 export async function mainCheckout(cwd: string): Promise<string> {
   const [, common] = await gitDirs(cwd);
-  return path.dirname(common);
+  return path.normalize(path.dirname(common));
+}
+
+async function worktreeRows(cwd: string): Promise<WorktreeEntry[]> {
+  const [primary, text] = await Promise.all([
+    mainCheckout(cwd),
+    git(cwd, ["worktree", "list", "--porcelain", "-z"]),
+  ]);
+  return parseWorktrees(text, primary).map((row) => {
+    const resolved = path.normalize(row.path);
+    return { ...row, path: resolved, primary: samePath(resolved, primary) };
+  });
 }
 
 export async function addWorktree(cwd: string, name: string): Promise<string> {
@@ -253,11 +264,7 @@ export async function addWorktree(cwd: string, name: string): Promise<string> {
 }
 
 export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
-  const [primary, text] = await Promise.all([
-    mainCheckout(cwd),
-    git(cwd, ["worktree", "list", "--porcelain", "-z"]),
-  ]);
-  const rows = parseWorktrees(text, primary);
+  const rows = await worktreeRows(cwd);
   const checked = await Promise.all(rows.map(async (row) => {
     if (row.bare) return row;
     const { stdout } = await exec(row.path, ["status", "--porcelain", "--untracked-files=normal"]);
@@ -268,11 +275,9 @@ export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
 
 export async function removeWorktrees(cwd: string, targets: string[]): Promise<void> {
   if (!Array.isArray(targets) || !targets.length || targets.length > 32) throw new Error("Pick the worktrees to delete.");
-  const primary = await mainCheckout(cwd);
-  const text = await git(cwd, ["worktree", "list", "--porcelain", "-z"]);
-  const known = new Map(parseWorktrees(text, primary).map((row) => [row.path, row]));
+  const known = await worktreeRows(cwd);
   for (const target of targets) {
-    const row = known.get(target);
+    const row = known.find((entry) => samePath(entry.path, target));
     if (!row) throw new Error("That worktree is no longer on this repository's list. Refresh and try again.");
     if (row.primary) throw new Error("The main checkout cannot be deleted from here.");
     if (row.bare) throw new Error("A bare repository cannot be deleted from here.");

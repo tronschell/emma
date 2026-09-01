@@ -420,7 +420,7 @@ test("a turn for another directory is refused instead of written to the wrong on
 
     await assert.rejects(
       () => client.prompt("thread-3", "/tmp/somewhere-else", "do it", "ask"),
-      new RegExp(`bound to ${workspace}`),
+      (error: Error) => error.message.includes(`bound to ${workspace}`),
     );
   } finally {
     client.close();

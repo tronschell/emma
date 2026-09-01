@@ -93,9 +93,11 @@ test("a tool Emma wrote herself is listed before it is run, and runs as one shel
   assert.equal(toolGate("acceptEdits", "write_tool"), "auto");
   assert.equal(toolGate("acceptEdits", "run_tool"), "ask");
 
-  const hostile = `'; rm -rf ~; echo '`;
-  const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `echo ${shellQuoted(hostile)}`]);
-  assert.equal(stdout, `${hostile}\n`);
+  if (process.platform !== "win32") {
+    const hostile = `'; rm -rf ~; echo '`;
+    const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `echo ${shellQuoted(hostile)}`]);
+    assert.equal(stdout, `${hostile}\n`);
+  }
 });
 
 test("an unknown permission mode falls back rather than throwing", () => {

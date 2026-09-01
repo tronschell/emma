@@ -5,6 +5,8 @@ import path from "node:path";
 import { MAX_FILE_BYTES, MAX_FOLDER_FILES, MAX_FOLDERS, type FolderFile, type FolderGrant } from "../shared/folders";
 import { pathInside, samePath } from "./platform";
 
+export const grantRelative = (root: string, full: string) => path.relative(root, full).split(path.sep).join("/");
+
 const SKIP_DIRECTORIES = new Set(["node_modules", "target", "dist", "build", "__pycache__", ".venv", "vendor"]);
 const TEXT_FILE = /\.(md|markdown|txt|rst|org|json|jsonc|ya?ml|toml|ini|csv|tsv|tsx?|jsx?|mjs|cjs|rs|zig|py|go|rb|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|zsh|sql|css|scss|html?|xml|tex|env|gitignore)$/i;
 const MAX_DEPTH = 6;
@@ -59,7 +61,7 @@ export class FolderStore {
         if (entry.isDirectory()) walk(full, depth + 1);
         else if (entry.isFile() && TEXT_FILE.test(entry.name)) {
           const bytes = statSync(full).size;
-          if (bytes <= MAX_FILE_BYTES) found.push({ path: path.relative(root, full), bytes });
+          if (bytes <= MAX_FILE_BYTES) found.push({ path: grantRelative(root, full), bytes });
         }
       }
     };
@@ -72,7 +74,7 @@ export class FolderStore {
     const full = realpathSync(path.resolve(root, relative));
     if (!pathInside(root, full)) throw new Error("That file is outside the granted folder.");
     if (!statSync(full).isFile() || statSync(full).size > MAX_FILE_BYTES) throw new Error("That file cannot be attached.");
-    return { path: path.relative(root, full), text: readFileSync(full, "utf8") };
+    return { path: grantRelative(root, full), text: readFileSync(full, "utf8") };
   }
 
   write(id: string, relative: string, text: string): { path: string; before: string | null } {
@@ -89,7 +91,7 @@ export class FolderStore {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     writeFileSync(full, text, "utf8");
-    return { path: path.relative(root, full), before };
+    return { path: grantRelative(root, full), before };
   }
 
   directory(id: string): string {
@@ -99,7 +101,7 @@ export class FolderStore {
   within(id: string, relative: string): string {
     const root = this.root(id);
     if (!path.isAbsolute(relative) && samePath(path.resolve(root, relative), root)) return ".";
-    return path.relative(root, this.contain(root, relative));
+    return grantRelative(root, this.contain(root, relative));
   }
 
   private contain(root: string, relative: string): string {

@@ -39,6 +39,7 @@ function makeRepo(): Repo {
   const run = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString();
   run("config", "user.email", "test@example.com");
   run("config", "user.name", "Test");
+  run("config", "core.autocrlf", "false");
   return { root, repo, run };
 }
 

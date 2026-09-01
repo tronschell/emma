@@ -30,7 +30,7 @@ import { flattenTaskListTasks, mergeTaskList, parseTaskListTasks, renderTaskList
 import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage } from "../shared/visualize";
 import { captureVisual, keepVisual, readVisual } from "./visuals";
 import { CredentialStore } from "./credentials";
-import { FolderStore } from "./folders";
+import { FolderStore, grantRelative } from "./folders";
 import { AttachmentStore, isImageAttachment, type Attachment } from "./attachments";
 import { defaultVaultRoot, vaultReady } from "./setup";
 import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNoteFolders, listNotes, moveNote, obsidianInstallCommand, obsidianInstalled, readVault, renameNoteFolder, saveVault } from "./vault";
@@ -1988,7 +1988,7 @@ function noteHarnessChange(cwd: string, call: HarnessToolCall): FileChange | und
   harnessBefore.delete(key);
   const after = read();
   if (after === null || after === before) return;
-  const change: FileChange = { folderId: grant.id, path: path.relative(cwd, absolute), before, after, at: Date.now() };
+  const change: FileChange = { folderId: grant.id, path: grantRelative(cwd, absolute), before, after, at: Date.now() };
   agents!.noteChange(call.threadId, change);
   changed();
   return change;
