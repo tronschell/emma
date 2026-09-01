@@ -12,6 +12,7 @@ import {
   MAX_TITLE_BYTES,
   MAX_VAULT_NOTES,
   attachmentFolder,
+  clampBytes,
   isKeepKind,
   keepKindLabel,
   noteFolder,
@@ -71,14 +72,6 @@ function isDirectory(target: string): boolean {
   }
 }
 
-const byteLength = (value: string) => Buffer.byteLength(value, "utf8");
-
-function clampBytes(value: string, limit: number): string {
-  let text = value;
-  while (byteLength(text) > limit) text = text.slice(0, Math.min(text.length - 1, Math.floor((text.length * limit) / byteLength(text))));
-  return text;
-}
-
 function writeAtomic(file: string, data: string | Buffer, mode?: number): void {
   const temporary = `${file}.tmp`;
   writeFileSync(temporary, data, mode === undefined ? {} : { mode });
@@ -121,7 +114,7 @@ export function saveVault(userData: string, choice: VaultChoice): VaultChoice {
 export function vaultWritable(vault: VaultChoice): boolean {
   let folder: string;
   try {
-    folder = noteFolder(normalizeVault(vault));
+    folder = notesRoot(vault);
   } catch {
     return false;
   }
@@ -267,7 +260,7 @@ function noteBody(request: KeepRequest, embed: string): string {
 export async function keepNote(vault: VaultChoice, request: KeepRequest): Promise<KeptNote> {
   const choice = normalizeVault(vault);
   if (!request || typeof request !== "object" || !isKeepKind(request.kind)) throw new Error("Emma keeps screenshots, highlights, pages and notes.");
-  const folder = noteFolder(choice);
+  const folder = notesRoot(choice);
   mkdirSync(folder, { recursive: true });
   const title = clampBytes((((request.title ?? "").trim() || fallbackTitle(request)).replace(/\s+/g, " ")), MAX_TITLE_BYTES);
   const { file, relative } = freeNotePath(folder, noteSlug(title));
@@ -357,16 +350,13 @@ function subfolders(root: string): string[] {
 }
 
 function notesRoot(vault: VaultChoice): string {
-  return noteFolder(normalizeVault(vault));
+  const choice = normalizeVault(vault);
+  if (!isDirectory(choice.root)) throw new Error(`Your vault is not at ${choice.root} any more. It was moved, renamed or unmounted, so Emma is not reading or writing your notes until you choose it again on the Knowledge base page.`);
+  return noteFolder(choice);
 }
 
 export function listNotes(vault: VaultChoice): KeptNote[] {
-  let root: string;
-  try {
-    root = notesRoot(vault);
-  } catch {
-    return [];
-  }
+  const root = notesRoot(vault);
   const names = [...markdownIn(root), ...subfolders(root).flatMap((name) => markdownIn(path.join(root, name), `${name}/`))];
   const notes: KeptNote[] = [];
   for (const name of names.slice(0, MAX_VAULT_NOTES * 2)) {
@@ -377,12 +367,7 @@ export function listNotes(vault: VaultChoice): KeptNote[] {
 }
 
 export function listNoteFolders(vault: VaultChoice): NoteFolder[] {
-  let root: string;
-  try {
-    root = notesRoot(vault);
-  } catch {
-    return [];
-  }
+  const root = notesRoot(vault);
   return subfolders(root).map((name) => ({ name, changedAt: statSync(path.join(root, name)).mtime.toISOString() }));
 }
 

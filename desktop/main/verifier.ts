@@ -95,8 +95,9 @@ export async function chatCompletion(
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`The ${label} endpoint answered ${response.status}.`);
-  const body = await response.json() as { choices?: { message?: { content?: unknown; reasoning?: unknown } }[] };
+  const body = await response.json() as { choices?: { message?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown } }[] };
   const message = body.choices?.[0]?.message;
+  const thought = [message?.reasoning, message?.reasoning_content].find((value) => typeof value === "string" && value.trim());
   const content = typeof message?.content === "string" ? message.content : "";
-  return content || (typeof message?.reasoning === "string" ? message.reasoning : "");
+  return content || (typeof thought === "string" ? thought : "");
 }

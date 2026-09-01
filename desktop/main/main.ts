@@ -1190,6 +1190,14 @@ function noteInVault(vault: VaultChoice, value: unknown): string {
 
 const notesChanged = () => broadcast("emma:notes-changed");
 
+function notesOrNone(vault: VaultChoice | null): KeptNote[] {
+  try {
+    return vault ? listNotes(vault) : [];
+  } catch {
+    return [];
+  }
+}
+
 async function clipForKeep(url: string | undefined, hideOverlay: boolean) {
   if (url) return await clipPage({ application: "", url });
   if (!hideOverlay || !overlay || overlay.isDestroyed()) return await clipPage(await frontmostPage());
@@ -1268,6 +1276,7 @@ async function tagKeptNote(note: KeptNote, body: string) {
   try {
     const tagged = await tagNote(note, body, tagger);
     if (tagged) applyNoteTags(note.path, tagged.title, tagged.tags);
+    else console.warn(`The tagger returned no title or tags for ${note.relative}, so it keeps the title it was saved under.`);
     fireEvent("note-kept", { title: tagged?.title ?? note.title, tags: (tagged?.tags ?? note.tags).join(", ") });
   } catch (error) {
     console.error(`Could not tag ${note.relative}:`, error);
@@ -2576,7 +2585,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         ],
         at: [
           ...artifacts.map((artifact) => ({ id: `artifact:${artifact.id}`, name: pathName(artifact.title), kind: "artifact" as const, detail: `${ARTIFACT_LABELS[artifact.kind]} · artifact` })),
-          ...(vault ? listNotes(vault) : []).map((note) => ({ id: `note:${note.path}`, name: pathName(note.title), kind: "page" as const, detail: [keepKindLabel(note.kind), ...note.tags].join(" · ") })),
+          ...notesOrNone(vault).map((note) => ({ id: `note:${note.path}`, name: pathName(note.title), kind: "page" as const, detail: [keepKindLabel(note.kind), ...note.tags].join(" · ") })),
           ...attached.flatMap((folderId) => {
             const folder = grants.find((grant) => grant.id === folderId);
             return folder ? folders!.files(folderId).map((file) => ({ id: `file:${folderId}:${file.path}`, name: pathName(file.path), kind: "file" as const, detail: `${folder.name}/${file.path}` })) : [];

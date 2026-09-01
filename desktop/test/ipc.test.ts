@@ -90,7 +90,8 @@ test("a keep carries bounded text, one image, and a public source at most", () =
   assert.throws(() => keepRequest({ kind: "wiki", text: "x" }), /Keep request is invalid/);
   assert.throws(() => keepRequest({ kind: "note", text: "x", sourceUrl: "file:///etc/passwd" }), /Keep source is invalid/);
   assert.throws(() => keepRequest({ kind: "note", text: "x".repeat(MAX_NOTE_BYTES + 1) }), /Keep text is invalid/);
-  assert.throws(() => keepRequest({ kind: "note", title: "x".repeat(MAX_TITLE_BYTES + 1), text: "x" }), /Keep title is invalid/);
+  assert.equal(keepRequest({ kind: "note", title: "x".repeat(MAX_TITLE_BYTES + 40), text: "x" }).title, "x".repeat(MAX_TITLE_BYTES));
+  assert.throws(() => keepRequest({ kind: "note", title: "x".repeat(MAX_NOTE_BYTES + 1), text: "x" }), /Keep title is invalid/);
   assert.throws(() => keepRequest({ kind: "screenshot", image: "data:text/html;base64,PHA+" }), /Keep image is invalid/);
   assert.throws(() => keepRequest({ kind: "screenshot", image: "data:image/png;base64,not base64" }), /Keep image is invalid/);
 });

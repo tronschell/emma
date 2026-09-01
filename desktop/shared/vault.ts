@@ -53,13 +53,21 @@ export function isKeepKind(value: unknown): value is KeepKind {
   return typeof value === "string" && (KEEP_KINDS as readonly string[]).includes(value);
 }
 
+const byteLength = (value: string) => new TextEncoder().encode(value).length;
+
 export function noteSlug(title: string): string {
-  const slug = title.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase().slice(0, 60).replace(/-+$/g, "");
+  const slug = title.normalize("NFKD").replace(/[^\p{L}\p{N}\p{M}]+/gu, "-").replace(/^-+|-+$/g, "").toLowerCase().slice(0, 60).replace(/-+$/g, "").normalize("NFC");
   return slug || "note";
 }
 
+export function clampBytes(value: string, limit: number): string {
+  let text = value;
+  while (byteLength(text) > limit) text = text.slice(0, Math.min(text.length - 1, Math.floor((text.length * limit) / byteLength(text))));
+  return text;
+}
+
 export function validTag(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z0-9][a-z0-9/-]*$/.test(value) && new TextEncoder().encode(value).length <= MAX_TAG_BYTES;
+  return typeof value === "string" && /^[a-z0-9][a-z0-9/-]*$/.test(value) && byteLength(value) <= MAX_TAG_BYTES;
 }
 
 export const MAX_FOLDER_NAME = 64;
