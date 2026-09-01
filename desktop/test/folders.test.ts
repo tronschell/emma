@@ -7,7 +7,7 @@ import ts from "typescript";
 import { FolderStore } from "../main/folders";
 import { isImageAttachment } from "../main/attachments";
 import { pathInside } from "../main/platform";
-import { contextBlock, mergeSkillContext, slashName } from "../shared/folders";
+import { contextBlock, MAX_FOLDER_FILES, mergeSkillContext, slashName } from "../shared/folders";
 
 function workspace() {
   const root = mkdtempSync(path.join(tmpdir(), "emma-folders-"));
@@ -25,8 +25,26 @@ function workspace() {
 test("a grant lists its text files and skips vendored and non-text ones", () => {
   const { project, store } = workspace();
   const [grant] = store.add(project);
-  assert.deepEqual(store.files(grant.id).map((file) => file.path), ["notes/plan.txt", "readme.md"]);
+  assert.deepEqual(store.files(grant.id).files.map((file) => file.path), ["notes/plan.txt", "readme.md"]);
+  assert.equal(store.files(grant.id).total, 2);
   assert.equal(store.read(grant.id, "readme.md").text, "# hello");
+});
+
+test("a capped listing still counts every file it walked past", () => {
+  const { project, store } = workspace();
+  const many = path.join(project, "many");
+  mkdirSync(many, { recursive: true });
+  for (let index = 0; index < MAX_FOLDER_FILES + 20; index += 1) writeFileSync(path.join(many, `mod${index}.ts`), "export const v = 1;");
+  const [grant] = store.add(project);
+  const listing = store.files(grant.id);
+  assert.equal(listing.files.length, MAX_FOLDER_FILES);
+  assert.equal(listing.total, MAX_FOLDER_FILES + 22);
+});
+
+test("a missing optional file reads as empty rather than throwing", () => {
+  const { project, store } = workspace();
+  const [grant] = store.add(project);
+  assert.deepEqual(store.read(grant.id, "AGENTS.md"), { path: "AGENTS.md", text: "", missing: true });
 });
 
 test("a read cannot escape the granted folder, and an unknown grant is refused", () => {

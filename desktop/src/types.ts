@@ -2,7 +2,7 @@ import type { BackgroundTask, FileChange, LiveAgent, PermissionAsk, ThreadStep }
 import type { Artifact, ArtifactMeta } from "../shared/artifacts";
 import type { BuiltComponent, ComponentMeta, ComponentRequest } from "../shared/components";
 import type { CliModels, CliRun } from "../shared/cli";
-import type { EditorApp, FolderFile, FolderGrant } from "../shared/folders";
+import type { EditorApp, FolderGrant, FolderListing } from "../shared/folders";
 import type { GitCommandResult, GitHistory, GitReady, GitSnapshot, WorktreeEntry } from "../shared/git";
 import type { MachineSample } from "../shared/machine";
 import type { HarnessLogLine, HarnessReport } from "../shared/harness-log";
@@ -347,7 +347,7 @@ declare global {
       onFolderAttached(listener: (value: { threadId: string; folderId: string }) => void): () => void;
       pickFolder(): Promise<FolderGrant[]>;
       forgetFolder(id: string): Promise<FolderGrant[]>;
-      listFolderFiles(id: string): Promise<FolderFile[]>;
+      listFolderFiles(id: string): Promise<FolderListing>;
       gitStatus(id: string): Promise<GitSnapshot | null>;
       gitReady(id: string): Promise<GitReady>;
       gitInit(id: string): Promise<void>;
@@ -364,7 +364,7 @@ declare global {
       worktreeAdd(value: { folderId: string; prefix: string; name: string }): Promise<{ folders: FolderGrant[]; folderId: string }>;
       worktreeRemove(value: { folderId: string; paths: string[] }): Promise<void>;
       setBranch(value: { folderId: string; branch: string; create: boolean; from?: string }): Promise<void>;
-      readFolderFile(value: { folderId: string; path: string }): Promise<{ path: string; text: string }>;
+      readFolderFile(value: { folderId: string; path: string }): Promise<{ path: string; text: string; missing?: boolean }>;
       attachFiles(): Promise<HeldAttachment[]>;
       attachData(value: { name: string; data: ArrayBuffer }): Promise<HeldAttachment>;
       readAttachment(id: string): Promise<HeldAttachment & { text?: string }>;

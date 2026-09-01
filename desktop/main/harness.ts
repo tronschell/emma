@@ -8,6 +8,7 @@ export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import type { RunnableHookEvent } from "../shared/plugins";
+import { missingFolderMessage } from "../shared/folders";
 import { MAX_LOG_BODY, type HarnessFlow, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import type { HarnessExperiments } from "../shared/settings";
 import { decodeSpans, encodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
@@ -443,6 +444,11 @@ export class Harness {
 
   async start() {
     if (this.child) return;
+    if (!exists(this.deps.cwd)) {
+      const gone = new Error(missingFolderMessage(path.basename(this.deps.cwd) || this.deps.cwd, this.deps.cwd));
+      this.fail(gone);
+      throw gone;
+    }
 
     const key = this.deps.apiKey ? { AI_GATEWAY_API_KEY: this.deps.apiKey, EMMA_PROVIDER_API_KEY: this.deps.apiKey } : {};
     const route = this.deps.chatUrl ? { EMMA_PROVIDER_CHAT_URL: this.deps.chatUrl } : {};

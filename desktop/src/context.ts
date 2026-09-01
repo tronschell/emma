@@ -593,7 +593,7 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
       const label = `${folder?.name ?? ""}/${pick.path}`;
       try {
         const file = await window.emma.readFolderFile({ folderId: pick.folderId, path: pick.path });
-        sections.push({ heading: `File ${folder?.name ?? ""}/${file.path}`, body: file.text, label });
+        sections.push({ heading: `File ${folder?.name ?? ""}/${file.path}`, body: file.missing ? "That file is no longer on disk." : file.text, label });
       } catch (reason) {
         sections.push({ heading: `File ${label}`, body: `Could not be read: ${reasonText(reason)}`, label });
       }

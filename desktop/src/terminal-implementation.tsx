@@ -129,7 +129,7 @@ export function TerminalSurfaceImplementation({ tab, active, onSelect, onLink }:
 
 type TerminalPanelImplementationProps = TerminalPanelProps & { tabs: TerminalTab[]; tabGlyph: () => ReactNode };
 
-export function TerminalPanelImplementation({ tabs: allTabs, tabGlyph: TabGlyph, threadId, popped, onPop, onSelect, onHide, onOpenInEmma }: TerminalPanelImplementationProps) {
+export function TerminalPanelImplementation({ tabs: allTabs, tabGlyph: TabGlyph, threadId, folderId, popped, onPop, onSelect, onHide, onOpenInEmma }: TerminalPanelImplementationProps) {
   const tabs = allTabs.filter((tab) => !popped.includes(tab.id));
   const [picked, setPicked] = useState("");
   const [error, setError] = useState("");
@@ -144,10 +144,12 @@ export function TerminalPanelImplementation({ tabs: allTabs, tabGlyph: TabGlyph,
   }, [threadId]);
 
   useEffect(() => {
-    if (started.current === threadId) return;
-    started.current = threadId;
+    const where = `${threadId}\u0000${folderId}`;
+    if (started.current === where) return;
+    started.current = where;
+    setError("");
     void window.emma.listTerminals(threadId).then((found) => { if (!found.length) void start(); }).catch(() => void start());
-  }, [threadId, start]);
+  }, [folderId, threadId, start]);
 
   useEffect(() => {
     if (!link) return;

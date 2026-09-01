@@ -40,6 +40,11 @@ export function harnessHealth(processes: readonly HarnessState[]): HarnessHealth
   return processes.some((process) => process.failure && process.failure !== CLOSED_BY_EMMA) ? "offline" : "ready";
 }
 
+export function stoppedReason(processes: readonly HarnessState[]): string {
+  if (harnessHealth(processes) !== "offline") return "";
+  return processes.find((process) => process.failure && process.failure !== CLOSED_BY_EMMA)?.failure ?? "";
+}
+
 const clock = (at: number) => new Date(at).toISOString().slice(11, 19);
 
 export const logLine = (line: HarnessLogLine, bodyChars = MAX_LOG_BODY) =>

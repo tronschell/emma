@@ -45,7 +45,7 @@ pub const Foreground = struct {
             foreground.signal == null and
             !foreground.timed_out) return null;
 
-        var details: [6]tool_result_errors.Detail = undefined;
+        var details: [7]tool_result_errors.Detail = undefined;
         var count: usize = 0;
         details[count] = .{ .name = "command", .value = .{ .string = foreground.command } };
         count += 1;
@@ -57,6 +57,11 @@ pub const Foreground = struct {
         }
         if (foreground.signal) |signal| {
             details[count] = .{ .name = "signal", .value = .{ .unsigned = signal } };
+            count += 1;
+        }
+        const stdout_text = extractEnvelope(result.output, "<stdout>\n", "\n</stdout>");
+        if (stdout_text.len > 0) {
+            details[count] = .{ .name = "stdout", .value = .{ .string = stdout_text } };
             count += 1;
         }
         const stderr_text = extractEnvelope(result.output, "<stderr>\n", "\n</stderr>");
@@ -71,7 +76,7 @@ pub const Foreground = struct {
                 .tool_name = "terminal",
                 .message = if (foreground.exit_code != null) "Command exited with non-zero status" else "Command terminated before completing successfully",
                 .details = details[0..count],
-                .suggestion = "Inspect stderr and the command context, then fix the command or explain the blocker rather than retrying unchanged.",
+                .suggestion = "Inspect stdout, stderr and the command context, then fix the command or explain the blocker rather than retrying unchanged.",
             }),
             .command_result_json = try command_result.toJson(arena),
         };
@@ -395,10 +400,10 @@ fn freeBackgroundCommand(alloc: Allocator, background: command_contract.Backgrou
     if (background.url) |url| alloc.free(url);
 }
 
-test "command result mapping preserves non-zero stderr envelope and JSON" {
+test "command result mapping preserves non-zero stdout and stderr envelopes and JSON" {
     const alloc = std.testing.allocator;
     const result = try Foreground.nonZeroFailure(alloc, .{
-        .output = "<stderr>\nbad [redacted]\n</stderr>",
+        .output = "<stdout>\nfailing test report\n</stdout>\n<stderr>\nbad [redacted]\n</stderr>",
         .command_result = .{ .foreground = .{
             .command = "printf bad >&2; exit 7",
             .cwd = "/tmp/workspace",
@@ -410,6 +415,7 @@ test "command result mapping preserves non-zero stderr envelope and JSON" {
     defer alloc.free(result.command_result_json.?);
 
     try expectContains(result.model_output, "Command exited with non-zero status");
+    try expectContains(result.model_output, "\"stdout\":\"failing test report\"");
     try expectContains(result.model_output, "\"stderr\":\"bad [redacted]\"");
     try expectContains(result.command_result_json.?, "\"kind\":\"foreground\"");
     try expectContains(result.command_result_json.?, "\"exit_code\":7");

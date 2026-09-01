@@ -33,6 +33,7 @@ client, and ACP server are upstream's. The fork's divergences, in short:
 | Auth | All Vercel and ChatGPT OAuth removed; one env var, `EMMA_PROVIDER_API_KEY` |
 | Branding | `fx.sh` links, feedback, upgrade, and telemetry endpoints removed |
 | `terminal` args | Two real-world call shapes normalized; per-action required fields |
+| `terminal` failures | A non-zero exit reports `stdout` beside `stderr`; test runners print their failure report on stdout |
 | `subagent` | Advertised whenever the session supports children, not hidden behind `search_tools` |
 | Images | ACP `image` prompt blocks accepted into the turn's attachment catalogue |
 | Vision | Model catalogue reads OpenRouter's `architecture.input_modalities`; gate is vision alone, not vision + file input |

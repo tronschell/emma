@@ -6,7 +6,7 @@ import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
-import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
+import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, stoppedReason, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import { Harness, HARNESS_MODE_ID, INTERRUPTED_CALL, callEscapesWorkspace, compactionReported, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, recoveredSessionTraces, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 import { decodeSpans, encodeSpans } from "../shared/trace";
 
@@ -732,6 +732,9 @@ test("health reads the process, and offline is a death Emma did not ask for", ()
   assert.equal(harnessHealth([state({ running: true, busy: true, silentMs: STALL_MS + 1 })]), "stalled");
   assert.equal(harnessHealth([state({ failure: "emma-cli exited with code 1" })]), "offline");
   assert.equal(harnessHealth([state({ failure: CLOSED_BY_EMMA })]), "ready");
+  assert.equal(stoppedReason([state({ failure: '"work" is no longer at /tmp/work — reconnect it from the ＋ menu.' })]), '"work" is no longer at /tmp/work — reconnect it from the ＋ menu.');
+  assert.equal(stoppedReason([state({ running: true })]), "");
+  assert.equal(stoppedReason([state({ failure: CLOSED_BY_EMMA })]), "");
 });
 
 test("the fix prompt carries the failure and the traffic, not just the word broken", () => {
@@ -828,4 +831,19 @@ test("a recovery replayed while the session opens is not why the next run stoppe
   await client.prompt("t_stale", workspace, "hello", "ask");
   assert.equal(client.paused.get("t_stale"), undefined);
   client.close();
+});
+
+test("a run whose project folder was deleted names the folder, not the agent binary", async () => {
+  const gone = path.join(tmpdir(), `emma-gone-${process.pid}`);
+  rmSync(gone, { recursive: true, force: true });
+  const client = new Harness({
+    binaryPath: process.execPath,
+    args: [fakeAgent],
+    home: tmpdir(),
+    cwd: gone,
+    mcpServers: async () => [],
+  } as unknown as ConstructorParameters<typeof Harness>[0]);
+  await assert.rejects(() => client.start(), new RegExp(`is no longer at ${gone}`));
+  assert.match(client.state.failure, /reconnect it from the ＋ menu/);
+  assert.doesNotMatch(client.state.failure, /ENOENT/);
 });

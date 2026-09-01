@@ -45,6 +45,14 @@ test("a sub thread stays under its owner and carries it up the list", () => {
   assert.equal(threadDepth(threads, threads[2]), 1);
 });
 
+test("thousands of threads still group in a blink", () => {
+  const threads = Array.from({ length: 3000 }, (_, index) => thread(`t${index}`, `2026-01-01T00:00:${String(index % 60).padStart(2, "0")}Z`, index % 3 === 0 && index > 0 ? `t${index - 1}` : undefined));
+  const started = Date.now();
+  const listed = nested(threads);
+  assert.equal(listed.length, threads.length);
+  assert.ok(Date.now() - started < 1000, `grouping 3000 threads took ${Date.now() - started}ms`);
+});
+
 test("an idle sub thread says how long ago it moved, in one column's worth", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
   const at = (updatedAt: string) => since(thread("a", updatedAt), now);

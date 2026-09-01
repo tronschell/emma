@@ -2593,7 +2593,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
           ...notesOrNone(vault).map((note) => ({ id: `note:${note.path}`, name: pathName(note.title), kind: "page" as const, detail: [keepKindLabel(note.kind), ...note.tags].join(" · ") })),
           ...attached.flatMap((folderId) => {
             const folder = grants.find((grant) => grant.id === folderId);
-            return folder ? folders!.files(folderId).map((file) => ({ id: `file:${folderId}:${file.path}`, name: pathName(file.path), kind: "file" as const, detail: `${folder.name}/${file.path}` })) : [];
+            return folder ? folders!.files(folderId).files.map((file) => ({ id: `file:${folderId}:${file.path}`, name: pathName(file.path), kind: "file" as const, detail: `${folder.name}/${file.path}` })) : [];
           }),
         ],
       } satisfies CommandMenu;
@@ -2772,7 +2772,7 @@ async function resolveMentions(prompt: string, threadId: string): Promise<string
       continue;
     }
     for (const grant of folders!.list()) {
-      const listed = folders!.files(grant.id).find((file) => pathName(file.path) === mention);
+      const listed = folders!.files(grant.id).files.find((file) => pathName(file.path) === mention);
       if (!listed) continue;
       try {
         const file = folders!.read(grant.id, listed.path);
