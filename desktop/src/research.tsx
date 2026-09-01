@@ -4,7 +4,7 @@ import { ModePicker } from "./agents";
 import { PromptField, useTaskCommands } from "./schedule";
 import { Mark } from "./icons";
 import { plural } from "./plural";
-import { DEFAULT_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
+import { UNATTENDED_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
 import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
 import { zoned } from "./dates";
 
@@ -88,7 +88,7 @@ function JobDetail({ job, act, busy, back }: { job: ResearchJob; act: Act; busy:
   const rows = [...job.iterations].reverse();
   const remove = async () => {
     if (!confirming) { setConfirming(true); return; }
-    await act("deleteResearchJob", { jobId: job.id });
+    if (await act("deleteResearchJob", { jobId: job.id }) === undefined) return;
     back();
   };
   return <section className="research-view">
@@ -191,7 +191,7 @@ function ResearchForm({ job, act, busy, onSaved }: { job?: ResearchJob; act: Act
   const [prompt, setPrompt] = useState(job?.prompt ?? "");
   const { skills, tools, atItems } = useTaskCommands();
   const [model, setModel] = useState(job?.proposerModel ?? "");
-  const [mode, setMode] = useState<PermissionMode>(job?.permissionMode ?? DEFAULT_PERMISSION_MODE);
+  const [mode, setMode] = useState<PermissionMode>(job?.permissionMode ?? UNATTENDED_PERMISSION_MODE);
   const [hours, setHours] = useState(job ? String(Number((job.maxSeconds / 3600).toFixed(2))) : "6");
   const [tokens, setTokens] = useState(job ? String(job.maxTokens) : "2000000");
   const [dollars, setDollars] = useState(job ? String(job.maxMicroDollars / 1_000_000) : "5");

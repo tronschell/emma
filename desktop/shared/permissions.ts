@@ -2,6 +2,7 @@ export const PERMISSION_MODES = ["ask", "acceptEdits", "auto", "full"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export const DEFAULT_PERMISSION_MODE: PermissionMode = "ask";
+export const UNATTENDED_PERMISSION_MODE: PermissionMode = "acceptEdits";
 
 export const permissionModeNames: Record<PermissionMode, string> = {
   ask: "Ask",

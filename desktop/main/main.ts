@@ -243,6 +243,7 @@ function primeGoals(snapshot: unknown) {
 }
 
 const GOAL_CONTINUATION = "Continue working toward this thread's goal.";
+const GOAL_OVERSPENT = "The token allowance ran out part-way through a turn, so Emma stopped it there. Each agent step re-sends the conversation, so a long turn spends more than the turn ledger records. Continue grants more.";
 
 const threadFolderIds = (threadId: string) => threadContexts.get(threadId)?.folderIds ?? [];
 function namedPath(value: unknown): string | undefined {
@@ -1869,7 +1870,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       harnessUsage.set(threadId, usage);
       agents?.noteUsage(threadId, usage);
       const goal = goals.get(threadId);
-      if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) stopThread(threadId);
+      if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) noteGoalOverspent(threadId);
     },
     onChildStart: async ({ parentThreadId, childId, title }) => {
       const name = agentName(childId, new Set(agents!.list().map((agent) => agent.title)));
@@ -2687,6 +2688,11 @@ async function runDrivenTurn(turn: TurnRequest) {
   await noteGoalFailure(turn.threadId, agents!.list().find((agent) => agent.threadId === turn.threadId)?.error);
   if (!turn.goalTurn) void continueGoal(turn, thread).catch((error: unknown) => console.error("Emma: a goal's continuation failed", error));
   return recorded;
+}
+
+function noteGoalOverspent(threadId: string) {
+  stopThread(threadId);
+  void goalRequest("updateGoal", { threadId, status: "budgetLimited", reason: GOAL_OVERSPENT }).catch(() => undefined);
 }
 
 async function noteGoalFailure(threadId: string, detail: string | undefined) {

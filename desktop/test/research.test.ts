@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { asJob, bestValue, estimateMicroDollars, exhaustedBudget, improved, iterationPrompt, parseScore, readMetric, resultsRow, RESULTS_HEADER } from "../main/research";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { asJob, bestValue, estimateMicroDollars, exhaustedBudget, improved, iterationPrompt, parseScore, readMetric, resultsRow, RESULTS_HEADER, unattendedRefusal } from "../main/research";
+import { UNATTENDED_PERMISSION_MODE } from "../shared/permissions";
 
 const job = (extra: Record<string, unknown> = {}) => asJob({
   id: "research-1",
@@ -114,4 +117,18 @@ test("a job off the snapshot survives numbers arriving as strings", () => {
 test("spend is tokens times the model's rate, and a rate the catalog lacks costs nothing", () => {
   assert.equal(estimateMicroDollars({ inputTokens: 1_000_000, outputTokens: 500_000 }, { input: 3_000_000, output: 15_000_000 }), 10_500_000);
   assert.equal(estimateMicroDollars({ inputTokens: 4000, outputTokens: 900 }, { input: 0, output: 0 }), 0);
+});
+
+test("an experiment nobody is watching refuses to start in a mode that waits for an answer", () => {
+  assert.equal(unattendedRefusal(job()), undefined);
+  assert.equal(unattendedRefusal(job({ permissionMode: "acceptEdits" })), undefined);
+  const refusal = unattendedRefusal(job({ permissionMode: "ask" })) ?? "";
+  assert.match(refusal, /Accept edits/);
+  assert.match(refusal, /nobody is there/);
+
+  assert.notEqual(UNATTENDED_PERMISSION_MODE, "ask", "a new experiment must be offered a mode it can actually run in");
+  const form = readFileSync(path.join(__dirname, "..", "..", "src", "research.tsx"), "utf8").split("\n");
+  const picked = form.find((line) => line.includes("setMode] = useState"));
+  assert.ok(picked, "the experiment form's mode state is not where the test looks for it");
+  assert.match(picked, /UNATTENDED_PERMISSION_MODE/);
 });

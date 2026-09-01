@@ -91,6 +91,11 @@ export function bestValue(iterations: ResearchIteration[], direction: string): n
   return best;
 }
 
+export function unattendedRefusal(job: ResearchJob): string | undefined {
+  if (job.permissionMode !== "ask") return undefined;
+  return "This experiment runs as Ask, so every edit and command an iteration makes waits for an answer that nobody is there to give, and times out as a refusal after 10 minutes. Set it to Accept edits — where the agent's one change goes through and commands still ask — or to Full access, then press play.";
+}
+
 export function exhaustedBudget(job: ResearchJob): string | undefined {
   if (job.maxSeconds > 0 && job.spentSeconds >= job.maxSeconds) {
     return `Paused: the time budget is used up — ${job.spentSeconds}s of ${job.maxSeconds}s. Raise it and press play to carry on.`;
@@ -241,7 +246,7 @@ class Runner {
   async loop() {
     try {
       let job = await this.read();
-      const refusal = await this.checkRepository(job);
+      const refusal = unattendedRefusal(job) ?? await this.checkRepository(job);
       if (refusal) return await this.pause(refusal);
       this.threadId = job.threadId || await this.openThread(job);
       deps!.attachProject(this.threadId, job.projectDir);

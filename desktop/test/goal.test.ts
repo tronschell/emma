@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 import {
   DEFAULT_GOAL_TOKEN_BUDGET, GOAL_BLOCKED_TURNS, MAX_GOAL_TURNS, goalDrivesAgain, goalResult, goalTitle,
   markedGoal, usageLimitedFailure, type Goal,
@@ -112,6 +113,35 @@ test("a thread the user archived is never driven at on its own", () => {
   assert.ok(loop, "continueGoal's loop condition is not where the test looks for it");
   assert.match(loop, /!archived &&/, "archiving during a goal must end the continuation loop, not only block its entry");
   assert.ok(goalDrivesAgain({ goal: goal({ turns: 3, tokensUsed: 40_000 }) }), "an unarchived thread with an active goal still is");
+});
+
+test("a turn stopped mid-way for spending its budget settles the goal instead of leaving it pursuing", async () => {
+  const source = readFileSync(path.join(__dirname, "..", "..", "main", "main.ts"), "utf8");
+  const guard = source.split("\n").find((line) => line.includes("noteTurnSpend(threadId, usage) >="));
+  assert.ok(guard, "the mid-turn budget guard is not where the test looks for it");
+  assert.match(guard, /noteGoalOverspent\(threadId\)/, "stopping the thread without recording why leaves the goal card reading Pursuing forever");
+
+  const file = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
+  const overspent = file.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "noteGoalOverspent");
+  const reason = file.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(file) === "GOAL_OVERSPENT"));
+  assert.ok(overspent && reason);
+  const stopped: string[] = [];
+  const requests: unknown[] = [];
+  const scope = {
+    stopThread: (threadId: string) => stopped.push(threadId),
+    goalRequest: async (method: string, params: unknown) => { requests.push({ method, params }); },
+  };
+  const body = `${reason.getText(file)}\n${overspent.getText(file)}\nreturn noteGoalOverspent;`;
+  Function(...Object.keys(scope), ts.transpile(body, { target: ts.ScriptTarget.ES2022 }))(...Object.values(scope))("thread-7");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(stopped, ["thread-7"]);
+  assert.equal(requests.length, 1);
+  const request = requests[0] as { method: string; params: { threadId: string; status: string; reason: string } };
+  assert.equal(request.method, "updateGoal");
+  assert.equal(request.params.threadId, "thread-7");
+  assert.equal(request.params.status, "budgetLimited");
+  assert.match(request.params.reason, /allowance ran out/);
+  assert.ok(!goalDrivesAgain({ goal: goal({ status: "budgetLimited" }) }), "and a settled goal drives no further turn");
 });
 
 test("a provider limit is not a goal that failed", () => {
