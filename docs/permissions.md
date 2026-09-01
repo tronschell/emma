@@ -210,6 +210,13 @@ Nothing here consults the table, and `full` does not switch any of it off.
   [tools.md](tools.md).
 - **The workspace grant.** `context.outsideWorkspace` denies before any mode
   check.
+- **Folder grants on the file IPC.** `emma:preview-path`, `emma:reveal-path` and
+  `emma:open-in-editor` resolve a path and then refuse it unless it sits inside a
+  connected folder or is an attachment this session holds. Being an image is not
+  a way in.
+- **The artifact database.** `artifactSql` runs one statement against that app
+  artifact's own `data.sqlite`, under a SQLite authorizer that denies `ATTACH`
+  and `DETACH`, so a page cannot name a second file anywhere on disk.
 - **Argument validation.** `parseToolArgs` runs on every call.
 - **Accessibility.** Computer use cannot read or act on controls without the
   macOS Accessibility grant or the Windows UI Automation path. Screen Recording
