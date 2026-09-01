@@ -332,6 +332,11 @@ export const RUN_ERROR_EVENT = "emma:run-error";
 
 export const runOf = (threadId: string): Run => read(threadId);
 
+export const turnToRetry = (threadId: string): QueuedTurn | null => {
+  const run = read(threadId);
+  return run.sending ? run.pending : null;
+};
+
 export function settleRun(threadId: string, messages: Message[], cached: Record<string, Block[]>): void {
   const run = read(threadId);
   const settled = run.landed.at(-1);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, compactionNotice, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, compactionNotice, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, turnToRetry, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
 import type { TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
@@ -386,6 +386,19 @@ test("a turn's notice takes the tool calls of a run that said nothing", () => {
   ];
   const steps: Block[] = [{ kind: "step", step: step("a", "cancelled") }];
   assert.deepEqual(pairBlocks(messages, [steps], {})[1], steps);
+});
+
+test("the stall swap only resends a turn that is still running", async () => {
+  sendTurn("stalling", turn("PING-F"), () => {});
+  await settle();
+  // Nothing has streamed for minutes, so the stall notice is up and the turn is still open.
+  assert.equal(turnToRetry("stalling")?.content, "PING-F");
+
+  // The answer lands while the model menu sits open. Swapping now must not pay for it twice.
+  release?.();
+  await settle();
+  assert.equal(runOf("stalling").sending, false);
+  assert.equal(turnToRetry("stalling"), null);
 });
 
 test("a turn the host refuses hands its text back once", async () => {

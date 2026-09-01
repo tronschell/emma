@@ -15,7 +15,7 @@ import { DndContext, MeasuringStrategy, PointerSensor, closestCenter, useSensor,
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { hasPersistedPrompt } from "./drafts";
-import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, settleRun, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, steerQueued, steerRunning, stopTurn, takeDraft, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
+import { arrived, canSteer, dropHeld, dropQueued, groupBlocks, pairBlocks, settleRun, tracedBlocks, queuedTurns, releaseHeld, RUN_ERROR_EVENT, sendTurn, steerQueued, steerRunning, stopTurn, takeDraft, turnToRetry, thinkingOf, useRun, withoutThinking, wrote, type Block, type RunFailure } from "./runs";
 import { splitThinking } from "../shared/thinking";
 import { showsUpdate } from "../shared/update";
 import { brandForImporter, brandForModel, brandForProvider, obsidianBrand, providerBrands, type BrandDefinition } from "./brands";
@@ -2345,7 +2345,7 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
   const swapStalledModel = async (next: UserSettings) => {
     const label = modelKeyLabel(next, next.selectedModel);
     const quiet = run.activeAt ? clock(Date.now() - run.activeAt) : "";
-    const turn = run.pending;
+    const turn = turnToRetry(thread.id);
     closeModels();
     await window.emma.setThreadContext({ threadId: thread.id, folderIds, mode, model: next.selectedModel }).catch(() => undefined);
     recordModelSwitch(thread.id, { at: thread.messages.length, label, brand: modelKeyBrand(next, next.selectedModel)?.id ?? "", after: quiet });
