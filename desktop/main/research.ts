@@ -255,8 +255,8 @@ class Runner {
       while (!this.stopped) {
         job = await this.read();
         if (job.status !== "running") return;
-        const spent = exhaustedBudget(job);
-        if (spent) return await this.pause(spent);
+        const blocked = unattendedRefusal(job) ?? exhaustedBudget(job);
+        if (blocked) return await this.pause(blocked);
         await this.iterate(job);
       }
     } catch (error) {
@@ -326,7 +326,7 @@ class Runner {
         "Output:",
         output.slice(0, 32 * 1024),
       ].join("\n"),
-      mode: "ask",
+      mode: job.permissionMode,
       title: `${job.title} · judge`,
       model: job.proposerModel,
     })) ?? "";

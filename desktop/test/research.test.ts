@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { asJob, bestValue, estimateMicroDollars, exhaustedBudget, improved, iterationPrompt, parseScore, readMetric, resultsRow, RESULTS_HEADER, unattendedRefusal } from "../main/research";
-import { UNATTENDED_PERMISSION_MODE } from "../shared/permissions";
+import { asJob, bestValue, configureResearch, estimateMicroDollars, exhaustedBudget, improved, iterationPrompt, parseScore, readMetric, researchJobIds, resultsRow, RESULTS_HEADER, startResearchJob, stopResearchJob, unattendedRefusal, type ResearchDeps, type ResearchJob } from "../main/research";
+import { UNATTENDED_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
 
 const job = (extra: Record<string, unknown> = {}) => asJob({
   id: "research-1",
@@ -131,4 +132,98 @@ test("an experiment nobody is watching refuses to start in a mode that waits for
   const picked = form.find((line) => line.includes("setMode] = useState"));
   assert.ok(picked, "the experiment form's mode state is not where the test looks for it");
   assert.match(picked, /UNATTENDED_PERMISSION_MODE/);
+});
+
+type TurnCall = { threadId: string; content: string; mode: PermissionMode; title: string; model: string };
+
+function harness(seed: Record<string, unknown>) {
+  const turns: TurnCall[] = [];
+  const threads: string[] = [];
+  const git: string[][] = [];
+  const snapshots: ResearchJob[] = [];
+  const answers = ["changed the optimizer", "72"];
+  let current = asJob(seed);
+  let commits = 0;
+  let paused = "";
+  const projectDir = mkdtempSync(path.join(tmpdir(), "research-loop-"));
+  current = { ...current, projectDir };
+
+  const deps: ResearchDeps = {
+    async request(method, params) {
+      if (method === "snapshot") {
+        snapshots.push(current);
+        return { researchJobs: [current] };
+      }
+      if (method === "createThread") {
+        threads.push(params.title);
+        return { id: `thread-${threads.length}` };
+      }
+      if (method === "setResearchJobStatus") paused = params.note ?? "";
+      if (method === "recordResearchIteration") current = { ...current, status: "paused" };
+      return {};
+    },
+    async turn(request) {
+      turns.push(request as TurnCall);
+      return { messages: [{ role: "assistant", content: answers[turns.length - 1] ?? "" }] };
+    },
+    stopTurn() {},
+    async run() { return "val_bpb: 0.5"; },
+    async runGit(_cwd, args) {
+      git.push(args);
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return projectDir;
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return String(commits).padStart(12, "a");
+      if (args[0] === "diff") return "train.py";
+      if (args[0] === "commit") commits += 1;
+      return "";
+    },
+    attachProject() {},
+    async resolve(prompt) { return prompt; },
+    usage() { return { inputTokens: 0, outputTokens: 0 }; },
+    catalogFile: path.join(projectDir, "no-catalog.json"),
+    changed() {},
+  };
+  configureResearch(deps);
+  return {
+    turns,
+    threads,
+    git,
+    note: () => paused,
+    snapshots,
+    flipTo(mode: PermissionMode) { current = { ...current, permissionMode: mode }; },
+    async drain(jobId: string) {
+      startResearchJob(jobId);
+      for (let tick = 0; tick < 4000 && researchJobIds().includes(jobId); tick += 1) await new Promise((done) => setTimeout(done, 1));
+      stopResearchJob(jobId);
+      rmSync(projectDir, { recursive: true, force: true });
+    },
+  };
+}
+
+test("a job saved as Ask is refused by the loop before it opens a thread or touches the repository", async () => {
+  const rig = harness({ id: "loop-ask", title: "ask job", permissionMode: "ask", status: "running", evalCommand: "true", metricName: "val_bpb" });
+  await rig.drain("loop-ask");
+  assert.match(rig.note(), /nobody is there/);
+  assert.deepEqual(rig.threads, []);
+  assert.deepEqual(rig.git, []);
+  assert.deepEqual(rig.turns, []);
+});
+
+test("a running job switched to Ask pauses instead of deadlocking its next iteration", async () => {
+  const rig = harness({ id: "loop-flip", title: "flip job", permissionMode: "acceptEdits", status: "running", evalCommand: "true", metricName: "val_bpb" });
+  const started = rig.drain("loop-flip");
+  for (let tick = 0; tick < 4000 && rig.snapshots.length < 1; tick += 1) await new Promise((done) => setTimeout(done, 1));
+  rig.flipTo("ask");
+  await started;
+  assert.match(rig.note(), /nobody is there/);
+  assert.equal(rig.threads.length, 1);
+  assert.deepEqual(rig.turns, []);
+});
+
+test("the judge scores in the job's own mode, never one that waits for an answer", async () => {
+  const rig = harness({ id: "loop-judge", title: "judge job", permissionMode: "full", metricKind: "judge", status: "running", evalCommand: "true", metricName: "quality", direction: "higher" });
+  await rig.drain("loop-judge");
+  assert.equal(rig.turns.length, 2);
+  assert.match(rig.turns[1].title, /judge/);
+  assert.equal(rig.turns[1].mode, "full");
+  assert.notEqual(rig.turns[1].mode, "ask");
 });
