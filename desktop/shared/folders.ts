@@ -13,6 +13,9 @@ export type ContextPick =
   | { kind: "visual"; id: string; title: string; label: string; html: string }
   | { kind: "component"; id: string; title: string };
 
+export const missingFolderMessage = (name: string, at: string) =>
+  `"${name}" is no longer at ${at} — reconnect it from the ＋ menu.`;
+
 export const MAX_FOLDERS = 16;
 export const MAX_FOLDER_FILES = 400;
 export const MAX_FILE_BYTES = 256 * 1024;
