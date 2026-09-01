@@ -16,11 +16,10 @@ test("dev checks never compile the app and full CI only targets main", () => {
   assert.deepEqual([...dev.matchAll(/^\s+- uses: (.+)$/gm)].map((match) => match[1]), ["actions/checkout@v5", "actions/setup-node@v5"]);
 });
 
-test("main checks cover Windows x64 and ARM64 native builds", () => {
+test("the Windows lane covers the native x64 build and stays off the release path", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
-  assert.match(workflow, /check-windows:\n {4}strategy:/);
-  assert.match(workflow, /runner: windows-2025\n {12}arch: x64/);
-  assert.match(workflow, /runner: windows-11-vs2026-arm\n {12}arch: arm64/);
+  assert.match(workflow, /check-windows:\n {4}if: github\.event_name == 'pull_request'\n {4}runs-on: windows-2025/);
+  assert.doesNotMatch(workflow, /strategy:|matrix|windows-11-vs2026-arm/);
   assert.match(workflow, /node-version: 24/);
   assert.match(workflow, /version: 0\.16\.0/);
   assert.match(workflow, /probe Windows native toolchain/);
@@ -30,9 +29,8 @@ test("main checks cover Windows x64 and ARM64 native builds", () => {
   assert.match(workflow, /VersionInfo\.FileVersion/);
   assert.match(workflow, /npm run build:native/);
   assert.match(workflow, /workflow_call:/);
-  assert.match(workflow, /if: \(github\.event_name == 'pull_request' && github\.base_ref == 'main'\) \|\| github\.event_name == 'workflow_call'/);
-  assert.doesNotMatch(workflow, /matrix\.arch == 'x64'/);
-  assert.match(workflow, /npm run package:win/);
+  assert.match(workflow, /package the Windows release candidate without signing secrets\n {8}if: github\.base_ref == 'main'\n {8}run: npm run package:win/);
+  for (const duplicated of [/npm run check/g, /cargo fmt/g, /cargo check /g]) assert.equal(workflow.match(duplicated).length, 1);
 });
 
 test("Windows transcription keeps Unicode paths in its native argv", () => {
