@@ -110,10 +110,12 @@ class Host {
 
   request(request: { method: string; params: Record<string, string> }): Promise<unknown> {
     if (this.failure) return Promise.reject(this.failure);
-    if (request.method === "thread") return this.send(request);
+    if (request.method === "thread" || request.method === "readTrace") return this.send(request);
     if (request.method !== "snapshot" && request.method !== "threadSummaries") {
       this.storeChanged();
-      return this.send(request);
+      const written = this.send(request);
+      void written.then(() => changed(), () => undefined);
+      return written;
     }
     const cached = this.snapshots.get(request.method);
     if (cached && cached.writes === this.writes && Date.now() - cached.at < SNAPSHOT_CACHE_MS) return cached.value;
