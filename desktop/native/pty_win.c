@@ -318,6 +318,28 @@ static int run_pty(int columns, int rows, wchar_t **argv, int argc, HANDLE input
   return (int)status;
 }
 
+static size_t strip_terminal(const char *source, size_t length, char *target) {
+  size_t kept = 0;
+  for (size_t index = 0; index < length; index += 1) {
+    const unsigned char character = (unsigned char)source[index];
+    if (character == 0x1b) {
+      index += 1;
+      if (index >= length) break;
+      const unsigned char kind = (unsigned char)source[index];
+      if (kind == '[') {
+        index += 1;
+        while (index < length && ((unsigned char)source[index] < 0x40 || (unsigned char)source[index] > 0x7e)) index += 1;
+      } else if (kind == ']') {
+        while (index < length && (unsigned char)source[index] != 0x07 && (unsigned char)source[index] != 0x1b) index += 1;
+      }
+      continue;
+    }
+    if (character >= 0x20 && character <= 0x7e) target[kept++] = (char)character;
+  }
+  target[kept] = 0;
+  return kept;
+}
+
 static int self_test(void) {
   SECURITY_ATTRIBUTES security = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
   HANDLE input_read = NULL;
@@ -372,14 +394,9 @@ static int self_test(void) {
   close_handle(output_read);
   output[length] = 0;
   char plain[BUFFER_BYTES];
-  size_t kept = 0;
-  for (size_t index = 0; index < length; index += 1) {
-    const unsigned char character = (unsigned char)output[index];
-    if (character >= 0x20 && character <= 0x7e) plain[kept++] = (char)character;
-  }
-  plain[kept] = 0;
+  strip_terminal(output, length, plain);
   if (status == 0 && strstr(plain, "received:100x30:26481") != NULL) return 0;
-  fprintf(stderr, "pty self-test failed: status %d, %zu bytes, %zu printable\n", status, length, kept);
+  fprintf(stderr, "pty self-test failed: status %d, %zu bytes, rendered \"%s\"\n", status, length, plain);
   return 1;
 }
 
