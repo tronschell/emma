@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/tronschell/emma/compare/v0.3.1...v0.3.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **ci:** stop the Windows desktop tests hanging for an hour ([#24](https://github.com/tronschell/emma/issues/24)) ([0275d54](https://github.com/tronschell/emma/commit/0275d5422b157527d5a376efe18b2a7764056929))
+* **desktop:** harden the phone bridge and tighten MCP config parsing ([#27](https://github.com/tronschell/emma/issues/27)) ([72da134](https://github.com/tronschell/emma/commit/72da134afe0969df1cc9067cb0025229cc7dba20))
+
 ## [0.3.1](https://github.com/tronschell/emma/compare/v0.3.0...v0.3.1) (2026-09-01)
 
 
