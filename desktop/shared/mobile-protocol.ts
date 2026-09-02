@@ -143,13 +143,16 @@ export type ThreadStep = {
 };
 
 /** One file the agent rewrote. `before` is null when the tool created the file, which is why
-    a revert needs it back: only a file that had a previous body can be put back to one. */
+    a revert needs it back: only a file that had a previous body can be put back to one. The body
+    itself is clipped and the rewritten one is not sent at all — a thread that rewrote a few large
+    files is otherwise a frame the codec refuses to seal, and the Mac reverts from its own record. */
 export type FileChange = {
   folderId: string;
   path: string;
   before: string | null;
-  after: string;
   at: number;
+  /** Set when `before` was clipped to fit the frame. */
+  truncated?: boolean;
 };
 
 export type AgentStatus = "running" | "waiting" | "done" | "failed" | "stopped";
@@ -240,7 +243,7 @@ export type CliRun = {
 };
 
 /** Mirrors MemoryNote in main/memory.ts; the phone does not carry that file. */
-export type MemoryNote = { path: string; bytes: number; updatedAt: number; text: string };
+export type MemoryNote = { path: string; bytes: number; updatedAt: number; text: string; truncated?: boolean };
 
 /** Mirrors KeptNote and NoteFolder in shared/vault.ts; the phone does not carry that file. */
 export type KeepKind = "screenshot" | "selection" | "page" | "note";
@@ -363,7 +366,8 @@ export type ToolTargets = {
 /**
  * Mirrors the scheduled task main.ts stores, without its node graph and its last run's outputs:
  * the phone reads a task, it does not edit or replay one, and either field is unbounded enough
- * that a Mac full of tasks would not fit in a frame.
+ * that a Mac full of tasks would not fit in a frame. `prompt` and `title` are clipped for the
+ * same reason, and `truncated` says so.
  */
 export type ScheduledJob = {
   id: string;
@@ -376,6 +380,8 @@ export type ScheduledJob = {
   model: string;
   nextRunAt?: string | null;
   lastRunAt?: string | null;
+  /** Set when `prompt` or `title` was clipped to fit the frame. */
+  truncated?: boolean;
 };
 
 export type ThreadTrace = { timestamp: string; text: string };
@@ -462,7 +468,9 @@ export type BridgeMethods = {
     result: ThreadSummary;
   };
   clearGoal: { params: { threadId: string }; result: ThreadSummary };
-  listTaskLists: { params: Record<string, never>; result: TaskList[] };
+  /** One thread's lists, plus the ones the Mac never stamped with a thread. Without a threadId
+      every list on the Mac rides to the phone to render one thread's rail. */
+  listTaskLists: { params: { threadId?: string }; result: TaskList[] };
   threadChanges: { params: { threadId: string }; result: FileChange[] };
   revertChange: { params: { folderId: string; path: string; before: string }; result: { reverted: true } };
   listBackground: { params: Record<string, never>; result: BackgroundTask[] };

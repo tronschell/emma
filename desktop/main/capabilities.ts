@@ -30,7 +30,7 @@ type ImportManifest = {
   sources: ImportedSource[];
 };
 
-export type McpTransport = "http" | "sse";
+type McpTransport = "http" | "sse";
 
 type InternalMcpServer = {
   id: string;
@@ -60,7 +60,6 @@ export type McpServer = {
   environmentKeys: string[];
   type?: McpTransport;
   url?: string;
-  headerNames?: string[];
 };
 
 function boundedString(value: unknown, max: number, label: string) {
@@ -471,23 +470,41 @@ function configRoots(value: Record<string, unknown>) {
     if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate as Record<string, unknown>;
   }
   const entries = Object.entries(value);
-  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && ("command" in (item as object) || "url" in (item as object)))) return value;
+  // A keyless file is only claimed when every entry looks declared: a command, or a url with the
+  // transport a real remote entry always names. {name: {url}} alone is a shape too much unrelated
+  // JSON has, and claiming it would dial endpoints the user never offered as MCP servers.
+  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && ("command" in (item as object) || ("url" in (item as object) && "type" in (item as object))))) return value;
   return {};
 }
+
+// Mirrors streamable_http.zig: isReservedHeader (plus its "mcp-param-" prefix) and the bytes
+// isValidHeaderValue refuses.
+const RESERVED_HEADERS = new Set(["accept", "accept-encoding", "connection", "content-length", "content-type", "host", "last-event-id", "mcp-method", "mcp-name", "mcp-protocol-version", "mcp-session-id", "transfer-encoding"]);
+const CONTROL_BYTE = /[\u0000-\u0008\u000a-\u001f\u007f]/;
 
 function parseMcpServer(source: string, fileIndex: number, name: string, raw: unknown): InternalMcpServer | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) return undefined;
   const value = raw as Record<string, unknown>;
   const id = `mcp:${source}:${fileIndex}:${name}`;
-  if (typeof value.url === "string") {
+  if (typeof value.url === "string" && value.type !== "stdio") {
     // https only. A remote entry's headers are how it authenticates, so plaintext http would
     // put the user's bearer token on the wire; the harness would take loopback http, we do not.
     if (value.url.length > 4096 || !URL.canParse(value.url) || new URL(value.url).protocol !== "https:") return undefined;
+    // The harness parses this same string with std.Uri and refuses userinfo or a fragment. A
+    // refusal there is not a dropped entry: parse() propagates it and session/new fails for every
+    // thread on the Mac, naming neither server nor file. So nothing it refuses leaves here.
+    const authority = value.url.slice(value.url.indexOf("//") + 2).split(/[/?#]/)[0];
+    if (authority.includes("@") || value.url.includes("#")) return undefined;
     const supplied = value.headers ?? {};
     if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) return undefined;
-    const headers = Object.entries(supplied).filter(([key, item]) => /^[A-Za-z0-9-]{1,128}$/.test(key) && typeof item === "string" && item.length <= 8192);
-    if (headers.length !== Object.keys(supplied).length || headers.length > 32) return undefined;
+    // A reserved name is the one bad header worth surviving: the transport writes these itself,
+    // and a Content-Type sitting in an imported Cursor config is ordinary enough that taking the
+    // whole entry down for it would cost more than dropping the header does.
+    const offered = Object.entries(supplied).filter(([key]) => !RESERVED_HEADERS.has(key.toLowerCase()) && !key.toLowerCase().startsWith("mcp-param-"));
+    const headers = offered.filter(([key, item]) => /^[A-Za-z0-9-]{1,128}$/.test(key) && typeof item === "string" && item.length <= 8192 && !CONTROL_BYTE.test(item));
+    if (headers.length !== offered.length || headers.length > 32) return undefined;
+    if (new Set(headers.map(([key]) => key.toLowerCase())).size !== headers.length) return undefined;
     const type = value.type === "sse" ? "sse" : "http";
     return { id, source, name, args: [], env: {}, type, url: value.url, headers: headers.map(([key, item]) => ({ name: key, value: item as string })) };
   }
@@ -520,7 +537,7 @@ export function parseMcpConfig(text: string, fileName = "config.json", source = 
   return servers;
 }
 
-export type McpServerDefinition = { name: string; command?: string; args?: string[]; env?: Record<string, string>; type?: McpTransport; url?: string; headers?: Record<string, string> };
+export type McpServerDefinition = { name: string; command: string; args: string[]; env: Record<string, string> };
 
 export async function writeLearnedMcpServer(userData: string, server: McpServerDefinition) {
   const file = learnedMcpFile(userData);
@@ -529,9 +546,7 @@ export async function writeLearnedMcpServer(userData: string, server: McpServerD
     const existing: unknown = JSON.parse(await readBounded(file, MAX_CONFIG_BYTES));
     if (existing && typeof existing === "object" && !Array.isArray(existing)) servers = { ...configRoots(existing as Record<string, unknown>) };
   } catch { servers = {}; }
-  servers[server.name] = server.url
-    ? { type: server.type ?? "http", url: server.url, headers: server.headers ?? {} }
-    : { command: server.command, args: server.args ?? [], env: server.env ?? {} };
+  servers[server.name] = { command: server.command, args: server.args, env: server.env };
   const text = `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
   const written = parseMcpConfig(text, "mcp.json", "emma", 0).find((candidate) => candidate.name === server.name);
   if (!written) throw new Error("That MCP server definition is not valid.");
@@ -570,19 +585,20 @@ function serverMetadata(server: InternalMcpServer): McpServer {
     if (/^@?[a-z0-9][a-z0-9._/-]*$/i.test(value) && (value.includes("/") || /\.(?:cjs|js|mjs|py|rb|sh)$/i.test(value))) return value;
     return `[argument ${index + 1} redacted]`;
   });
+  // A remote server has no command; the origin of its endpoint stands in so a row still names
+  // something the user recognises. Hosted MCP carries its token in the path or query as often as
+  // in a header (Zapier, Smithery), so the rest of the url stays main-side along with them.
+  const origin = server.url ? new URL(server.url).origin : undefined;
   return {
     id: server.id,
     source: server.source,
     name: server.name,
-    // A remote server has no command; its endpoint stands in so a row still names
-    // something the user recognises. Header *values* are credentials and stay main-side.
-    command: server.command ?? server.url ?? "",
+    command: server.command ?? origin ?? "",
     args,
     argCount: server.args.length,
     environmentKeys: Object.keys(server.env).sort(),
     type: server.type,
-    url: server.url,
-    headerNames: server.headers?.map((header) => header.name).sort(),
+    url: origin,
   };
 }
 

@@ -313,9 +313,14 @@ resolves its command against PATH, because the harness rejects a bare name
 (`CommandNotAbsolute`). A remote server carries `type` (`http` or `sse`), `url`
 and `headers` in place of command, args and env, and `headers` is always sent —
 an empty array when the entry has none — because the harness answers
-`MissingHeaders` for an absent key. The url is checked harness-side by
-`streamable_http.validateEndpoint`; Emma keeps only https, which is the stricter
-rule. A bad entry is dropped rather than failing the whole `session/new`.
+`MissingHeaders` for an absent key. The url and headers are checked harness-side by
+`streamable_http`; a refusal there is not a dropped entry — `parse()` propagates
+it and `session/new` fails for every thread. So `parseMcpServer` mirrors those
+rules and drops the entry first: https only (stricter than the harness's loopback
+allowance), no userinfo or fragment in the url, no control bytes in a header
+value, no two names differing only in case. A reserved header name (`Content-Type`
+and friends, which the transport writes itself) is dropped from the entry rather
+than taking the entry with it.
 
 `install_mcp` is still stdio-only: its harness-side spec requires a command, so a
 remote server arrives by importing a Claude or Cursor config, not mid-turn.

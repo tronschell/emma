@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { isWindows, pathInside, samePath } from "./platform";
+import { isWindows, realPathInside, samePath } from "./platform";
 import {
   ATTACHMENT_FOLDER,
   DEFAULT_VAULT_FOLDER,
@@ -78,8 +78,10 @@ function writeAtomic(file: string, data: string | Buffer, mode?: number): void {
   renameSync(temporary, file);
 }
 
+// Resolved, not lexical: a symlink dropped in the vault reads as a path inside it, so the name has
+// to be followed to whatever it really points at before the folder can be said to hold it.
 function contains(folder: string, target: string): boolean {
-  return pathInside(folder, target);
+  return realPathInside(folder, target);
 }
 
 function normalizeVault(value: unknown): VaultChoice {

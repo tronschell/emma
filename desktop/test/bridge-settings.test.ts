@@ -77,22 +77,73 @@ test("no credential slot can steer how programs are loaded", () => {
   }
 });
 
-test("a folder is only connected from a phone once the path itself has been checked", () => {
-  // folders.add is the grant. Everything that decides whether this path may be granted has to
-  // have run by then, and it has to look at what the path resolves to, not at how it reads.
+test("a folder is only connected from a phone once someone at the Mac has said so", () => {
+  // folders.add is the grant, and a grant is the Mac's only boundary on file I/O. What the path
+  // resolves to is a fact about the string; the answer from this Mac's own window is the consent.
   const body = caseBody("addFolder");
   const grant = body.indexOf("folders!.add(");
   assert.ok(grant > 0, "addFolder no longer grants anything");
-  for (const guard of ["path.isAbsolute(asked)", "realpathSync(asked)", "isDirectory()", "pathInside(homedir(), directory)"]) {
+  for (const guard of ["path.isAbsolute(asked)", "realpathSync(asked)", "isDirectory()", "pathInside(homedir(), directory)", "await confirmOnMac(", "if (!granted) throw new Error("]) {
     const at = body.indexOf(guard);
     assert.ok(at > 0 && at < grant, `addFolder grants the folder without ${guard} deciding first`);
   }
+  // Held folders skip the question because they carry an earlier grant; nothing else may.
+  assert.match(body, /const granted = held \|\| await confirmOnMac\(/);
+});
+
+test("a server a phone installs is approved at the Mac and holds no loader variable", () => {
+  // installMcpServer is a command the Mac spawns on the next turn, so a well-formed definition is
+  // still code execution. mcpServerRequest is the shared shape check; the ask is the consent.
+  const body = caseBody("installMcpServer");
+  const install = body.indexOf("capabilities!.installMcpServer(");
+  assert.ok(install > 0, "installMcpServer no longer installs anything");
+  for (const guard of ["mcpServerRequest(params)", "await confirmOnMac(", "if (!approved) throw new Error("]) {
+    const at = body.indexOf(guard);
+    assert.ok(at > 0 && at < install, `installMcpServer runs the server without ${guard} deciding first`);
+  }
+  const request = source.slice(source.indexOf("function mcpServerRequest("), source.indexOf("function bridgeVisual("));
+  assert.match(request, /!isEnvName\(key\)/, "a server env key need not be an environment variable name");
+  assert.match(request, /if \(LOADER_ENV\.test\(key\)\) throw new Error\(/, "a server env may still steer how programs are loaded");
+  assert.ok(request.indexOf("LOADER_ENV.test(key)") < request.indexOf("return { name, command,"), "mcpServerRequest returns the definition before checking its env");
+});
+
+test("a scheduled task written from a phone cannot pick how much it may do", () => {
+  // asPermissionMode makes any string a member of PERMISSION_MODES, which is the shape of a mode
+  // and never a grant of one. The forced fields have to be in the object runRequest is handed.
+  const body = caseBody("saveScheduledJob");
+  const forwarded = body.indexOf("await runRequest(validateRequest(");
+  assert.ok(forwarded > 0, "saveScheduledJob no longer reaches the host");
+  assert.ok(body.indexOf("(await scheduledJobs()).find((job) => job.id === jobId)") < forwarded, "the task's own record is read after the write is forwarded");
+  for (const forced of [
+    /permissionMode: asPermissionMode\(existing\?\.permissionMode\)/,
+    /sourceDomains: JSON\.stringify\(existing\?\.sourceDomains \?\? \[\]\)/,
+    /model: existing\?\.model \?\? ""/,
+  ]) assert.match(body.slice(0, forwarded + body.slice(forwarded).indexOf("}))")), forced, "a phone still chooses part of what a scheduled task may do");
+});
+
+test("a CLI turn from a phone cannot become a harness flag", () => {
+  // shared/cli.ts appends the prompt as the last positional token with no "--" before it, so the
+  // check has to stand in cliSendRequest, which is the one door both callers pass through.
+  const request = source.slice(source.indexOf("function cliSendRequest("), source.indexOf("function recordedRevert("));
+  assert.match(request, /if \(\/\^\\s\*-\/\.test\(candidate\.prompt\)\) throw new Error\(/);
+  assert.ok(request.indexOf("test(candidate.prompt)") < request.indexOf("return { id, prompt"), "cliSendRequest hands the prompt back before checking it is one");
+  for (const flag of ["--dangerously-skip-permissions", " --approval-mode=yolo", "-p"]) assert.match(flag, /^\s*-/);
+  for (const prompt of ["carry on", "pass --force to the build"]) assert.doesNotMatch(prompt, /^\s*-/);
 });
 
 test("the phone's file reads and writes stay inside what this Mac granted", () => {
   const revert = caseBody("revertChange");
   const contained = revert.indexOf("escapesRoot(folders!.directory(folderId), file)");
   assert.ok(contained > 0 && contained < revert.indexOf("folders!.write("), "revertChange writes before it checks the path is in the folder");
+  // Containment alone lets a phone choose the bytes of .git/hooks/pre-commit. The body written has
+  // to be the one Emma recorded, resolved before the write and never read off params.
+  const recorded = revert.indexOf("const before = recordedRevert(folderId, file);");
+  assert.ok(recorded > 0 && recorded < revert.indexOf("folders!.write("), "revertChange writes before it looks up the change it is reverting");
+  assert.match(revert, /folders!\.write\(folderId, file, before\)/);
+  assert.doesNotMatch(revert, /params\.before/, "revertChange still writes a body off the wire");
+  const lookup = source.slice(source.indexOf("function recordedRevert("), source.indexOf("async function confirmOnMac("));
+  assert.match(lookup, /recorded\.before === null/, "a file Emma created can be reverted to a body it never had");
+  assert.match(lookup, /agents!\.changes\(agent\.threadId\)/);
 
   const note = caseBody("readNote");
   const inVault = note.indexOf("noteInVault(vault, params.path)");

@@ -123,25 +123,33 @@ test("a remote server is kept only over https and reaches the harness with its h
     const config = path.join(root, "cursor.json");
     await mkdir(userData, { recursive: true });
     await writeFile(config, JSON.stringify({ mcpServers: {
-      remote: { type: "http", url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer do-not-render" } },
+      remote: { type: "http", url: "https://mcp.example.com/s/do-not-render/v1", headers: { Authorization: "Bearer do-not-render", "Content-Type": "application/json" } },
       plain: { type: "http", url: "http://mcp.example.com/v1", headers: {} },
+      userinfo: { type: "http", url: "https://user:do-not-render@mcp.example.com/v1", headers: {} },
+      fragment: { type: "http", url: "https://mcp.example.com/v1#one", headers: {} },
+      shouting: { type: "http", url: "https://mcp.example.com/v1", headers: { Authorization: "one", authorization: "two" } },
+      local: { type: "stdio", command: process.execPath, url: "https://docs.example.com/local", args: [], env: {} },
     } }));
     await writeFile(path.join(userData, "imports.json"), JSON.stringify({ version: 1, sources: [{ id: "cursor", skillRoots: [], mcpFiles: [config] }] }));
 
-    assert.deepEqual(parseMcpConfig(await readFile(config, "utf8"), "cursor.json").map((server) => server.name), ["remote"]);
+    // Everything the harness would refuse is refused here, where refusing costs one entry rather
+    // than every thread's session/new. A declared stdio transport wins over the url beside it.
+    assert.deepEqual(parseMcpConfig(await readFile(config, "utf8"), "cursor.json").map((server) => server.name), ["remote", "local"]);
+    // A keyless map of url-bearing objects is not a server list until an entry names its transport.
+    assert.deepEqual(parseMcpConfig(JSON.stringify({ docs: { url: "https://example.com/one" } }), "cursor.json"), []);
 
     const listed = await new ImportedCapabilityRuntime(userData).listMcpServers();
-    assert.deepEqual(listed.map((server) => [server.name, server.type, server.url]), [["remote", "http", "https://mcp.example.com/v1"]]);
-    // Header values are credentials, so the renderer gets names only, as it does for env.
-    assert.deepEqual(listed[0].headerNames, ["Authorization"]);
+    assert.deepEqual(listed.map((server) => [server.name, server.type, server.url]), [["remote", "http", "https://mcp.example.com"], ["local", undefined, undefined]]);
+    // Header values are credentials and so is the rest of the endpoint, which is where hosted MCP
+    // usually puts its token; the renderer gets the origin, as it gets env names and not values.
     assert.equal(JSON.stringify(listed).includes("do-not-render"), false);
 
     assert.deepEqual(await harnessMcpServers(userData), [{
       name: "remote",
       type: "http",
-      url: "https://mcp.example.com/v1",
+      url: "https://mcp.example.com/s/do-not-render/v1",
       headers: [{ name: "Authorization", value: "Bearer do-not-render" }],
-    }]);
+    }, { name: "local", command: process.execPath, args: [], env: [] }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

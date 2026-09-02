@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyNoteTags, createNoteFolder, keepNote, listNoteFolders, listNotes, moveNote, noteInVault, readVault, renameNoteFolder, saveVault, vaultWritable } from "../main/vault";
@@ -138,6 +138,22 @@ test("a note is named relative to the guarded folder, and nothing outside it is 
   for (const value of ["../../etc/passwd", "/etc/passwd", "", 7, undefined, "x".repeat(300)]) {
     assert.throws(() => noteInVault(vault, value), /not in your vault/, `accepted ${JSON.stringify(value)}`);
   }
+});
+
+test("a symlink planted in the vault leads nowhere, however innocent its name reads", async () => {
+  const vault = workspace();
+  const note = await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
+  const elsewhere = mkdtempSync(path.join(tmpdir(), "emma-elsewhere-"));
+  const secret = path.join(elsewhere, "id_rsa");
+  writeFileSync(secret, "PRIVATE KEY");
+  symlinkSync(secret, path.join(noteFolder(vault), "key.md"));
+  symlinkSync(elsewhere, path.join(noteFolder(vault), "Design"));
+  assert.throws(() => noteInVault(vault, "key.md"), /not in your vault/);
+  assert.deepEqual(listNotes(vault).map((item) => item.relative), [note.relative]);
+  assert.deepEqual(listNoteFolders(vault).map((item) => item.name), []);
+  assert.throws(() => moveNote(vault, note.relative, "Design"), Error);
+  assert.deepEqual(readdirSync(elsewhere), ["id_rsa"]);
+  assert.equal(existsSync(note.path), true);
 });
 
 test("a tag the model writes in another script reaches the note on disk", async () => {

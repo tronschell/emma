@@ -81,7 +81,7 @@ const SIGN_IN_THREAD = "sign-in";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type PermissionMode } from "../shared/permissions";
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
-import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type ModelEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
+import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
 import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -1053,7 +1053,39 @@ function cliSendRequest(value: unknown) {
   const candidate = value as Record<string, unknown>;
   const id = boundedCapabilityId(candidate.id, "CLI run");
   if (typeof candidate.prompt !== "string" || !candidate.prompt.trim() || candidate.prompt.length > MAX_CLI_PROMPT_CHARS) throw new Error("CLI send request is invalid");
+  // The prompt is the last positional token in the harness argv with nothing separating it from the
+  // flags, so a leading dash is not a prompt: every harness in the table has a single-token flag
+  // that turns its approvals off, and the `--flag=value` form fits in the one token a caller picks.
+  if (/^\s*-/.test(candidate.prompt)) throw new Error("A CLI turn is a prompt, not a flag.");
   return { id, prompt: candidate.prompt };
+}
+
+/** The body a revert writes has to be one Emma recorded, never one the caller sent — a caller that
+    picks the bytes has a write to any path in a granted folder wearing a revert's clothes. Every
+    run is searched because neither the phone frame nor the renderer's request names a thread. */
+function recordedRevert(folderId: string, file: string): string {
+  const recorded = agents!.list()
+    .flatMap((agent) => agents!.changes(agent.threadId))
+    .find((change) => change.folderId === folderId && change.path === file);
+  if (!recorded || recorded.before === null) throw new Error("Only a file Emma rewrote can be reverted here.");
+  return recorded.before;
+}
+
+/** A phone frame is not a person. Anything that hands the agent reach it did not have asks this
+    Mac's own window first, so the same gesture backs it as a grant made at the keyboard. */
+async function confirmOnMac(message: string, detail: string, accept: string): Promise<boolean> {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const choice = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    title: "Approve on this Mac",
+    message,
+    detail,
+    buttons: ["Cancel", accept],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+  return choice.response === 1;
 }
 
 function goalIpc(value: unknown): Record<string, unknown> & { threadId: string } {
@@ -2713,14 +2745,19 @@ function credentialSlotsHeld(): CredentialSlot[] {
   return [...slots.values()];
 }
 
-/** stdio only: the harness has no HTTP transport, so a URL server is not installable from here. */
+/** stdio only: install_mcp's harness-side spec requires a command, so a remote server arrives by importing a Claude or Cursor config, not mid-turn. */
 function mcpServerRequest(params: Record<string, unknown>): McpServerDefinition {
   const name = boundedCapabilityId(params.name, "Server name");
   const command = boundedCapabilityId(params.command, "Server command");
   const args = params.args ?? [];
   const env = params.env ?? {};
   if (!Array.isArray(args) || args.length > 32 || args.some((arg) => typeof arg !== "string" || arg.length > 4096)) throw new Error("Server arguments are invalid");
-  if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((value) => typeof value !== "string")) throw new Error("Server environment is invalid");
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Server environment is invalid");
+  const entries = Object.entries(env as Record<string, unknown>);
+  if (entries.length > 32 || entries.some(([key, value]) => typeof value !== "string" || !isEnvName(key))) throw new Error("Server environment is invalid");
+  // The definition is spawned as a child process on the next turn, so a name that decides which
+  // executable runs or what gets loaded into it is code execution the same way a credential slot is.
+  for (const [key] of entries) if (LOADER_ENV.test(key)) throw new Error("That environment variable controls how programs are loaded, so Emma will not pass it to a server.");
   return { name, command, args: args as string[], env: env as Record<string, string> };
 }
 
@@ -3069,7 +3106,17 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return toolSwitches();
     }
     case "installMcpServer": {
-      const { id } = await capabilities!.installMcpServer(mcpServerRequest(params));
+      // The Mac spawns this command on the next turn. The agent's own install_mcp tool is gated at
+      // `ask` in every mode but full; a phone frame gets that same question, asked where the person
+      // is, because a validated-looking definition is still a definition nobody chose.
+      const definition = mcpServerRequest(params);
+      const approved = await confirmOnMac(
+        `Install the MCP server “${definition.name}” from your phone?`,
+        `Emma will run this on your Mac, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
+        "Install it",
+      );
+      if (!approved) throw new Error("Nobody at your Mac approved that server.");
+      const { id } = await capabilities!.installMcpServer(definition);
       await toolsChanged();
       return { id };
     }
@@ -3098,17 +3145,35 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       if (!thread) throw new Error("That thread is gone.");
       return threadSummary(thread);
     }
-    case "listTaskLists":
-      return await listTaskLists(userData);
-    case "threadChanges":
-      return agents!.changes(boundedCapabilityId(params.threadId, "Changes thread"));
+    case "listTaskLists": {
+      // The rail asks about one thread, and a list the Mac never stamped with a thread is nobody
+      // else's either. Filtering here rather than on the phone keeps every other thread's tasks
+      // off the wire, where 64 lists of 128 KiB do not fit.
+      const threadId = typeof params.threadId === "string" ? params.threadId : "";
+      const lists = await listTaskLists(userData);
+      return phoneList(threadId ? lists.filter((list) => !list.threadId || list.threadId === threadId) : lists);
+    }
+    case "threadChanges": {
+      // The rewritten body is the renderer's diff, not the phone's: the rail shows a filename and
+      // a revert button, and the revert writes what Emma recorded. So `after` never goes out and
+      // `before` goes out clipped — it is read for whether there was one, never for what it said.
+      const changes = agents!.changes(boundedCapabilityId(params.threadId, "Changes thread")).map(({ after: _after, ...change }) => ({
+        ...change,
+        before: change.before === null ? null : change.before.slice(0, MAX_PHONE_TEXT_CHARS),
+        truncated: change.before !== null && change.before.length > MAX_PHONE_TEXT_CHARS,
+      }));
+      // A thread over the budget keeps its newest rewrites: those are the ones still worth reverting.
+      return phoneList(changes.reverse()).reverse();
+    }
     case "revertChange": {
       const folderId = boundedCapabilityId(params.folderId, "Revert folder");
       const file = params.path;
       if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
-      if (typeof params.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
+      // The body on the wire is what the phone thinks the old file held; what gets written is what
+      // Emma recorded. Containment stays as defence in depth, but the recorded change is the gate.
+      const before = recordedRevert(folderId, file);
       if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
-      folders!.write(folderId, file, params.before);
+      folders!.write(folderId, file, before);
       changed();
       return { reverted: true };
     }
@@ -3119,13 +3184,14 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "stopBackground":
       return { stopped: background.stop(boundedCapabilityId(params.id, "Background task")) };
     case "listMemories":
-      return listMemories(memoryRoot());
+      return await phoneMemories();
     case "deleteMemory":
       await runMemoryCommand(memoryRoot(), { command: "delete", path: typeof params.path === "string" ? params.path : "" });
-      return listMemories(memoryRoot());
+      return await phoneMemories();
     case "listNotes": {
       const vault = readVault(userData);
-      return vault ? listNotes(vault) : [];
+      // A vault holds up to MAX_VAULT_NOTES; a frame holds the first page of them.
+      return vault ? phoneList(listNotes(vault)) : [];
     }
     case "readNote": {
       const vault = readVault(userData);
@@ -3144,15 +3210,22 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return vault ? listNoteFolders(vault) : [];
     }
     case "addFolder": {
-      // Every other grant went through a native directory dialog with a person in front of it.
-      // A phone hands over a string, so what it resolves to decides: a real directory under
-      // this Mac's home, unless it is a folder someone already granted.
+      // Every other grant went through a native directory dialog with a person in front of it, and
+      // a folder grant is the Mac's only boundary on file I/O. A path that resolves is not consent:
+      // a folder someone already granted goes straight through, and anything else has to be
+      // approved on this Mac's own window before it becomes a grant.
       const asked = params.path;
       if (typeof asked !== "string" || !path.isAbsolute(asked) || asked.length > 1024) throw new Error("Name the folder by its full path.");
       const directory = realpathSync(asked);
       if (!statSync(directory).isDirectory()) throw new Error("That is not a folder.");
       const held = folders!.list().some((grant) => samePath(grant.path, directory));
       if (!held && !pathInside(homedir(), directory)) throw new Error("From a phone, Emma only connects folders inside your home folder.");
+      const granted = held || await confirmOnMac(
+        "Connect a folder from your phone?",
+        `Emma will be able to read and write everything in ${directory}, and its agents will run against it. Only connect a folder you asked for from your phone just now.`,
+        "Connect this folder",
+      );
+      if (!granted) throw new Error("Nobody at your Mac approved that folder.");
       folders!.add(directory);
       return visibleFolders();
     }
@@ -3177,12 +3250,23 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     }
     case "listScheduledJobs":
       return await phoneJobs();
-    case "saveScheduledJob":
+    case "saveScheduledJob": {
       // Straight to the renderer's own validateRequest and answerRequest: the field list, the
       // graph parse and the check that every script path sits in a granted folder are the ones
-      // the Mac applies to itself. Nothing on the phone sends this yet — a task is written here.
-      await runRequest(validateRequest({ method, params }));
+      // the Mac applies to itself. What a phone must never choose is how much the job may do —
+      // a mode is a member of PERMISSION_MODES because it was typed, not because it was granted.
+      // An edit keeps what the Mac already recorded, a new task starts at the default, so no
+      // frame can write itself a standing full-access agent and then run it.
+      const jobId = typeof params.jobId === "string" ? params.jobId : "";
+      const existing = jobId ? (await scheduledJobs()).find((job) => job.id === jobId) : undefined;
+      await runRequest(validateRequest({ method, params: {
+        ...params,
+        permissionMode: asPermissionMode(existing?.permissionMode),
+        sourceDomains: JSON.stringify(existing?.sourceDomains ?? []),
+        model: existing?.model ?? "",
+      } }));
       return await phoneJobs();
+    }
     case "deleteScheduledJob":
       await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
       return await phoneJobs();
@@ -3335,8 +3419,40 @@ async function scheduledJobs(): Promise<StoredJob[]> {
   return snapshot.scheduledJobs ?? [];
 }
 
+/** A reply the codec cannot seal is dropped unsent — bridge.ts answers TOO_LARGE at best and the
+    phone waits out its timeout at worst — so every list a phone asks for is trimmed here. The
+    Mac-side limits behind these lists are each sized for a disk: 256 memory files of 256 KiB, 2000
+    notes, 64 task lists of 128 KiB. MAX_FRAME_BYTES is 1 MiB for all of it. */
+const MAX_PHONE_LIST_BYTES = 256 * 1024;
+/** Enough of a body for a preview row; nothing on the phone reads more than that of one. */
+const MAX_PHONE_TEXT_CHARS = 2048;
+
+function phoneList<T>(rows: readonly T[]): T[] {
+  const kept: T[] = [];
+  let used = 0;
+  for (const row of rows) {
+    used += Buffer.byteLength(JSON.stringify(row), "utf8") + 1;
+    if (used > MAX_PHONE_LIST_BYTES) break;
+    kept.push(row);
+  }
+  return kept;
+}
+
+function phoneMemories(): Promise<MemoryNote[]> {
+  return listMemories(memoryRoot()).then((notes) => phoneList(notes.map((note) => ({
+    ...note,
+    text: note.text.slice(0, MAX_PHONE_TEXT_CHARS),
+    truncated: note.text.length > MAX_PHONE_TEXT_CHARS,
+  }))));
+}
+
 function phoneJobs(): Promise<ScheduledJob[]> {
-  return scheduledJobs().then((jobs) => jobs.map(({ nodes: _nodes, outputs: _outputs, ...job }) => job));
+  return scheduledJobs().then((jobs) => phoneList(jobs.map(({ nodes: _nodes, outputs: _outputs, ...job }) => ({
+    ...job,
+    title: job.title.slice(0, MAX_PHONE_TEXT_CHARS),
+    prompt: job.prompt.slice(0, MAX_PHONE_TEXT_CHARS),
+    truncated: job.title.length > MAX_PHONE_TEXT_CHARS || job.prompt.length > MAX_PHONE_TEXT_CHARS,
+  }))));
 }
 
 function workflowScriptRoots(): string[] {
@@ -4232,9 +4348,9 @@ if (primaryInstance) app.whenReady().then(() => {
     const folderId = boundedCapabilityId(request.folderId, "Revert folder");
     const file = request.path;
     if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
-    if (typeof request.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
+    const before = recordedRevert(folderId, file);
     if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
-    folders!.write(folderId, file, request.before);
+    folders!.write(folderId, file, before);
     changed();
     return true;
   });
