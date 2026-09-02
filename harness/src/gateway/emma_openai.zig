@@ -24,6 +24,44 @@ pub const max_routed_model_bytes = 256;
 
 pub const default_chat_url = "https://openrouter.ai/api/v1/chat/completions";
 pub const chat_url_env = "EMMA_PROVIDER_CHAT_URL";
+pub const stream_silence_env = "EMMA_STREAM_SILENCE_MS";
+const default_stream_silence_ms: i64 = 3 * std.time.ms_per_min;
+var test_stream_silence_ms: ?i64 = null;
+
+const StreamSilence = struct {
+    limit_ms: i64,
+    last_ms: std.atomic.Value(i64),
+
+    fn init(limit_ms: i64) StreamSilence {
+        return .{ .limit_ms = limit_ms, .last_ms = .init(io_mod.milliTimestamp()) };
+    }
+
+    fn touch(self: *StreamSilence) void {
+        self.last_ms.store(io_mod.milliTimestamp(), .seq_cst);
+    }
+
+    fn overdue(self: *const StreamSilence) bool {
+        if (self.limit_ms <= 0) return false;
+        return io_mod.milliTimestamp() - self.last_ms.load(.seq_cst) > self.limit_ms;
+    }
+};
+
+fn streamSilenceLimitMs() i64 {
+    if (@import("builtin").is_test) {
+        if (test_stream_silence_ms) |limit| return limit;
+    }
+    const raw = io_mod.getenv(stream_silence_env) orelse return default_stream_silence_ms;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return default_stream_silence_ms;
+    return std.fmt.parseInt(i64, trimmed, 10) catch default_stream_silence_ms;
+}
+
+fn waitForStreamSilence(silence: *StreamSilence) anyerror!void {
+    while (!silence.overdue()) {
+        try io_mod.getIo().sleep(.fromMilliseconds(50), .awake);
+    }
+}
+
 const openrouter_session_id_prefix = "emma-openrouter-session-v1:";
 const openrouter_session_id_bytes = openrouter_session_id_prefix.len + Sha256.digest_length * 2;
 
@@ -424,6 +462,7 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
     request.delivery.markPossiblySent();
     request.attempt_evidence.provider_admitted = true;
 
+    var silence = StreamSilence.init(streamSilenceLimitMs());
     const posted = post(.{
         .client = &client,
         .url = url,
@@ -433,6 +472,7 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
         .out = &out,
         .sink = &sink,
         .cancel_flag = request.cancel_flag,
+        .silence = &silence,
     }) catch |err| {
         request.attempt_evidence.network_failure = stream_provider.responseFailureEvidence(
             err,
@@ -545,6 +585,7 @@ const SseSink = struct {
         self: *@This(),
         reader: *std.Io.Reader,
         cancel_flag: *std.atomic.Value(bool),
+        silence: *StreamSilence,
     ) !void {
         var event_reader = gateway_client.SseEventReader{ .max_line_bytes = max_response_bytes };
         defer event_reader.deinit(self.alloc);
@@ -552,6 +593,7 @@ const SseSink = struct {
         while (true) {
             if (cancel_flag.load(.seq_cst)) return error.Cancelled;
             const event = try event_reader.next(self.alloc, reader);
+            silence.touch();
             defer event_reader.releaseLine();
             switch (event) {
                 .data => |json_text| try self.consume(json_text),
@@ -743,6 +785,7 @@ const PostCall = struct {
     out: *std.Io.Writer.Allocating,
     sink: *SseSink,
     cancel_flag: *std.atomic.Value(bool),
+    silence: *StreamSilence,
 
     fn run(self: PostCall) anyerror!PostOutcome {
         const uri = try std.Uri.parse(self.url);
@@ -772,7 +815,7 @@ const PostCall = struct {
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
         if (streamed) {
-            try self.sink.consumeStream(reader, self.cancel_flag);
+            try self.sink.consumeStream(reader, self.cancel_flag, self.silence);
             return .{ .status = status, .streamed = true };
         }
         _ = reader.streamRemaining(&self.out.writer) catch |err| switch (err) {
@@ -787,10 +830,12 @@ fn post(call: PostCall) anyerror!PostOutcome {
     const Event = union(enum) {
         posted: anyerror!PostOutcome,
         cancelled: anyerror!void,
+        silent: anyerror!void,
     };
-    var buffer: [2]Event = undefined;
+    var buffer: [3]Event = undefined;
     var select: std.Io.Select(Event) = .init(io_mod.getIo(), &buffer);
     try select.concurrent(.cancelled, gateway_client.waitForBoundedCancellation, .{call.cancel_flag});
+    try select.concurrent(.silent, waitForStreamSilence, .{call.silence});
     select.concurrent(.posted, PostCall.run, .{call}) catch |err| {
         select.cancelDiscard();
         return err;
@@ -805,6 +850,10 @@ fn post(call: PostCall) anyerror!PostOutcome {
         .cancelled => |result| {
             try result;
             return error.Cancelled;
+        },
+        .silent => |result| {
+            try result;
+            return error.Timeout;
         },
     }
 }
@@ -1353,7 +1402,8 @@ fn consumeSseForTest(
     defer sink.deinit();
     var source = std.Io.Reader.fixed(payload);
     var buffered = source.limited(.unlimited, transfer_buffer);
-    try sink.consumeStream(&buffered.interface, &harness.cancel_flag);
+    var silence = StreamSilence.init(0);
+    try sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence);
     return sink.finish();
 }
 
@@ -1462,9 +1512,10 @@ test "streaming holds the buffered bounds on tool call count and argument size" 
     var source = std.Io.Reader.fixed(payload.items);
     var transfer_buffer: [4096]u8 = undefined;
     var buffered = source.limited(.unlimited, &transfer_buffer);
+    var silence = StreamSilence.init(0);
     try std.testing.expectError(
         error.InvalidProviderResponse,
-        sink.consumeStream(&buffered.interface, &harness.cancel_flag),
+        sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence),
     );
 }
 
@@ -1493,7 +1544,8 @@ test "the response cap counts generated bytes, not SSE envelope bytes" {
     var source = std.Io.Reader.fixed(payload.items);
     var transfer_buffer: [4096]u8 = undefined;
     var buffered = source.limited(.unlimited, &transfer_buffer);
-    try sink.consumeStream(&buffered.interface, &harness.cancel_flag);
+    var silence = StreamSilence.init(0);
+    try sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence);
 
     try std.testing.expectEqual(@as(usize, chunks * 4 + 4), sink.payload_bytes);
     try std.testing.expect(payload.items.len > sink.payload_bytes * 20);
@@ -1518,10 +1570,11 @@ test "a mid stream cancellation abandons partial state without a leak" {
     var source = std.Io.Reader.fixed(payload);
     var transfer_buffer: [4096]u8 = undefined;
     var buffered = source.limited(.unlimited, &transfer_buffer);
+    var silence = StreamSilence.init(0);
 
     try std.testing.expectError(
         error.Cancelled,
-        sink.consumeStream(&buffered.interface, &harness.cancel_flag),
+        sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence),
     );
     try std.testing.expectEqualStrings("partial", harness.capture.text.items);
 }
@@ -1561,6 +1614,8 @@ const LoopbackResponseFixture = struct {
     response: []const u8,
     thread: ?std.Thread = null,
     open: bool = true,
+    stall: bool = false,
+    released: std.atomic.Value(bool) = .init(false),
 
     fn init(response: []const u8) !@This() {
         var fixture: @This() = .{ .server = undefined, .response = response };
@@ -1583,6 +1638,7 @@ const LoopbackResponseFixture = struct {
 
     fn deinit(self: *@This()) void {
         if (!self.open) return;
+        self.released.store(true, .seq_cst);
         if (self.thread) |thread| thread.join();
         self.thread = null;
         self.server.deinit(self.io());
@@ -1620,6 +1676,9 @@ const LoopbackResponseFixture = struct {
         var writer = socket.writer(zio, &write_buffer);
         try writer.interface.writeAll(self.response);
         try writer.interface.flush();
+        while (self.stall and !self.released.load(.seq_cst)) {
+            io_mod.sleep(5 * std.time.ns_per_ms);
+        }
     }
 };
 
@@ -1632,6 +1691,47 @@ fn streamAgainstFixture(alloc: Allocator, harness: *StreamHarness, response: []c
     defer alloc.free(url);
     harness.bind(url);
     return provider.stream(alloc, harness.request);
+}
+
+test "a provider that goes quiet mid-stream fails the attempt instead of hanging" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    test_stream_silence_ms = 150;
+    defer test_stream_silence_ms = null;
+
+    var fixture = try LoopbackResponseFixture.init("HTTP/1.1 200 OK\r\n" ++
+        "Content-Type: text/event-stream\r\n" ++
+        "Connection: close\r\n\r\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n");
+    fixture.stall = true;
+    defer fixture.deinit();
+    try fixture.start();
+
+    const url = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/chat", .{fixture.port()});
+    defer alloc.free(url);
+    harness.bind(url);
+
+    const started_ms = io_mod.milliTimestamp();
+    try std.testing.expectError(error.Timeout, provider.stream(alloc, harness.request));
+    try std.testing.expect(io_mod.milliTimestamp() - started_ms < 5_000);
+    try std.testing.expectEqual(
+        stream_provider.NetworkFailureCause.response_interrupted,
+        harness.attempt_evidence.network_failure.?.cause,
+    );
+}
+
+test "the silence limit reads its environment override and stays off when disabled" {
+    test_stream_silence_ms = null;
+    var quiet = StreamSilence.init(0);
+    try std.testing.expect(!quiet.overdue());
+
+    var bounded = StreamSilence.init(1);
+    io_mod.sleep(10 * std.time.ns_per_ms);
+    try std.testing.expect(bounded.overdue());
+    bounded.touch();
+    try std.testing.expect(!bounded.overdue());
 }
 
 test "an event stream response reaches the agent as incremental chunks" {

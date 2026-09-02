@@ -54,7 +54,7 @@ export async function tagNote(
     { role: "user", content: tagPrompt(note, body) },
   ];
   try {
-    return readTagReply(await ask(settings, messages, key ?? "", { maxTokens: TAG_MAX_TOKENS, timeoutMs: TAG_TIMEOUT, label: "note tagger" }));
+    return readTagReply(await ask(settings, messages, key ?? "", { maxTokens: TAG_MAX_TOKENS, timeoutMs: TAG_TIMEOUT, label: "note tagger", thinking: true }));
   } catch {
     return null;
   }

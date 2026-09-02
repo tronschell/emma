@@ -30,7 +30,7 @@ const stopped: string[] = [];
 let liveSpans: Record<string, TraceSpan[]> = {};
 let livePartials: Record<string, { text: string; thinking: string }> = {};
 /* Main broadcasts to every window, so the store is driven from outside here too. */
-let pushDelta: (value: { threadId: string; delta: string }) => void = () => undefined;
+let pushDelta: (value: { threadId: string; delta: string; thinking?: boolean; recovery?: boolean }) => void = () => undefined;
 let pushAgents: (value: LiveAgent[]) => void = () => undefined;
 (globalThis as unknown as { window: unknown }).window = {
   emma: {
@@ -92,15 +92,22 @@ test("a stop sends what you typed next and holds the rest", async () => {
 test("swapping the model mid-turn stops it and sends the same prompt again", async () => {
   sent.length = 0;
   stopped.length = 0;
+  const marked: string[] = [];
   sendTurn("stalled", turn("render the map"), () => undefined);
   assert.deepEqual(sent, ["render the map"]);
-  stopTurn("stalled", { ...turn("render the map"), notice: "Model changed to Opus — Stealth answered nothing for 4m" }, () => undefined);
+  stopTurn("stalled", {
+    ...turn("render the map"),
+    notice: "Model changed to Opus — Stealth answered nothing for 4m",
+    prepare: async () => { marked.push("switched"); return { params: {} }; },
+  }, () => undefined);
   assert.deepEqual(stopped, ["stalled"]);
   // Not before the stopped turn has ended: one thread runs one turn.
   assert.deepEqual(sent, ["render the map"]);
+  assert.deepEqual(marked, []);
   release!();
   await settle();
   assert.deepEqual(sent, ["render the map", "render the map"]);
+  assert.deepEqual(marked, ["switched"]);
   release!();
   await settle();
 });
@@ -514,4 +521,21 @@ test("a turn that ends refetches the thread, so the answer it wrote is drawn", a
   await settle();
   assert.equal(runOf("quiet").sending, false);
   assert.equal(reloads, 1);
+});
+
+test("a retry notice is not the model answering, so the stall clock keeps running", async () => {
+  sent.length = 0;
+  request = (_method, params) => { sent.push(params.content); return new Promise<void>((resolve) => { release = resolve; }); };
+  wire();
+  sendTurn("retrying", turn("summarise the log"), () => undefined);
+  await settle();
+  const startedAt = runOf("retrying").activeAt;
+  pushDelta({ threadId: "retrying", delta: "The model sent nothing (attempt 2 of 5), retrying in 4s\n", thinking: true, recovery: true });
+  assert.equal(runOf("retrying").activeAt, startedAt);
+  assert.match(runOf("retrying").recovery, /attempt 2 of 5/);
+  pushDelta({ threadId: "retrying", delta: "here it is" });
+  assert.equal(runOf("retrying").recovery, "");
+  assert.ok(runOf("retrying").activeAt >= startedAt);
+  release!();
+  await settle();
 });

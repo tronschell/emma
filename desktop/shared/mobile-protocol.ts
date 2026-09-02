@@ -89,6 +89,13 @@ export type Goal = {
   updatedAt: string;
 };
 
+/** Mirrors TaskList in shared/task-list.ts; the phone does not carry that file. */
+export type TaskListStatus = "pending" | "in_progress" | "completed" | "blocked";
+
+export type TaskListTask = { id: string; title: string; status: TaskListStatus; subtasks: TaskListTask[] };
+
+export type TaskList = { id: string; title: string; goal: string; tasks: TaskListTask[]; updatedAt: string; threadId?: string };
+
 export type Thread = {
   id: string;
   title: string;
@@ -99,9 +106,17 @@ export type Thread = {
   updatedAt: string;
   archivedAt?: string;
   goal?: Goal;
+  /**
+   * The opening prompt, so a thread the namer has not reached yet can be labelled by what it is
+   * about rather than by the placeholder title. Carried on a summary because the phone is sent
+   * message counts, not messages, and so has nothing else to fall back to.
+   */
   labelPrompt?: string;
   messages: Message[];
 };
+
+/** Enough for a label four times over; the rest of a pasted first message is not worth the frame. */
+export const MAX_LABEL_PROMPT_CHARS = 200;
 
 export type ThreadSummary = Omit<Thread, "messages"> & { messages: number; folderIds?: string[]; messageDates?: string[]; userMessageCount?: number; displayTitle?: string; subagentBrief?: string };
 
@@ -125,6 +140,16 @@ export type ThreadStep = {
   output?: string;
   at: number;
   edit?: { path: string; added: number; removed: number };
+};
+
+/** One file the agent rewrote. `before` is null when the tool created the file, which is why
+    a revert needs it back: only a file that had a previous body can be put back to one. */
+export type FileChange = {
+  folderId: string;
+  path: string;
+  before: string | null;
+  after: string;
+  at: number;
 };
 
 export type AgentStatus = "running" | "waiting" | "done" | "failed" | "stopped";
@@ -179,9 +204,62 @@ export type ThreadContext = {
   folderIds: string[];
   mode: PermissionMode;
   model: string;
+  effort?: string;
 };
 
 export type Folder = { id: string; path: string; name: string };
+
+/** Mirrors BackgroundTask in shared/agents.ts; the phone does not carry that file. */
+export type BackgroundTask = {
+  id: string;
+  command: string;
+  folder: string;
+  status: "running" | "exited";
+  /** Null while running, and for a command that never started. */
+  exitCode: number | null;
+  startedAt: number;
+  endedAt?: number;
+};
+
+/** Mirrors CliRun in shared/cli.ts; the phone does not carry that file. */
+export type CliRun = {
+  id: string;
+  cli: string;
+  threadId: string;
+  title: string;
+  cwd: string;
+  folder: string;
+  status: "running" | "idle" | "failed";
+  exitCode: number | null;
+  turns: number;
+  startedAt: number;
+  turnStartedAt: number;
+  endedAt?: number;
+  unattended: boolean;
+  model?: string;
+};
+
+/** Mirrors MemoryNote in main/memory.ts; the phone does not carry that file. */
+export type MemoryNote = { path: string; bytes: number; updatedAt: number; text: string };
+
+/** Mirrors KeptNote and NoteFolder in shared/vault.ts; the phone does not carry that file. */
+export type KeepKind = "screenshot" | "selection" | "page" | "note";
+
+export type KeptNote = {
+  path: string;
+  relative: string;
+  title: string;
+  tags: readonly string[];
+  savedAt: string;
+  kind: KeepKind;
+  folder?: string;
+  excerpt?: string;
+  image?: string;
+  sourceUrl?: string;
+  sourceApplication?: string;
+};
+
+export type NoteFolder = { name: string; changedAt: string };
 
 export type ArtifactKind = "markdown" | "code" | "html" | "app" | "svg" | "mermaid" | "react";
 
@@ -228,6 +306,8 @@ export type GitHistory = { commits: GitCommit[]; more: boolean };
 export type GitReady = "ready" | "no-git" | "no-repo";
 export type GitSyncResult = { ok: boolean; output: string; ahead: number; behind: number };
 
+export type ModelSource = "openrouter" | "provider" | "router";
+
 export type ModelEntry = {
   id: string;
   key: string;
@@ -235,6 +315,67 @@ export type ModelEntry = {
   contextLength: number;
   free: boolean;
   efforts: string[];
+  /** Absent means openrouter, so an older Mac still reads as a catalogue listing. */
+  source?: ModelSource;
+  /** What a million tokens costs, in micro-dollars ($1 = 1_000_000). 0 is free, or unpublished. */
+  promptMicroUsdPerMtok?: number;
+  completionMicroUsdPerMtok?: number;
+  inputModalities?: string[];
+  reasoningMandatory?: boolean;
+};
+
+/** Mirrors KeyBalance in shared/settings.ts; the phone does not carry that file. */
+export type KeyBalance = { keyed: boolean; freeTier: boolean; remaining: number | null; usage: number; error: string; currency?: string };
+
+export type KeyStatus = {
+  env: string;
+  /** "" when this Mac holds no key under that name. Never the secret itself. */
+  masked: string;
+  balance: KeyBalance | null;
+  zeroRetention: boolean;
+  selectedModel: string;
+};
+
+/** A key the Mac could hold, masked. A slot with an empty mask is one nothing is saved under yet. */
+export type CredentialSlot = { env: string; masked: string; label: string; detail: string; hint: string };
+
+export type MacSettings = {
+  defaultPermissionMode: PermissionMode;
+  selectedModel: string;
+  thinkingLevel: string;
+  review: { enabled: boolean; model: string };
+};
+
+export type ToolCatalogEntry = { name: string; label: string; blurb: string; group: string; gate: string };
+export type SkillEntry = { id: string; name: string; source: string };
+export type SkillBody = SkillEntry & { instructions: string };
+export type McpServerEntry = { id: string; source: string; name: string; command: string; args: string[]; argCount: number; environmentKeys: string[] };
+export type ToolSwitches = { tools: string[]; skills: string[]; servers: string[] };
+
+export type ToolTargets = {
+  catalog: ToolCatalogEntry[];
+  written: { id: string; name: string; source: string }[];
+  skills: SkillEntry[];
+  servers: McpServerEntry[];
+  disabled: ToolSwitches;
+};
+
+/**
+ * Mirrors the scheduled task main.ts stores, without its node graph and its last run's outputs:
+ * the phone reads a task, it does not edit or replay one, and either field is unbounded enough
+ * that a Mac full of tasks would not fit in a frame.
+ */
+export type ScheduledJob = {
+  id: string;
+  title: string;
+  schedule: string;
+  prompt: string;
+  sourceDomains: string[];
+  enabled: boolean;
+  permissionMode: string;
+  model: string;
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
 };
 
 export type ThreadTrace = { timestamp: string; text: string };
@@ -259,9 +400,9 @@ export type BridgeMethods = {
   createThread: { params: { parentThreadId?: string }; result: ThreadSummary };
   renameThread: { params: { threadId: string; title: string }; result: ThreadSummary };
   setThreadArchived: { params: { threadId: string; archived: boolean }; result: ThreadSummary };
-  sendMessage: { params: { threadId: string; content: string }; result: ThreadSummary };
+  sendMessage: { params: { threadId: string; content: string; attachedContext?: string; attachedImages?: { name: string; base64: string }[]; clientId?: string }; result: ThreadSummary };
   stopAgent: { params: { threadId?: string }; result: { stopped: true } };
-  steerAgent: { params: { threadId: string; text: string }; result: { steered: boolean } };
+  steerAgent: { params: { threadId: string; text: string; clientId?: string }; result: { steered: boolean } };
   answerPermission: { params: { id: string; allowed: boolean }; result: { answered: true } };
   getThreadContext: { params: { threadId: string }; result: ThreadContext };
   setThreadContext: {
@@ -278,6 +419,9 @@ export type BridgeMethods = {
   readArtifact: { params: { id: string }; result: ArtifactBody };
   deleteArtifact: { params: { id: string }; result: { deleted: true } };
   readBlob: { params: { id: string; file?: string }; result: { mime: string; base64: string } };
+  readImage: { params: { path: string }; result: { mime: "image/jpeg"; base64: string } };
+  readVisual: { params: { id: string }; result: { title: string; html: string } };
+  keepVisual: { params: { id: string }; result: ArtifactMeta };
   gitReady: { params: { folderId: string }; result: GitReady };
   gitStatus: { params: { folderId: string; diff?: boolean }; result: GitSnapshot | null };
   gitFileDiff: { params: { folderId: string; path: string }; result: { diff: string } };
@@ -296,6 +440,59 @@ export type BridgeMethods = {
     params: { folderId: string; branch: string; create: boolean; from?: string };
     result: { branch: string };
   };
+  keyStatus: { params: Record<string, never>; result: KeyStatus };
+  listCredentials: { params: Record<string, never>; result: CredentialSlot[] };
+  saveCredential: { params: { env: string; secret?: string }; result: CredentialSlot[] };
+  setZeroRetention: { params: { on: boolean }; result: { zeroRetention: boolean } };
+  getSettings: { params: Record<string, never>; result: MacSettings };
+  listToolTargets: { params: Record<string, never>; result: ToolTargets };
+  setToolSettings: {
+    params: { disabledTools?: string[]; disabledSkills?: string[]; disabledServers?: string[] };
+    result: ToolSwitches;
+  };
+  installMcpServer: {
+    params: { name: string; command: string; args: string[]; env: Record<string, string> };
+    result: { id: string };
+  };
+  readSkill: { params: { id: string }; result: SkillBody };
+  writeSkill: { params: { name: string; instructions: string }; result: SkillEntry };
+  setGoal: { params: { threadId: string; objective: string; tokenBudget?: number }; result: ThreadSummary };
+  updateGoal: {
+    params: { threadId: string; status?: GoalStatus; evidence?: string; reason?: string; extraTokens?: number };
+    result: ThreadSummary;
+  };
+  clearGoal: { params: { threadId: string }; result: ThreadSummary };
+  listTaskLists: { params: Record<string, never>; result: TaskList[] };
+  threadChanges: { params: { threadId: string }; result: FileChange[] };
+  revertChange: { params: { folderId: string; path: string; before: string }; result: { reverted: true } };
+  listBackground: { params: Record<string, never>; result: BackgroundTask[] };
+  readBackground: { params: { id: string }; result: { task: BackgroundTask; output: string } | null };
+  /** False when the task had already exited, so the phone can leave the row alone. */
+  stopBackground: { params: { id: string }; result: { stopped: boolean } };
+  listMemories: { params: Record<string, never>; result: MemoryNote[] };
+  deleteMemory: { params: { path: string }; result: MemoryNote[] };
+  listNotes: { params: Record<string, never>; result: KeptNote[] };
+  readNote: { params: { path: string }; result: { text: string; truncated: boolean } };
+  keep: {
+    params: { kind: KeepKind; title?: string; text?: string; sourceUrl?: string; sourceApplication?: string; image?: string };
+    result: KeptNote;
+  };
+  listNoteFolders: { params: Record<string, never>; result: NoteFolder[] };
+  addFolder: { params: { path: string }; result: Folder[] };
+  forgetFolder: { params: { id: string }; result: Folder[] };
+  listCliRuns: { params: Record<string, never>; result: CliRun[] };
+  readCliRun: { params: { id: string }; result: { run: CliRun; output: string; truncated: boolean } | null };
+  stopCliRun: { params: { id: string }; result: { stopped: boolean } };
+  sendCliRun: { params: { id: string; prompt: string }; result: CliRun | null };
+  listScheduledJobs: { params: Record<string, never>; result: ScheduledJob[] };
+  saveScheduledJob: {
+    params: { jobId?: string; title: string; schedule: string; prompt: string; nodes?: string; sourceDomains: string; permissionMode: string; model?: string };
+    result: ScheduledJob[];
+  };
+  deleteScheduledJob: { params: { jobId: string }; result: ScheduledJob[] };
+  runScheduledJob: { params: { jobId: string }; result: { started: true } };
+  setScheduledJobEnabled: { params: { jobId: string; enabled: boolean }; result: ScheduledJob[] };
+  artifactSql: { params: { id: string; sql: string; params?: (string | number | boolean | null)[] }; result: Record<string, unknown>[] };
 };
 
 export type BridgeMethod = keyof BridgeMethods;
@@ -316,6 +513,7 @@ export type InvalidateTarget =
   | "artifacts"
   | "folders"
   | "plans"
+  | "taskLists"
   | "notes"
   | "tools"
   | "components"
@@ -369,11 +567,29 @@ export const READ_ONLY_METHODS: readonly BridgeMethod[] = [
   "listArtifacts",
   "readArtifact",
   "readBlob",
+  "readImage",
+  "readVisual",
   "gitReady",
   "gitStatus",
   "gitFileDiff",
   "gitHistory",
   "gitMessage",
+  "keyStatus",
+  "listCredentials",
+  "getSettings",
+  "listToolTargets",
+  "readSkill",
+  "listTaskLists",
+  "threadChanges",
+  "listBackground",
+  "readBackground",
+  "listMemories",
+  "listNotes",
+  "readNote",
+  "listNoteFolders",
+  "listCliRuns",
+  "readCliRun",
+  "listScheduledJobs",
 ];
 
 export function isBridgeMethod(value: unknown): value is BridgeMethod {
@@ -404,6 +620,9 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   readArtifact: true,
   deleteArtifact: true,
   readBlob: true,
+  readImage: true,
+  readVisual: true,
+  keepVisual: true,
   gitReady: true,
   gitStatus: true,
   gitFileDiff: true,
@@ -416,4 +635,41 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   gitPush: true,
   gitPull: true,
   setBranch: true,
+  keyStatus: true,
+  listCredentials: true,
+  saveCredential: true,
+  setZeroRetention: true,
+  getSettings: true,
+  listToolTargets: true,
+  setToolSettings: true,
+  installMcpServer: true,
+  readSkill: true,
+  writeSkill: true,
+  setGoal: true,
+  updateGoal: true,
+  clearGoal: true,
+  listTaskLists: true,
+  threadChanges: true,
+  revertChange: true,
+  listBackground: true,
+  readBackground: true,
+  stopBackground: true,
+  listMemories: true,
+  deleteMemory: true,
+  listNotes: true,
+  readNote: true,
+  keep: true,
+  listNoteFolders: true,
+  addFolder: true,
+  forgetFolder: true,
+  listCliRuns: true,
+  readCliRun: true,
+  stopCliRun: true,
+  sendCliRun: true,
+  listScheduledJobs: true,
+  saveScheduledJob: true,
+  deleteScheduledJob: true,
+  runScheduledJob: true,
+  setScheduledJobEnabled: true,
+  artifactSql: true,
 };

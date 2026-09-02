@@ -174,6 +174,23 @@ export function setThreadMode(threadId: string, mode: PermissionMode): void {
   localStorage.setItem(MODES_KEY, JSON.stringify({ ...allModes(), [threadId]: mode }));
 }
 
+const REVIEWS_KEY = "emma.threadReview.v1";
+
+function allReviews(): Record<string, boolean> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(REVIEWS_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(stored).filter(([, value]) => typeof value === "boolean")) as Record<string, boolean>;
+  } catch { return {}; }
+}
+
+export function threadReview(threadId: string, fallback = true): boolean {
+  return allReviews()[threadId] ?? fallback;
+}
+
+export function setThreadReview(threadId: string, review: boolean): void {
+  localStorage.setItem(REVIEWS_KEY, JSON.stringify({ ...allReviews(), [threadId]: review }));
+}
+
 const OVERLAY_MODE_KEY = "emma.overlayMode.v2";
 const POISONED_OVERLAY_MODE_KEY = "emma.overlayMode.v1";
 

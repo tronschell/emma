@@ -259,6 +259,14 @@ test("a harness that has gone quiet reports how long, and closing it hands the w
   await assert.rejects(wedged, /Harness closed/);
 });
 
+test("a turn the agent never answers is handed back, and the wedged agent is replaced", async () => {
+
+  const { client } = harness(async () => "allow_once", 150);
+  await assert.rejects(client.prompt("thread-wedged", workspace, "wedge", "ask"), /stopped answering/);
+  assert.equal(client.running, false);
+  client.close();
+});
+
 test("a subagent's words land on a thread of its own, never in its parent's answer", async () => {
   const { client, deltas, calls, children, ended, usages } = harness(async () => "allow_once");
   try {
@@ -846,4 +854,61 @@ test("a run whose project folder was deleted names the folder, not the agent bin
   await assert.rejects(() => client.start(), new RegExp(`is no longer at ${gone}`));
   assert.match(client.state.failure, /reconnect it from the ＋ menu/);
   assert.doesNotMatch(client.state.failure, /ENOENT/);
+});
+
+test("the configured vision route reaches the child, and no vision route leaves the session route alone", async () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "emma-vision-env-"));
+  const dump = path.join(scratch, "env.json");
+  const agent = path.join(scratch, "agent.mjs");
+  writeFileSync(agent, [
+    'import { writeFileSync } from "node:fs";',
+    'writeFileSync(process.env.EMMA_TEST_ENV_DUMP, JSON.stringify(process.env));',
+    `await import(${JSON.stringify(fakeAgent)});`,
+  ].join("\n"));
+  process.env.EMMA_TEST_ENV_DUMP = dump;
+  const start = async (vision?: { model: string; chatUrl: string; apiKey: string }) => {
+    const client = new Harness({
+      binaryPath: process.execPath,
+      args: [agent],
+      home: path.join(scratch, "home"),
+      cwd: workspace,
+      apiKey: "session-key",
+      chatUrl: "https://session.example/v1/chat/completions",
+      vision,
+      mcpServers: async () => [],
+      onDelta: () => {},
+      onThought: () => {},
+      onToolCall: () => {},
+      onCompacted: () => {},
+      onContextExperiment: () => {},
+      onRoutedModel: () => {},
+      onContextBreakdown: () => {},
+      onUsage: () => {},
+      onChildStart: () => Promise.resolve("t"),
+      onChildEnd: () => {},
+      onPlan: () => {},
+      onPermission: async () => null,
+      onToolRequest: async () => "",
+    });
+    await client.start();
+    const env = JSON.parse(readFileSync(dump, "utf8")) as Record<string, string>;
+    client.close();
+    return env;
+  };
+
+  const configured = await start({ model: "vendor/eyes:free", chatUrl: "https://vision.example/v1/chat/completions", apiKey: "vision-key" });
+  assert.equal(configured.EMMA_PROVIDER_API_KEY, "session-key");
+  assert.equal(configured.EMMA_PROVIDER_CHAT_URL, "https://session.example/v1/chat/completions");
+  assert.equal(configured.EMMA_VISION_MODEL, "vendor/eyes:free");
+  assert.equal(configured.EMMA_VISION_CHAT_URL, "https://vision.example/v1/chat/completions");
+  assert.equal(configured.EMMA_VISION_API_KEY, "vision-key");
+
+  const bare = await start();
+  assert.equal(bare.EMMA_PROVIDER_CHAT_URL, "https://session.example/v1/chat/completions");
+  assert.equal(bare.EMMA_VISION_MODEL, undefined);
+  assert.equal(bare.EMMA_VISION_CHAT_URL, undefined);
+  assert.equal(bare.EMMA_VISION_API_KEY, undefined);
+
+  delete process.env.EMMA_TEST_ENV_DUMP;
+  rmSync(scratch, { recursive: true, force: true });
 });

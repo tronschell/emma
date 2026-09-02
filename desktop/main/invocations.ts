@@ -7,7 +7,7 @@ const MAX_DAYS = 90;
 const MAX_USAGE_BYTES = 1024 * 1024;
 const MAX_COUNTED_CALLS = 4096;
 const DAY_MILLISECONDS = 86_400_000;
-const USAGE_KEY = /^(?:skill|mcp)\/[A-Za-z0-9._/-]{1,200}$/;
+const USAGE_KEY = /^(?:skill|mcp|model)\/[A-Za-z0-9._/:-]{1,200}$/;
 const MCP_TOOL = /^mcp__[A-Za-z0-9._-]{1,64}__[A-Za-z0-9._-]{1,96}$/;
 
 export type Usage = Record<string, Record<string, number>>;
@@ -22,6 +22,10 @@ export function skillKey(id: unknown) {
 
 export function mcpToolKey(toolName: unknown) {
   return typeof toolName === "string" && MCP_TOOL.test(toolName) ? `mcp/${toolName}` : "";
+}
+
+export function modelKey(name: unknown) {
+  return typeof name === "string" && /^[A-Za-z0-9._/:-]{1,200}$/.test(name) ? `model/${name}` : "";
 }
 
 export function mcpServerPrefix(name: string) {

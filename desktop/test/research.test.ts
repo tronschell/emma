@@ -177,7 +177,7 @@ function harness(seed: Record<string, unknown>) {
       return "";
     },
     attachProject() {},
-    async resolve(prompt) { return prompt; },
+    async resolve(prompt) { return { content: prompt }; },
     usage() { return { inputTokens: 0, outputTokens: 0 }; },
     catalogFile: path.join(projectDir, "no-catalog.json"),
     changed() {},

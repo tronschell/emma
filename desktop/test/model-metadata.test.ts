@@ -142,6 +142,12 @@ test("Codex metadata hot reloads and keeps the last good file during a partial r
     const routes = catalog.routes([], []);
     assert.equal(routes["codex:gpt-first"], undefined);
     assert.equal(routes["codex:gpt-second"].contextWindow, 180_000);
+
+    await rm(codexFile, { force: true });
+    assert.equal(catalog.routes([], [])["codex:gpt-second"].contextWindow, 180_000);
+
+    await save("gpt-third", 300_000, 4_000);
+    assert.equal(catalog.routes([], [])["codex:gpt-third"].contextWindow, 270_000);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

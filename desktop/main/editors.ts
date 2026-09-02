@@ -104,6 +104,7 @@ const WINDOWS_INSTALLS: Record<string, string[]> = {
 const WINDOWS_REGISTRY: Record<string, string[]> = Object.fromEntries(Object.entries(WINDOWS_COMMANDS).map(([id, names]) => [id, names.map((name) => name.replace(/\.cmd$/i, ""))]));
 
 const DIRECTORIES = ["/Applications", path.join(homedir(), "Applications")];
+const REGISTRY_TIMEOUT_MS = 5_000;
 
 function toolboxRoots(): string[] {
   const local = process.env.LOCALAPPDATA?.trim() || path.join(homedir(), "AppData", "Local");
@@ -153,7 +154,7 @@ async function windowsCommand(id: string): Promise<string | undefined> {
     ]) {
       const key = `${base}\\${name}`;
       const value = await new Promise<string | undefined>((resolve) => {
-        const child = spawnCommand(windowsSystemExecutable("reg.exe"), ["query", key, "/ve"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+        const child = spawnCommand(windowsSystemExecutable("reg.exe"), ["query", key, "/ve"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true, signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS) });
         let output = "";
         child.stdout?.on("data", (chunk: Buffer) => { output = `${output}${chunk}`.slice(0, 4096); });
         child.once("error", () => resolve(undefined));
@@ -245,7 +246,7 @@ export function installedEditors(): Promise<EditorApp[]> {
       icon = "";
     }
     return { id, label, icon };
-  })).then((items) => items.filter((item): item is EditorApp => !!item));
+  })).then((items) => items.filter((item): item is EditorApp => !!item)).catch((error) => { cached = undefined; throw error; });
   return cached;
 }
 

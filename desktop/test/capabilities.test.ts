@@ -116,6 +116,37 @@ test("an imported stdio server is listed with its arguments redacted and its env
   }
 });
 
+test("a remote server is kept only over https and reaches the harness with its headers", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "emma-remote-mcp-"));
+  try {
+    const userData = path.join(root, "user-data");
+    const config = path.join(root, "cursor.json");
+    await mkdir(userData, { recursive: true });
+    await writeFile(config, JSON.stringify({ mcpServers: {
+      remote: { type: "http", url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer do-not-render" } },
+      plain: { type: "http", url: "http://mcp.example.com/v1", headers: {} },
+    } }));
+    await writeFile(path.join(userData, "imports.json"), JSON.stringify({ version: 1, sources: [{ id: "cursor", skillRoots: [], mcpFiles: [config] }] }));
+
+    assert.deepEqual(parseMcpConfig(await readFile(config, "utf8"), "cursor.json").map((server) => server.name), ["remote"]);
+
+    const listed = await new ImportedCapabilityRuntime(userData).listMcpServers();
+    assert.deepEqual(listed.map((server) => [server.name, server.type, server.url]), [["remote", "http", "https://mcp.example.com/v1"]]);
+    // Header values are credentials, so the renderer gets names only, as it does for env.
+    assert.deepEqual(listed[0].headerNames, ["Authorization"]);
+    assert.equal(JSON.stringify(listed).includes("do-not-render"), false);
+
+    assert.deepEqual(await harnessMcpServers(userData), [{
+      name: "remote",
+      type: "http",
+      url: "https://mcp.example.com/v1",
+      headers: [{ name: "Authorization", value: "Bearer do-not-render" }],
+    }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an installed MCP server is listed with no import and no relaunch", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "emma-install-mcp-"));
   const userData = path.join(root, "user-data");

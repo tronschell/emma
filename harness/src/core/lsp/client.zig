@@ -168,13 +168,12 @@ pub const Client = struct {
             } else {
                 terminateChild(self.child_id);
             }
+        } else {
+            terminateChild(self.child_id);
         }
         if (self.reader_thread) |thread| {
             thread.join();
             self.reader_thread = null;
-        }
-        if (comptime builtin.os.tag != .windows) {
-            terminateChild(self.child_id);
         }
         _ = self.child.wait(io_mod.getIo()) catch {};
         if (comptime builtin.os.tag == .windows) {

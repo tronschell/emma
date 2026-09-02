@@ -168,6 +168,10 @@ behind a search. That is a prompt-cost mechanism, not a security boundary.
 - **`vision` — fx's wins**, because it is not a tool the model picks: the gateway
   looks it up by that exact name and forces it when a model that cannot see is
   handed an image. Emma's image tool is therefore advertised as `look_at_image`.
+  Both read one setting: Emma spawns the harness with Settings → Tools → Vision
+  in `EMMA_VISION_MODEL`, `EMMA_VISION_CHAT_URL` and `EMMA_VISION_API_KEY`, so
+  the forced tool asks the model the user chose over that model's own endpoint
+  rather than asking the session's provider for a slug it does not serve.
 
 ## How a call reaches an implementation
 

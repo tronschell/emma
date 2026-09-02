@@ -42,12 +42,12 @@ export type ResearchJob = {
 
 export type ResearchDeps = {
   request(method: string, params: Record<string, string>): Promise<unknown>;
-  turn(request: { threadId: string; content: string; mode: PermissionMode; title: string; model: string }): Promise<unknown>;
+  turn(request: { threadId: string; content: string; mode: PermissionMode; title: string; model: string; params?: Record<string, string> }): Promise<unknown>;
   stopTurn(threadId: string): void;
   run(cwd: string, command: string, timeoutMs?: number): Promise<string>;
   runGit(cwd: string, args: string[], timeoutMs?: number): Promise<string>;
   attachProject(threadId: string, directory: string): void;
-  resolve(prompt: string, threadId: string): Promise<string>;
+  resolve(prompt: string): Promise<{ content: string; skillContext?: string }>;
   usage(threadId: string): { inputTokens: number; outputTokens: number };
   catalogFile: string;
   changed(): void;
@@ -268,12 +268,14 @@ class Runner {
     const startedAt = Date.now();
     const index = job.iterations.length + 1;
     const before = (await deps!.runGit(job.projectDir, ["rev-parse", "HEAD"])).trim();
+    const { content, skillContext } = await deps!.resolve(iterationPrompt(job, index));
     const answer = lastAssistantMessage(await deps!.turn({
       threadId: this.threadId,
-      content: await deps!.resolve(iterationPrompt(job, index), this.threadId),
+      content,
       mode: job.permissionMode,
       title: job.title,
       model: job.proposerModel,
+      ...(skillContext ? { params: { skillContext } } : {}),
     })) ?? "";
     if (this.stopped) return;
     const usage = deps!.usage(this.threadId);

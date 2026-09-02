@@ -43,9 +43,10 @@ export const LINK_HUE = FILE_HUE + 1;
     ponytail: a flat cap, not virtualisation — narrow the query instead. */
 export const MENU_MAX = 20;
 
-/** The four names the composer answers itself, before any import is consulted. */
+/** The names the composer answers itself, before any import is consulted. */
 export const BUILTIN_COMMANDS: SlashCommand[] = [
   { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig coding harness" },
+  { id: "council", name: "council", kind: "builtin", detail: "built-in · seat several models on one question" },
   { id: "import", name: "import", kind: "builtin", detail: "built-in · import skills & MCP" },
   { id: "new", name: "new", kind: "builtin", detail: "built-in · new thread in this project" },
   { id: "clear", name: "clear", kind: "builtin", detail: "built-in · empty the context window" },

@@ -30,13 +30,18 @@ type ImportManifest = {
   sources: ImportedSource[];
 };
 
+export type McpTransport = "http" | "sse";
+
 type InternalMcpServer = {
   id: string;
   source: string;
   name: string;
-  command: string;
+  command?: string;
   args: string[];
   env: Record<string, string>;
+  type?: McpTransport;
+  url?: string;
+  headers?: Array<{ name: string; value: string }>;
 };
 
 export type ImportedSkill = {
@@ -53,6 +58,9 @@ export type McpServer = {
   args: string[];
   argCount: number;
   environmentKeys: string[];
+  type?: McpTransport;
+  url?: string;
+  headerNames?: string[];
 };
 
 function boundedString(value: unknown, max: number, label: string) {
@@ -463,13 +471,26 @@ function configRoots(value: Record<string, unknown>) {
     if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate as Record<string, unknown>;
   }
   const entries = Object.entries(value);
-  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && "command" in (item as object))) return value;
+  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && ("command" in (item as object) || "url" in (item as object)))) return value;
   return {};
 }
 
 function parseMcpServer(source: string, fileIndex: number, name: string, raw: unknown): InternalMcpServer | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) return undefined;
   const value = raw as Record<string, unknown>;
+  const id = `mcp:${source}:${fileIndex}:${name}`;
+  if (typeof value.url === "string") {
+    // https only. A remote entry's headers are how it authenticates, so plaintext http would
+    // put the user's bearer token on the wire; the harness would take loopback http, we do not.
+    if (value.url.length > 4096 || !URL.canParse(value.url) || new URL(value.url).protocol !== "https:") return undefined;
+    const supplied = value.headers ?? {};
+    if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) return undefined;
+    const headers = Object.entries(supplied).filter(([key, item]) => /^[A-Za-z0-9-]{1,128}$/.test(key) && typeof item === "string" && item.length <= 8192);
+    if (headers.length !== Object.keys(supplied).length || headers.length > 32) return undefined;
+    const type = value.type === "sse" ? "sse" : "http";
+    return { id, source, name, args: [], env: {}, type, url: value.url, headers: headers.map(([key, item]) => ({ name: key, value: item as string })) };
+  }
   let command: string | undefined;
   let args: unknown = value.args;
   if (typeof value.command === "string") command = value.command;
@@ -483,8 +504,7 @@ function parseMcpServer(source: string, fileIndex: number, name: string, raw: un
   if (!environment || typeof environment !== "object" || Array.isArray(environment)) return undefined;
   const env = Object.fromEntries(Object.entries(environment).filter(([key, item]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof item === "string" && item.length <= 8192));
   if (Object.keys(env).length !== Object.keys(environment).length || Object.keys(env).length > 32) return undefined;
-  if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) return undefined;
-  return { id: `mcp:${source}:${fileIndex}:${name}`, source, name, command, args: args as string[], env };
+  return { id, source, name, command, args: args as string[], env };
 }
 
 export function parseMcpConfig(text: string, fileName = "config.json", source = "import", fileIndex = 0) {
@@ -500,7 +520,7 @@ export function parseMcpConfig(text: string, fileName = "config.json", source = 
   return servers;
 }
 
-export type McpServerDefinition = { name: string; command: string; args: string[]; env: Record<string, string> };
+export type McpServerDefinition = { name: string; command?: string; args?: string[]; env?: Record<string, string>; type?: McpTransport; url?: string; headers?: Record<string, string> };
 
 export async function writeLearnedMcpServer(userData: string, server: McpServerDefinition) {
   const file = learnedMcpFile(userData);
@@ -509,7 +529,9 @@ export async function writeLearnedMcpServer(userData: string, server: McpServerD
     const existing: unknown = JSON.parse(await readBounded(file, MAX_CONFIG_BYTES));
     if (existing && typeof existing === "object" && !Array.isArray(existing)) servers = { ...configRoots(existing as Record<string, unknown>) };
   } catch { servers = {}; }
-  servers[server.name] = { command: server.command, args: server.args, env: server.env };
+  servers[server.name] = server.url
+    ? { type: server.type ?? "http", url: server.url, headers: server.headers ?? {} }
+    : { command: server.command, args: server.args ?? [], env: server.env ?? {} };
   const text = `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
   const written = parseMcpConfig(text, "mcp.json", "emma", 0).find((candidate) => candidate.name === server.name);
   if (!written) throw new Error("That MCP server definition is not valid.");
@@ -552,10 +574,15 @@ function serverMetadata(server: InternalMcpServer): McpServer {
     id: server.id,
     source: server.source,
     name: server.name,
-    command: server.command,
+    // A remote server has no command; its endpoint stands in so a row still names
+    // something the user recognises. Header *values* are credentials and stay main-side.
+    command: server.command ?? server.url ?? "",
     args,
     argCount: server.args.length,
     environmentKeys: Object.keys(server.env).sort(),
+    type: server.type,
+    url: server.url,
+    headerNames: server.headers?.map((header) => header.name).sort(),
   };
 }
 
@@ -567,7 +594,10 @@ export async function harnessMcpServers(userData: string, disabled: readonly str
   const blocked = new Set(disabled);
   const servers = (await enumerateMcpServers(await loadManifest(userData))).filter((server) => !blocked.has(server.id));
   const resolved = await Promise.all(servers.map(async (server) => {
-    const command = await absoluteCommand(server.command);
+    // The harness answers MissingHeaders when the key is absent, so a remote entry always
+    // carries one even with nothing in it. Its url is validated harness-side on the way in.
+    if (server.url) return { name: server.name, type: server.type, url: server.url, headers: server.headers ?? [] };
+    const command = server.command ? await absoluteCommand(server.command) : undefined;
     if (!command) return undefined;
     const env = Object.entries(server.env);
     const inherited = env.length === 0 ? [] : Object.entries({

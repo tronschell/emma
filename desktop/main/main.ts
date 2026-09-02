@@ -15,8 +15,8 @@ import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayo
 import { BoundedLines, HostResponses, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
 import { describeRun, packVariables, parseVariables, parseWorkflow, runWorkflow, type WorkflowNode } from "../shared/workflow";
 import { runWorkflowScript, workflowScriptPath } from "./workflow-script";
-import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
-import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "./invocations";
+import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, type McpServerDefinition, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
+import { daysUnder, mcpServerPrefix, mcpToolKey, modelKey, readUsage, recordUse, skillKey } from "./invocations";
 import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
 import { artifactFiles, deleteArtifact, listArtifacts, queryArtifact, readArtifact, readArtifactFile, updateArtifact, updateArtifactFile, writeArtifact, writeArtifactFile } from "./artifacts";
 import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
@@ -27,7 +27,7 @@ import { deleteTaskList, editTaskList, listTaskLists, readTaskList, writeTaskLis
 import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
 import { flattenTaskListTasks, mergeTaskList, parseTaskListTasks, renderTaskList, taskListProgress, taskListState, updateTaskListStatus, type TaskList } from "../shared/task-list";
-import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage } from "../shared/visualize";
+import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage, type Visual } from "../shared/visualize";
 import { captureVisual, keepVisual, readVisual } from "./visuals";
 import { CredentialStore } from "./credentials";
 import { FolderStore } from "./folders";
@@ -37,7 +37,7 @@ import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNo
 import { tagNote } from "./vault-tags";
 import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
-import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
+import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider, type CatalogModel } from "./catalog";
 import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
 import { branchPrefixName, validateGitArgs } from "../shared/git";
 import { installUpdate, readyUpdate, startUpdates } from "./update";
@@ -45,15 +45,19 @@ import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSna
 import { installedEditors, openInEditor } from "./editors";
 import { machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
-import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
+import { configureResearch, modelRates, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
-import { CODEX_MODEL_ID, CODEX_PREFIX, cliPlan, codexSlug, MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { CODEX_MODEL_ID, CODEX_PREFIX, cliPlan, codexSlug, isEnvName, MODEL_PLANS, providerCredentials, routerKey, webSearchProvider, FREE_ROUTER_ID, planForModel, planForProfile, MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultReview, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateReview, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type ReviewSettings, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
 import { nameThread } from "./thread-namer";
+import { suggestNextSteps } from "./next-steps";
+import { validateWorkState } from "../shared/next-steps";
 import { applied, validateImprovements, type Arm } from "../shared/improvement";
 import { frontApplicationNote, ScreenContextStore, validScreenContextId, type FrontApplication } from "../shared/screen-context";
 import { AgentRuntime, benchReplay, benchThread, haltBench, inheritBench, lastAssistantMessage, ownBench, OWN_TOOLS, refuseBenchTurn, towardGoal, type TurnRequest } from "./agent-loop";
+import { adoptCouncil, closeCouncil, configureCouncil, councilAnswer, councilState, startCouncil, stopCouncil, type CouncilRoute } from "./council";
+import { validateCouncilStart } from "../shared/council";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
 import { chatgptAuth, chatgptRoute } from "./chatgpt";
@@ -63,6 +67,7 @@ import { forceArm, harnessPromptFile, setImprovements, setPrompts, setSystemProm
 import { Harness, escapesRoot, failedTurn, harnessKey, recoveredSessionTraces, type HarnessMcpServer, type HarnessToolCall, type StoredThreadTrace, type ThinkingRoute, type TurnUsage } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
+import { MAX_REVIEW_ROUNDS, REVIEWABLE_KINDS, reviewPrompt, reviewTitle, reviewVerdict, revisionPrompt } from "./review";
 import { advise } from "./advisor";
 import { describeScreen, look } from "./vision";
 import { readSecret } from "./secret";
@@ -76,40 +81,57 @@ const SIGN_IN_THREAD = "sign-in";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type PermissionMode } from "../shared/permissions";
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
-import { isPin, MAX_ASK_MS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
+import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type ModelEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
 import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
+const MAX_HOST_CALL_MS = 60 * 1000;
 const WINDOWS_SHUTDOWN_TIMEOUT_MS = 8000;
 
 if (isWindows) app.setName("Emma");
 
 class Host {
-  private child: ChildProcessWithoutNullStreams;
+  private child!: ChildProcessWithoutNullStreams;
   private lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
   private responses = new HostResponses();
   private nextId = 1;
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: Error | null = null;
+  private closed = false;
   private writes = 0;
   private snapshots = new Map<string, { writes: number; at: number; value: Promise<unknown> }>();
 
-  constructor(binary: string) {
-    this.child = spawn(binary, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    this.child.stdout.on("data", (data: Buffer) => {
+  constructor(private readonly binaryPath: string) {
+    this.spawn();
+  }
+
+  private spawn() {
+    const child = spawn(this.binaryPath, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    this.child = child;
+    child.stdout.on("data", (data: Buffer) => {
+      if (this.child !== child) return;
       try { for (const line of this.lines.push(data)) { if (this.failure) break; this.receive(line); } }
       catch (error) { this.abort(error instanceof Error ? error : new Error("Emma host protocol error")); }
     });
-    this.child.stdout.on("end", () => { try { this.lines.end(); this.responses.end(); } catch (error) { this.abort(error as Error); } });
-    this.child.stderr.on("data", (data) => console.error(String(data).trim()));
-    this.child.once("error", (error) => this.fail(error));
-    this.child.stdin.on("error", (error) => this.fail(error));
-    this.child.once("exit", () => this.fail(new Error("Emma host stopped")));
+    child.stdout.on("end", () => { if (this.child !== child) return; try { this.lines.end(); this.responses.end(); } catch (error) { this.abort(error as Error); } });
+    child.stderr.on("data", (data) => console.error(String(data).trim()));
+    child.once("error", (error) => { if (this.child === child) this.fail(error); });
+    child.stdin.on("error", (error) => { if (this.child === child) this.fail(error); });
+    child.once("exit", () => { if (this.child === child) this.fail(new Error("Emma host stopped")); });
+  }
+
+  private restart() {
+    this.failure = null;
+    this.lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
+    this.responses = new HostResponses();
+    this.snapshots.clear();
+    this.spawn();
   }
 
   request(request: { method: string; params: Record<string, string> }): Promise<unknown> {
-    if (this.failure) return Promise.reject(this.failure);
+    if (this.failure && this.closed) return Promise.reject(this.failure);
+    if (this.failure) this.restart();
     if (request.method === "thread" || request.method === "readTrace") return this.send(request);
     if (request.method !== "snapshot" && request.method !== "threadSummaries") {
       this.storeChanged();
@@ -136,7 +158,14 @@ class Host {
   private send(request: { method: string; params: Record<string, string> }): Promise<unknown> {
     const id = String(this.nextId++);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) this.abort(new Error(`Emma host stopped answering ${request.method}`));
+      }, MAX_HOST_CALL_MS);
+      timer.unref?.();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
       this.child.stdin.write(`${JSON.stringify({ id, ...request })}\n`, (error) => {
         if (error) this.fail(error);
       });
@@ -144,6 +173,7 @@ class Host {
   }
 
   close() {
+    this.closed = true;
     this.fail(new Error("Emma host closed"));
     if (!this.child.stdin.destroyed) this.child.stdin.end();
     if (!this.child.killed) this.child.kill();
@@ -198,7 +228,7 @@ let bridge: Bridge | undefined;
 const background = new BackgroundCommands(() => broadcast("emma:background"));
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
 let cliModels: CliModelCatalog;
-const browsers = new Browsers(() => broadcast("emma:browser"));
+const browsers = new Browsers(() => broadcast("emma:browser"), reportBrowserCursor);
 const terminals = new Terminals(
   () => nativeHelper("emma-pty"),
   (id, data, at) => broadcast("emma:terminal-data", { id, data, at }),
@@ -210,8 +240,11 @@ let computerCursorReady = false;
 let computerCursorTimer: ReturnType<typeof setTimeout> | undefined;
 let computerProgress: ComputerRunProgress | undefined;
 let computerCursorProgress: ComputerRunProgress | undefined;
+let computerCursorOwner: "computer" | "browser" = "computer";
+let computerCursorIdle: ReturnType<typeof setTimeout> | undefined;
+const CURSOR_IDLE_MS = 60_000;
 let computerCursorAt = 0;
-const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute }>();
+const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean }>();
 
 const DEFAULT_THREAD_TITLE = "New thread";
 
@@ -353,10 +386,15 @@ let overlayPreferences: OverlayPreferences = { notchGap: defaultSettings.notchGa
 let verifier: VerifierSettings = defaultVerifier;
 let toolSettings: ToolSettings = defaultToolSettings;
 let harnessExperiments: HarnessExperiments = defaultHarnessExperiments;
+let reviewSettings: ReviewSettings = defaultReview;
+const reviewThreads = new Set<string>();
+const reviewing = new Set<string>();
+const turnTouched = new Set<string>();
 
 const toolsChanged = async () => {
-  for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:tools-changed");
+  broadcast("emma:tools-changed");
   for (const client of harnesses.values()) client.rebindServers();
+  recycleHarnesses();
   await syncHarnessSkills();
 };
 const artifactsChanged = () => broadcast("emma:artifacts-changed");
@@ -903,10 +941,19 @@ function setupStatus(): SetupStatus {
   };
 }
 
+/** Names that decide which executable runs, or what gets loaded into it. */
+const LOADER_ENV = /^(PATH|NODE_OPTIONS|NODE_PATH|npm_config_\w+|(DYLD|LD)_\w+|ELECTRON_RUN_AS_NODE|SHELL|IFS)$/i;
+
 function credentialSlot(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Provider key request is invalid");
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.env !== "string" || (candidate.secret !== undefined && typeof candidate.secret !== "string")) throw new Error("Provider key request is invalid");
+  // CredentialStore.set checks this too, but removal does not go through it, and a bridge peer
+  // is not the renderer's form: check the name once, here, where both callers pass.
+  if (!isEnvName(candidate.env)) throw new Error("An environment variable name must start with a letter or underscore and hold only letters, digits, and underscores.");
+  // A credential is applied to this process's own environment, so a name that steers how a program
+  // is found or loaded is code execution wearing an API key's clothes. Never a slot, from anywhere.
+  if (LOADER_ENV.test(candidate.env)) throw new Error("That environment variable controls how programs are loaded, so Emma will not hold it.");
   return { env: candidate.env, secret: candidate.secret as string | undefined };
 }
 
@@ -1038,6 +1085,14 @@ function threadMode(threadId: string): PermissionMode {
 }
 
 const threadModel = (threadId: string) => threadContexts.get(threadId)?.model ?? "";
+const threadEffort = (threadId: string) => threadContexts.get(threadId)?.effort ?? "";
+const threadContext = (threadId: string) => threadContexts.get(threadId) ?? { folderIds: [], mode: DEFAULT_PERMISSION_MODE, model: "" };
+// setThreadContext replaces the whole record, so the effort has to survive it — but only
+// while the model it was picked for is still the one selected.
+function keepThreadContext(threadId: string, next: { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute; review?: boolean }) {
+  const held = threadContexts.get(threadId);
+  threadContexts.set(threadId, { ...next, effort: held?.model === next.model ? held.effort : "", review: next.review ?? held?.review });
+}
 const threadSubagent = (threadId: string) => threadContexts.get(threadId)?.subagent;
 
 function subagentRoute(candidate: Record<string, unknown>): SubagentRoute | undefined {
@@ -1054,7 +1109,7 @@ function threadContextRequest(value: unknown) {
   const threadId = boundedCapabilityId(candidate.threadId, "Thread context thread");
   const raw = Array.isArray(candidate.folderIds) ? candidate.folderIds.slice(0, 1) : [];
   const model = typeof candidate.model === "string" ? candidate.model.slice(0, 128) : "";
-  return { threadId, folderIds: raw.map((id) => boundedCapabilityId(id, "Thread folder")), mode: asPermissionMode(candidate.mode), model, subagent: subagentRoute(candidate) };
+  return { threadId, folderIds: raw.map((id) => boundedCapabilityId(id, "Thread folder")), mode: asPermissionMode(candidate.mode), model, subagent: subagentRoute(candidate), review: typeof candidate.review === "boolean" ? candidate.review : undefined };
 }
 
 function agentMessage(value: unknown) {
@@ -1077,6 +1132,16 @@ function reportRunProgress(progress: ComputerRunProgress) {
   computerProgress = progress;
   if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", progress);
   if (progress.cursor === undefined) return;
+  computerCursorOwner = "computer";
+  computerCursorProgress = progress;
+  computerCursorAt = Date.now();
+  showComputerCursor();
+}
+
+function reportBrowserCursor(progress: ComputerRunProgress) {
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) return;
+  openComputerCursor();
+  computerCursorOwner = "browser";
   computerCursorProgress = progress;
   computerCursorAt = Date.now();
   showComputerCursor();
@@ -1089,7 +1154,9 @@ function showComputerCursor() {
   const progress = computerCursorProgress;
   const remaining = COMPUTER_CURSOR_MS - (Date.now() - computerCursorAt);
   const cursor = progress?.cursor && roundComputerCursor(progress.cursor);
-  if (!computerRuntime?.active || !computerCursorReady || !cursor || remaining <= 0) {
+  const browsing = computerCursorOwner === "browser";
+  const above = browsing ? mainWindow?.getMediaSourceId() : cursor && `window:${cursor.windowId}:0`;
+  if ((!browsing && !computerRuntime?.active) || !computerCursorReady || !cursor || !above || remaining <= 0) {
     window.hide();
     return;
   }
@@ -1097,7 +1164,7 @@ function showComputerCursor() {
     window.setBounds(cursor.bounds);
     window.webContents.send("emma:computer-run-progress", { ...progress, cursor });
     window.showInactive();
-    window.moveAbove(`window:${cursor.windowId}:0`);
+    window.moveAbove(above);
     computerCursorTimer = setTimeout(() => { if (!window.isDestroyed()) window.hide(); }, remaining);
   } catch {
     window.hide();
@@ -1108,8 +1175,10 @@ const BRIDGE_EVENTS: Record<string, (payload: unknown) => BridgeEvent> = {
   "emma:changed": () => ({ k: "evt", t: "invalidate", what: "snapshot" }),
   "emma:artifacts-changed": () => ({ k: "evt", t: "invalidate", what: "artifacts" }),
   "emma:plans-changed": () => ({ k: "evt", t: "invalidate", what: "plans" }),
+  "emma:task-lists-changed": () => ({ k: "evt", t: "invalidate", what: "taskLists" }),
   "emma:notes-changed": () => ({ k: "evt", t: "invalidate", what: "notes" }),
   "emma:components-changed": () => ({ k: "evt", t: "invalidate", what: "components" }),
+  "emma:tools-changed": () => ({ k: "evt", t: "invalidate", what: "tools" }),
   "emma:cli-runs": () => ({ k: "evt", t: "invalidate", what: "cliRuns" }),
   "emma:background": () => ({ k: "evt", t: "invalidate", what: "background" }),
   "emma:delta": (payload) => ({ k: "evt", ...(payload as { threadId: string; delta: string; thinking?: boolean }), t: "delta" }),
@@ -1406,15 +1475,19 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     case "shortcut":
       return await saveShortcutFromTool(args);
     case "browser": {
-      if (args.action !== "close") broadcast("emma:browser-show", { threadId: turn.threadId });
+      if (args.action !== "close") {
+        broadcast("emma:browser-show", { threadId: turn.threadId });
+        openComputerCursor();
+      }
       if (args.action === "open") return `Opened ${browserPage(await browsers.open(turn.threadId, args.url!))}. Snapshot it to see what is on it.`;
+      const doing = describeToolCall(args);
       if (args.action === "screenshot") {
         const file = shotFile("png");
-        await browsers.run(turn.threadId, ["screenshot", ...(args.selector ? [args.selector] : []), file]);
+        await browsers.run(turn.threadId, ["screenshot", ...(args.selector ? [args.selector] : []), file], doing);
         return shownToUser(file, "Took a screenshot of the page.");
       }
       const navigation = BROWSER_NAVIGATIONS.find((candidate) => candidate === args.action);
-      if (!navigation) return await browsers.run(turn.threadId, browserArgv(args));
+      if (!navigation) return await browsers.run(turn.threadId, browserArgv(args), doing);
       const status = await browsers.navigate(turn.threadId, navigation);
       return navigation === "close" ? "Closed this thread's browser." : `Now on ${browserPage(status)}.`;
     }
@@ -1497,6 +1570,42 @@ function goalRequest(method: string, params: Record<string, string>): Promise<Th
     changed();
     return noted;
   });
+}
+
+async function setGoal(request: Record<string, unknown> & { threadId: string }): Promise<ThreadRecord | undefined> {
+  const objective = boundedGoalText(request.objective, "Goal objective", MAX_GOAL_OBJECTIVE_CHARS, true);
+  const budget = wholeGoalNumber(request.tokenBudget, "Goal token budget");
+  const thread = await goalRequest("setGoal", { threadId: request.threadId, objective, tokenBudget: String(budget ?? DEFAULT_GOAL_TOKEN_BUDGET) });
+  if (thread?.title === DEFAULT_THREAD_TITLE) {
+    await host!.request({ method: "renameThread", params: { threadId: request.threadId, title: goalTitle(objective) } }).catch(() => undefined);
+    changed();
+  }
+  return thread;
+}
+
+async function updateGoal(request: Record<string, unknown> & { threadId: string }): Promise<ThreadRecord | undefined> {
+  if (request.status !== undefined && !isGoalStatus(request.status)) throw new Error("Goal status is invalid");
+  const extra = wholeGoalNumber(request.extraTokens, "Goal extra tokens");
+  if (request.status === undefined && extra === undefined) throw new Error("A goal update needs a status or extra tokens");
+  const updated = await goalRequest("updateGoal", {
+    threadId: request.threadId,
+    ...(request.status === undefined ? {} : { status: request.status }),
+    evidence: boundedGoalText(request.evidence, "Goal evidence", MAX_GOAL_EVIDENCE_CHARS, false),
+    reason: boundedGoalText(request.reason, "Goal blocker", MAX_GOAL_REASON_CHARS, false),
+    ...(extra === undefined ? {} : { extraTokens: String(extra) }),
+  });
+  goalStopped.delete(request.threadId);
+  agents?.forget(request.threadId);
+  if (goalPursuing(goals.get(request.threadId)) && !goalHalted(request.threadId)) {
+    void driveTurn({
+      threadId: request.threadId,
+      content: GOAL_CONTINUATION,
+      mode: threadMode(request.threadId),
+      title: "This thread",
+      model: threadModel(request.threadId),
+    }).catch((error: unknown) => console.error("Emma: a resumed goal could not start", error));
+  }
+  return updated;
 }
 
 async function goalTool(args: Extract<ToolArgs, { name: "goal" }>, turn: TurnRequest): Promise<string> {
@@ -1825,6 +1934,13 @@ const MAX_COMMAND_OUTPUT = 16 * 1024;
 const MAX_CLI_VIEW_CHARS = 128 * 1024;
 const MAX_COMMAND_MS = 120_000;
 
+function visionRoute() {
+  const { model, endpoint, credentialEnv } = toolSettings.vision;
+  const apiKey = (credentialEnv ? process.env[credentialEnv]?.trim() : "") ?? "";
+  if (!model.trim() || !endpoint || (credentialEnv && !apiKey)) return undefined;
+  return { model: model.trim(), chatUrl: endpoint, apiKey };
+}
+
 function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
   const running = harnesses.get(key);
   if (running?.running) {
@@ -1842,19 +1958,21 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
     home,
     apiKey: route ? route.apiKey : process.env.OPENROUTER_API_KEY,
     chatUrl: route?.chatUrl,
+    vision: visionRoute(),
     promptFile: harnessPromptFile(home, key),
     onDelta: (threadId, delta) => {
       if (agents && !agents.noteDelta(threadId, delta)) return;
       harnessText.set(threadId, (harnessText.get(threadId) ?? "") + delta);
       broadcast("emma:delta", { threadId, delta });
     },
-    onThought: (threadId, delta) => {
+    onThought: (threadId, delta, recovery) => {
       if (agents && !agents.noteDelta(threadId, delta, true)) return;
       harnessThought.set(threadId, (harnessThought.get(threadId) ?? "") + delta);
-      broadcast("emma:delta", { threadId, delta, thinking: true });
+      broadcast("emma:delta", { threadId, delta, thinking: true, recovery: recovery === true });
     },
     onToolCall: (call) => {
       agents?.noteTool(call.threadId, call.toolCallId, call.title || call.kind, call);
+      if (REVIEWABLE_KINDS.has(call.kind) && call.status === "completed") turnTouched.add(call.threadId);
       void recordUse(app.getPath("userData"), mcpToolKey(call.toolName ?? call.title), `${call.threadId}:${call.toolCallId}`);
       const wrote = noteHarnessChange(cwd, call);
       broadcast("emma:step", wrote ? { ...call, edit: editStat(wrote) } : call);
@@ -1877,6 +1995,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       const created = await host!.request({ method: "createThread", params: { parentThreadId, title: name, kind: "subagent" } });
       const threadId = (created as { id?: unknown }).id;
       if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
+      if (reviewThreads.has(parentThreadId)) reviewThreads.add(threadId);
       harnessText.set(threadId, "");
       harnessThought.set(threadId, "");
       harnessUsage.delete(threadId);
@@ -1942,6 +2061,10 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       const deny = () => pick("reject_once", "reject_always") ?? null;
       if (context.outsideWorkspace) {
         broadcast("emma:step", { threadId: ask.threadId, toolCallId: ask.id, title: `blocked: ${ask.tool} is outside the connected folder`, kind: "other", status: "failed", at: Date.now() });
+        return deny();
+      }
+      if (reviewThreads.has(ask.threadId) && context.kind === "edit") {
+        broadcast("emma:step", { threadId: ask.threadId, toolCallId: ask.id, title: `blocked: a review reads the work, it does not change it`, kind: "other", status: "failed", at: Date.now() });
         return deny();
       }
       if (agents!.mode(ask.threadId) === "full") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
@@ -2088,6 +2211,28 @@ function providerRoute(key: string | undefined): ProviderRoute | undefined {
   return { id: profile.id, chatUrl: providerChatUrl(profile), apiKey: apiKey || "no-key" };
 }
 
+function councilRoute(key: string): CouncilRoute {
+  if (codexSlug(key)) throw new Error("A ChatGPT plan model cannot take a council seat \u2014 it does not answer on the chat endpoint. Pick an API model for this seat.");
+  const profile = providerFor(key);
+  if (profile) {
+    const route = providerRoute(key)!;
+    return {
+      settings: { model: profile.modelId, endpoint: route.chatUrl, credentialEnv: profile.credentialEnv, system: "" },
+      apiKey: route.apiKey === "no-key" ? "" : route.apiKey,
+      modelId: profile.modelId,
+      plan: planForProfile(profile)?.id ?? "",
+    };
+  }
+  const model = harnessModel(key);
+  if (!model) throw new Error("That seat has no model behind it yet. Pick one.");
+  return {
+    settings: { model, endpoint: OPENROUTER_CHAT_ENDPOINT, credentialEnv: "OPENROUTER_API_KEY", system: "" },
+    apiKey: process.env.OPENROUTER_API_KEY?.trim() ?? "",
+    modelId: model.split(",")[0],
+    plan: planForModel(key)?.id ?? "",
+  };
+}
+
 function harnessModel(key: string | undefined) {
   if (key?.startsWith(CODEX_PREFIX)) return codexSlug(key);
   const routerId = routerIdFor(key);
@@ -2134,11 +2279,28 @@ function catalogued(modelId: string): string {
   return modelId;
 }
 
+/** A provider or router key, checked against what this Mac is actually set up to route to. */
+function routedModelKey(key: string): string {
+  if (providerFor(key)) return key;
+  const routerId = routerIdFor(key);
+  if (routerId === FREE_ROUTER_ID || routers.some((router) => router.id === routerId)) return key;
+  throw new Error("That model is not set up on this Mac any more. Pick another one.");
+}
+
 const thinkingLevel = (value: unknown): ThinkingLevel => isThinkingLevel(value) ? value : "";
 
 async function selectModel(method: string, params: Record<string, string>): Promise<unknown> {
   if (method === "setThreadModel") {
-    if (params.modelId) catalogued(params.modelId);
+    // A provider profile or a router arrives already keyed, with no catalogue id to check it
+    // against, so it is checked against what this Mac holds; a bare catalogue id is checked and
+    // prefixed. Either way the thread holds the key harnessModel/modelName read, or picking a
+    // model on the phone changes nothing.
+    const picked = params.modelId ?? "";
+    threadContexts.set(params.threadId, {
+      ...threadContext(params.threadId),
+      model: !picked ? "" : picked.startsWith("provider:") || picked.startsWith("router:") ? routedModelKey(picked) : `openrouter:${catalogued(picked)}`,
+      effort: thinkingLevel(params.effort),
+    });
     return { set: true };
   }
   if (method === "selectFallbackModel") {
@@ -2269,6 +2431,18 @@ function attachedImagePaths(value: unknown): string[] {
   }).slice(0, MAX_TURN_IMAGES);
 }
 
+// The phone has no attachment store of its own, so it hands over bytes and the ids stay here.
+// safeName and the store's own size check do the validating; this only bounds what reaches them.
+function bridgeImages(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_TURN_IMAGES) throw new Error("That is more photos than one message can carry.");
+  return value.map((entry) => {
+    const photo = (entry ?? {}) as { name?: unknown; base64?: unknown };
+    if (typeof photo.base64 !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(photo.base64)) throw new Error("That photo could not be read.");
+    return attachments!.save(photo.name, Buffer.from(photo.base64, "base64")).id;
+  });
+}
+
 const WAKE_GRACE_MS = 45_000;
 const harnessRuns = new Map<string, Harness>();
 const sleepWedged = new Set<string>();
@@ -2294,6 +2468,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
   computerRuntime?.end(turn.threadId);
   harnessText.set(turn.threadId, "");
   harnessThought.set(turn.threadId, "");
+  turnTouched.delete(turn.threadId);
   harnessRouted.delete(turn.threadId);
   harnessUsage.delete(turn.threadId);
   harnessTurns.set(turn.threadId, turn);
@@ -2397,7 +2572,8 @@ async function runTurn(turn: TurnRequest) {
   if (harnessRuns.has(turn.threadId)) throw new Error("This thread is still running or finishing its current turn. Wait for it to finish before starting another.");
   agents!.forget(turn.threadId);
   turn.subagent ??= threadSubagent(turn.threadId);
-  turn.effort ??= harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "";
+  turn.effort ??= threadEffort(turn.threadId) || (harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "");
+  void recordUse(app.getPath("userData"), modelKey(modelName(turn.model) || "auto"));
   turn.objective ??= activeGoal(turn.threadId)?.objective;
   const cwd = harnessCwd(turn.threadId);
   const nested = turn.nested ? turn.threadId : undefined;
@@ -2451,7 +2627,7 @@ const MESSAGE_PAGE = 40;
 
 type StoredThreadSummaries = { threads: ThreadSummary[]; warnings: string[] };
 
-const threadNamer: VerifierSettings = {
+const freeRouter: VerifierSettings = {
   model: routerChain(modelCatalog?.ids(), FREE_ROUTER_MODELS),
   endpoint: OPENROUTER_CHAT_ENDPOINT,
   credentialEnv: "OPENROUTER_API_KEY",
@@ -2467,7 +2643,7 @@ async function autoNameThread(threadId: string, asked: string) {
     const snapshot = await host!.request({ method: "threadSummaries", params: {} }) as { threads?: { id: string; title?: string }[] };
     const thread = snapshot.threads?.find((entry) => entry.id === threadId);
     if (thread?.title !== DEFAULT_THREAD_TITLE) return;
-    const title = await nameThread(asked, threadNamer);
+    const title = await nameThread(asked, freeRouter);
     if (!title || title === DEFAULT_THREAD_TITLE) return;
     await host!.request({ method: "renameThread", params: { threadId, title } });
     changed();
@@ -2484,8 +2660,17 @@ async function threadSummaryStore(): Promise<StoredThreadSummaries> {
 }
 
 function threadSummary(thread: unknown): ThreadSummary {
-  const { messages, ...rest } = thread as { messages?: unknown[] };
-  return { ...rest, messages: Array.isArray(messages) ? messages.length : 0 } as ThreadSummary;
+  const { messages, ...rest } = thread as { messages?: { role?: string; content?: string }[]; labelPrompt?: string };
+  // The phone is sent counts, not messages, so it cannot fall back to the opening prompt the way
+  // threadLabel does on this side — a thread the namer has not reached yet would read "New thread"
+  // here and say what it is about on the Mac. This is that fallback, carried across. Clamped
+  // because a first message can be a pasted document, and this rides along with every summary.
+  const asked = rest.labelPrompt ?? (Array.isArray(messages) ? messages.find((item) => item.role === "user")?.content : undefined);
+  return {
+    ...rest,
+    ...(asked ? { labelPrompt: asked.slice(0, MAX_LABEL_PROMPT_CHARS) } : {}),
+    messages: Array.isArray(messages) ? messages.length : 0,
+  } as ThreadSummary;
 }
 
 function bridgeLive(): LiveState {
@@ -2501,6 +2686,67 @@ async function namedGit(cwd: string, args: string[]): Promise<string> {
 async function gitSynced(cwd: string, result: { ok: boolean; output: string }): Promise<GitSyncResult> {
   const snapshot = await gitSnapshot(cwd);
   return { ok: result.ok, output: result.output, ahead: snapshot?.ahead ?? 0, behind: snapshot?.behind ?? 0 };
+}
+
+const OPENROUTER_ENV = providerCredentials[0].env;
+/** What one bridge frame comfortably carries, and more than a phone list scrolls through. */
+const MAX_PHONE_SKILLS = 64;
+
+const toolSwitches = (): ToolSwitches => ({ tools: toolSettings.disabledTools, skills: toolSettings.disabledSkills, servers: toolSettings.disabledServers });
+
+/** Every key this Mac could hold, masked, the way Settings → Models lists them. */
+function credentialSlotsHeld(): CredentialSlot[] {
+  const stored = credentials!.list();
+  const slots = new Map<string, CredentialSlot>();
+  const put = (env: string, label: string, detail: string, hint: string) => {
+    if (!env || slots.has(env)) return;
+    slots.set(env, { env, masked: stored.find((item) => item.env === env)?.masked ?? "", label, detail, hint });
+  };
+  for (const item of providerCredentials) put(item.env, item.label, item.detail, item.hint);
+  for (const plan of MODEL_PLANS) put(plan.credentialEnv, plan.label, plan.detail, plan.hint);
+  for (const profile of providers) put(profile.credentialEnv, profile.name, `${profile.modelId} · ${profile.baseUrl}`, "Provider key");
+  for (const source of toolSettings.webSearch.providers) {
+    const provider = webSearchProvider(source.provider);
+    put(source.credentialEnv, provider.label, `Web search · ${provider.detail}`, "Search API key");
+  }
+  for (const item of stored) put(item.env, item.env, "Custom environment variable", "Key");
+  return [...slots.values()];
+}
+
+/** stdio only: the harness has no HTTP transport, so a URL server is not installable from here. */
+function mcpServerRequest(params: Record<string, unknown>): McpServerDefinition {
+  const name = boundedCapabilityId(params.name, "Server name");
+  const command = boundedCapabilityId(params.command, "Server command");
+  const args = params.args ?? [];
+  const env = params.env ?? {};
+  if (!Array.isArray(args) || args.length > 32 || args.some((arg) => typeof arg !== "string" || arg.length > 4096)) throw new Error("Server arguments are invalid");
+  if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((value) => typeof value !== "string")) throw new Error("Server environment is invalid");
+  return { name, command, args: args as string[], env: env as Record<string, string> };
+}
+
+function bridgeVisual(id: unknown): Visual {
+  const visual = readVisual(boundedCapabilityId(id, "Visual"));
+  if (!visual) throw new Error("That visual is no longer in this conversation.");
+  return { title: visual.title, html: visual.html };
+}
+
+// The phone's outbox retries a send it never saw answered. Keyed by the id the phone
+// minted, so a retry gets the first answer back instead of posting the message twice.
+// ponytail: in-memory only, lost on restart; that is fine because the phone outbox TTL is 5 min.
+const bridgeReplies = new Map<string, Map<string, unknown>>();
+const MAX_REPLIES_PER_THREAD = 32;
+const MAX_REPLY_THREADS = 32;
+
+async function onlyOnce(threadId: string, clientId: unknown, run: () => Promise<unknown>): Promise<unknown> {
+  if (typeof clientId !== "string" || !clientId) return await run();
+  let held = bridgeReplies.get(threadId);
+  if (!held) bridgeReplies.set(threadId, (held = new Map()));
+  if (held.has(clientId)) return held.get(clientId);
+  const result = await run();
+  held.set(clientId, result);
+  for (const stale of [...held.keys()].slice(0, Math.max(0, held.size - MAX_REPLIES_PER_THREAD))) held.delete(stale);
+  for (const stale of [...bridgeReplies.keys()].slice(0, Math.max(0, bridgeReplies.size - MAX_REPLY_THREADS))) bridgeReplies.delete(stale);
+  return result;
 }
 
 async function bridgeDispatch(method: BridgeMethod, params: Record<string, unknown>): Promise<unknown> {
@@ -2547,27 +2793,41 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "setThreadArchived":
       return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, archived: flag(params.archived, "Archived") ? "true" : "false" } })));
     case "sendMessage":
-      return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, content: params.content } })));
+      return await onlyOnce(String(params.threadId), params.clientId, async () => {
+        const { content, skillContext } = await resolveMentions(typeof params.content === "string" ? params.content : "");
+        const images = bridgeImages(params.attachedImages);
+        return threadSummary(await runRequest(validateRequest({
+          method,
+          params: {
+            threadId: params.threadId,
+            content,
+            ...(typeof params.attachedContext === "string" && params.attachedContext.trim() ? { attachedContext: params.attachedContext } : {}),
+            ...(images.length ? { attachedImages: JSON.stringify(images) } : {}),
+            ...(skillContext ? { skillContext } : {}),
+          },
+        })));
+      });
     case "stopAgent":
       if (params.threadId === undefined) stopEveryThread();
       else stopThread(boundedCapabilityId(params.threadId, "Thread"));
       return { stopped: true };
-    case "steerAgent": {
-      const request = agentMessage(params);
-      await steerThread(request.threadId, request.text);
-      return { steered: true };
-    }
+    case "steerAgent":
+      return await onlyOnce(String(params.threadId), params.clientId, async () => {
+        const request = agentMessage(params);
+        await steerThread(request.threadId, request.text);
+        return { steered: true };
+      });
     case "answerPermission":
       answerAsk(boundedCapabilityId(params.id, "Permission"), flag(params.allowed, "Permission answer"));
       return { answered: true };
     case "getThreadContext": {
       const threadId = boundedCapabilityId(params.threadId, "Thread");
       const context = threadContexts.get(threadId);
-      return { threadId, folderIds: context?.folderIds ?? [], mode: context?.mode ?? DEFAULT_PERMISSION_MODE, model: context?.model ?? "" };
+      return { threadId, folderIds: context?.folderIds ?? [], mode: context?.mode ?? DEFAULT_PERMISSION_MODE, model: context?.model ?? "", effort: context?.effort ?? "" };
     }
     case "setThreadContext": {
       const { threadId, ...context } = threadContextRequest(params);
-      threadContexts.set(threadId, context);
+      keepThreadContext(threadId, context);
       agents!.setMode(threadId, context.mode);
       return { threadId, folderIds: context.folderIds, mode: context.mode, model: context.model };
     }
@@ -2576,8 +2836,48 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     }
     case "listModels": {
       const catalog = await runRequest(validateRequest({ method: "listOpenRouterModels", params: params.force === true ? { force: "true" } : {} }));
-      const models = (catalog as { models?: { id: string; name: string; contextLength: number; free: boolean; reasoningEfforts?: string[] }[] }).models ?? [];
-      return models.map((model): ModelEntry => ({ id: model.id, key: `openrouter:${model.id}`, name: model.name, contextLength: model.contextLength, free: model.free, efforts: model.reasoningEfforts ?? [] }));
+      const models = (catalog as { models?: CatalogModel[] }).models ?? [];
+      // The phone picks from everything this Mac can actually route to, not the OpenRouter
+      // catalogue alone: a local provider profile and a router are models to a person.
+      return [
+        ...models.map((model): ModelEntry => ({
+          id: model.id,
+          key: `openrouter:${model.id}`,
+          name: model.name,
+          contextLength: model.contextLength,
+          free: model.free,
+          efforts: model.reasoningEfforts ?? [],
+          source: "openrouter",
+          promptMicroUsdPerMtok: model.promptMicroUsdPerMtok,
+          completionMicroUsdPerMtok: model.completionMicroUsdPerMtok,
+          inputModalities: model.inputModalities,
+          reasoningMandatory: model.reasoningMandatory,
+        })),
+        ...providers.map((profile): ModelEntry => {
+          const metadata = modelMetadata?.provider(profile);
+          return {
+            id: profile.id,
+            key: `provider:${profile.id}`,
+            name: profile.name,
+            contextLength: metadata?.contextWindow ?? profile.contextWindow ?? 0,
+            free: true,
+            efforts: metadata?.reasoningEfforts ?? [],
+            source: "provider",
+          };
+        }),
+        ...routers.map((router): ModelEntry => {
+          const first = routerChain(modelCatalog?.ids(), router.models).split(",")[0] ?? "";
+          return {
+            id: router.id,
+            key: routerKey(router.id),
+            name: router.name,
+            contextLength: modelCatalog?.contextLength(first) ?? 0,
+            free: models.find((model) => model.id === first)?.free ?? false,
+            efforts: modelCatalog?.reasoningEfforts(first) ?? [],
+            source: "router",
+          };
+        }),
+      ];
     }
     case "setThreadModel":
       await runRequest(validateRequest({ method, params: { threadId: params.threadId, modelId: params.modelId, ...(params.effort === undefined ? {} : { effort: params.effort }) } }));
@@ -2599,8 +2899,8 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return {
         slash: [
           ...BUILTIN_COMMANDS,
-          ...skills.map((skill) => ({ id: skill.id, name: skill.name, kind: "skill" as const, detail: `${skill.source} · skill` })),
-          ...servers.map((server) => ({ id: server.id, name: server.name, kind: "mcp" as const, detail: `${server.source} · MCP server` })),
+          ...skills.filter((skill) => !toolSettings.disabledSkills.includes(skill.id)).map((skill) => ({ id: skill.id, name: skill.name, kind: "skill" as const, detail: `${skill.source} · skill` })),
+          ...servers.filter((server) => !toolSettings.disabledServers.includes(server.id)).map((server) => ({ id: server.id, name: server.name, kind: "mcp" as const, detail: `${server.source} · MCP server` })),
           ...TOOL_CATALOG
             .filter((tool) => !toolSettings.disabledTools.includes(tool.name))
             .map((tool) => ({ id: `tool:${tool.name}`, name: tool.name, kind: "tool" as const, detail: tool.blurb })),
@@ -2634,6 +2934,25 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       }
       const file = boundedCapabilityId(params.file, "Artifact file");
       return { mime: artifactFileType(file), base64: Buffer.from(await readArtifactFile(userData, id, file), "utf8").toString("base64") };
+    }
+    case "readImage": {
+      const found = namedPath(params.path);
+      const granted = found !== undefined && folders!.list().some((folder) => pathInside(folder.path, found));
+      // No filename-shaped fallback here: a bridge peer is remote, so only a granted
+      // folder or an attachment this Mac holds may be read off disk.
+      if (found === undefined || !(granted || attachments!.holds(found))) throw new Error("Not an image Emma can show");
+      const frame = nativeImage.createFromPath(found);
+      if (frame.isEmpty()) throw new Error("Not an image Emma can show");
+      // Not previewImage: its 1600px PNG can be larger than one bridge frame holds.
+      return { mime: "image/jpeg", base64: compressScreenFrame(frame).image.split(",")[1] };
+    }
+    case "readVisual":
+      return bridgeVisual(params.id);
+    case "keepVisual": {
+      const visual = bridgeVisual(params.id);
+      const { content: _content, path: _path, ...meta } = await writeArtifact(userData, { title: visual.title, kind: "html", content: visualPage(visual.html) });
+      artifactsChanged();
+      return meta;
     }
     case "gitReady":
       return await gitReady(cwd());
@@ -2682,6 +3001,200 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       await switchBranch(cwd(), branch, params.create === true, params.from === undefined ? undefined : boundedCapabilityId(params.from, "Branch"));
       return { branch };
     }
+    case "keyStatus": {
+      const key = process.env[OPENROUTER_ENV]?.trim() ?? "";
+      return {
+        env: OPENROUTER_ENV,
+        masked: credentials!.list().find((item) => item.env === OPENROUTER_ENV)?.masked ?? "",
+        balance: key ? await fetchOpenRouterBalance(key) : null,
+        zeroRetention: process.env.EMMA_OPENROUTER_ZDR !== undefined,
+        selectedModel,
+      } satisfies KeyStatus;
+    }
+    case "listCredentials":
+      return credentialSlotsHeld();
+    case "saveCredential": {
+      const slot = credentialSlot(params);
+      // A slot this Mac offers, not merely a string shaped like an env name: applyToEnv writes into
+      // this process's own environment, so PATH or NODE_OPTIONS from a phone would be code execution.
+      if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error("That is not a key this Mac holds a slot for.");
+      // The secret goes to the store and the child environment only — never to a log or an event.
+      if (slot.secret === undefined) credentials!.remove(slot.env);
+      else credentials!.set(slot.env, slot.secret);
+      startHost();
+      recycleHarnesses();
+      return credentialSlotsHeld();
+    }
+    case "setZeroRetention": {
+      const on = flag(params.on, "Zero retention");
+      if ((process.env.EMMA_OPENROUTER_ZDR !== undefined) !== on) {
+        if (on) process.env.EMMA_OPENROUTER_ZDR = "1";
+        else delete process.env.EMMA_OPENROUTER_ZDR;
+        recycleHarnesses();
+        broadcast("emma:changed");
+      }
+      return { zeroRetention: on };
+    }
+    case "getSettings":
+      return {
+        defaultPermissionMode: DEFAULT_PERMISSION_MODE,
+        selectedModel,
+        thinkingLevel: selectedEffort,
+        review: { enabled: reviewSettings.enabled, model: reviewSettings.model },
+      } satisfies MacSettings;
+    case "listToolTargets": {
+      const [written, skills, servers] = await Promise.all([
+        listEmmaTools(userData),
+        capabilities!.searchSkills("", MAX_PHONE_SKILLS),
+        capabilities!.listMcpServers(),
+      ]);
+      return {
+        catalog: TOOL_CATALOG.map((tool) => ({ ...tool, gate: toolGate(DEFAULT_PERMISSION_MODE, tool.name) })),
+        written: written.map((tool) => ({ id: `run_tool:${tool.name}`, name: tool.name, source: tool.description })),
+        skills: skills.filter((skill) => skill.source !== "installed"),
+        servers,
+        disabled: toolSwitches(),
+      } satisfies ToolTargets;
+    }
+    case "setToolSettings": {
+      // Only the three switch lists are the phone's to set; the advisor, vision, secret and
+      // web-search settings behind them stay where the Mac put them.
+      toolSettings = validateToolSettings({
+        ...toolSettings,
+        disabledTools: params.disabledTools ?? toolSettings.disabledTools,
+        disabledSkills: params.disabledSkills ?? toolSettings.disabledSkills,
+        disabledServers: params.disabledServers ?? toolSettings.disabledServers,
+      });
+      await toolsChanged();
+      return toolSwitches();
+    }
+    case "installMcpServer": {
+      const { id } = await capabilities!.installMcpServer(mcpServerRequest(params));
+      await toolsChanged();
+      return { id };
+    }
+    case "readSkill": {
+      const id = boundedCapabilityId(params.id, "Skill");
+      if (toolSettings.disabledSkills.includes(id)) throw new Error("That skill is switched off in Settings \u2192 Tools.");
+      return await capabilities!.selectSkill(id);
+    }
+    case "writeSkill": {
+      const skill = await writeLearnedSkill(userData, params.name, params.instructions);
+      await toolsChanged();
+      return skill;
+    }
+    case "setGoal": {
+      const thread = await setGoal(goalIpc(params));
+      if (!thread) throw new Error("That thread is gone.");
+      return threadSummary(thread);
+    }
+    case "updateGoal": {
+      const thread = await updateGoal(goalIpc(params));
+      if (!thread) throw new Error("That thread is gone.");
+      return threadSummary(thread);
+    }
+    case "clearGoal": {
+      const thread = await goalRequest("clearGoal", { threadId: boundedCapabilityId(params.threadId, "Goal thread") });
+      if (!thread) throw new Error("That thread is gone.");
+      return threadSummary(thread);
+    }
+    case "listTaskLists":
+      return await listTaskLists(userData);
+    case "threadChanges":
+      return agents!.changes(boundedCapabilityId(params.threadId, "Changes thread"));
+    case "revertChange": {
+      const folderId = boundedCapabilityId(params.folderId, "Revert folder");
+      const file = params.path;
+      if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
+      if (typeof params.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
+      if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
+      folders!.write(folderId, file, params.before);
+      changed();
+      return { reverted: true };
+    }
+    case "listBackground":
+      return background.list();
+    case "readBackground":
+      return background.output(boundedCapabilityId(params.id, "Background task"), MAX_COMMAND_OUTPUT) ?? null;
+    case "stopBackground":
+      return { stopped: background.stop(boundedCapabilityId(params.id, "Background task")) };
+    case "listMemories":
+      return listMemories(memoryRoot());
+    case "deleteMemory":
+      await runMemoryCommand(memoryRoot(), { command: "delete", path: typeof params.path === "string" ? params.path : "" });
+      return listMemories(memoryRoot());
+    case "listNotes": {
+      const vault = readVault(userData);
+      return vault ? listNotes(vault) : [];
+    }
+    case "readNote": {
+      const vault = readVault(userData);
+      if (!vault) throw new Error("No vault is connected.");
+      const note = path.join(notesRoot(vault), noteInVault(vault, params.path));
+      const stats = statSync(note);
+      if (!stats.isFile()) throw new Error("That note cannot be read.");
+      // The Mac's own handler refuses a note over MAX_NOTE_BYTES outright. A phone gets the
+      // first MAX_NOTE_BYTES of it instead: an error in place of a long note reads as a bug.
+      return { text: readFileSync(note).subarray(0, MAX_NOTE_BYTES).toString("utf8"), truncated: stats.size > MAX_NOTE_BYTES };
+    }
+    case "keep":
+      return await keep(keepRequest(params), false);
+    case "listNoteFolders": {
+      const vault = readVault(userData);
+      return vault ? listNoteFolders(vault) : [];
+    }
+    case "addFolder": {
+      // Every other grant went through a native directory dialog with a person in front of it.
+      // A phone hands over a string, so what it resolves to decides: a real directory under
+      // this Mac's home, unless it is a folder someone already granted.
+      const asked = params.path;
+      if (typeof asked !== "string" || !path.isAbsolute(asked) || asked.length > 1024) throw new Error("Name the folder by its full path.");
+      const directory = realpathSync(asked);
+      if (!statSync(directory).isDirectory()) throw new Error("That is not a folder.");
+      const held = folders!.list().some((grant) => samePath(grant.path, directory));
+      if (!held && !pathInside(homedir(), directory)) throw new Error("From a phone, Emma only connects folders inside your home folder.");
+      folders!.add(directory);
+      return visibleFolders();
+    }
+    case "forgetFolder": {
+      const id = boundedCapabilityId(params.id, "Folder");
+      if (id === vaultFolderId) throw new Error("Your vault stays connected; change it from Settings.");
+      folders!.remove(id);
+      return visibleFolders();
+    }
+    case "listCliRuns":
+      return clis.list();
+    case "readCliRun": {
+      const view = clis.output(boundedCapabilityId(params.id, "CLI run"), MAX_CLI_VIEW_CHARS);
+      return view ? { ...view, truncated: view.output.length >= MAX_CLI_VIEW_CHARS } : null;
+    }
+    case "stopCliRun":
+      return { stopped: clis.stop(boundedCapabilityId(params.id, "CLI run")) };
+    case "sendCliRun": {
+      const { id, prompt } = cliSendRequest(params);
+      await clis.send(id, prompt);
+      return clis.get(id) ?? null;
+    }
+    case "listScheduledJobs":
+      return await phoneJobs();
+    case "saveScheduledJob":
+      // Straight to the renderer's own validateRequest and answerRequest: the field list, the
+      // graph parse and the check that every script path sits in a granted folder are the ones
+      // the Mac applies to itself. Nothing on the phone sends this yet — a task is written here.
+      await runRequest(validateRequest({ method, params }));
+      return await phoneJobs();
+    case "deleteScheduledJob":
+      await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
+      return await phoneJobs();
+    case "runScheduledJob":
+      // The run becomes its own thread on the Mac, which the phone already sees in its list.
+      await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
+      return { started: true };
+    case "setScheduledJobEnabled":
+      await runRequest(validateRequest({ method, params: { jobId: params.jobId, enabled: flag(params.enabled, "Enabled") ? "true" : "false" } }));
+      return await phoneJobs();
+    case "artifactSql":
+      return await queryArtifact(userData, boundedCapabilityId(params.id, "Artifact"), params.sql, params.params);
   }
 }
 
@@ -2703,12 +3216,78 @@ async function runDrivenTurn(turn: TurnRequest) {
   const thread = noteThread(recorded);
   await noteGoalFailure(turn.threadId, agents!.list().find((agent) => agent.threadId === turn.threadId)?.error);
   if (!turn.goalTurn) void continueGoal(turn, thread).catch((error: unknown) => console.error("Emma: a goal's continuation failed", error));
+  if (wantsReview(turn, thread)) void reviewWork(turn, recorded).catch((error: unknown) => console.error("Emma: a second-model review failed", error));
   return recorded;
 }
 
 function noteGoalOverspent(threadId: string) {
   stopThread(threadId);
   void goalRequest("updateGoal", { threadId, status: "budgetLimited", reason: GOAL_OVERSPENT }).catch(() => undefined);
+}
+
+function wantsReview(turn: TurnRequest, thread: ThreadRecord | undefined): boolean {
+  const touched = turnTouched.delete(turn.threadId) || agents!.changes(turn.threadId).length > 0;
+  if (!reviewSettings.enabled || !reviewSettings.model.trim()) return false;
+  if (turn.reviewed || turn.goalTurn || turn.nested || turn.parentThreadId || turn.depth || turn.bench) return false;
+  if (thread?.archivedAt || reviewing.has(turn.threadId) || goalStopped.has(turn.threadId)) return false;
+  if (activeGoal(turn.threadId) || goalDriving.has(turn.threadId)) return false;
+  if (!(threadContexts.get(turn.threadId)?.review ?? true)) return false;
+  if (!threadFolderIds(turn.threadId).length) return false;
+  if (agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "done") return false;
+  return touched;
+}
+
+const reviewHalted = (threadId: string) => goalStopped.has(threadId) || agents!.isLive(threadId);
+
+async function reviewWork(turn: TurnRequest, recorded: unknown) {
+  reviewing.add(turn.threadId);
+  try {
+    let answered = lastAssistantMessage(recorded) ?? "";
+    for (let round = 0; round < MAX_REVIEW_ROUNDS; round += 1) {
+      if (reviewHalted(turn.threadId)) return;
+      const said = await runReview(turn, answered);
+      if (reviewVerdict(said) === "ship" || reviewHalted(turn.threadId)) return;
+      const redone = await driveTurn({
+        threadId: turn.threadId,
+        content: revisionPrompt(modelName(reviewSettings.model), said),
+        mode: threadContexts.get(turn.threadId)?.mode ?? agents!.mode(turn.threadId),
+        title: turn.title,
+        model: turn.model,
+        subagent: turn.subagent,
+        reviewed: true,
+      });
+      if (noteThread(redone)?.archivedAt) return;
+      answered = lastAssistantMessage(redone) ?? "";
+    }
+  } finally {
+    reviewing.delete(turn.threadId);
+  }
+}
+
+async function runReview(turn: TurnRequest, answered: string): Promise<string> {
+  const title = reviewTitle(turn.title);
+  const created = await host!.request({ method: "createThread", params: { parentThreadId: turn.threadId, title } });
+  const threadId = (created as { id?: unknown }).id;
+  if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
+  const parent = threadContexts.get(turn.threadId);
+  if (parent) threadContexts.set(threadId, { ...parent, model: reviewSettings.model, effort: "", review: false });
+  reviewThreads.add(threadId);
+  changed();
+  try {
+    const recorded = await driveTurn({
+      threadId,
+      content: reviewPrompt(turn.content, answered),
+      mode: threadMode(turn.threadId),
+      title,
+      model: reviewSettings.model,
+      parentThreadId: turn.threadId,
+      nested: true,
+      reviewed: true,
+    });
+    return lastAssistantMessage(recorded) ?? "";
+  } finally {
+    reviewThreads.delete(threadId);
+  }
 }
 
 async function noteGoalFailure(threadId: string, detail: string | undefined) {
@@ -2756,6 +3335,10 @@ async function scheduledJobs(): Promise<StoredJob[]> {
   return snapshot.scheduledJobs ?? [];
 }
 
+function phoneJobs(): Promise<ScheduledJob[]> {
+  return scheduledJobs().then((jobs) => jobs.map(({ nodes: _nodes, outputs: _outputs, ...job }) => job));
+}
+
 function workflowScriptRoots(): string[] {
   const roots: string[] = [];
   for (const grant of folders!.list()) {
@@ -2771,17 +3354,25 @@ async function validateWorkflowScripts(nodes: WorkflowNode[]): Promise<void> {
   await Promise.all(scripts.map((node) => workflowScriptPath(node.text, roots)));
 }
 
-async function resolveMentions(prompt: string, threadId: string): Promise<string> {
+// The skill comes back rather than going into skillAttachment: that store holds one slot and
+// only the renderer's own send claims it, so stashing here left every other caller's skill
+// unread and let one surface plant an attachment on another's next message.
+async function resolveMentions(prompt: string): Promise<{ content: string; skillContext?: string }> {
   const named = mentions(prompt, "/");
+  let skillContext: string | undefined;
   if (named.length) {
     const skills = await capabilities!.searchSkills("", 64);
     const skill = skills.find((item) => named.includes(item.name) && !toolSettings.disabledSkills.includes(item.id));
-    if (skill) skillAttachment.put(await capabilities!.selectSkill(skill.id), threadId);
+    if (skill) {
+      skillContext = (await capabilities!.selectSkill(skill.id)).instructions;
+      void recordUse(app.getPath("userData"), skillKey(skill.id));
+    }
   }
   const sections: { heading: string; body: string }[] = [];
   const paths = mentions(prompt, "@");
   const userData = app.getPath("userData");
   const artifacts = paths.length ? await listArtifacts(userData).catch(() => []) : [];
+  const vault = paths.length ? readVault(userData) : undefined;
   for (const mention of paths) {
     const artifact = artifacts.find((item) => pathName(item.title) === mention);
     if (artifact) {
@@ -2790,6 +3381,17 @@ async function resolveMentions(prompt: string, threadId: string): Promise<string
         sections.push({ heading: `Artifact ${read.title}`, body: read.content });
       } catch (error) {
         sections.push({ heading: `Artifact ${artifact.title}`, body: `Could not be read: ${error instanceof Error ? error.message : String(error)}` });
+      }
+      continue;
+    }
+    const note = vault ? listNotes(vault).find((item) => pathName(item.title) === mention) : undefined;
+    if (note && vault) {
+      const file = path.join(notesRoot(vault), noteInVault(vault, note.path));
+      try {
+        if (statSync(file).size > MAX_NOTE_BYTES) throw new Error("it is too large to attach");
+        sections.push({ heading: `Note ${note.title}`, body: readFileSync(file, "utf8") });
+      } catch (error) {
+        sections.push({ heading: `Note ${note.title}`, body: `Could not be read: ${error instanceof Error ? error.message : String(error)}` });
       }
       continue;
     }
@@ -2805,7 +3407,7 @@ async function resolveMentions(prompt: string, threadId: string): Promise<string
       break;
     }
   }
-  return sections.length ? `${prompt}\n\n${contextBlock(sections)}` : prompt;
+  return { content: sections.length ? `${prompt}\n\n${contextBlock(sections)}` : prompt, skillContext };
 }
 
 async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
@@ -2824,8 +3426,8 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
       try { return await runWorkflowScript(prompt, input, workflowScriptRoots()); }
       catch (error) { return `[script could not run: ${error instanceof Error ? error.message : String(error)}]`; }
     }
-    const content = await resolveMentions(prompt, job.threadId);
-    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel });
+    const { content, skillContext } = await resolveMentions(prompt);
+    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel, ...(skillContext ? { params: { skillContext } } : {}) });
     return lastAssistantMessage(outcome) ?? "";
   });
   await host!.request({ method: "finishScheduledJob", params: { jobId: job.jobId, outputs: packVariables(run.variables), depth: String(job.depth) } });
@@ -3031,6 +3633,13 @@ function openRunBanner(threadId: string, task: string) {
   pinWindow(window);
   window.on("closed", () => { if (runBanner === window) runBanner = null; });
   void load(window, "run", { threadId, task: task.slice(0, 200), maxSteps: String(MAX_RUN_STEPS) });
+  openComputerCursor();
+}
+
+function openComputerCursor() {
+  clearTimeout(computerCursorIdle);
+  if (!runBanner) computerCursorIdle = setTimeout(closeComputerCursor, CURSOR_IDLE_MS);
+  if (computerCursorWindow && !computerCursorWindow.isDestroyed()) return;
   const cursor = secureWindow({
     width: 1,
     height: 1,
@@ -3052,15 +3661,20 @@ function openRunBanner(threadId: string, task: string) {
   void load(cursor, "computerCursor");
 }
 
-function closeRunBanner() {
-  globalShortcut.unregister("Escape");
+function closeComputerCursor() {
   clearTimeout(computerCursorTimer);
+  clearTimeout(computerCursorIdle);
   computerCursorReady = false;
-  computerProgress = undefined;
   computerCursorProgress = undefined;
   computerCursorAt = 0;
   if (computerCursorWindow && !computerCursorWindow.isDestroyed()) computerCursorWindow.destroy();
   computerCursorWindow = null;
+}
+
+function closeRunBanner() {
+  globalShortcut.unregister("Escape");
+  computerProgress = undefined;
+  closeComputerCursor();
   if (runBanner && !runBanner.isDestroyed()) runBanner.destroy();
   runBanner = null;
 }
@@ -3203,8 +3817,12 @@ if (primaryInstance) app.whenReady().then(() => {
     request: (method, params) => answerRequest(method, params),
     ask: (request: PermissionAsk) => {
       const askedAt = Date.now();
-      const reached = bridge ? bridge.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) : false;
+      // True only when a phone is connected *now*; a phone paired months ago and long
+      // gone must not stall every ask for MAX_ASK_MS.
+      const reached = bridge?.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) === true;
       if (!mainWindow || mainWindow.isDestroyed()) {
+        // A phone that is asleep rather than gone still has the ask parked in the
+        // bridge's pending list; agent-loop's MAX_ASK_MS abort is the backstop.
         if (!reached) answerAsk(request.id, false);
         return;
       }
@@ -3236,6 +3854,33 @@ if (primaryInstance) app.whenReady().then(() => {
     onStatus: (status) => broadcast("emma:mobile-status", status),
   });
   bridge.start();
+  configureCouncil({
+    route: councilRoute,
+    rates: (modelId) => modelRates(path.join(app.getPath("userData"), "openrouter-catalog.json"), modelId),
+    emit: (state) => broadcast("emma:council", state),
+    land: async (state) => {
+      const spent = state.voices.reduce((total, voice) => ({
+        inputTokens: total.inputTokens + voice.inputTokens,
+        outputTokens: total.outputTokens + voice.outputTokens,
+        microDollars: total.microDollars + voice.microDollars,
+      }), { inputTokens: 0, outputTokens: 0, microDollars: 0 });
+      await recordTurn({
+        threadId: state.threadId,
+        prompt: state.question,
+        answer: councilAnswer(state),
+        durationMilliseconds: String(Date.now() - state.startedAt),
+        inputTokens: String(spent.inputTokens),
+        outputTokens: String(spent.outputTokens),
+        ...(spent.microDollars > 0 ? { costMicroUsd: String(spent.microDollars) } : {}),
+        model: `council of ${state.seats.length}`,
+      });
+      changed();
+    },
+    carried: async (threadId) => {
+      const thread = await runRequest(validateRequest({ method: "thread", params: { threadId } })).catch(() => undefined) as { messages?: Message[] } | undefined;
+      return (thread?.messages ?? []).slice(-6).map((message) => `${message.role}: ${message.content}`).join("\n\n");
+    },
+  });
   configureResearch({
     request: (method, params) => answerRequest(method, params),
     turn: (request) => driveTurn(request),
@@ -3322,7 +3967,7 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:set-thread-context", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents) mainWindowSender(event);
     const { threadId, ...context } = threadContextRequest(value);
-    threadContexts.set(threadId, context);
+    keepThreadContext(threadId, context);
     agents!.setMode(threadId, context.mode);
     return context.mode;
   });
@@ -3350,6 +3995,30 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     await runMemoryCommand(memoryRoot(), { command: "delete", path: typeof value === "string" ? value : "" });
     return listMemories(memoryRoot());
+  });
+  const councilThread = (value: unknown) => boundedCapabilityId((value as { threadId?: unknown } | null)?.threadId, "Thread");
+  ipcMain.handle("emma:council-start", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return await startCouncil(validateCouncilStart(value));
+  });
+  ipcMain.handle("emma:council-stop", (event, value: unknown) => {
+    mainWindowSender(event);
+    stopCouncil(councilThread(value));
+    return null;
+  });
+  ipcMain.handle("emma:council-adopt", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const seatId = (value as { seatId?: unknown } | null)?.seatId;
+    return await adoptCouncil(councilThread(value), typeof seatId === "string" && seatId.length <= 64 ? seatId : "");
+  });
+  ipcMain.handle("emma:council-close", (event, value: unknown) => {
+    mainWindowSender(event);
+    closeCouncil(councilThread(value));
+    return null;
+  });
+  ipcMain.handle("emma:council-state", (event, value: unknown) => {
+    mainWindowSender(event);
+    return councilState(councilThread(value)) ?? null;
   });
   ipcMain.handle("emma:list-agents", (event) => {
     mainWindowSender(event);
@@ -3507,6 +4176,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return agents!.spans();
   });
+  ipcMain.handle("emma:list-asks", (event) => {
+    mainWindowSender(event);
+    return agents!.outstandingAsks();
+  });
   ipcMain.handle("emma:live-partial", (event) => {
     mainWindowSender(event);
     return livePartial();
@@ -3591,12 +4264,12 @@ if (primaryInstance) app.whenReady().then(() => {
     return await probeProvider(profile.baseUrl, key, typeof draft.modelId === "string" ? draft.modelId.trim() : "");
   });
   ipcMain.handle("emma:set-verifier", (event, value: unknown) => {
-    mainWindowSender(event);
+    panelSender(event);
     verifier = validateVerifier(value);
     return verifier;
   });
   ipcMain.handle("emma:set-tagger", (event, value: unknown) => {
-    mainWindowSender(event);
+    panelSender(event);
     tagger = validateTagger(value);
     return tagger;
   });
@@ -3607,7 +4280,7 @@ if (primaryInstance) app.whenReady().then(() => {
     return zoom;
   });
   ipcMain.handle("emma:set-tool-settings", async (event, value: unknown) => {
-    mainWindowSender(event);
+    panelSender(event);
     toolSettings = validateToolSettings(value);
     await toolsChanged();
     return toolSettings;
@@ -3616,6 +4289,11 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     harnessExperiments = validateHarnessExperiments(value);
     return harnessExperiments;
+  });
+  ipcMain.handle("emma:set-review", (event, value: unknown) => {
+    mainWindowSender(event);
+    reviewSettings = validateReview(value);
+    return reviewSettings;
   });
   ipcMain.handle("emma:set-improvements", (event, value: unknown) => {
     mainWindowSender(event);
@@ -3655,41 +4333,11 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:set-goal", async (event, value: unknown) => {
     panelSender(event);
-    const request = goalIpc(value);
-    const objective = boundedGoalText(request.objective, "Goal objective", MAX_GOAL_OBJECTIVE_CHARS, true);
-    const budget = wholeGoalNumber(request.tokenBudget, "Goal token budget");
-    const thread = await goalRequest("setGoal", { threadId: request.threadId, objective, tokenBudget: String(budget ?? DEFAULT_GOAL_TOKEN_BUDGET) });
-    if (thread?.title === DEFAULT_THREAD_TITLE) {
-      await host!.request({ method: "renameThread", params: { threadId: request.threadId, title: goalTitle(objective) } }).catch(() => undefined);
-      changed();
-    }
-    return thread;
+    return await setGoal(goalIpc(value));
   });
   ipcMain.handle("emma:update-goal", async (event, value: unknown) => {
     panelSender(event);
-    const request = goalIpc(value);
-    if (request.status !== undefined && !isGoalStatus(request.status)) throw new Error("Goal status is invalid");
-    const extra = wholeGoalNumber(request.extraTokens, "Goal extra tokens");
-    if (request.status === undefined && extra === undefined) throw new Error("A goal update needs a status or extra tokens");
-    const updated = await goalRequest("updateGoal", {
-      threadId: request.threadId,
-      ...(request.status === undefined ? {} : { status: request.status }),
-      evidence: boundedGoalText(request.evidence, "Goal evidence", MAX_GOAL_EVIDENCE_CHARS, false),
-      reason: boundedGoalText(request.reason, "Goal blocker", MAX_GOAL_REASON_CHARS, false),
-      ...(extra === undefined ? {} : { extraTokens: String(extra) }),
-    });
-    goalStopped.delete(request.threadId);
-    agents?.forget(request.threadId);
-    if (goalPursuing(goals.get(request.threadId)) && !goalHalted(request.threadId)) {
-      void driveTurn({
-        threadId: request.threadId,
-        content: GOAL_CONTINUATION,
-        mode: threadMode(request.threadId),
-        title: "This thread",
-        model: threadModel(request.threadId),
-      }).catch((error: unknown) => console.error("Emma: a resumed goal could not start", error));
-    }
-    return updated;
+    return await updateGoal(goalIpc(value));
   });
   ipcMain.handle("emma:clear-goal", async (event, value: unknown) => {
     panelSender(event);
@@ -4221,12 +4869,20 @@ if (primaryInstance) app.whenReady().then(() => {
       servers: await capabilities!.listMcpServers(),
     };
   });
+  ipcMain.handle("emma:next-steps", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return await suggestNextSteps(validateWorkState(value), freeRouter);
+  });
   ipcMain.handle("emma:capability-usage", async (event) => {
     mainWindowSender(event);
     const usage = await readUsage(app.getPath("userData"));
     const [skills, servers] = await Promise.all([capabilities!.searchSkills("", MAX_SKILL_RESULTS), capabilities!.listMcpServers()]);
     return {
       skills: skills.filter((skill) => skill.source !== "installed").map((skill) => ({ id: skill.id, name: skill.name, source: skill.source, days: usage[skillKey(skill.id)] ?? {} })),
+      models: Object.entries(usage).filter(([key]) => key.startsWith("model/")).map(([key, days]) => {
+        const name = key.slice("model/".length);
+        return { id: key, name, source: name.includes("/") ? name.slice(0, name.indexOf("/")) : "", days };
+      }),
       servers: servers.map((server) => ({ id: server.id, name: server.name, source: `${server.source} · ${server.command}`, days: daysUnder(usage, mcpServerPrefix(server.name)) })),
     };
   });

@@ -109,9 +109,10 @@ export type Run = {
   draft: string;
   activeAt: number;
   routed: string;
+  recovery: string;
 };
 
-const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", activeAt: 0, routed: "" };
+const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", activeAt: 0, routed: "", recovery: "" };
 const runs = new Map<string, Run>();
 const listeners = new Set<() => void>();
 let wired = false;
@@ -141,7 +142,7 @@ export function mergeStep(blocks: Block[], step: ThreadStep): Block[] {
 }
 
 function adoptForeign(threadId: string) {
-  write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now() });
+  write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now(), recovery: "" });
   void rehydrate(threadId, began(threadId));
 }
 
@@ -282,14 +283,18 @@ export function wire() {
   wired = true;
   window.emma.onAgents(reconcile);
   void window.emma.listAgents().then(reconcile).catch(() => undefined);
-  window.emma.onDelta(({ threadId, delta, thinking }) => {
+  window.emma.onDelta(({ threadId, delta, thinking, recovery }) => {
     if (!read(threadId).sending) adoptForeign(threadId);
 
-    if (!delta) {
-      write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks, activeAt: Date.now() }));
+    if (recovery) {
+      write(threadId, (run) => ({ blocks: appendText(run.blocks, "thinking", delta), recovery: delta.trim() }));
       return;
     }
-    write(threadId, (run) => ({ blocks: appendText(run.blocks, thinking ? "thinking" : "text", delta), activeAt: Date.now() }));
+    if (!delta) {
+      write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks, activeAt: Date.now(), recovery: "" }));
+      return;
+    }
+    write(threadId, (run) => ({ blocks: appendText(run.blocks, thinking ? "thinking" : "text", delta), activeAt: Date.now(), recovery: "" }));
   });
   window.emma.onStep((step) => {
     if (!read(step.threadId).sending) adoptForeign(step.threadId);
@@ -446,7 +451,7 @@ async function drain(threadId: string, reload: () => unknown) {
     if (!next) return;
     began(threadId);
     write(threadId, {
-      sending: true, foreign: false, pending: next, stopped: false, activeAt: Date.now(),
+      sending: true, foreign: false, pending: next, stopped: false, activeAt: Date.now(), recovery: "",
       blocks: next.notice ? [{ kind: "notice", text: next.notice, plain: true }] : [],
     });
     let failed = false;

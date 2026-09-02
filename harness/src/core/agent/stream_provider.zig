@@ -67,8 +67,10 @@ pub fn responseFailureEvidence(
     err: anyerror,
     delivery: DeliveryCertainty.State,
 ) ?NetworkFailureEvidence {
-    if (err != error.InvalidProviderResponse) return null;
-    return .{ .cause = .response_interrupted, .delivery = delivery };
+    return switch (err) {
+        error.InvalidProviderResponse, error.Timeout => .{ .cause = .response_interrupted, .delivery = delivery },
+        else => null,
+    };
 }
 
 /// Gives a cooperative single-threaded host a chance to publish UI and runtime

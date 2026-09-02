@@ -287,15 +287,19 @@ button:where(.composer *) { background: transparent; color: inherit; }
 .composer-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-1); padding: var(--s-2) var(--s-1); border-top: 1px solid var(--border); }
 .composer-tools { display: flex; align-items: center; flex: 1 1 auto; gap: var(--s-1); min-width: min-content; }
 
-.composer-row .source-trigger, .composer-row .model-button {
+.composer-row .source-trigger, .composer-row .review-toggle, .composer-row .model-button {
   display: flex; align-items: center; gap: var(--s-2); flex: 0 0 auto; height: 26px; padding: 0 var(--s-2);
   color: var(--text-2); border: 0; background: transparent;
   font-family: var(--font-mono); font-size: var(--fs-sm); white-space: nowrap; transition: background-color var(--t), color var(--t);
 }
-.composer-row .source-trigger:hover:not(:disabled), .composer-row .model-button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+.composer-row .source-trigger:hover:not(:disabled), .composer-row .review-toggle:hover:not(:disabled), .composer-row .model-button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 .composer-row .source-trigger:disabled, .composer-row .model-button:disabled { color: var(--text-3); }
 .composer-row .source-trigger[aria-expanded="true"], .composer-row .model-button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
 .composer-row .source-trigger { justify-content: center; width: 26px; padding: 0; font-size: var(--fs-lg); line-height: 1; }
+.composer-row .review-toggle { justify-content: center; width: 26px; padding: 0; color: var(--text-3); line-height: 1; }
+.composer-row .review-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.composer-row .review-toggle:disabled { color: var(--text-3); }
+.review-mark { display: inline-flex; align-items: center; vertical-align: -2px; color: var(--accent); }
 
 .composer-row .model-button { flex: 0 1 auto; min-width: 88px; color: var(--text); }
 .composer-row .model-button .model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -402,6 +406,14 @@ button.add-row:hover:not(:disabled) { background: var(--surface-3); }
 .model-mark .model-brand { width: 18px; height: 18px; }
 
 .model-body { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.role-strip { display: flex; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid var(--border); scrollbar-width: none; }
+.role-strip::-webkit-scrollbar { height: 0; }
+.role-tab { display: grid; gap: 1px; flex: 0 0 auto; max-width: 132px; padding: var(--s-1) var(--s-3); text-align: left; color: var(--text-3); background: transparent; border: 0; border-right: 1px solid var(--border); transition: color var(--t), background-color var(--t); }
+.role-tab strong { font: var(--fs-2xs)/1.4 var(--font-mono); font-weight: 400; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.role-tab small { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.role-tab:hover { color: var(--text); background: var(--surface-3); }
+.role-tab[aria-selected="true"] { color: var(--text); background: var(--surface-4); box-shadow: inset 0 -2px 0 var(--accent); }
+.role-tab[aria-selected="true"] small { color: var(--accent); }
 .model-body > * { flex: 0 0 auto; }
 .model-search { min-height: 30px; padding: 0 var(--s-3); color: var(--text); border: 0; border-bottom: 1px solid var(--border); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .model-find .model-search:focus-visible { border-bottom-color: var(--border); }

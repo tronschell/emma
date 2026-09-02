@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 
 const png = { isEmpty: () => false, getSize: () => ({ width: 32, height: 32 }), toPNG: () => Buffer.from("icon"), toJPEG: () => Buffer.from("jpeg"), resize: () => png };
 const photo = { isEmpty: () => false, getSize: () => ({ width: 1200, height: 800 }), toPNG: () => Buffer.alloc(4096), toJPEG: () => Buffer.from("jpeg"), resize: () => photo };
-type Route = { status: number; type?: string; body?: string; location?: string };
+type Route = { status: number; type?: string; body?: string; location?: string; stall?: boolean };
 const routes: Record<string, Route> = {};
 const requested: string[] = [];
 
@@ -18,6 +18,7 @@ function fakeRequest({ url: start }: { url: string }) {
     requested.push(url);
     const route = routes[url];
     if (!route) { request.emit("error", new Error(`no route for ${url}`)); return; }
+    if (route.stall) return;
     if (route.location) {
       followed = false;
       request.emit("redirect", route.status, "GET", route.location);
@@ -154,4 +155,23 @@ test("a picture whose first hop is already inside this machine is never asked fo
   const clip = await clipPage({ application: "Safari", url: "https://shop.example.com/local", title: "L" });
   assert.deepEqual(clip.images, []);
   assert.deepEqual(requested.filter((url) => url.includes("127.0.0.1")), []);
+});
+
+test("every picture in a clip is fetched under the same timeout as the page", async (t) => {
+  Object.assign(routes, {
+    "https://example.com/piece": { status: 200, body: `<html><head><title>Piece</title></head><body><p>${"word ".repeat(120)}</p><img src="/hero.png"></body></html>` },
+    "https://example.com/hero.png": { status: 200, type: "image/png", stall: true },
+    "https://example.com/favicon.ico": { status: 404 },
+  });
+  requested.length = 0;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clipped = clipPage({ application: "Safari", url: "https://example.com/piece" });
+  for (let step = 0; step < 25; step += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(1_000);
+  }
+  const clip = await clipped;
+  assert.deepEqual(clip.images, [], "a stalled image host cannot hold the clip open");
+  assert.ok(requested.includes("https://example.com/hero.png"));
+  assert.match(clip.text, /word/);
 });

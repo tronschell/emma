@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
-import { applied, attemptIds, compare, frictionOf, heldBack, lessonBlock, readTurn, retryDraft, room, startTrial, validateImprovements, MAX_IMPROVEMENTS, MAX_KEPT, MAX_RESULT_CHARS, MIN_ARM_TURNS, type Improvement, type Turn } from "../shared/improvement";
+import { applied, attemptIds, compare, frictionOf, heldBack, lessonBlock, lessonShaped, readTurn, retryDraft, room, startTrial, toolOf, unfixable, validateImprovements, MAX_IMPROVEMENTS, MAX_KEPT, MAX_RESULT_CHARS, MIN_ARM_TURNS, type Improvement, type Turn } from "../shared/improvement";
 
 const span = (over: Partial<TraceSpan>): TraceSpan => ({ id: `s-${over.name ?? "x"}-${over.startedAt ?? 0}`, name: "step", kind: "bash", startedAt: 1, endedAt: 2, status: "ok", ...over });
 const thread = { id: "thread-1", title: "Ship it" };
@@ -172,4 +172,31 @@ test("a kept lesson that has stopped riding is named, not silently dropped", () 
   assert.deepEqual(heldBack(many), [`k${MAX_KEPT}`], "the lesson past the ceiling is not applied either, so it is named too");
   assert.equal(applied({ items: many }).kept.instructions.split("\n").length, MAX_KEPT + 1);
   assert.deepEqual(heldBack(many.slice(0, MAX_KEPT)), [], "under the ceiling every kept lesson rides");
+});
+
+test("a failed call is named by what it said, and a refusal is not a lesson", () => {
+  const denied = span({ kind: "execute", name: "Using terminal", status: "failed", input: '{"action":"exec","command":"ls"}', output: '{"error":{"type":"tool_permission_denied","tool_name":"terminal","reason":"user_denied"}}' });
+  const shaped = span({ kind: "search", name: "Searching", startedAt: 3, status: "failed", output: 'grep_files requires string field "pattern"' });
+  const exited = span({ kind: "execute", name: "Using terminal", startedAt: 4, status: "failed", input: '{"action":"exec","command":"grep x y"}', output: "That failed: command exited with non-zero status 1" });
+
+  assert.equal(toolOf(denied), "terminal", "the tool name in the error beats the span's category");
+  assert.equal(toolOf(shaped), "grep_files");
+  assert.equal(toolOf(exited), "terminal", "an exec call with no name in its output is still the terminal");
+  assert.equal(unfixable(denied), true);
+  assert.equal(unfixable(exited), true);
+  assert.equal(unfixable(shaped), false);
+
+  const text = encodeSpans([span({ kind: "agent", name: "run" }), denied, shaped, exited], { thread: thread.id });
+  const read = readTurn({ timestamp: "2026-08-20T00:00:00Z", text }, thread);
+  const found = frictionOf([read, { ...read, at: 2 }]);
+  const terminal = found.find((item) => item.tool === "terminal");
+  const grep = found.find((item) => item.tool === "grep_files");
+  assert.equal(terminal?.hits, 4, "both execute calls group under the one recovered name");
+  assert.equal(lessonShaped(terminal!), false, "nothing you could write removes a refusal or a non-zero exit");
+  assert.equal(lessonShaped(grep!), true);
+});
+
+test("a turn carries the model that ran it, without its vendor prefix", () => {
+  const text = encodeSpans([span({ kind: "agent", name: "run" })], { thread: thread.id, model: "z-ai/glm-5.3-flash" });
+  assert.equal(readTurn({ timestamp: "2026-08-20T00:00:00Z", text }, thread).model, "glm-5.3-flash");
 });

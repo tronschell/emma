@@ -2,6 +2,7 @@
 @import "./styles/tokens.css";
 @import "./styles/sidebar.css";
 @import "./styles/conversation.css";
+@import "./styles/council.css";
 @import "./styles/browser.css";
 @import "./styles/terminal.css";
 @import "./styles/markdown.css";
@@ -14,6 +15,8 @@
 @import "./styles/goal.css";
 @import "./styles/plugins.css";
 @import "./styles/activity.css";
+@import "./styles/repairs.css";
+@import "./styles/dashboard.css";
 @import "./styles/settings.css";
 @import "./styles/color-picker.css";
 @import "./styles/context-bar.css";
