@@ -2,8 +2,8 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { MAX_FILE_BYTES, MAX_FOLDER_FILES, MAX_FOLDERS, type FolderFile, type FolderGrant } from "../shared/folders";
-import { pathInside, samePath } from "./platform";
+import { MAX_FILE_BYTES, MAX_FOLDER_COUNT, MAX_FOLDER_FILES, MAX_FOLDERS, missingFolderMessage, type FolderFile, type FolderGrant, type FolderListing } from "../shared/folders";
+import { pathInside, realPath, realPathInside, samePath } from "./platform";
 
 const SKIP_DIRECTORIES = new Set(["node_modules", "target", "dist", "build", "__pycache__", ".venv", "vendor"]);
 const TEXT_FILE = /\.(md|markdown|txt|rst|org|json|jsonc|ya?ml|toml|ini|csv|tsv|tsx?|jsx?|mjs|cjs|rs|zig|py|go|rb|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|zsh|sql|css|scss|html?|xml|tex|env|gitignore)$/i;
@@ -45,31 +45,37 @@ export class FolderStore {
     return this.list();
   }
 
-  files(id: string): FolderFile[] {
+  files(id: string): FolderListing {
     const root = this.root(id);
     const found: FolderFile[] = [];
+    let total = 0;
     const walk = (directory: string, depth: number) => {
-      if (depth > MAX_DEPTH || found.length >= MAX_FOLDER_FILES) return;
+      if (depth > MAX_DEPTH) return;
       let entries: import("node:fs").Dirent<string>[];
       try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
-        if (found.length >= MAX_FOLDER_FILES) return;
+        if (total >= MAX_FOLDER_COUNT) return;
         if (entry.name.startsWith(".") || SKIP_DIRECTORIES.has(entry.name)) continue;
         const full = path.join(directory, entry.name);
         if (entry.isDirectory()) walk(full, depth + 1);
         else if (entry.isFile() && TEXT_FILE.test(entry.name)) {
           const bytes = statSync(full).size;
-          if (bytes <= MAX_FILE_BYTES) found.push({ path: path.relative(root, full), bytes });
+          if (bytes > MAX_FILE_BYTES) continue;
+          total += 1;
+          if (found.length < MAX_FOLDER_FILES) found.push({ path: path.relative(root, full), bytes });
         }
       }
     };
     walk(root, 0);
-    return found.sort((left, right) => left.path.localeCompare(right.path));
+    return { files: found.sort((left, right) => left.path.localeCompare(right.path)), total, capped: total >= MAX_FOLDER_COUNT };
   }
 
-  read(id: string, relative: string): { path: string; text: string } {
+  read(id: string, relative: string): { path: string; text: string; missing?: boolean } {
     const root = this.root(id);
-    const full = realpathSync(path.resolve(root, relative));
+    const target = path.resolve(root, relative);
+    if (!pathInside(root, target)) throw new Error("That file is outside the granted folder.");
+    if (!this.exists(target)) return { path: path.relative(root, target), text: "", missing: true };
+    const full = realpathSync(target);
     if (!pathInside(root, full)) throw new Error("That file is outside the granted folder.");
     if (!statSync(full).isFile() || statSync(full).size > MAX_FILE_BYTES) throw new Error("That file cannot be attached.");
     return { path: path.relative(root, full), text: readFileSync(full, "utf8") };
@@ -102,16 +108,16 @@ export class FolderStore {
     return path.relative(root, this.contain(root, relative));
   }
 
+  fileWithin(id: string, given: string): string {
+    const root = this.root(id);
+    const relative = path.isAbsolute(given) ? path.relative(root, realPath(given) ?? given) : given;
+    return path.join(root, this.within(id, relative));
+  }
+
   private contain(root: string, relative: string): string {
     if (path.isAbsolute(relative)) throw new Error("Name the file relative to the granted folder.");
     const target = path.resolve(root, relative);
-    if (!pathInside(root, target)) throw new Error("That file is outside the granted folder.");
-    let existing = path.dirname(target);
-    while (!samePath(existing, root) && pathInside(root, existing) && !this.exists(existing)) {
-      existing = path.dirname(existing);
-    }
-    const real = realpathSync(existing);
-    if (!pathInside(root, real)) throw new Error("That file is outside the granted folder.");
+    if (!realPathInside(root, target)) throw new Error("That file is outside the granted folder.");
     return target;
   }
 
@@ -125,7 +131,7 @@ export class FolderStore {
     try {
       return realpathSync(grant.path);
     } catch {
-      throw new Error(`"${grant.name}" is no longer at ${grant.path} — reconnect it from the ＋ menu.`);
+      throw new Error(missingFolderMessage(grant.name, grant.path));
     }
   }
 

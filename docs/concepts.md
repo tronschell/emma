@@ -18,6 +18,14 @@ Ceilings: `MAX_THREAD_MESSAGES` 1024, `MAX_THREAD_TRACES` 64,
 `MAX_TRACE_BYTES` 16 KiB. `traces` is `#[serde(skip)]`, so it never rides a
 snapshot.
 
+An untitled thread is named after the first thing asked in it. The host sends
+two forms of that name on every summary: `display_title`, cut to 48 UTF-16 units
+with an ellipsis, which is what the sidebar row shows, and `label_prompt`, the
+first `SEARCHABLE_TITLE_UNITS` (**200**) units, which is what the sidebar's
+search box matches against — so a word buried past the visible cut still finds
+its thread. Neither reaches into the conversation body; searching message text
+would need an index the compact snapshot does not carry.
+
 A thread can be **pinned**: right-click the row, or use the pin that appears on
 hover. Pinned threads leave their project group and stand in a `Pinned` section
 above every project, each row prefixed with the name of the folder it is filed
@@ -39,6 +47,14 @@ once. When a turn finishes, `recordTurn` appends the prompt and the answer, and
 the assistant message carries `output_tokens`, `duration_milliseconds`,
 `input_tokens` and `model`.
 
+Every way a turn can end leaves one record, and only what the model actually
+said is stored as a model message. A run that was stopped, refused, cut off at
+its output limit or that ended without speaking appends a `system` message
+instead — the turn's notice — drawn the way the context notices are drawn, with
+no model name, no copy button and no rate. An answer that was cut off keeps its
+text and gets the notice under it, so a truncated reply cannot be read later as
+a terse one. When the model said nothing at all, no assistant message is written.
+
 ## Queue · steer · stop
 
 **Three doors into a turn already running, and they are not the same door.**
@@ -56,11 +72,12 @@ it fires and the model keeps the work it had already done. At most 8 messages,
 the same turn wins.
 
 Esc, and ■ **stop.** The turn is cancelled — the partial answer, the tool call
-it was in, and what it had already finished are all written to history, so
-nothing is lost — and everything still queued behind it is *held* rather than
-fired at a thread whose direction just changed. Held messages sit above the
-composer with ↑ to send and × to drop. With text typed, Esc stops and sends what
-you typed as the next turn.
+it was in, and what it had already finished are all written to history under a
+notice saying you stopped it, so nothing is lost and nothing reads as finished
+— and everything still queued behind it is *held* rather than fired at a thread
+whose direction just changed. Held messages sit above the composer with ↑ to
+send and × to drop. With text typed, Esc stops and sends what you typed as the
+next turn.
 
 A subagent has its own composer, and its own door: `session/steer_child`, which
 lands with the child's next tool result.
@@ -141,7 +158,14 @@ makes file and shell tools mean anything; a thread with no folder has no
 filesystem at all. In the composer `/` names a capability and `@` names a file
 ([`shared/slash.ts`](../desktop/shared/slash.ts)); `buildAttachedContext` in
 [`src/context.ts`](../desktop/src/context.ts) assembles folder listings, `@`
-files, attachments and artifacts into one bounded block. Emma's own standing
+files, attachments and artifacts into one bounded block. A listing is capped at
+`MAX_FOLDER_FILES` (400) per folder and six levels deep; the walk itself stops
+once it has counted `MAX_FOLDER_COUNT` (2000) attachable files, so a large grant
+costs a bounded walk rather than a full one. `listFolderFiles` returns that page
+with the count and whether the walk was cut short, so the Files picker reads
+`Showing 400 of N files` — or `of 2000+` when the count is a floor rather than a
+total. The count admits exactly what the listing admits, so an oversized file is
+neither shown nor counted. Any file can still be read by path past the cap. Emma's own standing
 text goes to two files under the `HOME` she hands the harness: the resolved
 Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
 the agent's own built-in prompt, and kept Agent-page improvements to

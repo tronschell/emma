@@ -43,9 +43,10 @@ export const LINK_HUE = FILE_HUE + 1;
     ponytail: a flat cap, not virtualisation — narrow the query instead. */
 export const MENU_MAX = 20;
 
-/** The four names the composer answers itself, before any import is consulted. */
+/** The names the composer answers itself, before any import is consulted. */
 export const BUILTIN_COMMANDS: SlashCommand[] = [
   { id: "agent", name: "agent", kind: "builtin", detail: "built-in · Zig coding harness" },
+  { id: "council", name: "council", kind: "builtin", detail: "built-in · seat several models on one question" },
   { id: "import", name: "import", kind: "builtin", detail: "built-in · import skills & MCP" },
   { id: "new", name: "new", kind: "builtin", detail: "built-in · new thread in this project" },
   { id: "clear", name: "clear", kind: "builtin", detail: "built-in · empty the context window" },
@@ -55,17 +56,17 @@ export type Sigil = "/" | "@";
 
 /* A "/" name is one word: the token ends at whitespace or a second slash. An "@"
    name is a path, so it keeps its slashes and ends only at whitespace. */
-const NAME = "[A-Za-z0-9][A-Za-z0-9._:-]*";
-const PATH = "[A-Za-z0-9][A-Za-z0-9._:/-]*";
+const WORD = "\\p{L}\\p{N}\\p{M}";
+const NAME = `[${WORD}][${WORD}._:-]*`;
+const PATH = `[${WORD}][${WORD}._:/-]*`;
 const GRAMMAR: [Sigil, string][] = [["/", NAME], ["@", PATH]];
-const TYPING = GRAMMAR.map(([sigil, name]) => [sigil, new RegExp(`(?:^|\\s)[${sigil}](${name}|)$`)] as const);
+const TYPING = GRAMMAR.map(([sigil, name]) => [sigil, new RegExp(`(?:^|\\s)[${sigil}](${name}|)$`, "u")] as const);
 /* A link ends before the punctuation a sentence puts after it, so "see https://a.dev." keeps its full stop as prose. */
 const LINK = "https?://[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"]";
-const TOKEN = new RegExp(`(^|\\s)(${LINK}|/${NAME}|@${PATH})`, "g");
+const TOKEN = new RegExp(`(^|\\s)(${LINK}|/${NAME}|@${PATH})`, "gu");
 
-/** Turn a file path into an "@" name: the path, in the grammar's alphabet. */
 export function pathName(path: string): string {
-  const name = path.replace(/[^A-Za-z0-9._:/-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "");
+  const name = path.replace(/[^\p{L}\p{N}\p{M}._:/-]+/gu, "-").replace(/^[^\p{L}\p{N}]+/u, "");
   return name || "file";
 }
 

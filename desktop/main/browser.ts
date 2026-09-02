@@ -2,6 +2,7 @@ import { app, WebContentsView, type BrowserWindow } from "electron";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { recentClips, rememberClip, restoreClip } from "./clip";
 import { externalUrl } from "./ipc";
 import { findExecutable, isWindows, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
@@ -36,10 +37,13 @@ const HOME = "about:blank";
 const CLIP_SETTLE_MS = 150;
 const CLIP_KEYS = ["c", "x", "v"];
 const TRUNCATION_NOTICE = "\n[truncated — read less at a time: snapshot with interactive true, or narrow it with a selector]";
+const MAX_CURSOR_ACTIONS = 20;
+const MAX_CURSOR_LABEL = 80;
 
 export type Ran = { text: string; code: number | null; signal: NodeJS.Signals | null };
 type Tab = { id: string; view: WebContentsView; targetId?: string; favicon?: string };
 type Session = { name: string; threadId: string; tabs: Tab[]; activeId?: string; bounds?: BrowserBounds; shown: boolean; connected?: Promise<void>; pinned?: string };
+type Driving = { session: Session; tab: Tab; action: string; actions: number };
 
 export class Browsers {
   private sessions = new Map<string, Session>();
@@ -50,8 +54,10 @@ export class Browsers {
   private expires = 0;
   private loginPath?: string;
   private counter = 0;
+  private driving: Driving | undefined;
+  private drives = 0;
 
-  constructor(private readonly onChange: () => void) {}
+  constructor(private readonly onChange: () => void, private readonly onCursor: (progress: ComputerRunProgress) => void) {}
 
   attach(window: BrowserWindow) {
     this.window = window;
@@ -176,11 +182,17 @@ export class Browsers {
     contents.paste();
   }
 
-  async run(threadId: string, argv: readonly string[]): Promise<string> {
+  async run(threadId: string, argv: readonly string[], action?: string): Promise<string> {
     const session = this.session(threadId);
     const tab = this.active(session) ?? this.spawnTab(session);
     await this.pin(session, tab);
-    return bounded((await this.exec(session, argv)).text);
+    this.drives = (this.drives + 1) % MAX_CURSOR_ACTIONS;
+    this.driving = { session, tab, action: action ?? argv[0] ?? "working", actions: this.drives };
+    try {
+      return bounded((await this.exec(session, argv)).text);
+    } finally {
+      this.driving = undefined;
+    }
   }
 
   stopAll() {
@@ -220,6 +232,11 @@ export class Browsers {
       if (!CLIP_KEYS.includes(input.key.toLowerCase())) return;
       setTimeout(rememberClip, CLIP_SETTLE_MS).unref();
     });
+    contents.on("input-event", (_event, input) => {
+      if (input.type !== "mouseMove" && input.type !== "mouseDown") return;
+      const { x, y } = input as Electron.MouseInputEvent;
+      this.pointAt(tab, { x, y });
+    });
     contents.on("page-favicon-updated", (_event, icons) => {
       tab.favicon = icons.find((icon) => icon.startsWith("https://") || icon.startsWith("http://"));
       this.onChange();
@@ -235,6 +252,17 @@ export class Browsers {
     this.window?.contentView.addChildView(view);
     this.layout(session);
     return tab;
+  }
+
+  private pointAt(tab: Tab, point: { x: number; y: number }) {
+    const driving = this.driving;
+    const window = this.window;
+    if (driving?.tab !== tab || !driving.session.shown || !window || window.isDestroyed()) return;
+    const view = tab.view.getBounds();
+    const content = window.getContentBounds();
+    const bounds = { x: content.x + view.x, y: content.y + view.y, width: view.width, height: view.height };
+    const progress = browserCursorProgress(bounds, point, driving.action, driving.actions, window.id);
+    if (progress) this.onCursor(progress);
   }
 
   private destroyTab(session: Session, tab: Tab) {
@@ -283,13 +311,15 @@ export class Browsers {
   }
 
   private cdpPort(): Promise<number | null> {
-    this.port ??= readFile(join(app.getPath("userData"), "DevToolsActivePort"), "utf8")
+    const reading = this.port ?? readFile(join(app.getPath("userData"), "DevToolsActivePort"), "utf8")
       .then((body) => {
         const port = Number(body.split("\n")[0]);
         return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : null;
       })
       .catch(() => null);
-    return this.port;
+    this.port = reading;
+    void reading.then((port) => { if (port === null && this.port === reading) this.port = undefined; });
+    return reading;
   }
 
   private async exec(session: Session, argv: readonly string[]): Promise<Ran> {
@@ -313,6 +343,16 @@ export class Browsers {
     this.path = await findExecutable("agent-browser", this.loginPath);
     return this.path;
   }
+}
+
+export function browserCursorProgress(bounds: BrowserBounds, point: { x: number; y: number }, action: string, actions: number, windowId: number): ComputerRunProgress | null {
+  const progress = {
+    step: 0,
+    actions,
+    action: action.slice(0, MAX_CURSOR_LABEL),
+    cursor: { windowId, bounds, x: bounds.x + Math.round(point.x), y: bounds.y + Math.round(point.y) },
+  };
+  return validComputerProgress(progress) ? progress : null;
 }
 
 async function targetOf(tab: Tab): Promise<string> {

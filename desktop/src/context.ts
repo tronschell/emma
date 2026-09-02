@@ -2,10 +2,10 @@
 import { contextBlock, pickKey, slashName, type ContextPick, type FolderFile, type FolderGrant } from "../shared/folders";
 import { pathName, type SlashCommand } from "../shared/slash";
 import { ARTIFACT_LABELS, type ArtifactMeta } from "../shared/artifacts";
-import { asPermissionMode, DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
+import { DEFAULT_PERMISSION_MODE, isPermissionMode, TOOL_CATALOG, type PermissionMode } from "../shared/permissions";
 import { CHARS_PER_TOKEN, mergeUses, rateByContext, usageKey, type ContextUse } from "../shared/usage";
-import { SETTINGS_KEY, tagName, validateSettings } from "../shared/settings";
-import { keepKindLabel, type KeptNote } from "../shared/vault";
+import { SETTINGS_KEY, validateSettings } from "../shared/settings";
+import { keepKindLabel, tagName, type KeptNote } from "../shared/vault";
 import { COMPONENT_ZONE_LABEL } from "../shared/components";
 import type { LiveAgent } from "../shared/agents";
 import type { Message, Thread } from "./types";
@@ -174,10 +174,37 @@ export function setThreadMode(threadId: string, mode: PermissionMode): void {
   localStorage.setItem(MODES_KEY, JSON.stringify({ ...allModes(), [threadId]: mode }));
 }
 
-const OVERLAY_MODE_KEY = "emma.overlayMode.v1";
+const REVIEWS_KEY = "emma.threadReview.v1";
 
-export function overlayMode(): PermissionMode {
-  return asPermissionMode(localStorage.getItem(OVERLAY_MODE_KEY) ?? "auto");
+function allReviews(): Record<string, boolean> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(REVIEWS_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(stored).filter(([, value]) => typeof value === "boolean")) as Record<string, boolean>;
+  } catch { return {}; }
+}
+
+export function threadReview(threadId: string, fallback = true): boolean {
+  return allReviews()[threadId] ?? fallback;
+}
+
+export function setThreadReview(threadId: string, review: boolean): void {
+  localStorage.setItem(REVIEWS_KEY, JSON.stringify({ ...allReviews(), [threadId]: review }));
+}
+
+const OVERLAY_MODE_KEY = "emma.overlayMode.v2";
+const POISONED_OVERLAY_MODE_KEY = "emma.overlayMode.v1";
+
+function carriedOverlayMode(): string | null {
+  const legacy = localStorage.getItem(POISONED_OVERLAY_MODE_KEY);
+  localStorage.removeItem(POISONED_OVERLAY_MODE_KEY);
+  if (legacy === null || legacy === "auto" || !isPermissionMode(legacy)) return null;
+  localStorage.setItem(OVERLAY_MODE_KEY, legacy);
+  return legacy;
+}
+
+export function overlayMode(fallback: PermissionMode = DEFAULT_PERMISSION_MODE): PermissionMode {
+  const saved = localStorage.getItem(OVERLAY_MODE_KEY) ?? carriedOverlayMode();
+  return isPermissionMode(saved) ? saved : fallback;
 }
 
 export function setOverlayMode(mode: PermissionMode): void {
@@ -354,7 +381,7 @@ function toolItems(): SegmentItem[] {
 export async function segmentItems(source: SegmentSource, messages: Message[], threadId: string): Promise<SegmentItem[]> {
   if (source === "messages") {
     return messages.slice(-MAX_SEGMENT_ITEMS).map((message, index) => ({
-      name: `${index + 1}. ${message.role === "user" ? "You" : "Emma"}`,
+      name: `${index + 1}. ${message.role === "user" ? "You" : message.role === "system" ? "Notice" : "Emma"}`,
       detail: message.content.replace(/\s+/g, " ").slice(0, PREVIEW_CHARS).trim(),
       chars: message.content.length,
     }));
@@ -592,7 +619,7 @@ export async function buildAttachedContext(folders: FolderGrant[], folderIds: st
       const label = `${folder?.name ?? ""}/${pick.path}`;
       try {
         const file = await window.emma.readFolderFile({ folderId: pick.folderId, path: pick.path });
-        sections.push({ heading: `File ${folder?.name ?? ""}/${file.path}`, body: file.text, label });
+        sections.push({ heading: `File ${folder?.name ?? ""}/${file.path}`, body: file.missing ? "That file is no longer on disk." : file.text, label });
       } catch (reason) {
         sections.push({ heading: `File ${label}`, body: `Could not be read: ${reasonText(reason)}`, label });
       }

@@ -1,24 +1,37 @@
-import { agentColor, sentByThread, type LiveAgent } from "../shared/agents";
+import { agentColor, sentByThread, type AgentRow, type LiveAgent } from "../shared/agents";
 import type { Message, Thread } from "./types";
 
-export function threadLabel(thread: Thread): string {
+export function threadTitle(thread: Thread): string {
   const title = thread.title.trim();
   if (title && title !== "New thread") return title;
   const first = thread.labelPrompt ?? thread.messages.find((item) => item.role === "user")?.content ?? "";
   const asked = sentByThread(first).body.trim().replace(/\s+/g, " ");
-  if (asked) return asked.length > 48 ? `${asked.slice(0, 47)}…` : asked;
-  return thread.displayTitle?.trim() || "New thread";
+  return asked || thread.displayTitle?.trim() || "New thread";
+}
+
+export function threadLabel(thread: Thread, limit = 48): string {
+  const full = threadTitle(thread);
+  if (full === thread.title.trim()) return full;
+  return full.length > limit ? `${full.slice(0, limit - 1)}…` : full;
 }
 
 export function nested(threads: Thread[], parent = ""): Thread[] {
-  return threads
-    .filter((item) => ownerIn(threads, item) === parent)
+  const ids = new Set(threads.map((item) => item.id));
+  const children = new Map<string, Thread[]>();
+  for (const item of threads) {
+    const owner = ids.has(item.parentThreadId ?? "") ? item.parentThreadId ?? "" : "";
+    const kin = children.get(owner);
+    if (kin) kin.push(item);
+    else children.set(owner, [item]);
+  }
+  const under = (owner: string): Thread[] => (children.get(owner) ?? [])
     .map((item) => {
-      const under = nested(threads, item.id);
-      return { item, under, at: under.reduce((latest, child) => Math.max(latest, stamp(child)), stamp(item)) };
+      const kin = under(item.id);
+      return { item, kin, at: kin.reduce((latest, child) => Math.max(latest, stamp(child)), stamp(item)) };
     })
     .sort((left, right) => right.at - left.at)
-    .flatMap((entry) => [entry.item, ...entry.under]);
+    .flatMap((entry) => [entry.item, ...entry.kin]);
+  return under(parent);
 }
 
 function stamp(thread: Thread): number {
@@ -83,6 +96,22 @@ export function spawnedAgents(threads: Thread[], agents: LiveAgent[], parentThre
     .map((item, index) => item.color ? item : { ...item, color: agentColor(index) });
 }
 
+export function subagentRows(threads: Thread[], agents: LiveAgent[], parentThreadId: string): AgentRow[] {
+  const live = agents.filter((agent) => agent.parentThreadId === parentThreadId);
+  const running = new Set(live.map((agent) => agent.threadId));
+  const recorded = spawnedAgents(threads, agents, parentThreadId)
+    .filter((item) => !running.has(item.id))
+    .map((item): AgentRow => ({
+      threadId: item.id,
+      parentThreadId,
+      title: item.name,
+      color: item.color,
+      status: "done",
+      activity: item.brief,
+    }));
+  return [...recorded, ...live];
+}
+
 export function spawnedByTurn(messages: Message[], spawned: Spawned[]): { turns: Map<number, Spawned[]>; loose: Spawned[] } {
   const ends = messages.map((item) => item.role === "assistant" ? Date.parse(item.timestamp) : NaN);
   const turns = new Map<number, Spawned[]>();
@@ -94,3 +123,19 @@ export function spawnedByTurn(messages: Message[], spawned: Spawned[]): { turns:
   }
   return { turns, loose };
 }
+
+export function latestAssistantMessage(thread?: Thread) {
+  const messages = thread?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") return undefined;
+    if (messages[index].role === "assistant") return messages[index];
+  }
+  return undefined;
+}
+
+export const latestReply = (thread?: Thread) => latestAssistantMessage(thread)?.content ?? "";
+
+export const latestRate = (thread?: Thread) => {
+  const generation = latestAssistantMessage(thread)?.generation;
+  return generation?.durationMilliseconds ? Math.round(generation.outputTokens / generation.durationMilliseconds * 1000) : 0;
+};

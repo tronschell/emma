@@ -33,6 +33,7 @@ client, and ACP server are upstream's. The fork's divergences, in short:
 | Auth | All Vercel and ChatGPT OAuth removed; one env var, `EMMA_PROVIDER_API_KEY` |
 | Branding | `fx.sh` links, feedback, upgrade, and telemetry endpoints removed |
 | `terminal` args | Two real-world call shapes normalized; per-action required fields |
+| `terminal` failures | A non-zero exit reports `stdout` beside `stderr`; test runners print their failure report on stdout |
 | `subagent` | Advertised whenever the session supports children, not hidden behind `search_tools` |
 | Images | ACP `image` prompt blocks accepted into the turn's attachment catalogue |
 | Vision | Model catalogue reads OpenRouter's `architecture.input_modalities`; gate is vision alone, not vision + file input |
@@ -105,7 +106,9 @@ tree under `<userData>/memories`) and so does `web_search` (fx's is dead on the
 ACP path — `.web_search_runtime_ready = false`). `web_fetch` stays fx's, already
 wired with an artifact store and progress. `vision` stays fx's because the
 gateway looks it up **by name** and forces it when a model that cannot see is
-handed an image; its advertisement is `.never`. Emma's image tool is therefore
+handed an image; its advertisement is `.never`. It calls the route in
+`EMMA_VISION_*`, which is Emma's own Vision setting — the same model
+`look_at_image` asks. Emma's image tool is therefore
 `look_at_image`, mapped back to Emma's internal `vision` by
 `HARNESS_TOOL_NAMES` in [`main.ts`](../desktop/main/main.ts).
 
@@ -147,9 +150,24 @@ acp` once per workspace directory, at most `MAX_HARNESSES = 4` alive at once
   reads the user's `~/.fx`.
 - `AI_GATEWAY_API_KEY` and `EMMA_PROVIDER_API_KEY` are both set from Emma's
   `OPENROUTER_API_KEY`; both names, while the Vercel vocabulary is being removed.
+- `EMMA_VISION_MODEL`, `EMMA_VISION_CHAT_URL` and `EMMA_VISION_API_KEY` carry
+  Settings → Tools → Vision to the forced `vision` tool, which would otherwise
+  ask the session's own endpoint for a model that endpoint has never heard of.
+  Unset, the tool keeps its built-in default on the session route. The key
+  travels only with its own URL, so a session credential never reaches another
+  host. Saving tool settings recycles the idle processes that hold the old
+  values.
+- `EMMA_REVIEWER_MODEL`, `EMMA_REVIEWER_CHAT_URL` and `EMMA_REVIEWER_API_KEY` do
+  the same for the automatic permission reviewer behind `emma-cli --auto`, whose
+  built-in slug is an OpenRouter one; on another provider every reviewed call
+  would fail the review and be denied. The same pairing rule applies: the key
+  travels only with its own URL.
 
 A call is abandoned after `MAX_IDLE_MS` — 30 minutes — of **silence**, not wall
-clock; any inbound message refreshes every pending timer.
+clock; any inbound message refreshes every pending timer. Silence that long means
+the process is wedged, so the whole client is failed and closed rather than left
+holding a turn no reply will ever end: `harnessClient` then spawns a fresh one
+and `session/resume` brings the thread back, the same recovery suspend uses.
 
 Those timers count only the time Emma was awake, which is why suspend needs its
 own path. When the operating system suspends the process and takes the model's
@@ -288,12 +306,24 @@ cost an HTTP round trip, a bearer token, and a second protocol.
 ### MCP servers
 
 The user's configured servers are read fresh and passed on `session/new` and
-`session/resume` in `HarnessMcpServer` shape — stdio only, signalled by the
-*absence* of a `type`, since the harness rejects `"stdio"` as a transport value.
+`session/resume` in `HarnessMcpServer` shape. A stdio server is signalled by the
+*absence* of a `type`, since the harness rejects `"stdio"` as a transport value;
 `harnessMcpServers` in [`capabilities.ts`](../desktop/main/capabilities.ts)
-resolves each command against PATH, because the harness rejects a bare name
-(`CommandNotAbsolute`). A bad entry is dropped rather than failing the whole
-`session/new`.
+resolves its command against PATH, because the harness rejects a bare name
+(`CommandNotAbsolute`). A remote server carries `type` (`http` or `sse`), `url`
+and `headers` in place of command, args and env, and `headers` is always sent —
+an empty array when the entry has none — because the harness answers
+`MissingHeaders` for an absent key. The url and headers are checked harness-side by
+`streamable_http`; a refusal there is not a dropped entry — `parse()` propagates
+it and `session/new` fails for every thread. So `parseMcpServer` mirrors those
+rules and drops the entry first: https only (stricter than the harness's loopback
+allowance), no userinfo or fragment in the url, no control bytes in a header
+value, no two names differing only in case. A reserved header name (`Content-Type`
+and friends, which the transport writes itself) is dropped from the entry rather
+than taking the entry with it.
+
+`install_mcp` is still stdio-only: its harness-side spec requires a command, so a
+remote server arrives by importing a Claude or Cursor config, not mid-turn.
 
 The harness takes MCP servers only at session creation, so `forgetSession` /
 `forgetAllSessions` drop a thread's session and let the next turn build a new
@@ -431,6 +461,7 @@ On Windows, use `harness/zig-out/bin/emma-cli.exe acp`.
 | `EMMA_PROVIDER_CHAT_URL` | Read by `chatUrl()` in [`gateway/emma_openai.zig`](../harness/src/gateway/emma_openai.zig). Unset falls back to `https://openrouter.ai/api/v1/chat/completions`. Also points at a local llama-server |
 | `EMMA_OPENROUTER_ZDR` | Any non-empty value adds OpenRouter's `data_collection: "deny"` and `zdr: true`. Opt-in, because most free endpoints offer neither |
 | `EMMA_UPGRADE_BASE_URL` | Loopback E2E override only; emma-cli ships inside the app and has nothing to self-update from |
+| `EMMA_STREAM_SILENCE_MS` | How long a provider call in [`gateway/emma_openai.zig`](../harness/src/gateway/emma_openai.zig) may deliver nothing at all before the attempt is abandoned with `error.Timeout`, which reaches the recovery policy as an interrupted response and is retried like any other. Default 180000; `0` waits forever |
 
 Larger suites: [`harness/tests/e2e/`](../harness/tests/e2e) (TypeScript, `bun
 test`, spawns the built binary with a fake key and never reaches a provider;

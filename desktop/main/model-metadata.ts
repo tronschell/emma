@@ -256,13 +256,8 @@ export class ModelMetadataCatalog {
 
   private readCodex() {
     let modified: number;
-    try { modified = statSync(this.codexFile).mtimeMs; } catch { modified = 0; }
+    try { modified = statSync(this.codexFile).mtimeMs; } catch { return; }
     if (modified === this.codexModified) return;
-    if (!modified) {
-      this.codexModified = modified;
-      this.codexModels.clear();
-      return;
-    }
     try {
       const body = JSON.parse(readFileSync(this.codexFile, "utf8")) as { fetched_at?: unknown; models?: unknown };
       const fetchedAt = typeof body.fetched_at === "string" ? body.fetched_at : "";

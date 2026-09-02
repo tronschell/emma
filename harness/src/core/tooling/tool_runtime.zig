@@ -6977,22 +6977,23 @@ test "run_command nonzero exit returns structured masked failure" {
     const result = try executeTestRunCommand(rt.context(), arena_state.allocator(), .{
         .id = "cmd",
         .name = "terminal",
-        .arguments_json = "{\"action\":\"exec\",\"command\":\"printf 'bad AKIA0123456789ABCDEF\\\\n' >&2; exit 7\"}",
+        .arguments_json = "{\"action\":\"exec\",\"command\":\"printf 'failing test report\\\\n'; printf 'bad AKIA0123456789ABCDEF\\\\n' >&2; exit 7\"}",
     });
 
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
     try expectToolErrorField(result.model_output, "type", "tool_execution_failed");
     try expectToolErrorField(result.model_output, "tool_name", "terminal");
-    try expectToolErrorDetailString(result.model_output, "command", "printf 'bad [redacted]\\n' >&2; exit 7");
+    try expectToolErrorDetailString(result.model_output, "command", "printf 'failing test report\\n'; printf 'bad [redacted]\\n' >&2; exit 7");
     try expectToolErrorDetailString(result.model_output, "cwd", "/tmp");
     try expectToolErrorDetailInt(result.model_output, "exit_code", 7);
+    try expectToolErrorDetailString(result.model_output, "stdout", "failing test report");
     try expectToolErrorDetailString(result.model_output, "stderr", "bad [redacted]");
-    try expectContains(result.model_output, "Inspect stderr");
+    try expectContains(result.model_output, "Inspect stdout, stderr");
     try expectNotContains(result.model_output, "AKIA0123456789ABCDEF");
     const structured = result.command_result_json orelse return error.TestExpectedEqual;
     try expectCommandResultField(structured, "kind", "foreground");
     try expectCommandResultInt(structured, "exit_code", 7);
-    try expectCommandResultInt(structured, "stdout_bytes", 0);
+    try expectCommandResultInt(structured, "stdout_bytes", 20);
     try expectCommandResultInt(structured, "stderr_bytes", 25);
     try std.testing.expect(std.mem.find(u8, structured, "\"stdout\":") == null);
     try std.testing.expect(std.mem.find(u8, structured, "\"stderr\":") == null);

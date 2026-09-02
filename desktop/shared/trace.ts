@@ -207,11 +207,11 @@ export function axisTicks(totalMs: number): { step: number; marks: number[] } {
   return { step, marks };
 }
 
-/** `888ms`, `3.87s`, `2m 04s` — the same reading LangSmith gives a span. */
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;
-  return `${Math.floor(ms / 60_000)}m ${String(Math.round((ms % 60_000) / 1000)).padStart(2, "0")}s`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${(ms / 1000).toFixed(2)}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 /* ---------------------------------------------------------------------------

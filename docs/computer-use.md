@@ -97,8 +97,8 @@ stops the turn. Calls also appear in the thread's execution trace.
 
 ## Activity cursor
 
-An orange Emma cursor and action label mark the control being edited, typed into,
-pressed or scrolled. The cursor glides between controls in the same window over
+A grey Emma cursor haloed in the secondary accent, with an action label, marks
+the control being edited, typed into, pressed or scrolled. The cursor glides between controls in the same window over
 280 ms and pulses on arrival. Read-state steps do not interrupt that movement.
 The operating system's Reduce Motion preference disables the glide and pulse.
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FLOW_LABEL, HEALTH_ADVICE, HEALTH_LABEL, MAX_LOG_LINES, fixPrompt, harnessHealth, type HarnessFlow, type HarnessReport } from "../shared/harness-log";
+import { FLOW_LABEL, HEALTH_ADVICE, HEALTH_LABEL, MAX_LOG_LINES, fixPrompt, harnessHealth, stoppedReason, type HarnessFlow, type HarnessReport } from "../shared/harness-log";
 import { useTailScroll } from "./cli";
 import { reasonText } from "./errors";
 import { plural } from "./plural";
@@ -40,6 +40,7 @@ export function HarnessStatus() {
   }, [copied]);
 
   const health = harnessHealth(report.processes);
+  const advice = stoppedReason(report.processes) || HEALTH_ADVICE[health];
   const lines = useMemo(() => report.lines.filter((line) => flow === "all" || line.flow === flow), [report.lines, flow]);
   const { ref, onScroll } = useTailScroll<HTMLDivElement>([lines.length, open], flow);
   const dismiss = () => dialog.current?.close();
@@ -51,7 +52,7 @@ export function HarnessStatus() {
   };
 
   return <>
-    <button type="button" className="nav-status" data-health={health} aria-haspopup="dialog" title={HEALTH_ADVICE[health]} onClick={() => setOpen(true)}>
+    <button type="button" className="nav-status" data-health={health} aria-haspopup="dialog" title={advice} onClick={() => setOpen(true)}>
       <i /><span>{HEALTH_LABEL[health]}</span>
     </button>
     {open && <dialog ref={dialog} className="modal-backdrop" aria-labelledby="harness-title" onClose={() => setOpen(false)} onCancel={(event) => { event.preventDefault(); dismiss(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
@@ -64,7 +65,7 @@ export function HarnessStatus() {
           </div>)}
           {!report.processes.length && <div><dt>Processes</dt><dd>None — the next turn starts one</dd></div>}
         </dl>
-        {health !== "online" && <p className="dialog-error" role={health === "ready" ? undefined : "alert"}>{HEALTH_ADVICE[health]}</p>}
+        {health !== "online" && <p className="dialog-error" role={health === "ready" ? undefined : "alert"}>{advice}</p>}
         <div className="harness-filters" role="group" aria-label="Filter wire traffic">
           <button type="button" aria-pressed={flow === "all"} onClick={() => setFlow("all")}>All</button>
           {FLOWS.map((kind) => <button type="button" key={kind} aria-pressed={flow === kind} onClick={() => setFlow(kind)}>{FLOW_LABEL[kind]}</button>)}

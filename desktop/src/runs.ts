@@ -26,19 +26,28 @@ export type Block =
 
   | { kind: "notice"; text: string; plain?: boolean; steer?: boolean };
 
+const voice = (blocks: Block[], least: number) =>
+  blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > least) as { text: string } | undefined;
+
 export function pairBlocks(messages: Message[], landed: Block[][], cached: Record<string, Block[]>): (Block[] | undefined)[] {
-  const assistants = messages.reduce((count, item) => item.role === "assistant" ? count + 1 : count, 0);
-  let seen = -1;
-  return messages.map((item) => {
-    if (item.role !== "assistant") return undefined;
-    seen += 1;
-    return landed[seen - (assistants - landed.length)] ?? cached[item.timestamp];
-  });
+  const spots = messages.flatMap((item, at) => item.role === "user" ? [] : [at]);
+  const paired = new Map<number, Block[]>();
+  const spare: Block[][] = [];
+  for (const blocks of landed) {
+    const said = voice(blocks, 0);
+    if (!said) { spare.push(blocks); continue; }
+    const spot = spots.find((at) => !paired.has(at) && messages[at].content.includes(said.text.trim().slice(0, 40)));
+    if (spot !== undefined) paired.set(spot, blocks);
+  }
+  const open = spots.filter((at) => !paired.has(at));
+  const take = Math.min(spare.length, open.length);
+  for (let at = 0; at < take; at += 1) paired.set(open[open.length - take + at], spare[spare.length - take + at]);
+  return messages.map((item, at) => paired.get(at) ?? (item.role === "user" ? undefined : cached[item.timestamp]));
 }
 
 export function wrote(content: string, blocks: Block[]): boolean {
-  const said = blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > 8);
-  return !said || content.includes((said as { text: string }).text.trim().slice(0, 40));
+  const said = voice(blocks, 8);
+  return !said || content.includes(said.text.trim().slice(0, 40));
 }
 
 export function arrived(messages: Message[], blocks: Block[]): boolean {
@@ -100,9 +109,10 @@ export type Run = {
   draft: string;
   activeAt: number;
   routed: string;
+  recovery: string;
 };
 
-const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", activeAt: 0, routed: "" };
+const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", activeAt: 0, routed: "", recovery: "" };
 const runs = new Map<string, Run>();
 const listeners = new Set<() => void>();
 let wired = false;
@@ -132,7 +142,7 @@ export function mergeStep(blocks: Block[], step: ThreadStep): Block[] {
 }
 
 function adoptForeign(threadId: string) {
-  write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now() });
+  write(threadId, { sending: true, foreign: true, blocks: [], pending: null, stopped: false, activeAt: Date.now(), recovery: "" });
   void rehydrate(threadId, began(threadId));
 }
 
@@ -273,14 +283,18 @@ export function wire() {
   wired = true;
   window.emma.onAgents(reconcile);
   void window.emma.listAgents().then(reconcile).catch(() => undefined);
-  window.emma.onDelta(({ threadId, delta, thinking }) => {
+  window.emma.onDelta(({ threadId, delta, thinking, recovery }) => {
     if (!read(threadId).sending) adoptForeign(threadId);
 
-    if (!delta) {
-      write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks, activeAt: Date.now() }));
+    if (recovery) {
+      write(threadId, (run) => ({ blocks: appendText(run.blocks, "thinking", delta), recovery: delta.trim() }));
       return;
     }
-    write(threadId, (run) => ({ blocks: appendText(run.blocks, thinking ? "thinking" : "text", delta), activeAt: Date.now() }));
+    if (!delta) {
+      write(threadId, (run) => ({ blocks: run.blocks.at(-1)?.kind === "text" ? run.blocks.slice(0, -1) : run.blocks, activeAt: Date.now(), recovery: "" }));
+      return;
+    }
+    write(threadId, (run) => ({ blocks: appendText(run.blocks, thinking ? "thinking" : "text", delta), activeAt: Date.now(), recovery: "" }));
   });
   window.emma.onStep((step) => {
     if (!read(step.threadId).sending) adoptForeign(step.threadId);
@@ -323,17 +337,21 @@ export const RUN_ERROR_EVENT = "emma:run-error";
 
 export const runOf = (threadId: string): Run => read(threadId);
 
+export const turnToRetry = (threadId: string): QueuedTurn | null => {
+  const run = read(threadId);
+  return run.sending ? run.pending : null;
+};
+
 export function settleRun(threadId: string, messages: Message[], cached: Record<string, Block[]>): void {
   const run = read(threadId);
   const settled = run.landed.at(-1);
   if (run.sending || run.foreign || run.queue.length || !settled?.length || run.blocks !== settled) return;
-  const assistants = messages.filter((message) => message.role === "assistant");
-  const first = assistants.length - run.landed.length;
-  if (first < 0) return;
-  for (let at = 0; at < run.landed.length; at += 1) {
-    const message = assistants[first + at];
-    const blocks = run.landed[at];
-    if (!message || !blocks.length || !wrote(message.content, blocks) || !Object.prototype.hasOwnProperty.call(cached, message.timestamp) || !Array.isArray(cached[message.timestamp]) || !cached[message.timestamp].length) return;
+  const paired = pairBlocks(messages, run.landed, {});
+  if (paired.filter(Boolean).length < run.landed.length) return;
+  for (const [at, blocks] of paired.entries()) {
+    if (!blocks) continue;
+    const message = messages[at];
+    if (!blocks.length || !wrote(message.content, blocks) || !Array.isArray(cached[message.timestamp]) || !cached[message.timestamp].length) return;
   }
   write(threadId, { blocks: [], landed: [], pending: null });
 }
@@ -433,7 +451,7 @@ async function drain(threadId: string, reload: () => unknown) {
     if (!next) return;
     began(threadId);
     write(threadId, {
-      sending: true, foreign: false, pending: next, stopped: false, activeAt: Date.now(),
+      sending: true, foreign: false, pending: next, stopped: false, activeAt: Date.now(), recovery: "",
       blocks: next.notice ? [{ kind: "notice", text: next.notice, plain: true }] : [],
     });
     let failed = false;
@@ -451,7 +469,6 @@ async function drain(threadId: string, reload: () => unknown) {
       failed = true;
       write(threadId, { pending: null, blocks: [], draft: next.content });
       dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text: reasonText(reason) } }));
-      await reload();
     }
 
     write(threadId, (run) => ({
@@ -459,5 +476,6 @@ async function drain(threadId: string, reload: () => unknown) {
       queue: run.queue.slice(1),
       landed: failed || !run.blocks.length ? run.landed : [...run.landed, run.blocks],
     }));
+    await reload();
   }
 }

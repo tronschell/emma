@@ -42,12 +42,12 @@ export type ResearchJob = {
 
 export type ResearchDeps = {
   request(method: string, params: Record<string, string>): Promise<unknown>;
-  turn(request: { threadId: string; content: string; mode: PermissionMode; title: string; model: string }): Promise<unknown>;
+  turn(request: { threadId: string; content: string; mode: PermissionMode; title: string; model: string; params?: Record<string, string> }): Promise<unknown>;
   stopTurn(threadId: string): void;
   run(cwd: string, command: string, timeoutMs?: number): Promise<string>;
   runGit(cwd: string, args: string[], timeoutMs?: number): Promise<string>;
   attachProject(threadId: string, directory: string): void;
-  resolve(prompt: string, threadId: string): Promise<string>;
+  resolve(prompt: string): Promise<{ content: string; skillContext?: string }>;
   usage(threadId: string): { inputTokens: number; outputTokens: number };
   catalogFile: string;
   changed(): void;
@@ -89,6 +89,11 @@ export function bestValue(iterations: ResearchIteration[], direction: string): n
     if (iteration.value !== undefined && improved(iteration.value, best, direction)) best = iteration.value;
   }
   return best;
+}
+
+export function unattendedRefusal(job: ResearchJob): string | undefined {
+  if (job.permissionMode !== "ask") return undefined;
+  return "This experiment runs as Ask, so every edit and command an iteration makes waits for an answer that nobody is there to give, and times out as a refusal after 10 minutes. Set it to Accept edits — where the agent's one change goes through and commands still ask — or to Full access, then press play.";
 }
 
 export function exhaustedBudget(job: ResearchJob): string | undefined {
@@ -241,7 +246,7 @@ class Runner {
   async loop() {
     try {
       let job = await this.read();
-      const refusal = await this.checkRepository(job);
+      const refusal = unattendedRefusal(job) ?? await this.checkRepository(job);
       if (refusal) return await this.pause(refusal);
       this.threadId = job.threadId || await this.openThread(job);
       deps!.attachProject(this.threadId, job.projectDir);
@@ -250,8 +255,8 @@ class Runner {
       while (!this.stopped) {
         job = await this.read();
         if (job.status !== "running") return;
-        const spent = exhaustedBudget(job);
-        if (spent) return await this.pause(spent);
+        const blocked = unattendedRefusal(job) ?? exhaustedBudget(job);
+        if (blocked) return await this.pause(blocked);
         await this.iterate(job);
       }
     } catch (error) {
@@ -263,12 +268,14 @@ class Runner {
     const startedAt = Date.now();
     const index = job.iterations.length + 1;
     const before = (await deps!.runGit(job.projectDir, ["rev-parse", "HEAD"])).trim();
+    const { content, skillContext } = await deps!.resolve(iterationPrompt(job, index));
     const answer = lastAssistantMessage(await deps!.turn({
       threadId: this.threadId,
-      content: await deps!.resolve(iterationPrompt(job, index), this.threadId),
+      content,
       mode: job.permissionMode,
       title: job.title,
       model: job.proposerModel,
+      ...(skillContext ? { params: { skillContext } } : {}),
     })) ?? "";
     if (this.stopped) return;
     const usage = deps!.usage(this.threadId);
@@ -321,7 +328,7 @@ class Runner {
         "Output:",
         output.slice(0, 32 * 1024),
       ].join("\n"),
-      mode: "ask",
+      mode: job.permissionMode,
       title: `${job.title} · judge`,
       model: job.proposerModel,
     })) ?? "";

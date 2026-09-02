@@ -46,10 +46,15 @@ try {
   }
   findRevert(source);
   assert.ok(revertNode);
-  const revert = vm.runInNewContext(ts.transpileModule(capability.getText(source) + '\n(' + revertNode.getText(source) + ')', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
+  // The handler writes the body recordedRevert looks up, never the one the request carries, so the
+  // recorded changes have to be in the vm alongside it for the revert to have anything to restore.
+  const lookup = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'recordedRevert');
+  const revert = vm.runInNewContext(ts.transpileModule(capability.getText(source) + '\n' + lookup.getText(source) + '\n(' + revertNode.getText(source) + ')', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
     Buffer, escapesRoot, folders, changed() {}, mainWindowSender(event) { assert.equal(event.trusted, true); },
+    agents: { list: () => [{ threadId: 't' }], changes: () => captured },
   });
-  assert.equal(revert({ trusted: true }, captured[0]), true);
+  // The body in the request is a decoy: what lands on disk is the one the harness recorded.
+  assert.equal(revert({ trusted: true }, { ...captured[0], before: 'whatever the caller typed' }), true);
   assert.equal(fs.readFileSync(file, 'utf8'), 'before');
   const outsideFile = path.join(outside, 'file.txt');
   fs.writeFileSync(outsideFile, 'outside');
@@ -59,7 +64,8 @@ try {
     assert.throws(() => revert({ trusted: true }, { folderId: grant.id, path: bad, before: 'invalid' }));
   }
   assert.throws(() => revert({ trusted: false }, captured[0]));
-  assert.throws(() => revert({ trusted: true }, { ...captured[0], before: null }));
+  // A path inside the grant that the harness never rewrote has no recorded body to put back.
+  assert.throws(() => revert({ trusted: true }, { folderId: grant.id, path: 'nested/other.txt', before: 'planted' }));
   assert.throws(() => revert({ trusted: true }, { ...captured[0], folderId: 'missing' }));
   assert.equal(fs.readFileSync(file, 'utf8'), 'before');
   assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'outside');

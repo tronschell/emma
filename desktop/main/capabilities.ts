@@ -30,13 +30,18 @@ type ImportManifest = {
   sources: ImportedSource[];
 };
 
+type McpTransport = "http" | "sse";
+
 type InternalMcpServer = {
   id: string;
   source: string;
   name: string;
-  command: string;
+  command?: string;
   args: string[];
   env: Record<string, string>;
+  type?: McpTransport;
+  url?: string;
+  headers?: Array<{ name: string; value: string }>;
 };
 
 export type ImportedSkill = {
@@ -53,6 +58,8 @@ export type McpServer = {
   args: string[];
   argCount: number;
   environmentKeys: string[];
+  type?: McpTransport;
+  url?: string;
 };
 
 function boundedString(value: unknown, max: number, label: string) {
@@ -463,13 +470,44 @@ function configRoots(value: Record<string, unknown>) {
     if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate as Record<string, unknown>;
   }
   const entries = Object.entries(value);
-  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && "command" in (item as object))) return value;
+  // A keyless file is only claimed when every entry looks declared: a command, or a url with the
+  // transport a real remote entry always names. {name: {url}} alone is a shape too much unrelated
+  // JSON has, and claiming it would dial endpoints the user never offered as MCP servers.
+  if (entries.length && entries.every(([, item]) => item && typeof item === "object" && !Array.isArray(item) && ("command" in (item as object) || ("url" in (item as object) && "type" in (item as object))))) return value;
   return {};
 }
 
+// Mirrors streamable_http.zig: isReservedHeader (plus its "mcp-param-" prefix) and the bytes
+// isValidHeaderValue refuses.
+const RESERVED_HEADERS = new Set(["accept", "accept-encoding", "connection", "content-length", "content-type", "host", "last-event-id", "mcp-method", "mcp-name", "mcp-protocol-version", "mcp-session-id", "transfer-encoding"]);
+const CONTROL_BYTE = /[\u0000-\u0008\u000a-\u001f\u007f]/;
+
 function parseMcpServer(source: string, fileIndex: number, name: string, raw: unknown): InternalMcpServer | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) return undefined;
   const value = raw as Record<string, unknown>;
+  const id = `mcp:${source}:${fileIndex}:${name}`;
+  if (typeof value.url === "string" && value.type !== "stdio") {
+    // https only. A remote entry's headers are how it authenticates, so plaintext http would
+    // put the user's bearer token on the wire; the harness would take loopback http, we do not.
+    if (value.url.length > 4096 || !URL.canParse(value.url) || new URL(value.url).protocol !== "https:") return undefined;
+    // The harness parses this same string with std.Uri and refuses userinfo or a fragment. A
+    // refusal there is not a dropped entry: parse() propagates it and session/new fails for every
+    // thread on the Mac, naming neither server nor file. So nothing it refuses leaves here.
+    const authority = value.url.slice(value.url.indexOf("//") + 2).split(/[/?#]/)[0];
+    if (authority.includes("@") || value.url.includes("#")) return undefined;
+    const supplied = value.headers ?? {};
+    if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) return undefined;
+    // A reserved name is the one bad header worth surviving: the transport writes these itself,
+    // and a Content-Type sitting in an imported Cursor config is ordinary enough that taking the
+    // whole entry down for it would cost more than dropping the header does.
+    const offered = Object.entries(supplied).filter(([key]) => !RESERVED_HEADERS.has(key.toLowerCase()) && !key.toLowerCase().startsWith("mcp-param-"));
+    const headers = offered.filter(([key, item]) => /^[A-Za-z0-9-]{1,128}$/.test(key) && typeof item === "string" && item.length <= 8192 && !CONTROL_BYTE.test(item));
+    if (headers.length !== offered.length || headers.length > 32) return undefined;
+    if (new Set(headers.map(([key]) => key.toLowerCase())).size !== headers.length) return undefined;
+    const type = value.type === "sse" ? "sse" : "http";
+    return { id, source, name, args: [], env: {}, type, url: value.url, headers: headers.map(([key, item]) => ({ name: key, value: item as string })) };
+  }
   let command: string | undefined;
   let args: unknown = value.args;
   if (typeof value.command === "string") command = value.command;
@@ -483,8 +521,7 @@ function parseMcpServer(source: string, fileIndex: number, name: string, raw: un
   if (!environment || typeof environment !== "object" || Array.isArray(environment)) return undefined;
   const env = Object.fromEntries(Object.entries(environment).filter(([key, item]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof item === "string" && item.length <= 8192));
   if (Object.keys(env).length !== Object.keys(environment).length || Object.keys(env).length > 32) return undefined;
-  if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) return undefined;
-  return { id: `mcp:${source}:${fileIndex}:${name}`, source, name, command, args: args as string[], env };
+  return { id, source, name, command, args: args as string[], env };
 }
 
 export function parseMcpConfig(text: string, fileName = "config.json", source = "import", fileIndex = 0) {
@@ -548,14 +585,20 @@ function serverMetadata(server: InternalMcpServer): McpServer {
     if (/^@?[a-z0-9][a-z0-9._/-]*$/i.test(value) && (value.includes("/") || /\.(?:cjs|js|mjs|py|rb|sh)$/i.test(value))) return value;
     return `[argument ${index + 1} redacted]`;
   });
+  // A remote server has no command; the origin of its endpoint stands in so a row still names
+  // something the user recognises. Hosted MCP carries its token in the path or query as often as
+  // in a header (Zapier, Smithery), so the rest of the url stays main-side along with them.
+  const origin = server.url ? new URL(server.url).origin : undefined;
   return {
     id: server.id,
     source: server.source,
     name: server.name,
-    command: server.command,
+    command: server.command ?? origin ?? "",
     args,
     argCount: server.args.length,
     environmentKeys: Object.keys(server.env).sort(),
+    type: server.type,
+    url: origin,
   };
 }
 
@@ -567,7 +610,10 @@ export async function harnessMcpServers(userData: string, disabled: readonly str
   const blocked = new Set(disabled);
   const servers = (await enumerateMcpServers(await loadManifest(userData))).filter((server) => !blocked.has(server.id));
   const resolved = await Promise.all(servers.map(async (server) => {
-    const command = await absoluteCommand(server.command);
+    // The harness answers MissingHeaders when the key is absent, so a remote entry always
+    // carries one even with nothing in it. Its url is validated harness-side on the way in.
+    if (server.url) return { name: server.name, type: server.type, url: server.url, headers: server.headers ?? [] };
+    const command = server.command ? await absoluteCommand(server.command) : undefined;
     if (!command) return undefined;
     const env = Object.entries(server.env);
     const inherited = env.length === 0 ? [] : Object.entries({

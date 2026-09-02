@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
@@ -15,6 +15,9 @@ assert.ok(editor?.body);
 const save = editor.body.statements.flatMap((node) => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : []).find((node) => node.name.getText(source) === "save");
 assert.ok(save?.initializer);
 const code = ts.transpile(`return (${save.initializer.getText(source)});`, { target: ts.ScriptTarget.ES2022 });
+const remove = editor.body.statements.flatMap((node) => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : []).find((node) => node.name.getText(source) === "remove");
+assert.ok(remove?.initializer);
+const removeCode = ts.transpile(`return (${remove.initializer.getText(source)});`, { target: ts.ScriptTarget.ES2022 });
 
 test("scheduled create and edit payloads from TaskEditor preserve the selected or inherited model", async () => {
   for (const job of [undefined, { id: "job-123456789012", sourceDomains: ["example.com"] }]) {
@@ -43,6 +46,84 @@ test("scheduled create and edit payloads from TaskEditor preserve the selected o
   }
 });
 
+test("a delete that did not land leaves the task editor on the job it failed to remove", async () => {
+  const run = async (confirming: boolean, result: unknown) => {
+    const calls: unknown[] = [];
+    const deleted: string[] = [];
+    let confirmed = false;
+    const scope = {
+      job: { id: "job-123456789012" },
+      confirming,
+      setConfirming: (next: boolean) => { confirmed = next; },
+      act: async (method: string, params: Record<string, string>) => {
+        const request = { method, params };
+        assert.deepEqual(validateRequest(request), request);
+        calls.push(request);
+        return result;
+      },
+      onDeleted: () => deleted.push("gone"),
+    };
+    await Function(...Object.keys(scope), removeCode)(...Object.values(scope))();
+    return { calls, deleted, confirmed };
+  };
+  const asked = await run(false, null);
+  assert.deepEqual(asked.calls, [], "the first press asks rather than deleting");
+  assert.equal(asked.confirmed, true);
+
+  const request = { method: "deleteScheduledJob", params: { jobId: "job-123456789012" } };
+  const landed = await run(true, null);
+  assert.deepEqual(landed.calls, [request]);
+  assert.deepEqual(landed.deleted, ["gone"]);
+
+  const failed = await run(true, undefined);
+  assert.deepEqual(failed.calls, [request]);
+  assert.deepEqual(failed.deleted, [], "a delete that failed must not close the editor and hide the job's buttons");
+});
+
+test("a store change refreshes the snapshot even while the window is not on screen", () => {
+  const hook = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "useSnapshot");
+  assert.ok(hook?.body);
+  const effect = hook.body.statements.flatMap((node) => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && node.expression.expression.getText(source) === "useEffect" ? [node.expression] : [])[0];
+  assert.ok(effect, "useSnapshot's effect is not where the test looks for it");
+
+  let loads = 0;
+  let changed: (() => void) | undefined;
+  let tick: (() => void) | undefined;
+  const handlers: Record<string, () => void> = {};
+  const scope = {
+    load: async () => { loads += 1; },
+    skipped: { current: false },
+    SNAPSHOT_REFRESH_MS: 10_000,
+    document: {
+      visibilityState: "hidden",
+      addEventListener: (name: string, handler: () => void) => { handlers[name] = handler; },
+      removeEventListener: () => {},
+    },
+    window: {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      emma: { onChanged: (handler: () => void) => { changed = handler; return handler; }, offChanged: () => {} },
+    },
+    queueMicrotask: () => {},
+    setInterval: (handler: () => void) => { tick = handler; return 1; },
+    clearInterval: () => {},
+  };
+  const cleanup = Function(...Object.keys(scope), ts.transpile(`return (${effect.arguments[0].getText(source)});`, { target: ts.ScriptTarget.ES2022 }))(...Object.values(scope))();
+
+  assert.ok(changed && tick);
+  changed();
+  assert.equal(loads, 1, "a job saved while the window is occluded must still reach the renderer");
+
+  tick();
+  assert.equal(loads, 1, "the poll still stands down while nothing is on screen");
+  assert.equal(scope.skipped.current, true);
+
+  scope.document.visibilityState = "visible";
+  handlers.visibilitychange?.();
+  assert.equal(loads, 2);
+  cleanup();
+});
+
 test("scheduled model support preserves IPC field and size restrictions", () => {
   const params = { title: "Weekly", schedule: "manual", prompt: "Find reading", sourceDomains: "[]", permissionMode: "ask" };
   assert.deepEqual(validateRequest({ method: "saveScheduledJob", params }).params, params);
@@ -60,6 +141,34 @@ test("scheduled model support preserves IPC field and size restrictions", () => 
     assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", model } }), /Invalid parameters/);
   }
   assert.throws(() => validateRequest({ method: "selectOpenRouterModel", params: { modelId: "" } }), /Invalid parameters/);
+});
+
+test("a mentioned skill comes back to its caller instead of being left in the composer's slot", async () => {
+  const main = ts.createSourceFile("main.ts", readFileSync(path.join(__dirname, "../../main/main.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+  const declaration = main.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "resolveMentions");
+  assert.ok(declaration);
+  const put: unknown[] = [];
+  const scope = {
+    mentions: (prompt: string, sigil: string) => prompt.split(/\s+/).filter((word) => word.startsWith(sigil)).map((word) => word.slice(1)),
+    capabilities: {
+      searchSkills: async () => [{ id: "skill-live", name: "release-notes" }, { id: "skill-off", name: "retired" }],
+      selectSkill: async (id: string) => ({ instructions: `instructions for ${id}` }),
+    },
+    toolSettings: { disabledSkills: ["skill-off"] },
+    // Present so the test fails loudly if the single-slot store is ever written to again.
+    skillAttachment: { put: (...args: unknown[]) => put.push(args) },
+    app: { getPath: () => "/tmp" },
+    recordUse: async () => {}, skillKey: (id: string) => id,
+    listArtifacts: async () => [], readVault: () => undefined, listNotes: () => [],
+    folders: { list: () => [], files: () => [], read: () => ({ path: "", text: "" }) },
+    pathName: (value: string) => value, contextBlock: () => "", path, statSync, readFileSync, MAX_NOTE_BYTES: 1, noteFolder: () => "", noteInVault: () => "",
+  };
+  const resolve = Function(...Object.keys(scope), ts.transpile(`${declaration.getText(main)}\nreturn resolveMentions;`, { target: ts.ScriptTarget.ES2022 }))(...Object.values(scope));
+
+  assert.deepEqual(await resolve("run /release-notes now"), { content: "run /release-notes now", skillContext: "instructions for skill-live" }, "the caller is handed the skill so it can put it on its own turn");
+  assert.equal((await resolve("run /retired now")).skillContext, undefined, "a skill turned off in settings stays off");
+  assert.equal((await resolve("no mention here")).skillContext, undefined);
+  assert.equal(put.length, 0, "nothing is left in the shared attachment slot for another surface to send");
 });
 
 test("scheduled workflows use Emma's selected model unless the job pins a model", async () => {
@@ -82,7 +191,7 @@ test("scheduled workflows use Emma's selected model unless the job pins a model"
         modelCatalog: { ids: () => ["vendor/model", "vendor/other"] },
         process: { env: {} }, providerChatUrl, routerChain, routerIdFor, CODEX_PREFIX, codexSlug,
         asPermissionMode, packVariables, parseVariables, parseWorkflow, runWorkflow,
-        resolveMentions: async (prompt: string) => prompt,
+        resolveMentions: async (prompt: string) => ({ content: prompt }),
         driveTurn: async (turn: TurnRequest) => { turns.push(turn); },
         lastAssistantMessage: () => "done",
         host: { request: async (request: unknown) => { requests.push(request); } },

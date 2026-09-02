@@ -51,7 +51,8 @@ function Spans({ spans }: { spans: Span[] }) {
 
 function Items({ ordered, items }: { ordered: boolean; items: Item[] }) {
   const List = ordered ? "ol" : "ul";
-  return <List>{items.map((item, index) => <li key={index}>
+  return <List>{items.map((item, index) => <li key={index} className={item.checked === undefined ? undefined : "md-task"}>
+    {item.checked !== undefined && <input type="checkbox" checked={item.checked} disabled aria-label={item.checked ? "Done" : "Not done"} />}
     <Spans spans={item.spans} />
     {item.sub && <Items ordered={item.sub.ordered} items={item.sub.items} />}
   </li>)}</List>;

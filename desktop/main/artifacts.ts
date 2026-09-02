@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { constants, DatabaseSync } from "node:sqlite";
 import { ARTIFACT_DB_FILE, ARTIFACT_EXTENSIONS, ARTIFACT_FILE_TYPES, ARTIFACT_KINDS, ARTIFACT_SURFACES, artifactSlug, isArtifactKind, isArtifactSurface, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_DB_BYTES, MAX_ARTIFACT_FILES, MAX_ARTIFACT_ROWS, MAX_ARTIFACT_SQL_CHARS, MAX_ARTIFACT_SQL_PARAMS, MAX_ARTIFACT_TITLE_CHARS, MAX_ARTIFACTS, mountable, validArtifactFile, validArtifactId, type Artifact, type ArtifactKind, type ArtifactMeta } from "../shared/artifacts";
 
 export function artifactRoot(userData: string): string {
@@ -249,21 +249,6 @@ export async function writeArtifactFile(userData: string, id: string, file: stri
   return await writeArtifact(userData, { id, title: artifact.title, kind: artifact.kind, language: artifact.language, content: artifact.content });
 }
 
-/**
- * One statement against one app's own database, and the whole of what a page can
- * reach out and do.
- *
- * This is the trust boundary: the artifact's code is model-written and runs in a
- * sandboxed frame with no network, so the id arrives from the renderer's own
- * component and is checked here as every other id is, the file is fixed at
- * `data.sqlite` inside that one folder, and the kind has to be `app` — no other
- * artifact grows a database behind the user's back. The statement itself is the
- * app's business: it owns every row in there and nobody else's.
- *
- * ponytail: opened per query and closed after, so there is no handle to leak and
- * none held open across a delete. Keep one open per artifact if a chart of ten
- * thousand rows ever feels slow.
- */
 export async function queryArtifact(userData: string, id: string, sql: unknown, params: unknown): Promise<Record<string, unknown>[]> {
   const artifact = await readArtifact(userData, id);
   if (artifact.kind !== "app") throw new Error(`${id} is a ${artifact.kind} artifact, so it has no database.`);
@@ -272,18 +257,12 @@ export async function queryArtifact(userData: string, id: string, sql: unknown, 
   const bound = bindable(params);
   const database = new DatabaseSync(path.join(artifactDirectory(userData, id), ARTIFACT_DB_FILE));
   try {
-    // SQLite's own ceiling, in its own pages, so the write that would cross it comes
-    // back as "database or disk is full" instead of the file quietly growing.
     const pageSize = Number((database.prepare("pragma page_size").get() as { page_size?: number } | undefined)?.page_size) || 4096;
     database.prepare(`pragma max_page_count = ${Math.floor(MAX_ARTIFACT_DB_BYTES / pageSize)}`).run();
+    database.setAuthorizer((action) => action === constants.SQLITE_ATTACH || action === constants.SQLITE_DETACH ? constants.SQLITE_DENY : constants.SQLITE_OK);
     const rows: Record<string, unknown>[] = [];
-    // Iterated rather than collected: `all()` would build the whole result in memory
-    // before there was anything to refuse, which is the case the cap is here for.
     for (const row of database.prepare(sql).iterate(...bound)) {
       if (rows.length >= MAX_ARTIFACT_ROWS) throw new Error(`That returned more than ${MAX_ARTIFACT_ROWS} rows. Add a LIMIT, or count in SQL rather than in the page.`);
-      // Copied onto an ordinary object: node:sqlite hands back null-prototype rows,
-      // and the structured clone that carries them to the frame would not, so main
-      // and the page would otherwise be looking at two different shapes.
       rows.push({ ...(row as Record<string, unknown>) });
     }
     return rows;

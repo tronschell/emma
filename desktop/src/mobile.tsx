@@ -158,7 +158,7 @@ export function MobileSettings({ busy }: { busy: boolean }) {
         {status.devices.map((device) => <p key={device.id}>
           <strong className={device.connected ? "status-live" : "status-idle"}><i /> {device.connected ? "Connected" : `Disconnected · seen ${seen(device.lastSeen)}`}</strong>
           {" "}Paired {day(device.id)}.{" "}
-          <button type="button" className="reset-data" disabled={locked} onClick={() => void unpair(device.id)}>{confirming === device.id ? "Remove for good" : "Remove"}</button>
+          <button type="button" className="reset-data" data-armed={confirming === device.id} disabled={locked} onClick={() => void unpair(device.id)}>{confirming === device.id ? "Remove for good" : "Remove"}</button>
         </p>)}
         {pairing && <strong className="status-live"><i /> Expires in {left}s</strong>}
         {pairing && <p>Scan this with Emma Mobile.</p>}

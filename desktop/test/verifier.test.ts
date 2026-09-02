@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import { defaultVerifier, defaultVerifierSystem, OPENROUTER_CHAT_ENDPOINT, routerKey, validateVerifier, verifierFromKey, verifierKey } from "../shared/settings";
 import { toolGate } from "../shared/permissions";
@@ -116,6 +118,20 @@ test("a chained second model asks OpenRouter to fall through for it", async () =
   } finally { globalThis.fetch = original; }
 });
 
+test("a reasoning model that answers in its thinking field is still read", async () => {
+  const original = globalThis.fetch;
+  const reply = (message: Record<string, unknown>) => (async () =>
+    new Response(JSON.stringify({ choices: [{ message }] }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+  const ask = (thinking?: boolean) => chatCompletion(settings, [{ role: "user", content: "hi" }], "", { maxTokens: 10, timeoutMs: 5_000, label: "note tagger", thinking });
+  try {
+    globalThis.fetch = reply({ content: null, reasoning_content: '{"title": "Vendor risk", "tags": []}' });
+    assert.equal(await ask(true), '{"title": "Vendor risk", "tags": []}');
+    globalThis.fetch = reply({ content: "", reasoning: "thought" });
+    assert.equal(await ask(true), "thought");
+    assert.equal(await ask(), "");
+  } finally { globalThis.fetch = original; }
+});
+
 test("auto gates exactly what ask gates, so the verifier is asked the same questions", () => {
   assert.equal(toolGate("auto", "run_tool"), "ask");
   assert.equal(toolGate("auto", "computer"), "ask");
@@ -203,3 +219,11 @@ function harness({ verify, answer }: { verify: (request: VerifierRequest) => Pro
   const gate = () => runtime.question({ threadId: "t1", tool: "terminal", summary: "running npm test", detail: "npm test" });
   return { runtime, gate, asked, live, traced };
 }
+
+test("a second model picker never offers the ChatGPT plan, which it cannot express", () => {
+  const app = readFileSync(resolve(__dirname, "../../src/App.tsx"), "utf8");
+  assert.match(app, /const slugs = useCodexSlugs\(\);\s+const codexSlugs = codex \? slugs : \[\];/);
+  assert.match(app, /onPick=\{pick\} codex=\{false\}/);
+  assert.doesNotMatch(app, /<ModelRow(?![^>]*codex=)[^>]*\/>/);
+  assert.equal(verifierFromKey("codex:gpt-5.6-luna", [], "rules").model, "");
+});

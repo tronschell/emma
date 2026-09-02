@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { BlockList, isIP } from "node:net";
 import { MAX_ATTACHED_CONTEXT_CHARS } from "../shared/folders";
-import { isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
+import { clampBytes, isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
 
 const MAX_HOST_REQUEST_BYTES = 128 * 1024;
 export const MAX_ANNOTATION_INPUT_CHARS = 16 * 1024 * 1024;
@@ -63,7 +63,7 @@ const fields: Record<Method, readonly string[]> = {
 };
 
 const optionalFields: Partial<Record<Method, readonly string[]>> = {
-  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages"],
+  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages", "skillContext"],
   listOpenRouterModels: ["force"],
   selectOpenRouterModel: ["effort"],
   selectProviderModel: ["effort"],
@@ -140,10 +140,10 @@ export function keepRequest(value: unknown): KeepRequest {
   if (sourceUrl && !externalUrl(sourceUrl)) throw new Error("Keep source is invalid");
   if (candidate.image !== undefined && !validImageDataUrl(candidate.image, MAX_ATTACHMENT_BYTES)) throw new Error("Keep image is invalid");
   const request: KeepRequest = { kind: candidate.kind };
-  const title = bounded(candidate.title, MAX_TITLE_BYTES, "Keep title is invalid");
+  const title = bounded(candidate.title, MAX_NOTE_BYTES, "Keep title is invalid");
   const text = bounded(candidate.text, MAX_NOTE_BYTES, "Keep text is invalid");
   const sourceApplication = bounded(candidate.sourceApplication, 256, "Keep source is invalid");
-  if (title) request.title = title;
+  if (title) request.title = clampBytes(title, MAX_TITLE_BYTES);
   if (text) request.text = text;
   if (sourceUrl) request.sourceUrl = sourceUrl;
   if (sourceApplication) request.sourceApplication = sourceApplication;

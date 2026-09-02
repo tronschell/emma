@@ -43,6 +43,7 @@ struct RecordTurnParams {
     thread_id: String,
     prompt: String,
     response: String,
+    notice: Option<String>,
     output_tokens: Option<String>,
     duration_milliseconds: Option<String>,
     input_tokens: Option<String>,
@@ -247,6 +248,8 @@ fn normalized_prompt(content: &str) -> String {
         .join(" ")
 }
 
+const SEARCHABLE_TITLE_UNITS: usize = 200;
+
 fn display_title(content: &str) -> String {
     if content.encode_utf16().count() <= 48 {
         return content.to_owned();
@@ -263,21 +266,6 @@ fn display_title(content: &str) -> String {
     }
     title.push('…');
     title
-}
-
-fn needs_renderer_prompt(content: &str) -> bool {
-    if content.encode_utf16().count() <= 48 {
-        return false;
-    }
-    let mut units = 0;
-    for character in content.chars() {
-        let width = character.len_utf16();
-        if units + width > 47 {
-            return width == 2;
-        }
-        units += width;
-    }
-    false
 }
 
 fn utf16_prefix(content: &str, limit: usize) -> String {
@@ -312,8 +300,8 @@ impl From<&Thread> for ThreadSummary {
         let label_prompt = if default_title {
             first_user_message
                 .as_deref()
-                .filter(|content| needs_renderer_prompt(content))
-                .map(|content| utf16_prefix(content, 50))
+                .filter(|content| content.encode_utf16().count() > 48)
+                .map(|content| utf16_prefix(content, SEARCHABLE_TITLE_UNITS))
         } else {
             None
         };
@@ -658,6 +646,7 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
                     params.prompt,
                     params.response,
+                    params.notice.unwrap_or_default(),
                     output_tokens,
                     duration_milliseconds,
                     input_tokens,
@@ -927,6 +916,15 @@ mod tests {
         );
         let split = format!("{emoji}x");
         assert!(summary(&split).label_prompt.is_some());
+        let buried = "Draft a one page memo for the pricing committee on semiconductor supply";
+        let summarised = summary(buried);
+        assert!(!summarised.display_title.unwrap().contains("semiconductor"));
+        assert_eq!(summarised.label_prompt.as_deref(), Some(buried));
+        let long = "word ".repeat(80);
+        assert_eq!(
+            summary(&long).label_prompt.unwrap().encode_utf16().count(),
+            SEARCHABLE_TITLE_UNITS
+        );
         assert_eq!(
             summary("[thread short! messaged]\nhello")
                 .display_title

@@ -50,6 +50,11 @@ shell can only ever start somewhere this thread already has — and a thread wit
 no folder connected cannot open one at all. Swapping a thread onto a worktree
 rewrites that grant, so a terminal opened afterwards starts in the worktree.
 
+The panel's auto-start is keyed on the thread *and* the folder it is pointed at.
+Point a thread whose folder could not open a shell at a healthy one and the pane
+clears the old error and starts a shell there; shells already running keep the
+cwd they were opened in.
+
 On macOS the shell is `$SHELL` (falling back to `/bin/zsh`) run as `-il` —
 interactive and login, so your rc files, prompt and PATH are the ones you
 already have. On Windows it is `COMSPEC` (normally `cmd.exe`) with `/d`, so

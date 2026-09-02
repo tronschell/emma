@@ -8,6 +8,7 @@ export type { PermissionAsk } from "../shared/agents";
 import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import type { RunnableHookEvent } from "../shared/plugins";
+import { missingFolderMessage } from "../shared/folders";
 import { MAX_LOG_BODY, type HarnessFlow, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import type { HarnessExperiments } from "../shared/settings";
 import { decodeSpans, encodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
@@ -43,7 +44,8 @@ export const experimentOption = (experiments: HarnessExperiments) =>
     `prune_percent=${experiments.pruneToolsPercent}`,
   ].join(",");
 
-export type HarnessMcpServer = { name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> };
+// stdio is signalled by the absence of `type`; a remote entry carries url and headers instead.
+export type HarnessMcpServer = { name: string; command?: string; args?: string[]; env?: Array<{ name: string; value: string }>; type?: "http" | "sse"; url?: string; headers?: Array<{ name: string; value: string }> };
 
 const wireLabel = (message: Record<string, unknown>) => {
   const id = typeof message.id === "number" ? `#${message.id}` : "";
@@ -139,6 +141,7 @@ export type HarnessDeps = {
   cwd: string;
   apiKey?: string;
   chatUrl?: string;
+  vision?: { model: string; chatUrl: string; apiKey: string };
   promptFile?: string;
 
   idleMs?: number;
@@ -146,7 +149,7 @@ export type HarnessDeps = {
   mcpServers: (threadId: string) => Promise<HarnessMcpServer[]>;
   onDelta: (threadId: string, delta: string) => void;
 
-  onThought: (threadId: string, delta: string) => void;
+  onThought: (threadId: string, delta: string, recovery?: boolean) => void;
   onToolCall: (call: HarnessToolCall) => void;
 
   onCompacted: (threadId: string, compacted: Compaction) => void;
@@ -443,9 +446,17 @@ export class Harness {
 
   async start() {
     if (this.child) return;
+    if (!exists(this.deps.cwd)) {
+      const gone = new Error(missingFolderMessage(path.basename(this.deps.cwd) || this.deps.cwd, this.deps.cwd));
+      this.fail(gone);
+      throw gone;
+    }
 
     const key = this.deps.apiKey ? { AI_GATEWAY_API_KEY: this.deps.apiKey, EMMA_PROVIDER_API_KEY: this.deps.apiKey } : {};
     const route = this.deps.chatUrl ? { EMMA_PROVIDER_CHAT_URL: this.deps.chatUrl } : {};
+    const vision = this.deps.vision
+      ? { EMMA_VISION_MODEL: this.deps.vision.model, EMMA_VISION_CHAT_URL: this.deps.vision.chatUrl, EMMA_VISION_API_KEY: this.deps.vision.apiKey }
+      : {};
     const prompt = this.deps.promptFile ? { EMMA_SYSTEM_PROMPT: this.deps.promptFile } : {};
     const child = spawn(this.deps.binaryPath, this.deps.args ?? ["acp"], {
       cwd: this.deps.cwd,
@@ -461,6 +472,7 @@ export class Harness {
         } : {}),
         ...key,
         ...route,
+        ...vision,
         ...prompt,
       },
     });
@@ -705,12 +717,13 @@ export class Harness {
       const threadId = this.threadsBySession.get(sessionId);
       if (threadId && !this.cancelled.has(threadId)) this.computerTurn = { id, threadId, sessionId, calls: new Set() };
     }
+    const idleMs = this.deps.idleMs ?? MAX_IDLE_MS;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (!this.pending.delete(id)) return;
-        if (this.computerTurn?.id === id) this.computerTurn = undefined;
-        reject(new Error(`Harness call ${method} timed out`));
-      }, this.deps.idleMs ?? MAX_IDLE_MS);
+        if (!this.pending.has(id)) return;
+        this.fail(new Error(`emma-cli stopped answering while ${method} was in flight. Emma restarted the agent; send the turn again.`));
+        void this.close();
+      }, idleMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, touch: () => timer.refresh() });
       this.send({ jsonrpc: "2.0", id, method, params });
@@ -890,7 +903,7 @@ export class Harness {
         const wait = typeof recovery.delaySeconds === "number" && recovery.delaySeconds > 0 ? `, retrying in ${recovery.delaySeconds}s` : "";
         const line = `${recovery.message}${attempt}${wait}`;
         if (recovery.state === "paused") this.paused.set(threadId, line); else this.paused.delete(threadId);
-        this.deps.onThought(threadId, `${line}\n`);
+        this.deps.onThought(threadId, `${line}\n`, true);
         return;
       }
       default:

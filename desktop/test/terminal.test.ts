@@ -86,6 +86,22 @@ test("terminal subscriptions follow the selected thread and ignore stale tabs an
   assert.equal(writes, settledWrites);
 });
 
+test("the terminal pane retries when the thread is pointed at another folder", () => {
+  const source = ts.createSourceFile("terminal-implementation.tsx", readFileSync(path.join(__dirname, "..", "..", "src", "terminal-implementation.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "useEffect" && node.getText(source).includes("listTerminals")) found.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.equal(found.length, 1);
+  const [body, deps] = found[0].arguments;
+  assert.ok(ts.isArrayLiteralExpression(deps));
+  assert.deepEqual(deps.elements.map((item) => item.getText(source)).sort(), ["folderId", "start", "threadId"]);
+  assert.match(body.getText(source), /started\.current = where/);
+  assert.match(body.getText(source), /setError\(""\)/);
+});
+
 test("xterm stays behind the terminal implementation lazy boundary", () => {
   const eager = readFileSync(path.join(__dirname, "..", "..", "src", "terminal.tsx"), "utf8");
   const implementation = readFileSync(path.join(__dirname, "..", "..", "src", "terminal-implementation.tsx"), "utf8");

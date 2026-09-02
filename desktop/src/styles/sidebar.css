@@ -226,7 +226,7 @@
 .thread-status.done { color: var(--lime); }
 .thread-status.done::before { content: "\2713"; }
 .thread-status.waiting { color: var(--orange); }
-.thread-status.waiting::before { content: "\25CF"; animation: thread-breathe 1.4s ease-in-out infinite; }
+.thread-status.waiting::before { width: 6px; height: 6px; content: ""; background: currentColor; border-radius: var(--r-full); animation: thread-breathe 1.4s ease-in-out infinite; }
 .thread-status.failed { color: var(--danger); }
 .thread-status.failed::before { content: "!"; font-weight: 700; }
 

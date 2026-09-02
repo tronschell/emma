@@ -6,7 +6,7 @@ import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
-import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
+import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, stoppedReason, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import { Harness, HARNESS_MODE_ID, INTERRUPTED_CALL, callEscapesWorkspace, compactionReported, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, recoveredSessionTraces, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 import { decodeSpans, encodeSpans } from "../shared/trace";
 
@@ -257,6 +257,14 @@ test("a harness that has gone quiet reports how long, and closing it hands the w
   assert.ok(client.silentFor >= 50, `nothing since: ${client.silentFor}`);
   client.close();
   await assert.rejects(wedged, /Harness closed/);
+});
+
+test("a turn the agent never answers is handed back, and the wedged agent is replaced", async () => {
+
+  const { client } = harness(async () => "allow_once", 150);
+  await assert.rejects(client.prompt("thread-wedged", workspace, "wedge", "ask"), /stopped answering/);
+  assert.equal(client.running, false);
+  client.close();
 });
 
 test("a subagent's words land on a thread of its own, never in its parent's answer", async () => {
@@ -732,6 +740,9 @@ test("health reads the process, and offline is a death Emma did not ask for", ()
   assert.equal(harnessHealth([state({ running: true, busy: true, silentMs: STALL_MS + 1 })]), "stalled");
   assert.equal(harnessHealth([state({ failure: "emma-cli exited with code 1" })]), "offline");
   assert.equal(harnessHealth([state({ failure: CLOSED_BY_EMMA })]), "ready");
+  assert.equal(stoppedReason([state({ failure: '"work" is no longer at /tmp/work — reconnect it from the ＋ menu.' })]), '"work" is no longer at /tmp/work — reconnect it from the ＋ menu.');
+  assert.equal(stoppedReason([state({ running: true })]), "");
+  assert.equal(stoppedReason([state({ failure: CLOSED_BY_EMMA })]), "");
 });
 
 test("the fix prompt carries the failure and the traffic, not just the word broken", () => {
@@ -828,4 +839,76 @@ test("a recovery replayed while the session opens is not why the next run stoppe
   await client.prompt("t_stale", workspace, "hello", "ask");
   assert.equal(client.paused.get("t_stale"), undefined);
   client.close();
+});
+
+test("a run whose project folder was deleted names the folder, not the agent binary", async () => {
+  const gone = path.join(tmpdir(), `emma-gone-${process.pid}`);
+  rmSync(gone, { recursive: true, force: true });
+  const client = new Harness({
+    binaryPath: process.execPath,
+    args: [fakeAgent],
+    home: tmpdir(),
+    cwd: gone,
+    mcpServers: async () => [],
+  } as unknown as ConstructorParameters<typeof Harness>[0]);
+  await assert.rejects(() => client.start(), new RegExp(`is no longer at ${gone}`));
+  assert.match(client.state.failure, /reconnect it from the ＋ menu/);
+  assert.doesNotMatch(client.state.failure, /ENOENT/);
+});
+
+test("the configured vision route reaches the child, and no vision route leaves the session route alone", async () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "emma-vision-env-"));
+  const dump = path.join(scratch, "env.json");
+  const agent = path.join(scratch, "agent.mjs");
+  writeFileSync(agent, [
+    'import { writeFileSync } from "node:fs";',
+    'writeFileSync(process.env.EMMA_TEST_ENV_DUMP, JSON.stringify(process.env));',
+    `await import(${JSON.stringify(fakeAgent)});`,
+  ].join("\n"));
+  process.env.EMMA_TEST_ENV_DUMP = dump;
+  const start = async (vision?: { model: string; chatUrl: string; apiKey: string }) => {
+    const client = new Harness({
+      binaryPath: process.execPath,
+      args: [agent],
+      home: path.join(scratch, "home"),
+      cwd: workspace,
+      apiKey: "session-key",
+      chatUrl: "https://session.example/v1/chat/completions",
+      vision,
+      mcpServers: async () => [],
+      onDelta: () => {},
+      onThought: () => {},
+      onToolCall: () => {},
+      onCompacted: () => {},
+      onContextExperiment: () => {},
+      onRoutedModel: () => {},
+      onContextBreakdown: () => {},
+      onUsage: () => {},
+      onChildStart: () => Promise.resolve("t"),
+      onChildEnd: () => {},
+      onPlan: () => {},
+      onPermission: async () => null,
+      onToolRequest: async () => "",
+    });
+    await client.start();
+    const env = JSON.parse(readFileSync(dump, "utf8")) as Record<string, string>;
+    client.close();
+    return env;
+  };
+
+  const configured = await start({ model: "vendor/eyes:free", chatUrl: "https://vision.example/v1/chat/completions", apiKey: "vision-key" });
+  assert.equal(configured.EMMA_PROVIDER_API_KEY, "session-key");
+  assert.equal(configured.EMMA_PROVIDER_CHAT_URL, "https://session.example/v1/chat/completions");
+  assert.equal(configured.EMMA_VISION_MODEL, "vendor/eyes:free");
+  assert.equal(configured.EMMA_VISION_CHAT_URL, "https://vision.example/v1/chat/completions");
+  assert.equal(configured.EMMA_VISION_API_KEY, "vision-key");
+
+  const bare = await start();
+  assert.equal(bare.EMMA_PROVIDER_CHAT_URL, "https://session.example/v1/chat/completions");
+  assert.equal(bare.EMMA_VISION_MODEL, undefined);
+  assert.equal(bare.EMMA_VISION_CHAT_URL, undefined);
+  assert.equal(bare.EMMA_VISION_API_KEY, undefined);
+
+  delete process.env.EMMA_TEST_ENV_DUMP;
+  rmSync(scratch, { recursive: true, force: true });
 });

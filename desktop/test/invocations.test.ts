@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "../main/invocations";
+import { daysUnder, mcpServerPrefix, mcpToolKey, modelKey, readUsage, recordUse, skillKey } from "../main/invocations";
 import { byUse, recentDays, rowSeries, rowTotal, usageDay, usageSeries, type UsageRow } from "../shared/invocations";
 
 test("keys name a skill by source and an MCP call by its tool", () => {
@@ -63,4 +63,20 @@ test("the chart series follows the day window, oldest first", () => {
   assert.deepEqual(usageSeries(rows, days), [2, 0, 6]);
   assert.equal(rowTotal(rows[1]), 5);
   assert.deepEqual(byUse(rows).map((row) => row.name), ["beta", "alpha"]);
+});
+
+test("a model key survives a round trip through the store", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "emma-model-usage-"));
+  try {
+    assert.equal(modelKey("z-ai/glm-5.2:free"), "model/z-ai/glm-5.2:free");
+    assert.equal(modelKey("auto"), "model/auto");
+    assert.equal(modelKey("a model with spaces"), "");
+    assert.equal(modelKey(undefined), "");
+    await recordUse(home, modelKey("z-ai/glm-5.2:free"));
+    await recordUse(home, modelKey("z-ai/glm-5.2:free"));
+    const usage = await readUsage(home);
+    assert.equal(Object.values(usage["model/z-ai/glm-5.2:free"])[0], 2);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });
