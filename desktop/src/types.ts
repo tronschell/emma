@@ -2,6 +2,7 @@ import type { BackgroundTask, FileChange, LiveAgent, PermissionAsk, ThreadStep }
 import type { Artifact, ArtifactMeta } from "../shared/artifacts";
 import type { BuiltComponent, ComponentMeta, ComponentRequest } from "../shared/components";
 import type { CliModels, CliRun } from "../shared/cli";
+import type { CouncilStart, CouncilState } from "../shared/council";
 import type { EditorApp, FolderFile, FolderGrant } from "../shared/folders";
 import type { GitCommandResult, GitHistory, GitReady, GitSnapshot, WorktreeEntry } from "../shared/git";
 import type { MachineSample } from "../shared/machine";
@@ -14,12 +15,13 @@ import type { Plan } from "../shared/plan";
 import type { TaskList } from "../shared/task-list";
 import type { PluginCatalog, PluginDetail } from "../shared/plugins";
 import type { UsageRow } from "../shared/invocations";
+import type { NextStep, WorkState } from "../shared/next-steps";
 import type { FrontApplication } from "../shared/screen-context";
 import type { LinkedPermission, SetupStatus } from "../shared/setup";
 import type { TerminalTab } from "../shared/terminal";
 import type { TraceSpan } from "../shared/trace";
 import type { VoiceStatus } from "../shared/voice";
-import type { HarnessExperiments, KeyBalance, ProviderProfile, ShortcutRequest, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
+import type { HarnessExperiments, KeyBalance, ProviderProfile, ReviewSettings, ShortcutRequest, ToolSettings, UserSettings, VerifierSettings } from "../shared/settings";
 import type { KeepRequest, KeptNote, NoteFolder, VaultChoice } from "../shared/vault";
 
 export interface MemoryNote {
@@ -275,7 +277,7 @@ declare global {
       updateReady(): Promise<string>;
       installUpdate(): Promise<void>;
       onUpdateReady(listener: (value: string) => void): () => void;
-      onDelta(listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void): () => void;
+      onDelta(listener: (value: { threadId: string; delta: string; thinking?: boolean; recovery?: boolean }) => void): () => void;
       onStep(listener: (value: ThreadStep) => void): () => void;
       onCompacted(listener: (value: { threadId: string; removedTurns: number; summaryChars: number; modelWritten: boolean }) => void): () => void;
       onContextExperiment(listener: (value: { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }) => void): () => void;
@@ -381,15 +383,24 @@ declare global {
       setProviders(value: ProviderProfile[]): Promise<ProviderProfile[]>;
       testProvider(value: { baseUrl: string; credentialEnv: string; modelId: string; insecure: boolean }): Promise<{ models: string[]; tools: boolean; error: string }>;
       setVerifier(value: VerifierSettings): Promise<VerifierSettings>;
+      setTagger(value: VerifierSettings): Promise<VerifierSettings>;
       setToolSettings(value: ToolSettings): Promise<ToolSettings>;
       setZoom(value: number): Promise<number>;
       setHarnessExperiments(value: HarnessExperiments): Promise<HarnessExperiments>;
+      setReview(value: ReviewSettings): Promise<ReviewSettings>;
       setImprovements(value: Improvements): Promise<Improvements>;
       forceArm(value: { threadId: string; arm: Arm }): Promise<Arm>;
       listToolTargets(): Promise<{ written: ToolTarget[]; skills: ImportedSkill[]; servers: ImportedMcpServer[] }>;
-      capabilityUsage(): Promise<{ skills: UsageRow[]; servers: UsageRow[] }>;
+      capabilityUsage(): Promise<{ skills: UsageRow[]; servers: UsageRow[]; models: UsageRow[] }>;
+      nextSteps(value: WorkState): Promise<NextStep[]>;
       onToolsChanged(listener: () => void): () => void;
-      setThreadContext(value: { threadId: string; folderIds: string[]; mode: PermissionMode; model: string; subagentModel?: string; subagentEffort?: string }): Promise<PermissionMode>;
+      startCouncil(value: CouncilStart): Promise<CouncilState>;
+      stopCouncil(threadId: string): Promise<void>;
+      adoptCouncil(value: { threadId: string; seatId: string }): Promise<CouncilState>;
+      closeCouncil(threadId: string): Promise<void>;
+      councilState(threadId: string): Promise<CouncilState | null>;
+      onCouncil(listener: (state: CouncilState) => void): () => void;
+      setThreadContext(value: { threadId: string; folderIds: string[]; mode: PermissionMode; model: string; subagentModel?: string; subagentEffort?: string; review?: boolean }): Promise<PermissionMode>;
       runCommand(value: { command: string; folderId?: string }): Promise<BackgroundTask>;
       listBackground(): Promise<BackgroundTask[]>;
       readBackground(id: string): Promise<{ task: BackgroundTask; output: string } | null>;
@@ -432,6 +443,7 @@ declare global {
       listAgents(): Promise<LiveAgent[]>;
       listSpans(): Promise<Record<string, TraceSpan[]>>;
       livePartial(): Promise<Record<string, { text: string; thinking: string }>>;
+      listAsks(): Promise<PermissionAsk[]>;
       threadTraces(threadId: string): Promise<{ timestamp: string; text: string }[]>;
       steerAgent(value: { threadId: string; text: string }): Promise<void>;
       stopAgent(threadId?: string): void;

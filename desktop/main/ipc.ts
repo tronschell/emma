@@ -63,7 +63,7 @@ const fields: Record<Method, readonly string[]> = {
 };
 
 const optionalFields: Partial<Record<Method, readonly string[]>> = {
-  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages"],
+  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages", "skillContext"],
   listOpenRouterModels: ["force"],
   selectOpenRouterModel: ["effort"],
   selectProviderModel: ["effort"],

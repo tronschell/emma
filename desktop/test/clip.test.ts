@@ -56,3 +56,24 @@ test("clipped text is trimmed by bytes, not characters", () => {
   assert.ok(Buffer.byteLength(trimmed) <= 30 && trimmed.length === 10);
   assert.equal(boundedText("", 0), "");
 });
+
+test("every picture in a clip is fetched under the same timeout as the page", async () => {
+  const signals: (AbortSignal | undefined | null)[] = [];
+  const page = `<html><head><title>Piece</title></head><body><p>${"word ".repeat(120)}</p><img src="/hero.png"></body></html>`;
+  electron.net.fetch = (async (url: string, init: RequestInit) => {
+    signals.push(init.signal);
+    const image = /\.(?:png|ico)$/.test(new URL(url).pathname);
+    return {
+      status: 200,
+      ok: true,
+      headers: new Headers({ "content-type": image ? "image/png" : "text/html" }),
+      arrayBuffer: async () => (image ? Buffer.from("icon") : Buffer.from(page)),
+    };
+  }) as unknown as typeof electron.net.fetch;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { clipPage }: typeof import("../main/clip") = require("../main/clip");
+  const clip = await clipPage({ application: "Safari", url: "https://example.com/piece" });
+  assert.equal(clip.images.length > 0, true);
+  assert.equal(signals.length, 3);
+  assert.equal(signals.every((signal) => signal instanceof AbortSignal), true, "a stalled image host cannot hold the clip open");
+});

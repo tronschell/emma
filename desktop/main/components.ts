@@ -224,7 +224,7 @@ function componentGrant(userData: string, meta: BuiltComponent, call: ComponentC
 }
 
 export class ComponentRequests {
-  private grants = new Map<string, Promise<boolean>>();
+  private grants = new Map<string, boolean>();
 
   async fetch(userData: string, id: string, request: unknown, secrets: NodeJS.ProcessEnv, approve: (meta: ComponentMeta, call: ComponentCall) => Promise<boolean>): Promise<ComponentResponse> {
     const meta = await readComponent(userData, id);
@@ -238,13 +238,13 @@ export class ComponentRequests {
     if (Buffer.byteLength(JSON.stringify(call)) > MAX_COMPONENT_REQUEST_BYTES) throw new Error("The expanded component request exceeds 8 KiB.");
     if (template.variables.length) {
       const key = componentGrant(userData, meta, template, credentials);
-      let grant = this.grants.get(key);
-      if (!grant) {
+      let granted = this.grants.get(key);
+      if (granted === undefined) {
+        granted = await Promise.resolve().then(() => approve(meta, template)).catch(() => false);
         if (this.grants.size >= 256) this.grants.delete(this.grants.keys().next().value!);
-        grant = Promise.resolve().then(() => approve(meta, template)).catch(() => false);
-        this.grants.set(key, grant);
+        this.grants.set(key, granted);
       }
-      if (!await grant) throw new Error("This credential-bearing component request was not approved.");
+      if (!granted) throw new Error("This credential-bearing component request was not approved.");
       const current = await readComponent(userData, id);
       if (current.disabled || componentGrant(userData, current, template, componentCredentials(template, secrets)) !== key) throw new Error("The component or credentials changed while approval was pending. Request again for a new approval.");
     }

@@ -173,7 +173,7 @@ export function boundedText(text: string, limit: number) {
 }
 
 async function fetchImage(url: string) {
-  const response = await net.fetch(url, { redirect: "follow", credentials: "omit" });
+  const response = await net.fetch(url, { redirect: "follow", credentials: "omit", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!response.ok || !/^\s*image\//i.test(response.headers.get("content-type") ?? "")) return null;
   const bytes = Buffer.from(await response.arrayBuffer());
   return bytes.length > 0 && bytes.length <= MAX_IMAGE_BYTES ? bytes : null;

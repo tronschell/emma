@@ -628,6 +628,50 @@ them on this computer. See [privacy.md](privacy.md).
 IPC surface but nothing in the renderer calls it, so its model is whatever
 `defaultTagger` says.
 
+### The reviewer is not one of them
+
+A sixth subsystem runs a second model and shares none of this shape. **Second-model
+review** — `Settings → Harness`, `ReviewSettings { enabled, model }` — posts no
+chat completion at all: it drives a whole agentic turn on the model you pick, in a
+thread of its own, on the harness, with the tools and the workspace the reviewed
+thread had. So it takes a *model key* like any thread model (`openrouter:…`,
+`provider:…`, `codex:…`) rather than an endpoint and a credential name, and it is
+billed like a turn, not like a completion.
+
+The prompts and the verdict live in [review.ts](../desktop/main/review.ts); the
+loop sits in [main.ts](../desktop/main/main.ts) beside the goal loop, on the same
+`runDrivenTurn` chokepoint. It ships off, because a reviewer weaker than the model
+doing the work is worse than no reviewer at all, and only you know which model
+that is.
+
+**When it fires.** After a turn that changed something — a completed tool call of
+kind `edit`, `delete`, `move` or `execute`, or a file change on record — in a
+thread with a connected folder, whose run finished cleanly. Never on a nested,
+subagent, bench, goal-driven or already-reviewed turn; never while a goal is being
+pursued, because that loop owns the thread; never when the thread's own ◎ toggle
+beside the composer is off. A turn that only read and answered is not reviewed —
+the `advisor` tool is the one for asking mid-turn.
+
+**What it sees, and what it may do.** A child thread called `Review · <thread>`
+inherits the parent's folder and permission mode, and is handed the request and
+the first pass quoted between markers, each trimmed to `MAX_REVIEW_QUOTE_CHARS`
+(20,000) from the tail. It reads, greps, runs `git diff`, runs the tests. Every
+permission request of kind `edit` is refused for it and for any subagent it
+starts, so it cannot write the fix — that is the reviewed model's job. The block
+is on the edit tools and not on the shell, so a thread that runs commands without
+asking reviews at that same rung.
+
+**The verdict.** The review ends with `VERDICT: ship` or `VERDICT: revise` on a
+line of its own. The last such line wins, and anything unparseable counts as
+`ship`, so a confused, empty or interrupted review costs one turn and never a
+loop. On `revise` the critique goes back to the thread's own model as a fresh
+turn, quoted as a reviewer's opinion rather than as something the user said, and
+the result is reviewed again — at most `MAX_REVIEW_ROUNDS` (2) rounds, after which
+Emma stops and leaves the last word to you. Stopping the thread, archiving it, or
+starting a turn of your own ends the loop too.
+
+**Cost.** Up to two extra agentic turns per round, on two bills.
+
 ## Token, rate and cost accounting
 
 Two numbers exist per turn: a live estimate and the provider's real count.

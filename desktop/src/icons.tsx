@@ -1,6 +1,7 @@
 
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { brandRenderData } from "./brand-data";
+import { TerminalIcon } from "./terminal";
 import type { BrandDefinition } from "./brands";
 
 const EMMA_OPEN = new URL("../assets/emma.webp", import.meta.url).href;
@@ -143,6 +144,45 @@ export function MoveIcon() {
   return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 5.4h9.2M8.6 2.8l2.6 2.6-2.6 2.6M14 10.6H4.8M7.4 8l-2.6 2.6 2.6 2.6" /></svg>;
 }
 
+export function ReviewIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4 4.67 11.33 1.33 8" /><path d="M14.67 6.67 9.67 11.67 8.67 10.67" /></svg>;
+}
+
 export function SparkIcon() {
   return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 1.8 9.5 6 13.7 7.5 9.5 9 8 13.2 6.5 9 2.3 7.5 6.5 6zM12.8 11.6l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z" /></svg>;
+}
+
+export function ComputerIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="1.6" y="2.6" width="12.8" height="8.4" /><path d="M5.6 13.4h4.8M8 11v2.4" /></svg>;
+}
+
+export function LockIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.4" /><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" /></svg>;
+}
+
+export function PencilIcon() {
+  return <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11.2 2.3 13.7 4.8 5.4 13H2.9v-2.5z" /><path d="M9.7 3.8l2.5 2.5" /></svg>;
+}
+
+const TOOL_MARKS: Record<string, () => ReactElement> = {
+  read_file: BookIcon, read_tool_result: BookIcon, open_file: BookIcon,
+  file_info: GlassIcon, vision: GlassIcon, look_at_image: GlassIcon,
+  terminal: TerminalIcon, run_command: TerminalIcon, bash: TerminalIcon,
+  grep_files: SearchIcon, glob_files: SearchIcon, semantic_search: SearchIcon,
+  web_search: SearchIcon, search_tools: SearchIcon, mcp_search_tools: SearchIcon,
+  edit_file: PencilIcon, write_file: PencilIcon,
+  list_files: TreeIcon, create_folder: TreeIcon,
+  delete_file: TrashIcon, rename_file: MoveIcon, copy_file: MoveIcon,
+  web_fetch: GlobeIcon, save_page: GlobeIcon, browser: GlobeIcon,
+  subagent: SparkIcon, computer: ComputerIcon,
+};
+
+const KIND_MARKS: Record<string, () => ReactElement> = {
+  read: BookIcon, search: SearchIcon, edit: PencilIcon,
+  execute: TerminalIcon, delete: TrashIcon, move: MoveIcon, fetch: GlobeIcon,
+};
+
+export function ToolMark({ name = "", kind = "" }: { name?: string; kind?: string }) {
+  const Glyph = TOOL_MARKS[name] ?? KIND_MARKS[kind] ?? ToolIcon;
+  return <Glyph />;
 }

@@ -13,6 +13,9 @@ pub const tool_name = "permission_decision";
 const max_rationale_bytes: usize = 240;
 const max_review_packet_bytes: usize = 16 * 1024;
 pub const gateway_reviewer_model = "zai/glm-5.2";
+pub const model_env = "EMMA_REVIEWER_MODEL";
+pub const chat_url_env = "EMMA_REVIEWER_CHAT_URL";
+pub const api_key_env = "EMMA_REVIEWER_API_KEY";
 
 pub const Risk = enum {
     low,
@@ -231,6 +234,79 @@ pub const Provider = struct {
     context: ?*anyopaque = null,
     review_fn: ProviderFn,
 };
+
+pub const Route = struct {
+    model: []const u8,
+    chat_url: []const u8,
+    api_key: []const u8,
+};
+
+fn configuredEnv(name: []const u8) ?[]const u8 {
+    const raw = io_mod.getenv(name) orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    return if (trimmed.len == 0) null else trimmed;
+}
+
+pub fn route(session_chat_url: []const u8, session_api_key: []const u8) Route {
+    return routeFrom(
+        configuredEnv(model_env),
+        configuredEnv(chat_url_env),
+        configuredEnv(api_key_env),
+        session_chat_url,
+        session_api_key,
+    );
+}
+
+fn routeFrom(
+    model_override: ?[]const u8,
+    chat_url_override: ?[]const u8,
+    api_key_override: ?[]const u8,
+    session_chat_url: []const u8,
+    session_api_key: []const u8,
+) Route {
+    return .{
+        .model = model_override orelse gateway_reviewer_model,
+        .chat_url = chat_url_override orelse session_chat_url,
+        .api_key = if (chat_url_override == null)
+            session_api_key
+        else
+            api_key_override orelse "",
+    };
+}
+
+test "reviewer route falls back to the session route and pairs an override key with an override endpoint" {
+    const session = routeFrom(null, null, null, "https://session.test/chat", "session-key");
+    try std.testing.expectEqualStrings(gateway_reviewer_model, session.model);
+    try std.testing.expectEqualStrings("https://session.test/chat", session.chat_url);
+    try std.testing.expectEqualStrings("session-key", session.api_key);
+
+    const overridden = routeFrom(
+        "local/reviewer",
+        "https://local.test/chat",
+        "local-key",
+        "https://session.test/chat",
+        "session-key",
+    );
+    try std.testing.expectEqualStrings("local/reviewer", overridden.model);
+    try std.testing.expectEqualStrings("https://local.test/chat", overridden.chat_url);
+    try std.testing.expectEqualStrings("local-key", overridden.api_key);
+
+    const model_only = routeFrom(
+        "local/reviewer",
+        null,
+        "local-key",
+        "https://session.test/chat",
+        "session-key",
+    );
+    try std.testing.expectEqualStrings("local/reviewer", model_only.model);
+    try std.testing.expectEqualStrings("https://session.test/chat", model_only.chat_url);
+    try std.testing.expectEqualStrings("session-key", model_only.api_key);
+
+    const keyless = routeFrom(null, "https://local.test/chat", null, "https://session.test/chat", "session-key");
+    try std.testing.expectEqualStrings(gateway_reviewer_model, keyless.model);
+    try std.testing.expectEqualStrings("https://local.test/chat", keyless.chat_url);
+    try std.testing.expectEqualStrings("", keyless.api_key);
+}
 
 pub const Reviewer = struct {
     transport: ?Transport = null,

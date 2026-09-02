@@ -1,0 +1,234 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Emma carousels</title>
+<style>
+@font-face{font-family:"Departure Mono";src:url("../desktop/assets/DepartureMono-Regular.woff2") format("woff2")}
+:root{--bg:#0e0e10;--surface:#131316;--surface-2:#17171a;--surface-4:#232327;--text:#e8e6df;--text-2:#e8e6dfad;--text-3:#e8e6df8c;--border:#e8e6df26;--border-strong:#e8e6df47;
+--orange:#ff6a3d;--blue:#6faee6;--rose:#ed7a9b;--teal:#3fd8c0;--lime:#c3d64b;--violet:#ae78f0;--yellow:#e8c34a;
+--mono:"Departure Mono",ui-monospace,Menlo,monospace;--sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+html,body{margin:0;background:#000}
+.pano{position:relative;width:3600px;height:1000px;overflow:hidden;color:var(--text);font-family:var(--sans)}
+.pano canvas{position:absolute;inset:0}
+.card{position:absolute;top:0;width:1200px;height:1000px;box-sizing:border-box;padding:96px}
+.c1{left:0}.c2{left:1200px}.c3{left:2400px}
+.eyebrow{font:20px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text-2);margin:0 0 24px}
+.eyebrow b{color:var(--orange);font-weight:400}
+h1{font:400 72px/1.05 var(--mono);margin:0;letter-spacing:-.01em;text-wrap:balance}
+h1.sm{font-size:60px}
+h1 em{font-style:normal;color:var(--orange)}
+p{font:24px/1.4 var(--sans);color:var(--text-2);margin:24px 0 0;max-width:840px;text-wrap:pretty}
+.pano>.card>p,.pano>.card>.big,p.plate{background:var(--bg);border:1px solid var(--border-strong);padding:32px 40px;box-sizing:border-box}
+.copy{display:inline-block;background:var(--bg);border:1px solid var(--border-strong);padding:40px 48px;max-width:1008px;box-sizing:border-box}
+.copy>:first-child{margin-top:0}
+.wm{position:absolute;left:96px;bottom:80px;font:26px var(--mono);letter-spacing:.08em;color:var(--text);background:var(--bg);border:1px solid var(--border-strong);padding:16px 24px}
+.wm span{color:var(--text-3)}
+.big{font:400 128px/1 var(--mono);letter-spacing:-.02em;margin:0}
+.big small{font-size:56px;color:var(--text-3)}
+/* dark app panels — square corners, --border edge */
+.panel{position:absolute;background:var(--surface);border:1px solid var(--border-strong);font:22px/1.5 var(--mono);color:var(--text);box-sizing:border-box}
+.panel .hd{display:flex;justify-content:space-between;padding:20px 24px;border-bottom:1px solid var(--border);color:var(--text-2);letter-spacing:.08em;text-transform:uppercase;font-size:18px}
+.row{display:flex;gap:16px;align-items:center;padding:16px 24px;border-bottom:1px solid var(--border);white-space:nowrap}
+.row:last-child{border-bottom:0}
+.row .k{flex:1;overflow:hidden;text-overflow:ellipsis}
+.row .v{color:var(--text-3);width:100px;text-align:right}
+.row .pct{color:var(--text-3);width:90px;text-align:right}
+.sw{width:14px;height:14px;flex:none}
+.tag{border:1px solid var(--border-strong);padding:6px 12px;font:18px var(--mono);color:var(--text-2)}
+/* meter */
+.meter{position:absolute;height:28px;background:#0e0e10;border:1px solid var(--border-strong);display:flex}
+.meter i{display:block;height:100%}
+.notice{position:absolute;font:22px var(--mono);color:var(--text-2);display:flex;gap:24px;align-items:center;white-space:nowrap}
+.notice::before{content:"";flex:1;height:1px;background:var(--border-strong);min-width:60px}
+.notice::after{content:"";flex:1;height:1px;background:var(--border-strong);min-width:60px}
+.notice button{font:inherit;background:var(--text);color:#0e0e10;border:0;padding:10px 18px}
+.chat{position:absolute;background:var(--surface);border:1px solid var(--border-strong);padding:32px;font:22px/1.55 var(--sans);color:var(--text);box-sizing:border-box}
+.chat .u{color:var(--text-2);font-family:var(--mono);font-size:20px;margin-bottom:16px}
+.chat code{font-family:var(--mono);color:var(--violet)}
+.chain{position:absolute;display:flex;flex-direction:column;gap:0;font:22px var(--mono);border:1px solid var(--border-strong);background:var(--surface)}
+.chain .row{gap:24px;padding:20px 28px}
+.chain .st{width:220px;text-align:right}
+.x{color:var(--rose)}.ok{color:var(--lime)}.wait{color:var(--yellow)}
+.dot{width:10px;height:10px;background:currentColor;flex:none}
+.pick .row{padding:18px 24px}
+.pick .row.on{background:var(--surface-4)}
+.pick .nm{flex:1}.pick .nm small{display:block;color:var(--text-3);font-size:18px}
+.pick .ctx{color:var(--text-3);width:90px;text-align:right}
+.pick .star{color:var(--yellow);width:30px;text-align:right}
+.pick .star.off{color:var(--text-3)}
+.pick .ft{padding:18px 24px;border-top:1px solid var(--border);display:flex;justify-content:space-between;color:var(--text-2);font-size:18px;letter-spacing:.08em;text-transform:uppercase}
+.q{padding:18px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;font-size:22px}
+.q b{font-weight:400;color:var(--text-3);font-size:18px;letter-spacing:.08em}
+.composer{position:absolute;background:var(--surface-2);border:1px solid var(--border-strong);display:flex;align-items:center;justify-content:space-between;padding:20px 28px;font:22px var(--mono);box-sizing:border-box}
+.composer .m{border:1px solid var(--border-strong);padding:8px 14px}
+.composer .m b{color:var(--orange);font-weight:400}
+.prov{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--border-strong);background:var(--surface);font:22px var(--mono);margin-top:40px}
+.prov div{padding:20px 24px;border-bottom:1px solid var(--border);border-right:1px solid var(--border);display:flex;justify-content:space-between}
+.prov div:nth-child(even){border-right:0}.prov div:nth-last-child(-n+2){border-bottom:0}
+.prov small{color:var(--text-3);font-size:18px}
+svg text{font:20px var(--mono)}
+.lbl{position:absolute;top:812px;font:20px var(--mono);letter-spacing:.08em;color:var(--text-2);background:var(--bg);border:1px solid var(--border-strong);padding:10px 16px}
+.leg{position:absolute;display:flex;gap:28px;font:20px var(--mono);color:var(--text-2)}
+.leg span::before{content:"";display:inline-block;width:12px;height:12px;margin-right:10px;vertical-align:-1px;background:var(--c)}
+</style>
+
+<!-- ===== 1 · CONTEXT WINDOW ===== -->
+<section class="pano" data-pal="#6f7aa8,#8f9aa6,#c8cfa0,#e4e8d0" data-seed="11">
+  <canvas></canvas>
+  <div class="card c1">
+    <div class="copy"><p class="eyebrow"><b>▤</b> Context window</p>
+    <h1>Know what every turn carries.</h1>
+    <p>Every token the last turn sent, by kind, against the model's stated window. Before you spend the next one.</p></div></div>
+    <div class="wm">emma <span>· the thread inspector</span></div>
+  </div>
+  <div class="card c2">
+    <div class="panel" style="left:0;top:96px;width:1008px">
+      <div class="hd"><span>Context window</span><span>35k / 205k tokens · 17.0%</span></div>
+      <div class="row"><i class="sw" style="background:var(--blue)"></i><span class="k">Tool results &amp; retries</span><span class="v">11k</span><span class="pct">5.6%</span></div>
+      <div class="row"><i class="sw" style="background:var(--orange)"></i><span class="k">System tools</span><span class="v">5.3k</span><span class="pct">2.6%</span></div>
+      <div class="row"><i class="sw" style="background:var(--violet)"></i><span class="k">plans/ship-splitleaf-1-0.md</span><span class="v">4.7k</span><span class="pct">2.3%</span></div>
+      <div class="row"><i class="sw" style="background:var(--teal)"></i><span class="k">Attachments · 5</span><span class="v">3.9k</span><span class="pct">1.9%</span></div>
+      <div class="row"><i class="sw" style="background:var(--lime)"></i><span class="k">Skill · releasing</span><span class="v">2.8k</span><span class="pct">1.4%</span></div>
+      <div class="row"><i class="sw" style="background:var(--yellow)"></i><span class="k">Reinjections</span><span class="v">1.1k</span><span class="pct">0.5%</span></div>
+      <div class="row"><span class="k" style="color:var(--text-3)">9 more · ⤢ full ledger</span></div>
+    </div>
+  </div>
+  <div class="card c3">
+    <p class="big" style="margin-top:96px">170k <small>free</small></p>
+    <p style="margin-top:40px">Pruning saved 18k this thread. Nothing was summarised away without a line in the ledger.</p>
+    <div class="wm">emma <span>· github.com/tronschell/emma</span></div>
+  </div>
+  <!-- the meter runs under all three cards -->
+  <div class="meter" style="left:96px;right:96px;top:760px">
+    <i style="width:5.6%;background:var(--blue)"></i><i style="width:2.6%;background:var(--orange)"></i><i style="width:2.3%;background:var(--violet)"></i><i style="width:1.9%;background:var(--teal)"></i><i style="width:1.4%;background:var(--lime)"></i><i style="width:.5%;background:var(--yellow)"></i><i style="width:2.7%;background:var(--text-3)"></i>
+  </div>
+  <div class="lbl" style="left:96px">0</div>
+  <div class="lbl" style="left:700px;color:var(--text)">35K CARRIED</div>
+  <div class="lbl" style="right:96px">205K WINDOW</div>
+</section>
+
+<!-- ===== 2 · SELF-HEALING ===== -->
+<section class="pano" data-pal="#3a3a38,#6a4a48,#6a9a8a,#c0c0a8,#e8e8dc" data-seed="7">
+  <canvas></canvas>
+  <div class="card c1">
+    <div class="copy"><p class="eyebrow"><b>∿</b> Self-healing turns</p>
+    <h1>The model went quiet. <em>The turn didn't.</em></h1></div>
+    <div class="notice" style="left:96px;width:1008px;top:560px"><span>No reply for 1:12</span><button>Try another model</button></div>
+    <p style="position:absolute;left:96px;top:640px;width:1008px">A minute of silence draws a stall notice, counting up. Three, if a tool is still running.</p>
+    <div class="wm">emma <span>· when a model goes quiet</span></div>
+  </div>
+  <div class="card c2">
+    <p class="eyebrow">Routers fall through on their own</p>
+    <div class="chain" style="left:96px;top:180px;width:1008px">
+      <div class="row"><i class="dot x"></i><span class="k">nvidia/nemotron-3-super-120b:free</span><span class="st x">rate-limited</span></div>
+      <div class="row"><i class="dot x"></i><span class="k">thinkingmachines/inkling:free</span><span class="st x">503 · backoff</span></div>
+      <div class="row" style="background:var(--surface-4)"><i class="dot ok"></i><span class="k">z-ai/glm-5.2:free</span><span class="st ok">answered</span></div>
+      <div class="row"><i class="dot" style="color:var(--text-3)"></i><span class="k" style="color:var(--text-3)">poolside/laguna-s-2.1:free</span><span class="st" style="color:var(--text-3)">standing by</span></div>
+    </div>
+    <p style="position:absolute;left:96px;top:560px;width:1008px">A router is a chain, best first. The next link answers when the one above is rate-limited, down, or retired. Retry and backoff are written to the thinking channel, so a run waiting out a 503 is never read as a hang.</p>
+  </div>
+  <div class="card c3">
+    <div class="chat" style="left:96px;top:96px;width:1008px">
+      <div class="u">you · 09:41</div>
+      Make the merge deterministic and add the test.
+      <div class="notice" style="position:static;margin:28px 0;font-size:20px"><span>Model changed to glm-5.2</span></div>
+      Re-sent the same prompt. The merge now sorts by <code>(ts, id)</code> before folding, and <code>merge.test.ts</code> covers the tie…
+    </div>
+    <p style="position:absolute;left:96px;top:600px;width:1008px">Pick a model from the stall notice and the <span style="color:var(--text)">same</span> turn carries on. Nothing retyped, no <code style="font-family:var(--mono)">continue</code>.</p>
+    <div class="wm">emma <span>· github.com/tronschell/emma</span></div>
+  </div>
+</section>
+
+<!-- ===== 3 · MODEL PICKER ===== -->
+<section class="pano" data-pal="#2a2830,#4a4050,#9a8aa8,#d8d0d8" data-seed="23">
+  <canvas></canvas>
+  <div class="card c1">
+    <div class="copy"><p class="eyebrow"><b>◇</b> Model picker</p>
+    <h1>Any model. <em>Every thread.</em></h1>
+    <p>Paste one key. Pick from the whole OpenRouter catalog, a router chain, a ChatGPT plan, or a box down the hall. Switch per thread, mid-turn if you like.</p></div></div>
+    <div class="wm">emma <span>· one picker, no adapters</span></div>
+  </div>
+  <!-- picker spans cards 2 and 3 -->
+  <div class="panel pick" style="left:1296px;top:96px;width:1400px">
+    <div class="q"><span>glm<span style="opacity:.6">|</span></span><b>FREE ONLY</b></div>
+    <div class="row on"><span class="nm">Z.ai: GLM 5.3 Flash<small>Z.ai / GLM</small></span><span class="ctx">205K</span><span class="star">★</span></div>
+    <div class="row"><span class="nm">Z.ai: GLM 5.3<small>Z.ai / GLM</small></span><span class="ctx">205K</span><span class="star">★</span></div>
+    <div class="row"><span class="nm">Z.ai: GLM 4.5<small>Z.ai / GLM</small></span><span class="ctx">131K</span><span class="star off">☆</span></div>
+    <div class="row"><span class="nm">Z.ai: GLM 4.5 Air<small>Z.ai / GLM</small></span><span class="ctx">131K</span><span class="star off">☆</span></div>
+    <div class="row"><span class="nm">Z.ai: GLM 4.6<small>Z.ai / GLM</small></span><span class="ctx">200K</span><span class="star off">☆</span></div>
+    <div class="ft"><span>Thinking</span><span>▍ · · · · default</span></div>
+    <div class="ft" style="text-transform:none;letter-spacing:0;font-size:20px"><span>All models, keys, and local profiles</span><span>↗</span></div>
+  </div>
+  <div class="composer" style="left:1296px;top:850px;width:1400px"><span style="color:var(--text-3)">Ask Emma to continue…</span><span class="m"><b>Z</b> glm-5.3-flash ▾</span></div>
+  <div style="position:absolute;left:2800px;top:96px;width:704px">
+    <div class="prov" style="margin:0">
+      <div><span>OpenRouter</span><small>catalog</small></div>
+      <div><span>Emma Free Router</span><small>10 free</small></div>
+      <div><span>Z.AI</span><small>profile</small></div>
+      <div><span>DeepSeek</span><small>profile</small></div>
+      <div><span>ChatGPT</span><small>via Codex</small></div>
+      <div><span>LM Studio</span><small>localhost</small></div>
+      <div><span>llama.cpp</span><small>10.0.0.4</small></div>
+      <div><span>+ any endpoint</span><small>chat/completions</small></div>
+    </div>
+    <p class="plate" style="max-width:704px">A provider is <span style="font-family:var(--mono)">{ modelId, baseUrl, key }</span>. That's the whole adapter.</p>
+  </div>
+</section>
+
+<!-- ===== 4 · DYNAMIC PLAN ===== -->
+<section class="pano" data-pal="#3a3038,#5a5a8a,#8a5ab8,#b8b0d0,#e0dce8" data-seed="41">
+  <canvas></canvas>
+  <div class="card c1">
+    <div class="copy"><p class="eyebrow"><b>◰</b> Dynamic plan</p>
+    <h1 class="sm">24 steps. Nine waves. <em>Eight subagents at once.</em></h1>
+    <p>A plan is a graph, not a list. Steps whose dependencies are done form a wave, and Emma spawns the whole wave.</p></div></div>
+    <div class="wm">emma <span>· plan · 13 of 24 steps</span></div>
+  </div>
+  <div class="card c2"><p>Steps whose dependencies are all done form a wave. <span style="font-family:var(--mono);color:var(--text)">plan run</span> hands the model one brief per step, and it spawns a subagent against each. Up to eight at once.</p></div>
+  <div class="card c3">
+    <p class="eyebrow" style="margin-top:0">Wave 4 · 3 running</p>
+    <div class="panel" style="position:static;width:1008px;font-size:22px">
+      <div class="row"><i class="dot" style="color:var(--orange)"></i><span class="k">15 · Wire sync into the app</span><span class="tag">running</span></div>
+      <div class="row"><i class="dot" style="color:var(--orange)"></i><span class="k">16 · Release notes</span><span class="tag">running</span></div>
+      <div class="row"><i class="dot" style="color:var(--orange)"></i><span class="k">17 · Beta invite</span><span class="tag">running</span></div>
+      <div class="row"><i class="dot x"></i><span class="k">5 · Signing</span><span class="tag" style="color:var(--rose)">failed · blocks 18, 19</span></div>
+    </div>
+    <p style="margin-top:0;border-top:0">A failed step is left red, not painted green. It blocks only what waits on it. Press a node to light its wave.</p>
+    <div class="wm">emma <span>· github.com/tronschell/emma</span></div>
+  </div>
+  <!-- graph spans all three cards; drawn by script -->
+  <svg id="dag" style="position:absolute;left:0;top:0" width="3600" height="1000"></svg>
+  <div class="leg" style="left:2000px;top:900px;background:var(--bg);border:1px solid var(--border-strong);padding:14px 20px"><span style="--c:var(--orange)">running</span><span style="--c:#e8e6df47">waiting</span><span style="--c:var(--lime)">done</span><span style="--c:var(--rose)">failed</span></div>
+</section>
+
+<script>
+// ---- dithered background: value noise → n-colour palette → Bayer 8×8 ordered dither, 3px cells
+const B=[[0,32,8,40,2,34,10,42],[48,16,56,24,50,18,58,26],[12,44,4,36,14,46,6,38],[60,28,52,20,62,30,54,22],[3,35,11,43,1,33,9,41],[51,19,59,27,49,17,57,25],[15,47,7,39,13,45,5,37],[63,31,55,23,61,29,53,21]];
+function rng(s){return()=>{s=(s*1664525+1013904223)>>>0;return s/2**32}}
+function hex(h){return[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))}
+function dither(cv,pal,seed){
+  const CELL=3,W=cv.width/CELL|0,H=cv.height/CELL|0,r=rng(seed);
+  // value-noise lattice, 2 octaves
+  const oct=[{n:5,a:1},{n:14,a:.28}].map(o=>({...o,g:Array.from({length:(o.n+1)*4},r)}));
+  const sm=t=>t*t*(3-2*t);
+  const field=(x,y)=>{let v=0;for(const o of oct){const fx=x/W*o.n,fy=y/H*(o.n/3.6);const ix=fx|0,iy=fy|0,tx=sm(fx-ix),ty=sm(fy-iy);const g=(i,j)=>o.g[(j%4)*(o.n+1)+Math.min(i,o.n)];const a=g(ix,iy)+(g(ix+1,iy)-g(ix,iy))*tx,b=g(ix,iy+1)+(g(ix+1,iy+1)-g(ix,iy+1))*tx;v+=(a+(b-a)*ty)*o.a}return v/1.28};
+  const off=document.createElement("canvas");off.width=W;off.height=H;const ox=off.getContext("2d"),img=ox.createImageData(W,H),d=img.data,P=pal.map(hex),n=P.length-1;
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){let v=field(x,y);v=Math.min(.999,Math.max(0,(v-.2)/.6));const t=v*n,i=t|0,f=t-i;const c=f>B[y&7][x&7]/64?P[i+1]:P[i];const k=(y*W+x)*4;d[k]=c[0];d[k+1]=c[1];d[k+2]=c[2];d[k+3]=255}
+  ox.putImageData(img,0,0);const g=cv.getContext("2d");g.imageSmoothingEnabled=false;g.drawImage(off,0,0,cv.width,cv.height);
+}
+document.querySelectorAll(".pano").forEach(p=>{const cv=p.querySelector("canvas");cv.width=3600;cv.height=1000;dither(cv,p.dataset.pal.split(","),+p.dataset.seed)});
+
+// ---- plan graph: waves as columns, left→right across the seam
+const waves=[[1,2,3,4,5],[6,7,8,9,10],[11,12,13,14],[15,16,17],[18,19],[20,21],[22],[23],[24]];
+const state={done:[1,2,3,4,6,7,8,9,10,11,12,13,14],running:[15,16,17],failed:[5]};
+const edges=[[1,6],[1,7],[2,7],[2,9],[3,8],[3,9],[4,10],[5,18],[5,19],[6,11],[7,11],[7,13],[8,12],[9,13],[10,14],[11,15],[12,15],[13,15],[13,16],[14,16],[14,17],[15,18],[16,19],[17,20],[18,21],[19,21],[20,22],[21,22],[22,23],[23,24]];
+const pos={},x0=1180,x1=3300,yc=740,gap=80;
+waves.forEach((w,i)=>w.forEach((s,j)=>{pos[s]=[x0+i*(x1-x0)/(waves.length-1),yc+(j-(w.length-1)/2)*gap]}));
+const col=s=>state.failed.includes(s)?"var(--rose)":state.running.includes(s)?"var(--orange)":state.done.includes(s)?"var(--lime)":"none";
+let svg="";
+for(const[a,b]of edges){const[ax,ay]=pos[a],[bx,by]=pos[b];const hot=state.running.includes(b)||state.running.includes(a)&&!state.done.includes(b);svg+=`<path d="M${ax+22} ${ay} C ${ax+70} ${ay}, ${bx-70} ${by}, ${bx-22} ${by}" fill="none" stroke="${hot?"var(--orange)":"#e8e6df66"}" stroke-width="${hot?2.5:1.5}" ${hot?"":'stroke-dasharray="6 6"'}/>`}
+for(const s in pos){const[x,y]=pos[s],c=col(+s);svg+=`<rect x="${x-22}" y="${y-22}" width="44" height="44" fill="${c==="none"?"#131316":c}" stroke="${c==="none"?"#e8e6df47":c}" stroke-width="1.5"/><text x="${x}" y="${y+7}" text-anchor="middle" fill="${c==="none"?"#e8e6dfad":"#0e0e10"}">${s}</text>`}
+document.getElementById("dag").innerHTML=svg;
+
+const q=new URLSearchParams(location.search),only=q.get("only"),card=q.get("card");
+if(only){document.querySelectorAll(".pano").forEach((p,i)=>{if(String(i+1)!==only)p.remove()});if(card)document.querySelector(".pano").style.marginLeft=-(card-1)*1200+"px"}
+</script>

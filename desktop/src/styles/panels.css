@@ -133,9 +133,9 @@
 .agent-receipt:hover { color: var(--accent); text-decoration: underline; }
 .agent-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding-bottom: var(--s-3); }
 .agent-actions small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
-.evidence-table .agent-actions button { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: background-color var(--t); }
-.evidence-table .agent-actions button:hover:not(:disabled) { background: var(--accent-soft); }
-.evidence-table .agent-actions button:disabled { color: var(--text-3); }
+.evidence-table .agent-actions button, .repairs-body .agent-actions button { min-height: 26px; padding: 0 var(--s-3); border: 1px solid var(--border); background: transparent; color: var(--accent); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; transition: background-color var(--t); }
+.evidence-table .agent-actions button:hover:not(:disabled), .repairs-body .agent-actions button:hover:not(:disabled) { background: var(--accent-soft); }
+.evidence-table .agent-actions button:disabled, .repairs-body .agent-actions button:disabled { color: var(--text-3); }
 .agent-actions select { max-width: 220px; min-height: 26px; padding: 0 var(--s-2); border: 1px solid var(--border); background: var(--bg); color: var(--text-2); font: var(--fs-2xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
 .agent-trial-arms { display: grid; gap: var(--s-3); margin-top: var(--s-4); }

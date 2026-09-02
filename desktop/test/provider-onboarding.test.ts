@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { canRemoveProvider, CODEX_PREFIX, codexSlug, defaultSettings, forgetProvider, validateSettings, type ProviderProfile, type UserSettings } from "../shared/settings";
+import { canRemoveProvider, CODEX_PREFIX, codexSlug, defaultSettings, forgetProvider, SETTINGS_KEY, validateSettings, type ProviderProfile, type UserSettings } from "../shared/settings";
 
 const source = ts.createSourceFile("App.tsx", readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const main = ts.createSourceFile("main.ts", readFileSync(path.join(__dirname, "../../main/main.ts"), "utf8"), ts.ScriptTarget.Latest, true);
@@ -183,4 +183,34 @@ test("a provider whose named key is missing says so, while a keyless local endpo
     process: { env: {} as Record<string, string> },
   }) as (key: string) => { apiKey: string };
   assert.equal(local("provider:local").apiKey, "no-key");
+});
+
+test("a saved ChatGPT model is restored on boot instead of being reset to fallback", async () => {
+  let effect = "";
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "useEffect" && node.getText(source).includes("The saved model selection is invalid")) effect = node.arguments[0].getText(source);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(effect);
+  const settings: UserSettings = { ...structuredClone(defaultSettings), selectedModel: "codex:gpt-5.6-luna", thinkingLevel: "max" };
+  const calls: { method: string; params: Record<string, string> }[] = [];
+  let error = "";
+  let persisted: UserSettings | undefined;
+  compile(effect, {
+    restoredModel: { current: false }, settings, SETTINGS_KEY, CODEX_PREFIX, codexSlug,
+    routerIdFor: () => undefined, selectModelKey: () => assert.fail("routers do not own Codex keys"),
+    reasonText: (reason: Error) => reason.message,
+    setError: (value: string) => { error = value; },
+    setSettings() {}, persistSettings: (next: UserSettings) => { persisted = next; return next; },
+    window: { emma: {
+      setZeroRetention: async () => undefined,
+      setProviders: async () => [],
+      request: async (method: string, params: Record<string, string> = {}) => { calls.push({ method, params }); return undefined; },
+    } },
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(calls, [{ method: "selectCodexModel", params: { modelId: "gpt-5.6-luna", effort: "max" } }]);
+  assert.equal(error, "");
+  assert.equal(persisted, undefined);
 });

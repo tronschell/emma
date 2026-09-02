@@ -183,6 +183,7 @@ const gateway_transfer_buffer_bytes: usize = 256 * 1024;
 const provider_failure_detail_max_bytes: usize = 600;
 const generation_response_max_bytes: usize = 128 * 1024;
 const generation_lookup_timeout_ms: i64 = 30_000;
+const gateway_json_fetch_timeout_ms: i64 = 60_000;
 const max_sse_event_line_bytes: usize = 32 * 1024 * 1024;
 const e2e_gateway_chat_url_env = "FX_E2E_GATEWAY_CHAT_URL";
 const e2e_gateway_models_url_env = "FX_E2E_GATEWAY_MODELS_URL";
@@ -412,60 +413,16 @@ fn runCancellableGatewayJsonFetch(
     cancel_flag: *std.atomic.Value(bool),
     operation: *GatewayJsonFetchOperation,
 ) !GatewayJsonResult {
-    if (cancel_flag.load(.seq_cst)) return error.Cancelled;
-
-    const Event = union(enum) {
-        request: anyerror!GatewayJsonResult,
-        cancelled: anyerror!void,
-    };
-    const Runner = struct {
-        fn run(value: *GatewayJsonFetchOperation) anyerror!GatewayJsonResult {
-            return value.run();
-        }
-    };
-    const Cleanup = struct {
-        fn drain(result_alloc: std.mem.Allocator, select: *std.Io.Select(Event)) void {
-            while (select.cancel()) |item| switch (item) {
-                .request => |request_result| {
-                    var late_result = request_result catch continue;
-                    late_result.deinit(result_alloc);
-                },
-                .cancelled => {},
-            };
-        }
-    };
-
-    var select_buffer: [2]Event = undefined;
-    var select: std.Io.Select(Event) = .init(io_mod.getIo(), &select_buffer);
-    select.concurrent(.cancelled, waitForBoundedCancellation, .{cancel_flag}) catch |err| return err;
-    select.concurrent(.request, Runner.run, .{operation}) catch |err| {
-        select.cancelDiscard();
-        return err;
-    };
-
-    const event = select.await() catch |err| {
-        Cleanup.drain(alloc, &select);
-        return err;
-    };
-    switch (event) {
-        .request => |request_result| {
-            Cleanup.drain(alloc, &select);
-            if (cancel_flag.load(.seq_cst)) {
-                var result = request_result catch return error.Cancelled;
-                result.deinit(alloc);
-                return error.Cancelled;
-            }
-            return request_result;
-        },
-        .cancelled => |cancel_result| {
-            cancel_result catch |err| {
-                Cleanup.drain(alloc, &select);
-                return err;
-            };
-            Cleanup.drain(alloc, &select);
-            return error.Cancelled;
-        },
-    }
+    return runBoundedHttpOperation(
+        GatewayJsonResult,
+        alloc,
+        cancel_flag,
+        std.Io.Clock.Timestamp.fromNow(io_mod.getIo(), .{
+            .clock = .awake,
+            .raw = .fromMilliseconds(gateway_json_fetch_timeout_ms),
+        }),
+        operation,
+    );
 }
 
 fn fetchGatewayJsonAtUrlCore(

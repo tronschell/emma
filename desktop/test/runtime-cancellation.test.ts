@@ -225,7 +225,7 @@ for (const child of [false, true]) {
   });
 }
 
-function nativeFixture(f: ReturnType<typeof fixture>, kind = "execute", threadId = "t") {
+function nativeFixture(f: ReturnType<typeof fixture>, kind = "execute", threadId = "t", reviewThreads = new Set<string>()) {
   let permission!: ts.Expression;
   const visit = (node: ts.Node) => {
     if (ts.isPropertyAssignment(node) && node.name.getText(source) === "onPermission") permission = node.initializer;
@@ -234,7 +234,7 @@ function nativeFixture(f: ReturnType<typeof fixture>, kind = "execute", threadId
   visit(source);
   const onPermission = runInNewContext(ts.transpileModule(`(${permission.getText(source)})`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
-  }).outputText, { agents: f.agents, broadcast() {} });
+  }).outputText, { agents: f.agents, broadcast() {}, reviewThreads });
   const client = new Harness({ onPermission } as ConstructorParameters<typeof Harness>[0]);
   const replies: { result: { outcome: { optionId?: string } } }[] = [];
   const peer = client as unknown as {
@@ -312,6 +312,48 @@ test("mode changes reach descendants and newly adopted children without changing
   assert.equal(f.agents.mode("other"), "full");
 });
 
+function lifted(name: string, globals: Record<string, unknown>) {
+  const found = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name)!;
+  assert.ok(found, `${name} is no longer a function declaration in main.ts`);
+  return runInNewContext(ts.transpileModule(`(${found.getText(source)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
+}
+
+test("setThreadModel puts the phone's pick on the thread, keyed the way the harness reads it", async () => {
+  const threadContexts = new Map<string, Record<string, unknown>>();
+  const selectModel = lifted("selectModel", {
+    threadContexts,
+    catalogued: (modelId: string) => modelId,
+    threadContext: (threadId: string) => threadContexts.get(threadId) ?? { folderIds: [], mode: "auto", model: "" },
+    thinkingLevel: (value: unknown) => typeof value === "string" ? value : "",
+  });
+
+  await selectModel("setThreadModel", { threadId: "t", modelId: "anthropic/claude-x" });
+  assert.equal(threadContexts.get("t")?.model, "openrouter:anthropic/claude-x", "the phone sends a bare catalogue id; the thread has to hold the key harnessModel reads");
+  assert.equal(threadContexts.get("t")?.effort, "", "a fresh model does not inherit the effort picked for the last one");
+
+  await selectModel("setThreadModel", { threadId: "t", modelId: "anthropic/claude-x", effort: "high" });
+  assert.equal(threadContexts.get("t")?.effort, "high", "an effort picked on the phone is remembered, not just validated");
+  assert.equal(threadContexts.get("t")?.model, "openrouter:anthropic/claude-x", "picking an effort leaves the model alone");
+
+  threadContexts.set("t", { ...threadContexts.get("t")!, folderIds: ["f"] });
+  await selectModel("setThreadModel", { threadId: "t", modelId: "" });
+  assert.equal(threadContexts.get("t")?.model, "", "an empty pick falls the thread back to whatever the Mac has selected");
+  assert.deepEqual(threadContexts.get("t")?.folderIds, ["f"], "changing the model does not detach the folder");
+});
+
+test("setThreadContext keeps a thread's effort only while its model is unchanged", () => {
+  const threadContexts = new Map<string, Record<string, unknown>>();
+  const keepThreadContext = lifted("keepThreadContext", { threadContexts });
+  const held = { folderIds: [], mode: "ask", model: "openrouter:anthropic/claude-x" };
+
+  threadContexts.set("t", { ...held, effort: "high" });
+  keepThreadContext("t", { ...held, mode: "auto" });
+  assert.equal(threadContexts.get("t")?.effort, "high", "changing only the mode must not silently drop the effort");
+
+  keepThreadContext("t", { ...held, model: "openrouter:openai/other" });
+  assert.equal(threadContexts.get("t")?.effort, "", "an effort belongs to the model it was picked for");
+});
+
 for (const channel of ["desktop", "mobile"] as const) {
   test(`${channel} context setter changes active app and native authorization`, async () => {
     let setter = "";
@@ -327,8 +369,10 @@ for (const channel of ["desktop", "mobile"] as const) {
     assert.ok(setter);
     const f = fixture({}, "full");
     const context = { threadId: "t", folderIds: [], mode: "ask", model: "" };
+    const threadContexts = new Map<string, Record<string, unknown>>();
     const set = runInNewContext(ts.transpileModule(`(${setter})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
-      agents: f.agents, threadContexts: new Map(), threadContextRequest: () => context, mainWindowSender() {}, overlay: undefined,
+      agents: f.agents, threadContexts, keepThreadContext: lifted("keepThreadContext", { threadContexts }),
+      threadContextRequest: () => context, mainWindowSender() {}, overlay: undefined,
     });
     if (channel === "desktop") set({ sender: { mainFrame: {} } }, context);
     else set(context);
@@ -369,4 +413,19 @@ test("a native grandchild asks under its parent's updated mode", async () => {
   f.agents.answer(f.asked[0].id, false);
   await pending;
   assert.equal(native.replies[0].result.outcome.optionId, "deny");
+});
+
+test("a review thread reads and runs, but every edit it attempts is refused", async () => {
+  const f = fixture({}, "full");
+  const reviewThreads = new Set(["t"]);
+  const edit = nativeFixture(f, "edit", "t", reviewThreads);
+  await edit.run();
+  assert.equal(edit.replies[0].result.outcome.optionId, "deny");
+  const read = nativeFixture(f, "read", "t", reviewThreads);
+  await read.run();
+  assert.equal(read.replies[0].result.outcome.optionId, "allow");
+  const elsewhere = nativeFixture(f, "edit", "other");
+  f.agents.adopt({ ...turn, threadId: "other", mode: "full" });
+  await elsewhere.run();
+  assert.equal(elsewhere.replies[0].result.outcome.optionId, "allow");
 });

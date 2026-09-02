@@ -267,6 +267,25 @@ export function validateHarnessExperiments(value: unknown): HarnessExperiments {
   };
 }
 
+export interface ReviewSettings {
+  enabled: boolean;
+  model: string;
+}
+
+export const MAX_REVIEW_ROUNDS = 2;
+
+export const defaultReview: ReviewSettings = { enabled: false, model: "" };
+
+export function validateReview(value: unknown): ReviewSettings {
+  if (value === undefined || value === null) return defaultReview;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Review settings are invalid");
+  const review = value as Partial<ReviewSettings>;
+  const enabled = review.enabled ?? defaultReview.enabled;
+  const model = review.model ?? defaultReview.model;
+  if (typeof enabled !== "boolean" || typeof model !== "string" || model.length > 256) throw new Error("Review settings are invalid");
+  return { enabled, model };
+}
+
 export interface ToolSettings {
   disabledTools: string[];
   disabledSkills: string[];
@@ -365,6 +384,7 @@ export interface UserSettings {
   tagger: TaggerSettings;
   tools: ToolSettings;
   harnessExperiments: HarnessExperiments;
+  review: ReviewSettings;
   favoriteModels: string[];
   routers: ModelRouter[];
   requireZeroRetention: boolean;
@@ -827,6 +847,45 @@ export function validateTagger(value: unknown): TaggerSettings {
   return validateSecondModel(value, defaultTagger, "categorizer");
 }
 
+export const SECOND_MODEL_IDS = ["verifier", "advisor", "vision", "secret", "tagger"] as const;
+export type SecondModelId = (typeof SECOND_MODEL_IDS)[number];
+
+export interface SecondModel {
+  label: string;
+  off: string;
+  line: string;
+  read: (settings: UserSettings) => VerifierSettings;
+  write: (settings: UserSettings, value: VerifierSettings) => UserSettings;
+}
+
+const toolSecondModel = (key: "advisor" | "vision" | "secret", label: string, off: string, line: string): SecondModel => ({
+  label,
+  off,
+  line,
+  read: (settings) => settings.tools[key],
+  write: (settings, value) => ({ ...settings, tools: { ...settings.tools, [key]: value } }),
+});
+
+export const SECOND_MODELS: Record<SecondModelId, SecondModel> = {
+  verifier: {
+    label: "Verifier",
+    off: "No verifier \u00b7 Auto asks you",
+    line: "In Auto, clears or blocks each gated call so it does not stop for you.",
+    read: (settings) => settings.verifier,
+    write: (settings, value) => ({ ...settings, verifier: value }),
+  },
+  advisor: toolSecondModel("advisor", "Advisor", "No advisor \u00b7 the tool does nothing", "A second opinion mid-task, read on the transcript so far."),
+  vision: toolSecondModel("vision", "Vision", "No vision model \u00b7 the agent cannot look", "Looks at an image for a main model that cannot see one."),
+  secret: toolSecondModel("secret", "Secrets", "No secrets model \u00b7 the tool refuses", "Reads output that holds keys, so the main model never sees the values."),
+  tagger: {
+    label: "Tagger",
+    off: "No tagger \u00b7 saved notes keep the tags you give them",
+    line: "Files a finished thread under a tag you already use.",
+    read: (settings) => settings.tagger,
+    write: (settings, value) => ({ ...settings, tagger: value }),
+  },
+};
+
 function validateSecondModel(value: unknown, fallback: VerifierSettings, label: string): VerifierSettings {
   if (value === undefined || value === null) return fallback;
   if (typeof value !== "object") throw new Error(`The ${label} model is invalid`);
@@ -919,6 +978,7 @@ export const defaultSettings: UserSettings = {
   tagger: defaultTagger,
   tools: defaultToolSettings,
   harnessExperiments: defaultHarnessExperiments,
+  review: defaultReview,
   favoriteModels: ["fallback"],
   routers: [{ id: FREE_ROUTER_ID, name: FREE_ROUTER_NAME, models: [...FREE_ROUTER_MODELS] }],
   requireZeroRetention: false,
@@ -998,6 +1058,7 @@ export function validateSettings(value: unknown, platform = "darwin"): UserSetti
   const tagger = validateTagger(settings.tagger);
   const tools = validateToolSettings(settings.tools);
   const harnessExperiments = validateHarnessExperiments(settings.harnessExperiments);
+  const review = validateReview(settings.review);
   const favoriteModels = settings.favoriteModels ?? [];
   if (!Array.isArray(favoriteModels) || favoriteModels.length > MAX_FAVORITE_MODELS) throw new Error(`Star at most ${MAX_FAVORITE_MODELS} models`);
   for (const key of favoriteModels) if (typeof key !== "string" || !key || key.length > 256 || favoriteModels.indexOf(key) !== favoriteModels.lastIndexOf(key)) throw new Error("Starred models are invalid");
@@ -1021,7 +1082,7 @@ export function validateSettings(value: unknown, platform = "darwin"): UserSetti
   if (!isThinkingLevel(thinkingLevel)) throw new Error("The thinking level is invalid");
   const keybinds = validateKeybinds(settings.keybinds, platform);
   const contextPages = validateContextPages(settings.contextPages);
-  return { accent, navIconColors, navHues, folderHues, uiScale, conversationWidth, interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, providers, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, favoriteModels: favoriteModels.map(legacyModelKey), routers, requireZeroRetention, systemPrompt, prompts };
+  return { accent, navIconColors, navHues, folderHues, uiScale, conversationWidth, interfaceFont, agentFont, thinkingLevel, keybinds, contextPages, quickActions, cursorOrbs: [...cursorOrbs], cursorOrbsEnabled, notchCommandsEnabled, notchGap, notchModel, notchConcurrency, transcriptionEnabled: settings.transcriptionEnabled, transcriptionEngine, transcriptionEndpoint: settings.transcriptionEndpoint, transcriptionModel: settings.transcriptionModel, voiceHoldMs, voiceCleanup, voiceCleanupEndpoint, voiceCleanupModel, providers, selectedModel, defaultPermissionMode, verifier, tagger, tools, harnessExperiments, review, favoriteModels: favoriteModels.map(legacyModelKey), routers, requireZeroRetention, systemPrompt, prompts };
 }
 
 export function toggleFavoriteModel(settings: UserSettings, key: string): UserSettings {

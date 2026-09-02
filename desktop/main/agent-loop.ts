@@ -91,6 +91,7 @@ export type TurnRequest = {
   goalTurn?: boolean;
   continueRecovery?: boolean;
   bench?: boolean;
+  reviewed?: boolean;
 };
 
 export type LoopDeps = {
@@ -131,7 +132,7 @@ type Run = Omit<LiveAgent, "tool"> & {
 
 export class AgentRuntime {
   private readonly runs = new Map<string, Run>();
-  private readonly asks = new Map<string, { run: Run; settle: (allowed: boolean) => void }>();
+  private readonly asks = new Map<string, { run: Run; settle: (allowed: boolean) => void; shown?: PermissionAsk }>();
   private spawned = 0;
   private streamedAt = 0;
   private verifications = 0;
@@ -289,6 +290,10 @@ export class AgentRuntime {
 
   answer(id: string, allowed: boolean) {
     this.asks.get(id)?.settle(allowed);
+  }
+
+  outstandingAsks(): PermissionAsk[] {
+    return [...this.asks.values()].flatMap((ask) => ask.shown ? [ask.shown] : []);
   }
 
   dropAsks(threadId: string) {
@@ -634,8 +639,10 @@ export class AgentRuntime {
         run.status = "waiting";
         run.activity = `waiting for your approval · ${ask.summary}`;
         try {
+          const shown = { id, ...ask };
+          this.asks.get(id)!.shown = shown;
           this.deps.changed();
-          this.deps.ask({ id, ...ask });
+          this.deps.ask(shown);
         } catch {
           settle(false);
         }
