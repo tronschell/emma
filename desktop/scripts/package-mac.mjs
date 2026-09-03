@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, globSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +53,6 @@ const metadata = JSON.parse(output("cargo", ["metadata", "--locked", "--offline"
 writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter((pkg) => pkg.source).map((pkg) => {
   const cwd = path.dirname(pkg.manifest_path);
   const files = globSync(["LICENSE*", "COPYING*", "NOTICE*"], { cwd }).filter((name) => statSync(path.join(cwd, name)).isFile()).sort();
-  // Crates that ship no license text (most of the objc2 family) still declare an SPDX expression.
   assert.ok(files.length || pkg.license, `Missing license for ${pkg.name}.`);
   const text = files.length ? files.map((name) => readFileSync(path.join(cwd, name), "utf8")).join("\n\n") : pkg.license;
   return `${pkg.name} ${pkg.version}\n\n${text}`;
@@ -88,7 +87,6 @@ try {
     appVersion: version,
     buildVersion: version,
     extendInfo: path.join(desktop, "native/Info.extra.plist"),
-    extraResource: resources,
     ignore: (file) => file !== "" && !bundled.test(file),
     afterCopy: [({ buildPath }) => {
       const file = path.join(buildPath, "package.json");
@@ -100,6 +98,7 @@ try {
   rmSync(iconDirectory, { recursive: true, force: true });
 }
 const app = path.join(out, "Emma-darwin-arm64/Emma.app");
+for (const resource of resources) cpSync(resource, path.join(app, "Contents/Resources", path.basename(resource)), { recursive: true, verbatimSymlinks: true });
 run(process.execPath, ["scripts/trim-packaged-locales.mjs", app]);
 const archive = path.join(app, "Contents/Resources/app.asar");
 const plist = (key) => output("plutil", ["-extract", key, "raw", "-o", "-", path.join(app, "Contents/Info.plist")]).trim();
@@ -124,13 +123,8 @@ for (const resource of resources) {
   const libraries = output("otool", ["-L", file]).trim().split("\n").slice(1);
   assert.ok(libraries.every((line) => /^\s*\/(?:usr\/lib\/|System\/Library\/)/.test(line)), `Unbundled native dependency: ${file}`);
 }
-// codesign refuses an absolute symlink anywhere in the bundle, even one whose target is inside it,
-// and only says "invalid destination for symbolic link in bundle". Catch it here, where every
-// resource has landed, rather than in the release job after notarization credentials are loaded.
-for (const link of globSync("**", { cwd: app, withFileTypes: true })) {
-  const file = path.join(link.parentPath, link.name);
-  if (link.isSymbolicLink()) assert.ok(!path.isAbsolute(readlinkSync(file)), `Absolute symlink breaks codesign: ${path.relative(app, file)}`);
-}
+run("codesign", ["--force", "--deep", "--sign", "-", app]);
+run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);
 for (const name of ["emma-option-tap", "emma-computer", "emma-pty"]) run(path.join(app, "Contents/Resources", name), ["--self-test"]);
 assert.equal(execFileSync(path.join(app, "Contents/Resources/rg"), ["--pcre2", "--only-matching", "(?<=release-)ready"], { input: "release-ready\n", encoding: "utf8" }).trim(), "ready");
 console.log(`Verified Emma ${version}: ${app}`);
