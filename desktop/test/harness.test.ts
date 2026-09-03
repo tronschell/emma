@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { EventEmitter } from "node:events";
 import { withThinking } from "../shared/thinking";
 import { artifactWritten } from "../shared/artifacts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { defaultHarnessExperiments, validateHarnessExperiments } from "../shared/settings";
-import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
-import { Harness, HARNESS_MODE_ID, INTERRUPTED_CALL, callEscapesWorkspace, compactionReported, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, recoveredSessionTraces, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
+import { CLOSED_BY_EMMA, fixPrompt, harnessHealth, STALL_MS, stoppedReason, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
+import { Harness, HARNESS_MODE_ID, INTERRUPTED_CALL, RESTARTED_BY_YOU, explainFailure, callEscapesWorkspace, compactionReported, contextBreakdownReported, contextExperimentFired, describePath, effortOption, escapesRoot, experimentOption, failedTurn, harnessKey, recoveredSessionTraces, toolCallText, toolOutput, turnUsageReported, unwrapMcpResult, type HarnessToolCall, type PermissionAsk, type PermissionContext, type PermissionOption } from "../main/harness";
 import { decodeSpans, encodeSpans } from "../shared/trace";
 
 const fakeAgent = path.join(process.cwd(), "test", "fake-acp-agent.mjs");
@@ -169,6 +170,14 @@ test("a refused turn is a failure rather than an answer", () => {
   assert.equal(failedTurn("cancelled"), false);
 });
 
+test("a bare Zig error name is read out as words with a way forward", () => {
+  assert.match(explainFailure("RequestTooLarge"), /outgrew what this model accepts/);
+  assert.equal(explainFailure("InvalidProviderResponse"), "invalid provider response — the agent gave up on this turn. Send Continue to pick it back up");
+  assert.equal(explainFailure("Timeout"), "timeout — the agent gave up on this turn. Send Continue to pick it back up");
+  assert.equal(explainFailure("The model refused this turn."), "The model refused this turn.");
+  assert.equal(explainFailure("429 rate limit reached"), "429 rate limit reached");
+});
+
 test("a file mutation is described by its path rather than by the word file_mutation", () => {
   assert.equal(describePath({ path: "src/main.ts" }), "src/main.ts");
   assert.equal(describePath({ old_path: "a", new_path: "b" }), "b");
@@ -256,7 +265,94 @@ test("a harness that has gone quiet reports how long, and closing it hands the w
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.ok(client.silentFor >= 50, `nothing since: ${client.silentFor}`);
   client.close();
-  await assert.rejects(wedged, /Harness closed/);
+  const closed = await wedged.then(() => "", (error: Error) => error.message);
+  assert.match(closed, /Harness closed/);
+  assert.equal(explainFailure(closed), "Emma was closed while it was in flight. Send Continue to pick it back up");
+});
+
+test("restarting the agent says so, rather than blaming a close", async () => {
+  const { client, deltas } = harness(async () => "allow_once");
+  const wedged = client.prompt("thread-1", workspace, "wedge", "ask");
+  while (!deltas.some((entry) => entry.delta === "wedged")) await new Promise((resolve) => setTimeout(resolve, 10));
+  client.close(RESTARTED_BY_YOU);
+  const restarted = await wedged.then(() => "", (error: Error) => error.message);
+  assert.equal(explainFailure(restarted), "You restarted the agent while this run was in flight. Send Continue to pick it back up");
+});
+
+function departingChild(leaveAfterEof: boolean) {
+  const child = Object.assign(new EventEmitter(), {
+    exitCode: null as number | null,
+    signalCode: null as string | null,
+    killed: false,
+    pid: undefined,
+    kill() {
+      child.killed = true;
+      return true;
+    },
+    stdin: {
+      destroyed: false,
+      end() {
+        if (!leaveAfterEof) return;
+        setTimeout(() => {
+          child.exitCode = 0;
+          child.emit("exit", 0, null);
+        }, 5);
+      },
+    },
+  });
+  return child;
+}
+
+test("closing lets emma-cli leave on its own once its stdin ends", async () => {
+  const { client } = harness(async () => "allow_once");
+  const child = departingChild(true);
+  (client as unknown as { child: unknown }).child = child;
+  await client.close();
+  assert.equal(child.killed, false);
+  assert.equal(child.exitCode, 0);
+});
+
+test("closing still kills an emma-cli that ignores its stdin ending", async () => {
+  const { client } = harness(async () => "allow_once");
+  const child = departingChild(false);
+  (client as unknown as { child: unknown }).child = child;
+  await client.close();
+  assert.equal(child.killed, true);
+});
+
+test("a turn the agent never answers is handed back, and the wedged agent is replaced", async () => {
+
+  const { client } = harness(async () => "allow_once", 150);
+  await assert.rejects(client.prompt("thread-wedged", workspace, "wedge", "ask"), /stopped answering/);
+  assert.equal(client.running, false);
+  client.close();
+});
+
+test("a tool call still running keeps its silent turn alive past the idle window", async () => {
+  const { client, calls } = harness(async () => "allow_once", 150);
+  try {
+    const { stopReason } = await client.prompt("thread-longtool", workspace, "longtool", "ask");
+    assert.equal(stopReason, "end_turn");
+    assert.equal(calls.at(-1)?.status, "completed");
+    assert.equal(client.running, true);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a permission ask left open on screen does not kill the agent waiting on it", async () => {
+  const { client, asks } = harness(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return "allow_once";
+  }, 150);
+  try {
+    const { stopReason } = await client.prompt("thread-slowask", workspace, "run it", "ask");
+    assert.equal(stopReason, "end_turn");
+    assert.equal(asks.length, 1);
+    assert.equal(client.running, true);
+  } finally {
+    await client.close();
+  }
 });
 
 test("a subagent's words land on a thread of its own, never in its parent's answer", async () => {
@@ -279,6 +375,30 @@ test("a subagent's words land on a thread of its own, never in its parent's answ
   } finally {
     client.close();
   }
+});
+
+test("a subagent paused by a terminal provider failure ends with that reason", async () => {
+  const { client, ended } = harness(async () => "allow_once");
+  const inner = client as unknown as { threadsBySession: Map<string, string>; handleUpdate: (params: Record<string, unknown>) => void };
+  inner.threadsBySession.set("session-child", "thread-parent");
+  const tag = (state: string) => ({ child: { id: "child_1", title: "read the docs", state } });
+
+  inner.handleUpdate({
+    sessionId: "session-child",
+    update: {
+      sessionUpdate: "session_info_update",
+      _meta: { fx: { ...tag("running"), modelResponseRecovery: { state: "paused", kind: "terminal_provider_error", cause: "provider_error", message: "The provider refused the request" } } },
+    },
+  });
+  await Promise.resolve();
+  assert.equal(client.paused.get("thread_for_child_1")?.message, "The provider refused the request");
+
+  inner.handleUpdate({ sessionId: "session-child", update: { sessionUpdate: "session_info_update", _meta: { fx: tag("ended") } } });
+  await Promise.resolve();
+
+  assert.deepEqual(ended, [{ threadId: "thread_for_child_1", reason: "The provider refused the request" }]);
+  assert.equal(client.paused.has("thread_for_child_1"), false);
+  client.close();
 });
 
 test("a subagent left running when its process dies is told, not left spinning", async () => {
@@ -595,14 +715,25 @@ test("a session forgotten mid-turn still routes the rest of that turn", async ()
 test("experiment settings survive the round trip from the settings page to the harness option", () => {
 
   const settings = validateHarnessExperiments({ autoCompactPercent: 80, reinjectPromptSteps: 15, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 70 });
-  assert.equal(experimentOption(settings), "compact_percent=80,reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70");
+  assert.equal(experimentOption(settings), "compact_percent=80,reinject_steps=15,reinject_percent=0,prune_steps=0,prune_percent=70,command_timeout_minutes=10");
   assert.equal(validateHarnessExperiments({}).autoCompactPercent, 70);
 
   for (const bad of [{ reinjectPromptSteps: 999 }, { reinjectPromptPercent: -5 }, { pruneToolsSteps: 2.5 }, { pruneToolsPercent: "70" }])
     assert.throws(() => validateHarnessExperiments(bad), /invalid/);
   assert.throws(() => validateHarnessExperiments({ autoCompactPercent: 101 }), /invalid/);
+  // A zero-minute command timeout would terminate every command the instant it started.
+  for (const bad of [{ commandTimeoutMinutes: 0 }, { commandTimeoutMinutes: 121 }, { commandTimeoutMinutes: 1.5 }])
+    assert.throws(() => validateHarnessExperiments(bad), /invalid/);
+  assert.equal(validateHarnessExperiments({}).commandTimeoutMinutes, 10);
   assert.deepEqual(validateHarnessExperiments(undefined), defaultHarnessExperiments);
-  assert.equal(experimentOption(defaultHarnessExperiments), "compact_percent=70,reinject_steps=0,reinject_percent=0,prune_steps=0,prune_percent=0");
+  assert.equal(validateHarnessExperiments({}).semanticGrep, false);
+  assert.equal(validateHarnessExperiments({ semanticGrep: 1 }).semanticGrep, false);
+  assert.equal(validateHarnessExperiments({ semanticGrep: true, embeddingModel: "local/embeddinggemma-300m" }).embeddingModel, "local/embeddinggemma-300m");
+  assert.equal(validateHarnessExperiments({}).embeddingModel, "local/potion-code-16m-v2");
+  assert.equal(validateHarnessExperiments({ embeddingModel: "hosted/openrouter/voyageai/voyage-code-4" }).embeddingModel, "hosted/openrouter/voyageai/voyage-code-4");
+  assert.throws(() => validateHarnessExperiments({ embeddingModel: "qwen/text-embedding-v4" }), /invalid/);
+  assert.throws(() => validateHarnessExperiments({ embeddingModel: "hosted/openrouter/openai/gpt-4o" }), /invalid/);
+  assert.equal(experimentOption(defaultHarnessExperiments), "compact_percent=70,reinject_steps=0,reinject_percent=0,prune_steps=0,prune_percent=0,command_timeout_minutes=10");
 });
 
 test("the thinking option carries the stop and the list the harness checks it against", () => {
@@ -732,6 +863,9 @@ test("health reads the process, and offline is a death Emma did not ask for", ()
   assert.equal(harnessHealth([state({ running: true, busy: true, silentMs: STALL_MS + 1 })]), "stalled");
   assert.equal(harnessHealth([state({ failure: "emma-cli exited with code 1" })]), "offline");
   assert.equal(harnessHealth([state({ failure: CLOSED_BY_EMMA })]), "ready");
+  assert.equal(stoppedReason([state({ failure: '"work" is no longer at /tmp/work — reconnect it from the ＋ menu.' })]), '"work" is no longer at /tmp/work — reconnect it from the ＋ menu.');
+  assert.equal(stoppedReason([state({ running: true })]), "");
+  assert.equal(stoppedReason([state({ failure: CLOSED_BY_EMMA })]), "");
 });
 
 test("the fix prompt carries the failure and the traffic, not just the word broken", () => {
@@ -812,10 +946,51 @@ test("a paused recovery is kept as the reason a run stopped", () => {
   assert.equal(client.paused.get("t1"), undefined);
 
   apply({ state: "paused", message: "⚠ Response ended early · recovery paused after 10/10 attempts", attempt: 10, attemptLimit: 10 });
-  assert.equal(client.paused.get("t1"), "⚠ Response ended early · recovery paused after 10/10 attempts (attempt 10 of 10)");
+  assert.deepEqual(client.paused.get("t1"), { message: "⚠ Response ended early · recovery paused after 10/10 attempts", cause: undefined, requiredAction: undefined });
+
+  apply({ state: "paused", message: "⚠ Provider unavailable · quota", attempt: 1, attemptLimit: 6, delaySeconds: 4 });
+  assert.deepEqual(client.paused.get("t1"), { message: "⚠ Provider unavailable · quota (attempt 1 of 6), retrying in 4s", cause: undefined, requiredAction: undefined });
+
+  apply({ state: "paused", kind: "terminal_provider_error", cause: "request_limit_reached", message: "⚠ Provider limit reached · usage limit · recovery paused after 1/6 attempts", attempt: 1, attemptLimit: 6 });
+  assert.deepEqual(client.paused.get("t1"), { message: "⚠ Provider limit reached · usage limit · recovery paused after 1/6 attempts", cause: "request_limit_reached", requiredAction: undefined });
+
+  apply({ state: "paused", kind: "content_filter", requiredAction: "change_request", message: "⚠ blocked · content filter · change the request" });
+  assert.deepEqual(client.paused.get("t1"), { message: "⚠ blocked · content filter · change the request", cause: undefined, requiredAction: "change_request" });
+
+  apply({ state: "paused", kind: "content_filter", requiredAction: "change_request", message: "⚠ blocked · content filter · change the request", attempt: 1, attemptLimit: 10 });
+  assert.deepEqual(client.paused.get("t1"), { message: "⚠ blocked · content filter · change the request", cause: undefined, requiredAction: "change_request" });
 
   apply({ state: "recovered", message: "✓ recovered" });
   assert.equal(client.paused.get("t1"), undefined);
+});
+
+test("the model's own image input is published to the harness, and stays unsent when the desktop does not know it", async () => {
+  const known = harness(async () => "allow_once");
+  try {
+    await known.client.prompt("thread-vision", workspace, "do it", "ask", undefined, { imageInput: true });
+    assert.ok(known.text().join("").includes("cfg:image_input=true"), known.text().join(""));
+  } finally {
+    known.client.close();
+  }
+
+  const unknown = harness(async () => "allow_once");
+  try {
+    await unknown.client.prompt("thread-vision", workspace, "do it", "ask", undefined, { contextWindow: 1000 });
+    assert.ok(unknown.text().join("").includes("cfg:context_window=1000"), unknown.text().join(""));
+    assert.ok(!unknown.text().join("").includes("cfg:image_input"), unknown.text().join(""));
+  } finally {
+    unknown.client.close();
+  }
+});
+
+test("a content filter that ends the turn is reported as blocked, not as a model error", async () => {
+  const { client } = harness(async () => "allow_once");
+  await assert.rejects(
+    client.prompt("t_filtered", workspace, "filtered please", "ask"),
+    { message: "⚠ blocked · content filter · change the request" },
+  );
+  assert.equal(client.paused.get("t_filtered")?.requiredAction, "change_request");
+  client.close();
 });
 
 test("a recovery replayed while the session opens is not why the next run stopped", async () => {
@@ -828,4 +1003,76 @@ test("a recovery replayed while the session opens is not why the next run stoppe
   await client.prompt("t_stale", workspace, "hello", "ask");
   assert.equal(client.paused.get("t_stale"), undefined);
   client.close();
+});
+
+test("a run whose project folder was deleted names the folder, not the agent binary", async () => {
+  const gone = path.join(tmpdir(), `emma-gone-${process.pid}`);
+  rmSync(gone, { recursive: true, force: true });
+  const client = new Harness({
+    binaryPath: process.execPath,
+    args: [fakeAgent],
+    home: tmpdir(),
+    cwd: gone,
+    mcpServers: async () => [],
+  } as unknown as ConstructorParameters<typeof Harness>[0]);
+  await assert.rejects(() => client.start(), new RegExp(`is no longer at ${gone}`));
+  assert.match(client.state.failure, /reconnect it from the ＋ menu/);
+  assert.doesNotMatch(client.state.failure, /ENOENT/);
+});
+
+test("the configured vision route reaches the child, and no vision route leaves the session route alone", async () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "emma-vision-env-"));
+  const dump = path.join(scratch, "env.json");
+  const agent = path.join(scratch, "agent.mjs");
+  writeFileSync(agent, [
+    'import { writeFileSync } from "node:fs";',
+    'writeFileSync(process.env.EMMA_TEST_ENV_DUMP, JSON.stringify(process.env));',
+    `await import(${JSON.stringify(fakeAgent)});`,
+  ].join("\n"));
+  process.env.EMMA_TEST_ENV_DUMP = dump;
+  const start = async (vision?: { model: string; chatUrl: string; apiKey: string }) => {
+    const client = new Harness({
+      binaryPath: process.execPath,
+      args: [agent],
+      home: path.join(scratch, "home"),
+      cwd: workspace,
+      apiKey: "session-key",
+      chatUrl: "https://session.example/v1/chat/completions",
+      vision,
+      mcpServers: async () => [],
+      onDelta: () => {},
+      onThought: () => {},
+      onToolCall: () => {},
+      onCompacted: () => {},
+      onContextExperiment: () => {},
+      onRoutedModel: () => {},
+      onContextBreakdown: () => {},
+      onUsage: () => {},
+      onChildStart: () => Promise.resolve("t"),
+      onChildEnd: () => {},
+      onPlan: () => {},
+      onPermission: async () => null,
+      onToolRequest: async () => "",
+    });
+    await client.start();
+    const env = JSON.parse(readFileSync(dump, "utf8")) as Record<string, string>;
+    client.close();
+    return env;
+  };
+
+  const configured = await start({ model: "vendor/eyes:free", chatUrl: "https://vision.example/v1/chat/completions", apiKey: "vision-key" });
+  assert.equal(configured.EMMA_PROVIDER_API_KEY, "session-key");
+  assert.equal(configured.EMMA_PROVIDER_CHAT_URL, "https://session.example/v1/chat/completions");
+  assert.equal(configured.EMMA_VISION_MODEL, "vendor/eyes:free");
+  assert.equal(configured.EMMA_VISION_CHAT_URL, "https://vision.example/v1/chat/completions");
+  assert.equal(configured.EMMA_VISION_API_KEY, "vision-key");
+
+  const bare = await start();
+  assert.equal(bare.EMMA_PROVIDER_CHAT_URL, "https://session.example/v1/chat/completions");
+  assert.equal(bare.EMMA_VISION_MODEL, undefined);
+  assert.equal(bare.EMMA_VISION_CHAT_URL, undefined);
+  assert.equal(bare.EMMA_VISION_API_KEY, undefined);
+
+  delete process.env.EMMA_TEST_ENV_DUMP;
+  rmSync(scratch, { recursive: true, force: true });
 });

@@ -166,7 +166,7 @@ export function BuiltSettings({ busy, onAttach }: { busy: boolean; onAttach: (me
     if (!confirm(`Delete all ${built.length} of them?\n\nEverything Emma has built into her interface goes for good.`)) return;
     act(Promise.all(built.map((one) => window.emma.deleteComponent(one.id))));
   };
-  if (!built.length) return <p className="built-empty">Emma has built nothing into her interface yet. Ask her for one in a thread — it appears in {COMPONENT_ZONE_LABEL}, under the built-in widgets.</p>;
+  if (!built.length) return <div className="settings-lines"><section><div><p className="built-empty">Emma has built nothing into her interface yet. Ask her for one in a thread — it appears in {COMPONENT_ZONE_LABEL}, under the built-in widgets.</p></div></section></div>;
   return <div className="built-list">
     {note && <p className="built-error" role="status">{note}</p>}
     {built.map((one) => <article key={one.id} className="built-card" data-off={one.disabled || undefined}>

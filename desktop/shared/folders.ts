@@ -1,5 +1,6 @@
 export type FolderGrant = { id: string; path: string; name: string };
 export type FolderFile = { path: string; bytes: number };
+export type FolderListing = { files: FolderFile[]; total: number; capped: boolean };
 
 export type EditorApp = { id: string; label: string; icon: string };
 
@@ -13,8 +14,12 @@ export type ContextPick =
   | { kind: "visual"; id: string; title: string; label: string; html: string }
   | { kind: "component"; id: string; title: string };
 
+export const missingFolderMessage = (name: string, at: string) =>
+  `"${name}" is no longer at ${at} — reconnect it from the ＋ menu.`;
+
 export const MAX_FOLDERS = 16;
 export const MAX_FOLDER_FILES = 400;
+export const MAX_FOLDER_COUNT = 2000;
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_ATTACHED_CONTEXT_CHARS = 32 * 1024;
 export const MAX_TURN_IMAGES = 8;

@@ -68,6 +68,30 @@ The hook is on key events, so a copy made from the page's context menu is not
 recorded. The drawer is a drawer rather than a popover for the reason above: a
 menu floating over the stage would be behind the page.
 
+## The activity cursor
+
+While a `browser` tool call is in flight, the input the agent sends to the page
+is echoed as the same cue the computer tool draws over a native app: a grey
+arrow haloed in the secondary accent that glides to the point, a pulse on
+arrival, and a label naming what Emma is doing there. It is the tab's own input events that place it, so a
+click, a hover, a fill or a drag marks the spot it landed on, and a snapshot, a
+`get` or a scroll — none of which move a pointer — show nothing rather than
+guess.
+
+The overlay is a transparent, click-through window ordered directly above
+Emma's own window, so it cannot take focus, cannot swallow a click the user
+means for the page, and never moves the real pointer. It is dropped when the
+pane is hidden or the window is not on screen, expires 1.4 seconds after the
+last point, and the window itself is closed after a minute with no browser
+work. The coordinates stay inside Emma: they are not added to the tool result
+the model reads.
+
+[`main/browser.ts`](../desktop/main/browser.ts) turns a tab's input events into
+that cue, `reportBrowserCursor` in [`main/main.ts`](../desktop/main/main.ts)
+places the window, and `ComputerActivityCursor` in
+[`src/App.tsx`](../desktop/src/App.tsx) paints it — the same component, window
+and stylesheet as [computer use](computer-use.md#activity-cursor).
+
 ## The agent
 
 The `browser` tool drives the session by thread id over CDP, through

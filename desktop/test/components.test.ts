@@ -278,3 +278,29 @@ test("create and rewrite have to carry what they need", () => {
   assert.throws(() => parseToolArgs("component", JSON.stringify({ action: "rewrite", code: "x" })), /id/);
   assert.throws(() => parseToolArgs("component", JSON.stringify({ action: "place", title: "x" })), /action must be one of/);
 });
+
+test("a settled answer is remembered; a dialog that never answered is not", async (t) => {
+  const directory = await userData();
+  componentServer(t);
+  try {
+    await writeComponent(directory, { title: "Alpha", code: "export default () => () => null", variables: ["ALPHA_KEY"] });
+    const env = { ALPHA_KEY: "DUMMY_ALPHA_123" };
+    const requests = new ComponentRequests();
+    const template = { url: "https://api.example.com/graphql", method: "POST", headers: { Authorization: "Bearer {{ALPHA_KEY}}" } };
+    const answers: (boolean | "unanswered")[] = ["unanswered", true];
+    let asked = 0;
+    const approve = () => {
+      const answer = answers[asked++];
+      return answer === "unanswered" ? new Promise<boolean>(() => {}) : Promise.resolve(answer);
+    };
+
+    void requests.fetch(directory, "alpha", template, env, approve).catch(() => {});
+    while (!asked) await new Promise((resolve) => setTimeout(resolve, 5));
+    await requests.fetch(directory, "alpha", template, env, approve);
+    assert.equal(asked, 2, "a dialog that never answered cannot silence every later request");
+    await requests.fetch(directory, "alpha", template, env, approve);
+    assert.equal(asked, 2, "a settled answer is remembered for the session");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

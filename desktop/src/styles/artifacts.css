@@ -43,7 +43,7 @@
 .artifact-code .tok-tag { color: var(--blue); }
 .artifact-code .tok-attr { color: var(--teal); }
 .artifact-prose { max-width: 72ch; color: var(--text); font: var(--fs-md)/1.65 var(--font); }
-.artifact-mermaid { display: grid; justify-items: center; gap: var(--s-3); margin: 0; }
+.artifact-mermaid { display: grid; justify-items: stretch; gap: var(--s-3); margin: 0; }
 .artifact-mermaid svg { max-width: 100%; height: auto; }
 .artifact-missing { margin-top: var(--s-3); color: var(--text-3); font: var(--fs-sm)/1.6 var(--font); }
 

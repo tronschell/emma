@@ -83,6 +83,9 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
       setAlwaysOnTop: () => calls.push("alwaysOnTop"),
       setVisibleOnAllWorkspaces: () => {},
       setIgnoreMouseEvents: (value: boolean) => calls.push(`ignoreMouse:${value}`),
+      getMediaSourceId: () => "window:900:0",
+      isVisible: () => true,
+      isMinimized: () => false,
       setHiddenInMissionControl: (value: boolean) => calls.push(`hiddenInMissionControl:${value}`),
       webContents: { mainFrame: {}, send: (_channel: string, value: ComputerRunProgress) => messages.push(value) },
     };
@@ -91,6 +94,11 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   let ready: (event: ReadyEvent) => void = () => assert.fail("Missing readiness listener");
   const context = {
     isMac: false,
+    mainWindow: makeWindow({}),
+    computerCursorOwner: "computer",
+    computerCursorHeld: false,
+    computerCursorIdle: undefined,
+    CURSOR_IDLE_MS: 60_000,
     platform_1: { isMac: false },
     computerCursorWindow: null,
     computerCursorReady: false,
@@ -122,10 +130,11 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
     extract(/function openRunBanner\(threadId, task\) \{[\s\S]*?(?=\nfunction startAnnotation\()/),
     extract(/electron_1\.ipcMain\.on\("emma:computer-run-ready",[\s\S]*?(?=\n\s*electron_1\.ipcMain\.handle)/),
   ].join("\n");
-  const api = runInNewContext(`${functions}\n({ openRunBanner, closeRunBanner, reportRunProgress })`, context) as {
+  const api = runInNewContext(`${functions}\n({ openRunBanner, closeRunBanner, reportRunProgress, reportBrowserCursor })`, context) as {
     openRunBanner: (threadId: string, task: string) => void;
     closeRunBanner: () => void;
     reportRunProgress: (value: ComputerRunProgress) => void;
+    reportBrowserCursor: (value: ComputerRunProgress | null) => void;
   };
   api.openRunBanner("thread", "task");
   const [banner, overlay] = windows;
@@ -186,6 +195,22 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   api.reportRunProgress(reading);
   assert.equal(overlay.calls.filter((call) => call === "showInactive").length, 2);
   assert.equal(timeout, undefined);
+  now += 1;
+  api.reportBrowserCursor({ step: 0, actions: 2, action: "clicking @e1", cursor });
+  assert.deepEqual(overlay.calls.slice(-2), ["showInactive", "moveAbove:window:900:0"]);
+  assert.equal(overlay.messages.at(-1)?.action, "clicking @e1");
+  assert.equal(timeout, undefined);
+  now += COMPUTER_CURSOR_MS * 3;
+  api.reportBrowserCursor(null);
+  assert.equal(overlay.calls.at(-1), "moveAbove:window:900:0");
+  assert.equal((timeout as { milliseconds: number } | undefined)?.milliseconds, COMPUTER_CURSOR_MS);
+  api.reportBrowserCursor(null);
+  assert.equal((timeout as { milliseconds: number } | undefined)?.milliseconds, COMPUTER_CURSOR_MS);
+  context.computerRuntime.active = false;
+  now += 1;
+  api.reportBrowserCursor({ step: 0, actions: 3, action: "typing", cursor });
+  assert.equal(overlay.calls.filter((call) => call === "showInactive").length, 5);
+  context.computerRuntime.active = true;
   api.closeRunBanner();
   assert.equal(overlay.isDestroyed(), true);
   assert.equal(banner.isDestroyed(), true);

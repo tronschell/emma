@@ -298,11 +298,28 @@ profile under **Providers** for anything you run at length.
 
 ### Choosing the route
 
-Pick the model, then choose who bills for it under the selected row. The provider
-control appears only for the current model when its id sits under a plan's
+**A plain click takes the route you already pay for.** `modelEntryRoute`
+([App.tsx](../desktop/src/App.tsx)) reads the row and the routes it has: a
+ChatGPT-plan route Codex can run wins, then a `subscription` plan whose profile
+already exists, and only otherwise the metered OpenRouter route. A metered plan —
+OpenAI, Anthropic, Gemini, DeepSeek, Mistral — never displaces OpenRouter, because
+both bill per token. Clicking the row you are already on keeps the route you are
+on rather than dropping back to OpenRouter. Every surface that picks a model goes
+through it: the composer picker, the stall notice's **Try another model**, the
+catalog's **Use**, and the second-model pickers for the verifier, advisor, vision
+and secrets.
+
+The metered route is then the one you ask for, under the selected row. The
+provider control appears for the current model when its id sits under a plan's
 `namespace`: **OpenRouter · API** or the plan's name and billing kind. The same
 control appears in the workspace, Quick Ask, scheduled tasks, conditional prompts,
 verifier, advisor, vision and secrets. Rows no plan covers keep their existing route.
+
+**Every route is labelled, the metered one included.** `modelKeyTag` gives
+`codex:` **Plan**, `provider:` **Direct**, `router:` **Router**, a free or absent
+model **Free**, and an `openrouter:` model **API** — so the per-token route is
+never the unmarked one. The tag rides the composer's model button, the Quick Ask
+one, and the closed second-model picker.
 
 The model id is derived, never typed. `planForModel` matches the namespace,
 `planModelId` strips it along with any `:free` suffix, and
@@ -552,7 +569,12 @@ An id must match `/^[A-Za-z0-9_-]{1,64}$/`, a name ≤ 64 chars, a model id ≤ 
 turns `provider:<id>` into a route with `providerChatUrl()`.
 
 **Favorites and the composer.** `MAX_FAVORITE_MODELS` is 6; favorites sort first
-in the composer's picker, which is capped at `MODEL_MENU_LIMIT` 30 entries. Each
+in the composer's picker, which is capped at `MODEL_MENU_LIMIT` 30 entries. A
+favorite is a route key, and a model's plan, ChatGPT and OpenRouter routes share
+one row, so `modelEntryFavorite` matches a starred key against every route of the
+row rather than against `openrouter:<id>` alone — a starred `provider:plan-zai` or
+`codex:gpt-5.6-luna` fills the star on its row, counts towards the ★ filter, and
+sorts with the rest. Each
 thread carries its own model — `threadModel(threadId)` supplies it per turn — and
 the model is recorded per turn in `recordTurn` rather than read off the picker at
 render time.
@@ -583,13 +605,15 @@ go through one `chatCompletion` helper in
 [verifier.ts](../desktop/main/verifier.ts), which posts
 `{ model, messages, temperature: 0, max_tokens, stream: false }` with
 `authorization: Bearer <key>` from `process.env[credentialEnv]`, and reads
-`message.reasoning` when `content` comes back empty. An empty `credentialEnv`
+`message.reasoning` or `message.reasoning_content` when `content` comes back
+empty. Every one of these budgets has to cover the reasoning a current model
+spends before it answers, not just the answer. An empty `credentialEnv`
 means a local server that needs no key.
 
 | Subsystem | File | Default model | Timeout | Max tokens |
 | --- | --- | --- | --- | --- |
 | Verifier | [verifier.ts](../desktop/main/verifier.ts) | `liquid/lfm-2.5-2.6b:free` | 20 s | 700 |
-| Note tagger | [vault-tags.ts](../desktop/main/vault-tags.ts) | `liquid/lfm-2.5-2.6b:free` | 20 s | 256 |
+| Note tagger | [vault-tags.ts](../desktop/main/vault-tags.ts) | `thinkingmachines/inkling-small:free` | 20 s | 1024 |
 | Vision | [vision.ts](../desktop/main/vision.ts) | `nvidia/nemotron-nano-12b-v2-vl:free` | 60 s | 1024 |
 | Advisor | [advisor.ts](../desktop/main/advisor.ts) | `""` (off) | 120 s | 1024 |
 | Secrets | [secret.ts](../desktop/main/secret.ts) | `""` (off) | 60 s | 1024 |
@@ -624,9 +648,55 @@ them on this computer. See [privacy.md](privacy.md).
 
 **Note tagger** — titles and tags a note kept into your vault
 (`MAX_TAG_TEXT_CHARS` 6000, at most `MAX_TAGS` tags). See
-[knowledge.md](knowledge.md). It has no panel: `emma:set-tagger` exists on the
-IPC surface but nothing in the renderer calls it, so its model is whatever
-`defaultTagger` says.
+[knowledge.md](knowledge.md). Its rules are `defaultTaggerSystem` and it sends
+them; a stored `system` replaces them. It has no panel: `emma:set-tagger` exists
+on the IPC surface but nothing in the renderer calls it, so its model is
+whatever `defaultTagger` says — a three-model chain, none of which reasons
+unless asked to.
+
+### The reviewer is not one of them
+
+A sixth subsystem runs a second model and shares none of this shape. **Second-model
+review** — `Settings → Harness`, `ReviewSettings { enabled, model }` — posts no
+chat completion at all: it drives a whole agentic turn on the model you pick, in a
+thread of its own, on the harness, with the tools and the workspace the reviewed
+thread had. So it takes a *model key* like any thread model (`openrouter:…`,
+`provider:…`, `codex:…`) rather than an endpoint and a credential name, and it is
+billed like a turn, not like a completion.
+
+The prompts and the verdict live in [review.ts](../desktop/main/review.ts); the
+loop sits in [main.ts](../desktop/main/main.ts) beside the goal loop, on the same
+`runDrivenTurn` chokepoint. It ships off, because a reviewer weaker than the model
+doing the work is worse than no reviewer at all, and only you know which model
+that is.
+
+**When it fires.** After a turn that changed something — a completed tool call of
+kind `edit`, `delete`, `move` or `execute`, or a file change on record — in a
+thread with a connected folder, whose run finished cleanly. Never on a nested,
+subagent, bench, goal-driven or already-reviewed turn; never while a goal is being
+pursued, because that loop owns the thread; never when the thread's own ◎ toggle
+beside the composer is off. A turn that only read and answered is not reviewed —
+the `advisor` tool is the one for asking mid-turn.
+
+**What it sees, and what it may do.** A child thread called `Review · <thread>`
+inherits the parent's folder and permission mode, and is handed the request and
+the first pass quoted between markers, each trimmed to `MAX_REVIEW_QUOTE_CHARS`
+(20,000) from the tail. It reads, greps, runs `git diff`, runs the tests. Every
+permission request of kind `edit` is refused for it and for any subagent it
+starts, so it cannot write the fix — that is the reviewed model's job. The block
+is on the edit tools and not on the shell, so a thread that runs commands without
+asking reviews at that same rung.
+
+**The verdict.** The review ends with `VERDICT: ship` or `VERDICT: revise` on a
+line of its own. The last such line wins, and anything unparseable counts as
+`ship`, so a confused, empty or interrupted review costs one turn and never a
+loop. On `revise` the critique goes back to the thread's own model as a fresh
+turn, quoted as a reviewer's opinion rather than as something the user said, and
+the result is reviewed again — at most `MAX_REVIEW_ROUNDS` (2) rounds, after which
+Emma stops and leaves the last word to you. Stopping the thread, archiving it, or
+starting a turn of your own ends the loop too.
+
+**Cost.** Up to two extra agentic turns per round, on two bills.
 
 ## Token, rate and cost accounting
 

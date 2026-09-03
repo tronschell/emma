@@ -2,6 +2,7 @@
 @import "./styles/tokens.css";
 @import "./styles/sidebar.css";
 @import "./styles/conversation.css";
+@import "./styles/council.css";
 @import "./styles/browser.css";
 @import "./styles/terminal.css";
 @import "./styles/markdown.css";
@@ -14,6 +15,8 @@
 @import "./styles/goal.css";
 @import "./styles/plugins.css";
 @import "./styles/activity.css";
+@import "./styles/repairs.css";
+@import "./styles/dashboard.css";
 @import "./styles/settings.css";
 @import "./styles/color-picker.css";
 @import "./styles/context-bar.css";
@@ -40,6 +43,7 @@ body { background: transparent; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; cursor: pointer; }
 button:disabled { cursor: default; opacity: .45; }
+button[data-armed="true"], button[data-armed="true"]:hover:not(:disabled) { color: var(--fg-invert); background: var(--danger); border-color: var(--danger); font-weight: 600; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 :is(input:not([type="checkbox"], [type="range"], [type="file"]), textarea):focus-visible { border-color: var(--accent); outline: none; }
 
@@ -82,3 +86,10 @@ p, h1, h2, h3, dl, dd { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
 *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+
+.root-failure { display: grid; align-content: start; gap: var(--s-4); max-width: 68ch; margin: 0 auto; padding: var(--s-8) var(--s-5); color: var(--text); font: var(--fs-md)/1.6 var(--font); }
+.root-failure h1 { font: var(--fs-2xl)/1.2 var(--font); font-weight: 400; }
+.root-failure p { color: var(--text-2); }
+.root-failure button { justify-self: start; min-height: 28px; padding: 0 var(--s-3); color: var(--accent); border: 1px solid var(--border-strong); background: transparent; font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.root-failure button:hover { background: var(--accent-soft); }
+.root-failure pre { max-height: 40vh; margin: 0; padding: var(--s-3); overflow: auto; color: var(--text-3); border: 1px solid var(--border); background: var(--surface-2); font: var(--fs-xs)/1.5 var(--font-mono); white-space: pre-wrap; }

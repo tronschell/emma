@@ -36,10 +36,13 @@ pub const Settings = struct {
     context_window_tokens: usize = 0,
     previous_cache_read_tokens: u64 = 0,
     previous_input_tokens: u64 = 0,
+    /// Set by the runtime once a request body has overflowed the provider's
+    /// byte cap: prune on every step from then on, whatever the triggers say.
+    force_prune: bool = false,
 
     pub fn enabled(self: Settings) bool {
         return self.reinject_prompt_steps != 0 or self.reinject_prompt_percent != 0 or
-            self.prune_tools_steps != 0 or self.prune_tools_percent != 0;
+            self.prune_tools_steps != 0 or self.prune_tools_percent != 0 or self.force_prune;
     }
 };
 
@@ -85,7 +88,7 @@ pub fn apply(
     // must never be the reason a turn overflows its window. The periodic trigger
     // is only ever a cost optimization, and on a warm cache it is a losing one,
     // so it stands down and waits for the cache to cool.
-    const prune_pressure = firesOnPercent(settings.prune_tools_percent, outcome.percent_used);
+    const prune_pressure = settings.force_prune or firesOnPercent(settings.prune_tools_percent, outcome.percent_used);
     const prune_hygiene = firesOnStep(settings.prune_tools_steps, step_index) and !cacheWasWarm(settings);
     if (prune_pressure or prune_hygiene) {
         const pruned = pruneToolResults(messages.items);
@@ -99,7 +102,7 @@ pub fn apply(
         fires(settings.reinject_prompt_steps, settings.reinject_prompt_percent, step_index, outcome.percent_used))
     {
         const reminder = try std.fmt.allocPrint(alloc, "{s}{s}", .{ reinject_prefix, original_prompt });
-        try messages.append(alloc, .{ .role = .user, .content = reminder });
+        try messages.append(alloc, .{ .role = .user, .content = reminder, .cache_policy = .no_cache });
         outcome.reinjected = true;
         outcome.added_tokens = reminder.len / chars_per_token;
     }
@@ -158,6 +161,7 @@ fn percentUsed(estimated_tokens: usize, context_window_tokens: usize) usize {
 /// rejects a tool call whose result went missing.
 fn pruneToolResults(messages: []ChatMessage) struct { results: usize, characters: usize } {
     var keep_from = messages.len;
+    while (keep_from > 0 and messages[keep_from - 1].cache_policy == .no_cache) keep_from -= 1;
     while (keep_from > 0 and messages[keep_from - 1].role == .tool) keep_from -= 1;
 
     var results: usize = 0;
@@ -280,6 +284,25 @@ test "pruning blanks older tool results and keeps the newest block" {
     const second = try apply(alloc, &messages, .{ .prune_tools_steps = 2 }, 6, "build the thing");
     try std.testing.expectEqual(@as(usize, 0), second.pruned_results);
     try std.testing.expectEqual(@as(usize, 0), second.saved_tokens);
+}
+
+test "a forced prune fires with every trigger off and no known window" {
+    const alloc = std.testing.allocator;
+    var calls = [_]types.ToolCall{.{ .id = "call_1", .name = "read_file", .arguments_json = "{}" }};
+    var messages: std.ArrayList(ChatMessage) = .empty;
+    defer messages.deinit(alloc);
+    try messages.append(alloc, .{ .role = .user, .content = "build the thing" });
+    try messages.append(alloc, .{ .role = .assistant, .content = "reading", .tool_calls = calls[0..] });
+    try messages.append(alloc, .{ .role = .tool, .tool_call_id = "call_1", .tool_name = "read_file", .content = "an old, large page" });
+    try messages.append(alloc, .{ .role = .assistant, .content = "reading again", .tool_calls = calls[0..] });
+    try messages.append(alloc, .{ .role = .tool, .tool_call_id = "call_1", .tool_name = "read_file", .content = "the newest page" });
+
+    try std.testing.expect(!(try apply(alloc, &messages, .{}, 3, "build the thing")).changedAnything());
+    const outcome = try apply(alloc, &messages, .{ .force_prune = true }, 3, "build the thing");
+    try std.testing.expectEqual(@as(usize, 1), outcome.pruned_results);
+    try std.testing.expect(!outcome.reinjected);
+    try std.testing.expectEqualStrings(pruned_notice, messages.items[2].content.?);
+    try std.testing.expectEqualStrings("the newest page", messages.items[4].content.?);
 }
 
 test "a tool result smaller than the notice reports no saving" {

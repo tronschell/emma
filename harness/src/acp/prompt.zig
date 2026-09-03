@@ -57,6 +57,7 @@ const tool_mcp_runtime = @import("../core/tooling/tool_mcp_runtime.zig");
 const tool_presentation = @import("../core/tooling/tool_presentation.zig");
 const tool_result_errors = @import("../core/tooling/tool_result_errors.zig");
 const tool_runtime = @import("../core/tooling/tool_runtime.zig");
+const semantic_search_impl = @import("../tools/filesystem/semantic_search.zig");
 const command_output_content = @import("../core/tooling/command_output_content.zig");
 const builtin_skills = @import("../builtins/skills.zig");
 const builtin_tools = @import("../builtins/tools.zig");
@@ -307,6 +308,8 @@ const AcpContext = struct {
             .max_read_file_line_len = self.state.cfg.max_read_file_line_len,
             .max_command_output_bytes = self.state.cfg.max_command_output_bytes,
             .max_tool_result_bytes = session.max_tool_result_bytes,
+            .command_timeout_ms = session.command_timeout_ms,
+            .semantic_grep = if (session.semantic_grep) |*cfg| cfg else null,
             .api_key = session.api_key,
             .agent_stream_provider = server.streamProviderFor(self.state, session.provider),
             .credential_source = session.credential_source,
@@ -810,6 +813,7 @@ pub fn handlePrompt(
         .permission_rules = session.permission_rules,
         .mcp_runtime = session.mcp,
         .subagent_available = state.subagent_host != null,
+        .semantic_grep = if (session.semantic_grep != null) &semantic_search_impl.grep_schema else null,
     });
     defer tool_projection.deinit(alloc);
 
@@ -885,6 +889,8 @@ pub fn handlePrompt(
         .permission_mode = captured_permission_mode,
         .sandbox_backend = captured_sandbox_backend,
         .history = context_history,
+        .history_budget_floor = &session.session_rt.history_budget_floor,
+        .sticky_dynamic_tools = .{ .memory = &session.session_rt.sticky_dynamic_tools, .alloc = alloc },
         .root_user_intent_context = root_user_intent_context,
         .grants = session.session_grants,
         .context_snapshot = context_snapshot,
@@ -940,6 +946,7 @@ pub fn handlePrompt(
             if (err == error.NonInteractivePermissionRequired) {
                 ctx.stop_reason = .refused;
             } else {
+                if (err == error.RequestTooLarge) _ = compactAcpSession(alloc, session) catch false;
                 return err;
             }
         };
@@ -998,6 +1005,7 @@ pub fn runSubagentChild(
     const session_id = active.session_id;
     const captured_mode = active.mode;
     const mcp = active.mcp;
+    const semantic_grep_available = active.semantic_grep != null;
     state.subagent_authority_mutex.unlock(io_mod.getIo());
     var ctx = AcpContext{
         .alloc = alloc,
@@ -1019,6 +1027,8 @@ pub fn runSubagentChild(
             .permission_rules = admission.rules,
             .mcp_runtime = mcp,
             .subagent_available = true,
+            // Same tool list as the parent, so the child's request prefix hits the parent's cache.
+            .semantic_grep = if (semantic_grep_available) &semantic_search_impl.grep_schema else null,
         },
     ) catch return error.OutOfMemory;
     defer child_projection.deinit(alloc);
@@ -1051,6 +1061,7 @@ pub fn runSubagentChild(
             .push_text = pushText,
             .push_tool_lifecycle = pushChildToolLifecycle,
             .push_usage = reportTurnUsage,
+            .push_route_recovery_status = pushRouteRecoveryStatus,
         },
         .provider_routes = .{
             .gateway = .{
@@ -1529,10 +1540,13 @@ fn withPublishedEfforts(
     capabilities: model_capabilities.Capabilities,
 ) model_capabilities.Capabilities {
     const session = if (ctx.state.active_session) |*active| active else return capabilities;
-    if (session.reasoning_efforts.len == 0 or !std.mem.eql(u8, model, session.model)) return capabilities;
+    if (!std.mem.eql(u8, model, session.model)) return capabilities;
     var published = capabilities;
-    published.supports_reasoning = true;
-    published.reasoning_efforts = session.reasoning_efforts;
+    if (session.reasoning_efforts.len > 0) {
+        published.supports_reasoning = true;
+        published.reasoning_efforts = session.reasoning_efforts;
+    }
+    if (session.image_input) |native| published.supports_vision = native;
     return published;
 }
 
@@ -1543,6 +1557,11 @@ fn finalizeTurn(raw_ctx: *anyopaque, turn_id: u64, outcome: types.TurnPresentati
         ctx.stop_reason = .max_output_tokens;
     } else if (outcome == .failed or outcome == .paused) {
         ctx.stop_reason = .refused;
+    }
+    if (ctx.child == null) {
+        if (ctx.state.subagent_host) |subagent_host| {
+            subagent_host.requestRetirementSweep(io_mod.milliTimestamp());
+        }
     }
 }
 
@@ -1622,16 +1641,12 @@ fn acknowledgeParentTurnContext(
     }
     if (child_acks.len == 0) return;
     const subagent_host = ctx.state.subagent_host orelse return;
-    const retirement_ready = parent_delivery_projector
-        .acknowledgeWithRetirementSignal(
+    parent_delivery_projector.acknowledge(
         arena,
         subagent_host.sessions,
         subagent_host.manager.options.child_store,
         child_acks,
     );
-    if (retirement_ready) {
-        subagent_host.requestRetirementSweep(io_mod.milliTimestamp());
-    }
 }
 
 fn appendStaticContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
@@ -2488,7 +2503,14 @@ test "a child is named after the first line of its brief, never mid-character" {
 
 fn pushSystemNotice(raw_ctx: *anyopaque, text: []const u8) !void {
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
-    ctx.sendAgentText(text) catch {};
+    if (text.len == 0) return;
+    if (text[text.len - 1] == '\n') {
+        ctx.sendAgentText(text) catch {};
+        return;
+    }
+    const terminated = try std.fmt.allocPrint(ctx.alloc, "{s}\n", .{text});
+    defer ctx.alloc.free(terminated);
+    ctx.sendAgentText(terminated) catch {};
 }
 
 fn notifyCompacted(context: *anyopaque, event: session_runtime.CompactionEvent) void {
@@ -3800,6 +3822,51 @@ test "ACP stream adapter strips ANSI from agent chunks and suppresses writer fai
     try failed_deps.push_text(failed_deps.ctx, .{ .operational = "writer failure remains suppressed" });
 }
 
+test "an ACP system notice always ends its own line" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var capture = try tmp.dir.createFile(io_mod.getIo(), "acp-notice.jsonl", .{ .read = true });
+    defer capture.close(io_mod.getIo());
+    {
+        var state = try initTestAcpState(alloc, "/tmp/workspace", .ask);
+        defer state.deinit();
+        state.writer = .{ .stdout = capture };
+        var ctx = AcpContext{
+            .alloc = alloc,
+            .state = &state,
+            .session_id = "session_1",
+        };
+        const deps = agentRuntimeDeps(&ctx);
+        try deps.push_system_notice(deps.ctx, "Tip: vision-capable model.");
+        try deps.push_system_notice(deps.ctx, "already terminated\n");
+        try deps.push_system_notice(deps.ctx, "");
+        try capture.sync(io_mod.getIo());
+    }
+
+    var captured_file = try tmp.dir.openFile(io_mod.getIo(), "acp-notice.jsonl", .{});
+    defer captured_file.close(io_mod.getIo());
+    const captured = try io_mod.readFileToEnd(alloc, &captured_file, 64 * 1024);
+    defer alloc.free(captured);
+
+    const expected_texts = [_][]const u8{ "Tip: vision-capable model.\n", "already terminated\n" };
+    var notifications = std.mem.splitScalar(u8, captured, '\n');
+    var notification_count: usize = 0;
+    while (notifications.next()) |line| {
+        if (line.len == 0) continue;
+        var parsed = try std.json.parseFromSlice(std.json.Value, alloc, line, .{});
+        defer parsed.deinit();
+        const update = parsed.value.object.get("params").?.object.get("update").?.object;
+        try std.testing.expectEqualStrings(
+            expected_texts[notification_count],
+            update.get("content").?.object.get("text").?.string,
+        );
+        notification_count += 1;
+    }
+    try std.testing.expectEqual(expected_texts.len, notification_count);
+}
+
 test "ACP auth failure emits a valid detail-free JSON-RPC notification" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -4898,4 +4965,33 @@ test "ACP prompt agent config carries request options from active session" {
     try std.testing.expectEqual(state.cfg.gateway_retry_count, state.web_search_runtime.gateway_retry_count);
     try std.testing.expectEqualStrings(state.cfg.gateway_chat_url, state.web_search_runtime.gateway_chat_url);
     try std.testing.expectEqualStrings("/models", tool_ctx.gateway_models_path);
+}
+
+test "the published image input answer overlays vision for the session model only" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
+    defer alloc.free(workspace);
+
+    var state = try initTestAcpState(alloc, workspace, .auto);
+    defer state.deinit();
+    state.capability_resolver.state = .failed;
+    var ctx = AcpContext{ .alloc = alloc, .state = &state, .session_id = "session_1" };
+    const session = &state.active_session.?;
+
+    try std.testing.expect(!availableModelCapabilities(&ctx, session.model).supports_vision);
+
+    session.image_input = true;
+    try std.testing.expect(availableModelCapabilities(&ctx, session.model).supports_vision);
+    try std.testing.expect((try resolveModelCapabilities(&ctx, alloc, session.model)).supports_vision);
+    try std.testing.expect(!availableModelCapabilities(&ctx, "another-model").supports_vision);
+    try std.testing.expect(!(try resolveModelCapabilities(&ctx, alloc, "another-model")).supports_vision);
+
+    session.image_input = false;
+    try std.testing.expect(!availableModelCapabilities(&ctx, session.model).supports_vision);
+
+    session.image_input = null;
+    try std.testing.expect(!availableModelCapabilities(&ctx, session.model).supports_vision);
 }

@@ -22,7 +22,7 @@ export const MAX_COMMIT_MESSAGE_BYTES = 4_096;
 export const MAX_MESSAGE_DIFF_CHARS = 12_000;
 
 const MESSAGE_TIMEOUT = 45_000;
-const MESSAGE_MAX_TOKENS = 400;
+const MESSAGE_MAX_TOKENS = 1_200;
 
 export const NO_GIT = isWindows ? "git is not installed on this PC. Install Git for Windows and try again." : "git is not installed on this Mac. Install the Xcode command line tools with xcode-select --install.";
 
@@ -192,6 +192,8 @@ export function commitPrompt(files: GitFileEntry[], diff: string): string {
   ].join("\n");
 }
 
+const ECHOED_PROMPT = /Files in this commit:|<<<DIFF|Write the commit message now\.|You write the commit message|Reply with the message and nothing else/i;
+
 export function cleanMessage(reply: string): string {
   let text = reply.replace(/<(think|thinking|reasoning)>[\s\S]*?(?:<\/\1>|$)/gi, "").trim();
   const fenced = /^```[A-Za-z]*\r?\n([\s\S]*?)\r?\n?```$/.exec(text);
@@ -220,6 +222,7 @@ export async function writeCommitMessage(
   }
   const text = cleanMessage(reply);
   if (!text) throw new Error("The model answered with nothing. Write the message yourself or try again.");
+  if (ECHOED_PROMPT.test(text)) throw new Error("The model read the prompt back instead of writing a message. Try again, or pick a stronger model in Settings → Models.");
   return text;
 }
 

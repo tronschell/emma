@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
@@ -9,15 +9,16 @@ import { externalUrl, keepRequest, publicUrl, runCommandRequest, statsExportRequ
 import { roundComputerCursor, COMPUTER_CURSOR_MS, type ComputerRunProgress } from "../shared/computer";
 import { renderResults, webSearch } from "./web-search";
 import { clipPage, fetchReadablePage, frontmostApplication, frontmostPage, frontmostTab } from "./clip";
-import { discoverImports, saveImportManifest } from "./imports";
+import { discoverImports, importSources, MAX_IMPORT_SOURCES, registeredImportIds, saveImportManifest } from "./imports";
 import { loadUiPlugins } from "./plugins";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout, type NotchGeometry } from "./overlay";
 import { BoundedLines, HostResponses, parseHostLine, recordedTurn, type HostDueJob, type RecordedTurn } from "./ndjson";
 import { describeRun, packVariables, parseVariables, parseWorkflow, runWorkflow, type WorkflowNode } from "../shared/workflow";
 import { runWorkflowScript, workflowScriptPath } from "./workflow-script";
-import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
-import { daysUnder, mcpServerPrefix, mcpToolKey, readUsage, recordUse, skillKey } from "./invocations";
-import { addMarketplace, ensureDefaultMarketplace, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
+import { ImportedCapabilityRuntime, MAX_SKILL_RESULTS, SkillAttachmentStore, type McpServerDefinition, harnessMcpServers as readHarnessMcpServers, listEmmaTools, listImportedMcpServers, mirrorSkillsToHarness, searchImportedSkills, seedBuiltinSkills, writeEmmaTool, writeLearnedSkill } from "./capabilities";
+import { daysUnder, mcpServerPrefix, mcpToolKey, modelKey, readUsage, recordUse, skillKey } from "./invocations";
+import { addMarketplace, ensureDefaultMarketplace, installedHooks, installPlugin, pluginDetail, refreshMarketplace, removeMarketplace, runPluginHooks, setHookTrust, trustPluginHooks, uninstallPlugin, writePlugin } from "./marketplace";
+import { hookRuns } from "../shared/plugins";
 import { artifactFiles, deleteArtifact, listArtifacts, queryArtifact, readArtifact, readArtifactFile, updateArtifact, updateArtifactFile, writeArtifact, writeArtifactFile } from "./artifacts";
 import { ARTIFACT_LABELS, ARTIFACT_SCHEME, artifactFileType, artifactMarker, artifactSlug, MODULE_PATH } from "../shared/artifacts";
 import { ComponentRequests, deleteComponent, listComponents, readComponent, readComponentShot, setComponentEnabled, setComponentExpands, writeComponent, writeComponentShot } from "./components";
@@ -27,17 +28,17 @@ import { deleteTaskList, editTaskList, listTaskLists, readTaskList, writeTaskLis
 import { DEFAULT_GOAL_TOKEN_BUDGET, goalDrivesAgain, goalPursuing, goalResult, goalTitle, goalTokensLeft, isGoalStatus, MAX_GOAL_EVIDENCE_CHARS, MAX_GOAL_OBJECTIVE_CHARS, MAX_GOAL_REASON_CHARS, MAX_GOAL_TOKEN_BUDGET, usageLimitedFailure, type Goal } from "../shared/goal";
 import { mergePlan, parsePlanSteps, planProblems, planProgress, readySteps, renderPlan, stepBrief, type Plan } from "../shared/plan";
 import { flattenTaskListTasks, mergeTaskList, parseTaskListTasks, renderTaskList, taskListProgress, taskListState, updateTaskListStatus, type TaskList } from "../shared/task-list";
-import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage } from "../shared/visualize";
+import { VISUAL_CSP, VISUAL_SCHEME, visualMarker, visualPage, type Visual } from "../shared/visualize";
 import { captureVisual, keepVisual, readVisual } from "./visuals";
 import { CredentialStore } from "./credentials";
 import { FolderStore } from "./folders";
 import { AttachmentStore, isImageAttachment, type Attachment } from "./attachments";
 import { defaultVaultRoot, vaultReady } from "./setup";
-import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNoteFolders, listNotes, moveNote, obsidianInstallCommand, obsidianInstalled, readVault, renameNoteFolder, saveVault } from "./vault";
+import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNoteFolders, listNotes, moveNote, noteInVault, notesRoot, obsidianInstallCommand, obsidianInstalled, readVault, renameNoteFolder, saveVault } from "./vault";
 import { tagNote } from "./vault-tags";
-import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, noteFolder, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
+import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
-import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider } from "./catalog";
+import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider, type CatalogModel } from "./catalog";
 import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
 import { branchPrefixName, validateGitArgs } from "../shared/git";
 import { installUpdate, readyUpdate, startUpdates } from "./update";
@@ -45,28 +46,34 @@ import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSna
 import { installedEditors, openInEditor } from "./editors";
 import { machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
-import { configureResearch, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
+import { configureResearch, modelRates, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
-import { CODEX_MODEL_ID, CODEX_PREFIX, cliPlan, codexSlug, MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
+import { CODEX_MODEL_ID, CODEX_PREFIX, cliPlan, codexSlug, isEnvName, MODEL_PLANS, providerCredentials, routerKey, webSearchProvider, FREE_ROUTER_ID, planForModel, planForProfile, MIN_UI_SCALE, MAX_UI_SCALE, defaultHarnessExperiments, defaultReview, defaultSettings, defaultTagger, defaultToolSettings, defaultVerifier, routerChain, routerIdFor, validateRouters, holdBindings, isCursorCommand, isThinkingLevel, isKeybindAction, keybindCommands, normalizeAccelerator, providerChatUrl, validateProviders, validateKeybinds, validateOverlayPreferences, validateHarnessExperiments, validateReview, validateTagger, validateToolSettings, validateVerifier, FREE_ROUTER_MODELS, OPENROUTER_CHAT_ENDPOINT, type Keybind, type KeybindAction, type Keybinds, type HarnessExperiments, type OverlayPreferences, type ModelRouter, type ProviderProfile, type ReviewSettings, type TaggerSettings, type ThinkingLevel, type ToolSettings, type VerifierSettings } from "../shared/settings";
 import { nameThread } from "./thread-namer";
+import { suggestNextSteps } from "./next-steps";
+import { validateWorkState } from "../shared/next-steps";
 import { applied, validateImprovements, type Arm } from "../shared/improvement";
 import { frontApplicationNote, ScreenContextStore, validScreenContextId, type FrontApplication } from "../shared/screen-context";
 import { AgentRuntime, benchReplay, benchThread, haltBench, inheritBench, lastAssistantMessage, ownBench, OWN_TOOLS, refuseBenchTurn, towardGoal, type TurnRequest } from "./agent-loop";
+import { adoptCouncil, closeCouncil, configureCouncil, councilAnswer, councilState, startCouncil, stopCouncil, type CouncilRoute } from "./council";
+import { validateCouncilStart } from "../shared/council";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
+import { proxyPort, SemanticGrep, ZG_ENTRY } from "./semantic-grep";
 import { chatgptAuth, chatgptRoute } from "./chatgpt";
 import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
 import { forceArm, harnessPromptFile, setImprovements, setPrompts, setSystemPrompt, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
-import { Harness, escapesRoot, failedTurn, harnessKey, recoveredSessionTraces, type HarnessMcpServer, type HarnessToolCall, type StoredThreadTrace, type ThinkingRoute, type TurnUsage } from "./harness";
+import { Harness, RESTARTED_BY_YOU, escapesRoot, explainFailure, failedTurn, harnessKey, recoveredSessionTraces, type HarnessMcpServer, type HarnessToolCall, type StoredThreadTrace, type ThinkingRoute, type TurnUsage } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
+import { MAX_REVIEW_ROUNDS, REVIEWABLE_KINDS, reviewPrompt, reviewTitle, reviewVerdict, revisionPrompt } from "./review";
 import { advise } from "./advisor";
 import { describeScreen, look } from "./vision";
 import { readSecret } from "./secret";
-import { listMemories, runMemoryCommand } from "./memory";
+import { listMemories, MAX_MEMORY_FILE_BYTES, resolveMemoryPath, runMemoryCommand } from "./memory";
 import { browserArgv, BROWSER_NAVIGATIONS, describeToolCall, MAX_CLI_PROMPT_CHARS, parseToolArgs, shellQuoted, toolNeeds, type ToolArgs } from "./tools";
 import { Browsers, type BrowserStatus } from "./browser";
 import { Terminals } from "./terminal";
@@ -76,44 +83,64 @@ const SIGN_IN_THREAD = "sign-in";
 import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type PermissionMode } from "../shared/permissions";
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
-import { isPin, MAX_ASK_MS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type ModelEntry, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type TraceSpan } from "../shared/mobile-protocol";
-import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
+import { clampTrace, compactionNotice } from "../shared/trace";
+import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type PhoneList, type PluginEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type ThreadTrace, type TraceSpan } from "../shared/mobile-protocol";
+import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
+const MAX_HOST_CALL_MS = 60 * 1000;
 const WINDOWS_SHUTDOWN_TIMEOUT_MS = 8000;
 
 if (isWindows) app.setName("Emma");
 
 class Host {
-  private child: ChildProcessWithoutNullStreams;
+  private child!: ChildProcessWithoutNullStreams;
   private lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
   private responses = new HostResponses();
   private nextId = 1;
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: Error | null = null;
+  private closed = false;
   private writes = 0;
   private snapshots = new Map<string, { writes: number; at: number; value: Promise<unknown> }>();
 
-  constructor(binary: string) {
-    this.child = spawn(binary, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    this.child.stdout.on("data", (data: Buffer) => {
+  constructor(private readonly binaryPath: string) {
+    this.spawn();
+  }
+
+  private spawn() {
+    const child = spawn(this.binaryPath, [], { env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    this.child = child;
+    child.stdout.on("data", (data: Buffer) => {
+      if (this.child !== child) return;
       try { for (const line of this.lines.push(data)) { if (this.failure) break; this.receive(line); } }
       catch (error) { this.abort(error instanceof Error ? error : new Error("Emma host protocol error")); }
     });
-    this.child.stdout.on("end", () => { try { this.lines.end(); this.responses.end(); } catch (error) { this.abort(error as Error); } });
-    this.child.stderr.on("data", (data) => console.error(String(data).trim()));
-    this.child.once("error", (error) => this.fail(error));
-    this.child.stdin.on("error", (error) => this.fail(error));
-    this.child.once("exit", () => this.fail(new Error("Emma host stopped")));
+    child.stdout.on("end", () => { if (this.child !== child) return; try { this.lines.end(); this.responses.end(); } catch (error) { this.abort(error as Error); } });
+    child.stderr.on("data", (data) => console.error(String(data).trim()));
+    child.once("error", (error) => { if (this.child === child) this.fail(error); });
+    child.stdin.on("error", (error) => { if (this.child === child) this.fail(error); });
+    child.once("exit", () => { if (this.child === child) this.fail(new Error("Emma host stopped")); });
+  }
+
+  private restart() {
+    this.failure = null;
+    this.lines = new BoundedLines(MAX_HOST_RESPONSE_BYTES);
+    this.responses = new HostResponses();
+    this.snapshots.clear();
+    this.spawn();
   }
 
   request(request: { method: string; params: Record<string, string> }): Promise<unknown> {
-    if (this.failure) return Promise.reject(this.failure);
-    if (request.method === "thread") return this.send(request);
+    if (this.failure && this.closed) return Promise.reject(this.failure);
+    if (this.failure) this.restart();
+    if (request.method === "thread" || request.method === "readTrace") return this.send(request);
     if (request.method !== "snapshot" && request.method !== "threadSummaries") {
       this.storeChanged();
-      return this.send(request);
+      const written = this.send(request);
+      void written.then(() => changed(), () => undefined);
+      return written;
     }
     const cached = this.snapshots.get(request.method);
     if (cached && cached.writes === this.writes && Date.now() - cached.at < SNAPSHOT_CACHE_MS) return cached.value;
@@ -134,7 +161,14 @@ class Host {
   private send(request: { method: string; params: Record<string, string> }): Promise<unknown> {
     const id = String(this.nextId++);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) this.abort(new Error(`Emma host stopped answering ${request.method}`));
+      }, MAX_HOST_CALL_MS);
+      timer.unref?.();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
       this.child.stdin.write(`${JSON.stringify({ id, ...request })}\n`, (error) => {
         if (error) this.fail(error);
       });
@@ -142,6 +176,7 @@ class Host {
   }
 
   close() {
+    this.closed = true;
     this.fail(new Error("Emma host closed"));
     if (!this.child.stdin.destroyed) this.child.stdin.end();
     if (!this.child.killed) this.child.kill();
@@ -156,7 +191,12 @@ class Host {
       if ("dueJob" in response) {
         const job = response.dueJob;
         this.storeChanged();
-        void runScheduledWorkflow(job).catch((error: unknown) => console.error(`Scheduled job ${job.jobId} failed:`, error));
+        // The host stamps this row as it hands the job over and again when the run reports back,
+        // and a run sits between the two for as long as it takes, so both ends are said out loud.
+        scheduledJobsChanged();
+        void runScheduledWorkflow(job)
+          .finally(scheduledJobsChanged)
+          .catch((error: unknown) => console.error(`Scheduled job ${job.jobId} failed:`, error));
         return;
       }
       const request = this.pending.get(response.id);
@@ -195,8 +235,10 @@ let agents: AgentRuntime | undefined;
 let bridge: Bridge | undefined;
 const background = new BackgroundCommands(() => broadcast("emma:background"));
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
+const zgEntry = app.isPackaged ? path.join(process.resourcesPath, "zvec-grep", ZG_ENTRY) : path.join(app.getAppPath(), "vendor/zvec-grep", ZG_ENTRY);
+const semanticGrep = new SemanticGrep(process.execPath, zgEntry, existsSync(zgEntry), proxyPort(app.getPath("userData")), () => broadcast("emma:semantic-grep"));
 let cliModels: CliModelCatalog;
-const browsers = new Browsers(() => broadcast("emma:browser"));
+const browsers = new Browsers(() => broadcast("emma:browser"), reportBrowserCursor);
 const terminals = new Terminals(
   () => nativeHelper("emma-pty"),
   (id, data, at) => broadcast("emma:terminal-data", { id, data, at }),
@@ -208,8 +250,12 @@ let computerCursorReady = false;
 let computerCursorTimer: ReturnType<typeof setTimeout> | undefined;
 let computerProgress: ComputerRunProgress | undefined;
 let computerCursorProgress: ComputerRunProgress | undefined;
+let computerCursorOwner: "computer" | "browser" = "computer";
+let computerCursorHeld = false;
+let computerCursorIdle: ReturnType<typeof setTimeout> | undefined;
+const CURSOR_IDLE_MS = 60_000;
 let computerCursorAt = 0;
-const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute }>();
+const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean }>();
 
 const DEFAULT_THREAD_TITLE = "New thread";
 
@@ -243,13 +289,31 @@ function primeGoals(snapshot: unknown) {
 }
 
 const GOAL_CONTINUATION = "Continue working toward this thread's goal.";
+const GOAL_OVERSPENT = "The token allowance ran out part-way through a turn, so Emma stopped it there. Each agent step re-sends the conversation, so a long turn spends more than the turn ledger records. Continue grants more.";
 
 const threadFolderIds = (threadId: string) => threadContexts.get(threadId)?.folderIds ?? [];
+/* Threads a phone started. A mark on the row, nothing more, so it lives beside the
+   store rather than in it. */
+const phoneThreads = new Set<string>();
+const phoneThreadsFile = () => path.join(app.getPath("userData"), "phone-threads.json");
+function loadPhoneThreads() {
+  try {
+    const ids = JSON.parse(readFileSync(phoneThreadsFile(), "utf8")) as unknown;
+    if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") phoneThreads.add(id);
+  } catch { /* first run */ }
+}
+const mobileStatus = (activeAt?: number) => ({ ...bridge!.status(), threads: [...phoneThreads], ...(activeAt ? { activeAt } : {}) });
 function namedPath(value: unknown): string | undefined {
   if (typeof value !== "string" || !value || value.length > 1024) throw new Error("That path is invalid");
   const raw = value.startsWith("~/") ? path.join(homedir(), value.slice(2)) : value;
   const candidates = path.isAbsolute(raw) ? [raw] : folders!.list().map((grant) => path.join(grant.path, raw));
   return candidates.find((candidate) => existsSync(candidate));
+}
+
+function pathGrant(file: string) {
+  const real = realPath(file);
+  const grant = real ? folders!.list().find((folder) => realPathInside(folder.path, real)) : undefined;
+  return { grant, attached: !grant && attachments!.holds(file) };
 }
 
 function attachProject(threadId: string, directory: string) {
@@ -283,7 +347,8 @@ const readHarnessReport = (): HarnessReport => ({
 
 function restartHarnesses() {
   const stopped = harnesses.size;
-  for (const client of harnesses.values()) client.close();
+  stopEveryThread();
+  for (const client of harnesses.values()) client.close(RESTARTED_BY_YOU);
   harnesses.clear();
   noteHarnessLog({ at: Date.now(), flow: "err", label: "restart", body: `Emma stopped ${stopped} emma-cli ${stopped === 1 ? "process" : "processes"}. The next turn starts a fresh one.` });
   return readHarnessReport();
@@ -315,13 +380,13 @@ async function steerThread(threadId: string, text: string) {
   if (child) {
     if (!child.client.running) throw new Error("That subagent's harness is no longer running.");
     await child.client.steerChild(child.childId, text);
-    agents!.noteSteer(threadId, text);
+    agents!.noteNotice(threadId, "steer", text);
     return;
   }
   for (const harness of harnesses.values()) {
     if (await harness.steer(threadId, text)) {
       agents!.dropAsks(threadId);
-      agents!.noteSteer(threadId, text);
+      agents!.noteNotice(threadId, "steer", text);
       return;
     }
   }
@@ -341,13 +406,23 @@ const annotationAttachment = new ScreenContextStore();
 let annotating = false;
 let capturing = false;
 let overlayPreferences: OverlayPreferences = { notchGap: defaultSettings.notchGap, cursorOrbsEnabled: defaultSettings.cursorOrbsEnabled, notchConcurrency: defaultSettings.notchConcurrency };
+// The renderer owns the default-mode picker and keeps it in localStorage, so main has no way to
+// know it — and getSettings hands that value to the phone, where a Settings row reports it as the
+// Mac's own. Mirrored here on every save the way the verifier and the tool switches are, rather
+// than answering with the constant, which was only ever right for a Mac nobody had changed.
+let defaultMode: PermissionMode = DEFAULT_PERMISSION_MODE;
 let verifier: VerifierSettings = defaultVerifier;
 let toolSettings: ToolSettings = defaultToolSettings;
 let harnessExperiments: HarnessExperiments = defaultHarnessExperiments;
+let reviewSettings: ReviewSettings = defaultReview;
+const reviewThreads = new Set<string>();
+const reviewing = new Set<string>();
+const turnTouched = new Set<string>();
 
 const toolsChanged = async () => {
-  for (const window of BrowserWindow.getAllWindows()) window.webContents.send("emma:tools-changed");
+  broadcast("emma:tools-changed");
   for (const client of harnesses.values()) client.rebindServers();
+  recycleHarnesses();
   await syncHarnessSkills();
 };
 const artifactsChanged = () => broadcast("emma:artifacts-changed");
@@ -894,10 +969,19 @@ function setupStatus(): SetupStatus {
   };
 }
 
+/** Names that decide which executable runs, or what gets loaded into it. */
+const LOADER_ENV = /^(PATH|NODE_OPTIONS|NODE_PATH|npm_config_\w+|(DYLD|LD)_\w+|ELECTRON_RUN_AS_NODE|SHELL|IFS)$/i;
+
 function credentialSlot(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Provider key request is invalid");
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.env !== "string" || (candidate.secret !== undefined && typeof candidate.secret !== "string")) throw new Error("Provider key request is invalid");
+  // CredentialStore.set checks this too, but removal does not go through it, and a bridge peer
+  // is not the renderer's form: check the name once, here, where both callers pass.
+  if (!isEnvName(candidate.env)) throw new Error("An environment variable name must start with a letter or underscore and hold only letters, digits, and underscores.");
+  // A credential is applied to this process's own environment, so a name that steers how a program
+  // is found or loaded is code execution wearing an API key's clothes. Never a slot, from anywhere.
+  if (LOADER_ENV.test(candidate.env)) throw new Error("That environment variable controls how programs are loaded, so Emma will not hold it.");
   return { env: candidate.env, secret: candidate.secret as string | undefined };
 }
 
@@ -997,7 +1081,57 @@ function cliSendRequest(value: unknown) {
   const candidate = value as Record<string, unknown>;
   const id = boundedCapabilityId(candidate.id, "CLI run");
   if (typeof candidate.prompt !== "string" || !candidate.prompt.trim() || candidate.prompt.length > MAX_CLI_PROMPT_CHARS) throw new Error("CLI send request is invalid");
+  // The prompt is the last positional token in the harness argv with nothing separating it from the
+  // flags, so a leading dash is not a prompt: every harness in the table has a single-token flag
+  // that turns its approvals off, and the `--flag=value` form fits in the one token a caller picks.
+  if (/^\s*-/.test(candidate.prompt)) throw new Error("A CLI turn is a prompt, not a flag.");
   return { id, prompt: candidate.prompt };
+}
+
+/** The body a revert writes has to be one Emma recorded, never one the caller sent — a caller that
+    picks the bytes has a write to any path in a granted folder wearing a revert's clothes. Every
+    run is searched because neither the phone frame nor the renderer's request names a thread. */
+function recordedRevert(folderId: string, file: string): string {
+  const recorded = agents!.list()
+    .flatMap((agent) => agents!.changes(agent.threadId))
+    .find((change) => change.folderId === folderId && change.path === file);
+  if (!recorded || recorded.before === null) throw new Error("Only a file Emma rewrote can be reverted here.");
+  return recorded.before;
+}
+
+const MAX_DIALOG_CHARS = 600;
+let confirming = false;
+
+/** A phone frame is not a person. Anything that hands the agent reach it did not have asks this
+    Mac's own window first, so the same gesture backs it as a grant made at the keyboard.
+
+    Both questions quote strings the phone chose, and a modal is the one thing on the Mac nobody can
+    click past: unbounded text pushes the buttons off the screen, and a frame per millisecond stacks
+    modals until the Mac is unusable. So the text is clipped and a second question is refused while
+    one is still open — refused, not queued, because a queue is the same storm arriving slowly. */
+async function confirmOnMac(message: string, detail: string, accept: string): Promise<boolean> {
+  if (!mainWindow || mainWindow.isDestroyed() || confirming) return false;
+  confirming = true;
+  // Clipping silently is how a phone hides the payload: pad the front with harmless argv and the
+  // part that matters falls off the end of a dialog that still reads as the whole question.
+  const clip = (text: string) => text.length > MAX_DIALOG_CHARS
+    ? `${text.slice(0, MAX_DIALOG_CHARS)}\n\n… clipped. Cancel unless this is exactly what you asked for from your phone just now.`
+    : text;
+  try {
+    const choice = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "Approve on this Mac",
+      message: clip(message),
+      detail: clip(detail),
+      buttons: ["Cancel", accept],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    return choice.response === 1;
+  } finally {
+    confirming = false;
+  }
 }
 
 function goalIpc(value: unknown): Record<string, unknown> & { threadId: string } {
@@ -1029,6 +1163,14 @@ function threadMode(threadId: string): PermissionMode {
 }
 
 const threadModel = (threadId: string) => threadContexts.get(threadId)?.model ?? "";
+const threadEffort = (threadId: string) => threadContexts.get(threadId)?.effort ?? "";
+const threadContext = (threadId: string) => threadContexts.get(threadId) ?? { folderIds: [], mode: DEFAULT_PERMISSION_MODE, model: "" };
+// setThreadContext replaces the whole record, so the effort has to survive it — but only
+// while the model it was picked for is still the one selected.
+function keepThreadContext(threadId: string, next: { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute; review?: boolean }) {
+  const held = threadContexts.get(threadId);
+  threadContexts.set(threadId, { ...next, effort: held?.model === next.model ? held.effort : "", review: next.review ?? held?.review });
+}
 const threadSubagent = (threadId: string) => threadContexts.get(threadId)?.subagent;
 
 function subagentRoute(candidate: Record<string, unknown>): SubagentRoute | undefined {
@@ -1045,7 +1187,7 @@ function threadContextRequest(value: unknown) {
   const threadId = boundedCapabilityId(candidate.threadId, "Thread context thread");
   const raw = Array.isArray(candidate.folderIds) ? candidate.folderIds.slice(0, 1) : [];
   const model = typeof candidate.model === "string" ? candidate.model.slice(0, 128) : "";
-  return { threadId, folderIds: raw.map((id) => boundedCapabilityId(id, "Thread folder")), mode: asPermissionMode(candidate.mode), model, subagent: subagentRoute(candidate) };
+  return { threadId, folderIds: raw.map((id) => boundedCapabilityId(id, "Thread folder")), mode: asPermissionMode(candidate.mode), model, subagent: subagentRoute(candidate), review: typeof candidate.review === "boolean" ? candidate.review : undefined };
 }
 
 function agentMessage(value: unknown) {
@@ -1068,6 +1210,25 @@ function reportRunProgress(progress: ComputerRunProgress) {
   computerProgress = progress;
   if (runBanner && !runBanner.isDestroyed()) runBanner.webContents.send("emma:computer-run-progress", progress);
   if (progress.cursor === undefined) return;
+  computerCursorOwner = "computer";
+  computerCursorHeld = false;
+  computerCursorProgress = progress;
+  computerCursorAt = Date.now();
+  showComputerCursor();
+}
+
+function reportBrowserCursor(progress: ComputerRunProgress | null) {
+  if (!progress) {
+    if (computerCursorOwner !== "browser" || !computerCursorHeld) return;
+    computerCursorHeld = false;
+    computerCursorAt = Date.now();
+    showComputerCursor();
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) return;
+  openComputerCursor();
+  computerCursorOwner = "browser";
+  computerCursorHeld = true;
   computerCursorProgress = progress;
   computerCursorAt = Date.now();
   showComputerCursor();
@@ -1078,9 +1239,11 @@ function showComputerCursor() {
   const window = computerCursorWindow;
   if (!window || window.isDestroyed()) return;
   const progress = computerCursorProgress;
-  const remaining = COMPUTER_CURSOR_MS - (Date.now() - computerCursorAt);
+  const remaining = computerCursorHeld ? COMPUTER_CURSOR_MS : COMPUTER_CURSOR_MS - (Date.now() - computerCursorAt);
   const cursor = progress?.cursor && roundComputerCursor(progress.cursor);
-  if (!computerRuntime?.active || !computerCursorReady || !cursor || remaining <= 0) {
+  const browsing = computerCursorOwner === "browser";
+  const above = browsing ? mainWindow?.getMediaSourceId() : cursor && `window:${cursor.windowId}:0`;
+  if ((!browsing && !computerRuntime?.active) || !computerCursorReady || !cursor || !above || remaining <= 0) {
     window.hide();
     return;
   }
@@ -1088,8 +1251,8 @@ function showComputerCursor() {
     window.setBounds(cursor.bounds);
     window.webContents.send("emma:computer-run-progress", { ...progress, cursor });
     window.showInactive();
-    window.moveAbove(`window:${cursor.windowId}:0`);
-    computerCursorTimer = setTimeout(() => { if (!window.isDestroyed()) window.hide(); }, remaining);
+    window.moveAbove(above);
+    if (!computerCursorHeld) computerCursorTimer = setTimeout(() => { if (!window.isDestroyed()) window.hide(); }, remaining);
   } catch {
     window.hide();
   }
@@ -1099,14 +1262,17 @@ const BRIDGE_EVENTS: Record<string, (payload: unknown) => BridgeEvent> = {
   "emma:changed": () => ({ k: "evt", t: "invalidate", what: "snapshot" }),
   "emma:artifacts-changed": () => ({ k: "evt", t: "invalidate", what: "artifacts" }),
   "emma:plans-changed": () => ({ k: "evt", t: "invalidate", what: "plans" }),
+  "emma:task-lists-changed": () => ({ k: "evt", t: "invalidate", what: "taskLists" }),
   "emma:notes-changed": () => ({ k: "evt", t: "invalidate", what: "notes" }),
   "emma:components-changed": () => ({ k: "evt", t: "invalidate", what: "components" }),
+  "emma:tools-changed": () => ({ k: "evt", t: "invalidate", what: "tools" }),
   "emma:cli-runs": () => ({ k: "evt", t: "invalidate", what: "cliRuns" }),
   "emma:background": () => ({ k: "evt", t: "invalidate", what: "background" }),
+  "emma:scheduled-jobs": () => ({ k: "evt", t: "invalidate", what: "scheduledJobs" }),
   "emma:delta": (payload) => ({ k: "evt", ...(payload as { threadId: string; delta: string; thinking?: boolean }), t: "delta" }),
-  "emma:step": (payload) => ({ k: "evt", t: "step", step: payload as RemoteStep }),
+  "emma:step": (payload) => ({ k: "evt", t: "step", step: phoneStep(payload as RemoteStep) }),
   "emma:agents": (payload) => ({ k: "evt", t: "agents", agents: payload as LiveAgent[] }),
-  "emma:spans": (payload) => ({ k: "evt", t: "spans", spans: payload as Record<string, TraceSpan[]> }),
+  "emma:spans": (payload) => ({ k: "evt", t: "spans", spans: phoneSpans(payload as Record<string, TraceSpan[]>) }),
   "emma:folder-attached": (payload) => ({ k: "evt", ...(payload as { threadId: string; folderId: string }), t: "folder-attached" }),
   "emma:context-experiment": (payload) => ({ k: "evt", ...(payload as { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }), t: "context-experiment" }),
   "emma:context-breakdown": (payload) => ({ k: "evt", ...(payload as { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }), t: "context-breakdown" }),
@@ -1121,6 +1287,11 @@ function broadcast(channel: string, payload?: unknown) {
 
 const CHANGED_COALESCE_MS = 150;
 const READ_ONLY_METHODS = new Set(["snapshot", "threadSummaries", "thread", "listOpenRouterModels"]);
+/* The requests that move a scheduled task's row, whether a phone frame or the Mac's own window
+   sent them. A run starting or finishing is not one of them — those reach the store from
+   runScheduledWorkflow, which says so itself. */
+const SCHEDULED_JOB_WRITES = new Set(["saveScheduledJob", "deleteScheduledJob", "runScheduledJob", "setScheduledJobEnabled"]);
+const scheduledJobsChanged = () => broadcast("emma:scheduled-jobs");
 let changedAt = 0;
 let changedQueued: ReturnType<typeof setTimeout> | undefined;
 
@@ -1149,7 +1320,7 @@ function grantFor(threadId: string, named: string | undefined): string {
   const vault = named ? folders!.list().find((grant) => grant.id === vaultFolderId) : undefined;
   if (vault && (named === vault.name || named === vault.id)) return vault.id;
   const id = threadFolder(threadId);
-  if (!id) throw new Error("No folder is connected to this thread. Ask the user to connect one from the ＋ menu.");
+  if (!id) throw new Error("No folder is connected to this thread. Connect one from the ＋ menu.");
   const grant = folders!.list().find((folder) => folder.id === id)!;
   if (named && named !== grant.name && named !== grant.id) {
     throw new Error(`This thread works in "${grant.name}", and nothing outside it is reachable from here. Drop the folder argument, or ask the user to open "${named}" in a thread of its own.`);
@@ -1181,14 +1352,15 @@ function visibleFolders() {
 const obsidianVaults = (): VaultChoice[] =>
   detectObsidianVaults().map((found) => ({ root: found.path, folder: DEFAULT_VAULT_FOLDER, kind: "obsidian", name: found.name }));
 
-function noteInVault(vault: VaultChoice, value: unknown): string {
-  const root = noteFolder(vault);
-  const full = path.resolve(root, boundedCapabilityId(value, "Note"));
-  if (!pathInside(root, full)) throw new Error("That note is not in your vault.");
-  return path.relative(root, full);
-}
-
 const notesChanged = () => broadcast("emma:notes-changed");
+
+function notesOrNone(vault: VaultChoice | null): KeptNote[] {
+  try {
+    return vault ? listNotes(vault) : [];
+  } catch {
+    return [];
+  }
+}
 
 async function clipForKeep(url: string | undefined, hideOverlay: boolean) {
   if (url) return await clipPage({ application: "", url });
@@ -1268,6 +1440,7 @@ async function tagKeptNote(note: KeptNote, body: string) {
   try {
     const tagged = await tagNote(note, body, tagger);
     if (tagged) applyNoteTags(note.path, tagged.title, tagged.tags);
+    else console.warn(`The tagger returned no title or tags for ${note.relative}, so it keeps the title it was saved under.`);
     fireEvent("note-kept", { title: tagged?.title ?? note.title, tags: (tagged?.tags ?? note.tags).join(", ") });
   } catch (error) {
     console.error(`Could not tag ${note.relative}:`, error);
@@ -1290,9 +1463,13 @@ function previewImage(file: string): string | null {
   return (frame.getSize().width > PREVIEW_IMAGE_WIDTH ? frame.resize({ width: PREVIEW_IMAGE_WIDTH }) : frame).toDataURL();
 }
 
+function grantedImage(threadId: string, named: string | undefined, given: string): string {
+  if (attachments!.holds(given)) return given;
+  return folders!.fileWithin(grantFor(threadId, named), given);
+}
+
 function folderImage(threadId: string, named: string | undefined, relative: string): string {
-  const grant = path.isAbsolute(relative) || attachments!.holds(relative) ? undefined : grantFor(threadId, named);
-  const frame = nativeImage.createFromPath(grant ? path.join(folders!.directory(grant), folders!.within(grant, relative)) : relative);
+  const frame = nativeImage.createFromPath(grantedImage(threadId, named, relative));
   if (frame.isEmpty()) throw new Error(`Emma could not read ${relative} as an image. PNG, JPEG, GIF and BMP work; a PDF, an SVG or a missing file does not.`);
   try {
     return compressScreenFrame(frame).image;
@@ -1391,15 +1568,19 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     case "shortcut":
       return await saveShortcutFromTool(args);
     case "browser": {
-      if (args.action !== "close") broadcast("emma:browser-show", { threadId: turn.threadId });
+      if (args.action !== "close") {
+        broadcast("emma:browser-show", { threadId: turn.threadId });
+        openComputerCursor();
+      }
       if (args.action === "open") return `Opened ${browserPage(await browsers.open(turn.threadId, args.url!))}. Snapshot it to see what is on it.`;
+      const doing = describeToolCall(args);
       if (args.action === "screenshot") {
         const file = shotFile("png");
-        await browsers.run(turn.threadId, ["screenshot", ...(args.selector ? [args.selector] : []), file]);
+        await browsers.run(turn.threadId, ["screenshot", ...(args.selector ? [args.selector] : []), file], doing);
         return shownToUser(file, "Took a screenshot of the page.");
       }
       const navigation = BROWSER_NAVIGATIONS.find((candidate) => candidate === args.action);
-      if (!navigation) return await browsers.run(turn.threadId, browserArgv(args));
+      if (!navigation) return await browsers.run(turn.threadId, browserArgv(args), doing);
       const status = await browsers.navigate(turn.threadId, navigation);
       return navigation === "close" ? "Closed this thread's browser." : `Now on ${browserPage(status)}.`;
     }
@@ -1482,6 +1663,42 @@ function goalRequest(method: string, params: Record<string, string>): Promise<Th
     changed();
     return noted;
   });
+}
+
+async function setGoal(request: Record<string, unknown> & { threadId: string }): Promise<ThreadRecord | undefined> {
+  const objective = boundedGoalText(request.objective, "Goal objective", MAX_GOAL_OBJECTIVE_CHARS, true);
+  const budget = wholeGoalNumber(request.tokenBudget, "Goal token budget");
+  const thread = await goalRequest("setGoal", { threadId: request.threadId, objective, tokenBudget: String(budget ?? DEFAULT_GOAL_TOKEN_BUDGET) });
+  if (thread?.title === DEFAULT_THREAD_TITLE) {
+    await host!.request({ method: "renameThread", params: { threadId: request.threadId, title: goalTitle(objective) } }).catch(() => undefined);
+    changed();
+  }
+  return thread;
+}
+
+async function updateGoal(request: Record<string, unknown> & { threadId: string }): Promise<ThreadRecord | undefined> {
+  if (request.status !== undefined && !isGoalStatus(request.status)) throw new Error("Goal status is invalid");
+  const extra = wholeGoalNumber(request.extraTokens, "Goal extra tokens");
+  if (request.status === undefined && extra === undefined) throw new Error("A goal update needs a status or extra tokens");
+  const updated = await goalRequest("updateGoal", {
+    threadId: request.threadId,
+    ...(request.status === undefined ? {} : { status: request.status }),
+    evidence: boundedGoalText(request.evidence, "Goal evidence", MAX_GOAL_EVIDENCE_CHARS, false),
+    reason: boundedGoalText(request.reason, "Goal blocker", MAX_GOAL_REASON_CHARS, false),
+    ...(extra === undefined ? {} : { extraTokens: String(extra) }),
+  });
+  goalStopped.delete(request.threadId);
+  agents?.forget(request.threadId);
+  if (goalPursuing(goals.get(request.threadId)) && !goalHalted(request.threadId)) {
+    void driveTurn({
+      threadId: request.threadId,
+      content: GOAL_CONTINUATION,
+      mode: threadMode(request.threadId),
+      title: updated?.title || "This thread",
+      model: threadModel(request.threadId),
+    }).catch((error: unknown) => console.error("Emma: a resumed goal could not start", error));
+  }
+  return updated;
 }
 
 async function goalTool(args: Extract<ToolArgs, { name: "goal" }>, turn: TurnRequest): Promise<string> {
@@ -1810,6 +2027,13 @@ const MAX_COMMAND_OUTPUT = 16 * 1024;
 const MAX_CLI_VIEW_CHARS = 128 * 1024;
 const MAX_COMMAND_MS = 120_000;
 
+function visionRoute() {
+  const { model, endpoint, credentialEnv } = toolSettings.vision;
+  const apiKey = (credentialEnv ? process.env[credentialEnv]?.trim() : "") ?? "";
+  if (!model.trim() || !endpoint || (credentialEnv && !apiKey)) return undefined;
+  return { model: model.trim(), chatUrl: endpoint, apiKey };
+}
+
 function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
   const running = harnesses.get(key);
   if (running?.running) {
@@ -1827,24 +2051,29 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
     home,
     apiKey: route ? route.apiKey : process.env.OPENROUTER_API_KEY,
     chatUrl: route?.chatUrl,
+    vision: visionRoute(),
     promptFile: harnessPromptFile(home, key),
     onDelta: (threadId, delta) => {
       if (agents && !agents.noteDelta(threadId, delta)) return;
       harnessText.set(threadId, (harnessText.get(threadId) ?? "") + delta);
       broadcast("emma:delta", { threadId, delta });
     },
-    onThought: (threadId, delta) => {
+    onThought: (threadId, delta, recovery) => {
       if (agents && !agents.noteDelta(threadId, delta, true)) return;
       harnessThought.set(threadId, (harnessThought.get(threadId) ?? "") + delta);
-      broadcast("emma:delta", { threadId, delta, thinking: true });
+      broadcast("emma:delta", { threadId, delta, thinking: true, recovery: recovery === true });
     },
     onToolCall: (call) => {
       agents?.noteTool(call.threadId, call.toolCallId, call.title || call.kind, call);
+      if (REVIEWABLE_KINDS.has(call.kind) && call.status === "completed") turnTouched.add(call.threadId);
       void recordUse(app.getPath("userData"), mcpToolKey(call.toolName ?? call.title), `${call.threadId}:${call.toolCallId}`);
       const wrote = noteHarnessChange(cwd, call);
       broadcast("emma:step", wrote ? { ...call, edit: editStat(wrote) } : call);
     },
-    onCompacted: (threadId, compacted) => broadcast("emma:compacted", { threadId, ...compacted }),
+    onCompacted: (threadId, compacted) => {
+      agents?.noteNotice(threadId, "compact", compactionNotice(compacted.removedTurns, compacted.modelWritten));
+      broadcast("emma:compacted", { threadId, ...compacted });
+    },
     onContextExperiment: (threadId, fired) => broadcast("emma:context-experiment", { threadId, ...fired }),
     onContextBreakdown: (threadId, parts) => broadcast("emma:context-breakdown", { threadId, ...parts }),
     onRoutedModel: (threadId, routed) => {
@@ -1855,13 +2084,14 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       harnessUsage.set(threadId, usage);
       agents?.noteUsage(threadId, usage);
       const goal = goals.get(threadId);
-      if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) stopThread(threadId);
+      if (goalPursuing(goal) && noteTurnSpend(threadId, usage) >= goalTokensLeft(goal)) noteGoalOverspent(threadId);
     },
     onChildStart: async ({ parentThreadId, childId, title }) => {
       const name = agentName(childId, new Set(agents!.list().map((agent) => agent.title)));
       const created = await host!.request({ method: "createThread", params: { parentThreadId, title: name, kind: "subagent" } });
       const threadId = (created as { id?: unknown }).id;
       if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
+      if (reviewThreads.has(parentThreadId)) reviewThreads.add(threadId);
       harnessText.set(threadId, "");
       harnessThought.set(threadId, "");
       harnessUsage.delete(threadId);
@@ -1896,7 +2126,8 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         threadId,
         prompt: child.title,
         thinking,
-        answer: spoken || (reason ? `(this subagent stopped: ${reason})` : "(the subagent finished without an answer)"),
+        answer: spoken,
+        notice: reason ? `This subagent stopped: ${reason}` : spoken ? "" : "This subagent finished without an answer.",
         durationMilliseconds: String(Date.now() - child.startedAt),
         outputTokens: String(spent?.outputTokens ?? 0),
         inputTokens: String(spent?.inputTokens ?? 0),
@@ -1926,6 +2157,10 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
       const deny = () => pick("reject_once", "reject_always") ?? null;
       if (context.outsideWorkspace) {
         broadcast("emma:step", { threadId: ask.threadId, toolCallId: ask.id, title: `blocked: ${ask.tool} is outside the connected folder`, kind: "other", status: "failed", at: Date.now() });
+        return deny();
+      }
+      if (reviewThreads.has(ask.threadId) && context.kind === "edit") {
+        broadcast("emma:step", { threadId: ask.threadId, toolCallId: ask.id, title: `blocked: a review reads the work, it does not change it`, kind: "other", status: "failed", at: Date.now() });
         return deny();
       }
       if (agents!.mode(ask.threadId) === "full") return pick("allow_once", "allow_always") ?? options[0]?.optionId ?? null;
@@ -2072,6 +2307,28 @@ function providerRoute(key: string | undefined): ProviderRoute | undefined {
   return { id: profile.id, chatUrl: providerChatUrl(profile), apiKey: apiKey || "no-key" };
 }
 
+function councilRoute(key: string): CouncilRoute {
+  if (codexSlug(key)) throw new Error("A ChatGPT plan model cannot take a council seat \u2014 it does not answer on the chat endpoint. Pick an API model for this seat.");
+  const profile = providerFor(key);
+  if (profile) {
+    const route = providerRoute(key)!;
+    return {
+      settings: { model: profile.modelId, endpoint: route.chatUrl, credentialEnv: profile.credentialEnv, system: "" },
+      apiKey: route.apiKey === "no-key" ? "" : route.apiKey,
+      modelId: profile.modelId,
+      plan: planForProfile(profile)?.id ?? "",
+    };
+  }
+  const model = harnessModel(key);
+  if (!model) throw new Error("That seat has no model behind it yet. Pick one.");
+  return {
+    settings: { model, endpoint: OPENROUTER_CHAT_ENDPOINT, credentialEnv: "OPENROUTER_API_KEY", system: "" },
+    apiKey: process.env.OPENROUTER_API_KEY?.trim() ?? "",
+    modelId: model.split(",")[0],
+    plan: planForModel(key)?.id ?? "",
+  };
+}
+
 function harnessModel(key: string | undefined) {
   if (key?.startsWith(CODEX_PREFIX)) return codexSlug(key);
   const routerId = routerIdFor(key);
@@ -2118,11 +2375,28 @@ function catalogued(modelId: string): string {
   return modelId;
 }
 
+/** A provider or router key, checked against what this Mac is actually set up to route to. */
+function routedModelKey(key: string): string {
+  if (providerFor(key)) return key;
+  const routerId = routerIdFor(key);
+  if (routerId === FREE_ROUTER_ID || routers.some((router) => router.id === routerId)) return key;
+  throw new Error("That model is not set up on this Mac any more. Pick another one.");
+}
+
 const thinkingLevel = (value: unknown): ThinkingLevel => isThinkingLevel(value) ? value : "";
 
 async function selectModel(method: string, params: Record<string, string>): Promise<unknown> {
   if (method === "setThreadModel") {
-    if (params.modelId) catalogued(params.modelId);
+    // A provider profile or a router arrives already keyed, with no catalogue id to check it
+    // against, so it is checked against what this Mac holds; a bare catalogue id is checked and
+    // prefixed. Either way the thread holds the key harnessModel/modelName read, or picking a
+    // model on the phone changes nothing.
+    const picked = params.modelId ?? "";
+    threadContexts.set(params.threadId, {
+      ...threadContext(params.threadId),
+      model: !picked ? "" : picked.startsWith("provider:") || picked.startsWith("router:") ? routedModelKey(picked) : `openrouter:${catalogued(picked)}`,
+      effort: thinkingLevel(params.effort),
+    });
     return { set: true };
   }
   if (method === "selectFallbackModel") {
@@ -2214,6 +2488,19 @@ function harnessCwd(threadId: string) {
   return scratch;
 }
 
+const STOP_NOTICES: Record<string, string> = {
+  cancelled: "You stopped this run",
+  refused: "The run was refused",
+  max_output_tokens: "The model hit its output limit",
+  max_model_turns: "The run hit its step limit",
+};
+
+function turnNotice(stopReason: string, spoken: string): string {
+  const ended = STOP_NOTICES[stopReason];
+  if (!ended) return spoken ? "" : "This turn ended without an answer.";
+  return spoken ? `${ended} — the answer above stops where it was cut off.` : `${ended}.`;
+}
+
 function recordTurn(turn: RecordedTurn): Promise<unknown> {
   return host!.request({ method: "recordTurn", params: recordedTurn(turn) });
 }
@@ -2240,12 +2527,30 @@ function attachedImagePaths(value: unknown): string[] {
   }).slice(0, MAX_TURN_IMAGES);
 }
 
+// The phone has no attachment store of its own, so it hands over bytes and the ids stay here.
+// safeName and the store's own size check do the validating; this only bounds what reaches them.
+function bridgeImages(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_TURN_IMAGES) throw new Error("That is more photos than one message can carry.");
+  return value.map((entry) => {
+    const photo = (entry ?? {}) as { name?: unknown; base64?: unknown };
+    if (typeof photo.base64 !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(photo.base64)) throw new Error("That photo could not be read.");
+    return attachments!.save(photo.name, Buffer.from(photo.base64, "base64")).id;
+  });
+}
+
 const WAKE_GRACE_MS = 45_000;
 const harnessRuns = new Map<string, Harness>();
 const sleepWedged = new Set<string>();
 const SLEEP_CONTINUATION = "This computer went to sleep mid-turn and the connection to the model was lost. Carry on from the last step you finished.";
 const pausedRecovery = new Set<string>();
 const CRASH_CONTINUATION = "The harness process died mid-turn and has been restarted. Carry on from the last step you finished, and check what is already on disk before redoing any of it.";
+const RESTART_NOTICE = "Emma restarted the agent mid-turn and asked it to carry on";
+
+function noteRestart(threadId: string) {
+  harnessThought.set(threadId, `${RESTART_NOTICE}\n`);
+  broadcast("emma:delta", { threadId, delta: RESTART_NOTICE, thinking: true, recovery: true });
+}
 
 async function resumeAfterSleep() {
   if (harnessRuns.size === 0) return;
@@ -2259,12 +2564,14 @@ async function resumeAfterSleep() {
   for (const client of wedged) client.close();
 }
 
-async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key = cwd) {
+async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key = cwd, resume = "") {
   const home = path.join(app.getPath("userData"), "harness");
   writeHarnessPrompt(home, { model: turn.model, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools }, harnessPromptFile(home, key));
   computerRuntime?.end(turn.threadId);
   harnessText.set(turn.threadId, "");
   harnessThought.set(turn.threadId, "");
+  if (resume || turn.continueRecovery) noteRestart(turn.threadId);
+  turnTouched.delete(turn.threadId);
   harnessRouted.delete(turn.threadId);
   harnessUsage.delete(turn.threadId);
   harnessTurns.set(turn.threadId, turn);
@@ -2273,12 +2580,14 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
   agents!.adopt({ ...turn, model: modelName(turn.model) });
   const route = harnessModel(turn.model);
   try {
-    const { stopReason, usage } = await client.prompt(turn.threadId, cwd, turn.content, turn.mode, route, {
+    const { stopReason, usage } = await client.prompt(turn.threadId, cwd, resume || turn.content, turn.mode, route, {
       skillContext: typeof turn.params?.skillContext === "string" ? turn.params.skillContext : undefined,
       images: attachedImagePaths(turn.params?.attachedImages),
       contextWindow: contextWindowFor(turn.model, route),
       effort: thinkingRoute(turn.model, route, turn.effort),
       experiments: harnessExperiments,
+      semanticGrep: semanticGrep.option(harnessExperiments, threadFolder(turn.threadId) ? cwd : undefined),
+      imageInput: metadataFor(turn.model, route)?.inputModalities?.includes("image"),
       compact: compactNext.delete(turn.threadId),
       continueRecovery: turn.continueRecovery,
     });
@@ -2287,15 +2596,16 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     const spoken = (harnessText.get(turn.threadId) ?? "").trim();
     if (failedTurn(stopReason)) {
       pausedRecovery.add(turn.threadId);
-      throw new Error(client.paused.get(turn.threadId) || "The run was refused.");
+      throw new Error(client.paused.get(turn.threadId)?.message || "The run was refused.");
     }
     agents!.finish(turn.threadId);
     return await recordTurn({
       threadId: turn.threadId,
       prompt: turn.content,
       thinking: harnessThought.get(turn.threadId),
-      answer: spoken || `(the run ended: ${stopReason})`,
-      durationMilliseconds: String(Date.now() - startedAt),
+      answer: spoken,
+      notice: turnNotice(stopReason, spoken),
+      durationMilliseconds: String(Math.max(1, Date.now() - startedAt - agents!.awaited(turn.threadId))),
       outputTokens: String(usage.outputTokens),
       inputTokens: String(usage.inputTokens),
       ...recordedCacheUsage(cacheUsage),
@@ -2307,20 +2617,21 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
     agents!.finish(turn.threadId, detail);
     if (sleepWedged.delete(turn.threadId) && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
-      return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, content: SLEEP_CONTINUATION }, key);
+      return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, turn, key, SLEEP_CONTINUATION);
     }
-    if (pausedRecovery.delete(turn.threadId) && !turn.continueRecovery && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
+    const pausedTurn = client.paused.get(turn.threadId);
+    if (pausedRecovery.delete(turn.threadId) && pausedTurn?.cause !== "request_limit_reached" && pausedTurn?.cause !== "authentication" && pausedTurn?.requiredAction !== "change_request" && !turn.continueRecovery && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
       try {
-        return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, continueRecovery: true }, key);
+        return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, continueRecovery: true }, key, resume);
       } catch {
         throw error;
       }
     }
-    if (!client.running && turn.content !== CRASH_CONTINUATION && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
+    if (!client.running && resume !== CRASH_CONTINUATION && agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "stopped") {
       agents!.forget(turn.threadId);
       try {
-        return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, { ...turn, content: CRASH_CONTINUATION }, key);
+        return await runOnHarness(harnessClient(cwd, key, await turnRoute(turn.model)), cwd, turn, key, CRASH_CONTINUATION);
       } catch {
         throw error;
       }
@@ -2334,8 +2645,9 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
         threadId: turn.threadId,
         prompt: turn.content,
         thinking: thought,
-        answer: `${spoken}\n\n_(this run stopped: ${client.paused.get(turn.threadId) ?? detail})_`.trim(),
-        durationMilliseconds: String(Date.now() - startedAt),
+        answer: spoken,
+        notice: `This run stopped: ${client.paused.get(turn.threadId)?.message ?? explainFailure(detail)}`,
+        durationMilliseconds: String(Math.max(1, Date.now() - startedAt - agents!.awaited(turn.threadId))),
         outputTokens: String(stoppedUsage.outputTokens),
         inputTokens: String(stoppedUsage.inputTokens),
         ...recordedCacheUsage(harnessUsage.get(turn.threadId)),
@@ -2366,7 +2678,8 @@ async function runTurn(turn: TurnRequest) {
   if (harnessRuns.has(turn.threadId)) throw new Error("This thread is still running or finishing its current turn. Wait for it to finish before starting another.");
   agents!.forget(turn.threadId);
   turn.subagent ??= threadSubagent(turn.threadId);
-  turn.effort ??= harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "";
+  turn.effort ??= threadEffort(turn.threadId) || (harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "");
+  void recordUse(app.getPath("userData"), modelKey(modelName(turn.model) || "auto"));
   turn.objective ??= activeGoal(turn.threadId)?.objective;
   const cwd = harnessCwd(turn.threadId);
   const nested = turn.nested ? turn.threadId : undefined;
@@ -2389,16 +2702,17 @@ async function runRequest(request: Request): Promise<unknown> {
     request = { method: request.method, params: { ...params, skillContext: mergeSkillContext(attachedContext, skillContext) } };
   }
   const { threadId, content, ...extra } = request.params;
+  if (request.method === "sendMessage") void autoNameThread(threadId, sentByThread(content).body);
   const result = request.method === "sendMessage"
     ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: extra })
     : await answerRequest(request.method, request.params);
-  if (request.method === "sendMessage") void autoNameThread(threadId, sentByThread(content).body);
   if (request.method === "setResearchJobStatus") {
     if (request.params.status === "running") startResearchJob(request.params.jobId);
     else stopResearchJob(request.params.jobId);
   }
   if (request.method === "deleteResearchJob") stopResearchJob(request.params.jobId);
   if (!READ_ONLY_METHODS.has(request.method)) changed();
+  if (SCHEDULED_JOB_WRITES.has(request.method)) scheduledJobsChanged();
   return result;
 }
 
@@ -2420,7 +2734,7 @@ const MESSAGE_PAGE = 40;
 
 type StoredThreadSummaries = { threads: ThreadSummary[]; warnings: string[] };
 
-const threadNamer: VerifierSettings = {
+const freeRouter: VerifierSettings = {
   model: routerChain(modelCatalog?.ids(), FREE_ROUTER_MODELS),
   endpoint: OPENROUTER_CHAT_ENDPOINT,
   credentialEnv: "OPENROUTER_API_KEY",
@@ -2428,6 +2742,14 @@ const threadNamer: VerifierSettings = {
 };
 
 const namingThreads = new Set<string>();
+/** Thread names as last seen, so a turn's sidebar chip opens with one. */
+const threadNames = new Map<string, string>();
+
+function noteThreadName(threadId: string, title: string) {
+  if (!title.trim() || title === DEFAULT_THREAD_TITLE) return;
+  threadNames.set(threadId, title);
+  agents?.noteTitle(threadId, title);
+}
 
 async function autoNameThread(threadId: string, asked: string) {
   if (!asked.trim() || namingThreads.has(threadId) || benchThread(threadId)) return;
@@ -2435,10 +2757,14 @@ async function autoNameThread(threadId: string, asked: string) {
   try {
     const snapshot = await host!.request({ method: "threadSummaries", params: {} }) as { threads?: { id: string; title?: string }[] };
     const thread = snapshot.threads?.find((entry) => entry.id === threadId);
-    if (thread?.title !== DEFAULT_THREAD_TITLE) return;
-    const title = await nameThread(asked, threadNamer);
+    if (thread?.title !== DEFAULT_THREAD_TITLE) {
+      noteThreadName(threadId, thread?.title ?? "");
+      return;
+    }
+    const title = await nameThread(asked, freeRouter);
     if (!title || title === DEFAULT_THREAD_TITLE) return;
     await host!.request({ method: "renameThread", params: { threadId, title } });
+    noteThreadName(threadId, title);
     changed();
   } catch (error) {
     console.error("Emma: this thread could not be named", error);
@@ -2453,12 +2779,21 @@ async function threadSummaryStore(): Promise<StoredThreadSummaries> {
 }
 
 function threadSummary(thread: unknown): ThreadSummary {
-  const { messages, ...rest } = thread as { messages?: unknown[] };
-  return { ...rest, messages: Array.isArray(messages) ? messages.length : 0 } as ThreadSummary;
+  const { messages, ...rest } = thread as { messages?: { role?: string; content?: string }[]; labelPrompt?: string };
+  // The phone is sent counts, not messages, so it cannot fall back to the opening prompt the way
+  // threadLabel does on this side — a thread the namer has not reached yet would read "New thread"
+  // here and say what it is about on the Mac. This is that fallback, carried across. Clamped
+  // because a first message can be a pasted document, and this rides along with every summary.
+  const asked = rest.labelPrompt ?? (Array.isArray(messages) ? messages.find((item) => item.role === "user")?.content : undefined);
+  return {
+    ...rest,
+    ...(asked ? { labelPrompt: asked.slice(0, MAX_LABEL_PROMPT_CHARS) } : {}),
+    messages: Array.isArray(messages) ? messages.length : 0,
+  } as ThreadSummary;
 }
 
 function bridgeLive(): LiveState {
-  return { agents: agents!.list(), spans: agents!.spans(), asks: [], partial: livePartial(), desktop: desktopIdentity };
+  return { agents: agents!.list(), spans: phoneSpans(agents!.spans()), asks: [], partial: livePartial(), desktop: desktopIdentity };
 }
 
 async function namedGit(cwd: string, args: string[]): Promise<string> {
@@ -2470,6 +2805,74 @@ async function namedGit(cwd: string, args: string[]): Promise<string> {
 async function gitSynced(cwd: string, result: { ok: boolean; output: string }): Promise<GitSyncResult> {
   const snapshot = await gitSnapshot(cwd);
   return { ok: result.ok, output: result.output, ahead: snapshot?.ahead ?? 0, behind: snapshot?.behind ?? 0 };
+}
+
+const OPENROUTER_ENV = providerCredentials[0].env;
+/** What one bridge frame comfortably carries, and more than a phone list scrolls through. One
+    under the search ceiling, because the list is fetched one longer than it is sent and a search
+    asked for more rows than it may return is refused rather than clamped. */
+const MAX_PHONE_SKILLS = MAX_SKILL_RESULTS - 1;
+
+const toolSwitches = (): ToolSwitches => ({ tools: toolSettings.disabledTools, skills: toolSettings.disabledSkills, servers: toolSettings.disabledServers });
+
+/** Every key this Mac could hold, masked, the way Settings → Models lists them. */
+function credentialSlotsHeld(): CredentialSlot[] {
+  const stored = credentials!.list();
+  const slots = new Map<string, CredentialSlot>();
+  const put = (env: string, label: string, detail: string, hint: string) => {
+    if (!env || slots.has(env)) return;
+    slots.set(env, { env, masked: stored.find((item) => item.env === env)?.masked ?? "", label, detail, hint });
+  };
+  for (const item of providerCredentials) put(item.env, item.label, item.detail, item.hint);
+  for (const plan of MODEL_PLANS) put(plan.credentialEnv, plan.label, plan.detail, plan.hint);
+  for (const profile of providers) put(profile.credentialEnv, profile.name, `${profile.modelId} · ${profile.baseUrl}`, "Provider key");
+  for (const source of toolSettings.webSearch.providers) {
+    const provider = webSearchProvider(source.provider);
+    put(source.credentialEnv, provider.label, `Web search · ${provider.detail}`, "Search API key");
+  }
+  for (const item of stored) put(item.env, item.env, "Custom environment variable", "Key");
+  return [...slots.values()];
+}
+
+/** stdio only: install_mcp's harness-side spec requires a command, so a remote server arrives by importing a Claude or Cursor config, not mid-turn. */
+function mcpServerRequest(params: Record<string, unknown>): McpServerDefinition {
+  const name = boundedCapabilityId(params.name, "Server name");
+  const command = boundedCapabilityId(params.command, "Server command");
+  const args = params.args ?? [];
+  const env = params.env ?? {};
+  if (!Array.isArray(args) || args.length > 32 || args.some((arg) => typeof arg !== "string" || arg.length > 4096)) throw new Error("Server arguments are invalid");
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Server environment is invalid");
+  const entries = Object.entries(env as Record<string, unknown>);
+  if (entries.length > 32 || entries.some(([key, value]) => typeof value !== "string" || !isEnvName(key))) throw new Error("Server environment is invalid");
+  // The definition is spawned as a child process on the next turn, so a name that decides which
+  // executable runs or what gets loaded into it is code execution the same way a credential slot is.
+  for (const [key] of entries) if (LOADER_ENV.test(key)) throw new Error("That environment variable controls how programs are loaded, so Emma will not pass it to a server.");
+  return { name, command, args: args as string[], env: env as Record<string, string> };
+}
+
+function bridgeVisual(id: unknown): Visual {
+  const visual = readVisual(boundedCapabilityId(id, "Visual"));
+  if (!visual) throw new Error("That visual is no longer in this conversation.");
+  return { title: visual.title, html: visual.html };
+}
+
+// The phone's outbox retries a send it never saw answered. Keyed by the id the phone
+// minted, so a retry gets the first answer back instead of posting the message twice.
+// ponytail: in-memory only, lost on restart; that is fine because the phone outbox TTL is 5 min.
+const bridgeReplies = new Map<string, Map<string, unknown>>();
+const MAX_REPLIES_PER_THREAD = 32;
+const MAX_REPLY_THREADS = 32;
+
+async function onlyOnce(threadId: string, clientId: unknown, run: () => Promise<unknown>): Promise<unknown> {
+  if (typeof clientId !== "string" || !clientId) return await run();
+  let held = bridgeReplies.get(threadId);
+  if (!held) bridgeReplies.set(threadId, (held = new Map()));
+  if (held.has(clientId)) return held.get(clientId);
+  const result = await run();
+  held.set(clientId, result);
+  for (const stale of [...held.keys()].slice(0, Math.max(0, held.size - MAX_REPLIES_PER_THREAD))) held.delete(stale);
+  for (const stale of [...bridgeReplies.keys()].slice(0, Math.max(0, bridgeReplies.size - MAX_REPLY_THREADS))) bridgeReplies.delete(stale);
+  return result;
 }
 
 async function bridgeDispatch(method: BridgeMethod, params: Record<string, unknown>): Promise<unknown> {
@@ -2501,7 +2904,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const before = Math.min(gitCount(params.before, "Before") ?? total, total);
       const limit = Math.min(gitCount(params.limit, "Limit") || MESSAGE_PAGE, MESSAGE_PAGE);
       const from = Math.max(0, before - limit);
-      return { messages: messages.slice(from, before), total, from };
+      return phonePage(messages.slice(from, before), total, from);
     }
     case "live":
       return bridgeLive();
@@ -2516,37 +2919,91 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "setThreadArchived":
       return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, archived: flag(params.archived, "Archived") ? "true" : "false" } })));
     case "sendMessage":
-      return threadSummary(await runRequest(validateRequest({ method, params: { threadId: params.threadId, content: params.content } })));
+      return await onlyOnce(String(params.threadId), params.clientId, async () => {
+        const { content, skillContext } = await resolveMentions(typeof params.content === "string" ? params.content : "");
+        const images = bridgeImages(params.attachedImages);
+        return threadSummary(await runRequest(validateRequest({
+          method,
+          params: {
+            threadId: params.threadId,
+            content,
+            ...(typeof params.attachedContext === "string" && params.attachedContext.trim() ? { attachedContext: params.attachedContext } : {}),
+            ...(images.length ? { attachedImages: JSON.stringify(images) } : {}),
+            ...(skillContext ? { skillContext } : {}),
+          },
+        })));
+      });
     case "stopAgent":
       if (params.threadId === undefined) stopEveryThread();
       else stopThread(boundedCapabilityId(params.threadId, "Thread"));
       return { stopped: true };
-    case "steerAgent": {
-      const request = agentMessage(params);
-      await steerThread(request.threadId, request.text);
-      return { steered: true };
-    }
+    case "steerAgent":
+      return await onlyOnce(String(params.threadId), params.clientId, async () => {
+        const request = agentMessage(params);
+        await steerThread(request.threadId, request.text);
+        return { steered: true };
+      });
     case "answerPermission":
       answerAsk(boundedCapabilityId(params.id, "Permission"), flag(params.allowed, "Permission answer"));
       return { answered: true };
     case "getThreadContext": {
       const threadId = boundedCapabilityId(params.threadId, "Thread");
       const context = threadContexts.get(threadId);
-      return { threadId, folderIds: context?.folderIds ?? [], mode: context?.mode ?? DEFAULT_PERMISSION_MODE, model: context?.model ?? "" };
+      return { threadId, folderIds: context?.folderIds ?? [], mode: context?.mode ?? DEFAULT_PERMISSION_MODE, model: context?.model ?? "", effort: context?.effort ?? "" };
     }
     case "setThreadContext": {
       const { threadId, ...context } = threadContextRequest(params);
-      threadContexts.set(threadId, context);
+      keepThreadContext(threadId, context);
       agents!.setMode(threadId, context.mode);
       return { threadId, folderIds: context.folderIds, mode: context.mode, model: context.model };
     }
     case "threadTraces": {
-      return await readThreadTraces(boundedCapabilityId(params.threadId, "Thread"));
+      return phoneTraces(await readThreadTraces(boundedCapabilityId(params.threadId, "Thread")));
     }
     case "listModels": {
       const catalog = await runRequest(validateRequest({ method: "listOpenRouterModels", params: params.force === true ? { force: "true" } : {} }));
-      const models = (catalog as { models?: { id: string; name: string; contextLength: number; free: boolean; reasoningEfforts?: string[] }[] }).models ?? [];
-      return models.map((model): ModelEntry => ({ id: model.id, key: `openrouter:${model.id}`, name: model.name, contextLength: model.contextLength, free: model.free, efforts: model.reasoningEfforts ?? [] }));
+      const models = (catalog as { models?: CatalogModel[] }).models ?? [];
+      // The phone picks from everything this Mac can actually route to, not the OpenRouter
+      // catalogue alone: a local provider profile and a router are models to a person.
+      return [
+        ...models.map((model): ModelEntry => ({
+          id: model.id,
+          key: `openrouter:${model.id}`,
+          name: model.name,
+          contextLength: model.contextLength,
+          free: model.free,
+          efforts: model.reasoningEfforts ?? [],
+          source: "openrouter",
+          promptMicroUsdPerMtok: model.promptMicroUsdPerMtok,
+          completionMicroUsdPerMtok: model.completionMicroUsdPerMtok,
+          inputModalities: model.inputModalities,
+          reasoningMandatory: model.reasoningMandatory,
+        })),
+        ...providers.map((profile): ModelEntry => {
+          const metadata = modelMetadata?.provider(profile);
+          return {
+            id: profile.id,
+            key: `provider:${profile.id}`,
+            name: profile.name,
+            contextLength: metadata?.contextWindow ?? profile.contextWindow ?? 0,
+            free: true,
+            efforts: metadata?.reasoningEfforts ?? [],
+            source: "provider",
+          };
+        }),
+        ...routers.map((router): ModelEntry => {
+          const first = routerChain(modelCatalog?.ids(), router.models).split(",")[0] ?? "";
+          return {
+            id: router.id,
+            key: routerKey(router.id),
+            name: router.name,
+            contextLength: modelCatalog?.contextLength(first) ?? 0,
+            free: models.find((model) => model.id === first)?.free ?? false,
+            efforts: modelCatalog?.reasoningEfforts(first) ?? [],
+            source: "router",
+          };
+        }),
+      ];
     }
     case "setThreadModel":
       await runRequest(validateRequest({ method, params: { threadId: params.threadId, modelId: params.modelId, ...(params.effort === undefined ? {} : { effort: params.effort }) } }));
@@ -2568,18 +3025,18 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return {
         slash: [
           ...BUILTIN_COMMANDS,
-          ...skills.map((skill) => ({ id: skill.id, name: skill.name, kind: "skill" as const, detail: `${skill.source} · skill` })),
-          ...servers.map((server) => ({ id: server.id, name: server.name, kind: "mcp" as const, detail: `${server.source} · MCP server` })),
+          ...skills.filter((skill) => !toolSettings.disabledSkills.includes(skill.id)).map((skill) => ({ id: skill.id, name: skill.name, kind: "skill" as const, detail: `${skill.source} · skill` })),
+          ...servers.filter((server) => !toolSettings.disabledServers.includes(server.id)).map((server) => ({ id: server.id, name: server.name, kind: "mcp" as const, detail: `${server.source} · MCP server` })),
           ...TOOL_CATALOG
             .filter((tool) => !toolSettings.disabledTools.includes(tool.name))
             .map((tool) => ({ id: `tool:${tool.name}`, name: tool.name, kind: "tool" as const, detail: tool.blurb })),
         ],
         at: [
           ...artifacts.map((artifact) => ({ id: `artifact:${artifact.id}`, name: pathName(artifact.title), kind: "artifact" as const, detail: `${ARTIFACT_LABELS[artifact.kind]} · artifact` })),
-          ...(vault ? listNotes(vault) : []).map((note) => ({ id: `note:${note.path}`, name: pathName(note.title), kind: "page" as const, detail: [keepKindLabel(note.kind), ...note.tags].join(" · ") })),
+          ...notesOrNone(vault).map((note) => ({ id: `note:${note.path}`, name: pathName(note.title), kind: "page" as const, detail: [keepKindLabel(note.kind), ...note.tags].join(" · ") })),
           ...attached.flatMap((folderId) => {
             const folder = grants.find((grant) => grant.id === folderId);
-            return folder ? folders!.files(folderId).map((file) => ({ id: `file:${folderId}:${file.path}`, name: pathName(file.path), kind: "file" as const, detail: `${folder.name}/${file.path}` })) : [];
+            return folder ? folders!.files(folderId).files.map((file) => ({ id: `file:${folderId}:${file.path}`, name: pathName(file.path), kind: "file" as const, detail: `${folder.name}/${file.path}` })) : [];
           }),
         ],
       } satisfies CommandMenu;
@@ -2603,6 +3060,25 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       }
       const file = boundedCapabilityId(params.file, "Artifact file");
       return { mime: artifactFileType(file), base64: Buffer.from(await readArtifactFile(userData, id, file), "utf8").toString("base64") };
+    }
+    case "readImage": {
+      const found = namedPath(params.path);
+      const granted = found !== undefined && folders!.list().some((folder) => pathInside(folder.path, found));
+      // No filename-shaped fallback here: a bridge peer is remote, so only a granted
+      // folder or an attachment this Mac holds may be read off disk.
+      if (found === undefined || !(granted || attachments!.holds(found))) throw new Error("Not an image Emma can show");
+      const frame = nativeImage.createFromPath(found);
+      if (frame.isEmpty()) throw new Error("Not an image Emma can show");
+      // Not previewImage: its 1600px PNG can be larger than one bridge frame holds.
+      return { mime: "image/jpeg", base64: compressScreenFrame(frame).image.split(",")[1] };
+    }
+    case "readVisual":
+      return bridgeVisual(params.id);
+    case "keepVisual": {
+      const visual = bridgeVisual(params.id);
+      const { content: _content, path: _path, ...meta } = await writeArtifact(userData, { title: visual.title, kind: "html", content: visualPage(visual.html) });
+      artifactsChanged();
+      return meta;
     }
     case "gitReady":
       return await gitReady(cwd());
@@ -2651,11 +3127,348 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       await switchBranch(cwd(), branch, params.create === true, params.from === undefined ? undefined : boundedCapabilityId(params.from, "Branch"));
       return { branch };
     }
+    case "keyStatus": {
+      const key = process.env[OPENROUTER_ENV]?.trim() ?? "";
+      return {
+        env: OPENROUTER_ENV,
+        masked: credentials!.list().find((item) => item.env === OPENROUTER_ENV)?.masked ?? "",
+        balance: key ? await fetchOpenRouterBalance(key) : null,
+        zeroRetention: process.env.EMMA_OPENROUTER_ZDR !== undefined,
+        selectedModel,
+      } satisfies KeyStatus;
+    }
+    case "listCredentials":
+      return credentialSlotsHeld();
+    case "saveCredential": {
+      const slot = credentialSlot(params);
+      // A slot this Mac offers, not merely a string shaped like an env name: applyToEnv writes into
+      // this process's own environment, so PATH or NODE_OPTIONS from a phone would be code execution.
+      if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error("That is not a key this Mac holds a slot for.");
+      // The secret goes to the store and the child environment only — never to a log or an event.
+      if (slot.secret === undefined) credentials!.remove(slot.env);
+      else credentials!.set(slot.env, slot.secret);
+      startHost();
+      recycleHarnesses();
+      return credentialSlotsHeld();
+    }
+    case "setZeroRetention": {
+      const on = flag(params.on, "Zero retention");
+      if ((process.env.EMMA_OPENROUTER_ZDR !== undefined) !== on) {
+        if (on) process.env.EMMA_OPENROUTER_ZDR = "1";
+        else delete process.env.EMMA_OPENROUTER_ZDR;
+        recycleHarnesses();
+        broadcast("emma:changed");
+      }
+      return { zeroRetention: on };
+    }
+    case "getSettings":
+      return {
+        defaultPermissionMode: defaultMode,
+        selectedModel,
+        thinkingLevel: selectedEffort,
+        review: { enabled: reviewSettings.enabled, model: reviewSettings.model },
+      } satisfies MacSettings;
+    case "listToolTargets": {
+      const [written, found, servers] = await Promise.all([
+        listEmmaTools(userData),
+        // One more than the phone is sent, so a Mac holding more than fit can say so instead of
+        // handing over a short list that reads as the whole of what it has.
+        capabilities!.searchSkills("", MAX_PHONE_SKILLS + 1),
+        capabilities!.listMcpServers(),
+      ]);
+      const imported = found.filter((skill) => skill.source !== "installed");
+      const kept = phoneList(imported.slice(0, MAX_PHONE_SKILLS));
+      return {
+        catalog: TOOL_CATALOG.map((tool) => ({ ...tool, gate: toolGate(defaultMode, tool.name) })),
+        written: written.map((tool) => ({ id: `run_tool:${tool.name}`, name: tool.name, source: tool.description })),
+        skills: { rows: kept.rows, capped: kept.capped || imported.length > MAX_PHONE_SKILLS },
+        servers: phoneList(servers),
+        disabled: toolSwitches(),
+      } satisfies ToolTargets;
+    }
+    case "setToolSettings": {
+      // Only the three switch lists are the phone's to set; the advisor, vision, secret and
+      // web-search settings behind them stay where the Mac put them.
+      toolSettings = validateToolSettings({
+        ...toolSettings,
+        disabledTools: params.disabledTools ?? toolSettings.disabledTools,
+        disabledSkills: params.disabledSkills ?? toolSettings.disabledSkills,
+        disabledServers: params.disabledServers ?? toolSettings.disabledServers,
+      });
+      await toolsChanged();
+      return toolSwitches();
+    }
+    case "installMcpServer": {
+      // The Mac spawns this command on the next turn. The agent's own install_mcp tool is gated at
+      // `ask` in every mode but full; a phone frame gets that same question, asked where the person
+      // is, because a validated-looking definition is still a definition nobody chose.
+      const definition = mcpServerRequest(params);
+      const approved = await confirmOnMac(
+        `Install the MCP server “${definition.name}” from your phone?`,
+        `Emma will run this on your Mac, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
+        "Install it",
+      );
+      if (!approved) throw new Error("Nobody at your Mac approved that server.");
+      const { id } = await capabilities!.installMcpServer(definition);
+      await toolsChanged();
+      return { id };
+    }
+    case "listPlugins":
+      return await phonePlugins(userData);
+    case "trustPluginHooks": {
+      // A trusted hook is a shell line this Mac runs on every turn its event fires, which is the
+      // same reach installMcpServer buys — so it asks the same question, in the same place. Only
+      // the widening direction is asked, the way setImportSources does it: withdrawing trust takes
+      // nothing away from the phone, and needing somebody at the keyboard to say yes to *less*
+      // would leave a phone that saw something it did not like unable to act on it.
+      const id = boundedCapabilityId(params.id, "Plugin");
+      const trusted = flag(params.trusted, "Trust");
+      let hashes: string[] | null = null;
+      if (trusted) {
+        const plugin = (await installedHooks(userData)).find((entry) => entry.id === id);
+        if (!plugin) throw new Error(`No plugin called "${id}" is installed.`);
+        // The dialog quotes the Mac's own copy of the commands, not the phone's — what the phone
+        // was shown is a claim about this Mac, and the trust is pinned to what is actually on disk.
+        // Every hook is quoted, not just the runnable ones, because the write below hashes every
+        // hook: a command Emma has no moment for today is one RUNNABLE_HOOK_EVENTS entry away from
+        // running, and nobody should discover it then. The other two surfaces mark them the same way.
+        const running = plugin.hooks.filter((hook) => hookRuns(hook.event));
+        if (!running.length) throw new Error(`"${plugin.displayName || plugin.name}" has no hook Emma would ever run.`);
+        const approved = await confirmOnMac(
+          `Trust the hooks in “${plugin.displayName || plugin.name}” from your phone?`,
+          `Emma will run these on your Mac, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
+          "Trust them",
+        );
+        if (!approved) throw new Error("Nobody at your Mac approved those hooks.");
+        hashes = plugin.hooks.map((hook) => hook.hash);
+      }
+      await setHookTrust(userData, id, hashes);
+      return await phonePlugins(userData);
+    }
+    case "listImportSources": {
+      const registered = new Set(await registeredImportIds(userData));
+      return (await discoverImports(homedir())).map((source) => ({ ...source, registered: registered.has(source.id) }));
+    }
+    case "setImportSources": {
+      // Nothing here is authored from the wire — the ids pick from the fixed table in imports.ts,
+      // and every file was already sitting in this Mac's home folder. But registering a source is
+      // still the widening direction: harnessMcpServers spawns every command that source's config
+      // names, on by default, from the next turn on. On the Mac the consent is the person typing
+      // /import; from the couch there is none, so a source arriving for the first time asks here
+      // the way installMcpServer does. Switching one off takes nothing away from the phone and is
+      // never asked. The manifest is replaced rather than added to, so the selection is the whole
+      // set the phone wants kept.
+      const ids = params.ids;
+      if (!Array.isArray(ids) || ids.length > MAX_IMPORT_SOURCES || ids.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
+      const known = await registeredImportIds(userData);
+      const adding = (ids as string[]).filter((id) => !known.includes(id));
+      if (adding.length) {
+        const labels = importSources(homedir()).filter((source) => adding.includes(source.id)).map((source) => source.label).join(", ");
+        const approved = await confirmOnMac(
+          "Read another agent's skills and MCP servers?",
+          `Emma will read ${labels} on this Mac and start the servers their config files name.`,
+          "Import",
+        );
+        if (!approved) throw new Error("Nobody at your Mac approved that import.");
+      }
+      const saved = await saveImportManifest(userData, homedir(), ids as string[]);
+      await toolsChanged();
+      return saved;
+    }
+    case "readSkill": {
+      const id = boundedCapabilityId(params.id, "Skill");
+      if (toolSettings.disabledSkills.includes(id)) throw new Error("That skill is switched off in Settings \u2192 Tools.");
+      return await capabilities!.selectSkill(id);
+    }
+    case "writeSkill": {
+      const skill = await writeLearnedSkill(userData, params.name, params.instructions);
+      await toolsChanged();
+      return skill;
+    }
+    case "setGoal": {
+      const thread = await setGoal(goalIpc(params));
+      if (!thread) throw new Error("That thread is gone.");
+      return threadSummary(thread);
+    }
+    case "updateGoal": {
+      const thread = await updateGoal(goalIpc(params));
+      if (!thread) throw new Error("That thread is gone.");
+      return threadSummary(thread);
+    }
+    case "clearGoal": {
+      const thread = await goalRequest("clearGoal", { threadId: boundedCapabilityId(params.threadId, "Goal thread") });
+      if (!thread) throw new Error("That thread is gone.");
+      return threadSummary(thread);
+    }
+    case "listTaskLists": {
+      // The rail asks about one thread, and a list the Mac never stamped with a thread is nobody
+      // else's either. Filtering here rather than on the phone keeps every other thread's tasks
+      // off the wire, where 64 lists of 128 KiB do not fit.
+      const threadId = typeof params.threadId === "string" ? params.threadId : "";
+      const lists = await listTaskLists(userData);
+      return phoneList(threadId ? lists.filter((list) => !list.threadId || list.threadId === threadId) : lists);
+    }
+    case "threadChanges": {
+      // The rewritten body is the renderer's diff, not the phone's: the rail shows a filename and
+      // a revert button, and the revert writes what Emma recorded. So `after` never goes out and
+      // `before` goes out clipped — it is read for whether there was one, never for what it said.
+      const changes = agents!.changes(boundedCapabilityId(params.threadId, "Changes thread")).map(({ after: _after, ...change }) => ({
+        ...change,
+        before: change.before === null ? null : change.before.slice(0, MAX_PHONE_TEXT_CHARS),
+        truncated: change.before !== null && change.before.length > MAX_PHONE_TEXT_CHARS,
+      }));
+      // A thread over the budget keeps its newest rewrites: those are the ones still worth reverting.
+      const { rows, capped } = phoneList(changes.reverse());
+      return { rows: rows.reverse(), capped };
+    }
+    case "revertChange": {
+      const folderId = boundedCapabilityId(params.folderId, "Revert folder");
+      const file = params.path;
+      if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
+      // A revert names a file; the body it writes is the one Emma recorded, so no body comes off
+      // the wire. Containment stays as defence in depth, but the recorded change is the gate.
+      const before = recordedRevert(folderId, file);
+      if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
+      folders!.write(folderId, file, before);
+      changed();
+      return { reverted: true };
+    }
+    case "listBackground":
+      return background.list();
+    case "readBackground":
+      return background.output(boundedCapabilityId(params.id, "Background task"), MAX_COMMAND_OUTPUT) ?? null;
+    case "stopBackground":
+      return { stopped: background.stop(boundedCapabilityId(params.id, "Background task")) };
+    case "listMemories":
+      return await phoneMemories();
+    case "readMemory": {
+      // The list trims every memory to MAX_PHONE_TEXT_CHARS, which is a preview row's worth and
+      // not a memory. This is the file, capped where the writer is capped so the two move together.
+      const file = resolveMemoryPath(memoryRoot(), params.path);
+      const stats = statSync(file);
+      if (!stats.isFile()) throw new Error("That memory cannot be read.");
+      return {
+        text: readFileSync(file).subarray(0, MAX_MEMORY_FILE_BYTES).toString("utf8"),
+        truncated: stats.size > MAX_MEMORY_FILE_BYTES,
+      };
+    }
+    case "deleteMemory":
+      await runMemoryCommand(memoryRoot(), { command: "delete", path: typeof params.path === "string" ? params.path : "" });
+      return await phoneMemories();
+    case "listNotes": {
+      const vault = readVault(userData);
+      // A vault holds up to MAX_VAULT_NOTES; a frame holds the first page of them.
+      return vault ? phoneList(listNotes(vault)) : { rows: [], capped: false };
+    }
+    case "readNote": {
+      const vault = readVault(userData);
+      if (!vault) throw new Error("No vault is connected.");
+      const note = path.join(notesRoot(vault), noteInVault(vault, params.path));
+      const stats = statSync(note);
+      if (!stats.isFile()) throw new Error("That note cannot be read.");
+      // The Mac's own handler refuses a note over MAX_NOTE_BYTES outright. A phone gets the
+      // first MAX_NOTE_BYTES of it instead: an error in place of a long note reads as a bug.
+      return { text: readFileSync(note).subarray(0, MAX_NOTE_BYTES).toString("utf8"), truncated: stats.size > MAX_NOTE_BYTES };
+    }
+    case "keep":
+      return await keep(keepRequest(params), false);
+    case "listNoteFolders": {
+      const vault = readVault(userData);
+      return vault ? listNoteFolders(vault) : [];
+    }
+    case "addFolder": {
+      // Every other grant went through a native directory dialog with a person in front of it, and
+      // a folder grant is the Mac's only boundary on file I/O. A path that resolves is not consent:
+      // a folder someone already granted goes straight through, and anything else has to be
+      // approved on this Mac's own window before it becomes a grant.
+      const asked = params.path;
+      if (typeof asked !== "string" || !path.isAbsolute(asked) || asked.length > 1024) throw new Error("Name the folder by its full path.");
+      const directory = realpathSync(asked);
+      if (!statSync(directory).isDirectory()) throw new Error("That is not a folder.");
+      const held = folders!.list().some((grant) => samePath(grant.path, directory));
+      if (!held && !pathInside(homedir(), directory)) throw new Error("From a phone, Emma only connects folders inside your home folder.");
+      const granted = held || await confirmOnMac(
+        "Connect a folder from your phone?",
+        `Emma will be able to read and write everything in ${directory}, and its agents will run against it. Only connect a folder you asked for from your phone just now.`,
+        "Connect this folder",
+      );
+      if (!granted) throw new Error("Nobody at your Mac approved that folder.");
+      folders!.add(directory);
+      return visibleFolders();
+    }
+    case "forgetFolder": {
+      const id = boundedCapabilityId(params.id, "Folder");
+      if (id === vaultFolderId) throw new Error("Your vault stays connected; change it from Settings.");
+      folders!.remove(id);
+      return visibleFolders();
+    }
+    case "listCliRuns":
+      return clis.list();
+    case "readCliRun": {
+      const view = clis.output(boundedCapabilityId(params.id, "CLI run"), MAX_CLI_VIEW_CHARS);
+      return view ? { ...view, truncated: view.output.length >= MAX_CLI_VIEW_CHARS } : null;
+    }
+    case "stopCliRun":
+      return { stopped: clis.stop(boundedCapabilityId(params.id, "CLI run")) };
+    case "sendCliRun": {
+      const { id, prompt } = cliSendRequest(params);
+      await clis.send(id, prompt);
+      return clis.get(id) ?? null;
+    }
+    case "listCliModels": {
+      const cli = boundedCapabilityId(params.cli, "CLI");
+      if (!CLI_IDS.includes(cli)) throw new Error("Emma does not know that CLI.");
+      return phoneList((await cliModels.read(cli, (id) => clis.where(id))).models);
+    }
+    case "setCliRunModel": {
+      const id = boundedCapabilityId(params.id, "CLI run");
+      const run = clis.get(id);
+      if (!run) throw new Error("There is no such CLI run.");
+      const model = typeof params.model === "string" ? params.model : "";
+      // The model is a token in the harness argv beside the flags that turn approvals off, so a
+      // phone picks off the list this Mac discovered rather than naming one: a model nobody found
+      // is a flag wearing a model's clothes. Empty puts the run back on the CLI's own default.
+      const { models } = await cliModels.read(run.cli, (cli) => clis.where(cli));
+      if (model && !models.includes(model)) throw new Error("That is not a model this Mac found for that CLI.");
+      return clis.setModel(id, model);
+    }
+    case "listScheduledJobs":
+      return await phoneJobs();
+    case "saveScheduledJob": {
+      // Straight to the renderer's own validateRequest and answerRequest: the field list, the
+      // graph parse and the check that every script path sits in a granted folder are the ones
+      // the Mac applies to itself. What a phone must never choose is how much the job may do —
+      // a mode is a member of PERMISSION_MODES because it was typed, not because it was granted.
+      // An edit keeps what the Mac already recorded, a new task starts at the default, so no
+      // frame can write itself a standing full-access agent and then run it.
+      const jobId = typeof params.jobId === "string" ? params.jobId : "";
+      const existing = jobId ? (await scheduledJobs()).find((job) => job.id === jobId) : undefined;
+      await runRequest(validateRequest({ method, params: {
+        ...params,
+        permissionMode: asPermissionMode(existing?.permissionMode),
+        sourceDomains: JSON.stringify(existing?.sourceDomains ?? []),
+        model: existing?.model ?? "",
+      } }));
+      return await phoneJobs();
+    }
+    case "deleteScheduledJob":
+      await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
+      return await phoneJobs();
+    case "runScheduledJob":
+      // The run becomes its own thread on the Mac, which the phone already sees in its list.
+      await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
+      return { started: true };
+    case "setScheduledJobEnabled":
+      await runRequest(validateRequest({ method, params: { jobId: params.jobId, enabled: flag(params.enabled, "Enabled") ? "true" : "false" } }));
+      return await phoneJobs();
+    case "artifactSql":
+      return await queryArtifact(userData, boundedCapabilityId(params.id, "Artifact"), params.sql, params.params);
   }
 }
 
 async function driveTurn(turn: TurnRequest) {
   refuseBenchTurn(turn.threadId);
+  turn.title = threadNames.get(turn.threadId) || turn.title;
   turn.bench = benchThread(turn.threadId);
   return await runDrivenTurn(turn);
 }
@@ -2672,7 +3485,78 @@ async function runDrivenTurn(turn: TurnRequest) {
   const thread = noteThread(recorded);
   await noteGoalFailure(turn.threadId, agents!.list().find((agent) => agent.threadId === turn.threadId)?.error);
   if (!turn.goalTurn) void continueGoal(turn, thread).catch((error: unknown) => console.error("Emma: a goal's continuation failed", error));
+  if (wantsReview(turn, thread)) void reviewWork(turn, recorded).catch((error: unknown) => console.error("Emma: a second-model review failed", error));
   return recorded;
+}
+
+function noteGoalOverspent(threadId: string) {
+  stopThread(threadId);
+  void goalRequest("updateGoal", { threadId, status: "budgetLimited", reason: GOAL_OVERSPENT }).catch(() => undefined);
+}
+
+function wantsReview(turn: TurnRequest, thread: ThreadRecord | undefined): boolean {
+  const touched = turnTouched.delete(turn.threadId) || agents!.changes(turn.threadId).length > 0;
+  if (!reviewSettings.enabled || !reviewSettings.model.trim()) return false;
+  if (turn.reviewed || turn.goalTurn || turn.nested || turn.parentThreadId || turn.depth || turn.bench) return false;
+  if (thread?.archivedAt || reviewing.has(turn.threadId) || goalStopped.has(turn.threadId)) return false;
+  if (activeGoal(turn.threadId) || goalDriving.has(turn.threadId)) return false;
+  if (!(threadContexts.get(turn.threadId)?.review ?? true)) return false;
+  if (!threadFolderIds(turn.threadId).length) return false;
+  if (agents!.list().find((agent) => agent.threadId === turn.threadId)?.status !== "done") return false;
+  return touched;
+}
+
+const reviewHalted = (threadId: string) => goalStopped.has(threadId) || agents!.isLive(threadId);
+
+async function reviewWork(turn: TurnRequest, recorded: unknown) {
+  reviewing.add(turn.threadId);
+  try {
+    let answered = lastAssistantMessage(recorded) ?? "";
+    for (let round = 0; round < MAX_REVIEW_ROUNDS; round += 1) {
+      if (reviewHalted(turn.threadId)) return;
+      const said = await runReview(turn, answered);
+      if (reviewVerdict(said) === "ship" || reviewHalted(turn.threadId)) return;
+      const redone = await driveTurn({
+        threadId: turn.threadId,
+        content: revisionPrompt(modelName(reviewSettings.model), said),
+        mode: threadContexts.get(turn.threadId)?.mode ?? agents!.mode(turn.threadId),
+        title: turn.title,
+        model: turn.model,
+        subagent: turn.subagent,
+        reviewed: true,
+      });
+      if (noteThread(redone)?.archivedAt) return;
+      answered = lastAssistantMessage(redone) ?? "";
+    }
+  } finally {
+    reviewing.delete(turn.threadId);
+  }
+}
+
+async function runReview(turn: TurnRequest, answered: string): Promise<string> {
+  const title = reviewTitle(turn.title);
+  const created = await host!.request({ method: "createThread", params: { parentThreadId: turn.threadId, title } });
+  const threadId = (created as { id?: unknown }).id;
+  if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
+  const parent = threadContexts.get(turn.threadId);
+  if (parent) threadContexts.set(threadId, { ...parent, model: reviewSettings.model, effort: "", review: false });
+  reviewThreads.add(threadId);
+  changed();
+  try {
+    const recorded = await driveTurn({
+      threadId,
+      content: reviewPrompt(turn.content, answered),
+      mode: threadMode(turn.threadId),
+      title,
+      model: reviewSettings.model,
+      parentThreadId: turn.threadId,
+      nested: true,
+      reviewed: true,
+    });
+    return lastAssistantMessage(recorded) ?? "";
+  } finally {
+    reviewThreads.delete(threadId);
+  }
 }
 
 async function noteGoalFailure(threadId: string, detail: string | undefined) {
@@ -2720,6 +3604,155 @@ async function scheduledJobs(): Promise<StoredJob[]> {
   return snapshot.scheduledJobs ?? [];
 }
 
+/** A reply the codec cannot seal is dropped unsent — bridge.ts answers TOO_LARGE at best and the
+    phone waits out its timeout at worst — so every list a phone asks for is trimmed here. The
+    Mac-side limits behind these lists are each sized for a disk: 256 memory files of 256 KiB, 2000
+    notes, 64 task lists of 128 KiB. MAX_FRAME_BYTES is 1 MiB for all of it. */
+const MAX_PHONE_LIST_BYTES = 256 * 1024;
+/** Enough of a body for a preview row; nothing on the phone reads more than that of one. */
+const MAX_PHONE_TEXT_CHARS = 2048;
+
+function phoneList<T>(rows: readonly T[]): PhoneList<T> {
+  const kept: T[] = [];
+  let used = 0;
+  for (const row of rows) {
+    used += Buffer.byteLength(JSON.stringify(row), "utf8") + 1;
+    if (used > MAX_PHONE_LIST_BYTES) break;
+    kept.push(row);
+  }
+  // A short list that looks complete is worse than the overflow this trimming replaced: the phone
+  // filters and searches what it was sent, and would answer "nothing matches" for a note the Mac
+  // still holds. So the shortfall rides along with the rows.
+  return { rows: kept, capped: kept.length < rows.length };
+}
+
+/** The same trimming for the frames the phone did not ask for. Tool results are stored on a span
+    uncapped, and one live frame carries every open span of every running agent at once, so an
+    agent that read a few large files is a `live` or `spans` event the codec silently refuses to
+    seal — and the phone's trace view then freezes for the rest of the turn. */
+function phoneSpans(spans: Record<string, TraceSpan[]>): Record<string, TraceSpan[]> {
+  const out: Record<string, TraceSpan[]> = {};
+  let used = 0;
+  for (const [threadId, list] of Object.entries(spans)) {
+    out[threadId] = list.map((span) => {
+      // Past the budget a span keeps its shape and loses its text: the timeline is drawn from the
+      // spans themselves, and a turn missing half its rows is the wrong answer to draw.
+      const kept = used > MAX_PHONE_LIST_BYTES
+        ? { ...span, input: undefined, output: undefined, truncated: true }
+        : clipped(span);
+      used += Buffer.byteLength(JSON.stringify(kept), "utf8") + 1;
+      return kept;
+    });
+  }
+  return out;
+}
+
+function clipped(span: TraceSpan): TraceSpan {
+  const max = MAX_PHONE_TEXT_CHARS;
+  if ((span.input?.length ?? 0) <= max && (span.output?.length ?? 0) <= max) return span;
+  return {
+    ...span,
+    input: span.input === undefined ? undefined : span.input.slice(0, max),
+    output: span.output === undefined ? undefined : span.output.slice(0, max),
+    truncated: true,
+  };
+}
+
+/** How much of one body the phone is sent — a step's tool result, a message. Far looser than a
+    span's preview because these are the bodies the phone renders whole, and only one no frame
+    could hold is worth cutting. */
+const MAX_PHONE_BODY_CHARS = 128 * 1024;
+
+function phoneStep(step: RemoteStep): RemoteStep {
+  const output = step.output;
+  if (output === undefined || output.length <= MAX_PHONE_BODY_CHARS) return step;
+  // Cut without a word said: every reader of a step's output reads its head — the phone draws the
+  // first 2000 characters of a tool result, and the artifact, visual and spawn markers all anchor
+  // at the top — so a notice at the tail is one nothing would ever show.
+  return { ...step, output: output.slice(0, MAX_PHONE_BODY_CHARS) };
+}
+
+/** Room a trace needs to be worth sending at all, so the newest turn is never cut to a stub. */
+const MIN_TRACE_CHARS = 8 * 1024;
+
+/** The newest turns that fit one frame. The Mac keeps 64 traces a thread and clamps each at a
+    MiB — a disk's budget, not a socket's — so a long thread's whole record never arrives, and the
+    phone would draw every past turn as if it ran no tools and took no steers. A clipped trace
+    still parses: `clampTrace` cuts whole spans out of the middle. */
+function phoneTraces(traces: readonly StoredThreadTrace[]): ThreadTrace[] {
+  const kept: ThreadTrace[] = [];
+  let room = MAX_PHONE_LIST_BYTES;
+  for (let index = traces.length - 1; index >= 0 && room >= MIN_TRACE_CHARS; index -= 1) {
+    const trace = traces[index];
+    const text = clampTrace(trace.text, room);
+    room -= text.length + 64;
+    kept.push(text.length < trace.text.length ? { ...trace, text, truncated: true } : trace);
+  }
+  // The phone numbers turns from what it was sent, so a dropped one has to say so somewhere: the
+  // oldest turn that survived carries the shortfall.
+  if (kept.length && kept.length < traces.length) kept[kept.length - 1] = { ...kept[kept.length - 1], truncated: true };
+  return kept.reverse();
+}
+
+/** A page the codec can seal. Nothing caps a message body on the way here, so a thread with a few
+    pasted files in it is a page that never arrives. Each body is cut to what one frame holds first,
+    because dropping the oldest cannot save a page whose newest message is the oversized one; then
+    the oldest go until the page fits, and `from` already tells the phone where to ask for the rest.
+    Unlike a step, a message is drawn whole on the phone, so the cut is said in the text — the one
+    place the reader of a clipped message would see it. */
+function phonePage(messages: Message[], total: number, from: number): { messages: Message[]; total: number; from: number } {
+  const page = messages.map((message) => message.content.length <= MAX_PHONE_BODY_CHARS ? message : {
+    ...message,
+    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your Mac.`,
+  });
+  const sizes = page.map((message) => Buffer.byteLength(JSON.stringify(message), "utf8") + 1);
+  let used = sizes.reduce((sum, bytes) => sum + bytes, 0);
+  let start = 0;
+  while (start < page.length - 1 && used > MAX_PHONE_LIST_BYTES) {
+    used -= sizes[start];
+    start += 1;
+  }
+  return { messages: page.slice(start), total, from: from + start };
+}
+
+function phoneMemories(): Promise<PhoneList<MemoryNote>> {
+  return listMemories(memoryRoot()).then((notes) => phoneList(notes.map((note) => ({
+    ...note,
+    text: note.text.slice(0, MAX_PHONE_TEXT_CHARS),
+    truncated: note.text.length > MAX_PHONE_TEXT_CHARS,
+  }))));
+}
+
+function phoneJobs(): Promise<PhoneList<ScheduledJob>> {
+  return scheduledJobs().then((jobs) => phoneList(jobs.map(({ nodes: _nodes, outputs: _outputs, ...job }) => ({
+    ...job,
+    title: job.title.slice(0, MAX_PHONE_TEXT_CHARS),
+    prompt: job.prompt.slice(0, MAX_PHONE_TEXT_CHARS),
+    truncated: job.title.length > MAX_PHONE_TEXT_CHARS || job.prompt.length > MAX_PHONE_TEXT_CHARS,
+  }))));
+}
+
+/** The installed plugins as the phone audits them. A hook command is what the person is being
+    asked to trust, so it is the one string here that is never summarised — only clipped, visibly,
+    at the same ceiling as every other body, because a plugin with a megabyte on one line would
+    otherwise take the whole list down to `capped` and leave the audit screen empty. */
+function phonePlugins(userData: string): Promise<PhoneList<PluginEntry>> {
+  return installedHooks(userData).then((plugins) => phoneList(plugins.map((plugin) => ({
+    id: plugin.id,
+    displayName: plugin.displayName || plugin.name,
+    marketplace: plugin.marketplace,
+    version: plugin.version,
+    skills: plugin.skills.length > 0,
+    servers: plugin.mcpServers.length > 0,
+    hooks: plugin.hooks.map((hook) => ({
+      event: hook.event,
+      command: hook.command.length > MAX_PHONE_TEXT_CHARS ? `${hook.command.slice(0, MAX_PHONE_TEXT_CHARS)}…` : hook.command,
+      trusted: hook.trusted,
+      runs: hookRuns(hook.event),
+    })),
+  }))));
+}
+
 function workflowScriptRoots(): string[] {
   const roots: string[] = [];
   for (const grant of folders!.list()) {
@@ -2735,17 +3768,25 @@ async function validateWorkflowScripts(nodes: WorkflowNode[]): Promise<void> {
   await Promise.all(scripts.map((node) => workflowScriptPath(node.text, roots)));
 }
 
-async function resolveMentions(prompt: string, threadId: string): Promise<string> {
+// The skill comes back rather than going into skillAttachment: that store holds one slot and
+// only the renderer's own send claims it, so stashing here left every other caller's skill
+// unread and let one surface plant an attachment on another's next message.
+async function resolveMentions(prompt: string): Promise<{ content: string; skillContext?: string }> {
   const named = mentions(prompt, "/");
+  let skillContext: string | undefined;
   if (named.length) {
     const skills = await capabilities!.searchSkills("", 64);
     const skill = skills.find((item) => named.includes(item.name) && !toolSettings.disabledSkills.includes(item.id));
-    if (skill) skillAttachment.put(await capabilities!.selectSkill(skill.id), threadId);
+    if (skill) {
+      skillContext = (await capabilities!.selectSkill(skill.id)).instructions;
+      void recordUse(app.getPath("userData"), skillKey(skill.id));
+    }
   }
   const sections: { heading: string; body: string }[] = [];
   const paths = mentions(prompt, "@");
   const userData = app.getPath("userData");
   const artifacts = paths.length ? await listArtifacts(userData).catch(() => []) : [];
+  const vault = paths.length ? readVault(userData) : undefined;
   for (const mention of paths) {
     const artifact = artifacts.find((item) => pathName(item.title) === mention);
     if (artifact) {
@@ -2757,8 +3798,19 @@ async function resolveMentions(prompt: string, threadId: string): Promise<string
       }
       continue;
     }
+    const note = vault ? listNotes(vault).find((item) => pathName(item.title) === mention) : undefined;
+    if (note && vault) {
+      const file = path.join(notesRoot(vault), noteInVault(vault, note.path));
+      try {
+        if (statSync(file).size > MAX_NOTE_BYTES) throw new Error("it is too large to attach");
+        sections.push({ heading: `Note ${note.title}`, body: readFileSync(file, "utf8") });
+      } catch (error) {
+        sections.push({ heading: `Note ${note.title}`, body: `Could not be read: ${error instanceof Error ? error.message : String(error)}` });
+      }
+      continue;
+    }
     for (const grant of folders!.list()) {
-      const listed = folders!.files(grant.id).find((file) => pathName(file.path) === mention);
+      const listed = folders!.files(grant.id).files.find((file) => pathName(file.path) === mention);
       if (!listed) continue;
       try {
         const file = folders!.read(grant.id, listed.path);
@@ -2769,7 +3821,7 @@ async function resolveMentions(prompt: string, threadId: string): Promise<string
       break;
     }
   }
-  return sections.length ? `${prompt}\n\n${contextBlock(sections)}` : prompt;
+  return { content: sections.length ? `${prompt}\n\n${contextBlock(sections)}` : prompt, skillContext };
 }
 
 async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
@@ -2788,8 +3840,8 @@ async function runScheduledWorkflow(job: HostDueJob["dueJob"]) {
       try { return await runWorkflowScript(prompt, input, workflowScriptRoots()); }
       catch (error) { return `[script could not run: ${error instanceof Error ? error.message : String(error)}]`; }
     }
-    const content = await resolveMentions(prompt, job.threadId);
-    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel });
+    const { content, skillContext } = await resolveMentions(prompt);
+    const outcome = await driveTurn({ threadId: job.threadId, content, mode, title: job.title, model: job.model || selectedModel, ...(skillContext ? { params: { skillContext } } : {}) });
     return lastAssistantMessage(outcome) ?? "";
   });
   await host!.request({ method: "finishScheduledJob", params: { jobId: job.jobId, outputs: packVariables(run.variables), depth: String(job.depth) } });
@@ -2834,11 +3886,16 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
       const job = named();
       await host!.request({ method: "deleteScheduledJob", params: { jobId: job.id } });
       changed();
+      scheduledJobsChanged();
       return `Deleted "${job.title}".`;
     }
     case "run": {
       const job = named();
       await host!.request({ method: "runScheduledJob", params: { jobId: job.id, variables: args.variables ?? "" } });
+      // Starting a job stamps its run rows, same as the phone's own runScheduledJob does — and this
+      // path calls the host directly, so the SCHEDULED_JOB_WRITES broadcast in runRequest never sees it.
+      changed();
+      scheduledJobsChanged();
       return `Started "${job.title}". It runs as its own thread under Scheduled tasks; read it there when it finishes.`;
     }
     case "test": {
@@ -2874,6 +3931,7 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
         },
       }) as { id?: string };
       changed();
+      scheduledJobsChanged();
       return `${existing ? "Updated" : "Saved"} "${title}" (${saved.id ?? existing?.id}), triggered by ${trigger}. Nothing has run yet — test it, or run it once to see what it does.`;
     }
   }
@@ -2995,6 +4053,13 @@ function openRunBanner(threadId: string, task: string) {
   pinWindow(window);
   window.on("closed", () => { if (runBanner === window) runBanner = null; });
   void load(window, "run", { threadId, task: task.slice(0, 200), maxSteps: String(MAX_RUN_STEPS) });
+  openComputerCursor();
+}
+
+function openComputerCursor() {
+  clearTimeout(computerCursorIdle);
+  if (!runBanner) computerCursorIdle = setTimeout(closeComputerCursor, CURSOR_IDLE_MS);
+  if (computerCursorWindow && !computerCursorWindow.isDestroyed()) return;
   const cursor = secureWindow({
     width: 1,
     height: 1,
@@ -3016,15 +4081,21 @@ function openRunBanner(threadId: string, task: string) {
   void load(cursor, "computerCursor");
 }
 
-function closeRunBanner() {
-  globalShortcut.unregister("Escape");
+function closeComputerCursor() {
   clearTimeout(computerCursorTimer);
+  clearTimeout(computerCursorIdle);
   computerCursorReady = false;
-  computerProgress = undefined;
+  computerCursorHeld = false;
   computerCursorProgress = undefined;
   computerCursorAt = 0;
   if (computerCursorWindow && !computerCursorWindow.isDestroyed()) computerCursorWindow.destroy();
   computerCursorWindow = null;
+}
+
+function closeRunBanner() {
+  globalShortcut.unregister("Escape");
+  computerProgress = undefined;
+  closeComputerCursor();
   if (runBanner && !runBanner.isDestroyed()) runBanner.destroy();
   runBanner = null;
 }
@@ -3167,8 +4238,12 @@ if (primaryInstance) app.whenReady().then(() => {
     request: (method, params) => answerRequest(method, params),
     ask: (request: PermissionAsk) => {
       const askedAt = Date.now();
-      const reached = bridge ? bridge.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) : false;
+      // True only when a phone is connected *now*; a phone paired months ago and long
+      // gone must not stall every ask for MAX_ASK_MS.
+      const reached = bridge?.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) === true;
       if (!mainWindow || mainWindow.isDestroyed()) {
+        // A phone that is asleep rather than gone still has the ask parked in the
+        // bridge's pending list; agent-loop's MAX_ASK_MS abort is the backstop.
         if (!reached) answerAsk(request.id, false);
         return;
       }
@@ -3192,14 +4267,51 @@ if (primaryInstance) app.whenReady().then(() => {
     changed: () => { broadcast("emma:agents", agents!.list()); broadcast("emma:spans", agents!.spans()); },
     step: (step) => broadcast("emma:step", step),
   });
+  loadPhoneThreads();
   bridge = createBridge({
     userData: app.getPath("userData"),
     identity: desktopIdentity,
-    dispatch: bridgeDispatch,
+    dispatch: async (method, params) => {
+      if (method === "sendMessage" || method === "steerAgent" || method === "answerPermission") broadcast("emma:mobile-status", mobileStatus(Date.now()));
+      const result = await bridgeDispatch(method, params);
+      if (method === "createThread") {
+        phoneThreads.add((result as ThreadSummary).id);
+        writeFileSync(phoneThreadsFile(), JSON.stringify([...phoneThreads]));
+        broadcast("emma:mobile-status", mobileStatus());
+      }
+      return result;
+    },
     live: bridgeLive,
-    onStatus: (status) => broadcast("emma:mobile-status", status),
+    onStatus: (status) => broadcast("emma:mobile-status", { ...status, threads: [...phoneThreads] }),
   });
   bridge.start();
+  configureCouncil({
+    route: councilRoute,
+    rates: (modelId) => modelRates(path.join(app.getPath("userData"), "openrouter-catalog.json"), modelId),
+    emit: (state) => broadcast("emma:council", state),
+    land: async (state) => {
+      const spent = state.voices.reduce((total, voice) => ({
+        inputTokens: total.inputTokens + voice.inputTokens,
+        outputTokens: total.outputTokens + voice.outputTokens,
+        microDollars: total.microDollars + voice.microDollars,
+      }), { inputTokens: 0, outputTokens: 0, microDollars: 0 });
+      await recordTurn({
+        threadId: state.threadId,
+        prompt: state.question,
+        answer: councilAnswer(state),
+        durationMilliseconds: String(Date.now() - state.startedAt),
+        inputTokens: String(spent.inputTokens),
+        outputTokens: String(spent.outputTokens),
+        ...(spent.microDollars > 0 ? { costMicroUsd: String(spent.microDollars) } : {}),
+        model: `council of ${state.seats.length}`,
+      });
+      changed();
+    },
+    carried: async (threadId) => {
+      const thread = await runRequest(validateRequest({ method: "thread", params: { threadId } })).catch(() => undefined) as { messages?: Message[] } | undefined;
+      return (thread?.messages ?? []).slice(-6).map((message) => `${message.role}: ${message.content}`).join("\n\n");
+    },
+  });
   configureResearch({
     request: (method, params) => answerRequest(method, params),
     turn: (request) => driveTurn(request),
@@ -3286,7 +4398,7 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:set-thread-context", (event, value: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame || event.sender !== overlay?.webContents) mainWindowSender(event);
     const { threadId, ...context } = threadContextRequest(value);
-    threadContexts.set(threadId, context);
+    keepThreadContext(threadId, context);
     agents!.setMode(threadId, context.mode);
     return context.mode;
   });
@@ -3314,6 +4426,30 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     await runMemoryCommand(memoryRoot(), { command: "delete", path: typeof value === "string" ? value : "" });
     return listMemories(memoryRoot());
+  });
+  const councilThread = (value: unknown) => boundedCapabilityId((value as { threadId?: unknown } | null)?.threadId, "Thread");
+  ipcMain.handle("emma:council-start", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return await startCouncil(validateCouncilStart(value));
+  });
+  ipcMain.handle("emma:council-stop", (event, value: unknown) => {
+    mainWindowSender(event);
+    stopCouncil(councilThread(value));
+    return null;
+  });
+  ipcMain.handle("emma:council-adopt", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const seatId = (value as { seatId?: unknown } | null)?.seatId;
+    return await adoptCouncil(councilThread(value), typeof seatId === "string" && seatId.length <= 64 ? seatId : "");
+  });
+  ipcMain.handle("emma:council-close", (event, value: unknown) => {
+    mainWindowSender(event);
+    closeCouncil(councilThread(value));
+    return null;
+  });
+  ipcMain.handle("emma:council-state", (event, value: unknown) => {
+    mainWindowSender(event);
+    return councilState(councilThread(value)) ?? null;
   });
   ipcMain.handle("emma:list-agents", (event) => {
     mainWindowSender(event);
@@ -3471,6 +4607,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     return agents!.spans();
   });
+  ipcMain.handle("emma:list-asks", (event) => {
+    mainWindowSender(event);
+    return agents!.outstandingAsks();
+  });
   ipcMain.handle("emma:live-partial", (event) => {
     mainWindowSender(event);
     return livePartial();
@@ -3523,9 +4663,9 @@ if (primaryInstance) app.whenReady().then(() => {
     const folderId = boundedCapabilityId(request.folderId, "Revert folder");
     const file = request.path;
     if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
-    if (typeof request.before !== "string") throw new Error("Only a file Emma rewrote can be reverted here.");
+    const before = recordedRevert(folderId, file);
     if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
-    folders!.write(folderId, file, request.before);
+    folders!.write(folderId, file, before);
     changed();
     return true;
   });
@@ -3554,13 +4694,18 @@ if (primaryInstance) app.whenReady().then(() => {
     const key = profile.credentialEnv ? process.env[profile.credentialEnv] ?? "" : "";
     return await probeProvider(profile.baseUrl, key, typeof draft.modelId === "string" ? draft.modelId.trim() : "");
   });
+  ipcMain.handle("emma:set-default-mode", (event, value: unknown) => {
+    panelSender(event);
+    defaultMode = asPermissionMode(value);
+    return defaultMode;
+  });
   ipcMain.handle("emma:set-verifier", (event, value: unknown) => {
-    mainWindowSender(event);
+    panelSender(event);
     verifier = validateVerifier(value);
     return verifier;
   });
   ipcMain.handle("emma:set-tagger", (event, value: unknown) => {
-    mainWindowSender(event);
+    panelSender(event);
     tagger = validateTagger(value);
     return tagger;
   });
@@ -3571,7 +4716,7 @@ if (primaryInstance) app.whenReady().then(() => {
     return zoom;
   });
   ipcMain.handle("emma:set-tool-settings", async (event, value: unknown) => {
-    mainWindowSender(event);
+    panelSender(event);
     toolSettings = validateToolSettings(value);
     await toolsChanged();
     return toolSettings;
@@ -3579,7 +4724,17 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:set-harness-experiments", (event, value: unknown) => {
     mainWindowSender(event);
     harnessExperiments = validateHarnessExperiments(value);
+    semanticGrep.apply(harnessExperiments);
     return harnessExperiments;
+  });
+  ipcMain.handle("emma:semantic-grep-status", (event) => {
+    mainWindowSender(event);
+    return semanticGrep.status();
+  });
+  ipcMain.handle("emma:set-review", (event, value: unknown) => {
+    mainWindowSender(event);
+    reviewSettings = validateReview(value);
+    return reviewSettings;
   });
   ipcMain.handle("emma:set-improvements", (event, value: unknown) => {
     mainWindowSender(event);
@@ -3598,6 +4753,8 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     const found = namedPath(value);
     if (!found) return false;
+    const { grant, attached } = pathGrant(found);
+    if (!grant && !attached) return false;
     shell.showItemInFolder(found);
     return true;
   });
@@ -3605,12 +4762,10 @@ if (primaryInstance) app.whenReady().then(() => {
     mainWindowSender(event);
     const found = namedPath(value);
     if (!found) return null;
-    const grant = folders!.list().find((folder) => pathInside(folder.path, found));
-    const attached = !grant && attachments!.holds(found);
-    const picture = isImageAttachment(found);
-    if (!grant && !attached && !picture) return { path: found, text: null };
+    const { grant, attached } = pathGrant(found);
+    if (!grant && !attached) return { path: found, text: null };
     try {
-      if (picture) return { path: found, text: null, image: previewImage(found) };
+      if (isImageAttachment(found)) return { path: found, text: null, image: previewImage(found) };
       if (attached && statSync(found).size > MAX_FILE_BYTES) return { path: found, text: null };
       return { path: found, text: attached ? readFileSync(found, "utf8") : folders!.read(grant!.id, path.relative(grant!.path, found)).text };
     } catch {
@@ -3619,41 +4774,11 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:set-goal", async (event, value: unknown) => {
     panelSender(event);
-    const request = goalIpc(value);
-    const objective = boundedGoalText(request.objective, "Goal objective", MAX_GOAL_OBJECTIVE_CHARS, true);
-    const budget = wholeGoalNumber(request.tokenBudget, "Goal token budget");
-    const thread = await goalRequest("setGoal", { threadId: request.threadId, objective, tokenBudget: String(budget ?? DEFAULT_GOAL_TOKEN_BUDGET) });
-    if (thread?.title === DEFAULT_THREAD_TITLE) {
-      await host!.request({ method: "renameThread", params: { threadId: request.threadId, title: goalTitle(objective) } }).catch(() => undefined);
-      changed();
-    }
-    return thread;
+    return await setGoal(goalIpc(value));
   });
   ipcMain.handle("emma:update-goal", async (event, value: unknown) => {
     panelSender(event);
-    const request = goalIpc(value);
-    if (request.status !== undefined && !isGoalStatus(request.status)) throw new Error("Goal status is invalid");
-    const extra = wholeGoalNumber(request.extraTokens, "Goal extra tokens");
-    if (request.status === undefined && extra === undefined) throw new Error("A goal update needs a status or extra tokens");
-    const updated = await goalRequest("updateGoal", {
-      threadId: request.threadId,
-      ...(request.status === undefined ? {} : { status: request.status }),
-      evidence: boundedGoalText(request.evidence, "Goal evidence", MAX_GOAL_EVIDENCE_CHARS, false),
-      reason: boundedGoalText(request.reason, "Goal blocker", MAX_GOAL_REASON_CHARS, false),
-      ...(extra === undefined ? {} : { extraTokens: String(extra) }),
-    });
-    goalStopped.delete(request.threadId);
-    agents?.forget(request.threadId);
-    if (goalPursuing(goals.get(request.threadId)) && !goalHalted(request.threadId)) {
-      void driveTurn({
-        threadId: request.threadId,
-        content: GOAL_CONTINUATION,
-        mode: threadMode(request.threadId),
-        title: "This thread",
-        model: threadModel(request.threadId),
-      }).catch((error: unknown) => console.error("Emma: a resumed goal could not start", error));
-    }
-    return updated;
+    return await updateGoal(goalIpc(value));
   });
   ipcMain.handle("emma:clear-goal", async (event, value: unknown) => {
     panelSender(event);
@@ -3968,7 +5093,7 @@ if (primaryInstance) app.whenReady().then(() => {
     panelSender(event);
     const vault = readVault(app.getPath("userData"));
     if (!vault) throw new Error("No vault is connected.");
-    const file = path.join(noteFolder(vault), noteInVault(vault, value));
+    const file = path.join(notesRoot(vault), noteInVault(vault, value));
     if (!statSync(file).isFile() || statSync(file).size > MAX_NOTE_BYTES) throw new Error("That note cannot be read.");
     return readFileSync(file, "utf8");
   });
@@ -3978,7 +5103,7 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!vault) throw new Error("No vault is connected.");
     const relative = noteInVault(vault, value);
     if (vault.kind === "obsidian") void shell.openExternal(obsidianOpenUrl(vault, relative));
-    else shell.showItemInFolder(path.join(noteFolder(vault), relative));
+    else shell.showItemInFolder(path.join(notesRoot(vault), relative));
   });
   ipcMain.handle("emma:install-obsidian", (event) => {
     mainWindowSender(event);
@@ -4045,7 +5170,7 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:mobile-status", (event) => {
     mainWindowSender(event);
-    return bridge!.status();
+    return mobileStatus();
   });
   ipcMain.handle("emma:mobile-pair", async (event, value: unknown) => {
     mainWindowSender(event);
@@ -4077,15 +5202,13 @@ if (primaryInstance) app.whenReady().then(() => {
     const editorId = boundedCapabilityId(request.editorId, "Editor");
     if (request.folderId === undefined) {
       const file = namedPath(request.path);
-      const grant = file && folders!.list().some((folder) => pathInside(folder.path, file));
-      if (!file || (!grant && !attachments!.holds(file))) throw new Error("That file is not open to Emma.");
+      const held = file ? pathGrant(file) : { grant: undefined, attached: false };
+      if (!file || (!held.grant && !held.attached)) throw new Error("That file is not open to Emma.");
       await openInEditor(editorId, file);
       return;
     }
     const folderId = boundedCapabilityId(request.folderId, "Folder");
-    const root = folders!.directory(folderId);
-    const relative = folders!.within(folderId, boundedCapabilityId(request.path, "File path"));
-    await openInEditor(editorId, path.join(root, relative));
+    await openInEditor(editorId, folders!.fileWithin(folderId, boundedCapabilityId(request.path, "File path")));
   });
   ipcMain.handle("emma:set-branch", async (event, value: unknown) => {
     mainWindowSender(event);
@@ -4168,7 +5291,7 @@ if (primaryInstance) app.whenReady().then(() => {
     return discoverImports(homedir());
   });
   ipcMain.handle("emma:import-agent-sources", async (event, value: unknown) => {
-    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents || !Array.isArray(value) || value.length > 8 || value.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
+    if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents || !Array.isArray(value) || value.length > MAX_IMPORT_SOURCES || value.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
     const saved = await saveImportManifest(app.getPath("userData"), homedir(), value);
     await toolsChanged();
     return saved;
@@ -4187,12 +5310,20 @@ if (primaryInstance) app.whenReady().then(() => {
       servers: await capabilities!.listMcpServers(),
     };
   });
+  ipcMain.handle("emma:next-steps", async (event, value: unknown) => {
+    mainWindowSender(event);
+    return await suggestNextSteps(validateWorkState(value), freeRouter);
+  });
   ipcMain.handle("emma:capability-usage", async (event) => {
     mainWindowSender(event);
     const usage = await readUsage(app.getPath("userData"));
     const [skills, servers] = await Promise.all([capabilities!.searchSkills("", MAX_SKILL_RESULTS), capabilities!.listMcpServers()]);
     return {
       skills: skills.filter((skill) => skill.source !== "installed").map((skill) => ({ id: skill.id, name: skill.name, source: skill.source, days: usage[skillKey(skill.id)] ?? {} })),
+      models: Object.entries(usage).filter(([key]) => key.startsWith("model/")).map(([key, days]) => {
+        const name = key.slice("model/".length);
+        return { id: key, name, source: name.includes("/") ? name.slice(0, name.indexOf("/")) : "", days };
+      }),
       servers: servers.map((server) => ({ id: server.id, name: server.name, source: `${server.source} · ${server.command}`, days: daysUnder(usage, mcpServerPrefix(server.name)) })),
     };
   });
@@ -4499,6 +5630,7 @@ app.on("before-quit", (event) => {
 });
 app.on("will-quit", (event) => {
   bridge?.stop();
+  semanticGrep.stop();
   globalShortcut.unregisterAll();
   clearTimeout(hotspotTimer);
   hotkeyHelper?.kill();

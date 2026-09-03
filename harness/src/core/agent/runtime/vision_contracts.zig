@@ -74,11 +74,16 @@ pub const OutputLimit = struct {
     configured_bytes: usize,
 };
 
+pub const ProviderOutage = struct {
+    message: []const u8,
+    retryable: bool,
+};
+
 pub const VisionFailure = union(enum) {
     image_unavailable,
     provider_response_invalid,
     output_limit_exceeded: OutputLimit,
-    vision_unavailable,
+    vision_unavailable: ?ProviderOutage,
     missing_provider_record,
 
     pub fn code(self: VisionFailure) FailureCode {
@@ -88,9 +93,9 @@ pub const VisionFailure = union(enum) {
     fn retryable(self: VisionFailure) bool {
         return switch (self) {
             .image_unavailable => false,
+            .vision_unavailable => |outage| if (outage) |http| http.retryable else true,
             .provider_response_invalid,
             .output_limit_exceeded,
-            .vision_unavailable,
             .missing_provider_record,
             => true,
         };
@@ -101,7 +106,13 @@ pub const VisionFailure = union(enum) {
             .image_unavailable => "Explain the local image failure; do not retry the same snapshot unchanged.",
             .provider_response_invalid => "Try a later explicit Vision call if useful, or continue without visual claims.",
             .output_limit_exceeded => "Call Vision again with a narrower focus or fewer images.",
-            .vision_unavailable => "Retry later, change model or strategy, or continue without visual claims.",
+            .vision_unavailable => |outage| if (outage) |http|
+                (if (http.retryable)
+                    "Retry later, change model or strategy, or continue without visual claims."
+                else
+                    "Tell the user the vision route itself failed and needs fixing in Settings → Tools → Vision; retrying it this turn will fail the same way.")
+            else
+                "Retry later, change model or strategy, or continue without visual claims.",
             .missing_provider_record => "Call Vision again for only this image if its evidence is still needed.",
         };
     }
@@ -412,8 +423,8 @@ fn write_failure_diagnostic(
             "\"Vision produced {d} bytes; the configured budget is {d} bytes.\"",
             .{ limit.observed_bytes, limit.configured_bytes },
         ),
-        .vision_unavailable => try std.json.Stringify.value(
-            "Vision could not obtain a usable provider response.",
+        .vision_unavailable => |outage| try std.json.Stringify.value(
+            if (outage) |http| http.message else "Vision could not obtain a usable provider response.",
             .{},
             writer,
         ),
@@ -482,6 +493,9 @@ pub noinline fn project_text_only_messages(
     return projected;
 }
 
+pub const native_images_visible_notice =
+    "These images are already visible in this message; answer from them directly and do not call vision for them.";
+
 pub fn project_named_native_messages(
     alloc: Allocator,
     messages: []const types.ChatMessage,
@@ -501,9 +515,9 @@ pub fn project_named_native_messages(
     defer alloc.free(references);
     const content = named[current_user_message_index].content orelse "";
     named[current_user_message_index].content = if (content.len == 0)
-        try alloc.dupe(u8, references)
+        try std.fmt.allocPrint(alloc, "{s}\n{s}", .{ references, native_images_visible_notice })
     else
-        try std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ content, references });
+        try std.fmt.allocPrint(alloc, "{s}\n\n{s}\n{s}", .{ content, references, native_images_visible_notice });
     return named;
 }
 
@@ -660,7 +674,7 @@ fn parse_image_result(
         }
         return .{
             .image_id = try parse_image_id(object.get("image_id") orelse return error.InvalidVisionResult),
-            .outcome = .{ .failed = .vision_unavailable },
+            .outcome = .{ .failed = .{ .vision_unavailable = null } },
         };
     }
     return error.InvalidVisionResult;
@@ -1040,8 +1054,15 @@ test "Vision result serialization emits the five Fx-owned diagnostics" {
             .expected = "{\"images\":[{\"image_id\":7,\"status\":\"failed\",\"error\":{\"code\":\"output_limit_exceeded\",\"message\":\"Vision produced 27431 bytes; the configured budget is 20480 bytes.\",\"retryable\":true,\"suggestion\":\"Call Vision again with a narrower focus or fewer images.\"}}]}",
         },
         .{
-            .failure = .vision_unavailable,
+            .failure = .{ .vision_unavailable = null },
             .expected = "{\"images\":[{\"image_id\":7,\"status\":\"failed\",\"error\":{\"code\":\"vision_unavailable\",\"message\":\"Vision could not obtain a usable provider response.\",\"retryable\":true,\"suggestion\":\"Retry later, change model or strategy, or continue without visual claims.\"}}]}",
+        },
+        .{
+            .failure = .{ .vision_unavailable = .{
+                .message = "Vision model vendor/seer answered HTTP 402 · payment_required: Insufficient credits — fix it in Settings → Tools → Vision",
+                .retryable = false,
+            } },
+            .expected = "{\"images\":[{\"image_id\":7,\"status\":\"failed\",\"error\":{\"code\":\"vision_unavailable\",\"message\":\"Vision model vendor/seer answered HTTP 402 · payment_required: Insufficient credits — fix it in Settings → Tools → Vision\",\"retryable\":false,\"suggestion\":\"Tell the user the vision route itself failed and needs fixing in Settings → Tools → Vision; retrying it this turn will fail the same way.\"}}]}",
         },
         .{
             .failure = .missing_provider_record,
@@ -1220,7 +1241,7 @@ test "Vision merge preserves nineteen successes and one failure" {
     for (&requested, &provider_records, 0..) |*image_id, *record, index| {
         image_id.* = index + 1;
         record.* = if (index == 12)
-            .{ .image_id = index + 1, .outcome = .{ .failed = .vision_unavailable } }
+            .{ .image_id = index + 1, .outcome = .{ .failed = .{ .vision_unavailable = null } } }
         else
             test_ok_result(index + 1);
     }
@@ -1315,6 +1336,27 @@ test "text-only message projection removes raw images and exposes all authorized
     try std.testing.expect(std.mem.find(u8, content, "[Image #7]") != null);
     try std.testing.expect(std.mem.find(u8, content, "/tmp/private-two.png") == null);
     try std.testing.expect(std.mem.find(u8, content, "/Users/private/seven.jpg") == null);
+    try std.testing.expect(std.mem.find(u8, content, native_images_visible_notice) == null);
+}
+
+test "native message projection tells the model the attached images are already visible" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const catalog = [_]types.ImageAttachment{
+        .{ .id = 1, .path = @constCast("/tmp/one.png"), .media_type = @constCast("image/png") },
+    };
+    const messages = [_]types.ChatMessage{
+        .{ .role = .system, .content = "system" },
+        .{ .role = .user, .content = "inspect", .images = &catalog },
+    };
+
+    const named = try project_named_native_messages(arena, &messages, 1, &catalog);
+    const content = named[1].content.?;
+    try std.testing.expect(std.mem.find(u8, content, "[Image #1]") != null);
+    try std.testing.expect(std.mem.find(u8, content, native_images_visible_notice) != null);
+    try std.testing.expect(std.mem.find(u8, content, "</available_images>\n") != null);
+    try std.testing.expectEqual(@as(usize, 1), named[1].images.len);
 }
 
 test "text-only projection preserves typed permission feedback byte-exact" {

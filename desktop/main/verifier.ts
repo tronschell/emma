@@ -85,7 +85,7 @@ export async function chatCompletion(
   settings: VerifierSettings,
   messages: ChatMessage[],
   key: string,
-  { maxTokens, timeoutMs, label }: { maxTokens: number; timeoutMs: number; label: string },
+  { maxTokens, timeoutMs, label, thinking, onUsage }: { maxTokens: number; timeoutMs: number; label: string; thinking?: boolean; onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void },
 ): Promise<string> {
   const [primary, ...rest] = settings.model.split(",").map((id) => id.trim()).filter(Boolean);
   const response = await fetch(settings.endpoint, {
@@ -95,8 +95,12 @@ export async function chatCompletion(
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`The ${label} endpoint answered ${response.status}.`);
-  const body = await response.json() as { choices?: { message?: { content?: unknown; reasoning?: unknown } }[] };
+  const body = await response.json() as { choices?: { message?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
+  const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+  onUsage?.({ inputTokens: count(body.usage?.prompt_tokens), outputTokens: count(body.usage?.completion_tokens) });
   const message = body.choices?.[0]?.message;
   const content = typeof message?.content === "string" ? message.content : "";
-  return content || (typeof message?.reasoning === "string" ? message.reasoning : "");
+  if (content || !thinking) return content;
+  const thought = [message?.reasoning, message?.reasoning_content].find((value) => typeof value === "string" && value.trim());
+  return typeof thought === "string" ? thought : "";
 }

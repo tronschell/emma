@@ -8,7 +8,7 @@ const stored = new Map<string, string>();
 };
 (globalThis as unknown as { dispatchEvent: unknown }).dispatchEvent = () => true;
 
-import { nested, newest, since, spawnedAgents, spawnedByTurn, threadAt, threadDepth, threadLabel } from "../src/threads";
+import { nested, newest, since, spawnedAgents, spawnedByTurn, subagentRows, threadAt, threadDepth, threadLabel, threadTitle } from "../src/threads";
 import { handTags, pinnedThreads, setThreadPinned, setThreadTag, setThreadUnread, threadTags, unreadThreads } from "../src/context";
 import type { Thread } from "../src/types";
 import { AGENT_COLORS, type LiveAgent } from "../shared/agents";
@@ -43,6 +43,14 @@ test("a sub thread stays under its owner and carries it up the list", () => {
   assert.deepEqual(nested(threads).map((item) => item.id), ["orphan", "b", "b-sub", "a"]);
   assert.equal(threadDepth(threads, threads[3]), 0);
   assert.equal(threadDepth(threads, threads[2]), 1);
+});
+
+test("thousands of threads still group in a blink", () => {
+  const threads = Array.from({ length: 3000 }, (_, index) => thread(`t${index}`, `2026-01-01T00:00:${String(index % 60).padStart(2, "0")}Z`, index % 3 === 0 && index > 0 ? `t${index - 1}` : undefined));
+  const started = Date.now();
+  const listed = nested(threads);
+  assert.equal(listed.length, threads.length);
+  assert.ok(Date.now() - started < 1000, `grouping 3000 threads took ${Date.now() - started}ms`);
 });
 
 test("an idle sub thread says how long ago it moved, in one column's worth", () => {
@@ -86,6 +94,17 @@ test("an unnamed thread is called after what was asked in it", () => {
   assert.equal(threadLabel(asked), "what is in this folder");
   assert.equal(threadLabel(thread("b", "2026-01-01T10:00:00Z")), "New thread");
   assert.equal(threadLabel({ ...asked, title: "Rome in June" }), "Rome in June");
+});
+
+test("search reads the whole derived name while the sidebar still shows a short one", () => {
+  const long = "Draft a one page memo for the pricing committee on semiconductor supply";
+  const asked: Thread = { ...thread("a", "2026-01-01T10:00:00Z"), messages: [{ role: "user", content: long, timestamp: "2026-01-01T10:00:00Z" }] };
+  assert.equal(threadLabel(asked), `${long.slice(0, 47)}…`);
+  assert.equal(threadLabel(asked).includes("semiconductor"), false);
+  assert.equal(threadTitle(asked), long);
+  assert.equal(threadTitle(asked).includes("semiconductor"), true);
+  assert.equal(threadTitle({ ...asked, title: "Rome in June" }), "Rome in June");
+  assert.equal(threadTitle(thread("b", "2026-01-01T10:00:00Z")), "New thread");
 });
 
 test("⌘1 – ⌘9 index the project the open thread is filed under", () => {
@@ -156,6 +175,14 @@ test("a subagent chip lands on the turn that spawned it, live ones on the turn s
   assert.deepEqual(turns.get(1)?.map((item) => item.name), ["Ada"]);
   assert.deepEqual(turns.get(3)?.map((item) => item.name), ["Milo"]);
   assert.deepEqual(loose.map((item) => item.name), ["Iris"]);
+
+  const rows = subagentRows(threads, live, "main");
+  assert.deepEqual(rows.map((row) => row.threadId), ["t1", "t2", "t3"]);
+  assert.deepEqual(rows.map((row) => row.status), ["done", "done", "running"]);
+  assert.equal(rows[0].title, "Ada");
+  assert.equal(rows[0].parentThreadId, "main");
+  assert.deepEqual(subagentRows(threads, [], "main").map((row) => row.threadId), ["t1", "t2"], "a subagent the live rail forgot keeps its row");
+  assert.deepEqual(subagentRows([], live, "main").map((row) => row.threadId), ["t3"]);
 });
 
 test("a project is ranked by the last thing said anywhere in it", () => {

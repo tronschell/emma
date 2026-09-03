@@ -10,7 +10,7 @@ import { discoverImports } from "../main/imports";
 import { loadUiPlugins, validatePluginCss } from "../main/plugins";
 import { accelLabel, comboKeybind, holdBindings, holdKeybind, keybindLabel, keybindProblem, normalizeAccelerator, canRemoveProvider, defaultSettings, fontStack, forgetProvider, isEnvName, localEndpoint, providerEndpoint, providerReach, maskSecret, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, normalizeProviderEndpoint, printableSecret, saveShortcut, toggleFavoriteModel, validateOverlayPreferences, validateSettings } from "../shared/settings";
 import { DEFAULT_PERMISSION_MODE } from "../shared/permissions";
-import { defaultPaneLayout, validatePaneLayout } from "../src/layout";
+import { defaultPaneLayout, fitPaneLayout, validatePaneLayout } from "../src/layout";
 import { hotspotLayout, hotspotPollDelay, nearBounds, overlayGrowth, overlayLayout, parseNotchGeometry, pillLayout, popoutLayout } from "../main/overlay";
 import { hasPersistedPrompt } from "../src/drafts";
 import type { Thread } from "../src/types";
@@ -47,6 +47,7 @@ test("IPC accepts only exact allowlisted payloads", () => {
   assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", skillAttachmentId: "skill:codex:0:review" } }).params.skillAttachmentId, "skill:codex:0:review");
   assert.equal(validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", attachedImages: "[\"a\",\"b\"]" } }).params.attachedImages, "[\"a\",\"b\"]");
   assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "hello", screenContext: "data:image/jpeg;base64,/9j/" } }), /Invalid parameters/);
+  assert.throws(() => validateRequest({ method: "sendMessage", params: { threadId: "thread-123456789", content: "x".repeat(65_537) } }), /65,537 characters; Emma sends at most 65,536/);
   assert.throws(() => validateRequest({ method: "shell", params: {} }), /not allowed/);
   assert.throws(() => validateRequest({ method: "recordTurn", params: { threadId: "thread-123456789", prompt: "p", response: "r" } }), /not allowed/);
   assert.throws(() => validateRequest({ method: "submitToolResult", params: { threadId: "thread-123456789", results: "[]" } }), /not allowed/);
@@ -90,7 +91,8 @@ test("a keep carries bounded text, one image, and a public source at most", () =
   assert.throws(() => keepRequest({ kind: "wiki", text: "x" }), /Keep request is invalid/);
   assert.throws(() => keepRequest({ kind: "note", text: "x", sourceUrl: "file:///etc/passwd" }), /Keep source is invalid/);
   assert.throws(() => keepRequest({ kind: "note", text: "x".repeat(MAX_NOTE_BYTES + 1) }), /Keep text is invalid/);
-  assert.throws(() => keepRequest({ kind: "note", title: "x".repeat(MAX_TITLE_BYTES + 1), text: "x" }), /Keep title is invalid/);
+  assert.equal(keepRequest({ kind: "note", title: "x".repeat(MAX_TITLE_BYTES + 40), text: "x" }).title, "x".repeat(MAX_TITLE_BYTES));
+  assert.throws(() => keepRequest({ kind: "note", title: "x".repeat(MAX_NOTE_BYTES + 1), text: "x" }), /Keep title is invalid/);
   assert.throws(() => keepRequest({ kind: "screenshot", image: "data:text/html;base64,PHA+" }), /Keep image is invalid/);
   assert.throws(() => keepRequest({ kind: "screenshot", image: "data:image/png;base64,not base64" }), /Keep image is invalid/);
 });
@@ -122,6 +124,9 @@ test("a recorded turn is cut to fit the host's request line", () => {
   const telemetry = { threadId: "t", durationMilliseconds: "1", outputTokens: "0", inputTokens: "0", cacheInputTokens: "100", cacheReadTokens: "80", cacheWriteTokens: "12", costMicroUsd: "3456", model: "m" };
   const small = recordedTurn({ ...telemetry, prompt: "hi", thinking: "weighing it up", answer: "done" });
   assert.deepEqual(small, { ...telemetry, prompt: "hi", response: "<think>weighing it up</think>\ndone" });
+  const silent = recordedTurn({ ...telemetry, prompt: "hi", thinking: "weighing it up", answer: "", notice: "You stopped this run before anything was said." });
+  assert.equal(silent.response, "");
+  assert.equal(silent.notice, "You stopped this run before anything was said.");
   const huge = recordedTurn({ ...telemetry, prompt: "hi", thinking: "thought\n".repeat(50_000), answer: "answer\n".repeat(50_000) });
   assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= MAX_RECORDED_TURN_BYTES);
   assert.match(huge.response, /^<think>thought/);
@@ -429,11 +434,13 @@ test("pane layout restores only bounded persisted values", () => {
     inspectorWidth: 302,
     sidebarCollapsed: true,
   });
-  const fitted = validatePaneLayout({ sidebarWidth: 340, inspectorWidth: 360 }, 900);
+  const bounded = validatePaneLayout({ sidebarWidth: 340, inspectorWidth: 360 });
+  const fitted = fitPaneLayout(bounded, 900);
   assert.deepEqual([fitted.sidebarWidth, fitted.inspectorWidth], [270, 310]);
   assert.ok(900 - fitted.sidebarWidth - fitted.inspectorWidth >= 320);
-  const saved = { sidebarWidth: 340, inspectorWidth: 360 };
-  assert.deepEqual(validatePaneLayout(saved, 0), validatePaneLayout(saved));
+  assert.deepEqual([bounded.sidebarWidth, bounded.inspectorWidth], [340, 360]);
+  assert.deepEqual(fitPaneLayout(bounded), bounded);
+  assert.deepEqual(fitPaneLayout(bounded, 0), bounded);
 });
 
 test("a fetched page becomes plain captured text", () => {

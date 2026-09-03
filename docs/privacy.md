@@ -111,8 +111,11 @@ HTTP(S) links, while `publicUrl` rejects local hostnames and non-public literal
 addresses. The URL guard alone does not resolve DNS and is not a network sandbox
 for shell commands, browsers, MCP servers or user-configured endpoints.
 
-[clip.ts](../desktop/main/clip.ts) fetches with `redirect: "manual"` and at most 5
-hops, re-running the URL guard on **every hop**. `credentials: "omit"`,
+[clip.ts](../desktop/main/clip.ts) fetches over `net.request` with
+`redirect: "manual"` and at most 5 hops, re-running `publicUrl` on the first URL
+and again on **every hop** before the redirect is followed — a page that
+redirects to `127.0.0.1` is refused, not fetched. Clipped page images go through
+the same guard. `credentials: "omit"`,
 20-second timeout, content type must match
 `^\s*(text\/|application\/(xhtml|xml|json))`, body capped at
 `MAX_FETCHED_PAGE_BYTES`. Fetched page text and search results reach the model
@@ -158,9 +161,11 @@ bar and its system commands are excluded. Other image paths are unchanged:
 
 - **The `vision` tool** — the deliberate exception. It posts one image to the
   configured vision endpoint and hands back words. A `url` argument goes through
-  `publicUrl`; a `path` argument is a file in a connected folder, or any absolute
-  path on this Mac — including one a tool wrote outside a grant. Advertised to
-  the model as `look_at_image`.
+  `publicUrl`; a `path` argument is a file in a connected folder, or an
+  attachment the user picked in the native dialog. Absolute paths are folded
+  back against the granted root and refused when they land outside it, so the
+  tool reaches nothing the rest of the app would not. Advertised to the model
+  as `look_at_image`.
 - **The yellow pen's annotated capture** — compressed into `ScreenContextStore`
   and put on `request.params.screenContext`, but `runOnHarness` reads only
   `skillContext` and `attachedImages` off `turn.params`. The frame is dropped

@@ -16,5 +16,7 @@ test("localStorage is not trusted to hold section ids", () => {
   assert.deepEqual(layout.projectOrder, ["f1", "f2"]);
   assert.deepEqual(validatePaneLayout({ navOrder: "knowledge" }).navOrder, []);
   assert.deepEqual(validatePaneLayout(null).navOrder, []);
+  assert.equal(validatePaneLayout({ projectSort: "priority" }).projectSort, "priority");
+  assert.equal(validatePaneLayout({ projectSort: "nope" }).projectSort, "project");
   assert.ok(NAV_VIEWS.every((view) => validatePaneLayout({ navOrder: [...NAV_VIEWS] }).navOrder.includes(view)));
 });

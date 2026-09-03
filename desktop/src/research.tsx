@@ -4,7 +4,7 @@ import { ModePicker } from "./agents";
 import { PromptField, useTaskCommands } from "./schedule";
 import { Mark } from "./icons";
 import { plural } from "./plural";
-import { DEFAULT_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
+import { UNATTENDED_PERMISSION_MODE, type PermissionMode } from "../shared/permissions";
 import type { ResearchIteration, ResearchJob, Snapshot } from "./types";
 import { zoned } from "./dates";
 
@@ -50,7 +50,7 @@ export default function ResearchView({ snapshot, act, busy }: { snapshot: Snapsh
     <ResearchForm act={act} busy={busy} onSaved={setPicked} />
   </section>;
   return <section className="research-view">
-    <header className="research-head"><h2>Experiments</h2></header>
+    <header className="research-head"><span>Every experiment</span><h2>Autoresearch</h2></header>
     <div className="research-actions"><button type="button" disabled={busy} onClick={() => setPicked("new")}>+ New experiment</button></div>
     {!jobs.length && <div className="content-empty"><Mark /><h2>No experiments yet</h2><p>Create one here, or ask Emma to set one up on a folder you have already granted.</p></div>}
     <div className="job-list">{jobs.map((item) => <JobCard key={item.id} job={item} act={act} busy={busy} open={() => setPicked(item.id)} />)}</div>
@@ -88,7 +88,7 @@ function JobDetail({ job, act, busy, back }: { job: ResearchJob; act: Act; busy:
   const rows = [...job.iterations].reverse();
   const remove = async () => {
     if (!confirming) { setConfirming(true); return; }
-    await act("deleteResearchJob", { jobId: job.id });
+    if (await act("deleteResearchJob", { jobId: job.id }) === undefined) return;
     back();
   };
   return <section className="research-view">
@@ -126,7 +126,7 @@ function JobDetail({ job, act, busy, back }: { job: ResearchJob; act: Act; busy:
     <details className="research-edit">
       <summary>Edit experiment</summary>
       <ResearchForm job={job} act={act} busy={busy} onSaved={() => undefined} />
-      <div className="research-actions"><button type="button" className="research-danger" disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete experiment"}</button></div>
+      <div className="research-actions"><button type="button" className="research-danger" data-armed={confirming} disabled={busy} onClick={() => void remove()}>{confirming ? "Delete for good" : "Delete experiment"}</button></div>
     </details>
   </section>;
 }
@@ -191,7 +191,7 @@ function ResearchForm({ job, act, busy, onSaved }: { job?: ResearchJob; act: Act
   const [prompt, setPrompt] = useState(job?.prompt ?? "");
   const { skills, tools, atItems } = useTaskCommands();
   const [model, setModel] = useState(job?.proposerModel ?? "");
-  const [mode, setMode] = useState<PermissionMode>(job?.permissionMode ?? DEFAULT_PERMISSION_MODE);
+  const [mode, setMode] = useState<PermissionMode>(job?.permissionMode ?? UNATTENDED_PERMISSION_MODE);
   const [hours, setHours] = useState(job ? String(Number((job.maxSeconds / 3600).toFixed(2))) : "6");
   const [tokens, setTokens] = useState(job ? String(job.maxTokens) : "2000000");
   const [dollars, setDollars] = useState(job ? String(job.maxMicroDollars / 1_000_000) : "5");

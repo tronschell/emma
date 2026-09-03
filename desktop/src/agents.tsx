@@ -94,6 +94,9 @@ const subscribeAsks = (listener: () => void) => {
     permissionEventsWired = true;
     window.emma.onPermissionAsk((ask) => publishAsks([...askQueue, ask]));
     window.emma.onPermissionResolved(({ id }) => publishAsks(askQueue.filter((ask) => ask.id !== id)));
+    void window.emma.listAsks()
+      .then((asks) => publishAsks([...askQueue, ...asks.filter((ask) => !askQueue.some((held) => held.id === ask.id))]))
+      .catch(() => undefined);
   }
   askListeners.add(listener);
   return () => { askListeners.delete(listener); };

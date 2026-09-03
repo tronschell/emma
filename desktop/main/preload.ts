@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { ThreadStep } from "../shared/agents";
 import type { KeepRequest, VaultKind } from "../shared/vault";
 import type { GoalStatus } from "../shared/goal";
+import type { CouncilStart, CouncilState } from "../shared/council";
 import type { ShortcutRequest } from "../shared/settings";
 
 let nextListener = 1;
@@ -67,10 +68,10 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:update-ready", wrapped);
     return () => ipcRenderer.removeListener("emma:update-ready", wrapped);
   },
-  onDelta: (listener: (value: { threadId: string; delta: string; thinking?: boolean }) => void) => {
+  onDelta: (listener: (value: { threadId: string; delta: string; thinking?: boolean; recovery?: boolean }) => void) => {
     const wrapped = (_event: unknown, value: unknown) => {
-      const chunk = value as { threadId?: unknown; delta?: unknown; thinking?: unknown };
-      if (typeof chunk?.threadId === "string" && typeof chunk.delta === "string") listener({ threadId: chunk.threadId, delta: chunk.delta, thinking: chunk.thinking === true });
+      const chunk = value as { threadId?: unknown; delta?: unknown; thinking?: unknown; recovery?: unknown };
+      if (typeof chunk?.threadId === "string" && typeof chunk.delta === "string") listener({ threadId: chunk.threadId, delta: chunk.delta, thinking: chunk.thinking === true, recovery: chunk.recovery === true });
     };
     ipcRenderer.on("emma:delta", wrapped);
     return () => ipcRenderer.removeListener("emma:delta", wrapped);
@@ -259,21 +260,34 @@ contextBridge.exposeInMainWorld("emma", {
   },
   setProviders: (value: unknown) => ipcRenderer.invoke("emma:set-providers", value),
   testProvider: (value: unknown) => ipcRenderer.invoke("emma:test-provider", value),
+  setDefaultMode: (value: unknown) => ipcRenderer.invoke("emma:set-default-mode", value),
   setVerifier: (value: unknown) => ipcRenderer.invoke("emma:set-verifier", value),
   setToolSettings: (value: unknown) => ipcRenderer.invoke("emma:set-tool-settings", value),
   setZoom: (value: number) => ipcRenderer.invoke("emma:set-zoom", value),
   setTagger: (value: unknown) => ipcRenderer.invoke("emma:set-tagger", value),
   setHarnessExperiments: (value: unknown) => ipcRenderer.invoke("emma:set-harness-experiments", value),
+  setReview: (value: unknown) => ipcRenderer.invoke("emma:set-review", value),
   setImprovements: (value: unknown) => ipcRenderer.invoke("emma:set-improvements", value),
   forceArm: (value: { threadId: string; arm: "a" | "b" }) => ipcRenderer.invoke("emma:force-arm", value),
   listToolTargets: () => ipcRenderer.invoke("emma:list-tool-targets"),
   capabilityUsage: () => ipcRenderer.invoke("emma:capability-usage"),
+  nextSteps: (value: unknown) => ipcRenderer.invoke("emma:next-steps", value),
   onToolsChanged: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on("emma:tools-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:tools-changed", wrapped);
   },
-  setThreadContext: (value: { threadId: string; folderIds: string[]; mode: string; model: string; subagentModel?: string; subagentEffort?: string }) => ipcRenderer.invoke("emma:set-thread-context", value),
+  startCouncil: (value: CouncilStart) => ipcRenderer.invoke("emma:council-start", value) as Promise<CouncilState>,
+  stopCouncil: (threadId: string) => ipcRenderer.invoke("emma:council-stop", { threadId }),
+  adoptCouncil: (value: { threadId: string; seatId: string }) => ipcRenderer.invoke("emma:council-adopt", value) as Promise<CouncilState>,
+  closeCouncil: (threadId: string) => ipcRenderer.invoke("emma:council-close", { threadId }),
+  councilState: (threadId: string) => ipcRenderer.invoke("emma:council-state", { threadId }) as Promise<CouncilState | null>,
+  onCouncil: (listener: (state: CouncilState) => void) => {
+    const wrapped = (_event: unknown, value: unknown) => { if (value && typeof value === "object" && typeof (value as CouncilState).threadId === "string") listener(value as CouncilState); };
+    ipcRenderer.on("emma:council", wrapped);
+    return () => ipcRenderer.removeListener("emma:council", wrapped);
+  },
+  setThreadContext: (value: { threadId: string; folderIds: string[]; mode: string; model: string; subagentModel?: string; subagentEffort?: string; review?: boolean }) => ipcRenderer.invoke("emma:set-thread-context", value),
   runCommand: (value: { command: string; folderId?: string }) => ipcRenderer.invoke("emma:run-command", value),
   listBackground: () => ipcRenderer.invoke("emma:list-background"),
   readBackground: (id: string) => ipcRenderer.invoke("emma:read-background", id),
@@ -287,6 +301,12 @@ contextBridge.exposeInMainWorld("emma", {
   readCliRun: (id: string) => ipcRenderer.invoke("emma:read-cli-run", id),
   stopCliRun: (id: string) => ipcRenderer.invoke("emma:stop-cli-run", id),
   installedClis: () => ipcRenderer.invoke("emma:installed-clis"),
+  semanticGrepStatus: () => ipcRenderer.invoke("emma:semantic-grep-status"),
+  onSemanticGrep: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:semantic-grep", wrapped);
+    return () => ipcRenderer.removeListener("emma:semantic-grep", wrapped);
+  },
   signInCli: (value: { signIn: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:cli-sign-in", value),
   cliModels: (value: { cli: string; refresh?: boolean }) => ipcRenderer.invoke("emma:cli-models", value),
   setCliRunModel: (value: { id: string; model: string }) => ipcRenderer.invoke("emma:cli-run-model", value),
@@ -355,6 +375,7 @@ contextBridge.exposeInMainWorld("emma", {
   listAgents: () => ipcRenderer.invoke("emma:list-agents"),
   listSpans: () => ipcRenderer.invoke("emma:list-spans"),
   livePartial: () => ipcRenderer.invoke("emma:live-partial"),
+  listAsks: () => ipcRenderer.invoke("emma:list-asks"),
   threadTraces: (threadId: string) => ipcRenderer.invoke("emma:thread-traces", threadId),
   steerAgent: (value: { threadId: string; text: string }) => ipcRenderer.invoke("emma:steer-agent", value),
   stopAgent: (threadId?: string) => ipcRenderer.send("emma:stop-agent", threadId),

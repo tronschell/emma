@@ -422,7 +422,10 @@ async function forgetTrust(userData: string, keeping: StoredPlugin[]) {
   await writeJson(hookTrustFile(userData), { version: 1, trusted });
 }
 
-async function installedHooks(userData: string): Promise<InstalledPlugin[]> {
+/** Exported for the phone's audit list, which wants the installed plugins and their hooks and
+    nothing else: readCatalog also reads every marketplace listing off disk and base64s up to 4 MB
+    of card icons, none of which fits in a frame or is any use to a screen that cannot browse. */
+export async function installedHooks(userData: string): Promise<InstalledPlugin[]> {
   const installed = await readInstalled(userData);
   if (!installed.length) return [];
   const trusted = await readTrust(userData);
@@ -658,14 +661,23 @@ export async function uninstallPlugin(userData: string, id: unknown): Promise<Pl
   return readCatalog(userData);
 }
 
+/** The write on its own, for the phone, which already holds the plugin it just put in front of a
+    person and has no use for the catalogue readCatalog would read back — every marketplace listing
+    off disk and up to 4 MB of base64 card icons, none of which fits in a frame. Passing null
+    withdraws trust. */
+export async function setHookTrust(userData: string, id: unknown, hashes: string[] | null): Promise<void> {
+  if (typeof id !== "string" || id.length > 256) throw new Error("Plugin id is invalid");
+  const trusted = await readTrust(userData);
+  if (hashes) trusted[id] = hashes;
+  else delete trusted[id];
+  await writeJson(hookTrustFile(userData), { version: 1, trusted });
+}
+
 export async function trustPluginHooks(userData: string, id: unknown, trust: unknown): Promise<PluginCatalog> {
   if (typeof id !== "string" || id.length > 256) throw new Error("Plugin id is invalid");
   const plugin = (await installedHooks(userData)).find((entry) => entry.id === id);
   if (!plugin) throw new Error(`No plugin called "${id}" is installed.`);
-  const trusted = await readTrust(userData);
-  if (trust === true) trusted[id] = plugin.hooks.map((hook) => hook.hash);
-  else delete trusted[id];
-  await writeJson(hookTrustFile(userData), { version: 1, trusted });
+  await setHookTrust(userData, id, trust === true ? plugin.hooks.map((hook) => hook.hash) : null);
   return readCatalog(userData);
 }
 

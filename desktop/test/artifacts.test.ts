@@ -130,6 +130,10 @@ test("the sql bridge refuses everything that is not one statement against one ap
     await assert.rejects(queryArtifact(directory, app.id, "select 1", "drop"), /parameters are an array/);
     await assert.rejects(queryArtifact(directory, app.id, "select 1", [{}]), /Parameter 1 is not something SQLite stores/);
     await assert.rejects(queryArtifact(directory, app.id, "select 1", Array(MAX_ARTIFACT_SQL_PARAMS + 1).fill(1)), /at most 64 parameters/);
+    const escaped = path.join(directory, "escaped.sqlite");
+    await assert.rejects(queryArtifact(directory, app.id, `attach database '${escaped}' as other`, []), /not authorized/);
+    await assert.rejects(queryArtifact(directory, app.id, "detach database other", []), /not authorized/);
+    await assert.rejects(stat(escaped), /ENOENT/);
     // A select with no bound on it would otherwise build the whole table in memory.
     await assert.rejects(queryArtifact(directory, app.id, `with recursive r(x) as (select 1 union all select x + 1 from r where x < ${MAX_ARTIFACT_ROWS + 100}) select x from r`, []), /Add a LIMIT/);
 

@@ -27,6 +27,7 @@ var default_stream_ctx: u8 = 0;
 const GatewayConfig = struct {
     api_key: []const u8,
     chat_url: []const u8,
+    model: []const u8 = permission_auto_classifier.gateway_reviewer_model,
     cancel_flag: ?*std.atomic.Value(bool) = null,
     usage: ?*session_usage.Usage = null,
     usage_allocator: Allocator = std.heap.c_allocator,
@@ -42,9 +43,11 @@ fn reviewGateway(
     input: permission_auto_classifier.ProviderInput,
     request: permission_auto_classifier.ReviewRequest,
 ) anyerror!permission_auto_classifier.ParseOutcome {
+    const selected = permission_auto_classifier.route(input.endpoint, input.credential);
     return reviewGatewayConfig(.{
-        .api_key = input.credential,
-        .chat_url = input.endpoint,
+        .api_key = selected.api_key,
+        .chat_url = selected.chat_url,
+        .model = selected.model,
         .cancel_flag = input.cancel_flag,
         .usage = input.usage,
         .usage_allocator = input.usage_allocator,
@@ -57,13 +60,14 @@ fn reviewGatewayConfig(
     request: permission_auto_classifier.ReviewRequest,
 ) !permission_auto_classifier.ParseOutcome {
     var local = config;
-    return permission_auto_classifier.Reviewer.withTransport(
+    return permission_auto_classifier.Reviewer.withTransportModel(
         .{
             .context = @ptrCast(&local),
             .send_fn = sendGatewayReview,
         },
         local.cancel_flag,
         permission_auto_classifier.Reviewer.default_timeout_ms,
+        local.model,
     ).review(alloc, request);
 }
 

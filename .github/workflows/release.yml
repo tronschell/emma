@@ -2,73 +2,42 @@ name: release
 
 on:
   push:
-    branches: [dev, main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    if: github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: release-please v4.4.1 prepares a draft on dev
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
-        with:
-          target-branch: dev
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-  check:
-    if: github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/ci.yml
-
-  plan:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    outputs:
-      version: ${{ steps.release.outputs.version }}
-      tag: ${{ steps.release.outputs.tag }}
-      publish: ${{ steps.release.outputs.publish }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - name: validate the exact release candidate and draft
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node desktop/scripts/release.mjs plan >> "$GITHUB_OUTPUT"
-
-  package:
-    needs: [check, plan]
-    if: needs.plan.outputs.publish == 'true'
+  release:
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: write
     env:
       MACOSX_DEPLOYMENT_TARGET: '12.0'
-      TAG: ${{ needs.plan.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: skip when this version is already released
+        id: version
+        run: |
+          TAG="v$(node -p 'require("./package.json").version')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG is already released; bump the root package.json version on dev to publish again."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: require the Apple signing and notarization credentials
+        if: steps.version.outputs.skip != 'true'
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -83,28 +52,28 @@ jobs:
             fi
           done
 
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
       - uses: actions/setup-node@v5
+        if: steps.version.outputs.skip != 'true'
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
       - name: setup-zig v2.2.1
+        if: steps.version.outputs.skip != 'true'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.16.0
 
-      - run: npm ci
+      - if: steps.version.outputs.skip != 'true'
+        run: npm ci
         working-directory: desktop
 
-      - run: npm run package:mac
+      - if: steps.version.outputs.skip != 'true'
+        run: npm run package:mac
 
       - name: import the Developer ID Application certificate
+        if: steps.version.outputs.skip != 'true'
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -121,12 +90,14 @@ jobs:
           security find-identity -v -p codesigning "$RUNNER_TEMP/emma-signing.keychain-db" | grep 'Developer ID Application:'
 
       - name: sign and verify the app and all native helpers
+        if: steps.version.outputs.skip != 'true'
         working-directory: desktop
         run: |
           npx --no-install electron-osx-sign release/Emma-darwin-arm64/Emma.app
           codesign --verify --deep --strict --verbose=2 release/Emma-darwin-arm64/Emma.app
 
       - name: notarize, staple, and verify Gatekeeper acceptance
+        if: steps.version.outputs.skip != 'true'
         env:
           API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -144,27 +115,14 @@ jobs:
           xcrun stapler validate desktop/release/Emma-darwin-arm64/Emma.app
           spctl --assess --type execute --verbose=2 desktop/release/Emma-darwin-arm64/Emma.app
 
-      - name: archive the notarized app and calculate its checksum
+      - name: publish the release with generated notes
+        if: steps.version.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "Emma-$TAG-darwin-arm64.zip"
           shasum -a 256 "Emma-$TAG-darwin-arm64.zip" > "Emma-$TAG-darwin-arm64.zip.sha256"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Emma-${{ needs.plan.outputs.tag }}-darwin-arm64
-          path: |
-            Emma-*.zip
-            Emma-*.zip.sha256
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: publish only after both downloads are attached
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = true
-          gh release upload "$TAG" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --clobber
-          gh release edit "$TAG" --draft=false --title "$TAG" --latest
+          gh release create "$TAG" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes --latest
 
       - name: remove the temporary signing credentials
         if: always()

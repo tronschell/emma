@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PLAN_ROW, planLayout, planRows, type PlanStatus, type PlanStep } from "../shared/plan";
 import { flattenTaskListTasks, taskListProgress, taskListState, type FlatTaskListTask, type TaskList, type TaskListStatus } from "../shared/task-list";
-import { ExpandIcon } from "./icons";
+import { CaretIcon, ExpandIcon } from "./icons";
 import { Markdown } from "./markdown";
 import { PlanGraph, type PlanShape } from "./plan";
 import { plural } from "./plural";
@@ -161,4 +161,32 @@ function TaskEntry({ entry, at, active, onPick }: { entry: FlatTaskListTask; at:
     </h3>
     <p className="plan-entry-needs"><code>{task.id}</code>{parentId ? <>subtask of <code>{parentId}</code></> : <em>top-level task</em>}</p>
   </section>;
+}
+
+export function TaskListBar({ threadId, sample }: { threadId: string; sample?: TaskList[] }) {
+  const lists = useTaskLists(threadId, sample);
+  const [open, setOpen] = useState(false);
+  const list = lists.find((item) => taskListState(item) === "in_progress") ?? lists[0];
+  if (!list?.tasks.length) return null;
+  const tasks = list.tasks;
+  const done = tasks.filter((task) => task.status === "completed").length;
+  const said = `${list.title} — ${done} of ${tasks.length} ${plural(tasks.length, "task")} done`;
+  return <div className="task-bar">
+    <button type="button" className="task-bar-head" aria-expanded={open} title={said} aria-label={said} onClick={() => setOpen((was) => !was)}>
+      <span className="task-bar-label">Tasks</span>
+      <strong>{list.title}</strong>
+      <em>{done}/{tasks.length}</em>
+      <span className="task-bar-track">
+        {tasks.map((task) => <i key={task.id} data-status={visualState(task.status)} title={`${task.title} — ${task.status.replace("_", " ")}`}>
+          {task.subtasks.length > 0 && <span>{task.subtasks.map((subtask) => <b key={subtask.id} data-status={visualState(subtask.status)} />)}</span>}
+        </i>)}
+      </span>
+      <CaretIcon />
+    </button>
+    {open && <ol className="task-bar-list">
+      {flattenTaskListTasks(tasks).map(({ task, depth }) => <li key={task.id} data-status={visualState(task.status)} style={{ marginLeft: `calc(${depth} * var(--s-4))` }}>
+        <i aria-hidden="true" /><span>{task.title}</span><em>{task.status.replace("_", " ")}</em>
+      </li>)}
+    </ol>}
+  </div>;
 }

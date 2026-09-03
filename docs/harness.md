@@ -33,9 +33,11 @@ client, and ACP server are upstream's. The fork's divergences, in short:
 | Auth | All Vercel and ChatGPT OAuth removed; one env var, `EMMA_PROVIDER_API_KEY` |
 | Branding | `fx.sh` links, feedback, upgrade, and telemetry endpoints removed |
 | `terminal` args | Two real-world call shapes normalized; per-action required fields |
+| `terminal` failures | A non-zero exit reports `stdout` beside `stderr`; test runners print their failure report on stdout |
 | `subagent` | Advertised whenever the session supports children, not hidden behind `search_tools` |
 | Images | ACP `image` prompt blocks accepted into the turn's attachment catalogue |
 | Vision | Model catalogue reads OpenRouter's `architecture.input_modalities`; gate is vision alone, not vision + file input |
+| `semantic_search` | A `semantic_grep` session option hands the tool to an external `zg` command, adds a `regex` route, and promotes it to an always-advertised default search |
 
 [FORK.md](../harness/FORK.md) is the detailed record, including everything
 deleted and everything deliberately kept. Read it before touching a vendored
@@ -105,7 +107,9 @@ tree under `<userData>/memories`) and so does `web_search` (fx's is dead on the
 ACP path — `.web_search_runtime_ready = false`). `web_fetch` stays fx's, already
 wired with an artifact store and progress. `vision` stays fx's because the
 gateway looks it up **by name** and forces it when a model that cannot see is
-handed an image; its advertisement is `.never`. Emma's image tool is therefore
+handed an image; its advertisement is `.never`. It calls the route in
+`EMMA_VISION_*`, which is Emma's own Vision setting — the same model
+`look_at_image` asks. Emma's image tool is therefore
 `look_at_image`, mapped back to Emma's internal `vision` by
 `HARNESS_TOOL_NAMES` in [`main.ts`](../desktop/main/main.ts).
 
@@ -134,6 +138,94 @@ for.
 This is a prompt-cost mechanism, **not** a security boundary. A hidden tool is
 still registered and still runs under exactly its usual permission rules.
 
+### zvec-grep mode
+
+Settings → Harness → zvec-grep mode is an experiment. Off, `semantic_search`
+is the harness's lexical ranker, hidden behind `search_tools`. On, every turn
+sends `session/set_config_option {configId: "semantic_grep"}` whose value is
+one stdio MCP-server-shaped entry (`{name, command, args, env}`): the command
+is Emma's own binary run as Node (`ELECTRON_RUN_AS_NODE=1`) on the vendored
+`@zvec/zvec-grep` CLI, and `env` carries `ZVEC_GREP_EMBEDDING` plus
+`ZVEC_GREP_HOME` = `~/.zvec-grep`. That home is passed to every `zg` Emma runs
+because the harness child's `HOME` is Emma's own `<userData>/harness`, and
+without it the harness would query a second, empty index home. With that set
+the harness advertises `semantic_search` always, with a schema and description
+that name it the default search covering both of zvec-grep's routes, and adds
+one guidance line telling the model to start there and keep `grep_files` for
+per-line ERE, counts, and pagination. `query` runs
+`zg query --vector <q> --fts <q> --limit <limit> --mode auto --preview short [-g <path>/**]`
+(two ranked groups, Q1 vectors and Q2 BM25, kept apart because zvec-grep's
+fused hybrid list scored below vectors alone on paraphrase questions in the
+embedding bench; `limit` is optional, 7 by default, clamped to 1–25). `regex`
+runs `zg query --rg -n --max-count 20 -e <pattern> [-- <path>]`. An absolute
+`path` inside the workspace is rewritten workspace-relative first, because
+zvec-grep's globs and positionals are relative to the connected folder. Both
+run in the workspace under a 45 second deadline. Freshness comes from the
+daemon: `--mode auto` reaches it through the shared home, and its watcher
+refreshes changed files in the background; no `--refresh wait`, because in
+direct mode that blocks the query on a full catch-up index.
+
+A `zg` that exits non-zero reports only the first line of its stderr and
+points the model at `grep_files`, so zvec-grep's own "ask the user to build an
+index" hint never reaches the model. A timeout says so and points at
+`grep_files` too. Output past 256 KB is not an error: the tool returns a note
+to narrow the pattern or page with `grep_files`. On success, a
+`possibly_stale` status or a `background_refresh` coverage fraction below full
+appends one line saying how much of the tree the index covers and that no hits
+is not proof the code is absent. An empty value clears the option.
+
+Emma owns the index: the first turn in a connected folder runs
+`zg index <folder> --embedding <model> --embedding-concurrency 4` in the
+background (`--device metal` on Apple Silicon for the llama.cpp models), writes
+`<folder>/.zvec-grep/.gitignore` containing `*` so the index hides itself in
+worktrees, submodules, and folders that are not repositories at all, and shows
+a ledger under the toggle: one row per folder with its state, the model, local
+or hosted, and the files done with the time left, read off zg's `Indexing files: n/m`
+stderr lines; zg throttles those to one line every 15 s, so until the first one
+arrives the row shows zg's latest `Scanning files…` / `Preparing …` /
+`Downloading …` line, and no estimate is shown before 25 files or 10 s. A row
+whose `.zvec-grep/` has since been deleted is dropped and reindexed, and a
+failed folder is retried at most every 5 minutes. The thread bar shows the same
+for the thread's folders as a search-lines button beside the context bar
+toggle, with a 2px bar filling under it while indexing and a popup listing the
+folders. Changing the model clears that memory and rebuilds on the next turn.
+Toggling on starts the `zg` daemon so queries are fast; changing the model
+restarts it with the new environment, kills any index still running, and
+revokes the workspace grants when the new model is local.
+Before `zg server on` Emma writes 48 random hex to `~/.zvec-grep/daemon/token`
+(mode 0600, only when missing) and points the daemon at it with
+`ZVEC_GREP_SERVER_TOKEN_FILE`, because a daemon started without a token accepts
+every request on 127.0.0.1:7999; `zg` clients resolve that same path from
+`ZVEC_GREP_HOME`, so Emma's queries and a terminal on the same account keep
+working. The daemon and the index children get an allow-listed environment
+(`PATH`, `HOME`, `TMPDIR`, `ELECTRON_RUN_AS_NODE`, and `ZVEC_GREP_*`) so no
+provider key sits in a detached process. Toggling off or quitting stops it.
+
+The picker's "Hosted" group (`hosted/…` ids in `HOSTED_EMBEDDING_MODELS`)
+covers OpenRouter's embeddings endpoint plus direct OpenAI and Gemini. zvec-grep
+knows one remote backend, `qwen/text-embedding-v4`, which posts an
+OpenAI-shaped request to whatever `ZVEC_GREP_ENDPOINT` names and expects 1024 floats
+back, so Emma's main process runs a loopback proxy: an `http` server on
+127.0.0.1 at a port derived from the data directory (a stable port, because
+zvec-grep refuses to reuse an index whose endpoint changed), guarded by a
+per-launch bearer token. It rewrites `model` to the upstream id, keeps
+`dimensions: 1024` only for OpenAI text-embedding-3, otherwise truncates the
+returned vector to 1024 and L2-normalizes it, refuses vectors shorter than
+that, and signs the upstream call with the provider key from `process.env`
+(`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`, saved in
+Settings → Models). Indexing first grants zvec-grep's workspace authorization
+(`zg auth grant --capability embedding --scope workspace`) for that endpoint,
+so the harness's plain `zg query` needs no `--allow-remote`; the option env and
+the daemon carry `ZVEC_GREP_EMBEDDING`, `ZVEC_GREP_ENDPOINT`, and
+`ZVEC_GREP_API_KEY` for the proxy, and no `zg` argv repeats them, because argv
+is world-readable. If the proxy cannot bind its port the option stays empty and
+the folder fails with the bind error, so the harness never queries whatever
+else answers there. A hosted model whose key is missing leaves
+the option empty (the agent keeps keyword search) and marks the folder
+"Needs <KEY>"; Emma never substitutes another model. The vendored tree comes from `scripts/vendor-zvec-grep.mjs` into
+`desktop/vendor/zvec-grep`, pruned to the host platform's onnxruntime binaries,
+and ships as a `zvec-grep` resource beside `rg`.
+
 ## The ACP wire
 
 Newline-delimited JSON-RPC 2.0 over the child's stdio. Emma spawns `emma-cli
@@ -147,9 +239,24 @@ acp` once per workspace directory, at most `MAX_HARNESSES = 4` alive at once
   reads the user's `~/.fx`.
 - `AI_GATEWAY_API_KEY` and `EMMA_PROVIDER_API_KEY` are both set from Emma's
   `OPENROUTER_API_KEY`; both names, while the Vercel vocabulary is being removed.
+- `EMMA_VISION_MODEL`, `EMMA_VISION_CHAT_URL` and `EMMA_VISION_API_KEY` carry
+  Settings → Tools → Vision to the forced `vision` tool, which would otherwise
+  ask the session's own endpoint for a model that endpoint has never heard of.
+  Unset, the tool keeps its built-in default on the session route. The key
+  travels only with its own URL, so a session credential never reaches another
+  host. Saving tool settings recycles the idle processes that hold the old
+  values.
+- `EMMA_REVIEWER_MODEL`, `EMMA_REVIEWER_CHAT_URL` and `EMMA_REVIEWER_API_KEY` do
+  the same for the automatic permission reviewer behind `emma-cli --auto`, whose
+  built-in slug is an OpenRouter one; on another provider every reviewed call
+  would fail the review and be denied. The same pairing rule applies: the key
+  travels only with its own URL.
 
 A call is abandoned after `MAX_IDLE_MS` — 30 minutes — of **silence**, not wall
-clock; any inbound message refreshes every pending timer.
+clock; any inbound message refreshes every pending timer. Silence that long means
+the process is wedged, so the whole client is failed and closed rather than left
+holding a turn no reply will ever end: `harnessClient` then spawns a fresh one
+and `session/resume` brings the thread back, the same recovery suspend uses.
 
 Those timers count only the time Emma was awake, which is why suspend needs its
 own path. When the operating system suspends the process and takes the model's
@@ -177,7 +284,7 @@ fourteen:
 | `session/close` | Flushes usage, drops the active session |
 | `session/prompt` | Runs one turn |
 | `session/compact` | Folds history. Refused mid-turn |
-| `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments` |
+| `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments`, `semantic_grep` |
 | `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
 | `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
 | `session/steer` | Cuts into the running turn: the tool call or model stream in flight is aborted, and the same turn carries on with `content` as its next user message. Refused when no turn is running, over 16 KiB, or more than 8 deep |
@@ -288,12 +395,24 @@ cost an HTTP round trip, a bearer token, and a second protocol.
 ### MCP servers
 
 The user's configured servers are read fresh and passed on `session/new` and
-`session/resume` in `HarnessMcpServer` shape — stdio only, signalled by the
-*absence* of a `type`, since the harness rejects `"stdio"` as a transport value.
+`session/resume` in `HarnessMcpServer` shape. A stdio server is signalled by the
+*absence* of a `type`, since the harness rejects `"stdio"` as a transport value;
 `harnessMcpServers` in [`capabilities.ts`](../desktop/main/capabilities.ts)
-resolves each command against PATH, because the harness rejects a bare name
-(`CommandNotAbsolute`). A bad entry is dropped rather than failing the whole
-`session/new`.
+resolves its command against PATH, because the harness rejects a bare name
+(`CommandNotAbsolute`). A remote server carries `type` (`http` or `sse`), `url`
+and `headers` in place of command, args and env, and `headers` is always sent —
+an empty array when the entry has none — because the harness answers
+`MissingHeaders` for an absent key. The url and headers are checked harness-side by
+`streamable_http`; a refusal there is not a dropped entry — `parse()` propagates
+it and `session/new` fails for every thread. So `parseMcpServer` mirrors those
+rules and drops the entry first: https only (stricter than the harness's loopback
+allowance), no userinfo or fragment in the url, no control bytes in a header
+value, no two names differing only in case. A reserved header name (`Content-Type`
+and friends, which the transport writes itself) is dropped from the entry rather
+than taking the entry with it.
+
+`install_mcp` is still stdio-only: its harness-side spec requires a command, so a
+remote server arrives by importing a Claude or Cursor config, not mid-turn.
 
 The harness takes MCP servers only at session creation, so `forgetSession` /
 `forgetAllSessions` drop a thread's session and let the next turn build a new
@@ -331,6 +450,61 @@ the subagents inside it are told they ended rather than left spinning. **Copy
 fix prompt** builds a self-contained brief — the process states, the last forty
 wire messages, and where to start reading — for handing to another agent when
 the harness is what broke.
+
+## Prompt caching
+
+Every provider's prompt cache is a prefix cache, so the request is laid out so
+that the bytes that change sit last. Order, from
+[`prompt_context.zig`](../harness/src/core/agent/runtime/prompt_context.zig):
+the system prompt, tool guidance, skills, model overlay and static workspace
+context; the session-stable half of the runtime context (workspace, cwd, OS,
+shell, home, repo identity, permission mode, sandbox, authorized directories),
+which the context provider marks `prefix` so it is hoisted here; the durable
+history; the turn's user prompt; the turn's own tool calls and results; and only
+then the volatile tail (date, git branch and worktree state, tracked changes,
+background commands, child deliveries), which is marked `no_cache` and rebuilt
+every step. A step therefore shares everything but that small tail with the step
+before it, and the next turn shares everything but its new prompt with the last
+step of the previous one. Anything in the `prefix` half that does change (a
+permission-mode switch, a new directory grant, UTC midnight) costs one history
+re-read, the same as before the split, and never recurs per call.
+
+The history budget in [`session.zig`](../harness/src/core/session/session.zig)
+trims contiguously from the oldest turn and remembers the oldest turn it kept
+(`history_budget_floor`, a fingerprint held on the session). While the tail
+from that turn still fits, the kept set only grows, so the trim banner and the
+history bytes after the static prefix stay identical turn to turn. When the
+budget is exceeded the tail is cut back to three quarters of it, so a long
+session pays one prefix miss per several turns rather than one per turn.
+
+Two more things keep the prefix bytes still. The MCP catalog in
+[`model_catalog.zig`](../harness/src/core/mcp/model_catalog.zig) renders a
+server that is still discovering as ready and never renders tool counts, so
+the catalog does not change as servers come up. And a dynamic tool the model
+selected with `mcp_select_tool` stays advertised for the rest of the session
+(`sticky_dynamic_tools` on the session runtime), so the tool list stops
+changing from turn to turn. A subagent advertises the same tool list as its
+parent for the same reason, and shares the parent's cached prefix.
+
+For hosts that need explicit markers (Anthropic models through OpenRouter),
+[`gateway_json.findCacheMarks`](../harness/src/core/gateway/gateway_json.zig)
+places up to three: one on the last leading system message with a one-hour
+TTL, so the static prefix survives both a history miss and a pause between
+turns; one on the last durable-history message before the turn's prompt, which
+is the same bytes for every step of the turn; and one on the last cacheable
+message before the overlay, which moves forward each step. Nothing after a
+`no_cache` message is ever marked. For OpenAI-shaped hosts that cache automatically (OpenRouter,
+`api.openai.com`, any loopback gateway including Emma's ChatGPT relay) the
+request carries a
+`prompt_cache_key` derived from the session id, the same opaque hash as the
+`x-session-id` affinity header, so consecutive steps land on the same cache.
+
+The ChatGPT relay in [`chatgpt.ts`](../desktop/main/chatgpt.ts) keeps only the
+leading system messages in `instructions`; a system message after the
+conversation becomes a `developer` item at the end of `input`, and the
+`session_id` header is derived from the same key rather than drawn fresh per
+request. `cache_read_tokens` and `cache_write_tokens` in every turn's usage are
+the measure of whether this is working.
 
 ## Limits the code enforces
 
@@ -431,6 +605,7 @@ On Windows, use `harness/zig-out/bin/emma-cli.exe acp`.
 | `EMMA_PROVIDER_CHAT_URL` | Read by `chatUrl()` in [`gateway/emma_openai.zig`](../harness/src/gateway/emma_openai.zig). Unset falls back to `https://openrouter.ai/api/v1/chat/completions`. Also points at a local llama-server |
 | `EMMA_OPENROUTER_ZDR` | Any non-empty value adds OpenRouter's `data_collection: "deny"` and `zdr: true`. Opt-in, because most free endpoints offer neither |
 | `EMMA_UPGRADE_BASE_URL` | Loopback E2E override only; emma-cli ships inside the app and has nothing to self-update from |
+| `EMMA_STREAM_SILENCE_MS` | How long a provider call in [`gateway/emma_openai.zig`](../harness/src/gateway/emma_openai.zig) may deliver nothing at all before the attempt is abandoned with `error.Timeout`, which reaches the recovery policy as an interrupted response and is retried like any other. Default 180000; `0` waits forever |
 
 Larger suites: [`harness/tests/e2e/`](../harness/tests/e2e) (TypeScript, `bun
 test`, spawns the built binary with a fake key and never reaches a provider;

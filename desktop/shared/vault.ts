@@ -53,13 +53,28 @@ export function isKeepKind(value: unknown): value is KeepKind {
   return typeof value === "string" && (KEEP_KINDS as readonly string[]).includes(value);
 }
 
+const byteLength = (value: string) => new TextEncoder().encode(value).length;
+
 export function noteSlug(title: string): string {
-  const slug = title.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase().slice(0, 60).replace(/-+$/g, "");
+  const slug = title.normalize("NFKD").replace(/[^\p{L}\p{N}\p{M}]+/gu, "-").replace(/^-+|-+$/g, "").toLowerCase().slice(0, 60).replace(/-+$/g, "").normalize("NFC");
   return slug || "note";
 }
 
+export function clampBytes(value: string, limit: number): string {
+  let text = value;
+  while (byteLength(text) > limit) text = text.slice(0, Math.min(text.length - 1, Math.floor((text.length * limit) / byteLength(text))));
+  return text;
+}
+
+const TAG = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}/-]*$/u;
+
 export function validTag(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z0-9][a-z0-9/-]*$/.test(value) && new TextEncoder().encode(value).length <= MAX_TAG_BYTES;
+  return typeof value === "string" && TAG.test(value) && value === value.toLowerCase() && byteLength(value) <= MAX_TAG_BYTES;
+}
+
+export function tagName(value: string): string {
+  const name = clampBytes(value.normalize("NFKD").trim().toLowerCase().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}\p{M}-]+/gu, ""), MAX_TAG_BYTES);
+  return name.replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}\p{M}]+$/u, "").normalize("NFC");
 }
 
 export const MAX_FOLDER_NAME = 64;

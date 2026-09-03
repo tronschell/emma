@@ -126,6 +126,7 @@ export type Turn = {
   thread: string;
   at: number;
   arm: Arm | "";
+  model: string;
   failures: number;
   blocks: number;
   steps: number;
@@ -146,6 +147,7 @@ export function readTurn(trace: { timestamp: string; text: string }, thread: { i
     thread: thread.title,
     at: Number.isNaN(at) ? 0 : at,
     arm: header.arm === "a" || header.arm === "b" ? header.arm : "",
+    model: (header.model ?? "").split("/").pop() ?? "",
     failures: calls.filter((span) => !isVerifier(span) && span.status === "failed").length,
     blocks: calls.filter((span) => isVerifier(span) && span.status === "failed").length,
     steps: calls.filter((span) => !isVerifier(span)).length,
@@ -162,9 +164,12 @@ export type Friction = {
   tool: string;
   hits: number;
   turns: number;
+  unfixable: number;
   lastAt: number;
   evidence: { at: number; thread: string; threadId: string; text: string }[];
 };
+
+export const lessonShaped = (item: Friction): boolean => item.unfixable * 2 < item.hits;
 
 const MAX_EVIDENCE = 4;
 const MAX_EVIDENCE_CHARS = 220;
@@ -174,6 +179,24 @@ const clamp = (value: string) => {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > MAX_EVIDENCE_CHARS ? `${flat.slice(0, MAX_EVIDENCE_CHARS)}…` : flat;
 };
+
+const CATEGORIES = new Set(["read", "search", "edit", "execute", "delete", "move", "fetch", "other", "tool", ""]);
+
+export function toolOf(span: TraceSpan): string {
+  const output = span.output ?? "";
+  const named = /"tool_name"\s*:\s*"([^"]{1,40})"/.exec(output)?.[1]
+    ?? /Permission target resolution failed for ([a-z_]{2,40})/.exec(output)?.[1]
+    ?? /^([a-z_]{2,40}) (?:arguments|requires|failed|pattern|call)/.exec(output)?.[1];
+  if (named) return named;
+  if (!CATEGORIES.has(span.kind)) return span.kind;
+  if (/^[a-z][a-z0-9_]*$/.test(span.name)) return span.name;
+  if (/"action"\s*:\s*"exec"/.test(span.input ?? "")) return "terminal";
+  return span.kind || "tool";
+}
+
+export function unfixable(span: TraceSpan): boolean {
+  return /tool_permission_denied|"reason"\s*:\s*"user_denied"|non-zero status|^Cancelled:/.test(span.output ?? "");
+}
 
 export function reviewedTool(input: string | undefined): string {
   return /^Proposed action:[ \t]*(.+)$/m.exec(input ?? "")?.[1].trim().slice(0, 64) || "a call";
@@ -187,12 +210,13 @@ export function blockReason(output: string | undefined): string {
 export function frictionOf(turns: readonly Turn[]): Friction[] {
   const found = new Map<string, Friction>();
   const counted = new Map<string, Set<string>>();
-  const add = (kind: Friction["kind"], tool: string, turn: Turn, detail: string) => {
+  const add = (kind: Friction["kind"], tool: string, turn: Turn, detail: string, noLesson = false) => {
     const key = `${kind}:${tool}`;
-    const item = found.get(key) ?? { key, kind, tool, hits: 0, turns: 0, lastAt: 0, evidence: [] };
+    const item = found.get(key) ?? { key, kind, tool, hits: 0, turns: 0, unfixable: 0, lastAt: 0, evidence: [] };
     const seen = counted.get(key) ?? new Set<string>();
     counted.set(key, seen);
     item.hits += 1;
+    if (noLesson) item.unfixable += 1;
     if (!seen.has(turn.threadId + turn.at)) { seen.add(turn.threadId + turn.at); item.turns += 1; }
     item.lastAt = Math.max(item.lastAt, turn.at);
     if (detail && item.evidence.length < MAX_EVIDENCE) item.evidence.push({ at: turn.at, thread: turn.thread, threadId: turn.threadId, text: detail });
@@ -202,7 +226,7 @@ export function frictionOf(turns: readonly Turn[]): Friction[] {
     for (const span of turn.spans) {
       if (!isCall(span) || span.status !== "failed") continue;
       if (isVerifier(span)) add("verifier", reviewedTool(span.input), turn, blockReason(span.output));
-      else add("tool", span.kind || "tool", turn, clamp(span.output ?? ""));
+      else add("tool", toolOf(span), turn, clamp(span.output ?? ""), unfixable(span));
     }
   }
   return [...found.values()]

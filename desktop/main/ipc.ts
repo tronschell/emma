@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { BlockList, isIP } from "node:net";
 import { MAX_ATTACHED_CONTEXT_CHARS } from "../shared/folders";
-import { isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
+import { clampBytes, isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
 
 const MAX_HOST_REQUEST_BYTES = 128 * 1024;
 export const MAX_ANNOTATION_INPUT_CHARS = 16 * 1024 * 1024;
@@ -63,7 +63,7 @@ const fields: Record<Method, readonly string[]> = {
 };
 
 const optionalFields: Partial<Record<Method, readonly string[]>> = {
-  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages"],
+  sendMessage: ["screenContextId", "skillAttachmentId", "attachedContext", "attachedImages", "skillContext"],
   listOpenRouterModels: ["force"],
   selectOpenRouterModel: ["effort"],
   selectProviderModel: ["effort"],
@@ -97,10 +97,13 @@ export function validateRequest(value: unknown): Request {
     const text = params[key] as string;
     const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId") || (method === "saveScheduledJob" && key === "model");
     const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
+    if (key === "content" && text.length > maxLength) {
+      throw new Error(`This message is ${text.length.toLocaleString("en-US")} characters; Emma sends at most ${maxLength.toLocaleString("en-US")}. Trim it, or attach the text as a file.`);
+    }
     if (text.length > maxLength || (key !== "content" && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {
-    throw new Error("Request is too large");
+    throw new Error("Request is too large: send less attached context or a shorter message");
   }
   return { method, params: params as Record<string, string> };
 }
@@ -140,10 +143,10 @@ export function keepRequest(value: unknown): KeepRequest {
   if (sourceUrl && !externalUrl(sourceUrl)) throw new Error("Keep source is invalid");
   if (candidate.image !== undefined && !validImageDataUrl(candidate.image, MAX_ATTACHMENT_BYTES)) throw new Error("Keep image is invalid");
   const request: KeepRequest = { kind: candidate.kind };
-  const title = bounded(candidate.title, MAX_TITLE_BYTES, "Keep title is invalid");
+  const title = bounded(candidate.title, MAX_NOTE_BYTES, "Keep title is invalid");
   const text = bounded(candidate.text, MAX_NOTE_BYTES, "Keep text is invalid");
   const sourceApplication = bounded(candidate.sourceApplication, 256, "Keep source is invalid");
-  if (title) request.title = title;
+  if (title) request.title = clampBytes(title, MAX_TITLE_BYTES);
   if (text) request.text = text;
   if (sourceUrl) request.sourceUrl = sourceUrl;
   if (sourceApplication) request.sourceApplication = sourceApplication;

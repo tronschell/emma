@@ -97,6 +97,8 @@
    level takes the hollow marker, so one level of nesting reads as nested. */
 .message-body ul { list-style: disc; }
 .message-body ol { list-style: decimal; }
+.md-task { display: flex; align-items: baseline; gap: var(--s-2); list-style: none; margin-left: calc(var(--s-5) * -1); }
+.md-task > input { flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
 .message-body li > ul { list-style: circle; }
 
 /* Headings are demoted by two, so a model's ### and beyond land here. */

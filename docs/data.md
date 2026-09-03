@@ -232,7 +232,7 @@ Inside `Local Storage/`, not a file of Emma's own.
 | `emma.importsSeen.v1` | First-launch import dialog dismissed | `App.tsx` |
 | `emma.freeModelsOnly.v1` | The free-models filter | `App.tsx` |
 | `emma.overlayDraft.v1` | Unsent Quick Ask text | `App.tsx` |
-| `emma.overlayMode.v1` | Quick Ask permission mode | `context.ts` |
+| `emma.overlayMode.v2` | Quick Ask permission mode, migrated once out of `emma.overlayMode.v1` | `context.ts` |
 | `emma.contextPage.v1` | The pinned context page | `context-bar.tsx` |
 | `emma.improvements.v1` | System-prompt improvements | `improvements.ts` |
 | `emma.threadFolders.v1`, `emma.threadModes.v1`, `emma.threadDraft.v1`, `emma.threadTags.v1`, `emma.threadAttachments.v1`, `emma.threadBlocks.v1`, `emma.threadCleared.v1`, `emma.threadExperiments.v1`, `emma.threadContextUses.v2`, `emma.threadContextBreakdown.v1` | Per-thread renderer state | `context.ts` |

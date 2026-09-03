@@ -56,7 +56,7 @@ pub const ToolSpec = tool_specs.ToolSpec;
 const glob_files_description =
     "Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.";
 const grep_files_description =
-    "Search text files with a POSIX extended regular expression matched per line, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination; matches mode returns two lines of surrounding context by default, adjustable with context_lines, so a hit usually answers the question without a follow-up read. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites, including alternation such as `stopTurn|pairBlocks|landed`; this is the search tool, so never shell out to grep or rg for what pattern covers. When NOT to use: unknown-concept exploration, filename lookup, known-path reads; do not repeat the same or equivalent search after a caller search only finds a definition.";
+    "Search text files with a POSIX extended regular expression matched per line, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination; matches mode returns two lines of surrounding context by default, adjustable with context_lines, so a hit usually answers the question without a follow-up read. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites, including alternation such as `stopTurn|pairBlocks|landed`; never shell out to grep or rg for what pattern covers. When NOT to use: unknown-concept exploration, filename lookup, known-path reads; do not repeat the same or equivalent search after a caller search only finds a definition.";
 const list_files_description =
     "List directory entries from one directory level without reading file contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect a known folder, confirm names, or choose the next path before reading. When NOT to use: recursive discovery, content search, file counts, or shell ls.";
 const read_file_description =
@@ -219,7 +219,7 @@ const terminal_properties = [_]gateway_schema.Property{
     .{ .name = "rows", .json_type = .integer, .minimum = 1, .maximum = 4096 },
     .{ .name = "columns", .json_type = .integer, .minimum = 1, .maximum = 4096 },
     .{ .name = "signal", .json_type = .string, .shape = &.{ .enum_values = &.{ "hangup", "interrupt", "quit", "terminate", "kill" } } },
-    .{ .name = "close_policy", .json_type = .string, .shape = &.{ .enum_values = &.{ "graceful", "force" } }, .description = "Only for close and required for close. Close is final; read or inspect all needed output before closing." },
+    .{ .name = "close_policy", .json_type = .string, .shape = &.{ .enum_values = &.{ "graceful", "force" } }, .description = "Only for close and required for close. Close is final; read or inspect all needed output before closing. Closing ends every process the session started, so a server or watcher you still need stays open." },
 };
 
 const terminal_null_guidance = "Omit when the selected action does not use it.";
@@ -508,7 +508,7 @@ const subagent_command_schema = gateway_schema.ObjectSchema{
     .max_properties = 1,
 };
 const vision_description =
-    "Inspect authorized images attached by the user or local image paths supplied in the conversation, and return structured factual evidence. Pass exactly one source: image_ids for attached images, or paths for local images. When to use: read visible text, UI state, objects, layout, or other visual details needed for the task. When NOT to use: inspect paths the user did not supply, infer details not visible in an image, or repeat evidence already available in the conversation.";
+    "Inspect authorized images attached by the user or local image paths supplied in the conversation, and return structured factual evidence. Pass exactly one source: image_ids for attached images this model cannot see natively, or paths for local images. When to use: read visible text, UI state, objects, layout, or other visual details needed for the task. When NOT to use: inspect paths the user did not supply, describe attached images already visible in this conversation, infer details not visible in an image, or repeat evidence already available in the conversation.";
 const read_tool_result_description =
     "Read a prior large tool result by stable handle from the active session, using a bounded byte range or literal query. When to use: inspect more of a tool result after a preview said the full redacted result was stored. When NOT to use: read arbitrary files, search the workspace, recover secrets, or inspect results from another session.";
 
@@ -1627,7 +1627,7 @@ test "terminal tool schema derives one closed branch per terminal action" {
         schemaProperty(read_schema, "cursor_offset").?.nullable_description,
     );
     try std.testing.expectEqualStrings(
-        "Only for close and required for close. Close is final; read or inspect all needed output before closing.",
+        "Only for close and required for close. Close is final; read or inspect all needed output before closing. Closing ends every process the session started, so a server or watcher you still need stays open.",
         schemaProperty(close_schema, "close_policy").?.description,
     );
     try std.testing.expectEqualStrings(

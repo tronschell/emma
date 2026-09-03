@@ -34,8 +34,11 @@ Sources are defined in
 
 A skill directory counts only if it holds `SKILL.md`. Config parsing handles the
 JSON `mcpServers` / `mcp_servers` / `servers` / `mcp` shapes and the Codex-style
-`[mcp_servers.<name>]` TOML stdio subset (`command`, `args`, `env`). Only stdio
-is parsed and only stdio is passed on — there is no remote MCP transport.
+`[mcp_servers.<name>]` TOML stdio subset (`command`, `args`, `env`). A remote
+entry is parsed and passed on too: `url` plus its `type` (`http` or `sse`) and
+`headers`, over **https only** — an `http://` endpoint would put the entry's own
+auth header on the wire in the clear, so it is dropped even though the harness
+would take explicit loopback.
 
 An imported skill is an inactive reference until a thread attaches it; its
 `SKILL.md` is loaded only on attachment. An imported MCP server is registered
@@ -169,9 +172,10 @@ A map of ChatGPT-hosted connections, not of servers:
 ```
 
 An `id` names a connection inside a ChatGPT account served by ChatGPT's own
-remote MCP endpoint — no command, no URL, no credential, and Emma has no remote
-MCP transport. So Emma records each `{name, id, category}` and states it where
-the plugin is shown: *"Carries a ChatGPT-hosted connection Emma cannot run"*.
+remote MCP endpoint — no command, no URL, no credential, so there is nothing for
+Emma's remote transport to dial. So Emma records each `{name, id, category}` and
+states it where the plugin is shown: *"Carries a ChatGPT-hosted connection Emma
+cannot run"*.
 Nothing reaches `mcpFiles`, and a plugin whose only content is an `.app.json`
 still installs.
 

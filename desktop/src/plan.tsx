@@ -3,7 +3,7 @@ import { PLAN_ROW, planEdges, planLayout, planProgress, planRows, planState, rea
 import { plural } from "./plural";
 import { ExpandIcon } from "./icons";
 import { Markdown } from "./markdown";
-import type { LiveAgent } from "../shared/agents";
+import type { AgentRow } from "../shared/agents";
 
 const TASKS_PER_PAGE = 6;
 
@@ -38,10 +38,10 @@ export function usePlanShape(plan: Plan | undefined, row = PLAN_ROW): PlanShape 
   return { waves, spots, height, row, state: (step) => step.status !== "todo" ? step.status : ready.has(step.id) ? "ready" : "waiting" };
 }
 
-const workingOn = (agents: LiveAgent[], step: PlanStep) =>
+const workingOn = (agents: AgentRow[], step: PlanStep) =>
   agents.find((agent) => agent.title === step.title && (agent.status === "running" || agent.status === "waiting"));
 
-const ranBy = (agents: LiveAgent[], step: PlanStep) =>
+const ranBy = (agents: AgentRow[], step: PlanStep) =>
   workingOn(agents, step) ?? agents.find((agent) => agent.title === step.title);
 
 export function PlanGraph({ steps, shape, at, describe, onPick }: {
@@ -93,7 +93,7 @@ function PlanKey({ plan, shape }: { plan: Plan; shape: PlanShape }) {
   </div>;
 }
 
-export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: string; agents: LiveAgent[]; sample?: Plan[]; onOpen?: (threadId: string) => void }) {
+export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: string; agents: AgentRow[]; sample?: Plan[]; onOpen?: (threadId: string) => void }) {
   const plans = usePlans(threadId, sample);
   const [pick, setPick] = useState("");
   const [pinned, setPinned] = useState("");
@@ -165,7 +165,7 @@ export function PlanRail({ threadId, agents, sample, onOpen }: { threadId: strin
   </section>;
 }
 
-function PlanFile({ plan, agents, at, close }: { plan: Plan; agents: LiveAgent[]; at?: string; close: () => void }) {
+function PlanFile({ plan, agents, at, close }: { plan: Plan; agents: AgentRow[]; at?: string; close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const doc = useRef<HTMLDivElement>(null);
   const [pick, setPick] = useState(at ?? "");
@@ -213,7 +213,7 @@ function PlanFile({ plan, agents, at, close }: { plan: Plan; agents: LiveAgent[]
   </dialog>;
 }
 
-function PlanEntry({ step, at, state, agent, active, lit }: { step: PlanStep; at: number; state: NodeState; agent?: LiveAgent; active: boolean; lit: boolean }) {
+function PlanEntry({ step, at, state, agent, active, lit }: { step: PlanStep; at: number; state: NodeState; agent?: AgentRow; active: boolean; lit: boolean }) {
   return <section data-step={step.id} className={`plan-entry ${lit ? "lit" : ""} ${active ? "active" : ""}`}>
     <h3 className="plan-entry-title">
       <b>{at}</b>
@@ -236,7 +236,7 @@ function PlanEntry({ step, at, state, agent, active, lit }: { step: PlanStep; at
   </section>;
 }
 
-function PlanTasks({ step, at, agent }: { step: PlanStep; at: number; agent?: LiveAgent }) {
+function PlanTasks({ step, at, agent }: { step: PlanStep; at: number; agent?: AgentRow }) {
   const [page, setPage] = useState(0);
   const pages = Math.max(1, Math.ceil(step.tasks.length / TASKS_PER_PAGE));
   const on = Math.min(page, pages - 1);

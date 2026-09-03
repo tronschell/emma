@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { MACHINE_HISTORY, MACHINE_TICK_MS, type MachineSample } from "../shared/machine";
-import type { WidgetOrientation } from "../shared/context-bar";
+import { widgetDefinition, type WidgetOrientation } from "../shared/context-bar";
 
 let history: MachineSample[] = [];
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -95,7 +95,7 @@ export function MachineStats({ orientation }: { orientation: WidgetOrientation }
   const samples = useMachine();
   const latest = samples[samples.length - 1];
   return <section className="context-stats machine-stats" data-orientation={orientation}>
-    <span className="machine-title">Machine · now</span>
+    <span className="machine-title">{widgetDefinition("machine").label}</span>
     {latest ? <div className="agent-metrics">
       {SERIES.map((series) => <span key={series.id} title={series.title(latest)}>
         <b style={{ color: series.hue }}>{series.value(latest)}</b> {series.label.toLowerCase()}
@@ -109,8 +109,8 @@ export function MachineGraph({ orientation }: { orientation: WidgetOrientation }
   const samples = useMachine();
   const latest = samples[samples.length - 1];
   return <section className="machine-graph" data-orientation={orientation}>
-    <span>Machine · last {Math.max(1, samples.length)}s</span>
-    {latest ? <ul>
+    <span>{widgetDefinition("machinegraph").label}{samples.length > 1 ? ` · last ${samples.length}s` : ""}</span>
+    {latest && samples.length > 1 ? <ul>
       {SERIES.map((series) => {
         const peak = peakOf(series, samples);
         const line = points(series, samples, peak);
@@ -122,7 +122,7 @@ export function MachineGraph({ orientation }: { orientation: WidgetOrientation }
           </svg>
         </li>;
       })}
-    </ul> : <p className="machine-empty">{HOLD}</p>}
+    </ul> : <p className="machine-empty">{latest ? "Collecting…" : HOLD}</p>}
   </section>;
 }
 
@@ -132,7 +132,7 @@ export function MachineMeters({ orientation }: { orientation: WidgetOrientation 
   const samples = useMachine();
   const latest = samples[samples.length - 1];
   return <section className="machine-meters" data-orientation={orientation}>
-    <span>Machine</span>
+    <span>{widgetDefinition("machinemeters").label}</span>
     {latest ? <ul>
       {SERIES.map((series) => {
         const moved = latest.rxBytes + latest.txBytes;

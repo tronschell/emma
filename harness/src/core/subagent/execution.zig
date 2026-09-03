@@ -9222,6 +9222,96 @@ test "session-backed owner executes through deterministic gateway and normal age
     try std.testing.expect(saw_pending and saw_running and saw_completed);
 }
 
+const HttpFailureExecution = struct {
+    fn services(self: *HttpFailureExecution) Services {
+        return .{
+            .context = self,
+            .capture_fn = ProcessBoundaryExecution.capture,
+            .run_fn = run,
+        };
+    }
+
+    fn run(
+        _: ?*anyopaque,
+        turn: *TurnContext,
+        _: domain.QueuedMessage,
+        _: domain.AdmissionSnapshot,
+        _: *std.atomic.Value(bool),
+    ) ServiceError!RunOutcome {
+        try turn.setFailureDiagnostic(
+            "provider_http_error",
+            "API request failed · HTTP 400 · invalid_request_error: REQUESTTOOLARGE",
+        );
+        return error.ProviderFailed;
+    }
+};
+
+test "one off failed by a provider http error stays inspectable with its failure reason" {
+    const alloc = std.testing.allocator;
+    var env = try TestEnvironment.init(alloc);
+    defer env.deinit(alloc);
+    try env.createSession(alloc, "parent");
+    try env.createSession(alloc, "http-failed-child");
+    try env.installControl(
+        alloc,
+        "http-failed-child",
+        .one_off,
+        "anthropic/claude-opus-4.6",
+        types.ReasoningEffort.literal("high"),
+        &.{"http-work"},
+    );
+    _ = try relationship_index.ensureChild(
+        alloc,
+        &env.store,
+        "parent",
+        "http-failed-child",
+        .{},
+    );
+    var failing_execution: HttpFailureExecution = .{};
+    var manager = manager_mod.Manager{ .sessions = &env.store };
+    var owner = Owner{
+        .alloc = alloc,
+        .sessions = &env.store,
+        .manager = &manager,
+        .services = failing_execution.services(),
+        .retirement_root_id = "parent",
+    };
+    defer owner.deinit();
+    try std.testing.expectEqual(
+        StartResult.started,
+        try owner.start("http-failed-child", false),
+    );
+    try std.testing.expectEqual(
+        ChildResult.failed,
+        try owner.join("http-failed-child"),
+    );
+    var indexed = try env.store.listResumablePage(alloc, null, null);
+    indexed.deinit(alloc);
+
+    try std.testing.expect(!owner.tryRetireOneOff("http-failed-child"));
+
+    var inspect = try domain.validateCommand(alloc, .{ .inspect = .{
+        .id = "http-failed-child",
+        .sections = &.{ .status, .messages },
+        .limit = 10,
+    } });
+    defer inspect.deinit(alloc);
+    var inspected = try manager.execute(alloc, inspect, .{
+        .actor_id = "parent",
+        .timestamp_ms = 5,
+    });
+    defer inspected.deinit(alloc);
+    try std.testing.expectEqual(domain.State.failed, inspected.inspection.status.?);
+    try std.testing.expectEqualStrings(
+        "http-work",
+        inspected.inspection.failure_work_id.?,
+    );
+    try std.testing.expectEqualStrings(
+        "provider_http_error: API request failed · HTTP 400 · invalid_request_error: REQUESTTOOLARGE",
+        inspected.inspection.failure_reason.?,
+    );
+}
+
 test "completed one off reconciles one stable final result message" {
     const alloc = std.testing.allocator;
     var env = try TestEnvironment.init(alloc);

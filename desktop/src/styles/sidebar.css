@@ -208,6 +208,8 @@
 /* Thread state, in the same column the group caret uses, so a thread title still
    lands exactly under its group's name. One 12px box for every state, so the
    column never shifts as a thread moves between them. */
+/* Where a thread came from, beside the title: a phone started it. A mark only. */
+.thread-from { width: 10px; height: 10px; margin-right: var(--s-1); vertical-align: -1px; fill: none; stroke: var(--text-3); stroke-width: 1.4; stroke-linecap: round; }
 .thread-status { display: grid; place-items: center; width: 12px; height: 12px; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1; }
 .thread-status::before { content: "\B7"; }
 /* Thinking: a plain rotating arc. Border, not a glyph, so it turns on the
@@ -226,7 +228,7 @@
 .thread-status.done { color: var(--lime); }
 .thread-status.done::before { content: "\2713"; }
 .thread-status.waiting { color: var(--orange); }
-.thread-status.waiting::before { content: "\25CF"; animation: thread-breathe 1.4s ease-in-out infinite; }
+.thread-status.waiting::before { width: 6px; height: 6px; content: ""; background: currentColor; border-radius: var(--r-full); animation: thread-breathe 1.4s ease-in-out infinite; }
 .thread-status.failed { color: var(--danger); }
 .thread-status.failed::before { content: "!"; font-weight: 700; }
 
@@ -236,8 +238,11 @@
 .thread-selection button:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 /* The row's one control, in the count's own cell and on the count's own tab stop. */
 .project-new { grid-column: -2; justify-self: end; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t), opacity var(--t); }
-.sidebar-label .project-new { margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0; }
-.sidebar-label:not(:hover):not(:focus-within) .project-new { opacity: 0; }
+.sidebar-label-actions { display: flex; margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0; }
+.sidebar-label:not(:hover):not(:focus-within) .project-new:not(.on):not([aria-expanded="true"]) { opacity: 0; }
+.project-new.on { color: var(--text-2); }
+.thread-menu button[aria-checked="true"] { color: var(--text); }
+.thread-menu button[aria-checked="true"]::before { content: "• "; }
 .project-new:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 .project-row { position: relative; }
 .project-row .thread-actions { position: absolute; top: 50%; right: var(--s-3); translate: 0 -50%; display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; color: var(--text-3); background: transparent; opacity: 0; pointer-events: none; transition: opacity var(--t), color var(--t), background var(--t); }
@@ -291,11 +296,26 @@
 /* Reachable, not actionable: lime says "up", the accent would say "do something". */
 .nav-foot i { background: var(--lime); }
 .nav-status { padding: 0; background: transparent; text-align: left; transition: color var(--t); }
+.nav-status > i { flex: 0 0 auto; }
+.nav-status > span { display: block; min-width: 0; }
 .nav-status:hover { color: var(--text); }
 .nav-status[data-health="ready"] i { background: var(--text-3); }
 .nav-status[data-health="stalled"] i { background: var(--accent); }
 .nav-status[data-health="offline"] i { background: var(--danger); }
 .nav-status[data-health="offline"] { color: var(--danger); }
+/* The phone: the same glyph grid as its neighbours, with two radio arcs off its
+   edge that only exist while a phone is reachable — lime like the status line's
+   "up", teal and blinking outward while a message from it lands. Nothing paired
+   is drawn faint rather than hidden, so the control is where it will be. */
+.nav-phone[data-state="none"] { opacity: .45; }
+.nav-phone[data-state="on"], .nav-phone[data-state="busy"] { color: var(--text); }
+.nav-phone .arc { opacity: 0; transition: opacity var(--t); }
+.nav-phone[data-state="on"] .arc { opacity: 1; stroke: var(--lime); }
+.nav-phone[data-state="away"] .arc { opacity: 1; stroke: var(--text-3); stroke-dasharray: 1 1.5; }
+.nav-phone[data-state="busy"] .arc { opacity: 1; stroke: var(--teal); animation: phone-blink 1.2s steps(1) infinite; }
+.nav-phone[data-state="busy"] .arc-far { animation-delay: .4s; }
+@keyframes phone-blink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .nav-phone .arc { animation: none; } }
 
 /* Tier 4 — scheduled runs, pinned between the project scroller and the foot. The
    section header is a band header that folds; the job groups inside reuse the

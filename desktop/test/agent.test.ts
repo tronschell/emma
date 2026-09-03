@@ -5,9 +5,9 @@ import { promisify } from "node:util";
 import { agentName, AGENT_NAMES, collapseChanges, diffHunks, diffLines, diffStat, sentByThread, spawnedThread, type FileChange } from "../shared/agents";
 import { asPermissionMode, toolGate } from "../shared/permissions";
 import { browserArgv, describeToolCall, parseToolArgs, shellQuoted, toolDefinitions, MAX_TOOL_OUTPUT_BYTES } from "../main/tools";
-import { AgentRuntime, bounded, type LoopDeps } from "../main/agent-loop";
+import { AgentRuntime, bounded, lastAssistantMessage, type LoopDeps } from "../main/agent-loop";
 import type { VerifierReview } from "../main/verifier";
-import { decodeSpans } from "../shared/trace";
+import { compactionNotice, decodeSpans } from "../shared/trace";
 
 const everything = { folders: true, computer: true };
 const noReview: VerifierReview = { model: "", prompt: "", reply: "", attempts: 0, error: "no verifier" };
@@ -244,12 +244,41 @@ test("an adopted run times the model from the tokens coming back", () => {
   assert.equal(stored.find((span) => span.kind === "agent")?.status, "ok");
 });
 
+test("a stopped turn's trace says the run was cancelled, not that it went fine", () => {
+  const recorded: string[] = [];
+  const agents = runtime({ request: async (method, params) => { if (method === "recordTrace") recorded.push(params.trace); return {}; } });
+  agents.adopt({ threadId: "t1", content: "sleep 40", mode: "full", title: "Sleep" });
+  agents.stop("t1");
+  agents.finish("t1");
+  assert.equal(decodeSpans(recorded.at(-1) ?? "").find((span) => span.kind === "agent")?.status, "cancelled");
+
+  agents.adopt({ threadId: "t2", content: "ping", mode: "full", title: "Ping" });
+  agents.finish("t2");
+  assert.equal(decodeSpans(recorded.at(-1) ?? "").find((span) => span.kind === "agent")?.status, "ok");
+});
+
+test("a finished turn's last model span says how the turn ended, not that it is still running", () => {
+  const recorded: string[] = [];
+  const agents = runtime({ request: async (method, params) => { if (method === "recordTrace") recorded.push(params.trace); return {}; } });
+  agents.adopt({ threadId: "t1", content: "build it", mode: "full", title: "Build it" });
+  agents.noteDelta("t1", "here is the answer");
+  agents.finish("t1");
+  const answered = decodeSpans(recorded.at(-1) ?? "").filter((span) => span.kind === "model");
+  assert.equal(answered.length, 1, "the streamed answer left no model span behind");
+  assert.ok(answered.every((span) => span.status === "ok" && span.endedAt !== undefined), "the answering model call still reads as running on a finished turn");
+
+  agents.adopt({ threadId: "t2", content: "build it", mode: "full", title: "Build it" });
+  agents.noteDelta("t2", "half an answer");
+  agents.finish("t2", "boom");
+  assert.equal(decodeSpans(recorded.at(-1) ?? "").find((span) => span.kind === "model")?.status, "failed");
+});
+
 test("a steer is kept in the turn's trace at the point the answer had reached", () => {
   const recorded: string[] = [];
   const agents = runtime({ request: async (method, params) => { if (method === "recordTrace") recorded.push(params.trace); return {}; } });
   agents.adopt({ threadId: "t1", content: "build it", mode: "full", title: "Build it" });
   agents.noteDelta("t1", "Reading the styles.");
-  agents.noteSteer("t1", "stop, use the other palette");
+  agents.noteNotice("t1", "steer", "stop, use the other palette");
   const live = agents.spans().t1.find((span) => span.kind === "steer");
   assert.equal(live?.input, "stop, use the other palette");
   assert.equal(live?.said, "Reading the styles.".length);
@@ -259,11 +288,32 @@ test("a steer is kept in the turn's trace at the point the answer had reached", 
   assert.equal(stored?.parentId, "agent:t1");
 });
 
+test("a compaction is kept in the turn's trace, so a reopened thread still says the history was summarized", () => {
+  const recorded: string[] = [];
+  const agents = runtime({ request: async (method, params) => { if (method === "recordTrace") recorded.push(params.trace); return {}; } });
+  agents.adopt({ threadId: "t1", content: "build it", mode: "full", title: "Build it" });
+  agents.noteNotice("t1", "compact", compactionNotice(3, true));
+  agents.finish("t1");
+  const stored = decodeSpans(recorded.at(-1) ?? "").find((span) => span.id.startsWith("compact:"));
+  assert.equal(stored?.input, "Context compacted — 3 turns became a summary");
+  assert.equal(stored?.parentId, "agent:t1");
+  assert.ok(stored?.endedAt !== undefined, "the compaction span was left running");
+});
+
 test("a truncated tool result still fits the host's byte ceiling", () => {
   const output = bounded("é".repeat(MAX_TOOL_OUTPUT_BYTES));
   assert.ok(Buffer.byteLength(output) <= MAX_TOOL_OUTPUT_BYTES);
   assert.ok(output.endsWith("[truncated]"));
   assert.equal(bounded("short"), "short");
+});
+
+test("a stopped turn reports the notice it recorded, not the answer of the turn before it", () => {
+  const said = (role: string, content: string) => ({ role, content, timestamp: "2026-09-02T10:00:00.000Z" });
+  const stopped = { messages: [said("user", "build it"), said("assistant", "The build is green."), said("user", "and now?"), said("system", "You stopped this run.")] };
+  assert.equal(lastAssistantMessage(stopped), "You stopped this run.");
+  assert.equal(lastAssistantMessage({ messages: [said("user", "build it"), said("assistant", "The build is green."), said("system", "You stopped this run.")] }), "The build is green.");
+  assert.equal(lastAssistantMessage({ messages: [said("user", "build it"), said("assistant", "The build is green.")] }), "The build is green.");
+  assert.equal(lastAssistantMessage({ messages: [said("user", "build it")] }), undefined);
 });
 
 test("the harness reaches the thread and agent tools without a loop of its own", async () => {
@@ -330,4 +380,14 @@ test("a subagent is named off its id, the same way every time, and never twice a
   const live = new Set<string>();
   for (let i = 0; i < 8; i += 1) live.add(agentName(`child-${i}`, live));
   assert.equal(live.size, 8);
+});
+
+test("a live agent takes the thread's name once the namer answers", () => {
+  const agents = runtime();
+  agents.adopt({ threadId: "t1", content: "why is the build red", mode: "full", title: "This thread" });
+  agents.noteTitle("t1", "Red build on dev");
+  assert.equal(agents.list()[0].title, "Red build on dev");
+  agents.noteTitle("t1", "  ");
+  agents.noteTitle("nobody", "Ignored");
+  assert.equal(agents.list()[0].title, "Red build on dev");
 });

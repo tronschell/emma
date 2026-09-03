@@ -24,11 +24,21 @@ test("the vault picker opens where a person keeps documents", () => {
 
 test("readiness is answered by writing, so a vault Emma cannot write reads as denied", { skip: process.getuid?.() === 0 && "root writes anywhere" }, () => {
   const root = path.join(workspace(), "Second Brain");
-  mkdirSync(root, { mode: 0o500 });
+  const notes = path.join(root, DEFAULT_VAULT_FOLDER);
+  mkdirSync(notes, { recursive: true });
+  chmodSync(notes, 0o500);
   const vault: VaultChoice = { root, folder: DEFAULT_VAULT_FOLDER, kind: "folder", name: "Second Brain" };
   assert.equal(vaultReady(vault), false);
-  chmodSync(root, 0o700);
+  chmodSync(notes, 0o700);
   assert.equal(vaultReady(vault), true);
-  assert.deepEqual(readdirSync(path.join(root, DEFAULT_VAULT_FOLDER)), [], "the probe leaves nothing behind");
+  assert.deepEqual(readdirSync(notes), [], "the probe leaves nothing behind");
   assert.equal(vaultReady(null), true, "nothing is denied before a vault is chosen");
+});
+
+test("readiness never conjures a knowledge folder the user has deleted", () => {
+  const root = path.join(workspace(), "Second Brain");
+  mkdirSync(root, { recursive: true });
+  const vault: VaultChoice = { root, folder: DEFAULT_VAULT_FOLDER, kind: "folder", name: "Second Brain" };
+  assert.equal(vaultReady(vault), false);
+  assert.deepEqual(readdirSync(root), []);
 });

@@ -95,6 +95,7 @@ pub const LiveMirror = struct {
     push_text: *const fn (*anyopaque, agent_runtime.TextEmission) anyerror!void,
     push_tool_lifecycle: *const fn (*anyopaque, types.ToolLifecycleEvent) anyerror!void,
     push_usage: *const fn (*anyopaque, types.Usage) void,
+    push_route_recovery_status: *const fn (*anyopaque, types.RouteRecoveryStatus) anyerror!void,
 };
 
 pub const Config = struct {
@@ -388,16 +389,12 @@ fn acknowledgeParentTurnContext(
     acknowledgements: []const agent_runtime.ParentTurnDeliveryAck,
 ) void {
     const context: *Context = @ptrCast(@alignCast(raw));
-    const retirement_ready = parent_delivery_projector
-        .acknowledgeWithRetirementSignal(
+    parent_delivery_projector.acknowledge(
         arena,
         context.config.host.sessions,
         context.config.host.manager.options.child_store,
         acknowledgements,
     );
-    if (retirement_ready) {
-        context.config.host.requestRetirementSweep(io_mod.milliTimestamp());
-    }
 }
 
 fn appendRuntimeContext(raw: *anyopaque, arena: Allocator, messages: *std.ArrayList(types.ChatMessage)) !void {
@@ -720,7 +717,49 @@ fn pushLiveRouteRecoveryStatus(
     status: types.RouteRecoveryStatus,
 ) !void {
     const context: *Context = @ptrCast(@alignCast(raw));
+    if (context.config.live_mirror) |mirror| mirror.push_route_recovery_status(mirror.ctx, status) catch {};
     context.turn.appendLiveEvent(.{ .route_recovery_status = status });
+}
+
+test "a child's route recovery status reaches the live mirror" {
+    const Recorder = struct {
+        seen: ?types.RouteRecoveryStatus = null,
+
+        fn push(raw: *anyopaque, status: types.RouteRecoveryStatus) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.seen = status;
+        }
+    };
+    var recorder = Recorder{};
+    var turn = execution.TurnContext{
+        .alloc = std.testing.allocator,
+        .runtime = .{ .max_history_turns = 8 },
+        .loaded = undefined,
+    };
+    var context: Context = undefined;
+    context.turn = &turn;
+    context.config = undefined;
+    context.config.live_mirror = .{
+        .ctx = @ptrCast(&recorder),
+        .push_text = undefined,
+        .push_tool_lifecycle = undefined,
+        .push_usage = undefined,
+        .push_route_recovery_status = Recorder.push,
+    };
+
+    try pushLiveRouteRecoveryStatus(@ptrCast(&context), .{
+        .kind = .terminal_provider_error,
+        .required_action = .change_request,
+    });
+
+    try std.testing.expectEqual(
+        types.RouteRecoveryStatus.Kind.terminal_provider_error,
+        recorder.seen.?.kind,
+    );
+    try std.testing.expectEqual(
+        types.ModelRecoveryRequiredAction.change_request,
+        recorder.seen.?.required_action,
+    );
 }
 
 fn captureHttpError(

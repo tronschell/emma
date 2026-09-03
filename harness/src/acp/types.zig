@@ -22,7 +22,7 @@ pub fn writeModelRecoveryInfoUpdate(
     try writeJsonStr(
         if (recovery.isRecovered())
             "recovered"
-        else if (recovery.kind == .terminal_provider_error)
+        else if (recovery.kind == .terminal_provider_error or recovery.kind == .content_filter)
             "paused"
         else
             "active",
@@ -230,12 +230,22 @@ pub fn writeChildTaggedUpdate(
     ended: bool,
 ) !void {
     if (update_json.len <= 2 or update_json[update_json.len - 1] != '}') return error.InvalidChildUpdate;
-    if (std.mem.indexOf(u8, update_json, "\"_meta\"") != null) return error.InvalidChildUpdate;
+    if (std.mem.indexOf(u8, update_json, "\"_meta\"") != null) {
+        if (std.mem.indexOf(u8, update_json, meta_fx_prefix) == null or
+            !std.mem.endsWith(u8, update_json, "}}}")) return error.InvalidChildUpdate;
+        try w.writeAll(update_json[0 .. update_json.len - 3]);
+        try w.writeByte(',');
+        try writeChildTag(w, child_id, title, ended);
+        try w.writeAll("}}}");
+        return;
+    }
     try w.writeAll(update_json[0 .. update_json.len - 1]);
     try w.writeByte(',');
     try writeChildTagMeta(w, child_id, title, ended);
     try w.writeByte('}');
 }
+
+const meta_fx_prefix = "\"_meta\":{\"fx\":{";
 
 pub fn writeChildTagMeta(
     w: *std.Io.Writer,
@@ -243,13 +253,24 @@ pub fn writeChildTagMeta(
     title: []const u8,
     ended: bool,
 ) !void {
-    try w.writeAll("\"_meta\":{\"fx\":{\"child\":{\"id\":");
+    try w.writeAll(meta_fx_prefix);
+    try writeChildTag(w, child_id, title, ended);
+    try w.writeAll("}}");
+}
+
+fn writeChildTag(
+    w: *std.Io.Writer,
+    child_id: []const u8,
+    title: []const u8,
+    ended: bool,
+) !void {
+    try w.writeAll("\"child\":{\"id\":");
     try writeJsonStr(child_id, w);
     try w.writeAll(",\"title\":");
     try writeJsonStr(title, w);
     try w.writeAll(",\"state\":");
     try writeJsonStr(if (ended) "ended" else "running", w);
-    try w.writeAll("}}}");
+    try w.writeAll("}");
 }
 
 pub const child_state_update = "{\"sessionUpdate\":\"session_info_update\"}";
@@ -264,6 +285,31 @@ test "a child's update is tagged with the child it came from" {
     try std.testing.expectEqualStrings("child-1", child.get("id").?.string);
     try std.testing.expectEqualStrings("ended", child.get("state").?.string);
     try std.testing.expectEqualStrings("session_info_update", parsed.value.object.get("sessionUpdate").?.string);
+}
+
+test "a child's recovery update keeps its own fx metadata alongside the child tag" {
+    var update: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer update.deinit();
+    try writeModelRecoveryInfoUpdate(&update.writer, .{
+        .kind = .terminal_provider_error,
+        .required_action = .change_request,
+        .diagnostic = core_types.ModelFailureDiagnostic.init("HTTP 400"),
+    }, false);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeChildTaggedUpdate(&out.writer, update.writer.buffered(), "child-1", "say hi", false);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.writer.buffered(), .{});
+    defer parsed.deinit();
+    const fx = parsed.value.object.get("_meta").?.object.get("fx").?.object;
+    try std.testing.expectEqualStrings("child-1", fx.get("child").?.object.get("id").?.string);
+    try std.testing.expectEqualStrings("running", fx.get("child").?.object.get("state").?.string);
+    try std.testing.expectEqualStrings("paused", fx.get("modelResponseRecovery").?.object.get("state").?.string);
+    try std.testing.expectEqualStrings(
+        "change_request",
+        fx.get("modelResponseRecovery").?.object.get("requiredAction").?.string,
+    );
 }
 
 test "an update that already carries _meta is refused rather than tagged twice" {
@@ -603,6 +649,18 @@ test "model recovery info update is structured and clearable" {
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"state\":\"recovered\"") != null);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"attempt\":5") != null);
     try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "ConnectionResetByPeer") == null);
+
+    out.writer.end = 0;
+    try writeModelRecoveryInfoUpdate(&out.writer, .{
+        .kind = .content_filter,
+        .required_action = .change_request,
+        .diagnostic = core_types.ModelFailureDiagnostic.init("content_filter"),
+    }, true);
+    try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"state\":\"paused\"") != null);
+    try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"kind\":\"content_filter\"") != null);
+    try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "\"requiredAction\":\"change_request\"") != null);
+    try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "⚠ blocked · content filter · change the request") != null);
+    try std.testing.expect(std.mem.find(u8, out.writer.buffered(), "content_filter · content filter") == null);
 
     out.writer.end = 0;
     try writeModelRecoveryInfoUpdate(&out.writer, null, false);

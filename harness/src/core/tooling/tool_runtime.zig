@@ -53,6 +53,7 @@ const tool_admission = @import("tool_admission.zig");
 const tool_args = @import("tool_args.zig");
 const command_result_mapping = @import("command_result_mapping.zig");
 const tool_dispatch = @import("tool_dispatch.zig");
+const mcp_contract = @import("../mcp/mcp_contract.zig");
 const tool_specs = @import("tool_specs.zig");
 const tool_result_errors = @import("tool_result_errors.zig");
 const tool_result_limits = @import("tool_result_limits.zig");
@@ -176,6 +177,7 @@ pub const Context = struct {
     session_child_capability: ?*session_child_store.SessionChildCapability = null,
     terminal_client: ?*terminal_client_runtime.Runtime = null,
     command_timeout_ms: ?usize = null,
+    semantic_grep: ?*const mcp_contract.McpServerConfig = null,
     command_timeout_started_ms: ?i64 = null,
     command_replay_capture: ?*command_replay_store.Capture = null,
     command_replay_unavailable: bool = false,
@@ -878,6 +880,7 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         .output_chunk_ctx = ctx.output_chunk_ctx,
         .on_output_chunk = ctx.on_output_chunk,
         .command_timeout_ms = ctx.command_timeout_ms,
+        .semantic_grep = ctx.semantic_grep,
         .sandbox_backend = ctx.sandbox_backend,
         .ask_question_ctx = if (ctx.interactive) ctx.worker else null,
         .ask_question_batch = if (ctx.interactive) requestQuestionBatchWithWorker else null,
@@ -6977,22 +6980,23 @@ test "run_command nonzero exit returns structured masked failure" {
     const result = try executeTestRunCommand(rt.context(), arena_state.allocator(), .{
         .id = "cmd",
         .name = "terminal",
-        .arguments_json = "{\"action\":\"exec\",\"command\":\"printf 'bad AKIA0123456789ABCDEF\\\\n' >&2; exit 7\"}",
+        .arguments_json = "{\"action\":\"exec\",\"command\":\"printf 'failing test report\\\\n'; printf 'bad AKIA0123456789ABCDEF\\\\n' >&2; exit 7\"}",
     });
 
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
     try expectToolErrorField(result.model_output, "type", "tool_execution_failed");
     try expectToolErrorField(result.model_output, "tool_name", "terminal");
-    try expectToolErrorDetailString(result.model_output, "command", "printf 'bad [redacted]\\n' >&2; exit 7");
+    try expectToolErrorDetailString(result.model_output, "command", "printf 'failing test report\\n'; printf 'bad [redacted]\\n' >&2; exit 7");
     try expectToolErrorDetailString(result.model_output, "cwd", "/tmp");
     try expectToolErrorDetailInt(result.model_output, "exit_code", 7);
+    try expectToolErrorDetailString(result.model_output, "stdout", "failing test report");
     try expectToolErrorDetailString(result.model_output, "stderr", "bad [redacted]");
-    try expectContains(result.model_output, "Inspect stderr");
+    try expectContains(result.model_output, "Inspect stdout, stderr");
     try expectNotContains(result.model_output, "AKIA0123456789ABCDEF");
     const structured = result.command_result_json orelse return error.TestExpectedEqual;
     try expectCommandResultField(structured, "kind", "foreground");
     try expectCommandResultInt(structured, "exit_code", 7);
-    try expectCommandResultInt(structured, "stdout_bytes", 0);
+    try expectCommandResultInt(structured, "stdout_bytes", 20);
     try expectCommandResultInt(structured, "stderr_bytes", 25);
     try std.testing.expect(std.mem.find(u8, structured, "\"stdout\":") == null);
     try std.testing.expect(std.mem.find(u8, structured, "\"stderr\":") == null);
@@ -8303,6 +8307,7 @@ const vision_test_registry_tools = [_]tool_dispatch.Tool{test_builtin_tools.visi
 const VisionGatewayResponse = struct {
     status: std.http.Status = .ok,
     content: ?[]const u8 = null,
+    err_body: ?[]const u8 = null,
     usage: types.Usage = .{},
     generation_id: ?[]const u8 = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV",
 };
@@ -8360,6 +8365,7 @@ const VisionGatewayFixture = struct {
                 .finish_reason = .stop,
                 .usage = response.usage,
             },
+            .err_body = @constCast(response.err_body),
             .generation_origin = "https://openrouter.ai/api",
         };
     }
@@ -9108,11 +9114,19 @@ test "vision runtime preserves partial success and exact total outage notices" {
 
     const outage = try executeVisionForTest(&rt, alloc, "{\"image_ids\":[1],\"focus\":\"inspect\"}", catalog);
     defer alloc.free(@constCast(outage.model_output));
+    defer alloc.free(@constCast(outage.status_detail.?));
+    defer alloc.free(@constCast(outage.interactive_notice.?.body));
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, outage.status);
-    try std.testing.expectEqualStrings(vision_executor.outage_tip, outage.interactive_notice.?.body);
+    try std.testing.expectEqualStrings(
+        "Tip: This model doesn’t support OCR. Vision model google/gemini-2.5-flash answered HTTP 503 — fix it in Settings → Tools → Vision.",
+        outage.interactive_notice.?.body,
+    );
     try std.testing.expectEqualStrings(vision_executor.outage_system_notice, outage.system_notice.?);
     try expectContains(outage.model_output, "\"code\":\"vision_unavailable\"");
-    try std.testing.expectEqualStrings("Vision is unavailable right now", outage.status_detail.?);
+    try std.testing.expectEqualStrings(
+        "Vision model google/gemini-2.5-flash answered HTTP 503 — fix it in Settings → Tools → Vision",
+        outage.status_detail.?,
+    );
     try expectContains(outage.system_notice.?, "None of the requested images were read");
     try expectContains(outage.system_notice.?, "retry Vision");
     try expectContains(outage.system_notice.?, "change strategy");
@@ -9128,6 +9142,51 @@ test "vision runtime preserves partial success and exact total outage notices" {
     try std.testing.expect(malformed.interactive_notice == null);
     try std.testing.expect(malformed.system_notice == null);
     try std.testing.expectEqual(@as(usize, 4), fixture.call_count);
+}
+
+test "vision runtime names the vision model and HTTP failure for a route outage" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const catalog = try makeVisionCatalog(alloc, tmp.dir, 1);
+    defer types.freeImageAttachmentSlice(alloc, catalog);
+    const responses = [_]VisionGatewayResponse{.{
+        .status = .payment_required,
+        .err_body =
+        \\{"error":{"code":"insufficient_credits","message":"Add credits to use this model."}}
+        ,
+    }};
+    var fixture = VisionGatewayFixture{ .alloc = alloc, .responses = &responses };
+    defer fixture.deinit();
+    var rt = TestRuntime{
+        .agent_stream_provider = fixture.provider(),
+        .tool_registry = .{ .tools = vision_test_registry_tools[0..] },
+        .session_allocator = alloc,
+    };
+    defer rt.deinit(alloc);
+
+    const result = try executeVisionForTest(
+        &rt,
+        alloc,
+        "{\"image_ids\":[1],\"focus\":\"inspect\"}",
+        catalog,
+    );
+    defer alloc.free(@constCast(result.model_output));
+    defer alloc.free(@constCast(result.status_detail.?));
+    defer alloc.free(@constCast(result.interactive_notice.?.body));
+
+    const expected_line = "Vision model google/gemini-2.5-flash answered HTTP 402 · insufficient_credits: " ++
+        "Add credits to use this model. — fix it in Settings → Tools → Vision";
+    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
+    try std.testing.expectEqual(@as(usize, 1), fixture.call_count);
+    try expectContains(result.model_output, "\"code\":\"vision_unavailable\"");
+    try expectContains(result.model_output, expected_line);
+    try expectContains(result.model_output, "\"retryable\":false");
+    try expectContains(result.model_output, "fixing in Settings → Tools → Vision");
+    try std.testing.expectEqualStrings(expected_line, result.status_detail.?);
+    const expected_tip = "Tip: This model doesn’t support OCR. " ++ expected_line ++ ".";
+    try std.testing.expectEqualStrings(expected_tip, result.interactive_notice.?.body);
+    try std.testing.expectEqualStrings(vision_executor.outage_system_notice, result.system_notice.?);
 }
 
 test "vision runtime classifies an empty successful provider result as invalid" {

@@ -85,14 +85,17 @@ The allowance is also enforced **inside** a turn. The harness runs its agent
 steps unbounded, so one turn could otherwise spend without limit while the ledger
 still read zero. Emma accumulates what each mid-turn usage report adds — the
 step's prompt plus the output it grew by — and stops the turn where it stands once
-that running total passes what the goal has left. The accounting then lands as
-usual and the goal reads `budgetLimited`.
+that running total passes what the goal has left.
 
-The ledger itself is coarser than that guard. A turn is recorded with the
-harness's own figures, whose input side is the *last* step's prompt rather than
-the sum of every step's, so a long many-step turn is written down for less than it
-cost. The 40-turn ceiling is the backstop that a token budget alone does not
-give.
+Stopping is not enough on its own. The ledger is coarser than the guard: a turn is
+recorded with the harness's own figures, whose input side is the *last* step's
+prompt rather than the sum of every step's, so a long many-step turn is written
+down for less than it cost — and a goal stopped for overspending would settle back
+as `active` with budget apparently left, halted by a stop the card never mentions,
+reading *Pursuing* forever. So the guard writes the status itself: it stops the
+thread and records `budgetLimited` with a reason saying the allowance ran out
+part-way through a turn. The 40-turn ceiling is the backstop that a token budget
+alone does not give.
 
 Pause, Resume, Continue and Clear reach the record over two bridge methods —
 `updateGoal` and `clearGoal`; `setGoal` is how a goal is first put on a thread.

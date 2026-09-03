@@ -7,6 +7,32 @@ const text_utils = @import("../../core/shared/text_utils.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const workspace_access = @import("../../core/workspace/workspace_access.zig");
 const sort_utils = @import("../../core/shared/sort_utils.zig");
+const mcp_contract = @import("../../core/mcp/mcp_contract.zig");
+const gateway_schema = @import("../../core/tooling/gateway_schema.zig");
+
+pub const grep_description =
+    "Search this workspace with zvec-grep over a prebuilt index of the connected folder. `query` returns two ranked groups of up to `limit` hits each: Q1 by embedding similarity, whose hits often do not contain your literal words, and Q2 by BM25 keywords. Each hit is a workspace-relative path with a line range and a source snippet, so a hit usually answers the question without a follow-up read. `regex` runs ripgrep over the same folder for one exact symbol or literal and returns up to 20 matching lines per file. Pass exactly one of `query` or `regex`. When to use: you do not know the wording or the file, or the answer spans files: architecture, call relationships, data flow, rationale. When NOT to use: you already know the path (read it), you need per-line ERE, match counts, or paginated output (grep_files), or you want a filename (glob_files). The index may lag the working tree, so no hits means not in the index, not not in the repo; confirm with grep_files before concluding something is absent. Never build or rebuild the index yourself.";
+
+pub const grep_schema = gateway_schema.FunctionSchema{
+    .name = "semantic_search",
+    .description = grep_description,
+    .input_schema = .{
+        .properties = &.{
+            .{ .name = "query", .json_type = .string, .description = "Natural-language or keyword query; answered by a vector group and a BM25 group." },
+            .{ .name = "regex", .json_type = .string, .description = "Ripgrep regular expression for an exact search instead of a query." },
+            .{ .name = "path", .json_type = .string, .description = "Optional search root relative to the workspace. Defaults to the whole folder." },
+            .{ .name = "limit", .json_type = .integer, .minimum = 1, .maximum = 25, .description = "Maximum hits per ranked group; defaults to 7." },
+        },
+    },
+};
+
+const grep_default_limit: u8 = 7;
+const grep_max_limit: u8 = 25;
+const rg_max_count = "20";
+const grep_output_cap: usize = 256 * 1024;
+const grep_timeout_ns: i96 = 45 * std.time.ns_per_s;
+const grep_truncated_note = "[search] too many matches to capture; narrow the pattern or use grep_files with head_limit";
+const stale_index_note_prefix = "note: index covers ";
 
 pub const Config = struct {
     workspace_root: []const u8,
@@ -21,12 +47,15 @@ const walk_entry_cap: usize = 2000;
 
 pub const Input = struct {
     query: []u8,
+    regex: ?[]u8 = null,
     path: ?[]u8 = null,
+    limit: u8 = grep_default_limit,
 
     pub fn deinit(self: *Input, alloc: std.mem.Allocator) void {
         alloc.free(self.query);
+        if (self.regex) |regex| alloc.free(regex);
         if (self.path) |path| alloc.free(path);
-        self.* = .{ .query = &.{}, .path = null };
+        self.* = .{ .query = &.{}, .regex = null, .path = null };
     }
 };
 
@@ -38,16 +67,30 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
 
     if (parsed.value != .object) return error.InvalidToolArguments;
 
-    const query_value = parsed.value.object.get("query") orelse return error.InvalidToolArguments;
+    const regex_value = parsed.value.object.get("regex");
+    if (regex_value) |value| {
+        if (value != .string or ctx.semantic_grep == null) return error.InvalidToolArguments;
+    }
+    const query_value = parsed.value.object.get("query") orelse (if (regex_value != null) std.json.Value{ .string = "" } else return error.InvalidToolArguments);
     if (query_value != .string) return error.InvalidToolArguments;
+    if (regex_value != null and std.mem.trim(u8, query_value.string, " \t\r\n").len > 0) {
+        return .{ .failure = try ctx.allocator.dupe(u8, "pass query or regex, not both") };
+    }
 
     const path_value = parsed.value.object.get("path");
     if (path_value) |value| {
         if (value != .string) return error.InvalidToolArguments;
     }
 
+    const limit: u8 = if (parsed.value.object.get("limit")) |value| switch (value) {
+        .integer => |raw| @intCast(std.math.clamp(raw, 1, grep_max_limit)),
+        else => return error.InvalidToolArguments,
+    } else grep_default_limit;
+
     const query = try ctx.allocator.dupe(u8, query_value.string);
     errdefer ctx.allocator.free(query);
+    const regex: ?[]u8 = if (regex_value) |value| try ctx.allocator.dupe(u8, value.string) else null;
+    errdefer if (regex) |owned| ctx.allocator.free(owned);
 
     const path: ?[]u8 = if (path_value) |value|
         try ctx.allocator.dupe(u8, value.string)
@@ -57,7 +100,7 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
 
     const input = try ctx.allocator.create(Input);
     errdefer ctx.allocator.destroy(input);
-    input.* = .{ .query = query, .path = path };
+    input.* = .{ .query = query, .regex = regex, .path = path, .limit = limit };
 
     return .{ .input = .{ .ptr = input, .deinit_fn = inputDeinit } };
 }
@@ -78,6 +121,7 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
 
     var arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena_state.deinit();
+    if (ctx.semantic_grep) |grep| return runGrep(ctx, arena_state.allocator(), grep, input.query, input.regex, input.path, input.limit);
     const output = runSearch(configFromContext(ctx), arena_state.allocator(), input.query, requested) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.InvalidPath => return error.InvalidPath,
@@ -91,6 +135,200 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
 
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
     return true;
+}
+
+pub fn grepArgv(arena: std.mem.Allocator, grep: *const mcp_contract.McpServerConfig, workspace_root: []const u8, query: []const u8, regex: ?[]const u8, path: ?[]const u8, limit: u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(arena, grep.command orelse return error.McpInvalidServerConfig);
+    try argv.appendSlice(arena, grep.args);
+    const scope: ?[]const u8 = if (path) |requested| blk: {
+        const relative = if (std.fs.path.isAbsolute(requested))
+            try pathing.workspaceRelativePath(arena, workspace_root, requested)
+        else
+            requested;
+        const trimmed = std.mem.trimEnd(u8, relative, "/");
+        break :blk if (trimmed.len > 0 and !std.mem.eql(u8, trimmed, ".")) trimmed else null;
+    } else null;
+    if (regex) |pattern| {
+        try argv.appendSlice(arena, &.{ "query", "--rg", "-n", "--max-count", rg_max_count, "-e", pattern });
+        if (scope) |dir| try argv.appendSlice(arena, &.{ "--", dir });
+        return argv.items;
+    }
+    try argv.appendSlice(arena, &.{ "query", "--vector", query, "--fts", query, "--limit", try std.fmt.allocPrint(arena, "{d}", .{limit}), "--mode", "auto", "--preview", "short" });
+    if (scope) |dir| try argv.appendSlice(arena, &.{ "-g", try std.fmt.allocPrint(arena, "{s}/**", .{dir}) });
+    return argv.items;
+}
+
+fn staleIndexNote(arena: std.mem.Allocator, stderr: []const u8) !?[]const u8 {
+    var covered: ?struct { n: u64, m: u64 } = null;
+    var rest = stderr;
+    while (std.mem.findScalar(u8, rest, '(')) |open| {
+        rest = rest[open + 1 ..];
+        const close = std.mem.findScalar(u8, rest, ')') orelse break;
+        const inner = rest[0..close];
+        const slash = std.mem.findScalar(u8, inner, '/') orelse continue;
+        const n = std.fmt.parseInt(u64, inner[0..slash], 10) catch continue;
+        const m = std.fmt.parseInt(u64, inner[slash + 1 ..], 10) catch continue;
+        if (m == 0 or n >= m) continue;
+        covered = .{ .n = n, .m = m };
+        break;
+    }
+    if (covered) |fraction| {
+        return try std.fmt.allocPrint(arena, "{s}{d}/{d} files and may lag the working tree; no hits is not proof the code is absent", .{ stale_index_note_prefix, fraction.n, fraction.m });
+    }
+    if (std.mem.find(u8, stderr, "possibly_stale") != null) {
+        return "note: the index may lag the working tree; no hits is not proof the code is absent";
+    }
+    return null;
+}
+
+fn runGrep(ctx: tool_dispatch.DispatchContext, arena: std.mem.Allocator, grep: *const mcp_contract.McpServerConfig, query: []const u8, regex: ?[]const u8, path: ?[]const u8, limit: u8) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
+    if (std.mem.trim(u8, regex orelse query, " \t\r\n").len == 0) return .{ .failure = try ctx.allocator.dupe(u8, "semantic_search needs a query or a regex") };
+    const argv = grepArgv(arena, grep, ctx.workspace_root, query, regex, path, limit) catch return .{ .failure = try ctx.allocator.dupe(u8, "semantic_search is misconfigured") };
+    var env = io_mod.cloneEnvironMap(arena) catch return .{ .failure = try ctx.allocator.dupe(u8, "semantic_search could not read the environment") };
+    defer env.deinit();
+    for (grep.env) |entry| env.put(entry.key, entry.value) catch return error.OutOfMemory;
+    const result = std.process.run(arena, io_mod.getIo(), .{
+        .argv = argv,
+        .cwd = .{ .path = ctx.workspace_root },
+        .environ_map = &env,
+        .stdout_limit = .limited(grep_output_cap),
+        .stderr_limit = .limited(grep_output_cap),
+        .timeout = (std.Io.Timeout{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = grep_timeout_ns } } }).toDeadline(io_mod.getIo()),
+    }) catch |err| {
+        debug_trace.logf("core", "semantic_search grep spawn failed err={s}", .{@errorName(err)});
+        if (err == error.StreamTooLong) return .{ .success = try ctx.allocator.dupe(u8, grep_truncated_note) };
+        if (err == error.Timeout) return .{ .failure = try ctx.allocator.dupe(u8, "semantic search timed out after 45s.\nUse grep_files for this question.") };
+        return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "semantic search could not start ({s}).\nUse grep_files for this question.", .{@errorName(err)}) };
+    };
+    const stdout = std.mem.trim(u8, result.stdout, " \t\r\n");
+    const stderr = std.mem.trim(u8, result.stderr, " \t\r\n");
+    const exited_ok = switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+    if (!exited_ok) {
+        const detail = if (firstNonEmptyLine(stderr)) |line| line else if (firstNonEmptyLine(stdout)) |line| line else "no output";
+        return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "semantic search failed: {s}\nUse grep_files for this question.", .{detail}) };
+    }
+    const body = if (stdout.len == 0) "[search] no matches" else stdout;
+    const note = try staleIndexNote(arena, stderr);
+    if (note) |line| return .{ .success = try std.fmt.allocPrint(ctx.allocator, "{s}\n{s}", .{ body, line }) };
+    return .{ .success = try ctx.allocator.dupe(u8, body) };
+}
+
+fn firstNonEmptyLine(text: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return null;
+}
+
+test "grepArgv scopes a subdirectory with a glob and passes the configured command through" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const args = [_][]const u8{ "/app/zg/index.js" };
+    const grep: mcp_contract.McpServerConfig = .{ .name = "zg", .command = "/app/Electron", .args = args[0..] };
+    const argv = try grepArgv(arena, &grep, "/workspace", "where are permissions gated", null, "src/", grep_default_limit);
+    try std.testing.expectEqualStrings("/app/Electron", argv[0]);
+    try std.testing.expectEqualStrings("/app/zg/index.js", argv[1]);
+    try std.testing.expectEqualStrings("query", argv[2]);
+    try std.testing.expectEqualStrings("--vector", argv[3]);
+    try std.testing.expectEqualStrings("where are permissions gated", argv[4]);
+    try std.testing.expectEqualStrings("--fts", argv[5]);
+    try std.testing.expectEqualStrings("where are permissions gated", argv[6]);
+    try std.testing.expectEqualStrings("7", argv[8]);
+    try std.testing.expectEqualStrings("-g", argv[argv.len - 2]);
+    try std.testing.expectEqualStrings("src/**", argv[argv.len - 1]);
+    const unscoped = try grepArgv(arena, &grep, "/workspace", "q", null, ".", grep_default_limit);
+    try std.testing.expectEqualStrings("short", unscoped[unscoped.len - 1]);
+    const exact = try grepArgv(arena, &grep, "/workspace", "", "fn main\\(", "src/", grep_default_limit);
+    try std.testing.expectEqualStrings("--rg", exact[3]);
+    try std.testing.expectEqualStrings("-e", exact[7]);
+    try std.testing.expectEqualStrings("fn main\\(", exact[8]);
+    try std.testing.expectEqualStrings("src", exact[exact.len - 1]);
+}
+
+test "grepArgv rewrites an absolute in-workspace path and guards the rg positional" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const grep: mcp_contract.McpServerConfig = .{ .name = "zg", .command = "zg", .args = &.{} };
+
+    const scoped = try grepArgv(arena, &grep, "/workspace", "how are turns cancelled", null, "/workspace/desktop/main", grep_default_limit);
+    try std.testing.expectEqualStrings("-g", scoped[scoped.len - 2]);
+    try std.testing.expectEqualStrings("desktop/main/**", scoped[scoped.len - 1]);
+
+    const root = try grepArgv(arena, &grep, "/workspace", "q", null, "/workspace", grep_default_limit);
+    try std.testing.expectEqualStrings("short", root[root.len - 1]);
+
+    const exact = try grepArgv(arena, &grep, "/workspace", "", "needle", "/workspace/-weird", grep_default_limit);
+    try std.testing.expectEqualStrings("--max-count", exact[4]);
+    try std.testing.expectEqualStrings(rg_max_count, exact[5]);
+    try std.testing.expectEqualStrings("--", exact[exact.len - 2]);
+    try std.testing.expectEqualStrings("-weird", exact[exact.len - 1]);
+}
+
+test "grepArgv passes the requested limit through" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const grep: mcp_contract.McpServerConfig = .{ .name = "zg", .command = "zg", .args = &.{} };
+
+    const argv = try grepArgv(arena, &grep, "/workspace", "q", null, null, 25);
+    try std.testing.expectEqualStrings("--limit", argv[6]);
+    try std.testing.expectEqualStrings("25", argv[7]);
+}
+
+test "semantic_search decode clamps limit and rejects a query paired with a regex" {
+    const alloc = std.testing.allocator;
+    const grep: mcp_contract.McpServerConfig = .{ .name = "zg", .command = "zg", .args = &.{} };
+    const ctx = tool_dispatch.DispatchContext{
+        .allocator = alloc,
+        .workspace_root = "/workspace",
+        .semantic_grep = &grep,
+    };
+
+    var decoded = try decode(ctx, "{\"query\":\"where are turns cancelled\",\"limit\":99}");
+    switch (decoded) {
+        .input => |erased| {
+            defer erased.deinit_fn(erased.ptr, alloc);
+            try std.testing.expectEqual(@as(u8, grep_max_limit), erased.as(Input).limit);
+        },
+        .failure => |body| {
+            defer alloc.free(body);
+            try std.testing.expect(false);
+        },
+    }
+
+    decoded = try decode(ctx, "{\"query\":\"cancel\",\"regex\":\"cancel\"}");
+    switch (decoded) {
+        .input => |erased| {
+            defer erased.deinit_fn(erased.ptr, alloc);
+            try std.testing.expect(false);
+        },
+        .failure => |body| {
+            defer alloc.free(body);
+            try std.testing.expectEqualStrings("pass query or regex, not both", body);
+        },
+    }
+}
+
+test "staleIndexNote reports partial coverage and possibly_stale" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const partial = (try staleIndexNote(arena, "status: possibly_stale\nbackground_refresh: idle (710/1294)\n")).?;
+    try std.testing.expectEqualStrings("note: index covers 710/1294 files and may lag the working tree; no hits is not proof the code is absent", partial);
+
+    const stale_only = (try staleIndexNote(arena, "status: possibly_stale\n")).?;
+    try std.testing.expectEqualStrings("note: the index may lag the working tree; no hits is not proof the code is absent", stale_only);
+
+    try std.testing.expectEqual(@as(?[]const u8, null), try staleIndexNote(arena, "background_refresh: idle (1294/1294)\n"));
 }
 
 pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {

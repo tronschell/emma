@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { isWindows, pathInside, samePath } from "./platform";
+import { isWindows, realPathInside, samePath } from "./platform";
 import {
   ATTACHMENT_FOLDER,
   DEFAULT_VAULT_FOLDER,
@@ -12,6 +12,7 @@ import {
   MAX_TITLE_BYTES,
   MAX_VAULT_NOTES,
   attachmentFolder,
+  clampBytes,
   isKeepKind,
   keepKindLabel,
   noteFolder,
@@ -71,22 +72,16 @@ function isDirectory(target: string): boolean {
   }
 }
 
-const byteLength = (value: string) => Buffer.byteLength(value, "utf8");
-
-function clampBytes(value: string, limit: number): string {
-  let text = value;
-  while (byteLength(text) > limit) text = text.slice(0, Math.min(text.length - 1, Math.floor((text.length * limit) / byteLength(text))));
-  return text;
-}
-
 function writeAtomic(file: string, data: string | Buffer, mode?: number): void {
   const temporary = `${file}.tmp`;
   writeFileSync(temporary, data, mode === undefined ? {} : { mode });
   renameSync(temporary, file);
 }
 
+// Resolved, not lexical: a symlink dropped in the vault reads as a path inside it, so the name has
+// to be followed to whatever it really points at before the folder can be said to hold it.
 function contains(folder: string, target: string): boolean {
-  return pathInside(folder, target);
+  return realPathInside(folder, target);
 }
 
 function normalizeVault(value: unknown): VaultChoice {
@@ -121,13 +116,12 @@ export function saveVault(userData: string, choice: VaultChoice): VaultChoice {
 export function vaultWritable(vault: VaultChoice): boolean {
   let folder: string;
   try {
-    folder = noteFolder(normalizeVault(vault));
+    folder = notesRoot(vault);
   } catch {
     return false;
   }
   const probe = path.join(folder, ".emma-write-check");
   return attempt(() => {
-    mkdirSync(folder, { recursive: true });
     writeFileSync(probe, "");
     rmSync(probe);
   });
@@ -267,8 +261,7 @@ function noteBody(request: KeepRequest, embed: string): string {
 export async function keepNote(vault: VaultChoice, request: KeepRequest): Promise<KeptNote> {
   const choice = normalizeVault(vault);
   if (!request || typeof request !== "object" || !isKeepKind(request.kind)) throw new Error("Emma keeps screenshots, highlights, pages and notes.");
-  const folder = noteFolder(choice);
-  mkdirSync(folder, { recursive: true });
+  const folder = notesRoot(choice);
   const title = clampBytes((((request.title ?? "").trim() || fallbackTitle(request)).replace(/\s+/g, " ")), MAX_TITLE_BYTES);
   const { file, relative } = freeNotePath(folder, noteSlug(title));
   if (!contains(folder, file)) throw new Error("Emma will not write outside your knowledge folder.");
@@ -356,17 +349,24 @@ function subfolders(root: string): string[] {
   }
 }
 
-function notesRoot(vault: VaultChoice): string {
-  return noteFolder(normalizeVault(vault));
+export function notesRoot(vault: VaultChoice): string {
+  const choice = normalizeVault(vault);
+  if (!isDirectory(choice.root)) throw new Error(`Your vault is not at ${choice.root} any more. It was moved, renamed or unmounted, so Emma is not reading or writing your notes until you choose it again on the Knowledge base page.`);
+  const folder = noteFolder(choice);
+  if (!isDirectory(folder)) throw new Error(`Your knowledge folder is not at ${folder} any more. It was moved, renamed or deleted, so Emma is not reading or writing your notes until you choose it again on the Knowledge base page.`);
+  return folder;
+}
+
+export function noteInVault(vault: VaultChoice, value: unknown): string {
+  const root = notesRoot(vault);
+  if (typeof value !== "string" || !value || value.length > 256) throw new Error("That note is not in your vault.");
+  const full = path.resolve(root, value);
+  if (!contains(root, full)) throw new Error("That note is not in your vault.");
+  return path.relative(root, full);
 }
 
 export function listNotes(vault: VaultChoice): KeptNote[] {
-  let root: string;
-  try {
-    root = notesRoot(vault);
-  } catch {
-    return [];
-  }
+  const root = notesRoot(vault);
   const names = [...markdownIn(root), ...subfolders(root).flatMap((name) => markdownIn(path.join(root, name), `${name}/`))];
   const notes: KeptNote[] = [];
   for (const name of names.slice(0, MAX_VAULT_NOTES * 2)) {
@@ -377,12 +377,7 @@ export function listNotes(vault: VaultChoice): KeptNote[] {
 }
 
 export function listNoteFolders(vault: VaultChoice): NoteFolder[] {
-  let root: string;
-  try {
-    root = notesRoot(vault);
-  } catch {
-    return [];
-  }
+  const root = notesRoot(vault);
   return subfolders(root).map((name) => ({ name, changedAt: statSync(path.join(root, name)).mtime.toISOString() }));
 }
 

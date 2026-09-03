@@ -1,4 +1,6 @@
 const std = @import("std");
+const debug_trace = @import("../../core/shared/debug_trace.zig");
+const emma_openai = @import("../../gateway/emma_openai.zig");
 const gateway_client = @import("../../gateway/client.zig");
 const gateway_json = @import("../../core/gateway/gateway_json.zig");
 const io_mod = @import("../../core/shared/io.zig");
@@ -9,6 +11,7 @@ const Allocator = std.mem.Allocator;
 
 const single_attempt: usize = 1;
 const default_timeout_ms: u32 = 30_000;
+const failure_snippet_bytes: usize = 256;
 var default_post_ctx: u8 = 0;
 
 pub const PostFn = *const fn (
@@ -83,26 +86,45 @@ fn summarize(raw_ctx: *anyopaque, alloc: Allocator, request: session.SummaryRequ
         .raw = .fromMilliseconds(config.timeout_ms),
     });
 
-    const payload = try gateway_json.buildGatewayRequestBodyWithOptionsAndBudget(
-        alloc,
-        "[]",
-        &messages,
-        .{},
-        .none,
-        @intCast(@max(request.max_chars / 4, 1)),
-        .{ .deadline = deadline, .cancel_flag = config.cancel_flag },
-    );
+    const payload = try emma_openai.provider.build(alloc, .{
+        .model = config.model,
+        .serialized_tools = "[]",
+        .messages = &messages,
+        .tool_choice = .none,
+        .provider_options = .{},
+        .max_output_tokens = @intCast(@max(request.max_chars / 4, 1)),
+        .stream = false,
+        .budget = .{ .deadline = deadline, .cancel_flag = config.cancel_flag },
+    });
     defer alloc.free(payload);
 
     var result = try config.post_fn(config, alloc, payload, deadline);
     defer result.deinit(alloc);
     if (config.cancel_flag.load(.seq_cst)) return error.Cancelled;
-    if (result.status != .ok) return error.CompactionGatewayStatus;
+    if (result.status != .ok) {
+        logGatewayFailure("CompactionGatewayStatus", result);
+        return error.CompactionGatewayStatus;
+    }
 
-    const completion = try gateway_json.parseGatewayCompletion(alloc, result.body);
+    const completion = gateway_json.parseGatewayCompletion(alloc, result.body) catch |err| {
+        logGatewayFailure(@errorName(err), result);
+        return err;
+    };
     defer gateway_json.freeGatewayCompletion(alloc, completion);
     const content = completion.content orelse return error.EmptyCompactionSummary;
     return alloc.dupe(u8, content);
+}
+
+fn logGatewayFailure(reason: []const u8, result: gateway_client.PostResult) void {
+    debug_trace.logf(
+        "session",
+        "event=compaction_summary result=fallback stage=gateway reason={s} status={d} body={s}",
+        .{
+            reason,
+            @intFromEnum(result.status),
+            result.body[0..@min(result.body.len, failure_snippet_bytes)],
+        },
+    );
 }
 
 const FakePost = struct {
@@ -147,7 +169,13 @@ test "gateway compaction summarizer returns the model summary" {
     defer alloc.free(text);
     try std.testing.expectEqualStrings("## Goal\nship it", text);
     try std.testing.expectEqual(@as(usize, 1), fake.calls);
-    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"maxOutputTokens\":300") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"model\":\"openai/gpt-5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"messages\":[{\"role\":\"system\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"max_tokens\":300") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"stream\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"prompt\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"toolChoice\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "\"maxOutputTokens\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "ONLY output the structured summary") != null);
     try std.testing.expect(std.mem.indexOf(u8, fake.seen_payload, "do the thing") != null);
 }

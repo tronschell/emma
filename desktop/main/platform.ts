@@ -30,6 +30,28 @@ export function pathInside(root: string, target: string, platform: NodeJS.Platfo
   return relative === "" || relative !== ".." && !relative.startsWith(`..${implementation.sep}`) && !implementation.isAbsolute(relative);
 }
 
+export function realPath(value: string): string | undefined {
+  const missing: string[] = [];
+  let current = path.resolve(value);
+  while (true) {
+    try {
+      return missing.reduce((base, part) => path.join(base, part), realpathSync.native(current));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+      const parent = path.dirname(current);
+      if (parent === current) return undefined;
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+export function realPathInside(root: string, target: string): boolean {
+  const base = realPath(root);
+  const real = realPath(target);
+  return !!base && !!real && pathInside(base, real);
+}
+
 export function canonicalResetPath(root: string): string {
   const missing: string[] = [];
   let current = root;

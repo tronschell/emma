@@ -6,11 +6,60 @@ const types = @import("../../shared/types.zig");
 const debug_trace = @import("../../shared/debug_trace.zig");
 const session_usage = @import("../../session/session_usage.zig");
 const runtime_gateway_step = @import("gateway_step.zig");
+const gateway_error_format = @import("../../shared/gateway_error_format.zig");
+const io_mod = @import("../../shared/io.zig");
 
 const Allocator = std.mem.Allocator;
 const ChatMessage = types.ChatMessage;
 
-const model = "google/gemini-2.5-flash";
+const default_model = "google/gemini-2.5-flash";
+pub const model_env = "EMMA_VISION_MODEL";
+pub const chat_url_env = "EMMA_VISION_CHAT_URL";
+pub const api_key_env = "EMMA_VISION_API_KEY";
+
+fn configured(name: []const u8) ?[]const u8 {
+    const raw = io_mod.getenv(name) orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    return if (trimmed.len == 0) null else trimmed;
+}
+
+pub const Route = struct {
+    model: []const u8,
+    chat_url: []const u8,
+    api_key: []const u8,
+};
+
+pub fn route(session_chat_url: []const u8, session_api_key: []const u8) Route {
+    return routeFrom(
+        configured(model_env),
+        configured(chat_url_env),
+        configured(api_key_env),
+        session_chat_url,
+        session_api_key,
+    );
+}
+
+fn routeFrom(
+    model_override: ?[]const u8,
+    chat_url_override: ?[]const u8,
+    api_key_override: ?[]const u8,
+    session_chat_url: []const u8,
+    session_api_key: []const u8,
+) Route {
+    return .{
+        .model = model_override orelse default_model,
+        .chat_url = chat_url_override orelse session_chat_url,
+        .api_key = if (chat_url_override == null)
+            session_api_key
+        else
+            api_key_override orelse "",
+    };
+}
+
+pub const ProviderFailure = struct {
+    status: std.http.Status,
+    diagnostic: []u8,
+};
 
 pub const Request = struct {
     stream_provider: agent_stream_provider.Provider,
@@ -25,6 +74,7 @@ pub const Request = struct {
     trace_ctx: debug_trace.TraceContext,
     capture_limit_bytes: usize,
     response_format: agent_stream_provider.StructuredResponseFormat,
+    failure_out: ?*?ProviderFailure = null,
 };
 
 pub const Result = struct {
@@ -49,6 +99,8 @@ pub fn inspect(
         .{ .role = .system, .content = system_prompt },
         .{ .role = .user, .content = user_prompt },
     };
+    const selected = route(request.chat_url, request.api_key);
+    const model = selected.model;
     const provider_opts = model_capabilities.resolveProviderOptions(model, .auto, false);
     const payload = try request.stream_provider.build(
         alloc,
@@ -75,12 +127,12 @@ pub fn inspect(
     const streamed = try runtime_gateway_step.streamGatewayCompletion(
         request.stream_provider,
         alloc,
-        request.api_key,
+        selected.api_key,
         request.credential_source,
         request.session_id,
         model,
         request.retry_count,
-        request.chat_url,
+        selected.chat_url,
         payload,
         null,
         &delivery,
@@ -99,7 +151,17 @@ pub fn inspect(
     );
 
     if (request.cancel_flag.load(.seq_cst)) return error.Cancelled;
-    if (streamed.status != .ok) return error.ImageProviderUnavailable;
+    if (streamed.status != .ok) {
+        if (request.failure_out) |out| out.* = .{
+            .status = streamed.status,
+            .diagnostic = try gateway_error_format.formatHttpRecoveryDiagnostic(
+                alloc,
+                streamed.status,
+                streamed.err_body orelse "",
+            ),
+        };
+        return error.ImageProviderUnavailable;
+    }
     if (capture.failed) return error.OutOfMemory;
 
     const tool_usage = types.ToolUsage{
@@ -164,4 +226,29 @@ test "shared image provider capture counts all streamed bytes while retaining it
 
     try std.testing.expectEqual(@as(usize, "abc二xyz".len), capture.observed_bytes);
     try std.testing.expectEqualStrings("abc\xe4", capture.text.items);
+}
+
+test "a configured vision endpoint carries its own key while the session route stays paired" {
+    const session = routeFrom(null, null, null, "https://session.example/v1/chat/completions", "session-key");
+    try std.testing.expectEqualStrings(default_model, session.model);
+    try std.testing.expectEqualStrings("https://session.example/v1/chat/completions", session.chat_url);
+    try std.testing.expectEqualStrings("session-key", session.api_key);
+
+    const configured_route = routeFrom(
+        "vendor/seeing-model:free",
+        "https://vision.example/v1/chat/completions",
+        "vision-key",
+        "https://session.example/v1/chat/completions",
+        "session-key",
+    );
+    try std.testing.expectEqualStrings("vendor/seeing-model:free", configured_route.model);
+    try std.testing.expectEqualStrings("https://vision.example/v1/chat/completions", configured_route.chat_url);
+    try std.testing.expectEqualStrings("vision-key", configured_route.api_key);
+
+    const keyless = routeFrom(null, "https://vision.example/v1/chat/completions", null, "https://session.example/v1/chat/completions", "session-key");
+    try std.testing.expectEqualStrings("", keyless.api_key);
+
+    const model_only = routeFrom("vendor/seeing-model:free", null, "vision-key", "https://session.example/v1/chat/completions", "session-key");
+    try std.testing.expectEqualStrings("https://session.example/v1/chat/completions", model_only.chat_url);
+    try std.testing.expectEqualStrings("session-key", model_only.api_key);
 }

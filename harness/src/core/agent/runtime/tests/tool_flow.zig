@@ -467,11 +467,10 @@ fn expectPermissionDeniedToolResult(gateway: *const FakeGateway, index: usize, t
         if (call_id != .string) continue;
         const called = toolCallNameForId(prompt, call_id.string) orelse continue;
         if (!std.mem.eql(u8, called, tool_name)) continue;
-        const content = entry.object.get("content") orelse continue;
-        if (content != .string) continue;
+        const content = promptContentText(entry.object.get("content") orelse continue) orelse continue;
 
-        try std.testing.expect(tool_result_errors.isToolPermissionDeniedOutput(content.string));
-        var payload = try std.json.parseFromSlice(std.json.Value, alloc, content.string, .{});
+        try std.testing.expect(tool_result_errors.isToolPermissionDeniedOutput(content));
+        var payload = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
         defer payload.deinit();
         const error_obj = payload.value.object.get("error").?.object;
         try std.testing.expectEqualStrings("tool_permission_denied", error_obj.get("type").?.string);
@@ -486,6 +485,21 @@ fn expectPermissionDeniedToolResult(gateway: *const FakeGateway, index: usize, t
     }
 
     return error.TestExpectedToolResultMissing;
+}
+
+fn promptContentText(content: std.json.Value) ?[]const u8 {
+    return switch (content) {
+        .string => |text| text,
+        .array => |parts| blk: {
+            for (parts.items) |part| {
+                if (part != .object) continue;
+                const text = part.object.get("text") orelse continue;
+                if (text == .string) break :blk text.string;
+            }
+            break :blk null;
+        },
+        else => null,
+    };
 }
 
 fn toolCallNameForId(messages: []const std.json.Value, call_id: []const u8) ?[]const u8 {
@@ -557,11 +571,11 @@ fn expectMalformedArgumentToolPair(
         if (!std.mem.eql(u8, role.string, "tool")) continue;
         const call_id = entry.object.get("tool_call_id") orelse continue;
         if (call_id != .string or !std.mem.eql(u8, call_id.string, tool_call_id)) continue;
-        const content = entry.object.get("content") orelse return error.TestExpectedToolResultMissing;
-        if (content != .string) return error.TestExpectedToolResultMissing;
-        try std.testing.expect(tool_result_errors.isToolExecutionFailedOutput(content.string));
+        const content = promptContentText(entry.object.get("content") orelse return error.TestExpectedToolResultMissing) orelse
+            return error.TestExpectedToolResultMissing;
+        try std.testing.expect(tool_result_errors.isToolExecutionFailedOutput(content));
 
-        var failure = try std.json.parseFromSlice(std.json.Value, alloc, content.string, .{});
+        var failure = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
         defer failure.deinit();
         const error_obj = failure.value.object.get("error").?.object;
         try std.testing.expectEqualStrings("tool_execution_failed", error_obj.get("type").?.string);

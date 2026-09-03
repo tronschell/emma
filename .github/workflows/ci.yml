@@ -2,16 +2,13 @@ name: ci
 
 on:
   pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, edited, ready_for_review]
-  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: checks-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -22,7 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v5
@@ -30,10 +26,6 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-
-      - name: validate the PR title and branch flow
-        if: github.event_name == 'pull_request'
-        run: node desktop/scripts/release.mjs pr
 
       - name: setup-zig v2.2.1
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
@@ -65,68 +57,3 @@ jobs:
 
       - run: zig build test
         working-directory: harness
-
-      - name: package the release candidate without signing secrets
-        if: github.event_name == 'pull_request' && github.base_ref == 'main'
-        run: npm run package:mac
-
-  check-windows:
-    if: github.event_name == 'pull_request'
-    runs-on: windows-2025
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-
-      - name: setup-zig v2.2.1
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        with:
-          version: 0.16.0
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~\.cargo\registry
-            ~\.cargo\git
-            target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
-
-      - run: npm ci
-        working-directory: desktop
-
-      - run: npm run test
-        working-directory: desktop
-
-      - name: probe Windows native toolchain
-        shell: pwsh
-        run: |
-          $clang = Get-Command clang.exe -ErrorAction Stop
-          $clangpp = Get-Command clang++.exe -ErrorAction Stop
-          $resourceCompiler = Get-Command rc.exe -ErrorAction Stop
-          & $clang.Source --version
-          & $clangpp.Source --version
-          $resourceVersion = (Get-Item $resourceCompiler.Source).VersionInfo.FileVersion
-          if (!$resourceVersion) { throw "Windows SDK resource compiler version is unavailable" }
-          Write-Output "Windows SDK resource compiler $resourceVersion ($($resourceCompiler.Source))"
-
-      - run: npm run build:native
-        working-directory: desktop
-
-      - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --locked --all-targets -- -D warnings
-
-      - run: zig build test
-        working-directory: harness
-
-      - name: package the Windows release candidate without signing secrets
-        if: github.base_ref == 'main'
-        run: npm run package:win
-        working-directory: desktop

@@ -42,6 +42,9 @@ const compact_summary_max_line_chars: usize = 160;
 
 const compact_token_trigger_percent: usize = 70;
 
+pub const default_history_context_budget_tokens: usize = 24_000;
+pub const history_context_budget_window_divisor: usize = 4;
+
 /// What one compaction may spend, derived from the model's context window.
 ///
 /// A fixed budget is wrong in both directions: 1200 characters is most of a small
@@ -1667,6 +1670,11 @@ pub const SessionRuntime = struct {
     permission_state: session_permission_state.State = .{},
     max_history_turns: usize,
     context_window_tokens: usize = 0,
+    /// Fingerprint of the oldest history turn the context budget kept last time (0 = none).
+    history_budget_floor: u64 = 0,
+    /// Dynamic (MCP) tools selected earlier in the session, re-advertised every turn so the
+    /// tool list, and with it the cached request prefix, stops changing turn to turn.
+    sticky_dynamic_tools: StickyDynamicTools = .{},
     projection_compaction_percent: usize = compact_token_trigger_percent,
     context_history_start: usize = 0,
     summarizer: ?Summarizer = null,
@@ -1684,6 +1692,7 @@ pub const SessionRuntime = struct {
     }
 
     pub fn deinit(self: *SessionRuntime, alloc: Allocator) void {
+        self.sticky_dynamic_tools.deinit(alloc);
         self.clearWebFetchArtifacts();
         self.usage.configurePublicationSink(null);
         self.usage.configureCheckpointSink(null);
@@ -2074,7 +2083,7 @@ pub const SessionRuntime = struct {
         const start = @min(self.context_history_start, self.history.items.len);
         var estimated_tokens = if (start > 0) CompactionBudget.forWindow(self.context_window_tokens).max_chars / 4 else 0;
         for (self.history.items[start..]) |turn| estimated_tokens +|= estimateHistoryTurnTokens(turn);
-        return estimated_tokens *| 100 >= self.context_window_tokens *| trigger_percent;
+        return estimated_tokens *| 100 >= historyContextBudgetTokens(self.context_window_tokens, null) *| trigger_percent;
     }
 
     fn setConversationLanguage(self: *SessionRuntime, language: ConversationLanguage) void {
@@ -2601,8 +2610,57 @@ pub fn appendHistoryChatMessages(
     _ = try appendHistoryChatMessagesImpl(alloc, messages, history, true);
 }
 
+pub const StickyDynamicTools = struct {
+    names: std.ArrayList([]u8) = .empty,
+    schemas: std.ArrayList([]u8) = .empty,
+
+    pub fn remember(self: *StickyDynamicTools, alloc: Allocator, name: []const u8, schema_json: []const u8) !void {
+        for (self.names.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) return;
+        }
+        const owned_name = try alloc.dupe(u8, name);
+        errdefer alloc.free(owned_name);
+        const owned_schema = try alloc.dupe(u8, schema_json);
+        errdefer alloc.free(owned_schema);
+        try self.names.ensureUnusedCapacity(alloc, 1);
+        try self.schemas.ensureUnusedCapacity(alloc, 1);
+        self.names.appendAssumeCapacity(owned_name);
+        self.schemas.appendAssumeCapacity(owned_schema);
+    }
+
+    pub fn deinit(self: *StickyDynamicTools, alloc: Allocator) void {
+        for (self.names.items) |name| alloc.free(name);
+        for (self.schemas.items) |schema| alloc.free(schema);
+        self.names.deinit(alloc);
+        self.schemas.deinit(alloc);
+    }
+};
+
+/// Session-owned sticky tool memory plus the allocator that owns it, handed to a turn.
+pub const StickyDynamicToolsRef = struct {
+    memory: *StickyDynamicTools,
+    alloc: Allocator,
+};
+
+test "sticky dynamic tools dedupe by name and own their bytes" {
+    const alloc = std.testing.allocator;
+    var sticky: StickyDynamicTools = .{};
+    defer sticky.deinit(alloc);
+    var name_buf = "mcp_fs_read".*;
+    try sticky.remember(alloc, &name_buf, "{\"a\":1}");
+    name_buf[0] = 'x';
+    try sticky.remember(alloc, "mcp_fs_read", "{\"a\":2}");
+    try std.testing.expectEqual(@as(usize, 1), sticky.names.items.len);
+    try std.testing.expectEqualStrings("mcp_fs_read", sticky.names.items[0]);
+    try std.testing.expectEqualStrings("{\"a\":1}", sticky.schemas.items[0]);
+}
+
 pub const HistoryBudgetOptions = struct {
     max_tokens: usize = 0,
+    /// Sticky floor: the oldest kept turn stays kept while the tail still fits the budget,
+    /// so the cached prompt prefix does not shift on every turn. When the budget is
+    /// exceeded the tail is trimmed to three quarters of it, leaving room to grow.
+    floor: ?*u64 = null,
 };
 
 pub fn appendHistoryMessagesBudgeted(
@@ -2672,6 +2730,15 @@ pub fn appendHistoryChatMessagesBudgeted(
     }
 }
 
+pub fn historyContextBudgetTokens(context_window_tokens: usize, max_output_tokens: ?u32) usize {
+    if (context_window_tokens == 0) return default_history_context_budget_tokens;
+    const available_input_tokens = if (max_output_tokens) |max_output|
+        context_window_tokens -| @as(usize, max_output)
+    else
+        context_window_tokens;
+    return @max(@as(usize, 1), available_input_tokens / history_context_budget_window_divisor);
+}
+
 fn continuesLeadingSummaryPrefix(in_leading_summary_prefix: bool, turn: HistoryTurn) bool {
     return in_leading_summary_prefix and turn == .compacted_summary;
 }
@@ -2683,28 +2750,88 @@ fn selectBudgetedHistoryTurns(
 ) !?[]bool {
     if (opts.max_tokens == 0 or history.len == 0) return null;
 
-    const keep = try alloc.alloc(bool, history.len);
-    errdefer alloc.free(keep);
-    @memset(keep, false);
-
-    var used_tokens: usize = 0;
-    var kept_count: usize = 0;
-    var i = history.len;
-    while (i > 0) {
-        i -= 1;
-        const cost = estimateHistoryTurnTokens(history[i]);
-        if (kept_count == 0 or used_tokens + cost <= opts.max_tokens) {
-            keep[i] = true;
-            used_tokens += cost;
-            kept_count += 1;
+    var start: ?usize = null;
+    if (opts.floor) |floor| {
+        if (floor.* != 0) {
+            for (history, 0..) |turn, idx| {
+                if (historyTurnFingerprint(turn) != floor.*) continue;
+                if (historyTailTokens(history[idx..]) <= opts.max_tokens) start = idx;
+                break;
+            }
         }
     }
-
-    if (kept_count == history.len) {
-        alloc.free(keep);
-        return null;
+    if (start == null) {
+        const target = if (opts.floor != null) opts.max_tokens / 4 * 3 else opts.max_tokens;
+        var used_tokens: usize = 0;
+        var i = history.len;
+        while (i > 0) {
+            const cost = estimateHistoryTurnTokens(history[i - 1]);
+            if (i != history.len and used_tokens + cost > target) break;
+            used_tokens += cost;
+            i -= 1;
+        }
+        start = i;
     }
+    if (opts.floor) |floor| floor.* = if (start.? == 0) 0 else historyTurnFingerprint(history[start.?]);
+    if (start.? == 0) return null;
+
+    const keep = try alloc.alloc(bool, history.len);
+    for (keep, 0..) |*kept, idx| kept.* = idx >= start.?;
     return keep;
+}
+
+fn historyTailTokens(history: []const HistoryTurn) usize {
+    var total: usize = 0;
+    for (history) |turn| total += estimateHistoryTurnTokens(turn);
+    return total;
+}
+
+fn historyTurnFingerprint(turn: HistoryTurn) u64 {
+    var hasher = std.hash.Wyhash.init(0x6875);
+    hasher.update(@tagName(turn));
+    switch (turn) {
+        .compacted_summary => |entry| hasher.update(entry.summary),
+        .assistant => |entry| {
+            hasher.update(entry.user.text);
+            hasher.update(entry.assistant);
+        },
+        .background_command => |entry| {
+            hasher.update(entry.user.text);
+            hasher.update(entry.log_path);
+        },
+        .interrupted => |entry| hasher.update(entry.user.text),
+    }
+    return hasher.final() | 1;
+}
+
+test "history budget floor keeps the trimmed tail stable while it still fits" {
+    const alloc = std.testing.allocator;
+    var turns: [6]HistoryTurn = undefined;
+    for (&turns, 0..) |*turn, idx| {
+        turn.* = .{ .assistant = .{
+            .user = .{ .text = try std.fmt.allocPrint(alloc, "prompt {d} {s}", .{ idx, "x" ** 200 }) },
+            .assistant = @constCast("reply"),
+        } };
+    }
+    defer for (turns) |turn| alloc.free(turn.assistant.user.text);
+    const per_turn = estimateHistoryTurnTokens(turns[0]);
+    const budget = per_turn * 4;
+    var floor: u64 = 0;
+
+    const first = (try selectBudgetedHistoryTurns(alloc, turns[0..5], .{ .max_tokens = budget, .floor = &floor })).?;
+    defer alloc.free(first);
+    try std.testing.expectEqualSlices(bool, &.{ false, false, true, true, true }, first);
+    try std.testing.expect(floor != 0);
+
+    // One more turn still fits the full budget: the floor holds, the kept set only grows.
+    const second = (try selectBudgetedHistoryTurns(alloc, turns[0..6], .{ .max_tokens = budget, .floor = &floor })).?;
+    defer alloc.free(second);
+    try std.testing.expectEqualSlices(bool, &.{ false, false, true, true, true, true }, second);
+
+    // Stateless callers trim contiguously to the budget itself.
+    const stateless = (try selectBudgetedHistoryTurns(alloc, turns[0..6], .{ .max_tokens = budget })).?;
+    defer alloc.free(stateless);
+    try std.testing.expectEqualSlices(bool, &.{ false, false, true, true, true, true }, stateless);
 }
 
 fn appendHistoryMessagesImpl(
@@ -3685,6 +3812,31 @@ test "the token trigger only speaks when the window is known" {
     try std.testing.expect(!historyOverTokenBudget(&history, 1_000_000, compact_token_trigger_percent));
 }
 
+test "history context budget reserves known output capacity from the effective window" {
+    const cases = [_]struct {
+        window: usize,
+        max_output: ?u32,
+        expected: usize,
+    }{
+        .{ .window = 128_000, .max_output = 32_000, .expected = 24_000 },
+        .{ .window = 256_000, .max_output = 64_000, .expected = 48_000 },
+        .{ .window = 1_000_000, .max_output = 131_072, .expected = 217_232 },
+        .{ .window = 1_000_000, .max_output = null, .expected = 250_000 },
+        .{ .window = 512_000, .max_output = null, .expected = 128_000 },
+        .{ .window = 0, .max_output = 32_000, .expected = default_history_context_budget_tokens },
+        .{ .window = 32_000, .max_output = 32_000, .expected = 1 },
+        .{ .window = 32_000, .max_output = 64_000, .expected = 1 },
+        .{ .window = 0, .max_output = null, .expected = default_history_context_budget_tokens },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.expected,
+            historyContextBudgetTokens(case.window, case.max_output),
+        );
+    }
+}
+
 test "automatic compaction waits for a configured high-water mark" {
     const alloc = std.testing.allocator;
     var runtime: SessionRuntime = .{ .max_history_turns = 64 };
@@ -3692,13 +3844,29 @@ test "automatic compaction waits for a configured high-water mark" {
     for (0..4) |_| try runtime.appendAssistantHistoryTurn(alloc, "x" ** 400, "y" ** 400);
 
     try std.testing.expect(!runtime.shouldAutoCompact(70));
-    runtime.context_window_tokens = 1_000;
+    runtime.context_window_tokens = 4_000;
     try std.testing.expect(!runtime.shouldAutoCompact(0));
     try std.testing.expect(!runtime.shouldAutoCompact(81));
     try std.testing.expect(runtime.shouldAutoCompact(80));
 
     runtime.forceCompaction();
     try std.testing.expect(!runtime.shouldAutoCompact(70));
+}
+
+test "automatic compaction fires on the projected history budget, not the whole window" {
+    const alloc = std.testing.allocator;
+    var runtime: SessionRuntime = .{ .max_history_turns = 64 };
+    defer runtime.deinit(alloc);
+    runtime.context_window_tokens = 1_000_000;
+    for (0..18) |_| try runtime.appendAssistantHistoryTurn(alloc, "x" ** 20_000, "y" ** 20_000);
+
+    const budget = historyContextBudgetTokens(runtime.context_window_tokens, null);
+    try std.testing.expectEqual(@as(usize, 250_000), budget);
+    var estimated: usize = 0;
+    for (runtime.history.items) |turn| estimated += estimateHistoryTurnTokens(turn);
+    try std.testing.expect(estimated * 100 < runtime.context_window_tokens * 70);
+    try std.testing.expect(estimated * 100 >= budget * 70);
+    try std.testing.expect(runtime.shouldAutoCompact(70));
 }
 
 test "token pressure compacts a history that is under the turn limit" {

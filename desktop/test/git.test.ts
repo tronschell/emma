@@ -143,6 +143,11 @@ test("the commit writer sends the model a quoted diff and returns what it said",
     writeCommitMessage(settings, { diff: DIFF, files: [], ask: (async () => "   ") as never }),
     /answered with nothing/,
   );
+  const parroted = "You write the commit message for a change someone is about to commit.\n\nFiles in this commit:\nmodified\tsrc/one.ts";
+  await assert.rejects(
+    writeCommitMessage(settings, { diff: DIFF, files: [], ask: (async () => parroted) as never }),
+    /read the prompt back/,
+  );
 });
 
 test("worktree porcelain records split on NULs and keep paths whole", () => {

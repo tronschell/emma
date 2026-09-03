@@ -65,7 +65,7 @@ test "built-in modes register exact ACP order and permission policy" {
 
 test "every mode opens with the workhorse tools and the search door" {
     const always = [_][]const u8{ "read_file", "glob_files", "grep_files", "list_files", "search_tools", "select_tool" };
-    const writable = [_][]const u8{ "edit_file", "write_file", "terminal" };
+    const writable = [_][]const u8{ "edit_file", "write_file", "terminal", "task_list" };
     inline for (&.{ "plan", "ask", "acceptEdits", "full" }) |mode_id| {
         var projection = try registry.buildGatewayToolProjection(
             std.testing.allocator,

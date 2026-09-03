@@ -92,6 +92,17 @@ const safety_section =
     \\
 ;
 
+const task_tracking_section =
+    \\# Task tracking
+    \\
+    \\- task_list is advertised every turn and renders in the user's window. Write one before work that takes several meaningful steps you will carry out yourself. Skip it for simple or single-step work; use plan when independent parts should run in parallel subagents.
+    \\- Break the job into ordered steps that are verifiable when done, nesting subtasks under the task they serve. No filler steps, and none you cannot carry out.
+    \\- Keep exactly one task in_progress: set it before working that task, never jump pending straight to completed, and do not batch-complete after the fact.
+    \\- Rewrite the list when understanding changes instead of letting it go stale, and end the turn with every task completed or blocked.
+    \\- Do not repeat the list back in the reply. Say what changed and what is next.
+    \\
+;
+
 const tools_and_verification_section =
     \\# Tools and verification
     \\
@@ -99,7 +110,7 @@ const tools_and_verification_section =
     \\- Do this before answering that something is out of reach, and before substituting a shell command for a tool that exists.
     \\- What is behind that door, when the session carries it: files, language-server symbols, commands and long-running processes, the web, skills, delegated agents and threads, plans and goals, a browser, the machine itself, durable memory, and connected MCP servers. Search for the capability; the search names the tool.
     \\- advisor is a stronger reviewer that already sees this conversation and receives none of it from you. Consult it before substantive work, when you are stuck, before changing approach, and when you believe the work is done. When your evidence contradicts it, name the conflict and ask again rather than switching silently.
-    \\- vision is how an image becomes readable when the model cannot see one natively: it reads attached images or local image paths. A model that cannot see attached images is refused every other tool while any are pending, so call vision first.
+    \\- vision reads image files by local path, and attached images only for a model that cannot see them natively; such a model is refused every other tool while attached images are pending, so it calls vision first. A model that sees the attached images in its message answers from them and never calls vision for them.
     \\- Choose the smallest suitable capability.
     \\- A call whose arguments and result you have already seen is not progress. Do not repeat one; two steps that add no new evidence mean change approach or stop and report.
     \\- While a delegated agent runs, do work that does not overlap it. When you need its result, wait once with that tool's own wait, never by polling, sleeping, or re-reading state.
@@ -113,6 +124,7 @@ pub const gateway_system_prompt =
     source_routing_section ++
     interaction_section ++
     safety_section ++
+    task_tracking_section ++
     tools_and_verification_section;
 
 pub fn modelPromptOverlay(model: []const u8) ?[]const u8 {
@@ -2964,10 +2976,12 @@ fn appendTransient(input: TransientContextInput, arena: Allocator, messages: *st
             "{s}\nRuntime context: this is a noninteractive run without live question UI; when a user-owned decision remains after inspection, stop and surface a concrete blocker in freeform text with the available options. Do not recommend or label one option as preferred.",
             .{turn_context},
         );
-    try messages.append(arena, .{ .role = .system, .content = content });
+    // Session-stable lines ride in the cached prefix; only the per-turn state below trails the conversation.
+    const split = try splitVolatileTurnContext(arena, content);
+    try messages.append(arena, .{ .role = .system, .content = split.stable, .cache_policy = .prefix });
     try appendWorkspaceAccessContext(input.access_scope, arena, messages);
     if (input.permission_mode != .ask) {
-        try messages.append(arena, .{ .role = .system, .content = permissionModeContext(input.permission_mode) });
+        try messages.append(arena, .{ .role = .system, .content = permissionModeContext(input.permission_mode), .cache_policy = .prefix });
     }
     try appendSandboxContext(input.sandbox_backend, arena, messages);
     try appendFocusedVerificationContext(input.tracker, arena, messages);
@@ -3002,6 +3016,37 @@ fn appendTransient(input: TransientContextInput, arena: Allocator, messages: *st
     }
 
     try appendNonLiveBackgroundHistoryContext(input.background, input.session, arena, messages);
+    if (split.live) |live| try messages.append(arena, .{ .role = .system, .content = live });
+}
+
+/// Lines of the turn context that change within a session (date, git branch, worktree state).
+/// They leave the cached prefix and trail the conversation in their own message.
+const volatile_turn_context_keys = [_][]const u8{ "date_utc: ", "git_branch: ", "git_worktree: " };
+
+fn splitVolatileTurnContext(arena: Allocator, fragment: []const u8) !struct { stable: []const u8, live: ?[]const u8 } {
+    var stable: std.Io.Writer.Allocating = .init(arena);
+    defer stable.deinit();
+    var live: std.Io.Writer.Allocating = .init(arena);
+    defer live.deinit();
+    var lines = std.mem.splitScalar(u8, fragment, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        var is_live = false;
+        for (volatile_turn_context_keys) |key| {
+            if (std.mem.startsWith(u8, line, key)) is_live = true;
+        }
+        if (is_live) {
+            if (live.writer.end > 0) try live.writer.writeByte('\n');
+            try live.writer.writeAll(line);
+            continue;
+        }
+        if (!first) try stable.writer.writeByte('\n');
+        first = false;
+        try stable.writer.writeAll(line);
+    }
+    if (live.writer.end == 0) return .{ .stable = try stable.toOwnedSlice(), .live = null };
+    const live_text = try std.fmt.allocPrint(arena, "<fx-turn-state>\n{s}\n</fx-turn-state>", .{live.written()});
+    return .{ .stable = try stable.toOwnedSlice(), .live = live_text };
 }
 
 fn appendWorkspaceAccessContext(
@@ -3027,7 +3072,7 @@ fn appendWorkspaceAccessContext(
         try model_context_encoding.writeScalar(&note.writer, entry.path);
         try note.writer.writeByte('\n');
     }
-    try messages.append(arena, .{ .role = .system, .content = try note.toOwnedSlice() });
+    try messages.append(arena, .{ .role = .system, .content = try note.toOwnedSlice(), .cache_policy = .prefix });
 }
 
 fn appendFocusedVerificationContext(tracker: ?*change_tracker.ChangeTracker, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
@@ -3125,6 +3170,7 @@ fn appendSandboxContext(sandbox_backend: sandbox.BackendKind, arena: Allocator, 
     switch (sandbox.resolveBackend(sandbox_backend)) {
         .macos => try messages.append(arena, .{
             .role = .system,
+            .cache_policy = .prefix,
             .content = "Runtime context: shell commands run inside the operating system sandbox. " ++
                 "File writes are restricted to the workspace directory and /tmp. " ++
                 "Commands from package managers (npm, npx, yarn, pip, cargo, brew, etc.) automatically prompt the user for broader file access before running. " ++
@@ -3218,7 +3264,10 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     var messages: std.ArrayList(ChatMessage) = .empty;
     try appendStatic(rt.staticInput(), arena, &messages);
     try appendTransient(rt.transientInput(), arena, &messages);
-    try std.testing.expectEqual(@as(usize, if (os_sandbox_available) 3 else 2), messages.items.len);
+    try std.testing.expectEqual(@as(usize, if (os_sandbox_available) 4 else 3), messages.items.len);
+    try expectContains(messages.items[messages.items.len - 1].content.?, "<fx-turn-state>");
+    try expectContains(messages.items[messages.items.len - 1].content.?, "date_utc:");
+    try expectNotContains(messages.items[1].content.?, "date_utc:");
     try std.testing.expectEqualStrings("project facts", messages.items[0].content.?);
     try expectContains(messages.items[1].content.?, "<fx-turn-context>");
     try expectContains(messages.items[1].content.?, "workspace_root: /tmp");
@@ -3242,11 +3291,11 @@ test "runtime context ordering public sandbox modes and background snapshot" {
         try appendTransient(variant_rt.transientInput(), arena, &variant_messages);
         try expectContains(variant_messages.items[0].content.?, "<fx-turn-context>");
         if (variant.expected) |expected| {
-            try std.testing.expectEqual(@as(usize, 2), variant_messages.items.len);
+            try std.testing.expectEqual(@as(usize, 3), variant_messages.items.len);
             try std.testing.expectEqual(types.ChatRole.system, variant_messages.items[1].role);
             try std.testing.expectEqualStrings(expected, variant_messages.items[1].content.?);
         } else {
-            try std.testing.expectEqual(@as(usize, 1), variant_messages.items.len);
+            try std.testing.expectEqual(@as(usize, 2), variant_messages.items.len);
         }
     }
 
@@ -3307,7 +3356,7 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     var bg_messages: std.ArrayList(ChatMessage) = .empty;
     try appendStatic(bg_rt.staticInput(), arena, &bg_messages);
     try appendTransient(bg_rt.transientInput(), arena, &bg_messages);
-    try std.testing.expectEqual(@as(usize, 2), bg_messages.items.len);
+    try std.testing.expectEqual(@as(usize, 3), bg_messages.items.len);
     try expectContains(bg_messages.items[0].content.?, "<fx-turn-context>");
     try expectNotContains(bg_messages.items[0].content.?, "without sandbox isolation");
     try expectContains(bg_messages.items[1].content.?, "1 background command is running");
@@ -3328,7 +3377,7 @@ test "runtime context ordering public sandbox modes and background snapshot" {
     var starting_messages: std.ArrayList(ChatMessage) = .empty;
     try appendStatic(starting_rt.staticInput(), arena, &starting_messages);
     try appendTransient(starting_rt.transientInput(), arena, &starting_messages);
-    try std.testing.expectEqual(@as(usize, 2), starting_messages.items.len);
+    try std.testing.expectEqual(@as(usize, 3), starting_messages.items.len);
     try expectContains(starting_messages.items[0].content.?, "<fx-turn-context>");
     try expectContains(starting_messages.items[1].content.?, "url=pending");
 }
@@ -3399,7 +3448,7 @@ test "runtime context composes exact auto mode with noninteractive blockers and 
     try expectContains(messages.items[0].content.?, "surface a concrete blocker in freeform text");
     try expectContains(messages.items[0].content.?, "Do not recommend or label one option as preferred");
     try expectNotContains(messages.items[0].content.?, "ask_user_question");
-    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
     try std.testing.expectEqual(types.ChatRole.system, messages.items[1].role);
     try std.testing.expectEqualStrings(
         "Runtime context: permission mode is auto. After configured rules, session grants, and deterministic safe-tool authority, fx reviews each unresolved sensitive tool call once. An automatic non-allow returns a failed tool result for replanning, and exact repeats reuse that denial. Choose a materially different safe action, or when that result contains approval_request_id call ask_user_question with that exact ID to enter fx's real permission screen. Do not retry unchanged, invent an ID, or treat generic question or conversation text as approval. Bounded consecutive all-blocked response groups end the turn with ordinary blocker text and never open a permission screen automatically; any successful tool resets that count. Tool admission and exact live revalidation remain authoritative.",
@@ -3577,7 +3626,7 @@ test "runtime context reports non-live background history without making it reus
     var messages: std.ArrayList(ChatMessage) = .empty;
     try appendTransient(rt.transientInput(), arena, &messages);
 
-    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try std.testing.expectEqual(@as(usize, 4), messages.items.len);
     try expectContains(messages.items[0].content.?, "<fx-turn-context>");
     try expectContains(messages.items[1].content.?, "1 background command is running");
     try expectContains(messages.items[1].content.?, running_log);
@@ -3642,7 +3691,7 @@ fn checkPromptContextSnapshotAllocationFailures(alloc: Allocator, live_log: []co
         error.WriteFailed => return error.OutOfMemory,
         else => return err,
     };
-    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try std.testing.expectEqual(@as(usize, 4), messages.items.len);
     try expectContains(messages.items[1].content.?, live_log);
     try expectContains(messages.items[2].content.?, historical_log);
 }
@@ -3662,6 +3711,7 @@ test "gateway_system_prompt: compact ordered sections" {
         .{ .heading = "# Source routing", .text = source_routing_section },
         .{ .heading = "# Interaction", .text = interaction_section },
         .{ .heading = "# Safety", .text = safety_section },
+        .{ .heading = "# Task tracking", .text = task_tracking_section },
         .{ .heading = "# Tools and verification", .text = tools_and_verification_section },
     };
 
@@ -3776,8 +3826,9 @@ test "gateway_system_prompt: focused tools and live verification" {
     try expectDefaultPromptContains("before substituting a shell command for a tool that exists");
     try expectDefaultPromptContains("What is behind that door, when the session carries it");
     try expectDefaultPromptContains("advisor is a stronger reviewer that already sees this conversation");
-    try expectDefaultPromptContains("vision is how an image becomes readable when the model cannot see one natively");
-    try expectDefaultPromptContains("refused every other tool while any are pending");
+    try expectDefaultPromptContains("vision reads image files by local path");
+    try expectDefaultPromptContains("refused every other tool while attached images are pending");
+    try expectDefaultPromptContains("answers from them and never calls vision for them");
     try expectDefaultPromptContains("Choose the smallest suitable capability.");
     try expectDefaultPromptContains("verify the relevant behavior with direct checks");
     try expectDefaultPromptContains("Broaden when the touched surface is shared");

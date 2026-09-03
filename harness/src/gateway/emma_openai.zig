@@ -24,6 +24,44 @@ pub const max_routed_model_bytes = 256;
 
 pub const default_chat_url = "https://openrouter.ai/api/v1/chat/completions";
 pub const chat_url_env = "EMMA_PROVIDER_CHAT_URL";
+pub const stream_silence_env = "EMMA_STREAM_SILENCE_MS";
+const default_stream_silence_ms: i64 = 3 * std.time.ms_per_min;
+var test_stream_silence_ms: ?i64 = null;
+
+const StreamSilence = struct {
+    limit_ms: i64,
+    last_ms: std.atomic.Value(i64),
+
+    fn init(limit_ms: i64) StreamSilence {
+        return .{ .limit_ms = limit_ms, .last_ms = .init(io_mod.milliTimestamp()) };
+    }
+
+    fn touch(self: *StreamSilence) void {
+        self.last_ms.store(io_mod.milliTimestamp(), .seq_cst);
+    }
+
+    fn overdue(self: *const StreamSilence) bool {
+        if (self.limit_ms <= 0) return false;
+        return io_mod.milliTimestamp() - self.last_ms.load(.seq_cst) > self.limit_ms;
+    }
+};
+
+fn streamSilenceLimitMs() i64 {
+    if (@import("builtin").is_test) {
+        if (test_stream_silence_ms) |limit| return limit;
+    }
+    const raw = io_mod.getenv(stream_silence_env) orelse return default_stream_silence_ms;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return default_stream_silence_ms;
+    return std.fmt.parseInt(i64, trimmed, 10) catch default_stream_silence_ms;
+}
+
+fn waitForStreamSilence(silence: *StreamSilence) anyerror!void {
+    while (!silence.overdue()) {
+        try io_mod.getIo().sleep(.fromMilliseconds(50), .awake);
+    }
+}
+
 const openrouter_session_id_prefix = "emma-openrouter-session-v1:";
 const openrouter_session_id_bytes = openrouter_session_id_prefix.len + Sha256.digest_length * 2;
 
@@ -72,6 +110,17 @@ fn openRouterSessionHeader(
     if (id.len == 0) return null;
     value.* = openRouterSessionId(id);
     return .{ .name = "x-session-id", .value = value[0..] };
+}
+
+fn promptCacheKeyTarget(url: []const u8) bool {
+    const uri = std.Uri.parse(url) catch return false;
+    const host_component = uri.host orelse return false;
+    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const host = host_component.toRaw(&host_buf) catch return false;
+    return std.ascii.eqlIgnoreCase(host, "openrouter.ai") or
+        std.ascii.eqlIgnoreCase(host, "api.openai.com") or
+        std.mem.eql(u8, host, "127.0.0.1") or
+        std.ascii.eqlIgnoreCase(host, "localhost");
 }
 
 fn zeroRetentionRequested() bool {
@@ -135,10 +184,10 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     }
 
     const prompt_caching = request.provider_options.prompt_caching and explicitCachingTarget(request.model);
-    const cache_breakpoint_idx = if (prompt_caching)
-        gateway_json.findCacheBreakpoint(request.messages)
+    const cache_marks = if (prompt_caching)
+        gateway_json.findCacheMarks(request.messages)
     else
-        null;
+        gateway_json.CacheMarks{};
     var prefix_cacheable = true;
 
     try w.writeAll(",\"messages\":[");
@@ -149,12 +198,12 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
             request.verified_images
         else
             null;
-        const use_cache = prefix_cacheable and gateway_json.shouldCacheMessage(
+        const use_cache = if (prefix_cacheable) gateway_json.cacheTtlForMessage(
             message,
             index,
-            cache_breakpoint_idx,
+            cache_marks,
             prompt_caching,
-        );
+        ) else .none;
         try writeMessage(alloc, w, message, verified, budget, use_cache);
         if (message.cache_policy == .no_cache) prefix_cacheable = false;
     }
@@ -185,8 +234,19 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     if (isOpenRouter(chatUrl()) and zeroRetentionRequested()) {
         try w.writeAll(",\"provider\":{\"data_collection\":\"deny\",\"zdr\":true}");
     }
+    if (promptCacheKeyTarget(chatUrl())) {
+        if (request.session_id) |session_id| if (session_id.len > 0) {
+            const key = openRouterSessionId(session_id);
+            try w.writeAll(",\"prompt_cache_key\":");
+            try std.json.Stringify.value(key[0..], .{}, w);
+        };
+    }
 
-    try w.writeAll(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}");
+    if (request.stream) {
+        try w.writeAll(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}");
+    } else {
+        try w.writeAll(",\"stream\":false}");
+    }
 
     const body = try out.toOwnedSlice();
     errdefer alloc.free(body);
@@ -200,7 +260,7 @@ fn writeMessage(
     message: types.ChatMessage,
     verified_images: ?[]const image_attachments.VerifiedSnapshot,
     budget: image_attachments.CaptureBudget,
-    cached: bool,
+    cached: gateway_json.CacheTtl,
 ) !void {
     try w.writeAll("{\"role\":");
     try std.json.Stringify.value(gateway_json.roleName(message.role), .{}, w);
@@ -213,10 +273,12 @@ fn writeMessage(
     try w.writeAll(",\"content\":");
     if (verified_images != null or message.images.len > 0) {
         try writeImageContentParts(alloc, w, message, verified_images, budget, cached);
-    } else if (cached and message.content != null and message.content.?.len > 0) {
+    } else if (cached != .none and message.content != null and message.content.?.len > 0) {
         try w.writeAll("[{\"type\":\"text\",\"text\":");
         try std.json.Stringify.value(message.content.?, .{}, w);
-        try w.writeAll(",\"cache_control\":{\"type\":\"ephemeral\"}}]");
+        try w.writeAll(",\"cache_control\":");
+        try w.writeAll(gateway_json.cacheControlJson(cached));
+        try w.writeAll("}]");
     } else {
         try std.json.Stringify.value(message.content orelse "", .{}, w);
     }
@@ -319,7 +381,7 @@ fn writeImageContentParts(
     message: types.ChatMessage,
     verified_images: ?[]const image_attachments.VerifiedSnapshot,
     budget: image_attachments.CaptureBudget,
-    cached: bool,
+    cached: gateway_json.CacheTtl,
 ) !void {
     try w.writeByte('[');
     var wrote_part = false;
@@ -327,7 +389,10 @@ fn writeImageContentParts(
         if (content.len > 0) {
             try w.writeAll("{\"type\":\"text\",\"text\":");
             try std.json.Stringify.value(content, .{}, w);
-            if (cached) try w.writeAll(",\"cache_control\":{\"type\":\"ephemeral\"}");
+            if (cached != .none) {
+                try w.writeAll(",\"cache_control\":");
+                try w.writeAll(gateway_json.cacheControlJson(cached));
+            }
             try w.writeByte('}');
             wrote_part = true;
         }
@@ -424,6 +489,7 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
     request.delivery.markPossiblySent();
     request.attempt_evidence.provider_admitted = true;
 
+    var silence = StreamSilence.init(streamSilenceLimitMs());
     const posted = post(.{
         .client = &client,
         .url = url,
@@ -433,11 +499,12 @@ fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) an
         .out = &out,
         .sink = &sink,
         .cancel_flag = request.cancel_flag,
+        .silence = &silence,
     }) catch |err| {
         request.attempt_evidence.network_failure = stream_provider.responseFailureEvidence(
             err,
             request.delivery.load(),
-        );
+        ) orelse gateway_client.networkFailureEvidence(err, request.delivery.load());
         return err;
     };
 
@@ -529,6 +596,7 @@ const SseSink = struct {
     tools: std.ArrayList(SseToolFragment) = .empty,
     routed_model: ?[]u8 = null,
     finish_reason: ?types.ProviderFinishReason = null,
+    failure_detail: ?[]u8 = null,
     usage: types.Usage = .{},
     payload_bytes: usize = 0,
 
@@ -539,12 +607,15 @@ const SseSink = struct {
         self.tools.deinit(self.alloc);
         if (self.routed_model) |routed| self.alloc.free(routed);
         self.routed_model = null;
+        if (self.failure_detail) |detail| self.alloc.free(detail);
+        self.failure_detail = null;
     }
 
     fn consumeStream(
         self: *@This(),
         reader: *std.Io.Reader,
         cancel_flag: *std.atomic.Value(bool),
+        silence: *StreamSilence,
     ) !void {
         var event_reader = gateway_client.SseEventReader{ .max_line_bytes = max_response_bytes };
         defer event_reader.deinit(self.alloc);
@@ -552,6 +623,7 @@ const SseSink = struct {
         while (true) {
             if (cancel_flag.load(.seq_cst)) return error.Cancelled;
             const event = try event_reader.next(self.alloc, reader);
+            silence.touch();
             defer event_reader.releaseLine();
             switch (event) {
                 .data => |json_text| try self.consume(json_text),
@@ -595,6 +667,14 @@ const SseSink = struct {
                     .cache_write_tokens = cacheWriteTokenCount(usage.object),
                     .cost_micro_usd = costMicroUsd(usage.object.get("cost")),
                 };
+            }
+        }
+
+        if (root.get("error")) |raised| {
+            if (raised == .object or (raised == .string and raised.string.len > 0)) {
+                try gateway_client.captureProviderFailureDetail(self.alloc, &self.failure_detail, parsed.value);
+                self.finish_reason = .provider_error;
+                return;
             }
         }
 
@@ -709,8 +789,16 @@ const SseSink = struct {
         }
         completion.tool_calls = try list.toOwnedSlice(self.alloc);
 
-        if (self.content.items.len == 0 and completion.tool_calls.len == 0) {
+        completion.finish_reason = self.finish_reason;
+        const disposition = types.classifyProviderCompletion(completion);
+        if (self.content.items.len == 0 and completion.tool_calls.len == 0 and
+            disposition != .provider_failure and disposition != .length_limited)
+        {
             return error.InvalidProviderResponse;
+        }
+        if (self.failure_detail) |detail| {
+            completion.provider_failure_detail = detail;
+            self.failure_detail = null;
         }
         completion.content = try self.alloc.dupe(u8, self.content.items);
         if (!self.reasoning_dropped and
@@ -723,7 +811,6 @@ const SseSink = struct {
             completion.routed_model = routed;
             self.routed_model = null;
         }
-        completion.finish_reason = self.finish_reason;
         completion.usage = self.usage;
         return completion;
     }
@@ -743,6 +830,7 @@ const PostCall = struct {
     out: *std.Io.Writer.Allocating,
     sink: *SseSink,
     cancel_flag: *std.atomic.Value(bool),
+    silence: *StreamSilence,
 
     fn run(self: PostCall) anyerror!PostOutcome {
         const uri = try std.Uri.parse(self.url);
@@ -772,7 +860,7 @@ const PostCall = struct {
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
         if (streamed) {
-            try self.sink.consumeStream(reader, self.cancel_flag);
+            try self.sink.consumeStream(reader, self.cancel_flag, self.silence);
             return .{ .status = status, .streamed = true };
         }
         _ = reader.streamRemaining(&self.out.writer) catch |err| switch (err) {
@@ -787,10 +875,12 @@ fn post(call: PostCall) anyerror!PostOutcome {
     const Event = union(enum) {
         posted: anyerror!PostOutcome,
         cancelled: anyerror!void,
+        silent: anyerror!void,
     };
-    var buffer: [2]Event = undefined;
+    var buffer: [3]Event = undefined;
     var select: std.Io.Select(Event) = .init(io_mod.getIo(), &buffer);
     try select.concurrent(.cancelled, gateway_client.waitForBoundedCancellation, .{call.cancel_flag});
+    try select.concurrent(.silent, waitForStreamSilence, .{call.silence});
     select.concurrent(.posted, PostCall.run, .{call}) catch |err| {
         select.cancelDiscard();
         return err;
@@ -806,6 +896,10 @@ fn post(call: PostCall) anyerror!PostOutcome {
             try result;
             return error.Cancelled;
         },
+        .silent => |result| {
+            try result;
+            return error.Timeout;
+        },
     }
 }
 
@@ -814,6 +908,7 @@ fn freeCompletion(alloc: Allocator, completion: *types.GatewayCompletion) void {
     if (completion.content) |content| alloc.free(@constCast(content));
     if (completion.reasoning) |reasoning| alloc.free(@constCast(reasoning));
     types.freeToolCallSlice(alloc, @constCast(completion.tool_calls));
+    if (completion.provider_failure_detail) |detail| alloc.free(@constCast(detail));
     completion.* = .{};
 }
 
@@ -831,6 +926,19 @@ fn parseCompletion(alloc: Allocator, body: []const u8) !types.GatewayCompletion 
     };
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProviderResponse;
+
+    if (parsed.value.object.get("error")) |raised| {
+        if (raised == .object or (raised == .string and raised.string.len > 0)) {
+            var detail: ?[]u8 = null;
+            errdefer if (detail) |value| alloc.free(value);
+            try gateway_client.captureProviderFailureDetail(alloc, &detail, parsed.value);
+            return .{
+                .finish_reason = .provider_error,
+                .provider_failure_detail = detail,
+                .content = try alloc.dupe(u8, ""),
+            };
+        }
+    }
 
     const choices = parsed.value.object.get("choices") orelse return error.InvalidProviderResponse;
     if (choices != .array or choices.array.items.len == 0) return error.InvalidProviderResponse;
@@ -886,11 +994,9 @@ fn parseCompletion(alloc: Allocator, body: []const u8) !types.GatewayCompletion 
 }
 
 fn finishReason(raw: []const u8) ?types.ProviderFinishReason {
-    if (std.mem.eql(u8, raw, "stop")) return .stop;
-    if (std.mem.eql(u8, raw, "length")) return .length;
-    if (std.mem.eql(u8, raw, "tool_calls")) return .tool_calls;
+    if (raw.len == 0) return null;
     if (std.mem.eql(u8, raw, "function_call")) return .tool_calls;
-    return null;
+    return types.ProviderFinishReason.parse_legacy(raw) orelse .other;
 }
 
 fn tokenCount(value: ?std.json.Value) ?u64 {
@@ -1017,9 +1123,44 @@ test "native request marks one stable cache boundary" {
     defer alloc.free(body);
 
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "\"cache_control\":{\"type\":\"ephemeral\"}"));
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"stable system\",\"cache_control\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"first answer\",\"cache_control\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"current question\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}"));
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"stable system\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"first question\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"first answer\",\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"current question\",\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+}
+
+test "native request keys the prompt cache to the session on cache-aware hosts" {
+    const alloc = std.testing.allocator;
+    const messages = [_]types.ChatMessage{
+        .{ .role = .system, .content = "stable system" },
+        .{ .role = .user, .content = "question" },
+    };
+    const body = try build(null, alloc, .{
+        .model = "openai/gpt-5",
+        .serialized_tools = "[]",
+        .messages = &messages,
+        .tool_choice = .auto,
+        .provider_options = .{},
+        .session_id = "session-abc",
+    });
+    defer alloc.free(body);
+    const expected = openRouterSessionId("session-abc");
+    const key_idx = std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") orelse return error.TestExpectedCacheKey;
+    try std.testing.expect(std.mem.startsWith(u8, body[key_idx + "\"prompt_cache_key\":\"".len ..], expected[0..]));
+    try std.testing.expect(std.mem.indexOf(u8, body, "session-abc") == null);
+
+    const keyless = try build(null, alloc, .{
+        .model = "openai/gpt-5",
+        .serialized_tools = "[]",
+        .messages = &messages,
+        .tool_choice = .auto,
+        .provider_options = .{},
+    });
+    defer alloc.free(keyless);
+    try std.testing.expect(std.mem.indexOf(u8, keyless, "prompt_cache_key") == null);
+    try std.testing.expect(promptCacheKeyTarget("http://127.0.0.1:4321/v1/chat/completions"));
+    try std.testing.expect(!promptCacheKeyTarget("https://vision.example/v1/chat/completions"));
 }
 
 test "native request stops cache markers after a no-cache message" {
@@ -1040,7 +1181,8 @@ test "native request stops cache markers after a no-cache message" {
     });
     defer alloc.free(body);
 
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "\"cache_control\":{\"type\":\"ephemeral\"}"));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, body, "\"cache_control\":{\"type\":\"ephemeral\"}"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}"));
     const overlay = std.mem.indexOf(u8, body, "volatile overlay") orelse return error.TestExpectedOverlay;
     try std.testing.expect(std.mem.indexOf(u8, body[overlay..], "cache_control") == null);
 }
@@ -1096,12 +1238,12 @@ test "native request preserves text and tool content around cache markers" {
     });
     defer alloc.free(body);
 
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"Reading README.md\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"Reading README.md\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_call_id\":\"call_1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"read_file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"README contents\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"summarize it\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"README contents\",\"cache_control\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"summarize it\",\"cache_control\"") != null);
 }
 
 test "one model stays one model, and a chain becomes OpenRouter's fallback array" {
@@ -1229,6 +1371,22 @@ test "completion parsing accepts content, tool calls, and usage but rejects empt
     try std.testing.expectError(error.InvalidProviderResponse, parseCompletion(alloc, "{}"));
 }
 
+test "a buffered error object is a provider failure, not an unparseable completion" {
+    const alloc = std.testing.allocator;
+
+    var completion = try parseCompletion(alloc,
+        \\{"error":{"code":"1210","message":"context length exceeded for this model"}}
+    );
+    defer freeCompletion(alloc, &completion);
+
+    try std.testing.expectEqual(types.ProviderFinishReason.provider_error, completion.finish_reason.?);
+    try std.testing.expectEqual(
+        types.ProviderCompletionDisposition.provider_failure,
+        types.classifyProviderCompletion(completion),
+    );
+    try std.testing.expectEqualStrings("1210: context length exceeded for this model", completion.provider_failure_detail.?);
+}
+
 test "completion parsing frees earlier tool calls when a later call is invalid" {
     try std.testing.expectError(error.InvalidProviderResponse, parseCompletion(std.testing.allocator,
         \\{"model":"test/model","choices":[{"message":{"tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{}"}},null]}}]}
@@ -1353,7 +1511,8 @@ fn consumeSseForTest(
     defer sink.deinit();
     var source = std.Io.Reader.fixed(payload);
     var buffered = source.limited(.unlimited, transfer_buffer);
-    try sink.consumeStream(&buffered.interface, &harness.cancel_flag);
+    var silence = StreamSilence.init(0);
+    try sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence);
     return sink.finish();
 }
 
@@ -1387,6 +1546,65 @@ test "text deltas reach the callback one at a time and concatenate" {
     try std.testing.expectEqual(@as(?u64, 3), completion.usage.cache_read_tokens);
     try std.testing.expectEqual(@as(?u64, 1), completion.usage.cache_write_tokens);
     try std.testing.expectEqual(@as(?u64, 1_234), completion.usage.cost_micro_usd);
+}
+
+test "a provider-finished stream keeps its finish reason instead of reading as interrupted" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    const payload =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"I cannot help with\"},\"finish_reason\":\"content_filter\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+
+    var transfer_buffer: [4096]u8 = undefined;
+    var completion = try consumeSseForTest(&harness, payload, &transfer_buffer);
+    defer freeCompletion(alloc, &completion);
+
+    try std.testing.expectEqual(types.ProviderFinishReason.content_filter, completion.finish_reason.?);
+    try std.testing.expectEqual(types.ProviderCompletionDisposition.provider_failure, types.classifyProviderCompletion(completion));
+    try std.testing.expectEqual(types.ProviderFinishReason.other, finishReason("recitation").?);
+    try std.testing.expect(finishReason("") == null);
+
+    var empty_harness = StreamHarness.init(alloc);
+    defer empty_harness.deinit();
+    var empty_completion = try consumeSseForTest(
+        &empty_harness,
+        "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"content_filter\"}]}\n\ndata: [DONE]\n\n",
+        &transfer_buffer,
+    );
+    defer freeCompletion(alloc, &empty_completion);
+    try std.testing.expectEqual(types.ProviderFinishReason.content_filter, empty_completion.finish_reason.?);
+}
+
+test "a reasoning-only stream that hits the length limit finishes instead of erroring" {
+    const alloc = std.testing.allocator;
+    var transfer_buffer: [4096]u8 = undefined;
+
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+    var completion = try consumeSseForTest(
+        &harness,
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking hard\"}}]}\n\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" and harder\"}}]}\n\n" ++
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n" ++
+            "data: [DONE]\n\n",
+        &transfer_buffer,
+    );
+    defer freeCompletion(alloc, &completion);
+    try std.testing.expectEqual(types.ProviderFinishReason.length, completion.finish_reason.?);
+    try std.testing.expectEqual(types.ProviderCompletionDisposition.length_limited, types.classifyProviderCompletion(completion));
+    try std.testing.expectEqualStrings("", completion.content.?);
+
+    var stop_harness = StreamHarness.init(alloc);
+    defer stop_harness.deinit();
+    try std.testing.expectError(error.InvalidProviderResponse, consumeSseForTest(
+        &stop_harness,
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking hard\"}}]}\n\n" ++
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" ++
+            "data: [DONE]\n\n",
+        &transfer_buffer,
+    ));
 }
 
 test "an SSE frame split across a read boundary still parses" {
@@ -1462,9 +1680,10 @@ test "streaming holds the buffered bounds on tool call count and argument size" 
     var source = std.Io.Reader.fixed(payload.items);
     var transfer_buffer: [4096]u8 = undefined;
     var buffered = source.limited(.unlimited, &transfer_buffer);
+    var silence = StreamSilence.init(0);
     try std.testing.expectError(
         error.InvalidProviderResponse,
-        sink.consumeStream(&buffered.interface, &harness.cancel_flag),
+        sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence),
     );
 }
 
@@ -1493,7 +1712,8 @@ test "the response cap counts generated bytes, not SSE envelope bytes" {
     var source = std.Io.Reader.fixed(payload.items);
     var transfer_buffer: [4096]u8 = undefined;
     var buffered = source.limited(.unlimited, &transfer_buffer);
-    try sink.consumeStream(&buffered.interface, &harness.cancel_flag);
+    var silence = StreamSilence.init(0);
+    try sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence);
 
     try std.testing.expectEqual(@as(usize, chunks * 4 + 4), sink.payload_bytes);
     try std.testing.expect(payload.items.len > sink.payload_bytes * 20);
@@ -1518,12 +1738,69 @@ test "a mid stream cancellation abandons partial state without a leak" {
     var source = std.Io.Reader.fixed(payload);
     var transfer_buffer: [4096]u8 = undefined;
     var buffered = source.limited(.unlimited, &transfer_buffer);
+    var silence = StreamSilence.init(0);
 
     try std.testing.expectError(
         error.Cancelled,
-        sink.consumeStream(&buffered.interface, &harness.cancel_flag),
+        sink.consumeStream(&buffered.interface, &harness.cancel_flag, &silence),
     );
     try std.testing.expectEqualStrings("partial", harness.capture.text.items);
+}
+
+test "a mid stream error payload fails the turn with the provider message" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    const payload =
+        "data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n" ++
+        "data: {\"error\":{\"message\":\"You have hit your usage limit.\"}}\n\n" ++
+        "data: [DONE]\n\n";
+
+    var transfer_buffer: [4096]u8 = undefined;
+    var completion = try consumeSseForTest(&harness, payload, &transfer_buffer);
+    defer freeCompletion(alloc, &completion);
+
+    try std.testing.expectEqual(types.ProviderFinishReason.provider_error, completion.finish_reason.?);
+    try std.testing.expectEqualStrings("provider_error: You have hit your usage limit.", completion.provider_failure_detail.?);
+    try std.testing.expectEqualStrings("Hel", completion.content.?);
+}
+
+test "an error payload alone is a provider failure, not an empty turn" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    var transfer_buffer: [512]u8 = undefined;
+    var completion = try consumeSseForTest(
+        &harness,
+        "data: {\"error\":{\"message\":\"The ChatGPT run stopped early.\"}}\n\ndata: [DONE]\n\n",
+        &transfer_buffer,
+    );
+    defer freeCompletion(alloc, &completion);
+
+    try std.testing.expectEqual(types.ProviderCompletionDisposition.provider_failure, types.classifyProviderCompletion(completion));
+    try std.testing.expectEqualStrings("provider_error: The ChatGPT run stopped early.", completion.provider_failure_detail.?);
+}
+
+test "a raw error object streamed without an sse frame still fails the turn" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    var transfer_buffer: [512]u8 = undefined;
+    var completion = try consumeSseForTest(
+        &harness,
+        "{\"error\":{\"code\":\"1113\",\"message\":\"insufficient balance\"}}",
+        &transfer_buffer,
+    );
+    defer freeCompletion(alloc, &completion);
+
+    try std.testing.expectEqual(
+        types.ProviderCompletionDisposition.provider_failure,
+        types.classifyProviderCompletion(completion),
+    );
+    try std.testing.expectEqualStrings("1113: insufficient balance", completion.provider_failure_detail.?);
 }
 
 test "a stream that carried nothing is rejected like an empty buffered turn" {
@@ -1561,6 +1838,8 @@ const LoopbackResponseFixture = struct {
     response: []const u8,
     thread: ?std.Thread = null,
     open: bool = true,
+    stall: bool = false,
+    released: std.atomic.Value(bool) = .init(false),
 
     fn init(response: []const u8) !@This() {
         var fixture: @This() = .{ .server = undefined, .response = response };
@@ -1583,6 +1862,7 @@ const LoopbackResponseFixture = struct {
 
     fn deinit(self: *@This()) void {
         if (!self.open) return;
+        self.released.store(true, .seq_cst);
         if (self.thread) |thread| thread.join();
         self.thread = null;
         self.server.deinit(self.io());
@@ -1620,6 +1900,9 @@ const LoopbackResponseFixture = struct {
         var writer = socket.writer(zio, &write_buffer);
         try writer.interface.writeAll(self.response);
         try writer.interface.flush();
+        while (self.stall and !self.released.load(.seq_cst)) {
+            io_mod.sleep(5 * std.time.ns_per_ms);
+        }
     }
 };
 
@@ -1632,6 +1915,60 @@ fn streamAgainstFixture(alloc: Allocator, harness: *StreamHarness, response: []c
     defer alloc.free(url);
     harness.bind(url);
     return provider.stream(alloc, harness.request);
+}
+
+test "a provider that goes quiet mid-stream fails the attempt instead of hanging" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    test_stream_silence_ms = 150;
+    defer test_stream_silence_ms = null;
+
+    var fixture = try LoopbackResponseFixture.init("HTTP/1.1 200 OK\r\n" ++
+        "Content-Type: text/event-stream\r\n" ++
+        "Connection: close\r\n\r\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n");
+    fixture.stall = true;
+    defer fixture.deinit();
+    try fixture.start();
+
+    const url = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/chat", .{fixture.port()});
+    defer alloc.free(url);
+    harness.bind(url);
+
+    const started_ms = io_mod.milliTimestamp();
+    try std.testing.expectError(error.Timeout, provider.stream(alloc, harness.request));
+    try std.testing.expect(io_mod.milliTimestamp() - started_ms < 5_000);
+    try std.testing.expectEqual(
+        stream_provider.NetworkFailureCause.response_interrupted,
+        harness.attempt_evidence.network_failure.?.cause,
+    );
+}
+
+test "a refused connection reports retryable transport failure evidence" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    harness.bind("http://127.0.0.1:1/chat");
+    try std.testing.expectError(error.ConnectionRefused, provider.stream(alloc, harness.request));
+    try std.testing.expectEqual(
+        stream_provider.NetworkFailureCause.transport_interrupted,
+        harness.attempt_evidence.network_failure.?.cause,
+    );
+}
+
+test "the silence limit reads its environment override and stays off when disabled" {
+    test_stream_silence_ms = null;
+    var quiet = StreamSilence.init(0);
+    try std.testing.expect(!quiet.overdue());
+
+    var bounded = StreamSilence.init(1);
+    io_mod.sleep(10 * std.time.ns_per_ms);
+    try std.testing.expect(bounded.overdue());
+    bounded.touch();
+    try std.testing.expect(!bounded.overdue());
 }
 
 test "an event stream response reaches the agent as incremental chunks" {

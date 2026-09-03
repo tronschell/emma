@@ -68,6 +68,10 @@ const repeated_terminal_validation_notice =
     "Repeated terminal validation failures stopped the tool loop. The invalid terminal calls were not executed and produced no terminal effect.";
 const repeated_malformed_arguments_notice =
     "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
+pub const vision_not_looked_notice =
+    "This model did not look at the attached image, so the answer above ignores it. Try a model that accepts images.";
+const repeated_failing_tool_call_notice =
+    "Emma stopped this run: the model repeated the same failing tool call three times. Adjust the request or tell it what to do differently.";
 const Config = runtime_config.Config;
 const LifecycleContext = runtime_lifecycle.LifecycleContext;
 const PreparedToolCall = runtime_lifecycle.PreparedToolCall;
@@ -1226,6 +1230,18 @@ const read_failure_tool_recovery_instruction =
     \\</network_recovery>
 ;
 
+fn currentUserMessageIndex(messages: []const ChatMessage, current: ChatMessage) usize {
+    const expected = current.content orelse return messages.len;
+    for (messages, 0..) |message, index| {
+        if (message.role != .user or message.permission_feedback) continue;
+        const content = message.content orelse continue;
+        if (content.ptr == expected.ptr and
+            content.len == expected.len and
+            message.images.ptr == current.images.ptr) return index;
+    }
+    return messages.len;
+}
+
 fn appendReadFailureRecoveryContext(
     alloc: Allocator,
     messages: []const ChatMessage,
@@ -1250,6 +1266,7 @@ fn appendReadFailureRecoveryContext(
     projected[messages.len] = .{
         .role = .system,
         .content = instruction,
+        .cache_policy = .no_cache,
     };
     return projected;
 }
@@ -1482,13 +1499,133 @@ fn isRetryableModelStatus(status: std.http.Status) bool {
     };
 }
 
+const request_too_large_diagnostic =
+    "The request is still too large after older tool results were pruned. " ++
+    "Send another message and Emma will compact the thread first.";
+
+fn isContextOverflowRejection(status: std.http.Status, detail: []const u8) bool {
+    if (status == .payload_too_large) return true;
+    if (status != .bad_request and status != .ok) return false;
+    const overflow_phrases = [_][]const u8{
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "prompt is too long",
+        "exceeds the context window",
+        "request too large",
+        "requesttoolarge",
+        "request_too_large",
+        "too many tokens",
+        "input is too long",
+        "input length exceeds",
+        "reduce the length of the messages",
+    };
+    for (overflow_phrases) |phrase| {
+        if (std.ascii.findIgnoreCase(detail, phrase) != null) return true;
+    }
+    return std.ascii.findIgnoreCase(detail, "exceeds the maximum") != null and
+        (std.ascii.findIgnoreCase(detail, "token") != null or
+            std.ascii.findIgnoreCase(detail, "context") != null or
+            std.ascii.findIgnoreCase(detail, "length") != null);
+}
+
+test "context overflow is recognised by status or provider spelling" {
+    try std.testing.expect(isContextOverflowRejection(.payload_too_large, ""));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"error\":{\"code\":\"context_length_exceeded\"}}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 214000 tokens > 200000 maximum\"}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"error\":{\"message\":\"Your input exceeds the context window of this model. Please adjust your input and try again.\"}}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"error\":{\"message\":\"{\\\"detail\\\":\\\"REQUESTTOOLARGE\\\"}\"}}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"error\":{\"code\":\"request_too_large\"}}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "This request contains too many tokens for the selected model.",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"error\":{\"message\":\"Input is too long for requested model.\"}}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "{\"error\":{\"message\":\"input length exceeds the model limit\"}}",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "Please reduce the length of the messages or completion.",
+    ));
+    try std.testing.expect(isContextOverflowRejection(
+        .bad_request,
+        "The input exceeds the maximum number of tokens allowed.",
+    ));
+    try std.testing.expect(isContextOverflowRejection(.ok, "Context_Length_Exceeded"));
+    try std.testing.expect(isContextOverflowRejection(.bad_request, "Prompt Is Too Long: 214000 tokens"));
+    try std.testing.expect(!isContextOverflowRejection(.bad_request, "invalid tool schema"));
+    try std.testing.expect(!isContextOverflowRejection(.bad_request, "image too large: 32 MB > 20 MB"));
+    try std.testing.expect(!isContextOverflowRejection(.bad_request, "payload too large for this endpoint"));
+    try std.testing.expect(!isContextOverflowRejection(.too_many_requests, "context_length_exceeded"));
+}
+
+fn terminalProviderFailureCause(detail: []const u8) ?model_response_recovery.FailureCause {
+    const limit_phrases = [_][]const u8{ "usage limit", "insufficient_quota", "quota", "billing", "hit your limit", "insufficient balance" };
+    const authentication_phrases = [_][]const u8{ "invalid_api_key", "authentication", "unauthorized", "token has expired", "invalid token" };
+    for (limit_phrases) |phrase| {
+        if (std.ascii.findIgnoreCase(detail, phrase) != null) return .request_limit_reached;
+    }
+    for (authentication_phrases) |phrase| {
+        if (std.ascii.findIgnoreCase(detail, phrase) != null) return .authentication;
+    }
+    return null;
+}
+
+test "hard provider limits are recognised by their spelling" {
+    try std.testing.expectEqual(
+        model_response_recovery.FailureCause.request_limit_reached,
+        terminalProviderFailureCause("provider_error: You've hit your usage limit.").?,
+    );
+    try std.testing.expectEqual(
+        model_response_recovery.FailureCause.request_limit_reached,
+        terminalProviderFailureCause("{\"error\":{\"code\":\"insufficient_quota\"}}").?,
+    );
+    try std.testing.expectEqual(
+        model_response_recovery.FailureCause.request_limit_reached,
+        terminalProviderFailureCause("Billing hard limit has been reached").?,
+    );
+    try std.testing.expectEqual(
+        model_response_recovery.FailureCause.authentication,
+        terminalProviderFailureCause("Incorrect API key provided (invalid_api_key)").?,
+    );
+    try std.testing.expectEqual(
+        model_response_recovery.FailureCause.authentication,
+        terminalProviderFailureCause("Your token has expired, please sign in again").?,
+    );
+    try std.testing.expect(terminalProviderFailureCause("provider_error: upstream connect error") == null);
+    try std.testing.expect(terminalProviderFailureCause("") == null);
+}
+
 fn isPostVisionAssistantPrefillRejection(
     status: std.http.Status,
     detail: []const u8,
     messages: []const ChatMessage,
 ) bool {
-    if (status != .bad_request or messages.len == 0) return false;
-    const tail = messages[messages.len - 1];
+    if (status != .bad_request) return false;
+    var end = messages.len;
+    while (end > 0 and messages[end - 1].role == .system) end -= 1;
+    if (end == 0) return false;
+    const tail = messages[end - 1];
     if (tail.role != .tool or
         !std.mem.eql(u8, tail.tool_name orelse return false, "vision"))
     {
@@ -1963,6 +2100,20 @@ test "experiment settings fall back to the model's own context window" {
         @as(usize, 0),
         experimentSettings(config, .{}).context_window_tokens,
     );
+    try std.testing.expectEqual(
+        @as(usize, 217_232),
+        session_runtime.historyContextBudgetTokens(
+            experimentSettings(pinned, .{ .max_output_tokens = 131_072 }).context_window_tokens,
+            131_072,
+        ),
+    );
+    try std.testing.expectEqual(
+        session_runtime.default_history_context_budget_tokens,
+        session_runtime.historyContextBudgetTokens(
+            experimentSettings(config, .{}).context_window_tokens,
+            null,
+        ),
+    );
 }
 
 test "request output limit follows capability bounds" {
@@ -2113,7 +2264,13 @@ fn processQueuedPromptInner(
         arena,
         &history_messages,
         job.history,
-        .{ .max_tokens = runtime_prompt_context.historyContextBudgetTokensForCapabilities(request_capabilities) },
+        .{
+            .max_tokens = session_runtime.historyContextBudgetTokens(
+                experimentSettings(config, request_capabilities).context_window_tokens,
+                request_capabilities.max_output_tokens,
+            ),
+            .floor = job.history_budget_floor,
+        },
     );
     const projected_roles = try runtime_telemetry.formatMessageRoles(arena, history_messages.items);
     debug_trace.eventf(
@@ -2747,6 +2904,27 @@ test "vision fallback is available only through Gateway" {
     );
 }
 
+fn pushInteractiveNoticeOnce(
+    deps: *const AgentRuntimeDeps,
+    arena: Allocator,
+    seen_topics: *std.ArrayList([]const u8),
+    notice: types.SemanticNotice,
+    fallback_to_system: bool,
+) !bool {
+    for (seen_topics.items) |topic| {
+        if (std.mem.eql(u8, topic, notice.topic)) return true;
+    }
+    if (deps.push_interactive_notice) |push_notice| {
+        try push_notice(deps.ctx, notice);
+    } else if (fallback_to_system) {
+        try deps.push_system_notice(deps.ctx, notice.body);
+    } else {
+        return false;
+    }
+    try seen_topics.append(arena, notice.topic);
+    return true;
+}
+
 fn processQueuedPromptLoop(
     deps: *const AgentRuntimeDeps,
     semantic_presentation: ?runtime_assistant_stream.SemanticPresentationSink,
@@ -2776,6 +2954,8 @@ fn processQueuedPromptLoop(
     defer within_turn_suffix_ptr.* = within_turn_suffix;
     var local_grants = local_grants_ptr.*;
     defer local_grants_ptr.* = local_grants;
+    var pushed_notice_topics: std.ArrayList([]const u8) = .empty;
+    defer pushed_notice_topics.deinit(arena);
     var turn_file_mutation_denials: runtime_tool_admission.TurnFileMutationDenials = .{};
     defer turn_file_mutation_denials.deinit(arena);
     var turn_permission_recovery: runtime_tool_admission.TurnPermissionRecovery = .{};
@@ -2783,6 +2963,7 @@ fn processQueuedPromptLoop(
     var terminal_validation_retry: runtime_tool_admission.TerminalValidationRetryState = .{};
     defer terminal_validation_retry.deinit(arena);
     var malformed_arguments_retry: runtime_tool_admission.MalformedArgumentsRetryState = .{};
+    var repeated_failing_tool_calls: runtime_tool_admission.RepeatedFailingToolCallState = .{};
     var completed_tool_names = completed_tool_names_ptr.*;
     defer completed_tool_names_ptr.* = completed_tool_names;
     var context_delivery_state: context_contract.DeliveryState = if (deps.context_enabled)
@@ -2822,6 +3003,10 @@ fn processQueuedPromptLoop(
     var last_gateway_message_count: usize = stable_prefix.items.len + history_messages.items.len + 1;
     var selected_dynamic_tool_names: std.ArrayList([]const u8) = .empty;
     var selected_dynamic_tool_schemas: std.ArrayList([]const u8) = .empty;
+    if (job.sticky_dynamic_tools) |sticky| {
+        try selected_dynamic_tool_names.appendSlice(arena, sticky.memory.names.items);
+        try selected_dynamic_tool_schemas.appendSlice(arena, sticky.memory.schemas.items);
+    }
     const current_user_effective = current_user_message;
     const initial_pending_image_ids = try arena.alloc(usize, job.images.len);
     for (job.images, 0..) |attachment, index| initial_pending_image_ids[index] = attachment.id;
@@ -2870,6 +3055,12 @@ fn processQueuedPromptLoop(
     else
         .transport_interrupted;
     var latest_recovery_diagnostic: ?types.ModelFailureDiagnostic = null;
+    // A request body over the provider's byte cap never left the machine, so it
+    // costs no provider attempt: prune older tool results and build it again.
+    // Sticky for the rest of the turn, because every later step would only
+    // overflow the same way.
+    var prune_oversized = false;
+    var vision_required_downgraded = false;
     var preserved_tool_evidence: model_response_recovery.ToolEvidence = if (job.recovery_checkpoint) |checkpoint|
         restoredRecoveryToolEvidence(checkpoint.tool_state)
     else
@@ -2926,7 +3117,6 @@ fn processQueuedPromptLoop(
         );
         var gateway_messages = try runtime_prompt_context.buildGatewayMessages(overlay_arena, stable_prefix.items, ephemeral_overlay.items, history_messages.items, current_user_effective, within_turn_suffix.items);
         last_gateway_message_count = gateway_messages.items.len;
-        const current_user_message_index = stable_prefix.items.len + history_messages.items.len + ephemeral_overlay.items.len;
 
         debug_trace.logf("agent", "step start step={d} limit={d} messages={d}", .{ current_step_index, config.agent_step_limit, gateway_messages.items.len });
         debug_trace.eventf("agent", "step_begin", step_ctx, "step_index={d} step_limit={d} gateway_messages={d}", .{ current_step_index, config.agent_step_limit, gateway_messages.items.len });
@@ -3087,6 +3277,7 @@ fn processQueuedPromptLoop(
             var experiment_settings = experimentSettings(config, request_capabilities);
             experiment_settings.previous_cache_read_tokens = previous_cache_read_tokens;
             experiment_settings.previous_input_tokens = previous_input_tokens;
+            experiment_settings.force_prune = prune_oversized;
             const experiment = try context_experiments.apply(
                 overlay_arena,
                 &gateway_messages,
@@ -3122,6 +3313,10 @@ fn processQueuedPromptLoop(
                     stream_ctx.raw_text.items,
                 ),
             );
+            const current_user_message_index = currentUserMessageIndex(
+                recovery_source_messages,
+                current_user_effective,
+            );
             const projected_request_messages = blk: {
                 if (job.authorized_image_catalog.len == 0 and job.images.len == 0) {
                     break :blk recovery_source_messages;
@@ -3141,7 +3336,7 @@ fn processQueuedPromptLoop(
                     return error.MissingAuthorizedImageCatalog;
                 }
                 vision_route = .text_only;
-                vision_mode = if (pending_image_ids.len > 0) .required else .optional;
+                vision_mode = if (pending_image_ids.len > 0 and !vision_required_downgraded) .required else .optional;
                 break :blk try runtime_vision_contracts.project_text_only_messages(
                     overlay_arena,
                     recovery_source_messages,
@@ -3172,8 +3367,14 @@ fn processQueuedPromptLoop(
                     .provider_options = provider_opts,
                     .max_output_tokens = request_max_output_tokens(request_capabilities),
                     .budget = .{ .cancel_flag = config.cancel_flag },
+                    .session_id = lifecycle.scope.session_id,
                 },
             ) catch |err| {
+                if (err == error.RequestTooLarge and !prune_oversized) {
+                    prune_oversized = true;
+                    debug_trace.eventf("gateway", "request_too_large", step_ctx, "payload over the byte cap; pruning older tool results and rebuilding", .{});
+                    continue;
+                }
                 if (err == error.Cancelled) {
                     runtime_telemetry.traceCancelObserved(step_ctx, false);
                     try clearAutoRetryStatusIfNeeded(deps, recovery_strategy != null);
@@ -3193,6 +3394,15 @@ fn processQueuedPromptLoop(
                     finish_trace.finish("interrupted");
                     return;
                 }
+                try pushRouteRecoveryStatus(deps, .{
+                    .kind = .terminal_provider_error,
+                    .failed_attempt = semantic_attempt + 1,
+                    .attempt_limit = semantic_limit,
+                    .diagnostic = types.ModelFailureDiagnostic.init(if (err == error.RequestTooLarge)
+                        request_too_large_diagnostic
+                    else
+                        @errorName(err)),
+                });
                 return err;
             };
             summary_accumulator.prepareTokenRequest();
@@ -3532,7 +3742,7 @@ fn processQueuedPromptLoop(
                             failure_diagnostic,
                         );
                     }
-                } else if (semantic_attempt > 0) {
+                } else {
                     try pushRouteRecoveryStatus(deps, .{
                         .kind = .terminal_provider_error,
                         .failed_attempt = semantic_attempt + 1,
@@ -3706,7 +3916,6 @@ fn processQueuedPromptLoop(
                 try within_turn_suffix.append(arena, .{
                     .role = .user,
                     .content = assistant_prefill_recovery_prompt,
-                    .cache_policy = .no_cache,
                 });
                 debug_trace.eventf(
                     "gateway",
@@ -3723,6 +3932,45 @@ fn processQueuedPromptLoop(
                 retry_pacing = .idle;
                 reset_stream_for_next_attempt = true;
                 continue;
+            }
+
+            const overflow_detail: []const u8 = if (stream_result.status == .ok)
+                stream_result.completion.provider_failure_detail orelse ""
+            else
+                stream_result.err_body orelse "";
+
+            if (!prune_oversized and
+                semantic_attempt + 1 < semantic_limit and
+                streamReplaySafe(&stream_ctx) and
+                isContextOverflowRejection(stream_result.status, overflow_detail))
+            {
+                prune_oversized = true;
+                debug_trace.eventf(
+                    "gateway",
+                    "context_overflow_rejected",
+                    step_ctx,
+                    "status={d} provider_attempt={d}/{d}",
+                    .{ @intFromEnum(stream_result.status), semantic_attempt + 1, semantic_limit },
+                );
+                if (stream_result.err_body) |body| mem_utils.free(arena, body);
+                stream_result.err_body = null;
+                stream_result_set = false;
+                semantic_attempt += 1;
+                retry_pacing = .idle;
+                reset_stream_for_next_attempt = true;
+                continue;
+            }
+
+            if (prune_oversized and
+                isContextOverflowRejection(stream_result.status, overflow_detail))
+            {
+                try pushRouteRecoveryStatus(deps, .{
+                    .kind = .terminal_provider_error,
+                    .failed_attempt = semantic_attempt + 1,
+                    .attempt_limit = semantic_limit,
+                    .diagnostic = types.ModelFailureDiagnostic.init(request_too_large_diagnostic),
+                });
+                return error.RequestTooLarge;
             }
 
             if (isRetryableModelStatus(stream_result.status)) {
@@ -3912,6 +4160,8 @@ fn processQueuedPromptLoop(
                     .response_interrupted
                 else if (finish_reason.? == .content_filter)
                     .content_filter
+                else if (attempt_completion.provider_failure_detail) |detail|
+                    terminalProviderFailureCause(detail) orelse .provider_unavailable
                 else
                     .provider_unavailable;
                 const diagnostic = try providerCompletionDiagnostic(
@@ -4124,6 +4374,20 @@ fn processQueuedPromptLoop(
                 return error.ModelError;
             }
 
+            if (vision_mode == .required and stream_result.completion.tool_calls.len == 0) {
+                vision_required_downgraded = true;
+                debug_trace.eventf(
+                    "gateway",
+                    "required_vision_downgraded",
+                    step_ctx,
+                    "pending_images={d}",
+                    .{pending_image_ids.len},
+                );
+                stream_result_set = false;
+                reset_stream_for_next_attempt = true;
+                continue;
+            }
+
             successful_request_messages = request_messages;
             successful_source_messages = recovery_source_messages;
             successful_gateway_model = gateway_model;
@@ -4198,6 +4462,23 @@ fn processQueuedPromptLoop(
                 job.model,
                 request_capabilities,
             );
+            const terminal_cause: ?types.ModelRecoveryCause = if (terminalProviderFailureCause(clipped)) |failure|
+                checkpointCause(failure)
+            else switch (stream_result.status) {
+                .unauthorized, .forbidden => types.ModelRecoveryCause.authentication,
+                else => if (stream_result.status.class() == .client_error)
+                    null
+                else
+                    types.ModelRecoveryCause.provider_unavailable,
+            };
+            try pushRouteRecoveryStatus(deps, .{
+                .kind = .terminal_provider_error,
+                .failed_attempt = semantic_attempt + 1,
+                .attempt_limit = semantic_limit,
+                .cause = terminal_cause,
+                .required_action = if (terminal_cause == null) .change_request else .none,
+                .diagnostic = try httpFailureDiagnostic(arena, stream_result.status, clipped),
+            });
             try deps.push_http_error(deps.ctx, stream_result.status, http_detail, job.credential_source);
             if (stop_state.retained_candidate != null) {
                 stop_state.terminal_materializing = true;
@@ -4303,14 +4584,10 @@ fn processQueuedPromptLoop(
                 return error.ModelError;
             },
         }
-        if (successful_vision_mode == .required and completion.tool_calls.len == 0) {
-            try pushTerminalAutoRetryStatusIfNeeded(
-                deps,
-                successful_recovery_strategy != null,
-                semantic_attempt,
-                semantic_limit,
-                types.ModelFailureDiagnostic.init("RequiredVisionToolCallMissing"),
-            );
+        if (vision_required_downgraded and
+            pending_image_ids.len > 0 and
+            completion.tool_calls.len == 0)
+        {
             debug_trace.eventf(
                 "agent",
                 "required_vision_call_missing",
@@ -4318,8 +4595,7 @@ fn processQueuedPromptLoop(
                 "pending_images={d}",
                 .{pending_image_ids.len},
             );
-            finish_trace.finish("required_vision_call_missing");
-            return error.RequiredVisionToolCallMissing;
+            try deps.push_system_notice(deps.ctx, vision_not_looked_notice);
         }
         if (recovery_has_unexecuted_tool_start) {
             try stream_ctx.provisional_statuses.finishUnmatchedRecoveryStarts(
@@ -4999,6 +5275,7 @@ fn processQueuedPromptLoop(
         for (effective_tool_calls) |tool_call| {
             malformed_arguments_retry.observe(tool_call);
         }
+        repeated_failing_tool_calls.beginBatch(effective_tool_calls);
         var settled_vision_ids: std.ArrayList(usize) = .empty;
         defer mem_utils.deinitList(arena, &settled_vision_ids);
         var parallel_skip_until: usize = 0;
@@ -7447,13 +7724,10 @@ fn processQueuedPromptLoop(
                     &step_batch,
                     &within_turn_suffix,
                 );
-                var pushed_interactive_notice = false;
-                if (execution.interactive_notice) |notice| {
-                    if (deps.push_interactive_notice) |push_notice| {
-                        try push_notice(deps.ctx, notice);
-                        pushed_interactive_notice = true;
-                    }
-                }
+                const pushed_interactive_notice = if (execution.interactive_notice) |notice|
+                    try pushInteractiveNoticeOnce(deps, arena, &pushed_notice_topics, notice, false)
+                else
+                    false;
                 if (!pushed_interactive_notice) {
                     if (execution.system_notice) |notice| {
                         try deps.push_system_notice(deps.ctx, notice);
@@ -7505,6 +7779,13 @@ fn processQueuedPromptLoop(
             debug_trace.eventf("tool", "after_tool_execution", step_ctx, "call_id={s} name={s} result_kind={s} model_output_bytes={d}", .{ tool_call.id, tool_call.name, runtime_telemetry.toolExecutionResultKind(execution), safe_tool_output.len });
             debug_trace.eventf("tool", "execution_result", step_ctx, "call_id={s} name={s} result_kind={s} model_output_bytes={d}", .{ tool_call.id, tool_call.name, runtime_telemetry.toolExecutionResultKind(execution), safe_tool_output.len });
             try runtime_gateway_step.recordSelectedDynamicTool(arena, &selected_dynamic_tool_names, &selected_dynamic_tool_schemas, execution);
+            if (job.sticky_dynamic_tools) |sticky| {
+                if (execution.selected_dynamic_tool_name) |name| {
+                    if (execution.selected_dynamic_tool_schema_json) |schema| {
+                        try sticky.memory.remember(sticky.alloc, name, schema);
+                    }
+                }
+            }
             try runtime_tool_batch.appendOrdinaryExecutedResult(
                 deps.tool_registry,
                 arena,
@@ -7521,11 +7802,7 @@ fn processQueuedPromptLoop(
                 try within_turn_suffix.append(arena, .{ .role = .system, .content = notice });
             }
             if (execution.interactive_notice) |notice| {
-                if (deps.push_interactive_notice) |push_notice| {
-                    try push_notice(deps.ctx, notice);
-                } else {
-                    try deps.push_system_notice(deps.ctx, notice.body);
-                }
+                _ = try pushInteractiveNoticeOnce(deps, arena, &pushed_notice_topics, notice, true);
             }
             if (permission_outcome.feedback) |feedback| {
                 try appendPermissionFeedbackAfterToolResult(
@@ -7586,6 +7863,28 @@ fn processQueuedPromptLoop(
                 &finish_trace,
                 repeated_malformed_arguments_notice,
                 "repeated_malformed_tool_arguments",
+            );
+            return;
+        }
+        if (repeated_failing_tool_calls.finishBatch(step_batch.allToolResultsFailed())) {
+            debug_trace.eventf(
+                "agent",
+                "repeated_failing_tool_call",
+                step_ctx,
+                "tool_call_count={d}",
+                .{effective_tool_calls.len},
+            );
+            try finishFailedTurnWithNotice(
+                deps,
+                finalization,
+                arena,
+                job,
+                within_turn_suffix.items,
+                &summary_accumulator,
+                stop_state,
+                &finish_trace,
+                repeated_failing_tool_call_notice,
+                "repeated_failing_tool_call",
             );
             return;
         }

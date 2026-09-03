@@ -197,6 +197,12 @@ outputs. The loop breaker is depth, not cycle detection: a cron or event run
 starts at depth 0, each `after` hop adds one, and past `MAX_TRIGGER_DEPTH` (3)
 nothing fires.
 
+A job deleted while one of its runs is still in flight has nothing left to write
+the outputs to. `finish_scheduled_job` reads the record with `find`, which answers
+`None` for a file that is gone, and returns without saving or chaining — the run
+ends quietly instead of raising "could not load scheduled job" every time the
+trigger comes round.
+
 | How a run started | Starting variables |
 | --- | --- |
 | Cron | none |
