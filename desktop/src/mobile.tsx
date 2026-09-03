@@ -5,7 +5,7 @@ import { reasonText } from "./errors";
 import { InfoDot } from "./icons";
 
 type MobileDevice = { id: number; connected: boolean; lastSeen: number };
-type MobileStatus = { devices: MobileDevice[]; listening: boolean; pairing: boolean; full: boolean; reason: string; name: string; addr: string };
+type MobileStatus = { devices: MobileDevice[]; listening: boolean; pairing: boolean; full: boolean; reason: string; name: string; addr: string; threads?: string[]; activeAt?: number };
 
 const bridge = window.emma as typeof window.emma & {
   mobileStatus(): Promise<MobileStatus>;
@@ -16,6 +16,44 @@ const bridge = window.emma as typeof window.emma & {
 };
 
 const QR_PIXELS = 200;
+const ACTIVE_MS = 1500;
+
+/* The sidebar's view of the bridge: which phones are here, which threads they
+   started, and a short "busy" after each message or answer lands. */
+export function usePhone() {
+  const [status, setStatus] = useState<MobileStatus>(EMPTY);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const apply = (next: MobileStatus) => { setStatus(next); if (next.activeAt && Date.now() - next.activeAt < ACTIVE_MS) setBusy(true); };
+    bridge.mobileStatus().then(apply).catch(() => undefined);
+    return bridge.onMobileStatus(apply);
+  }, []);
+  useEffect(() => {
+    if (!busy) return;
+    const timer = setTimeout(() => setBusy(false), ACTIVE_MS);
+    return () => clearTimeout(timer);
+  }, [busy]);
+  const state = status.devices.length === 0 ? "none" : busy ? "busy" : status.devices.some((device) => device.connected) ? "on" : "away";
+  return { state, threads: status.threads ?? [], devices: status.devices };
+}
+
+const PHONE_TITLES: Record<string, string> = { none: "No phone paired", on: "Phone connected", away: "Phone paired, not connected", busy: "Phone sending" };
+
+const phoneBody = <><rect x="4.6" y="1.8" width="6.8" height="12.4" rx="1.4" /><path d="M7.2 12h1.6" /></>;
+
+export function PhoneGlyph() {
+  return <svg className="thread-from" viewBox="0 0 16 16" role="img" aria-label="Started from a phone"><title>Started from a phone</title>{phoneBody}</svg>;
+}
+
+export function PhoneMark({ state, disabled, onClick }: { state: string; disabled?: boolean; onClick: () => void }) {
+  const title = PHONE_TITLES[state] ?? state;
+  return <button type="button" className="nav-settings nav-phone" data-state={state} title={title} aria-label={title} disabled={disabled} onClick={onClick}>
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <g transform="translate(-1.6 0)">{phoneBody}</g>
+      <path className="arc" d="M12.6 6.3a2.4 2.4 0 0 1 0 3.4" /><path className="arc arc-far" d="M14.2 4.6a4.8 4.8 0 0 1 0 6.8" />
+    </svg>
+  </button>;
+}
 const EMPTY: MobileStatus = { devices: [], listening: false, pairing: false, full: false, reason: "", name: "", addr: "" };
 
 const tone = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -138,7 +176,7 @@ export function MobileSettings({ busy }: { busy: boolean }) {
       <div>
         <div className="settings-head"><h3>PIN</h3><InfoDot>The pairing code carries the key that opens this computer, and it is on screen for two minutes. The PIN never appears in it, so a code read over your shoulder is not enough on its own. The phone is asked for it once, while pairing.</InfoDot></div>
         <p>4 to 12 digits. Choose one before pairing, and type it on the phone when it asks.</p>
-        <label>PIN<input
+        <label><span className="sr-only">PIN</span><input
           value={pin}
           type="password"
           inputMode="numeric"
@@ -150,11 +188,10 @@ export function MobileSettings({ busy }: { busy: boolean }) {
           onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
         /></label>
       </div>
-      <a href="https://github.com/tronschell/emma-mobile" target="_blank" rel="noreferrer">Emma Mobile ↗</a>
     </section>
     <section>
       <div>
-        <h3>Emma Mobile</h3>
+        <div className="settings-head"><h3>Emma Mobile</h3><InfoDot>Both devices must be on the same Tailscale network, or the same Wi-Fi. A paired phone sends messages to your threads, answers the tool permission prompts this computer would otherwise ask you, and runs git — staging, commits, push and pull.</InfoDot></div>
         {status.devices.map((device) => <p key={device.id}>
           <strong className={device.connected ? "status-live" : "status-idle"}><i /> {device.connected ? "Connected" : `Disconnected · seen ${seen(device.lastSeen)}`}</strong>
           {" "}Paired {day(device.id)}.{" "}
@@ -165,7 +202,8 @@ export function MobileSettings({ busy }: { busy: boolean }) {
         {status.devices.length > 0 && status.addr && <p>Reachable at <code>{status.addr}</code>{status.listening || status.reason ? "" : " — not listening yet"}.</p>}
         {status.full && <p>Three devices are paired, which is the most Emma keeps. Remove one to pair another.</p>}
         {!ready && !status.full && <p>Choose a PIN above first.</p>}
-        <p>Both devices must be on the same Tailscale network, or the same Wi-Fi. A paired phone sends messages to your threads, answers the tool permission prompts this computer would otherwise ask you, and runs git — staging, commits, push and pull. Pair only a phone you are holding.</p>
+        <p>Pair only a phone you are holding.</p>
+        <a href="https://github.com/tronschell/emma-mobile" target="_blank" rel="noreferrer">Emma Mobile ↗</a>
       </div>
       {pairing
         ? <canvas ref={canvas} role="img" aria-label="Pairing code for Emma Mobile" style={{ justifySelf: "start" }} />

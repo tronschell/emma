@@ -480,6 +480,7 @@ function configRoots(value: Record<string, unknown>) {
 // Mirrors streamable_http.zig: isReservedHeader (plus its "mcp-param-" prefix) and the bytes
 // isValidHeaderValue refuses.
 const RESERVED_HEADERS = new Set(["accept", "accept-encoding", "connection", "content-length", "content-type", "host", "last-event-id", "mcp-method", "mcp-name", "mcp-protocol-version", "mcp-session-id", "transfer-encoding"]);
+// eslint-disable-next-line no-control-regex -- matching control bytes is the point: they are what a header value must not carry.
 const CONTROL_BYTE = /[\u0000-\u0008\u000a-\u001f\u007f]/;
 
 function parseMcpServer(source: string, fileIndex: number, name: string, raw: unknown): InternalMcpServer | undefined {

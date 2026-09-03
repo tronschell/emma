@@ -79,5 +79,5 @@ test("the task list tool and widget are explicit defaults for complex work", () 
   assert.throws(() => parseToolArgs("task_list", JSON.stringify({ action: "update", id: "ship-tasks", task: "widget" })), /both "task" and "status"/);
   assert.match(DEFAULT_SYSTEM_PROMPT, /`task_list` is the default for complex work/);
   assert.ok(CONTEXT_WIDGETS.some((widget) => widget.type === "tasklist"));
-  assert.ok(defaultContextPages[0].widgets.some((widget) => widget.type === "tasklist"));
+  assert.equal(defaultContextPages.filter((page) => page.widgets.some((widget) => widget.type === "tasklist")).length, 1);
 });

@@ -4,25 +4,9 @@ const types = @import("../../shared/types.zig");
 const session_runtime = @import("../../session/session.zig");
 const gateway_json = @import("../../gateway/gateway_json.zig");
 
-const runtime_config = @import("config.zig");
-
 const Allocator = std.mem.Allocator;
 const ChatMessage = types.ChatMessage;
 const HistoryTurn = types.HistoryTurn;
-
-pub fn historyContextBudgetTokensForCapabilities(capabilities: model_capabilities.Capabilities) usize {
-    const context_window = capabilities.context_window orelse
-        return runtime_config.default_history_context_budget_tokens;
-    const context_tokens: usize = @intCast(context_window);
-    const available_input_tokens = if (capabilities.max_output_tokens) |max_output_tokens|
-        context_tokens -| @as(usize, @intCast(max_output_tokens))
-    else
-        context_tokens;
-    return @max(
-        @as(usize, 1),
-        available_input_tokens / runtime_config.history_context_budget_window_divisor,
-    );
-}
 
 pub const unfinished_tool_result_output =
     "The turn was interrupted before this tool call reported a result. It may have partially run, " ++
@@ -40,11 +24,17 @@ pub fn buildGatewayMessages(
     errdefer messages.deinit(alloc);
 
     try messages.appendSlice(alloc, stable_prefix);
+    for (ephemeral_overlay) |overlay_message| {
+        if (overlay_message.cache_policy != .prefix) continue;
+        var copy = overlay_message;
+        copy.cache_policy = .default;
+        try messages.append(alloc, copy);
+    }
     try messages.appendSlice(alloc, durable_history);
-    try appendEphemeralOverlayMessages(alloc, &messages, ephemeral_overlay);
     try messages.append(alloc, current_user_message);
     try messages.appendSlice(alloc, within_turn_suffix);
     try ensureToolResultsPresent(alloc, &messages);
+    try appendEphemeralOverlayMessages(alloc, &messages, ephemeral_overlay);
     return messages;
 }
 
@@ -88,32 +78,10 @@ fn hasToolResult(results: []const ChatMessage, call_id: []const u8) bool {
 
 fn appendEphemeralOverlayMessages(alloc: Allocator, messages: *std.ArrayList(ChatMessage), ephemeral_overlay: []const ChatMessage) !void {
     for (ephemeral_overlay) |overlay_message| {
+        if (overlay_message.cache_policy == .prefix) continue;
         var copy = overlay_message;
         copy.cache_policy = .no_cache;
         try messages.append(alloc, copy);
-    }
-}
-
-test "history context budget reserves known output capacity from one capability snapshot" {
-    const cases = [_]struct {
-        capabilities: model_capabilities.Capabilities,
-        expected: usize,
-    }{
-        .{ .capabilities = .{ .context_window = 128_000, .max_output_tokens = 32_000 }, .expected = 24_000 },
-        .{ .capabilities = .{ .context_window = 256_000, .max_output_tokens = 64_000 }, .expected = 48_000 },
-        .{ .capabilities = .{ .context_window = 1_000_000, .max_output_tokens = 128_000 }, .expected = 218_000 },
-        .{ .capabilities = .{ .context_window = 512_000 }, .expected = 128_000 },
-        .{ .capabilities = .{ .max_output_tokens = 32_000 }, .expected = runtime_config.default_history_context_budget_tokens },
-        .{ .capabilities = .{ .context_window = 32_000, .max_output_tokens = 32_000 }, .expected = 1 },
-        .{ .capabilities = .{ .context_window = 32_000, .max_output_tokens = 64_000 }, .expected = 1 },
-        .{ .capabilities = .{}, .expected = runtime_config.default_history_context_budget_tokens },
-    };
-
-    for (cases) |case| {
-        try std.testing.expectEqual(
-            case.expected,
-            historyContextBudgetTokensForCapabilities(case.capabilities),
-        );
     }
 }
 
@@ -133,8 +101,10 @@ test "budgeted history projection uses corrected Anthropic window while remainin
         turn.* = try session_runtime.makeAssistantTurn(arena, large_user, large_assistant);
     }
 
-    const exact_budget = historyContextBudgetTokensForCapabilities(
-        model_capabilities.capabilitiesForModel("anthropic/claude-opus-4.8"),
+    const new_model = model_capabilities.capabilitiesForModel("anthropic/claude-opus-4.8");
+    const exact_budget = session_runtime.historyContextBudgetTokens(
+        new_model.context_window.?,
+        new_model.max_output_tokens,
     );
     try std.testing.expectEqual(@as(usize, 250_000), exact_budget);
 
@@ -173,20 +143,24 @@ test "budgeted history projection uses corrected Anthropic window while remainin
         arena,
         &older_model_projection,
         history[0..4],
-        .{ .max_tokens = historyContextBudgetTokensForCapabilities(model_capabilities.capabilitiesForModel("anthropic/claude-opus-4.5")) },
+        .{ .max_tokens = session_runtime.historyContextBudgetTokens(
+            model_capabilities.capabilitiesForModel("anthropic/claude-opus-4.5").context_window.?,
+            model_capabilities.capabilitiesForModel("anthropic/claude-opus-4.5").max_output_tokens,
+        ) },
     );
     try std.testing.expectEqual(types.ChatRole.system, older_model_projection.items[0].role);
     try std.testing.expectEqual(@as(usize, 3), older_model_projection.items.len);
     try std.testing.expectEqualStrings(large_assistant, older_model_projection.items[older_model_projection.items.len - 1].content.?);
 }
 
-test "buildGatewayMessages orders stable prefix history live delta and current prompt" {
+test "buildGatewayMessages keeps the volatile overlay after every cacheable message" {
     const alloc = std.testing.allocator;
     const stable_prefix = [_]ChatMessage{
         .{ .role = .system, .content = "stable system prompt" },
         .{ .role = .system, .content = "stable project context" },
     };
     const overlay = [_]ChatMessage{
+        .{ .role = .system, .content = "session-stable runtime context", .cache_policy = .prefix },
         .{ .role = .system, .content = "volatile runtime overlay" },
     };
     const history = [_]ChatMessage{
@@ -201,25 +175,28 @@ test "buildGatewayMessages orders stable prefix history live delta and current p
     var messages = try buildGatewayMessages(alloc, &stable_prefix, &overlay, &history, current, &suffix);
     defer messages.deinit(alloc);
 
-    try std.testing.expectEqual(@as(usize, 7), messages.items.len);
+    try std.testing.expectEqual(@as(usize, 8), messages.items.len);
     try std.testing.expectEqualStrings("stable system prompt", messages.items[0].content.?);
     try std.testing.expectEqualStrings("stable project context", messages.items[1].content.?);
-    try std.testing.expectEqualStrings("history user prompt", messages.items[2].content.?);
-    try std.testing.expectEqualStrings("history assistant answer", messages.items[3].content.?);
-    try std.testing.expectEqualStrings("volatile runtime overlay", messages.items[4].content.?);
+    try std.testing.expectEqualStrings("session-stable runtime context", messages.items[2].content.?);
+    try std.testing.expectEqual(types.ChatCachePolicy.default, messages.items[2].cache_policy);
+    try std.testing.expectEqualStrings("history user prompt", messages.items[3].content.?);
+    try std.testing.expectEqualStrings("history assistant answer", messages.items[4].content.?);
     try std.testing.expectEqualStrings("current user prompt", messages.items[5].content.?);
     try std.testing.expectEqualStrings("within turn assistant", messages.items[6].content.?);
-    try std.testing.expectEqual(types.ChatRole.system, messages.items[4].role);
-    try std.testing.expectEqual(types.ChatCachePolicy.no_cache, messages.items[4].cache_policy);
+    try std.testing.expectEqualStrings("volatile runtime overlay", messages.items[7].content.?);
+    try std.testing.expectEqual(types.ChatRole.system, messages.items[7].role);
+    try std.testing.expectEqual(types.ChatCachePolicy.no_cache, messages.items[7].cache_policy);
 
     const changed_overlay = [_]ChatMessage{
+        .{ .role = .system, .content = "session-stable runtime context", .cache_policy = .prefix },
         .{ .role = .system, .content = "different volatile runtime overlay" },
     };
     var changed_messages = try buildGatewayMessages(alloc, &stable_prefix, &changed_overlay, &history, current, &suffix);
     defer changed_messages.deinit(alloc);
-    const before_prefix = try gateway_json.buildGatewayRequestBody(alloc, "[]", messages.items[0..4]);
+    const before_prefix = try gateway_json.buildGatewayRequestBody(alloc, "[]", messages.items[0..7]);
     defer alloc.free(before_prefix);
-    const after_prefix = try gateway_json.buildGatewayRequestBody(alloc, "[]", changed_messages.items[0..4]);
+    const after_prefix = try gateway_json.buildGatewayRequestBody(alloc, "[]", changed_messages.items[0..7]);
     defer alloc.free(after_prefix);
     try std.testing.expectEqualStrings(before_prefix, after_prefix);
 }
@@ -338,7 +315,7 @@ test "buildGatewayMessages preserves one system prefix for projected session his
             interruption_count += 1;
         }
     }
-    const overlay_index = stable_prefix.len + projected_history.items.len;
+    const overlay_index = messages.items.len - 1;
     try std.testing.expectEqual(types.ChatRole.system, messages.items[overlay_index].role);
     try std.testing.expectEqual(types.ChatCachePolicy.no_cache, messages.items[overlay_index].cache_policy);
     try std.testing.expectEqual(@as(usize, 1), leading_summary_count);
@@ -346,8 +323,8 @@ test "buildGatewayMessages preserves one system prefix for projected session his
     try std.testing.expectEqual(@as(usize, 1), file_evidence_count);
     try std.testing.expectEqual(@as(usize, 1), background_count);
     try std.testing.expectEqual(@as(usize, 1), interruption_count);
-    try std.testing.expectEqualStrings("current portable prompt", messages.items[messages.items.len - 2].content.?);
-    try std.testing.expectEqualStrings("within-turn suffix", messages.items[messages.items.len - 1].content.?);
+    try std.testing.expectEqualStrings("current portable prompt", messages.items[messages.items.len - 3].content.?);
+    try std.testing.expectEqualStrings("within-turn suffix", messages.items[messages.items.len - 2].content.?);
     try gateway_json.validateToolMessageHistory(arena, messages.items);
 }
 

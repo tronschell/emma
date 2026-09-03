@@ -56,6 +56,7 @@ export function PluginsView({ busy, tools, onTools }: { busy: boolean; tools: To
 
   return <section className="plugins-view">
     <header>
+      <span>Skills, servers and marketplaces</span>
       <h2>{tab === "skills" ? "Skills" : tab === "servers" ? "MCP servers" : "Plugins"}</h2>
     </header>
 

@@ -1,7 +1,7 @@
 import type { Plan } from "./plan";
 import type { SlashCommand } from "./slash";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const KEY_BYTES = 32;
 export const NONCE_BYTES = 12;
@@ -44,7 +44,8 @@ export const PAIRING_TTL_MS = 120_000;
 export const MAX_ASK_MS = 600_000;
 
 export type PairingPayload = {
-  v: 1;
+  /** Tied to the constant: a bumped version that left this literal behind would not compile. */
+  v: typeof PROTOCOL_VERSION;
   addr: string;
   key: string;
   name: string;
@@ -142,10 +143,11 @@ export type ThreadStep = {
   edit?: { path: string; added: number; removed: number };
 };
 
-/** One file the agent rewrote. `before` is null when the tool created the file, which is why
-    a revert needs it back: only a file that had a previous body can be put back to one. The body
+/** One file the agent rewrote. `before` is null when the tool created the file, and such a change
+    cannot be reverted at all: only a file that had a previous body can be put back to one. The body
     itself is clipped and the rewritten one is not sent at all — a thread that rewrote a few large
-    files is otherwise a frame the codec refuses to seal, and the Mac reverts from its own record. */
+    files is otherwise a frame the codec refuses to seal — so what is here is a preview, and a
+    revert names the file and lets the Mac write the body off its own record. */
 export type FileChange = {
   folderId: string;
   path: string;
@@ -190,6 +192,9 @@ export type TraceSpan = {
   input?: string;
   output?: string;
   tokens?: number;
+  /** Set when `input` or `output` was clipped to fit the frame. Every open span rides one frame
+      together, so a live span carries a preview of its result and the Mac keeps the whole one. */
+  truncated?: boolean;
 };
 
 export type PermissionAsk = {
@@ -352,14 +357,48 @@ export type MacSettings = {
 export type ToolCatalogEntry = { name: string; label: string; blurb: string; group: string; gate: string };
 export type SkillEntry = { id: string; name: string; source: string };
 export type SkillBody = SkillEntry & { instructions: string };
-export type McpServerEntry = { id: string; source: string; name: string; command: string; args: string[]; argCount: number; environmentKeys: string[] };
+/** `type` and `url` are set for a server the Mac reaches over the network rather than by running
+    a command; `url` is the endpoint's origin only, because a hosted MCP token rides in the rest
+    of the address as often as in a header. `command` holds that same origin so a row still names
+    something, which is why a screen has to read `url` to tell the two kinds apart. */
+export type McpServerEntry = { id: string; source: string; name: string; command: string; args: string[]; argCount: number; environmentKeys: string[]; type?: "http" | "sse"; url?: string };
+/** An agent whose skills and MCP config sit in its own default place in the home folder, as the
+    Mac's scan found it. `registered` is whether Emma already reads that source: the manifest is
+    replaced rather than added to, so a phone that flips one switch sends back every source it
+    wants kept, and a source it leaves out is one it is deregistering. */
+export type ImportSourceEntry = { id: string; label: string; mark: string; skills: number; mcpConfigs: number; locations: string[]; registered: boolean };
+
+/** Mirrors PluginHookState in shared/plugins.ts; the phone does not carry that file. The command
+    rides whole rather than as a name, because it is the whole of what a hook is: a shell line the
+    Mac runs on every turn its event fires. `runs` is hookRuns(event) resolved on the Mac — Emma
+    only ever reaches four of the eleven declared moments, and a hook shown as merely untrusted
+    when nothing could run it is an alarm about nothing. The hash is not here: trust is stored and
+    cleared per plugin, every hook at once, so there is nothing a phone could do with one. */
+export type PluginHookEntry = { event: string; command: string; trusted: boolean; runs: boolean };
+
+/** One installed plugin, as the phone audits it. `skills` and `servers` say whether the plugin
+    carries a skills folder and an MCP config at all — not how many are in them, which is a number
+    the Mac holds nowhere: each is one root, and what it enumerates to already arrives as its own
+    switched row under listToolTargets, stamped `plugin:<id>` as its source. Marketplaces, the
+    catalogue and its screenshots are absent on purpose: nothing on the phone browses or installs,
+    and an untrusted hook never runs, so reviewing the hooks is the whole of the job. */
+export type PluginEntry = {
+  id: string;
+  displayName: string;
+  marketplace: string;
+  version: string;
+  skills: boolean;
+  servers: boolean;
+  hooks: PluginHookEntry[];
+};
+
 export type ToolSwitches = { tools: string[]; skills: string[]; servers: string[] };
 
 export type ToolTargets = {
   catalog: ToolCatalogEntry[];
   written: { id: string; name: string; source: string }[];
-  skills: SkillEntry[];
-  servers: McpServerEntry[];
+  skills: PhoneList<SkillEntry>;
+  servers: PhoneList<McpServerEntry>;
   disabled: ToolSwitches;
 };
 
@@ -384,7 +423,10 @@ export type ScheduledJob = {
   truncated?: boolean;
 };
 
-export type ThreadTrace = { timestamp: string; text: string };
+/** One finished turn's spans. `truncated` says the Mac holds more of this thread's record than
+    was sent — this turn's own text was clipped, or older turns were dropped to fit the frame —
+    so a timeline drawn from these can say so instead of showing a short run as a whole one. */
+export type ThreadTrace = { timestamp: string; text: string; truncated?: boolean };
 
 export type CommandMenu = { slash: SlashCommand[]; at: SlashCommand[] };
 
@@ -397,6 +439,11 @@ export type LiveState = {
   partial: Record<string, { text: string; thinking: string }>;
   desktop: DesktopIdentity;
 };
+
+/** A list the Mac clipped to fit one frame. `capped` says rows were dropped, so a screen that
+    filters or searches these can say the Mac holds more instead of answering for a list it does
+    not have — a partial list drawn as a whole one is a confident wrong answer. */
+export type PhoneList<T> = { rows: T[]; capped: boolean };
 
 export type BridgeMethods = {
   unlock: { params: { pin: string }; result: { unlocked: true } };
@@ -460,6 +507,15 @@ export type BridgeMethods = {
     params: { name: string; command: string; args: string[]; env: Record<string, string> };
     result: { id: string };
   };
+  listPlugins: { params: Record<string, never>; result: PhoneList<PluginEntry> };
+  /** Every hook the plugin declares, trusted or none of them — the Mac stores trust per plugin id
+      and rewrites the whole hash set, so there is no per-hook setter to offer. The answer is the
+      list the Mac ended up holding. */
+  trustPluginHooks: { params: { id: string; trusted: boolean }; result: PhoneList<PluginEntry> };
+  listImportSources: { params: Record<string, never>; result: ImportSourceEntry[] };
+  /** The ids to read from now on, whole. The result is what the Mac ended up registered to, which
+      drops any source whose files have gone since the scan. */
+  setImportSources: { params: { ids: string[] }; result: string[] };
   readSkill: { params: { id: string }; result: SkillBody };
   writeSkill: { params: { name: string; instructions: string }; result: SkillEntry };
   setGoal: { params: { threadId: string; objective: string; tokenBudget?: number }; result: ThreadSummary };
@@ -470,16 +526,18 @@ export type BridgeMethods = {
   clearGoal: { params: { threadId: string }; result: ThreadSummary };
   /** One thread's lists, plus the ones the Mac never stamped with a thread. Without a threadId
       every list on the Mac rides to the phone to render one thread's rail. */
-  listTaskLists: { params: { threadId?: string }; result: TaskList[] };
-  threadChanges: { params: { threadId: string }; result: FileChange[] };
-  revertChange: { params: { folderId: string; path: string; before: string }; result: { reverted: true } };
+  listTaskLists: { params: { threadId?: string }; result: PhoneList<TaskList> };
+  threadChanges: { params: { threadId: string }; result: PhoneList<FileChange> };
+  revertChange: { params: { folderId: string; path: string }; result: { reverted: true } };
   listBackground: { params: Record<string, never>; result: BackgroundTask[] };
   readBackground: { params: { id: string }; result: { task: BackgroundTask; output: string } | null };
   /** False when the task had already exited, so the phone can leave the row alone. */
   stopBackground: { params: { id: string }; result: { stopped: boolean } };
-  listMemories: { params: Record<string, never>; result: MemoryNote[] };
-  deleteMemory: { params: { path: string }; result: MemoryNote[] };
-  listNotes: { params: Record<string, never>; result: KeptNote[] };
+  listMemories: { params: Record<string, never>; result: PhoneList<MemoryNote> };
+  deleteMemory: { params: { path: string }; result: PhoneList<MemoryNote> };
+  /** A row carries only the first MAX_PHONE_TEXT_CHARS of a memory; this is the rest of it. */
+  readMemory: { params: { path: string }; result: { text: string; truncated: boolean } };
+  listNotes: { params: Record<string, never>; result: PhoneList<KeptNote> };
   readNote: { params: { path: string }; result: { text: string; truncated: boolean } };
   keep: {
     params: { kind: KeepKind; title?: string; text?: string; sourceUrl?: string; sourceApplication?: string; image?: string };
@@ -492,14 +550,18 @@ export type BridgeMethods = {
   readCliRun: { params: { id: string }; result: { run: CliRun; output: string; truncated: boolean } | null };
   stopCliRun: { params: { id: string }; result: { stopped: boolean } };
   sendCliRun: { params: { id: string; prompt: string }; result: CliRun | null };
-  listScheduledJobs: { params: Record<string, never>; result: ScheduledJob[] };
+  /** What this Mac found in that CLI's installed binary, not the chat catalogue: a CLI resumes on
+      the ids its own harness knows, and `setCliRunModel` only takes one of these back. */
+  listCliModels: { params: { cli: string }; result: PhoneList<string> };
+  setCliRunModel: { params: { id: string; model: string }; result: CliRun };
+  listScheduledJobs: { params: Record<string, never>; result: PhoneList<ScheduledJob> };
   saveScheduledJob: {
     params: { jobId?: string; title: string; schedule: string; prompt: string; nodes?: string; sourceDomains: string; permissionMode: string; model?: string };
-    result: ScheduledJob[];
+    result: PhoneList<ScheduledJob>;
   };
-  deleteScheduledJob: { params: { jobId: string }; result: ScheduledJob[] };
+  deleteScheduledJob: { params: { jobId: string }; result: PhoneList<ScheduledJob> };
   runScheduledJob: { params: { jobId: string }; result: { started: true } };
-  setScheduledJobEnabled: { params: { jobId: string; enabled: boolean }; result: ScheduledJob[] };
+  setScheduledJobEnabled: { params: { jobId: string; enabled: boolean }; result: PhoneList<ScheduledJob> };
   artifactSql: { params: { id: string; sql: string; params?: (string | number | boolean | null)[] }; result: Record<string, unknown>[] };
 };
 
@@ -526,7 +588,8 @@ export type InvalidateTarget =
   | "tools"
   | "components"
   | "cliRuns"
-  | "background";
+  | "background"
+  | "scheduledJobs";
 
 export type BridgeEvent = { k: "evt" } & (
   | { t: "live"; state: LiveState }
@@ -586,17 +649,21 @@ export const READ_ONLY_METHODS: readonly BridgeMethod[] = [
   "listCredentials",
   "getSettings",
   "listToolTargets",
+  "listPlugins",
+  "listImportSources",
   "readSkill",
   "listTaskLists",
   "threadChanges",
   "listBackground",
   "readBackground",
   "listMemories",
+  "readMemory",
   "listNotes",
   "readNote",
   "listNoteFolders",
   "listCliRuns",
   "readCliRun",
+  "listCliModels",
   "listScheduledJobs",
 ];
 
@@ -651,6 +718,10 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   listToolTargets: true,
   setToolSettings: true,
   installMcpServer: true,
+  listPlugins: true,
+  trustPluginHooks: true,
+  listImportSources: true,
+  setImportSources: true,
   readSkill: true,
   writeSkill: true,
   setGoal: true,
@@ -663,6 +734,7 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   readBackground: true,
   stopBackground: true,
   listMemories: true,
+  readMemory: true,
   deleteMemory: true,
   listNotes: true,
   readNote: true,
@@ -674,6 +746,8 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   readCliRun: true,
   stopCliRun: true,
   sendCliRun: true,
+  listCliModels: true,
+  setCliRunModel: true,
   listScheduledJobs: true,
   saveScheduledJob: true,
   deleteScheduledJob: true,

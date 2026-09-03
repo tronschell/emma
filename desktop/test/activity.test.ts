@@ -50,7 +50,7 @@ test("projectActivity groups by folder name and falls back to Other", () => {
     thread("b", { messages: [{ role: "user", content: "", timestamp: "2026-08-20T10:00:00.000Z" }] }),
     thread("c"),
   ], (item) => item.id === "c" ? "" : "emma");
-  assert.deepEqual(rows.map((row) => row.name), ["emma", "Other"]);
+  assert.deepEqual(rows.map((row) => row.name), ["emma", "Unfiled"]);
   assert.equal(rows[0].threads, 2);
   assert.equal(rows[0].messages, 2);
   assert.equal(Object.values(rows[0].days)[0], 2);

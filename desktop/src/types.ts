@@ -1,3 +1,4 @@
+import type { SemanticGrepStatus } from "../shared/semantic-grep";
 import type { BackgroundTask, FileChange, LiveAgent, PermissionAsk, ThreadStep } from "../shared/agents";
 import type { Artifact, ArtifactMeta } from "../shared/artifacts";
 import type { BuiltComponent, ComponentMeta, ComponentRequest } from "../shared/components";
@@ -410,6 +411,8 @@ declare global {
       readCliRun(id: string): Promise<{ run: CliRun; output: string } | null>;
       stopCliRun(id: string): Promise<boolean>;
       installedClis(): Promise<{ id: string; label: string; bin: string; path: string; signedIn?: boolean }[]>;
+      semanticGrepStatus(): Promise<SemanticGrepStatus>;
+      onSemanticGrep(listener: () => void): () => void;
       signInCli(value: { signIn: string; columns: number; rows: number }): Promise<TerminalTab>;
       cliModels(value: { cli: string; refresh?: boolean }): Promise<CliModels>;
       setCliRunModel(value: { id: string; model: string }): Promise<CliRun>;

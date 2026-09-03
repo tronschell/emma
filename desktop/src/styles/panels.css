@@ -45,6 +45,7 @@
 .inspector .agent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--border); }
 .inspector .agent-metrics span { background: var(--chrome); }
 .inspector .agent-metrics span + span { border-left: 0; }
+.inspector .agent-metrics span:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .inspector .agent-metrics b { font-size: var(--fs-xl); }
 
 .agent-metrics .metric-rate { position: relative; }
@@ -352,14 +353,14 @@
 .agent-dialog dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: var(--s-3); padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--border); }
 .agent-dialog dl > div:last-child { border-bottom: 0; }
 .agent-dialog dt { color: var(--text-3); font-size: var(--fs-2xs); line-height: 1.5; }
-.agent-dialog dd { overflow: hidden; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.agent-dialog dd { color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); overflow-wrap: anywhere; }
 .agent-dialog dd.copyable { display: flex; align-items: center; gap: var(--s-2); }
 .agent-dialog dd.stats-export { display: grid; gap: var(--s-2); justify-items: start; white-space: normal; }
 .agent-dialog dd.stats-export button { min-height: 24px; padding: 0 var(--s-3); color: var(--text-2); border: 1px solid var(--border-strong); background: transparent; font: var(--fs-xs)/1 var(--font-mono); transition: color var(--t), border-color var(--t); }
 .agent-dialog dd.stats-export button:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .agent-dialog dd.stats-export button:disabled { color: var(--text-3); }
 .agent-dialog dd.stats-export small { max-width: 44ch; overflow-wrap: anywhere; color: var(--text-3); font-size: var(--fs-2xs); }
-.agent-dialog dd.copyable > span { overflow: hidden; text-overflow: ellipsis; }
+.agent-dialog dd.copyable > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-dialog .message-copy { flex: 0 0 auto; opacity: 1; }
 
 .harness-dialog { width: min(880px, 100%); }

@@ -1,0 +1,1 @@
+{"version":"0.0.1","configurations":[{"name":"css-preview","runtimeExecutable":"python3","runtimeArgs":["-m","http.server","8765","-d","/private/tmp/claude-501/-Users-tronschell-Documents-emma/2ef5bad0-2576-46fa-91bf-7e83f375f768/scratchpad"],"port":8765}]}

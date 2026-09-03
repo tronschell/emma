@@ -30,9 +30,11 @@ const AgentRuntimeDeps = runtime_deps.AgentRuntimeDeps;
 const ToolExecutionResult = runtime_tool_contracts.ToolExecutionResult;
 
 const TerminalValidationDigest = [std.crypto.hash.sha2.Sha256.digest_length]u8;
+const ToolCallBatchDigest = [std.crypto.hash.sha2.Sha256.digest_length]u8;
 pub const PermissionActionId = [std.crypto.hash.sha2.Sha256.digest_length]u8;
 const max_turn_permission_denials: usize = 64;
 const max_consecutive_malformed_argument_batches: usize = 3;
+const max_consecutive_failing_tool_call_batches: usize = 3;
 
 const ApprovedAction = struct {
     authority: command_admission.ToolExecutionAuthority,
@@ -376,6 +378,91 @@ pub const MalformedArgumentsRetryState = struct {
         return self.consecutive_malformed_batches == max_consecutive_malformed_argument_batches;
     }
 };
+
+pub const RepeatedFailingToolCallState = struct {
+    previous: ?ToolCallBatchDigest = null,
+    current: ?ToolCallBatchDigest = null,
+    consecutive_failing_batches: usize = 0,
+
+    pub fn beginBatch(self: *RepeatedFailingToolCallState, calls: []const ToolCall) void {
+        if (calls.len == 0) {
+            self.current = null;
+            return;
+        }
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        hash.update("fx.failing-tool-batch.v1\x00");
+        for (calls) |call| {
+            hash.update(call.name);
+            hash.update("\x00");
+            hash.update(call.arguments_json);
+            hash.update("\x00");
+        }
+        self.current = hash.finalResult();
+    }
+
+    pub fn finishBatch(self: *RepeatedFailingToolCallState, all_calls_failed: bool) bool {
+        const previous = self.previous;
+        const current = self.current;
+        self.previous = current;
+        self.current = null;
+        const digest = current orelse {
+            self.consecutive_failing_batches = 0;
+            return false;
+        };
+        if (!all_calls_failed) {
+            self.consecutive_failing_batches = 0;
+            return false;
+        }
+        const repeated = if (previous) |prior|
+            std.mem.eql(u8, prior[0..], digest[0..])
+        else
+            false;
+        self.consecutive_failing_batches = if (repeated) self.consecutive_failing_batches + 1 else 1;
+        return self.consecutive_failing_batches >= max_consecutive_failing_tool_call_batches;
+    }
+};
+
+test "repeated failing tool call state stops identical all-failing batches" {
+    const shell_call: ToolCall = .{
+        .id = "shell-1",
+        .name = "shell",
+        .arguments_json = "{\"command\":\"ls\"}",
+    };
+    const other_arguments: ToolCall = .{
+        .id = "shell-2",
+        .name = "shell",
+        .arguments_json = "{\"command\":\"pwd\"}",
+    };
+
+    var state: RepeatedFailingToolCallState = .{};
+    state.beginBatch(&.{shell_call});
+    try std.testing.expect(!state.finishBatch(true));
+
+    state.beginBatch(&.{shell_call});
+    try std.testing.expect(!state.finishBatch(true));
+
+    state.beginBatch(&.{other_arguments});
+    try std.testing.expect(!state.finishBatch(true));
+
+    state.beginBatch(&.{other_arguments});
+    try std.testing.expect(!state.finishBatch(true));
+
+    state.beginBatch(&.{other_arguments});
+    try std.testing.expect(state.finishBatch(true));
+
+    state = .{};
+    state.beginBatch(&.{shell_call});
+    try std.testing.expect(!state.finishBatch(true));
+
+    state.beginBatch(&.{shell_call});
+    try std.testing.expect(!state.finishBatch(false));
+
+    state.beginBatch(&.{shell_call});
+    try std.testing.expect(!state.finishBatch(true));
+
+    state.beginBatch(&.{});
+    try std.testing.expect(!state.finishBatch(true));
+}
 
 test "malformed arguments retry state stops consecutive all-malformed batches" {
     const malformed_read: ToolCall = .{

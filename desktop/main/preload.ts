@@ -260,6 +260,7 @@ contextBridge.exposeInMainWorld("emma", {
   },
   setProviders: (value: unknown) => ipcRenderer.invoke("emma:set-providers", value),
   testProvider: (value: unknown) => ipcRenderer.invoke("emma:test-provider", value),
+  setDefaultMode: (value: unknown) => ipcRenderer.invoke("emma:set-default-mode", value),
   setVerifier: (value: unknown) => ipcRenderer.invoke("emma:set-verifier", value),
   setToolSettings: (value: unknown) => ipcRenderer.invoke("emma:set-tool-settings", value),
   setZoom: (value: number) => ipcRenderer.invoke("emma:set-zoom", value),
@@ -300,6 +301,12 @@ contextBridge.exposeInMainWorld("emma", {
   readCliRun: (id: string) => ipcRenderer.invoke("emma:read-cli-run", id),
   stopCliRun: (id: string) => ipcRenderer.invoke("emma:stop-cli-run", id),
   installedClis: () => ipcRenderer.invoke("emma:installed-clis"),
+  semanticGrepStatus: () => ipcRenderer.invoke("emma:semantic-grep-status"),
+  onSemanticGrep: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:semantic-grep", wrapped);
+    return () => ipcRenderer.removeListener("emma:semantic-grep", wrapped);
+  },
   signInCli: (value: { signIn: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:cli-sign-in", value),
   cliModels: (value: { cli: string; refresh?: boolean }) => ipcRenderer.invoke("emma:cli-models", value),
   setCliRunModel: (value: { id: string; model: string }) => ipcRenderer.invoke("emma:cli-run-model", value),

@@ -42,6 +42,7 @@ export interface PaneLayout {
   navIcons: boolean;
   navOrder: string[];
   projectOrder: string[];
+  projectSort: "project" | "priority";
 }
 
 export const defaultPaneLayout: PaneLayout = {
@@ -56,6 +57,7 @@ export const defaultPaneLayout: PaneLayout = {
   navIcons: false,
   navOrder: [],
   projectOrder: [],
+  projectSort: "project",
 };
 
 export function ordered<T extends { id: string }>(items: T[], order: string[]): T[] {
@@ -74,9 +76,9 @@ const idList = (value: unknown, allowed?: readonly string[]) => {
 export const MIN_BROWSER_WIDTH = 260;
 export const WIDE_BROWSER_WIDTH = 720;
 
-export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITIVE_INFINITY): PaneLayout {
+export function validatePaneLayout(value: unknown): PaneLayout {
   const input = value && typeof value === "object" ? value as Partial<PaneLayout> : {};
-  const layout = {
+  return {
     sidebarWidth: number(input.sidebarWidth, defaultPaneLayout.sidebarWidth, 200, 340),
     inspectorWidth: number(input.inspectorWidth, defaultPaneLayout.inspectorWidth, 260, 360),
     browserWidth: number(input.browserWidth, defaultPaneLayout.browserWidth, MIN_BROWSER_WIDTH, 720),
@@ -88,15 +90,22 @@ export function validatePaneLayout(value: unknown, viewportWidth = Number.POSITI
     navIcons: typeof input.navIcons === "boolean" ? input.navIcons : false,
     navOrder: idList(input.navOrder, NAV_VIEWS),
     projectOrder: idList(input.projectOrder),
+    projectSort: input.projectSort === "priority" ? "priority" as const : "project" as const,
   };
+}
+
+export function fitPaneLayout(layout: PaneLayout, viewportWidth = Number.POSITIVE_INFINITY): PaneLayout {
   const fixedWidth = 320 + (layout.sidebarCollapsed ? 46 : 200) + (layout.inspectorCollapsed ? 0 : 260) + (layout.browserOpen ? MIN_BROWSER_WIDTH : 0);
   const requestedSlack = (layout.sidebarCollapsed ? 0 : layout.sidebarWidth - 200)
     + (layout.inspectorCollapsed ? 0 : layout.inspectorWidth - 260)
     + (layout.browserOpen ? layout.browserWidth - MIN_BROWSER_WIDTH : 0);
   const width = viewportWidth > 0 ? viewportWidth : Number.POSITIVE_INFINITY;
   const ratio = requestedSlack ? Math.min(1, Math.max(0, (Math.floor(width) - fixedWidth) / requestedSlack)) : 1;
-  if (!layout.sidebarCollapsed) layout.sidebarWidth = 200 + Math.floor((layout.sidebarWidth - 200) * ratio);
-  if (!layout.inspectorCollapsed) layout.inspectorWidth = 260 + Math.floor((layout.inspectorWidth - 260) * ratio);
-  if (layout.browserOpen) layout.browserWidth = MIN_BROWSER_WIDTH + Math.floor((layout.browserWidth - MIN_BROWSER_WIDTH) * ratio);
-  return layout;
+  if (ratio === 1) return layout;
+  return {
+    ...layout,
+    sidebarWidth: layout.sidebarCollapsed ? layout.sidebarWidth : 200 + Math.floor((layout.sidebarWidth - 200) * ratio),
+    inspectorWidth: layout.inspectorCollapsed ? layout.inspectorWidth : 260 + Math.floor((layout.inspectorWidth - 260) * ratio),
+    browserWidth: layout.browserOpen ? MIN_BROWSER_WIDTH + Math.floor((layout.browserWidth - MIN_BROWSER_WIDTH) * ratio) : layout.browserWidth,
+  };
 }

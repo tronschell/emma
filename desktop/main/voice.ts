@@ -23,7 +23,7 @@ function helperPath() {
 function died(signal: NodeJS.Signals | null): string {
   if (signal === "SIGTERM") return "The built-in recognizer did not answer in time.";
   if (!signal) return "";
-  return "The built-in speech helper stopped unexpectedly. Rebuild the native helpers and try again.";
+  return "The built-in speech helper stopped. Restart Emma and try again.";
 }
 
 function runHelper(args: string[], timeout: number): Promise<{ ok: boolean; out: string; err: string }> {

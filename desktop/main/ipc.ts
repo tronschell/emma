@@ -97,10 +97,13 @@ export function validateRequest(value: unknown): Request {
     const text = params[key] as string;
     const optionalCredential = key === "effort" || (method === "setThreadModel" && key === "modelId") || (method === "saveScheduledJob" && key === "model");
     const maxLength = ["screenContextId", "skillAttachmentId"].includes(key) ? 256 : key === "attachedContext" ? MAX_ATTACHED_CONTEXT_CHARS : 65_536;
+    if (key === "content" && text.length > maxLength) {
+      throw new Error(`This message is ${text.length.toLocaleString("en-US")} characters; Emma sends at most ${maxLength.toLocaleString("en-US")}. Trim it, or attach the text as a file.`);
+    }
     if (text.length > maxLength || (key !== "content" && !optionalCredential && !text.trim())) throw new Error("Invalid parameters");
   }
   if (Buffer.byteLength(JSON.stringify({ id: "x".repeat(128), method, params })) > MAX_HOST_REQUEST_BYTES) {
-    throw new Error("Request is too large");
+    throw new Error("Request is too large: send less attached context or a shorter message");
   }
   return { method, params: params as Record<string, string> };
 }

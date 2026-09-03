@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 const AUTH_FILE = join(homedir(), ".codex", "auth.json");
 const ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
@@ -63,12 +63,20 @@ function inputContent(content: unknown): Record<string, string>[] {
   });
 }
 
+const isInstruction = (message: ChatMessage) => message.role === "system" || message.role === "developer";
+
 export function responsesRequest(body: Record<string, unknown>): Record<string, unknown> {
   const messages = (Array.isArray(body.messages) ? body.messages : []) as ChatMessage[];
-  const instructions = messages.filter((message) => message.role === "system" || message.role === "developer").map((message) => flatText(message.content)).join("\n\n");
+  let leading = 0;
+  while (leading < messages.length && isInstruction(messages[leading])) leading += 1;
+  const instructions = messages.slice(0, leading).map((message) => flatText(message.content)).join("\n\n");
   const input: unknown[] = [];
-  for (const message of messages) {
-    if (message.role === "system" || message.role === "developer") continue;
+  for (const message of messages.slice(leading)) {
+    if (isInstruction(message)) {
+      const text = flatText(message.content);
+      if (text) input.push({ type: "message", role: "developer", content: [{ type: "input_text", text }] });
+      continue;
+    }
     if (message.role === "tool") {
       input.push({ type: "function_call_output", call_id: message.tool_call_id ?? "", output: flatText(message.content) });
       continue;
@@ -96,12 +104,17 @@ export function responsesRequest(body: Record<string, unknown>): Record<string, 
     input,
     ...(tools.length ? { tools, tool_choice: body.tool_choice ?? "auto", parallel_tool_calls: body.parallel_tool_calls === true } : {}),
     ...(effort ? { reasoning: { effort, summary: "auto" } } : {}),
-    ...(typeof body.max_tokens === "number" ? { max_output_tokens: body.max_tokens } : {}),
+    ...(typeof body.prompt_cache_key === "string" && body.prompt_cache_key ? { prompt_cache_key: body.prompt_cache_key } : {}),
     stream: true,
     store: false,
     include: ["reasoning.encrypted_content"],
   };
 }
+
+const uuidShaped = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+
+export const sessionIdFor = (body: Record<string, unknown>) =>
+  typeof body.prompt_cache_key === "string" && body.prompt_cache_key ? uuidShaped(createHash("sha256").update(body.prompt_cache_key).digest("hex")) : randomUUID();
 
 export type ChunkState = { id: string; model: string; calls: Map<string, number>; calledTools: boolean };
 
@@ -149,9 +162,45 @@ export function chatChunks(event: Record<string, unknown>, state: ChunkState): R
     }
     case "response.completed":
       return [chunk({}, state.calledTools ? "tool_calls" : "stop", chatUsage((event.response as { usage?: unknown } | undefined)?.usage))];
+    case "response.incomplete": {
+      const response = (event.response ?? {}) as { usage?: unknown; incomplete_details?: { reason?: unknown } };
+      if (response.incomplete_details?.reason !== "max_output_tokens") return [];
+      return [chunk({}, "length", chatUsage(response.usage))];
+    }
     default:
       return [];
   }
+}
+
+type ChatToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+
+function chatCompletion(chunks: Record<string, unknown>[], state: ChunkState): Record<string, unknown> {
+  let content = "";
+  let finish = "stop";
+  let usage: unknown;
+  const calls: ChatToolCall[] = [];
+  for (const chunk of chunks) {
+    if (chunk.usage) usage = chunk.usage;
+    const choice = (chunk.choices as { delta?: Record<string, unknown>; finish_reason?: string | null }[] | undefined)?.[0];
+    if (choice?.finish_reason) finish = choice.finish_reason;
+    const delta = choice?.delta ?? {};
+    if (typeof delta.content === "string") content += delta.content;
+    for (const raw of (Array.isArray(delta.tool_calls) ? delta.tool_calls : []) as { index?: number; id?: string; function?: { name?: string; arguments?: string } }[]) {
+      const index = raw.index ?? calls.length;
+      const call = calls[index] ??= { id: raw.id ?? `call_${index}`, type: "function", function: { name: "", arguments: "" } };
+      if (raw.id) call.id = raw.id;
+      if (raw.function?.name) call.function.name = raw.function.name;
+      call.function.arguments += raw.function?.arguments ?? "";
+    }
+  }
+  return {
+    id: state.id,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: state.model,
+    choices: [{ index: 0, message: { role: "assistant", content, ...(calls.length ? { tool_calls: calls } : {}) }, finish_reason: finish }],
+    ...(usage ? { usage } : {}),
+  };
 }
 
 export function upstreamFailure(event: Record<string, unknown>): string {
@@ -189,18 +238,25 @@ async function relay(request: IncomingMessage, response: ServerResponse, token: 
         "chatgpt-account-id": auth.accountId,
         "OpenAI-Beta": "responses=experimental",
         originator: "codex_cli_rs",
-        session_id: randomUUID(),
+        session_id: sessionIdFor(body),
         "content-type": "application/json",
         accept: "text/event-stream",
       },
       body: JSON.stringify(responsesRequest(body)),
     });
     if (!upstream.ok || !upstream.body) return fail(upstream.status, (await upstream.text()).slice(0, 2048) || "The ChatGPT endpoint refused the request.");
-    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    const buffered = body.stream === false;
+    const collected: Record<string, unknown>[] = [];
+    if (!buffered) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     const state = chunkState(typeof body.model === "string" ? body.model : "");
+    const answer = () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(chatCompletion(collected, state)));
+    };
     const decoder = new TextDecoder();
     let carry = "";
     for await (const piece of upstream.body as unknown as AsyncIterable<Uint8Array>) {
+      if (!buffered) response.write(":\n\n");
       carry += decoder.decode(piece, { stream: true });
       const lines = carry.split("\n");
       carry = lines.pop() ?? "";
@@ -214,13 +270,26 @@ async function relay(request: IncomingMessage, response: ServerResponse, token: 
         } catch {
           continue;
         }
-        if (upstreamFailure(event)) {
-          response.destroy();
+        const failure = upstreamFailure(event);
+        if (failure) {
+          const [terminal] = chatChunks(event, state);
+          if (buffered) {
+            if (!terminal) return fail(502, failure);
+            collected.push(terminal);
+            return answer();
+          }
+          response.write(`data: ${JSON.stringify(terminal ?? { error: { message: failure } })}\n\n`);
+          response.write("data: [DONE]\n\n");
+          response.end();
           return;
         }
-        for (const chunk of chatChunks(event, state)) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        for (const chunk of chatChunks(event, state)) {
+          if (buffered) collected.push(chunk);
+          else response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        }
       }
     }
+    if (buffered) return answer();
     response.write("data: [DONE]\n\n");
     response.end();
   } catch (error) {

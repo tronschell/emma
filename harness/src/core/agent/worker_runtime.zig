@@ -67,6 +67,10 @@ pub const QueuedPrompt = struct {
     permission_mode: types.PermissionMode,
     sandbox_backend: sandbox.BackendKind = .none,
     history: []types.HistoryTurn,
+    /// Sticky history-budget floor owned by the session; see session.HistoryBudgetOptions.
+    history_budget_floor: ?*u64 = null,
+    /// Session-owned memory of dynamic tools selected in earlier turns; see session.StickyDynamicTools.
+    sticky_dynamic_tools: ?session_runtime.StickyDynamicToolsRef = null,
     root_user_intent_context: []u8 = &.{},
     grants: []types.PermissionGrant,
     skill_bindings: []SkillBinding = &.{},

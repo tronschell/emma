@@ -137,7 +137,7 @@ function LineagePanel({ threads, openThread }: { threads: Thread[]; openThread: 
           <span className="git-meta">{threadMessageCount(row.thread)} · {day(new Date(row.thread.updatedAt).getTime())}</span>
         </div>
       </li>)}
-      {!rows.length && <li className="git-commit-row">No threads yet</li>}
+      {!rows.length && <li className="empty">No threads yet.</li>}
     </ol>
   </section>;
 }

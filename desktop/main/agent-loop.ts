@@ -242,15 +242,15 @@ export class AgentRuntime {
       .join("\n");
   }
 
-  noteSteer(threadId: string, text: string): void {
+  noteNotice(threadId: string, kind: "steer" | "compact", text: string): void {
     const run = this.runs.get(threadId);
     if (!run || !run.spans.length) return;
     const at = Date.now();
     run.spans.push({
-      id: `steer:${run.threadId}:${run.spans.length}`,
+      id: `${kind}:${run.threadId}:${run.spans.length}`,
       parentId: run.spans[0].id,
-      name: "steer",
-      kind: "steer",
+      name: kind,
+      kind,
       startedAt: at,
       endedAt: at,
       status: "ok",
@@ -428,6 +428,14 @@ export class AgentRuntime {
     this.open(turn).adopted = true;
   }
 
+  /** The sidebar chip says which thread is running, so it follows the thread's name. */
+  noteTitle(threadId: string, title: string): void {
+    const run = this.runs.get(threadId);
+    if (!run || !title.trim() || run.title === title) return;
+    run.title = title;
+    this.deps.changed();
+  }
+
   /** What the turn is waiting on while nothing has streamed yet — startup, hooks, the model. */
   noteActivity(threadId: string, activity: string): void {
     const run = this.runs.get(threadId);
@@ -491,11 +499,12 @@ export class AgentRuntime {
     run.endedAt = Date.now();
     this.dismissAsks(run);
     run.generationMs = Math.max(run.generationMs, run.endedAt - run.startedAt - run.awaited, 1);
-    this.closeRun(run, error ? "failed" : "ok", error);
+    const ended: TraceStatus = run.stopped ? "cancelled" : error ? "failed" : "ok";
+    this.closeRun(run, ended, error);
     for (const span of run.spans) {
       if (span.endedAt !== undefined || span.status !== "running") continue;
       span.endedAt = run.endedAt;
-      if (span.id.startsWith("call:")) span.status = "cancelled";
+      span.status = span.id.startsWith("call:") ? "cancelled" : ended;
     }
     this.flushTrace(run);
     this.deps.changed();
@@ -762,9 +771,12 @@ export function bounded(value: string): string {
 export function lastAssistantMessage(result: unknown): string | undefined {
   const messages = (result as { messages?: unknown })?.messages;
   if (!Array.isArray(messages)) return undefined;
+  let notice: string | undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index] as { role?: unknown; content?: unknown };
     if (message?.role === "assistant" && typeof message.content === "string") return message.content;
+    if (message?.role === "user") return notice;
+    if (message?.role === "system" && typeof message.content === "string") notice ??= message.content;
   }
-  return undefined;
+  return notice;
 }

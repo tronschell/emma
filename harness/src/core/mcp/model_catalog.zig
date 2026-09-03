@@ -138,10 +138,11 @@ fn renderEntry(alloc: Allocator, server: ServerSummary) Allocator.Error![]u8 {
     defer out.deinit();
     out.writer.writeAll("  <server name=\"") catch return error.OutOfMemory;
     model_context_encoding.writeScalar(&out.writer, server.name) catch return error.OutOfMemory;
-    out.writer.print("\" state=\"{s}\"", .{@tagName(server.availability)}) catch return error.OutOfMemory;
-    if (server.tool_count) |count| {
-        out.writer.print(" tools=\"{d}\"", .{count}) catch return error.OutOfMemory;
-    }
+    // The catalog sits in the cached prompt prefix, so it must not change bytes while a
+    // session runs: discovery is reported as ready (a search simply waits for it) and tool
+    // counts, which move as servers finish discovering, are not rendered at all.
+    const state: Availability = if (server.availability == .discovering) .ready else server.availability;
+    out.writer.print("\" state=\"{s}\"", .{@tagName(state)}) catch return error.OutOfMemory;
     out.writer.writeAll(" />\n") catch return error.OutOfMemory;
     return out.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -244,6 +245,7 @@ test "render exposes sorted server summaries without tool metadata" {
     var snapshot = try ownedSnapshot(alloc, &.{
         .{ .name = "zeta", .availability = .authentication_required },
         .{ .name = "alpha", .availability = .ready, .tool_count = 2 },
+        .{ .name = "mid", .availability = .discovering },
     });
     defer snapshot.deinit(alloc);
 
@@ -254,7 +256,8 @@ test "render exposes sorted server summaries without tool metadata" {
         "Configured MCP servers visible to this model turn are listed below.\n" ++
             "Use mcp_search_tools with the server alias and requested use case. Then use mcp_select_tool with one exact result. Do not guess tool names.\n" ++
             "<mcp_servers>\n" ++
-            "  <server name=\"alpha\" state=\"ready\" tools=\"2\" />\n" ++
+            "  <server name=\"alpha\" state=\"ready\" />\n" ++
+            "  <server name=\"mid\" state=\"ready\" />\n" ++
             "  <server name=\"zeta\" state=\"authentication_required\" />\n" ++
             "</mcp_servers>\n",
         section.text,

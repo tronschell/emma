@@ -114,17 +114,12 @@ export const defaultContextPages: ContextPage[] = [
       { type: "stats", orientation: "horizontal" },
       { type: "context", orientation: "vertical" },
       { type: "timeline", orientation: "vertical" },
-      { type: "tasklist", orientation: "vertical" },
-      { type: "plan", orientation: "vertical" },
-      { type: "subagents", orientation: "vertical" },
-      { type: "subthreads", orientation: "vertical" },
     ],
   },
   {
     id: "p2",
     name: "Run",
     widgets: [
-      { type: "timeline", orientation: "vertical" },
       { type: "tasklist", orientation: "vertical" },
       { type: "plan", orientation: "vertical" },
       { type: "subagents", orientation: "vertical" },

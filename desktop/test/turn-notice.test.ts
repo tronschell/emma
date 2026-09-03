@@ -39,15 +39,20 @@ test("a turn that ends in a notice still reports the rate the answer ran at", ()
   assert.equal(latestRate(threadOf(answer, notice)), 50);
 });
 
-test("a turn that is only a notice has no reply and no rate", () => {
-  assert.equal(latestReply(threadOf(notice)), "");
+test("a turn that is only a notice shows the notice and has no rate", () => {
+  assert.equal(latestReply(threadOf(notice)), "This run stopped: you stopped it");
   assert.equal(latestRate(threadOf(notice)), 0);
 });
 
 test("a turn that answered nothing does not borrow the answer of the turn before it", () => {
   const stale = threadOf(answer, asked("and now?"), notice);
-  assert.equal(latestReply(stale), "");
+  assert.equal(latestReply(stale), "This run stopped: you stopped it");
   assert.equal(latestRate(stale), 0);
+});
+
+test("a turn that ends in an answer is unchanged", () => {
+  assert.equal(latestReply(threadOf(answer)), "The build is green.");
+  assert.equal(latestRate(threadOf(answer)), 50);
 });
 
 test("the context breakdown calls a notice a notice, not Emma", async () => {

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,7 +10,7 @@ import type { PermissionAsk, ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import type { RunnableHookEvent } from "../shared/plugins";
 import { missingFolderMessage } from "../shared/folders";
-import { MAX_LOG_BODY, type HarnessFlow, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
+import { CLOSED_BY_EMMA, MAX_LOG_BODY, type HarnessFlow, type HarnessLogLine, type HarnessState } from "../shared/harness-log";
 import type { HarnessExperiments } from "../shared/settings";
 import { decodeSpans, encodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
 
@@ -20,6 +21,7 @@ const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 
 export const MAX_IDLE_MS = 30 * 60 * 1000;
 const MAX_STDERR_TAIL = 4 * 1024;
+const CLOSE_GRACE_MS = 2000;
 
 export type StopReason = "end_turn" | "cancelled" | "refused" | "max_output_tokens" | "max_model_turns";
 
@@ -29,7 +31,7 @@ export type TurnUsage = { inputTokens: number; outputTokens: number; cacheInputT
 
 const mediaType =(file: string) => `image/${path.extname(file).slice(1).toLowerCase().replace("jpg", "jpeg")}`;
 
-export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; compact?: boolean; images?: string[]; continueRecovery?: boolean };
+export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; semanticGrep?: string; imageInput?: boolean; compact?: boolean; images?: string[]; continueRecovery?: boolean };
 
 export type ThinkingRoute = { level: string; published: string[] };
 
@@ -42,10 +44,13 @@ export const experimentOption = (experiments: HarnessExperiments) =>
     `reinject_percent=${experiments.reinjectPromptPercent}`,
     `prune_steps=${experiments.pruneToolsSteps}`,
     `prune_percent=${experiments.pruneToolsPercent}`,
+    `command_timeout_minutes=${experiments.commandTimeoutMinutes}`,
   ].join(",");
 
 // stdio is signalled by the absence of `type`; a remote entry carries url and headers instead.
 export type HarnessMcpServer = { name: string; command?: string; args?: string[]; env?: Array<{ name: string; value: string }>; type?: "http" | "sse"; url?: string; headers?: Array<{ name: string; value: string }> };
+
+const SECRET_OPTION_ENV = /(\\?"(?:ZVEC_GREP_API_KEY|ZVEC_GREP_SERVER_TOKEN)\\?",\\?"value\\?":\\?")[^"\\]*/g;
 
 const wireLabel = (message: Record<string, unknown>) => {
   const id = typeof message.id === "number" ? `#${message.id}` : "";
@@ -242,6 +247,7 @@ const RECOVERED_TOOL_TITLES: Record<string, string> = {
   terminal: "Using the terminal",
   vision: "Looking at the image",
   write_file: "Writing file",
+  zvec_grep_search: "Searching by meaning",
 };
 
 const recoveredToolTitle = (name: string) => RECOVERED_TOOL_TITLES[name] ?? name.replaceAll("_", " ");
@@ -385,6 +391,21 @@ export function recoveredSessionTraces(home: string, threadId: string, traces: S
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; touch: () => void };
 
+export const RESTARTED_BY_YOU = "Harness restarted";
+
+const FAILURE_EXPLANATIONS: Record<string, string> = {
+  [CLOSED_BY_EMMA]: "Emma was closed while it was in flight. Send Continue to pick it back up",
+  [RESTARTED_BY_YOU]: "You restarted the agent while this run was in flight. Send Continue to pick it back up",
+  RequestTooLarge: "the conversation outgrew what this model accepts, even after older tool results were pruned. Emma will compact it on your next message; send Continue",
+};
+
+export function explainFailure(detail: string): string {
+  const known = FAILURE_EXPLANATIONS[detail];
+  if (known) return known;
+  if (!/^[A-Z][A-Za-z0-9]*$/.test(detail)) return detail;
+  return `${detail.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()} — the agent gave up on this turn. Send Continue to pick it back up`;
+}
+
 export class Harness {
   private child: ChildProcessWithoutNullStreams | undefined;
 
@@ -406,7 +427,7 @@ export class Harness {
   private rebind = false;
 
   private cancelled = new Set<string>();
-  readonly paused = new Map<string, string>();
+  readonly paused = new Map<string, { message: string; cause?: string; requiredAction?: string }>();
   private readonly permissionChecks = new Set<{ threadId: string; childId?: string; cancelled: boolean }>();
   private failure: Error | undefined;
 
@@ -546,6 +567,14 @@ export class Harness {
       await this.request("session/set_config_option", { sessionId, configId: "context_experiments", value: experimentOption(extra.experiments) });
     }
 
+    if (extra.semanticGrep !== undefined) {
+      await this.request("session/set_config_option", { sessionId, configId: "semantic_grep", value: extra.semanticGrep });
+    }
+
+    if (extra.imageInput !== undefined) {
+      await this.request("session/set_config_option", { sessionId, configId: "image_input", value: String(extra.imageInput) });
+    }
+
     if (extra.compact) {
       this.phase(threadId, "compacting the context");
       await this.request("session/compact", { sessionId }).catch((error: unknown) => console.error("Emma: the harness would not compact", error));
@@ -640,13 +669,17 @@ export class Harness {
     return `emma-cli ${how}${detail ? `: ${detail}` : ""}`;
   }
 
-  async close() {
-    this.fail(new Error("Harness closed"));
+  async close(reason = CLOSED_BY_EMMA) {
+    this.fail(new Error(reason));
     if (this.deps.promptFile) rmSync(this.deps.promptFile, { force: true });
     const child = this.child;
     this.child = undefined;
     if (!child) return;
     if (!child.stdin.destroyed) child.stdin.end();
+    if (child.exitCode === null && child.signalCode === null) {
+      await once(child, "exit", { signal: AbortSignal.timeout(CLOSE_GRACE_MS) }).catch(() => {});
+    }
+    if (child.exitCode !== null || child.signalCode !== null) return;
     if (process.platform === "win32" && child.pid !== undefined) {
       if (await terminateProcessTree(child.pid, "SIGKILL")) return;
     }
@@ -721,6 +754,8 @@ export class Harness {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
+        if (this.permissionChecks.size > 0) return void timer.refresh();
+        for (const call of this.calls.values()) if (call.status === "in_progress") return void timer.refresh();
         this.fail(new Error(`emma-cli stopped answering while ${method} was in flight. Emma restarted the agent; send the turn again.`));
         void this.close();
       }, idleMs);
@@ -733,7 +768,7 @@ export class Harness {
   private send(message: Record<string, unknown>) {
     const child = this.child;
     if (!child) throw this.failure ?? new Error("Harness is not running");
-    this.log("out", wireLabel(message), JSON.stringify(message));
+    this.log("out", wireLabel(message), JSON.stringify(message).replace(SECRET_OPTION_ENV, "$1…"));
     child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
       if (error) this.fail(error);
     });
@@ -756,10 +791,12 @@ export class Harness {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
+    const turnThreadId = this.computerTurn?.id === message.id ? this.computerTurn.threadId : undefined;
     if (this.computerTurn?.id === message.id) this.computerTurn = undefined;
     if (message.error) {
       const detail = (message.error as { message?: string }).message ?? "Harness call failed";
-      pending.reject(new Error(detail));
+      const paused = turnThreadId ? this.paused.get(turnThreadId)?.message : undefined;
+      pending.reject(new Error(paused ?? explainFailure(detail)));
       return;
     }
     pending.resolve(message.result ?? null);
@@ -800,7 +837,10 @@ export class Harness {
       void owner
         .then((childThreadId) => {
           this.applyUpdate(childThreadId, update);
-          if (child.ended) this.deps.onChildEnd(childThreadId);
+          if (child.ended) {
+            this.deps.onChildEnd(childThreadId, this.paused.get(childThreadId)?.message);
+            this.paused.delete(childThreadId);
+          }
         })
         .catch(() => undefined);
       return;
@@ -895,14 +935,15 @@ export class Harness {
           return;
         }
         const recovery =((update._meta as { fx?: { modelResponseRecovery?: unknown } } | undefined)?.fx?.modelResponseRecovery ?? null) as
-          { state?: unknown; message?: unknown; attempt?: unknown; attemptLimit?: unknown; delaySeconds?: unknown } | null;
+          { state?: unknown; message?: unknown; cause?: unknown; requiredAction?: unknown; attempt?: unknown; attemptLimit?: unknown; delaySeconds?: unknown } | null;
         if (!recovery || typeof recovery.message !== "string") return;
-        const attempt = typeof recovery.attempt === "number" && typeof recovery.attemptLimit === "number" && recovery.attemptLimit > 0
+        const counted = recovery.requiredAction !== "change_request" && typeof recovery.attempt === "number" && typeof recovery.attemptLimit === "number" && recovery.attemptLimit > 0;
+        const attempt = counted && !recovery.message.includes(`${recovery.attempt}/${recovery.attemptLimit}`)
           ? ` (attempt ${recovery.attempt} of ${recovery.attemptLimit})`
           : "";
         const wait = typeof recovery.delaySeconds === "number" && recovery.delaySeconds > 0 ? `, retrying in ${recovery.delaySeconds}s` : "";
         const line = `${recovery.message}${attempt}${wait}`;
-        if (recovery.state === "paused") this.paused.set(threadId, line); else this.paused.delete(threadId);
+        if (recovery.state === "paused") this.paused.set(threadId, { message: line, cause: typeof recovery.cause === "string" ? recovery.cause : undefined, requiredAction: typeof recovery.requiredAction === "string" ? recovery.requiredAction : undefined }); else this.paused.delete(threadId);
         this.deps.onThought(threadId, `${line}\n`, true);
         return;
       }

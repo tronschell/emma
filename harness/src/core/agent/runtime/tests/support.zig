@@ -243,6 +243,7 @@ pub const FakeGateway = struct {
     request_api_keys: std.ArrayList([]u8) = .empty,
     request_session_ids: std.ArrayList(?[]u8) = .empty,
     recovery_pause_flag: ?*std.atomic.Value(bool) = null,
+    too_large_before_request: ?usize = null,
 
     pub fn init(alloc: Allocator, completions: []const FakeCompletion) FakeGateway {
         return .{ .alloc = alloc, .completions = completions };
@@ -265,6 +266,7 @@ pub const FakeGateway = struct {
         var result = builtin_gateway.agent_stream_provider;
         result.context = self;
         result.stream_fn = fakeGatewayStream;
+        result.build_fn = fakeGatewayBuild;
         return result;
     }
 
@@ -382,6 +384,21 @@ fn fakeGatewayStream(
 ) !agent_stream_provider.Result {
     const gateway: *FakeGateway = @ptrCast(@alignCast(context.?));
     return gateway.stream(alloc, request);
+}
+
+fn fakeGatewayBuild(
+    context: ?*anyopaque,
+    alloc: Allocator,
+    request: agent_stream_provider.BuildRequest,
+) anyerror![]u8 {
+    const gateway: *FakeGateway = @ptrCast(@alignCast(context.?));
+    if (gateway.too_large_before_request) |index| {
+        if (index == gateway.request_bodies.items.len) {
+            gateway.too_large_before_request = null;
+            return error.RequestTooLarge;
+        }
+    }
+    return builtin_gateway.agent_stream_provider.build_fn(null, alloc, request);
 }
 
 pub const FakeExecPlan = union(enum) {
@@ -547,6 +564,7 @@ pub const FakeAgentRuntimeDeps = struct {
     runtime_context_texts: []const []const u8 = &.{},
     runtime_context_index: usize = 0,
     runtime_context_error: ?anyerror = null,
+    runtime_context_prefix_text: ?[]const u8 = null,
     last_execute_grant_count: usize = 0,
     command_complete_count: usize = 0,
     route_recovery_clear_count: usize = 0,
@@ -874,6 +892,9 @@ pub const FakeAgentRuntimeDeps = struct {
     fn appendRuntimeContext(raw: *anyopaque, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
         const self: *FakeAgentRuntimeDeps = @ptrCast(@alignCast(raw));
         if (self.runtime_context_error) |err| return err;
+        if (self.runtime_context_prefix_text) |text| {
+            try messages.append(arena, .{ .role = .system, .content = try arena.dupe(u8, text), .cache_policy = .prefix });
+        }
         if (self.runtime_context_texts.len > 0) {
             const index = @min(self.runtime_context_index, self.runtime_context_texts.len - 1);
             const text = self.runtime_context_texts[index];

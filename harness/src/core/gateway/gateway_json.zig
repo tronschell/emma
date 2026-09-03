@@ -31,7 +31,7 @@ pub fn writeChatMessageJson(
     writer: *std.Io.Writer,
     message: ChatMessage,
 ) !void {
-    writeChatMessageJsonInner(scratch_alloc, writer, message, false, null, null) catch |err| return err;
+    writeChatMessageJsonInner(scratch_alloc, writer, message, .none, null, null) catch |err| return err;
 }
 
 pub fn writeChatMessageJsonCached(
@@ -39,7 +39,7 @@ pub fn writeChatMessageJsonCached(
     writer: *std.Io.Writer,
     message: ChatMessage,
 ) !void {
-    writeChatMessageJsonInner(scratch_alloc, writer, message, true, null, null) catch |err| return err;
+    writeChatMessageJsonInner(scratch_alloc, writer, message, .short, null, null) catch |err| return err;
 }
 
 pub fn buildGatewayRequestBody(
@@ -327,14 +327,14 @@ fn buildGatewayRequestBodyValidated(
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
 
-    const cache_breakpoint_idx = if (options.prompt_caching) findCacheBreakpoint(messages) else null;
+    const cache_marks = if (options.prompt_caching) findCacheMarks(messages) else CacheMarks{};
     var prefix_cacheable = true;
 
     try out.writer.writeAll("{\"prompt\":[");
     for (messages, 0..) |message, i| {
         if (budget) |active| try active.check();
         if (i > 0) try out.writer.writeByte(',');
-        const use_cache = prefix_cacheable and shouldCacheMessage(message, i, cache_breakpoint_idx, options.prompt_caching);
+        const use_cache = if (prefix_cacheable) cacheTtlForMessage(message, i, cache_marks, options.prompt_caching) else .none;
         const verified_images = if (verified_image_override) |override|
             if (override.message_index == i) override.images else null
         else
@@ -348,8 +348,8 @@ fn buildGatewayRequestBodyValidated(
                 active,
                 verified_images,
             );
-        } else if (use_cache) {
-            try writeChatMessageJsonCached(std.heap.c_allocator, &out.writer, message);
+        } else if (use_cache != .none) {
+            try writeChatMessageJsonInner(std.heap.c_allocator, &out.writer, message, use_cache, null, null);
         } else {
             try writeChatMessageJson(std.heap.c_allocator, &out.writer, message);
         }
@@ -529,20 +529,57 @@ fn findToolCallIndex(calls: []const ToolCall, id: []const u8) ?usize {
     return null;
 }
 
-pub fn shouldCacheMessage(message: ChatMessage, index: usize, cache_breakpoint_idx: ?usize, prompt_caching: bool) bool {
-    if (!prompt_caching) return false;
-    if (message.cache_policy == .no_cache) return false;
-    return message.role == .system or (cache_breakpoint_idx != null and index == cache_breakpoint_idx.?);
+pub const CacheMarks = struct {
+    /// Last leading system message: the static prefix, cached for an hour.
+    stable_prefix_idx: ?usize = null,
+    /// Last durable-history message before the current prompt; stable across a turn's steps.
+    history_end_idx: ?usize = null,
+    /// Last cacheable message before the volatile tail; moves forward each step.
+    breakpoint_idx: ?usize = null,
+
+    pub fn marks(self: CacheMarks, index: usize) bool {
+        return (self.stable_prefix_idx != null and index == self.stable_prefix_idx.?) or
+            (self.history_end_idx != null and index == self.history_end_idx.?) or
+            (self.breakpoint_idx != null and index == self.breakpoint_idx.?);
+    }
+};
+
+/// How long a cache mark on a message should live. Anthropic requires the
+/// longer-lived marks to precede the shorter ones, which the prefix layout guarantees.
+pub const CacheTtl = enum { none, short, long };
+
+pub fn cacheTtlForMessage(message: ChatMessage, index: usize, cache_marks: CacheMarks, prompt_caching: bool) CacheTtl {
+    if (!prompt_caching) return .none;
+    if (message.cache_policy == .no_cache) return .none;
+    if (!cache_marks.marks(index)) return .none;
+    if (cache_marks.stable_prefix_idx != null and index == cache_marks.stable_prefix_idx.?) return .long;
+    return .short;
 }
 
-const anthropic_cache_meta = ",\"providerOptions\":{\"anthropic\":{\"cacheControl\":{\"type\":\"ephemeral\"}}}";
+pub fn shouldCacheMessage(message: ChatMessage, index: usize, cache_marks: CacheMarks, prompt_caching: bool) bool {
+    return cacheTtlForMessage(message, index, cache_marks, prompt_caching) != .none;
+}
+
+pub const cache_control_short = "{\"type\":\"ephemeral\"}";
+pub const cache_control_long = "{\"type\":\"ephemeral\",\"ttl\":\"1h\"}";
+
+pub fn cacheControlJson(ttl: CacheTtl) []const u8 {
+    return switch (ttl) {
+        .none => "",
+        .short => cache_control_short,
+        .long => cache_control_long,
+    };
+}
+
+const anthropic_cache_meta = ",\"providerOptions\":{\"anthropic\":{\"cacheControl\":" ++ cache_control_short ++ "}}";
+const anthropic_cache_meta_long = ",\"providerOptions\":{\"anthropic\":{\"cacheControl\":" ++ cache_control_long ++ "}}";
 const max_prompt_shape_entries: usize = 12;
 
 fn writeChatMessageJsonInner(
     scratch_alloc: std.mem.Allocator,
     writer: *std.Io.Writer,
     message: ChatMessage,
-    cached: bool,
+    cached: CacheTtl,
     budget: ?BuildBudget,
     verified_images: ?[]const image_attachments.VerifiedSnapshot,
 ) !void {
@@ -650,7 +687,11 @@ fn writeChatMessageJsonInner(
         },
     }
 
-    if (cached) try writer.writeAll(anthropic_cache_meta);
+    switch (cached) {
+        .none => {},
+        .short => try writer.writeAll(anthropic_cache_meta),
+        .long => try writer.writeAll(anthropic_cache_meta_long),
+    }
     try writer.writeAll("}");
 }
 
@@ -775,14 +816,39 @@ fn jsonKindName(value: std.json.Value) []const u8 {
     };
 }
 
-pub fn findCacheBreakpoint(messages: []const ChatMessage) ?usize {
-    if (messages.len < 3) return null;
-    var i = messages.len - 2;
-    while (i > 0) : (i -= 1) {
-        const role = messages[i].role;
-        if (role == .user or role == .assistant) return i;
+pub fn findCacheMarks(messages: []const ChatMessage) CacheMarks {
+    var marks: CacheMarks = .{};
+    for (messages, 0..) |message, i| {
+        if (message.role != .system or message.cache_policy == .no_cache) break;
+        marks.stable_prefix_idx = i;
     }
-    return null;
+    var i = messages.len;
+    while (i > 0) {
+        i -= 1;
+        const message = messages[i];
+        if (message.cache_policy == .no_cache) continue;
+        if (marks.stable_prefix_idx != null and i <= marks.stable_prefix_idx.?) break;
+        marks.breakpoint_idx = i;
+        break;
+    }
+    // The message before the last user prompt closes the durable history. Marking it keeps
+    // the whole history cached across every step of the turn and into the next turn, even
+    // when the moving breakpoint lands on a tool result that never recurs.
+    var last_user: ?usize = null;
+    for (messages, 0..) |message, index| {
+        if (message.role == .user) last_user = index;
+    }
+    if (last_user) |user_idx| {
+        if (user_idx > 0) {
+            const candidate = user_idx - 1;
+            const beyond_prefix = marks.stable_prefix_idx == null or candidate > marks.stable_prefix_idx.?;
+            const before_breakpoint = marks.breakpoint_idx != null and candidate < marks.breakpoint_idx.?;
+            if (beyond_prefix and before_breakpoint and messages[candidate].cache_policy != .no_cache) {
+                marks.history_end_idx = candidate;
+            }
+        }
+    }
+    return marks;
 }
 
 pub fn parseGatewayCompletion(alloc: std.mem.Allocator, body: []const u8) !GatewayCompletion {
@@ -1136,6 +1202,11 @@ test "writeChatMessageJsonCached adds provider options and non-cached omits them
     try std.testing.expect(std.mem.find(u8, cached_out.written(), "\"providerOptions\"") != null);
     try std.testing.expect(std.mem.find(u8, cached_out.written(), "\"cacheControl\":{\"type\":\"ephemeral\"}") != null);
     try std.testing.expect(std.mem.find(u8, uncached_out.written(), "providerOptions") == null);
+
+    var long_out: std.Io.Writer.Allocating = .init(alloc);
+    defer long_out.deinit();
+    try writeChatMessageJsonInner(alloc, &long_out.writer, message, .long, null, null);
+    try std.testing.expect(std.mem.find(u8, long_out.written(), "\"cacheControl\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}") != null);
 }
 
 fn promptStringEntryHasCacheControl(body: []const u8, needle: []const u8) !bool {
@@ -1168,14 +1239,54 @@ test "buildGatewayRequestBodyWithOptions leaves transient system messages uncach
     const body = try buildGatewayRequestBodyWithOptions(alloc, "[]", &msgs, .{ .prompt_caching = true }, .auto);
     defer alloc.free(body);
 
-    const cache_marker = "\"cacheControl\":{\"type\":\"ephemeral\"}";
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, cache_marker));
-    try std.testing.expect(try promptStringEntryHasCacheControl(body, "stable system prompt"));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, body, "\"cacheControl\":{\"type\":\"ephemeral\"}"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, cache_control_long));
+    try std.testing.expect(!try promptStringEntryHasCacheControl(body, "stable system prompt"));
     try std.testing.expect(try promptStringEntryHasCacheControl(body, "static project context"));
     try std.testing.expect(!try promptStringEntryHasCacheControl(body, "volatile runtime overlay"));
 
     const overlay_idx = std.mem.indexOf(u8, body, "volatile runtime overlay") orelse return error.TestExpectedPromptMessageMissing;
     try std.testing.expect(std.mem.find(u8, body[overlay_idx..], "cacheControl") == null);
+}
+
+test "findCacheMarks closes the stable prefix and moves the breakpoint past the tail overlay" {
+    const messages = [_]ChatMessage{
+        .{ .role = .system, .content = "system prompt" },
+        .{ .role = .system, .content = "project context" },
+        .{ .role = .user, .content = "first question" },
+        .{ .role = .assistant, .content = "answer" },
+        .{ .role = .tool, .content = "output", .tool_call_id = "call_1", .tool_name = "read_file" },
+        .{ .role = .system, .content = "volatile runtime overlay", .cache_policy = .no_cache },
+    };
+    const marks = findCacheMarks(&messages);
+    try std.testing.expectEqual(@as(?usize, 1), marks.stable_prefix_idx);
+    try std.testing.expectEqual(@as(?usize, 4), marks.breakpoint_idx);
+    try std.testing.expectEqual(@as(?usize, null), marks.history_end_idx);
+    try std.testing.expectEqual(CacheTtl.long, cacheTtlForMessage(messages[1], 1, marks, true));
+    try std.testing.expectEqual(CacheTtl.short, cacheTtlForMessage(messages[4], 4, marks, true));
+    try std.testing.expectEqual(CacheTtl.none, cacheTtlForMessage(messages[3], 3, marks, true));
+
+    const with_history = [_]ChatMessage{
+        .{ .role = .system, .content = "system prompt" },
+        .{ .role = .user, .content = "first question" },
+        .{ .role = .assistant, .content = "answer" },
+        .{ .role = .user, .content = "follow up" },
+        .{ .role = .assistant, .content = "working", .tool_calls = &.{} },
+    };
+    const history_marks = findCacheMarks(&with_history);
+    try std.testing.expectEqual(@as(?usize, 0), history_marks.stable_prefix_idx);
+    try std.testing.expectEqual(@as(?usize, 2), history_marks.history_end_idx);
+    try std.testing.expectEqual(@as(?usize, 4), history_marks.breakpoint_idx);
+    try std.testing.expectEqual(@as(?usize, null), findCacheMarks(with_history[0..2]).history_end_idx);
+
+    const only_prefix = findCacheMarks(messages[0..2]);
+    try std.testing.expectEqual(@as(?usize, 1), only_prefix.stable_prefix_idx);
+    try std.testing.expectEqual(@as(?usize, null), only_prefix.breakpoint_idx);
+
+    const no_system = findCacheMarks(messages[2..]);
+    try std.testing.expectEqual(@as(?usize, null), no_system.stable_prefix_idx);
+    try std.testing.expectEqual(@as(?usize, 2), no_system.breakpoint_idx);
+    try std.testing.expectEqual(@as(?usize, null), findCacheMarks(&.{}).breakpoint_idx);
 }
 
 test "buildGatewayRequestBodyWithOptions keeps Anthropic default silent and named effort provider neutral" {
@@ -1407,35 +1518,6 @@ test "formatGatewayRequestShapeSummary reports content kinds without request con
     try std.testing.expect(std.mem.find(u8, mutated_summary, "SECRET_MUTATED_SYSTEM") == null);
 }
 
-test "findCacheBreakpoint returns null for short conversations" {
-    const messages = [_]ChatMessage{
-        .{ .role = .system, .content = "sys" },
-        .{ .role = .user, .content = "hi" },
-    };
-    try std.testing.expect(findCacheBreakpoint(&messages) == null);
-}
-
-test "findCacheBreakpoint returns last user/assistant before final message" {
-    const messages = [_]ChatMessage{
-        .{ .role = .system, .content = "sys" },
-        .{ .role = .user, .content = "first" },
-        .{ .role = .assistant, .content = "reply" },
-        .{ .role = .user, .content = "second" },
-    };
-    try std.testing.expectEqual(@as(?usize, 2), findCacheBreakpoint(&messages));
-}
-
-test "findCacheBreakpoint skips tool messages" {
-    const messages = [_]ChatMessage{
-        .{ .role = .system, .content = "sys" },
-        .{ .role = .user, .content = "do it" },
-        .{ .role = .assistant, .content = "ok" },
-        .{ .role = .tool, .content = "result", .tool_call_id = "t1", .tool_name = "read_file" },
-        .{ .role = .user, .content = "next" },
-    };
-    try std.testing.expectEqual(@as(?usize, 2), findCacheBreakpoint(&messages));
-}
-
 test "buildGatewayRequestBodyWithOptions includes cache markers for anthropic" {
     const alloc = std.testing.allocator;
     const messages = [_]ChatMessage{
@@ -1447,15 +1529,12 @@ test "buildGatewayRequestBodyWithOptions includes cache markers for anthropic" {
     const body = try buildGatewayRequestBodyWithOptions(alloc, "[]", &messages, .{ .prompt_caching = true }, .auto);
     defer alloc.free(body);
 
-    const cache_marker = "\"providerOptions\":{\"anthropic\":{\"cacheControl\":{\"type\":\"ephemeral\"}}}";
-
-    var count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.find(u8, body[pos..], cache_marker)) |idx| {
-        count += 1;
-        pos += idx + cache_marker.len;
-    }
-    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, anthropic_cache_meta));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, anthropic_cache_meta_long));
+    try std.testing.expect(try promptStringEntryHasCacheControl(body, "system prompt"));
+    try std.testing.expect(std.mem.find(u8, body, "\"text\":\"first question\"}]}") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"text\":\"answer\"}]" ++ anthropic_cache_meta) != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"text\":\"follow up\"}]" ++ anthropic_cache_meta) != null);
 }
 
 test "buildGatewayRequestBodyWithOptions omits cache markers when disabled" {

@@ -5,7 +5,7 @@ const bridge = @import("../../tools/emma/bridge.zig");
 const ToolSpec = tool_dispatch.Tool;
 
 const description =
-    "Keep one complex job's execution checklist in a durable Markdown file. Tasks can contain nested subtasks. Use this before starting work that needs several meaningful steps when you will do the work yourself; keep it current as tasks start, finish, or block. Use plan instead when independent parts should run in parallel subagents, and skip both for simple work. Actions: read lists or one file; write creates or replaces the nested shape while preserving statuses for ids that remain; update changes one task's status; delete removes a finished list. tasks is a JSON array encoded as a string, with id, title, optional status, and optional subtasks.";
+    "Keep one complex job's execution checklist in a durable Markdown file the user watches, with nested subtasks. Actions: read lists or one file; write creates or replaces the nested shape while preserving statuses for ids that remain; update changes one task's status; delete removes a finished list. tasks is a JSON array encoded as a string, with id, title, optional status, and optional subtasks.";
 
 pub const task_list = ToolSpec{
     .name = "task_list",
@@ -26,7 +26,7 @@ pub const task_list = ToolSpec{
             .required = &.{},
         },
     },
-    .advertisement = .on_select,
+    .advertisement = .always,
     .executor_kind = .emma,
     .activity_kind = .write,
     .requires_approval = false,

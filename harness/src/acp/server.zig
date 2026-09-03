@@ -45,12 +45,16 @@ const elicitation = @import("../core/mcp/elicitation.zig");
 const tool_mcp_runtime = @import("../core/tooling/tool_mcp_runtime.zig");
 const permissions = @import("../core/permissions/permissions.zig");
 const context_experiments = @import("../core/agent/runtime/context_experiments.zig");
+const mcp_servers = @import("mcp_servers.zig");
+const mcp_contract = @import("../core/mcp/mcp_contract.zig");
 const model_capabilities = @import("../core/config/model_capabilities.zig");
 
 const Allocator = std.mem.Allocator;
 const ErrorCode = jsonrpc.ErrorCode;
 const writeJsonStr = jsonrpc.writeJsonStr;
 const legacy_url_completion_timeout_ms: i64 = 10 * 60 * 1000;
+/// Upper bound on the configurable captured-command timeout, in minutes.
+pub const max_command_timeout_minutes: usize = 120;
 
 const AcpMethod = enum {
     initialize,
@@ -193,9 +197,15 @@ pub const ActiveSessionState = struct {
     /// Experimental per-step context hooks, off unless the client turns them on
     /// with the `context_experiments` config option.
     context_experiments: context_experiments.Settings = .{},
+    /// How long one `terminal` exec may run before it is terminated. Null leaves
+    /// the built-in default; the client sets it with the `command_timeout_minutes`
+    /// pair inside the `context_experiments` config option.
+    command_timeout_ms: ?usize = null,
+    semantic_grep: ?mcp_contract.McpServerConfig = null,
     /// What `effort` above is allowed to be: the stops the client says this model
     /// publishes, empty unless it sent them with the `reasoning_effort` option.
     reasoning_efforts: model_capabilities.ReasoningEffortOptions = .{},
+    image_input: ?bool = null,
     mcp: ?*mcp_runtime.McpRuntime = null,
     cancel_flag: std.atomic.Value(bool),
     pending_prompt_id: ?jsonrpc.RequestId,
@@ -431,6 +441,7 @@ fn destroyActiveSession(state: *ServerState) void {
     state.alloc.free(active.session_id);
     state.alloc.free(active.model);
     types.freePermissionGrantSlice(state.alloc, active.session_grants);
+    if (active.semantic_grep) |*config| config.deinit(state.alloc);
     if (comptime !host_target.is_wasm) {
         if (active.mcp) |runtime| {
             runtime.retireAndWait();
@@ -1543,6 +1554,7 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
         // The efforts below belong to the model they were published for, and this is
         // not that model any more. The client sends the new list with its next turn.
         session.reasoning_efforts = .{};
+        session.image_input = null;
     } else if (std.mem.eql(u8, config_id, "mode")) {
         if (state.active_session) |*session| {
             state.subagent_authority_mutex.lockUncancelable(io_mod.getIo());
@@ -1590,6 +1602,33 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
                 .code = ErrorCode.invalid_params,
                 .message = "Invalid context_experiments",
             });
+        session.command_timeout_ms = parseCommandTimeoutMs(value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid context_experiments",
+            });
+    } else if (std.mem.eql(u8, config_id, "semantic_grep")) {
+        const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No active session",
+        });
+        const next = parseSemanticGrep(state.alloc, value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid semantic_grep",
+            });
+        if (session.semantic_grep) |*previous| previous.deinit(state.alloc);
+        session.semantic_grep = next;
+    } else if (std.mem.eql(u8, config_id, "image_input")) {
+        const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No active session",
+        });
+        session.image_input = parseImageInput(value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid image_input",
+            });
     }
 
     const current_model = if (state.active_session) |s| s.model else state.selected_model;
@@ -1614,6 +1653,53 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
     try sessions.writeModeConfigOption(&out.writer, state.cfg.mode_registry, current_mode);
     try out.writer.writeAll("]}");
     try state.writer.writeResponse(alloc, msg.id, out.writer.buffered());
+}
+
+/// The longest a single captured command may run, carried as whole minutes in the
+/// same option string the context experiments use. Null means "leave the default".
+/// Zero minutes would terminate every command the instant it started, so it is
+/// rejected rather than honoured.
+fn parseCommandTimeoutMs(value: []const u8) !?usize {
+    var pairs = std.mem.splitScalar(u8, value, ',');
+    while (pairs.next()) |raw| {
+        const pair = std.mem.trim(u8, raw, " ");
+        if (pair.len == 0) continue;
+        const split = std.mem.indexOfScalar(u8, pair, '=') orelse return error.InvalidValue;
+        if (!std.mem.eql(u8, pair[0..split], "command_timeout_minutes")) continue;
+        const minutes = try std.fmt.parseInt(usize, pair[split + 1 ..], 10);
+        if (minutes == 0 or minutes > max_command_timeout_minutes) return error.InvalidValue;
+        return minutes * std.time.ms_per_min;
+    }
+    return null;
+}
+
+fn parseImageInput(value: []const u8) !bool {
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return error.InvalidValue;
+}
+
+fn parseSemanticGrep(alloc: Allocator, value: []const u8) !?mcp_contract.McpServerConfig {
+    if (std.mem.trim(u8, value, " ").len == 0) return null;
+    const wrapped = try std.fmt.allocPrint(alloc, "{{\"mcpServers\":[{s}]}}", .{value});
+    defer alloc.free(wrapped);
+    var configs = try mcp_servers.parse(alloc, wrapped);
+    defer configs.deinit(alloc);
+    if (configs.items.items.len != 1) return error.InvalidValue;
+    if (configs.items.items[0].transport != .stdio) return error.InvalidValue;
+    return configs.items.swapRemove(0);
+}
+
+test "the semantic_grep option carries one stdio command and an empty value clears it" {
+    const alloc = std.testing.allocator;
+    var config = (try parseSemanticGrep(alloc, "{\"name\":\"zg\",\"command\":\"/usr/bin/env\",\"args\":[\"zg\"],\"env\":[{\"name\":\"ELECTRON_RUN_AS_NODE\",\"value\":\"1\"}]}")).?;
+    defer config.deinit(alloc);
+    try std.testing.expectEqualStrings("/usr/bin/env", config.command.?);
+    try std.testing.expectEqual(@as(usize, 1), config.args.len);
+    try std.testing.expectEqualStrings("ELECTRON_RUN_AS_NODE", config.env[0].key);
+    try std.testing.expect((try parseSemanticGrep(alloc, "")) == null);
+    try std.testing.expectError(error.CommandNotAbsolute, parseSemanticGrep(alloc, "{\"name\":\"zg\",\"command\":\"zg\",\"args\":[],\"env\":[]}"));
+    try std.testing.expectError(error.InvalidValue, parseSemanticGrep(alloc, "{\"name\":\"zg\",\"type\":\"http\",\"url\":\"http://127.0.0.1:7999/mcp\",\"headers\":[]}"));
 }
 
 fn parseContextExperiments(value: []const u8) !context_experiments.Settings {
@@ -1648,6 +1734,23 @@ test "context experiment options parse into the settings the loop reads" {
     try std.testing.expectEqual(@as(usize, 0), parsed.reinject_prompt_percent);
     try std.testing.expectEqual(@as(usize, 0), parsed.prune_tools_steps);
     try std.testing.expectEqual(@as(usize, 70), parsed.prune_tools_percent);
+
+    try std.testing.expectEqual(
+        @as(?usize, 10 * std.time.ms_per_min),
+        try parseCommandTimeoutMs("compact_percent=80,command_timeout_minutes=10"),
+    );
+    // Absent leaves the built-in default in place rather than forcing one.
+    try std.testing.expectEqual(@as(?usize, null), try parseCommandTimeoutMs("compact_percent=80"));
+    // Zero would kill every command instantly; the ceiling keeps a stray digit from hanging a turn.
+    try std.testing.expectError(error.InvalidValue, parseCommandTimeoutMs("command_timeout_minutes=0"));
+    try std.testing.expectError(
+        error.InvalidValue,
+        parseCommandTimeoutMs("command_timeout_minutes=121"),
+    );
+    try std.testing.expectError(
+        error.InvalidCharacter,
+        parseCommandTimeoutMs("command_timeout_minutes=ten"),
+    );
 
     const empty = try parseContextExperiments("");
     try std.testing.expect(!empty.enabled());
@@ -1716,6 +1819,13 @@ test "the reasoning effort option carries the pick and the list it has to be in"
 
     try std.testing.expectError(error.InvalidValue, parseReasoningEffort("hi gh;low"));
     try std.testing.expectError(error.InvalidValue, parseReasoningEffort("low;a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q"));
+}
+
+test "the image input option carries only the two answers the client can publish" {
+    try std.testing.expect(try parseImageInput("true"));
+    try std.testing.expect(!(try parseImageInput("false")));
+    try std.testing.expectError(error.InvalidValue, parseImageInput("image"));
+    try std.testing.expectError(error.InvalidValue, parseImageInput(""));
 }
 
 fn commitActiveSessionProvider(

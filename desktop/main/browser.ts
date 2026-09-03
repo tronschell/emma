@@ -41,7 +41,7 @@ const MAX_CURSOR_ACTIONS = 20;
 const MAX_CURSOR_LABEL = 80;
 
 export type Ran = { text: string; code: number | null; signal: NodeJS.Signals | null };
-type Tab = { id: string; view: WebContentsView; targetId?: string; favicon?: string };
+type Tab = { id: string; view: WebContentsView; targetId?: string; favicon?: string; point?: { x: number; y: number } };
 type Session = { name: string; threadId: string; tabs: Tab[]; activeId?: string; bounds?: BrowserBounds; shown: boolean; connected?: Promise<void>; pinned?: string };
 type Driving = { session: Session; tab: Tab; action: string; actions: number };
 
@@ -57,7 +57,7 @@ export class Browsers {
   private driving: Driving | undefined;
   private drives = 0;
 
-  constructor(private readonly onChange: () => void, private readonly onCursor: (progress: ComputerRunProgress) => void) {}
+  constructor(private readonly onChange: () => void, private readonly onCursor: (progress: ComputerRunProgress | null) => void) {}
 
   attach(window: BrowserWindow) {
     this.window = window;
@@ -152,8 +152,7 @@ export class Browsers {
   }
 
   place(threadId: string, bounds: BrowserBounds | null) {
-    const session = this.sessions.get(sessionName(threadId));
-    if (!session) return;
+    const session = this.session(threadId);
     session.shown = bounds !== null;
     if (bounds) session.bounds = bounds;
     this.layout(session);
@@ -188,10 +187,12 @@ export class Browsers {
     await this.pin(session, tab);
     this.drives = (this.drives + 1) % MAX_CURSOR_ACTIONS;
     this.driving = { session, tab, action: action ?? argv[0] ?? "working", actions: this.drives };
+    this.pointAt(tab);
     try {
       return bounded((await this.exec(session, argv)).text);
     } finally {
       this.driving = undefined;
+      this.onCursor(null);
     }
   }
 
@@ -254,14 +255,16 @@ export class Browsers {
     return tab;
   }
 
-  private pointAt(tab: Tab, point: { x: number; y: number }) {
+  private pointAt(tab: Tab, point?: { x: number; y: number }) {
+    if (point) tab.point = point;
     const driving = this.driving;
     const window = this.window;
     if (driving?.tab !== tab || !driving.session.shown || !window || window.isDestroyed()) return;
     const view = tab.view.getBounds();
     const content = window.getContentBounds();
     const bounds = { x: content.x + view.x, y: content.y + view.y, width: view.width, height: view.height };
-    const progress = browserCursorProgress(bounds, point, driving.action, driving.actions, window.id);
+    const at = tab.point ?? { x: view.width / 2, y: view.height / 2 };
+    const progress = browserCursorProgress(bounds, at, driving.action, driving.actions, window.id);
     if (progress) this.onCursor(progress);
   }
 

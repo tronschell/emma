@@ -6,7 +6,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { packager } from "@electron/packager";
 import { extractFile, listPackage } from "@electron/asar";
-import { stableVersion } from "./release.mjs";
 
 assert.equal(process.platform, "darwin", "package:mac requires macOS.");
 assert.equal(process.arch, "arm64", "package:mac currently supports Apple silicon only.");
@@ -26,14 +25,15 @@ const runAsync = (command, args, cwd = desktop) => new Promise((resolve, reject)
   child.once("exit", (code, signal) => code === 0 ? resolve() : reject(new Error(`${command} exited with ${code ?? signal}`)));
 });
 const output = (command, args, cwd = desktop) => execFileSync(command, args, { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-const version = stableVersion(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version);
+const version = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
+assert.match(version, /^\d+\.\d+\.\d+$/, "The root package.json needs a stable X.Y.Z version.");
 const electronChecksums = JSON.parse(readFileSync(path.join(desktop, "node_modules/electron/checksums.json"), "utf8"));
 const zigOptimize = process.env.EMMA_FAST_BUILD === "1" ? "Debug" : "ReleaseSafe";
 
 await Promise.all([
   runAsync("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root),
   runAsync("zig", ["build", `-Doptimize=${zigOptimize}`, "-Dtarget=aarch64-macos.12.0"], path.join(root, "harness")),
-  ...["build:native", "vendor:ripgrep", "build:main", "build:renderer"].map((script) => runAsync("npm", ["run", script])),
+  ...["build:native", "vendor:ripgrep", "vendor:zvec-grep", "build:main", "build:renderer"].map((script) => runAsync("npm", ["run", script])),
 ]);
 
 const notices = path.join(out, "notices");
@@ -48,6 +48,7 @@ for (const [source, name] of [
   ["desktop/dist-renderer/.vite/license.md", "Renderer-LICENSES.md"],
 ]) cpSync(path.join(root, source), path.join(notices, name));
 writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MIT", "UNLICENSE"].map((name) => readFileSync(path.join(desktop, "vendor", name), "utf8")).join("\n\n"));
+writeFileSync(path.join(notices, "Zvec-grep-LICENSES.txt"), globSync("**/{LICENSE,LICENCE,COPYING,NOTICE}*", { cwd: path.join(desktop, "vendor/zvec-grep/node_modules") }).filter((name) => statSync(path.join(desktop, "vendor/zvec-grep/node_modules", name)).isFile()).sort().map((name) => `${name}\n\n${readFileSync(path.join(desktop, "vendor/zvec-grep/node_modules", name), "utf8")}`).join("\n\n"));
 const metadata = JSON.parse(output("cargo", ["metadata", "--locked", "--offline", "--filter-platform", "aarch64-apple-darwin", "--format-version", "1"], root));
 writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter((pkg) => pkg.source).map((pkg) => {
   const cwd = path.dirname(pkg.manifest_path);
@@ -62,6 +63,7 @@ const resources = [
   path.join(root, "target/release/emma-host"),
   path.join(root, "harness/zig-out/bin/emma-cli"),
   path.join(desktop, "vendor/rg"),
+  path.join(desktop, "vendor/zvec-grep"),
   ...["emma-option-tap", "emma-computer", "emma-transcribe", "emma-pty"].map((name) => path.join(desktop, "dist-native", name)),
   path.join(desktop, "skills"),
   notices,
