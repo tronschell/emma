@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, globSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,13 @@ for (const resource of resources) {
   assert.ok(major < 12 || (major === 12 && minor === 0 && patch === 0), `Binary requires a newer macOS: ${file}`);
   const libraries = output("otool", ["-L", file]).trim().split("\n").slice(1);
   assert.ok(libraries.every((line) => /^\s*\/(?:usr\/lib\/|System\/Library\/)/.test(line)), `Unbundled native dependency: ${file}`);
+}
+// codesign refuses an absolute symlink anywhere in the bundle, even one whose target is inside it,
+// and only says "invalid destination for symbolic link in bundle". Catch it here, where every
+// resource has landed, rather than in the release job after notarization credentials are loaded.
+for (const link of globSync("**", { cwd: app, withFileTypes: true })) {
+  const file = path.join(link.parentPath, link.name);
+  if (link.isSymbolicLink()) assert.ok(!path.isAbsolute(readlinkSync(file)), `Absolute symlink breaks codesign: ${path.relative(app, file)}`);
 }
 for (const name of ["emma-option-tap", "emma-computer", "emma-pty"]) run(path.join(app, "Contents/Resources", name), ["--self-test"]);
 assert.equal(execFileSync(path.join(app, "Contents/Resources/rg"), ["--pcre2", "--only-matching", "(?<=release-)ready"], { input: "release-ready\n", encoding: "utf8" }).trim(), "ready");
