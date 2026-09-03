@@ -58,9 +58,5 @@ jobs:
       - run: zig build test
         working-directory: harness
 
-      # Packaging used to run here and was deleted by accident in 4c8cb19e, alongside release-please.
-      # That left the release job as the only place it ran, so v0.4.0's codesign failure surfaced on
-      # main after a version bump and a promotion. package:mac now ad-hoc signs, so this catches
-      # signing-class breakage on the PR that causes it. No secrets: ad-hoc needs no identity.
       - name: package the app without signing secrets
         run: npm run package:mac

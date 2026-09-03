@@ -53,7 +53,6 @@ const metadata = JSON.parse(output("cargo", ["metadata", "--locked", "--offline"
 writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter((pkg) => pkg.source).map((pkg) => {
   const cwd = path.dirname(pkg.manifest_path);
   const files = globSync(["LICENSE*", "COPYING*", "NOTICE*"], { cwd }).filter((name) => statSync(path.join(cwd, name)).isFile()).sort();
-  // Crates that ship no license text (most of the objc2 family) still declare an SPDX expression.
   assert.ok(files.length || pkg.license, `Missing license for ${pkg.name}.`);
   const text = files.length ? files.map((name) => readFileSync(path.join(cwd, name), "utf8")).join("\n\n") : pkg.license;
   return `${pkg.name} ${pkg.version}\n\n${text}`;
@@ -88,7 +87,6 @@ try {
     appVersion: version,
     buildVersion: version,
     extendInfo: path.join(desktop, "native/Info.extra.plist"),
-    extraResource: resources,
     ignore: (file) => file !== "" && !bundled.test(file),
     afterCopy: [({ buildPath }) => {
       const file = path.join(buildPath, "package.json");
@@ -100,6 +98,7 @@ try {
   rmSync(iconDirectory, { recursive: true, force: true });
 }
 const app = path.join(out, "Emma-darwin-arm64/Emma.app");
+for (const resource of resources) cpSync(resource, path.join(app, "Contents/Resources", path.basename(resource)), { recursive: true, verbatimSymlinks: true });
 run(process.execPath, ["scripts/trim-packaged-locales.mjs", app]);
 const archive = path.join(app, "Contents/Resources/app.asar");
 const plist = (key) => output("plutil", ["-extract", key, "raw", "-o", "-", path.join(app, "Contents/Info.plist")]).trim();
@@ -124,10 +123,6 @@ for (const resource of resources) {
   const libraries = output("otool", ["-L", file]).trim().split("\n").slice(1);
   assert.ok(libraries.every((line) => /^\s*\/(?:usr\/lib\/|System\/Library\/)/.test(line)), `Unbundled native dependency: ${file}`);
 }
-// Ask codesign itself whether the bundle is structurally signable, using an ad-hoc identity so this
-// needs no credentials. This is the command pair the release job runs, and it rejects what a
-// hand-rolled check misses: absolute symlinks under dotted paths, bad nesting, malformed frameworks.
-// The signature is discarded and replaced by the real one during release.
 run("codesign", ["--force", "--deep", "--sign", "-", app]);
 run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);
 for (const name of ["emma-option-tap", "emma-computer", "emma-pty"]) run(path.join(app, "Contents/Resources", name), ["--self-test"]);
