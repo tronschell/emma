@@ -25,6 +25,10 @@ for (const platform of readdirSync(onnx)) {
   if (platform !== process.platform) { rmSync(path.join(onnx, platform), { recursive: true, force: true }); continue; }
   for (const arch of readdirSync(path.join(onnx, platform))) if (arch !== process.arch) rmSync(path.join(onnx, platform, arch), { recursive: true, force: true });
 }
+// node-llama-cpp ships an xpack cmake toolchain only needed to build llama.cpp from source, and it
+// contains an absolute symlink. codesign rejects any absolute symlink inside a bundle, so packaging
+// a copy of this tree fails signing. The prebuilt binaries it loads at runtime live elsewhere.
+rmSync(path.join(vendor, "node_modules/node-llama-cpp/llama/xpack"), { recursive: true, force: true });
 if (!existsSync(entry)) throw new Error(`zvec-grep did not install: ${entry} is missing.`);
 writeFileSync(stamp, want);
 console.log(`Vendored zvec-grep ${VERSION} to ${vendor}`);
