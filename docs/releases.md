@@ -11,7 +11,7 @@ feature branch → dev → main → signed macOS download
 ```
 
 `dev` is the default branch. Anyone opens feature PRs against it, and every PR
-runs the full `ci` workflow on macOS and Windows. `main` holds released code.
+runs the full `ci` workflow on macOS. `main` holds released code.
 Only the repository owner can update `main`; a GitHub ruleset blocks everyone
 else from merging into it.
 
@@ -55,8 +55,10 @@ downloads a newer eligible version in the background. Only after the download
 finishes does Emma show **Update ready · X.Y.Z** with **Install and relaunch**.
 The unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
 
-Windows CI runs tests only. Windows packaging, signing, and publication are not
-wired into any workflow yet.
+There is no Windows CI. The desktop suite is written against POSIX fixtures and
+`build-native.mjs` calls `rc.exe`, so the lane never passed; it was removed
+rather than left red. Windows packaging, signing, and publication are not wired
+into any workflow either.
 
 ## Signing credentials
 

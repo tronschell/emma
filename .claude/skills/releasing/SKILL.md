@@ -12,8 +12,8 @@ automation.
 ## Invariants
 
 - Feature branches start from and squash-merge into `dev`, the default branch.
-  `ci.yml` runs the full checks on every PR, on macOS and Windows. Windows is
-  test-only; it packages nothing.
+  `ci.yml` runs the full checks on every PR, on macOS only. There is no Windows
+  lane; it never passed and was removed.
 - The root `package.json` version is the release version. Bump it on `dev`.
   Nothing else carries version metadata, and there is no changelog file.
 - Only the owner can update `main`, enforced by a GitHub ruleset, not by code.
