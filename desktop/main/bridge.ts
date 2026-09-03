@@ -28,7 +28,7 @@ const NO_SAVE = "This computer could not save the pairing.";
 const MOVED = "This computer is no longer reachable at the address the phone was paired on. Pair the phone again.";
 const TAKEN = `Another program on this computer is using port ${BRIDGE_PORT}.`;
 const FULL = `Emma pairs ${MAX_PEERS} devices at a time. Remove one before pairing another.`;
-/** How many dead keys are remembered, so the 4001 close survives a restart. */
+/** How many dead keys are remembered, so a revoked phone stays refused across a restart. */
 const MAX_REVOKED = 32;
 
 const revokedFile = (userData: string) => path.join(userData, "mobile-revoked.json");
@@ -111,9 +111,15 @@ export function createBridge(deps: BridgeDeps): Bridge {
   // already opened, which is what stops a recorded session being replayed.
   const codecs = new Map<number, FrameCodec>();
   const lastSeen = new Map<number, number>();
-  // Keys this Mac has revoked, hashed and kept on disk: the socket is still accepted so
-  // the phone can be told why it is going, instead of a bare 1006 it cannot read and
-  // retries forever. Not constant-time on purpose — a dead key is worth nothing.
+  // Keys this Mac has revoked, hashed and kept on disk, and refused at the door by
+  // `known`. A revoked phone that was online was already told properly — `unpair` seals
+  // a `bye` before it drops the codec — and one that was offline gets a bare close it
+  // reads as "not now", backs off to thirty seconds, and explains from its own banner.
+  // It used to be let in far enough to be shut with 4001 "revoked", but a close code is
+  // the one thing on a ws:// link anyone on-path can write, and the phone believed it
+  // hard enough to delete its pairing key: an unauthenticated instruction to forget your
+  // Mac. Nothing can authenticate it before a handshake, so it is not sent at all.
+  // Not constant-time on purpose — a dead key is worth nothing.
   let revoked = loadRevoked(deps.userData);
   const wasRevoked = (offered: string) => offered !== "" && revoked.includes(digest(offered));
   const revoke = (token: string) => {
@@ -381,7 +387,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
   const open = (host: string, port: number) => {
     // Read live, not pinned at bind time: pairing a phone must not kick the others
     // off, and a revoked key has to stop opening the door the moment it is revoked.
-    const known = (offered: string) => candidates().some((peer) => sameToken(offered, codecFor(peer).auth)) || wasRevoked(offered);
+    const known = (offered: string) => !wasRevoked(offered) && candidates().some((peer) => sameToken(offered, codecFor(peer).auth));
     let next: WebSocketServer;
     try {
       next = new WebSocketServer({
@@ -425,12 +431,6 @@ export function createBridge(deps: BridgeDeps): Bridge {
       schedule();
     });
     next.on("connection", (ws) => {
-      // Let in above only so this can say why: a phone whose key was revoked here is
-      // shut with a code it can show the user, before any handshake.
-      if (wasRevoked(ws.protocol)) {
-        ws.close(4001, "revoked");
-        return;
-      }
       // verifyClient already refused anything that did not offer a live key; this
       // finds which phone it was, so the session speaks that phone's codec.
       const peer = mine() ? candidates().find((peer) => sameToken(ws.protocol, codecFor(peer).auth)) : undefined;

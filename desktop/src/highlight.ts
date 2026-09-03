@@ -28,8 +28,12 @@ const HASH = /^(sh|bash|zsh|shell|console|fish|py|python|rb|ruby|pl|perl|r|ya?ml
 
 /* One alternation, tried left to right at each position: a comment first (so a
    `//` inside a string never wins, and a `"` inside a comment never does
-   either), then strings, tags, numbers, and finally a bare name. */
-const CORE = String.raw`\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|\/\/[^\n]*)|("(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|\x60(?:\\.|[^\x60\\])*\x60?)|(<\/?[A-Za-z][\w.:-]*)|(\b\d[\w.]*)|([A-Za-z_$@#-][\w$-]*)`;
+   either), then strings, tags, numbers, and finally a bare name.
+   An unterminated `/*` or `<!--` runs to the end of the block, which is both
+   what the language means and what stops every later position re-scanning the
+   rest of the input: without the `|$` arm 100 000 characters of `/*a` cost
+   400 ms, quadrupling on every doubling. */
+const CORE = String.raw`\/\*[\s\S]*?(?:\*\/|$)|<!--[\s\S]*?(?:-->|$)|\/\/[^\n]*)|("(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|\x60(?:\\.|[^\x60\\])*\x60?)|(<\/?[A-Za-z][\w.:-]*)|(\b\d[\w.]*)|([A-Za-z_$@#-][\w$-]*)`;
 
 const PLAIN = new RegExp(`(${CORE}`, "g");
 const HASHED = new RegExp(String.raw`(#[^\n]*|` + CORE, "g");

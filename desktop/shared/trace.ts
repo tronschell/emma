@@ -41,6 +41,18 @@ export type TraceSpan = {
 /** Percent of the axis a zero-length span still gets, so an instant call is visible. */
 const MIN_BAR = 1.5;
 
+/**
+ * How deep the tree is walked before the rest is dropped.
+ *
+ * `layoutSpans` recurses once per level and nesting comes from `parentId`, which is whatever the
+ * writer sent, so a chain of n spans is a stack n deep: 5 000 of them is a RangeError, and 5 000
+ * spans fit inside `MAX_TRACE_CHARS` several times over. Guarded inside the walk so every caller
+ * inherits it instead of each remembering to cap first. Same number and same hazard as
+ * `MAX_SPAN_DEPTH` in the phone's state/events.ts, which caps the spans on the way in; kept local
+ * because this file is byte-mirrored between the two repos and that module is not.
+ */
+const MAX_DEPTH = 64;
+
 export type TraceRow = {
   span: TraceSpan;
   depth: number;
@@ -59,10 +71,18 @@ export type TraceRow = {
 export function layoutSpans(spans: readonly TraceSpan[], now: number, collapsed: ReadonlySet<string> = new Set()): TraceRow[] {
   if (!spans.length) return [];
   const close = (span: TraceSpan) => span.endedAt ?? now;
-  const start = Math.min(...spans.map((span) => span.startedAt));
+  // One pass rather than `Math.min(...spans.map(…))`: a spread is an argument list, and past
+  // roughly 130 000 of them the call throws RangeError instead of returning a number.
+  let start = Infinity;
+  let last = -Infinity;
+  for (const span of spans) {
+    if (span.startedAt < start) start = span.startedAt;
+    const end = close(span);
+    if (end > last) last = end;
+  }
   // At least a millisecond wide: a turn whose spans all landed in the same tick
   // would otherwise divide by zero.
-  const total = Math.max(1, Math.max(...spans.map(close)) - start);
+  const total = Math.max(1, last - start);
 
   const ids = new Set(spans.map((span) => span.id));
   const children = new Map<string, TraceSpan[]>();
@@ -78,6 +98,7 @@ export function layoutSpans(spans: readonly TraceSpan[], now: number, collapsed:
 
   const rows: TraceRow[] = [];
   const walk = (list: TraceSpan[], depth: number) => {
+    if (depth > MAX_DEPTH) return;
     for (const span of list) {
       const kids = children.get(span.id) ?? [];
       const durationMs = Math.max(0, close(span) - span.startedAt);

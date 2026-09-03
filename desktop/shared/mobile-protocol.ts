@@ -462,6 +462,9 @@ export type BridgeMethods = {
     params: { threadId: string; folderIds: string[]; mode: PermissionMode; model: string };
     result: ThreadContext;
   };
+  /** The Mac composer's /clear: the thread keeps its messages, the harness forgets the session
+      behind them, and the next turn starts on an empty context window. */
+  clearThreadContext: { params: { threadId: string }; result: { cleared: true } };
   threadTraces: { params: { threadId: string }; result: ThreadTrace[] };
   listModels: { params: { force?: boolean }; result: ModelEntry[] };
   setThreadModel: { params: { threadId: string; modelId: string; effort?: string }; result: { set: true } };
@@ -498,6 +501,20 @@ export type BridgeMethods = {
   saveCredential: { params: { env: string; secret?: string }; result: CredentialSlot[] };
   setZeroRetention: { params: { on: boolean }; result: { zeroRetention: boolean } };
   getSettings: { params: Record<string, never>; result: MacSettings };
+  /** A partial: a field the phone leaves out stays where the Mac put it, so a screen that has read
+      one setting can write it back without restating the other three it never showed. `selectedModel`
+      is the id setThreadModel takes rather than the key getSettings answers with — a bare catalogue
+      id, or a `provider:`/`router:` key for the routes that have none — and "" is the free fallback.
+      The result is what the Mac ended up holding, which is what getSettings would now answer. */
+  setSettings: {
+    params: {
+      defaultPermissionMode?: PermissionMode;
+      selectedModel?: string;
+      thinkingLevel?: string;
+      review?: { enabled?: boolean; model?: string };
+    };
+    result: MacSettings;
+  };
   listToolTargets: { params: Record<string, never>; result: ToolTargets };
   setToolSettings: {
     params: { disabledTools?: string[]; disabledSkills?: string[]; disabledServers?: string[] };
@@ -529,6 +546,11 @@ export type BridgeMethods = {
   listTaskLists: { params: { threadId?: string }; result: PhoneList<TaskList> };
   threadChanges: { params: { threadId: string }; result: PhoneList<FileChange> };
   revertChange: { params: { folderId: string; path: string }; result: { reverted: true } };
+  /** A shell line this Mac runs, with no agent anywhere in it — the widest reach on the bridge, so
+      the Mac's own window asks somebody there before anything is spawned, the way installMcpServer
+      does. Without a folder it runs in the home folder. The answer is the task the three methods
+      below then list, read and stop. */
+  runCommand: { params: { command: string; folderId?: string }; result: BackgroundTask };
   listBackground: { params: Record<string, never>; result: BackgroundTask[] };
   readBackground: { params: { id: string }; result: { task: BackgroundTask; output: string } | null };
   /** False when the task had already exited, so the phone can leave the row alone. */
@@ -685,6 +707,7 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   answerPermission: true,
   getThreadContext: true,
   setThreadContext: true,
+  clearThreadContext: true,
   threadTraces: true,
   listModels: true,
   setThreadModel: true,
@@ -715,6 +738,7 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   saveCredential: true,
   setZeroRetention: true,
   getSettings: true,
+  setSettings: true,
   listToolTargets: true,
   setToolSettings: true,
   installMcpServer: true,
@@ -730,6 +754,7 @@ const BRIDGE_METHOD_SET: Record<BridgeMethod, true> = {
   listTaskLists: true,
   threadChanges: true,
   revertChange: true,
+  runCommand: true,
   listBackground: true,
   readBackground: true,
   stopBackground: true,

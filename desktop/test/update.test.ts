@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_UPDATE_ORIGIN, newerVersion, showsUpdate, updateFeedUrl, updateOrigin } from "../shared/update";
+import { CHECK_GAP_MS, DEFAULT_UPDATE_ORIGIN, dueForCheck, newerVersion, showsUpdate, updateFeedUrl, updateOrigin } from "../shared/update";
 
 test("newerVersion takes only a higher semver and tolerates a v prefix", () => {
   assert.equal(newerVersion("0.1.0", "0.2.0"), "0.2.0");
@@ -40,4 +40,12 @@ test("updateOrigin keeps an https origin and loopback http, and discards the res
 test("updateFeedUrl names the running build", () => {
   assert.equal(updateFeedUrl(DEFAULT_UPDATE_ORIGIN, "darwin", "arm64", "0.1.0"), "https://update.electronjs.org/tronschell/emma/darwin-arm64/0.1.0");
   assert.equal(updateFeedUrl(DEFAULT_UPDATE_ORIGIN, "win32", "x64", "0.1.0"), "https://update.electronjs.org/tronschell/emma/win32-x64/0.1.0");
+});
+
+test("dueForCheck throttles repeat checks and stops once an update is downloaded", () => {
+  assert.equal(dueForCheck(0, 0, ""), true);
+  assert.equal(dueForCheck(CHECK_GAP_MS * 10, 0, ""), true);
+  assert.equal(dueForCheck(CHECK_GAP_MS - 1, 1, ""), false);
+  assert.equal(dueForCheck(CHECK_GAP_MS + 1, 1, ""), true);
+  assert.equal(dueForCheck(CHECK_GAP_MS * 10, 0, "0.2.0"), false);
 });

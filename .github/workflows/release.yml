@@ -59,6 +59,10 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      - name: collect the changelog since the last published release
+        if: steps.version.outputs.skip != 'true'
+        run: node desktop/scripts/release-notes.mjs > "$RUNNER_TEMP/emma-release-notes.md"
+
       - name: setup-zig v2.2.1
         if: steps.version.outputs.skip != 'true'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
@@ -122,7 +126,7 @@ jobs:
         run: |
           ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "Emma-$TAG-darwin-arm64.zip"
           shasum -a 256 "Emma-$TAG-darwin-arm64.zip" > "Emma-$TAG-darwin-arm64.zip.sha256"
-          gh release create "$TAG" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes --latest
+          gh release create "$TAG" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/emma-release-notes.md" --latest
 
       - name: remove the temporary signing credentials
         if: always()

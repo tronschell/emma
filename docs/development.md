@@ -187,9 +187,10 @@ Windows runner can never gate a macOS release. Main's release workflow remains
 macOS-only for signing, notarization, and publication. Public signed Windows x64
 publication is pending release-workflow authorization.
 
-Features start from and squash-merge into `dev`. A generated release PR on
-`dev` prepares a version, tag, and draft release. Promote the exact candidate
-to `main` with a merge commit to build and publish it. See the
+Features start from and squash-merge into `dev`, preserving their PR release
+summaries. Bump the root `package.json` version on `dev`, then promote the exact
+candidate to `main` with a merge commit. The release job collects the changelog,
+builds the app, and publishes both. See the
 [release guide](releases.md) and the
 [release skill](../.claude/skills/releasing/SKILL.md).
 

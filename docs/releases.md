@@ -29,11 +29,43 @@ gh pr create --base dev
 3. The push to `main` runs the `release` workflow. It reads the version from
    the root `package.json`, skips if that release already exists, and otherwise
    packages, signs, notarizes, staples, checks Gatekeeper, and publishes
-   `vX.Y.Z` with GitHub's generated release notes.
+   `vX.Y.Z` with the automatically collected changelog.
 
 There is no changelog file, release PR, manifest, or tag to manage. The
-GitHub Releases page is the changelog, built from merged PR titles. Merging
-`main` again with an unchanged version publishes nothing.
+GitHub Releases page is the changelog. Merging `main` again with an unchanged
+version publishes nothing.
+
+## Automatic changelog
+
+The existing release job runs [`release-notes.mjs`](../desktop/scripts/release-notes.mjs)
+before building. It compares the most recently published stable release with the
+exact commit being released. Drafts, prereleases, and unpublished tags do not
+move that starting point. GitHub supplies the commit range with pagination, so
+changes merged through `dev` and direct commits are included even in large
+releases. Promotion merge commits do not become changelog entries.
+
+Conventional titles group entries into Breaking changes, Features, Fixes,
+Performance, Documentation, and Other changes. Each entry links to its PR or
+commit and credits its author. Its committed `## Release notes` section supplies
+the detailed bullets; older commits without that section use their titles.
+Breaking-change footers retain their migration instructions. A full comparison
+link connects the previous release to the exact source commit.
+
+The [contribution skill](../.claude/skills/contributing/SKILL.md) routes agents to
+the [release skill](../.claude/skills/releasing/SKILL.md) to write these summaries
+as part of normal PR preparation. Emma's squash-merge settings already preserve
+the PR title and body. There is no release-time collection or editing step for
+the owner. A GitHub API failure stops the job before publication.
+
+To preview the remote `dev` changelog with an authenticated GitHub CLI:
+
+```sh
+npm run release:notes
+```
+
+Optional arguments select a previous release and target GitHub ref, for example
+`npm run release:notes -- v0.3.1 v0.4.1`. This prints Markdown without publishing
+or changing anything. References resolve on GitHub, independent of local tags.
 
 ## Downloads and updates
 

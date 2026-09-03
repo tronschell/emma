@@ -41,6 +41,10 @@ features with a conventional PR title. Only a prepared release on `dev` is
 promoted to `main`, using a merge commit. See [releasing](../releasing/SKILL.md).
 Preserve unrelated work already in the checkout.
 
+When preparing or updating a feature PR, write its `## Release notes` section
+from the completed changes using [releasing](../releasing/SKILL.md). Keep the
+notes current as the PR changes; squash merging preserves them for the release.
+
 ## Running it
 
 Three ways, and they are not interchangeable.

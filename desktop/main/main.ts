@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, MenuItem, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -41,7 +41,7 @@ import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
 import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider, type CatalogModel } from "./catalog";
 import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
 import { branchPrefixName, validateGitArgs } from "../shared/git";
-import { installUpdate, readyUpdate, startUpdates } from "./update";
+import { checkForUpdates, installUpdate, readyUpdate, startUpdates } from "./update";
 import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "./git";
 import { installedEditors, openInEditor } from "./editors";
 import { machineSample } from "./machine";
@@ -255,7 +255,12 @@ let computerCursorHeld = false;
 let computerCursorIdle: ReturnType<typeof setTimeout> | undefined;
 const CURSOR_IDLE_MS = 60_000;
 let computerCursorAt = 0;
-const threadContexts = new Map<string, { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean }>();
+type ThreadContextRecord = { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean };
+/* Which folder, permission mode and model each thread is set to. Every write goes through
+   `rememberThreadContext` so the file beside it stays the map — a `threadContexts.set` that
+   skips it is a setting that survives until the next restart and no further, which is exactly
+   the bug this used to be. */
+const threadContexts = new Map<string, ThreadContextRecord>();
 
 const DEFAULT_THREAD_TITLE = "New thread";
 
@@ -302,6 +307,40 @@ function loadPhoneThreads() {
     if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") phoneThreads.add(id);
   } catch { /* first run */ }
 }
+/* Beside phone-threads.json and for the same reason: this used to be memory only, so every Emma
+   restart silently reset each thread to no folder and the default permission mode. The window hid
+   that behind its own localStorage copy in src/context.ts and re-pushed it on thread open; the
+   phone had no such copy and showed the hole. */
+const threadContextsFile = () => path.join(app.getPath("userData"), "thread-contexts.json");
+function loadThreadContexts() {
+  try {
+    const stored = JSON.parse(readFileSync(threadContextsFile(), "utf8")) as unknown;
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return;
+    for (const [threadId, held] of Object.entries(stored as Record<string, unknown>)) {
+      if (!threadId || !held || typeof held !== "object" || Array.isArray(held)) continue;
+      const { folderIds, mode, model, effort, subagent, review } = held as Record<string, unknown>;
+      threadContexts.set(threadId, {
+        folderIds: Array.isArray(folderIds) ? folderIds.filter((id): id is string => typeof id === "string").slice(0, 1) : [],
+        mode: asPermissionMode(mode),
+        model: typeof model === "string" ? model.slice(0, 128) : "",
+        ...(isThinkingLevel(effort) ? { effort } : {}),
+        ...(subagent && typeof subagent === "object" && !Array.isArray(subagent) ? { subagent: subagent as SubagentRoute } : {}),
+        ...(typeof review === "boolean" ? { review } : {}),
+      });
+    }
+  } catch { /* first run */ }
+}
+/* The one write path. A folder or a mode is set by hand, so this is human-paced: written straight
+   through with no debounce, exactly as phone-threads.json is. A write that fails is the old
+   behaviour — a context lost on restart — not a failed turn, so it is swallowed.
+   ponytail: grows with the thread list, same as phone-threads.json; prune with the threads if it
+   ever matters. */
+function rememberThreadContext(threadId: string, record: ThreadContextRecord) {
+  threadContexts.set(threadId, record);
+  try {
+    writeFileSync(threadContextsFile(), JSON.stringify(Object.fromEntries(threadContexts)));
+  } catch { /* nothing here is worth failing a turn over */ }
+}
 const mobileStatus = (activeAt?: number) => ({ ...bridge!.status(), threads: [...phoneThreads], ...(activeAt ? { activeAt } : {}) });
 function namedPath(value: unknown): string | undefined {
   if (typeof value !== "string" || !value || value.length > 1024) throw new Error("That path is invalid");
@@ -325,7 +364,7 @@ function attachProject(threadId: string, directory: string) {
 
 function attachFolder(threadId: string, folderId: string) {
   const context = threadContexts.get(threadId) ?? { folderIds: [], mode: DEFAULT_PERMISSION_MODE, model: "" };
-  if (context.folderIds[0] !== folderId) threadContexts.set(threadId, { ...context, folderIds: [folderId] });
+  if (context.folderIds[0] !== folderId) rememberThreadContext(threadId, { ...context, folderIds: [folderId] });
   broadcast("emma:folder-attached", { threadId, folderId });
   changed();
 }
@@ -1169,7 +1208,7 @@ const threadContext = (threadId: string) => threadContexts.get(threadId) ?? { fo
 // while the model it was picked for is still the one selected.
 function keepThreadContext(threadId: string, next: { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute; review?: boolean }) {
   const held = threadContexts.get(threadId);
-  threadContexts.set(threadId, { ...next, effort: held?.model === next.model ? held.effort : "", review: next.review ?? held?.review });
+  rememberThreadContext(threadId, { ...next, effort: held?.model === next.model ? held.effort : "", review: next.review ?? held?.review });
 }
 const threadSubagent = (threadId: string) => threadContexts.get(threadId)?.subagent;
 
@@ -2392,7 +2431,7 @@ async function selectModel(method: string, params: Record<string, string>): Prom
     // prefixed. Either way the thread holds the key harnessModel/modelName read, or picking a
     // model on the phone changes nothing.
     const picked = params.modelId ?? "";
-    threadContexts.set(params.threadId, {
+    rememberThreadContext(params.threadId, {
       ...threadContext(params.threadId),
       model: !picked ? "" : picked.startsWith("provider:") || picked.startsWith("router:") ? routedModelKey(picked) : `openrouter:${catalogued(picked)}`,
       effort: thinkingLevel(params.effort),
@@ -2957,6 +2996,15 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       agents!.setMode(threadId, context.mode);
       return { threadId, folderIds: context.folderIds, mode: context.mode, model: context.model };
     }
+    case "clearThreadContext": {
+      // The composer's /clear, reached from the phone's slash menu. Nothing is deleted: the thread
+      // keeps every message, and only the harness sessions replaying them are dropped, so the next
+      // turn opens an empty context window. Narrowing, so nobody at the Mac is asked.
+      const threadId = boundedCapabilityId(params.threadId, "Clear context thread");
+      compactNext.delete(threadId);
+      for (const client of harnesses.values()) client.forgetSession(threadId);
+      return { cleared: true };
+    }
     case "threadTraces": {
       return phoneTraces(await readThreadTraces(boundedCapabilityId(params.threadId, "Thread")));
     }
@@ -3168,6 +3216,26 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         thinkingLevel: selectedEffort,
         review: { enabled: reviewSettings.enabled, model: reviewSettings.model },
       } satisfies MacSettings;
+    case "setSettings": {
+      // A partial, so a screen showing one of these four can write it back without restating the
+      // three it never read — and a phone racing somebody at the keyboard can only lose the field
+      // it actually touched. Every value goes through the same validator the Mac's own panel uses,
+      // and the model through setThreadContext's line, so a phone cannot pin one this Mac has no
+      // route to. Nothing here widens what the agent may do, so nobody at the Mac is asked.
+      if (params.defaultPermissionMode !== undefined) defaultMode = asPermissionMode(params.defaultPermissionMode);
+      if (params.selectedModel !== undefined) {
+        const picked = params.selectedModel;
+        if (typeof picked !== "string" || picked.length > 256) throw new Error("Model is invalid");
+        selectedModel = !picked ? "" : picked.startsWith("provider:") || picked.startsWith("router:") ? routedModelKey(picked) : `openrouter:${catalogued(picked)}`;
+        if (!picked) selectedEffort = "";
+      }
+      if (params.thinkingLevel !== undefined) selectedEffort = thinkingLevel(params.thinkingLevel);
+      if (params.review !== undefined) {
+        if (!params.review || typeof params.review !== "object" || Array.isArray(params.review)) throw new Error("Review settings are invalid");
+        reviewSettings = validateReview({ ...reviewSettings, ...params.review });
+      }
+      return await bridgeDispatch("getSettings", {});
+    }
     case "listToolTargets": {
       const [written, found, servers] = await Promise.all([
         listEmmaTools(userData),
@@ -3332,6 +3400,22 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       folders!.write(folderId, file, before);
       changed();
       return { reverted: true };
+    }
+    case "runCommand": {
+      // Every other write on this bridge hands the agent something, or moves a setting the Mac
+      // already offers. This one is a shell line, run as the person who is logged in, chosen on a
+      // device that is not in the room. So it asks this Mac's own window first, exactly as
+      // installMcpServer does — and the folder is resolved before the question, so a folder id
+      // this Mac never granted is refused without interrupting anyone.
+      const { command, folderId } = runCommandRequest(params);
+      const directory = folderId ? folders!.directory(folderId) : homedir();
+      const approved = await confirmOnMac(
+        "Run a command from your phone?",
+        `Emma will run this on your Mac now, in ${directory}:\n\n${command}`,
+        "Run it",
+      );
+      if (!approved) throw new Error("Nobody at your Mac approved that command.");
+      return background.start(directory, command, folderId ? folderNames([folderId])[0] ?? "" : "");
     }
     case "listBackground":
       return background.list();
@@ -3539,7 +3623,7 @@ async function runReview(turn: TurnRequest, answered: string): Promise<string> {
   const threadId = (created as { id?: unknown }).id;
   if (typeof threadId !== "string") throw new Error("Emma host returned an invalid thread");
   const parent = threadContexts.get(turn.threadId);
-  if (parent) threadContexts.set(threadId, { ...parent, model: reviewSettings.model, effort: "", review: false });
+  if (parent) rememberThreadContext(threadId, { ...parent, model: reviewSettings.model, effort: "", review: false });
   reviewThreads.add(threadId);
   changed();
   try {
@@ -4153,6 +4237,18 @@ app.commandLine.appendSwitch("remote-debugging-port", "0");
 
 if (isWindows) app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
 
+function addUpdateMenuItem() {
+  if (!isMac) return;
+  const menu = Menu.getApplicationMenu();
+  const submenu = menu?.items[0]?.submenu;
+  if (!submenu) {
+    console.warn("Emma: no application menu to add the update check to");
+    return;
+  }
+  submenu.insert(1, new MenuItem({ label: "Check for Updates\u2026", click: () => checkForUpdates() }));
+  Menu.setApplicationMenu(menu);
+}
+
 function handleSquirrelEvent(): boolean {
   if (!isWindows) return false;
   const event = readSquirrelEvent();
@@ -4261,13 +4357,14 @@ if (primaryInstance) app.whenReady().then(() => {
     advise: (transcript) => advise(toolSettings.advisor, transcript),
     spawnTurn: (turn, owner) => {
       const context = owner ? threadContexts.get(owner) : undefined;
-      if (context && !threadContexts.has(turn.threadId)) threadContexts.set(turn.threadId, { ...context });
+      if (context && !threadContexts.has(turn.threadId)) rememberThreadContext(turn.threadId, { ...context });
       return driveTurn(turn);
     },
     changed: () => { broadcast("emma:agents", agents!.list()); broadcast("emma:spans", agents!.spans()); },
     step: (step) => broadcast("emma:step", step),
   });
   loadPhoneThreads();
+  loadThreadContexts();
   bridge = createBridge({
     userData: app.getPath("userData"),
     identity: desktopIdentity,
@@ -5599,6 +5696,7 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   openMain();
   startUpdates((version) => broadcast("emma:update-ready", version));
+  addUpdateMenuItem();
   readNotchGeometry();
   screen.on("display-added", readNotchGeometry);
   screen.on("display-removed", readNotchGeometry);

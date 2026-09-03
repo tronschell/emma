@@ -29,6 +29,13 @@ export function newerVersion(current: string, downloaded: unknown): string {
   return "";
 }
 
+export const CHECK_TICK_MS = 5 * 60 * 1000;
+export const CHECK_GAP_MS = 30 * 60 * 1000;
+
+export function dueForCheck(now: number, lastCheck: number, ready: string) {
+  return !ready && (!lastCheck || now - lastCheck >= CHECK_GAP_MS);
+}
+
 export function showsUpdate(ready: string, dismissed: string) {
   return !!ready && ready !== dismissed;
 }
