@@ -89,9 +89,9 @@ jobs:
       - run: npm ci
         working-directory: desktop
 
-      - run: npm run test
-        working-directory: desktop
-
+      # The desktop suite is written against POSIX fixtures (#!/bin/sh scripts, symlinks, / paths),
+      # so it has never passed here; the macOS lane runs it. Windows proves what is platform-specific:
+      # that the native module builds and the Rust and Zig tests pass.
       - run: npm run build:native
         working-directory: desktop
 
