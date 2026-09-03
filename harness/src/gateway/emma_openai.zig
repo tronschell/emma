@@ -112,6 +112,23 @@ fn openRouterSessionHeader(
     return .{ .name = "x-session-id", .value = value[0..] };
 }
 
+fn hostIs(url: []const u8, expected: []const u8) bool {
+    const uri = std.Uri.parse(url) catch return false;
+    const host_component = uri.host orelse return false;
+    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const host = host_component.toRaw(&host_buf) catch return false;
+    return std.ascii.eqlIgnoreCase(host, expected);
+}
+
+fn isZai(url: []const u8) bool {
+    if (hostIs(url, "api.z.ai") or hostIs(url, "open.bigmodel.cn")) return true;
+    return std.mem.indexOf(u8, url, "/api/coding/paas/v4/") != null or std.mem.indexOf(u8, url, "/api/paas/v4/") != null;
+}
+
+fn isLoopback(url: []const u8) bool {
+    return hostIs(url, "127.0.0.1") or hostIs(url, "localhost");
+}
+
 fn promptCacheKeyTarget(url: []const u8) bool {
     const uri = std.Uri.parse(url) catch return false;
     const host_component = uri.host orelse return false;
@@ -161,6 +178,7 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
         break :index last;
     };
 
+    const chat_url = chatUrl();
     const tools_json = try advertisedToolsJson(alloc, request);
     defer alloc.free(tools_json);
 
@@ -204,7 +222,7 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
             cache_marks,
             prompt_caching,
         ) else .none;
-        try writeMessage(alloc, w, message, verified, budget, use_cache);
+        try writeMessage(alloc, w, chat_url, message, verified, budget, use_cache);
         if (message.cache_policy == .no_cache) prefix_cacheable = false;
     }
     try w.writeByte(']');
@@ -231,16 +249,17 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
         try w.writeAll(if (parallel) "true" else "false");
     }
 
-    if (isOpenRouter(chatUrl()) and zeroRetentionRequested()) {
+    if (isOpenRouter(chat_url) and zeroRetentionRequested()) {
         try w.writeAll(",\"provider\":{\"data_collection\":\"deny\",\"zdr\":true}");
     }
-    if (promptCacheKeyTarget(chatUrl())) {
+    if (promptCacheKeyTarget(chat_url)) {
         if (request.session_id) |session_id| if (session_id.len > 0) {
             const key = openRouterSessionId(session_id);
             try w.writeAll(",\"prompt_cache_key\":");
             try std.json.Stringify.value(key[0..], .{}, w);
         };
     }
+    try writeZaiRequestOptions(w, chat_url, request.session_id);
 
     if (request.stream) {
         try w.writeAll(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}");
@@ -254,9 +273,24 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
     return body;
 }
 
+fn writeZaiRequestOptions(
+    w: *std.Io.Writer,
+    url: []const u8,
+    session_id: ?[]const u8,
+) !void {
+    if (!isZai(url)) return;
+    try w.writeAll(",\"thinking\":{\"type\":\"enabled\",\"clear_thinking\":false}");
+    const id = session_id orelse return;
+    if (id.len == 0) return;
+    const key = openRouterSessionId(id);
+    try w.writeAll(",\"user_id\":");
+    try std.json.Stringify.value(key[0..], .{}, w);
+}
+
 fn writeMessage(
     alloc: Allocator,
     w: *std.Io.Writer,
+    chat_url: []const u8,
     message: types.ChatMessage,
     verified_images: ?[]const image_attachments.VerifiedSnapshot,
     budget: image_attachments.CaptureBudget,
@@ -281,6 +315,21 @@ fn writeMessage(
         try w.writeAll("}]");
     } else {
         try std.json.Stringify.value(message.content orelse "", .{}, w);
+    }
+
+    if (message.role == .assistant) {
+        if (message.reasoning) |reasoning| {
+            if (reasoning.len > 0 and isZai(chat_url)) {
+                try w.writeAll(",\"reasoning_content\":");
+                try std.json.Stringify.value(reasoning, .{}, w);
+            }
+        }
+        if (message.reasoning_details_json) |details| {
+            if (details.len > 0 and isLoopback(chat_url)) {
+                try w.writeAll(",\"reasoning_details\":");
+                try w.writeAll(details);
+            }
+        }
     }
 
     if (message.tool_calls.len > 0) {
@@ -593,6 +642,7 @@ const SseSink = struct {
     content: std.ArrayList(u8) = .empty,
     reasoning: std.ArrayList(u8) = .empty,
     reasoning_dropped: bool = false,
+    reasoning_details: ?[]u8 = null,
     tools: std.ArrayList(SseToolFragment) = .empty,
     routed_model: ?[]u8 = null,
     finish_reason: ?types.ProviderFinishReason = null,
@@ -603,6 +653,8 @@ const SseSink = struct {
     fn deinit(self: *@This()) void {
         self.content.deinit(self.alloc);
         self.reasoning.deinit(self.alloc);
+        if (self.reasoning_details) |details| self.alloc.free(details);
+        self.reasoning_details = null;
         for (self.tools.items) |*fragment| fragment.deinit(self.alloc);
         self.tools.deinit(self.alloc);
         if (self.routed_model) |routed| self.alloc.free(routed);
@@ -693,6 +745,7 @@ const SseSink = struct {
         if (jsonStringField(delta.object, "content")) |text| try self.appendContent(text);
         if (jsonStringField(delta.object, "reasoning") orelse
             jsonStringField(delta.object, "reasoning_content")) |text| try self.appendReasoning(text);
+        if (delta.object.get("reasoning_details")) |details| try self.captureReasoningDetails(details);
         if (delta.object.get("tool_calls")) |calls| try self.appendToolCalls(calls);
     }
 
@@ -717,6 +770,17 @@ const SseSink = struct {
             return;
         }
         try self.reasoning.appendSlice(self.alloc, text);
+    }
+
+    fn captureReasoningDetails(self: *@This(), value: std.json.Value) !void {
+        if (value == .null) return;
+        var out: std.Io.Writer.Allocating = .init(self.alloc);
+        defer out.deinit();
+        try std.json.Stringify.value(value, .{}, &out.writer);
+        if (out.written().len > max_content_bytes) return;
+        const raw = try self.alloc.dupe(u8, out.written());
+        if (self.reasoning_details) |old| self.alloc.free(old);
+        self.reasoning_details = raw;
     }
 
     fn appendToolCalls(self: *@This(), value: std.json.Value) !void {
@@ -806,6 +870,10 @@ const SseSink = struct {
             std.unicode.utf8ValidateSlice(self.reasoning.items))
         {
             completion.reasoning = try self.alloc.dupe(u8, self.reasoning.items);
+        }
+        if (self.reasoning_details) |details| {
+            completion.reasoning_details_json = details;
+            self.reasoning_details = null;
         }
         if (self.routed_model) |routed| {
             completion.routed_model = routed;
@@ -907,6 +975,7 @@ fn freeCompletion(alloc: Allocator, completion: *types.GatewayCompletion) void {
     if (completion.routed_model) |routed| alloc.free(@constCast(routed));
     if (completion.content) |content| alloc.free(@constCast(content));
     if (completion.reasoning) |reasoning| alloc.free(@constCast(reasoning));
+    if (completion.reasoning_details_json) |details| alloc.free(@constCast(details));
     types.freeToolCallSlice(alloc, @constCast(completion.tool_calls));
     if (completion.provider_failure_detail) |detail| alloc.free(@constCast(detail));
     completion.* = .{};
@@ -2014,4 +2083,125 @@ test "a json response falls back to the buffered path" {
     try std.testing.expectEqual(@as(usize, 1), harness.capture.content_chunks);
     try std.testing.expectEqualStrings("buffered", harness.capture.text.items);
     try std.testing.expectEqualStrings("buffered", result.completion.content.?);
+}
+
+test "assistant reasoning is replayed only to Z.AI and reasoning details only to the relay" {
+    const alloc = std.testing.allocator;
+    const message: types.ChatMessage = .{
+        .role = .assistant,
+        .content = "answer",
+        .reasoning = "the working out",
+        .reasoning_details_json = "[{\"type\":\"reasoning.encrypted\",\"data\":\"abc\"}]",
+    };
+
+    const hosts = [_]struct {
+        url: []const u8,
+        reasoning_content: bool,
+        reasoning_details: bool,
+    }{
+        .{ .url = "https://api.z.ai/api/coding/paas/v4/chat/completions", .reasoning_content = true, .reasoning_details = false },
+        .{ .url = "https://open.bigmodel.cn/api/paas/v4/chat/completions", .reasoning_content = true, .reasoning_details = false },
+        .{ .url = "http://127.0.0.1:18081/api/coding/paas/v4/chat/completions", .reasoning_content = true, .reasoning_details = true },
+        .{ .url = "http://127.0.0.1:4321/v1/chat/completions", .reasoning_content = false, .reasoning_details = true },
+        .{ .url = "http://localhost:4321/v1/chat/completions", .reasoning_content = false, .reasoning_details = true },
+        .{ .url = default_chat_url, .reasoning_content = false, .reasoning_details = false },
+        .{ .url = "https://api.openai.com/v1/chat/completions", .reasoning_content = false, .reasoning_details = false },
+    };
+
+    for (hosts) |host| {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try writeMessage(alloc, &out.writer, host.url, message, null, .{}, .none);
+        const written = out.written();
+        try std.testing.expectEqual(
+            host.reasoning_content,
+            std.mem.find(u8, written, "\"reasoning_content\":\"the working out\"") != null,
+        );
+        try std.testing.expectEqual(
+            host.reasoning_details,
+            std.mem.find(u8, written, "\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"data\":\"abc\"}]") != null,
+        );
+    }
+}
+
+test "a user message never carries reasoning to Z.AI" {
+    const alloc = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeMessage(
+        alloc,
+        &out.writer,
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        .{ .role = .user, .content = "question", .reasoning = "leaked" },
+        null,
+        .{},
+        .none,
+    );
+    try std.testing.expect(std.mem.find(u8, out.written(), "reasoning") == null);
+}
+
+test "thinking and user_id are written only for Z.AI" {
+    const alloc = std.testing.allocator;
+    const zai = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+
+    var keyed: std.Io.Writer.Allocating = .init(alloc);
+    defer keyed.deinit();
+    try writeZaiRequestOptions(&keyed.writer, zai, "session-abc");
+    const expected = openRouterSessionId("session-abc");
+    try std.testing.expect(std.mem.find(u8, keyed.written(), ",\"thinking\":{\"type\":\"enabled\",\"clear_thinking\":false}") != null);
+    try std.testing.expect(std.mem.find(u8, keyed.written(), expected[0..]) != null);
+    try std.testing.expect(std.mem.find(u8, keyed.written(), "session-abc") == null);
+
+    var keyless: std.Io.Writer.Allocating = .init(alloc);
+    defer keyless.deinit();
+    try writeZaiRequestOptions(&keyless.writer, zai, null);
+    try std.testing.expectEqualStrings(",\"thinking\":{\"type\":\"enabled\",\"clear_thinking\":false}", keyless.written());
+
+    for ([_][]const u8{ default_chat_url, "https://api.openai.com/v1/chat/completions", "http://127.0.0.1:4321/v1/chat/completions" }) |url| {
+        var other: std.Io.Writer.Allocating = .init(alloc);
+        defer other.deinit();
+        try writeZaiRequestOptions(&other.writer, url, "session-abc");
+        try std.testing.expectEqualStrings("", other.written());
+    }
+}
+
+test "streamed reasoning details survive to the completion and back onto the wire" {
+    const alloc = std.testing.allocator;
+    var harness = StreamHarness.init(alloc);
+    defer harness.deinit();
+
+    var transfer_buffer: [4096]u8 = undefined;
+    var completion = try consumeSseForTest(
+        &harness,
+        "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"data\":\"opaque\"}]}}]}\n\n" ++
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n" ++
+            "data: [DONE]\n\n",
+        &transfer_buffer,
+    );
+    defer freeCompletion(alloc, &completion);
+
+    try std.testing.expectEqualStrings(
+        "[{\"type\":\"reasoning.encrypted\",\"data\":\"opaque\"}]",
+        completion.reasoning_details_json.?,
+    );
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeMessage(
+        alloc,
+        &out.writer,
+        "http://127.0.0.1:4321/v1/chat/completions",
+        .{
+            .role = .assistant,
+            .content = completion.content,
+            .reasoning_details_json = completion.reasoning_details_json,
+        },
+        null,
+        .{},
+        .none,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"role\":\"assistant\",\"content\":\"hi\",\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"data\":\"opaque\"}]}",
+        out.written(),
+    );
 }

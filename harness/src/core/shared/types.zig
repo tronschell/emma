@@ -845,6 +845,7 @@ pub const ToolResultMemory = struct {
 
 pub const ToolExecutionStep = struct {
     assistant: ?[]u8 = null,
+    reasoning: ?[]u8 = null,
     tool_calls: []ToolCall = &.{},
     tool_results: []PersistedToolResult = &.{},
 };
@@ -896,6 +897,8 @@ pub const ChatCachePolicy = enum {
 pub const ChatMessage = struct {
     role: ChatRole,
     content: ?[]const u8 = null,
+    reasoning: ?[]const u8 = null,
+    reasoning_details_json: ?[]const u8 = null,
     images: []const ImageAttachment = &.{},
     tool_call_id: ?[]const u8 = null,
     tool_name: ?[]const u8 = null,
@@ -1084,6 +1087,7 @@ pub const GatewayCompletion = struct {
     /// beside the answer rather than inside it. Kept apart all the way to the
     /// transcript so the answer is never buried in the working-out.
     reasoning: ?[]const u8 = null,
+    reasoning_details_json: ?[]const u8 = null,
     tool_calls: []const ToolCall = &.{},
     routed_model: ?[]const u8 = null,
     generation_id: ?[]const u8 = null,
@@ -2108,6 +2112,8 @@ pub fn freeToolExecutionSteps(alloc: std.mem.Allocator, steps: []ToolExecutionSt
 fn dupeToolExecutionStep(alloc: std.mem.Allocator, step: ToolExecutionStep) !ToolExecutionStep {
     const assistant = if (step.assistant) |text| try alloc.dupe(u8, text) else null;
     errdefer if (assistant) |text| alloc.free(text);
+    const reasoning = if (step.reasoning) |text| try alloc.dupe(u8, text) else null;
+    errdefer if (reasoning) |text| alloc.free(text);
     const tool_calls = try dupeToolCallSlice(alloc, step.tool_calls);
     errdefer freeToolCallSlice(alloc, tool_calls);
     const tool_results = try dupePersistedToolResults(alloc, step.tool_results);
@@ -2115,6 +2121,7 @@ fn dupeToolExecutionStep(alloc: std.mem.Allocator, step: ToolExecutionStep) !Too
 
     return .{
         .assistant = assistant,
+        .reasoning = reasoning,
         .tool_calls = tool_calls,
         .tool_results = tool_results,
     };
@@ -2122,6 +2129,7 @@ fn dupeToolExecutionStep(alloc: std.mem.Allocator, step: ToolExecutionStep) !Too
 
 fn freeToolExecutionStep(alloc: std.mem.Allocator, step: ToolExecutionStep) void {
     if (step.assistant) |assistant| alloc.free(assistant);
+    if (step.reasoning) |reasoning| alloc.free(reasoning);
     freeToolCallSlice(alloc, step.tool_calls);
     freePersistedToolResults(alloc, step.tool_results);
 }

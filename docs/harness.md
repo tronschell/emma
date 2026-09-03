@@ -469,6 +469,30 @@ step of the previous one. Anything in the `prefix` half that does change (a
 permission-mode switch, a new directory grant, UTC midnight) costs one history
 re-read, the same as before the split, and never recurs per call.
 
+Project instructions follow the same rule. The root `AGENTS.md`, the global
+`.fx/AGENTS.md`, and the rules for anything named in the prompt are gathered
+once at the start of the turn and ride in the static prefix. Rules for a
+directory the model only reaches mid-turn — a first `read_file` under `docs/`
+whose folder has its own `AGENTS.md` — are append-only. The gate in
+[`orchestrator.zig`](../harness/src/core/agent/runtime/orchestrator.zig) holds
+the selected block until the step's tool results are in, then appends it to the
+content of the last of those tool results, after two newlines. Nothing is
+inserted into the prefix, so the bytes before history are identical on every
+step of a turn and from turn to turn.
+
+Riding inside the tool result is what makes it durable. `ExecutionMemory` is
+built from the same message content, and the history projection sends
+`result.output` back verbatim — including for a result large enough that its
+output is already a `<tool_result_preview>` wrapper — so the next turn replays
+the block from history at the byte offset it had in the turn that found it. At
+the start of every turn `seedDeliveredScopedRules` scans the persisted tool
+results for `<scoped-rules from="…">` and seeds those paths into
+`DeliveryState`, so a later turn that touches the same directory selects
+nothing and appends nothing. Within a turn `DeliveryState` already stops a
+source from rendering twice. Compaction that drops the turn carrying a block
+drops the seed with it, and the next touch renders it again into a new tool
+result.
+
 The history budget in [`session.zig`](../harness/src/core/session/session.zig)
 trims contiguously from the oldest turn and remembers the oldest turn it kept
 (`history_budget_floor`, a fingerprint held on the session). While the tail
@@ -499,12 +523,55 @@ request carries a
 `prompt_cache_key` derived from the session id, the same opaque hash as the
 `x-session-id` affinity header, so consecutive steps land on the same cache.
 
+Z.AI (`api.z.ai`) strips the previous turns' `reasoning_content` server-side
+unless told otherwise, and regenerates the chain of thought from scratch on
+every step, which burns quota and moves the prefix. So requests to that host
+carry `"thinking":{"type":"enabled","clear_thinking":false}`, a `user_id` set to
+the same opaque session hash as `prompt_cache_key`, and every assistant message
+that has reasoning carries it back as `"reasoning_content"`. The bytes have to
+be the same in both places a step is sent from, so `reasoning` rides on
+`ChatMessage`, on the within-turn suffix built in
+[`tool_batch.zig`](../harness/src/core/agent/runtime/tool_batch.zig), and on the
+durable `ToolExecutionStep` the session writes and replays. The session file
+keeps `schema_version` 3 and gains a `reasoning` key on a tool step only when
+there is one, so a step without reasoning encodes exactly as before. The final
+assistant message of a turn is never replayed within that turn, so its reasoning
+is not persisted. No other host sees any of this.
+
+A `reasoning_details` value on a streamed delta is kept as raw JSON on the
+completion and on the assistant message, and echoed back verbatim to
+`127.0.0.1` and `localhost` for the ChatGPT relay. It lives only for the turn.
+
+The automatic permission reviewer in
+[`auto_classifier.zig`](../harness/src/core/permissions/auto_classifier.zig)
+sends its ~16 KB instruction as the first message, a system one, and only then
+the request being reviewed and the pending call. It used to send them the other
+way round, which made every review a cold prefix.
+
 The ChatGPT relay in [`chatgpt.ts`](../desktop/main/chatgpt.ts) keeps only the
 leading system messages in `instructions`; a system message after the
 conversation becomes a `developer` item at the end of `input`, and the
 `session_id` header is derived from the same key rather than drawn fresh per
-request. `cache_read_tokens` and `cache_write_tokens` in every turn's usage are
+request, and is repeated as `session-id` and `thread-id` whenever a cache key is
+known. `cache_read_tokens` and `cache_write_tokens` in every turn's usage are
 the measure of whether this is working.
+
+Because the relay sends `store: false`, the server keeps nothing between steps:
+every reasoning item the model produced has to come back with the next request
+or the prefix diverges the moment a tool call lands. So the relay captures each
+`response.output_item.done` whose item is a `reasoning` item and hands it to the
+harness verbatim as a `reasoning_details` array on the assistant delta, once,
+ahead of that step's `tool_calls` and finish chunks. An inbound assistant
+message carrying `reasoning_details` puts those items straight back into
+`input`, immediately before that message's `function_call` items, or before the
+message itself when the step called nothing. A harness that drops the field
+silently loses reasoning and roughly a third of the cache hits.
+
+`prompt_cache_retention: "24h"` rides along for `gpt-5` through `gpt-5.5`,
+`-codex` variants included. From `gpt-5.6` on, that family uses
+`prompt_cache_options` instead and the backend rejects retention, so the relay
+omits it; a 400 naming `prompt_cache_retention` retries once without it and
+stops sending it for the life of the process.
 
 ## Limits the code enforces
 

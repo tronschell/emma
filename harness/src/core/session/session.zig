@@ -2981,6 +2981,7 @@ pub fn appendExecutionMemoryChatMessages(
         try messages.append(alloc, .{
             .role = .assistant,
             .content = step.assistant,
+            .reasoning = step.reasoning,
             .tool_calls = step.tool_calls,
         });
         for (step.tool_results) |result| {
@@ -3500,7 +3501,7 @@ fn trackedFileSection(action: core_types.FileEvidenceAction) ?TrackedFileSection
     };
 }
 
-fn turnExecution(turn: HistoryTurn) core_types.ExecutionMemory {
+pub fn turnExecution(turn: HistoryTurn) core_types.ExecutionMemory {
     return switch (turn) {
         .assistant => |entry| entry.execution,
         .background_command => |entry| entry.execution,
