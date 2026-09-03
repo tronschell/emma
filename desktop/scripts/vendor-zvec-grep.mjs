@@ -29,6 +29,10 @@ for (const platform of readdirSync(onnx)) {
 // contains an absolute symlink. codesign rejects any absolute symlink inside a bundle, so packaging
 // a copy of this tree fails signing. The prebuilt binaries it loads at runtime live elsewhere.
 rmSync(path.join(vendor, "node_modules/node-llama-cpp/llama/xpack"), { recursive: true, force: true });
+// transformers is the only thing depending on onnxruntime-web, and its node build ignores it
+// ("onnxruntime-web (ignored)" in dist/transformers.node.mjs) because the browser backend is not
+// reachable from Electron-as-Node. 91 MB that would otherwise be signed and notarized.
+rmSync(path.join(vendor, "node_modules/onnxruntime-web"), { recursive: true, force: true });
 if (!existsSync(entry)) throw new Error(`zvec-grep did not install: ${entry} is missing.`);
 writeFileSync(stamp, want);
 console.log(`Vendored zvec-grep ${VERSION} to ${vendor}`);
