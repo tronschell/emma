@@ -135,7 +135,7 @@ file, search and shell tools — Emma has none of her own.
 | `glob_files` | Paths matching a glob; `mode=count` for counts without listing. |
 | `open_file` | Open a file in the OS default app for the user. |
 | `grep_files` | POSIX extended regular expression, matched per line: alternation, character classes, anchors, groups, `{m,n}`. No backreferences, lookaround, lazy quantifiers or the `\d`/`\w`/`\s` shorthands. Modes for lines, files-with-matches or counts, with `head_limit`/`offset`. |
-| `semantic_search` | Lexical keyword ranking over workspace files. Not embeddings, despite the name. |
+| `semantic_search` | Lexical keyword ranking over workspace files by default. With Settings → Harness → zvec-grep mode on, it is answered by the bundled [zvec-grep](https://github.com/zvec-ai/zvec-grep) and advertised as the default search: `query` returns two ranked groups with snippets, Q1 by vector similarity and Q2 by BM25 keywords, up to `limit` hits each (default 7, clamped to 1-25), and `regex` runs ripgrep over the same folder. Embeddings come from the model picked there: local ones run on this computer, hosted ones (OpenRouter, OpenAI, Gemini) send indexed file contents and queries to that provider through a loopback proxy in Emma's main process. |
 | `lsp` | Diagnostics, definition, references, hover, symbols from an installed language server. |
 | `terminal` | Runs captured commands and drives durable interactive sessions, with monitors on exit, output, ports, paths. This is the shell. |
 | `web_fetch` | Bounded text from a public HTTP(S) URL, returned as untrusted content. |
@@ -151,8 +151,13 @@ Paths may be workspace-relative or external (absolute, `~/…`, or `../…`);
 external access is subject to permission policy, and Emma denies anything outside
 the connected folder before the mode is even consulted.
 
-Every mode opens advertising only `search_tools` and `select_tool`, with the rest
-behind a search. That is a prompt-cost mechanism, not a security boundary.
+Every mode opens advertising the file workhorses (`read_file`, `glob_files`,
+`grep_files`, `list_files`), the search door (`search_tools`, `select_tool`) and,
+in every mode that may write, `edit_file`, `write_file`, `terminal` and
+`task_list`. The rest is behind a search. That is a prompt-cost mechanism, not a
+security boundary. `task_list` is in that set because the system prompt's task
+tracking section tells the model when to write one, and a rule the model has to
+go searching to obey is a rule it skips.
 
 ### The four colliding names
 
@@ -178,8 +183,8 @@ behind a search. That is a prompt-cost mechanism, not a security boundary.
 The agent loop lives in the harness (`emma-cli acp`, see
 [harness.md](harness.md)). Emma's tools are registered there as native specs
 ([emma_tools.zig](../harness/src/builtins/emma_tools.zig)) with
-`executor_kind = .emma`, `advertisement = .on_select` and
-`requires_approval = false`; the harness dispatches them back into Electron over
+`executor_kind = .emma`, `advertisement = .on_select` (`task_list` alone is
+`.always`) and `requires_approval = false`; the harness dispatches them back into Electron over
 `_emma/callTool`, which lands in `runEmmaTool`. That function maps the wire name
 (`look_at_image` → `vision`), checks `toolGate`, checks availability, parses the
 arguments with `parseToolArgs`, raises the dialog on an ordinary `ask` gate, then

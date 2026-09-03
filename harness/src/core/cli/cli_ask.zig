@@ -1952,6 +1952,9 @@ fn finalizeTurn(raw_ctx: *anyopaque, turn_id: u64, outcome: types.TurnPresentati
     if (outcome == .failed or outcome == .paused) {
         ctx.failed = true;
     }
+    if (ctx.subagent_host) |subagent_host| {
+        subagent_host.requestRetirementSweep(io_mod.milliTimestamp());
+    }
 }
 
 fn appendRuntimeContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
@@ -1990,16 +1993,12 @@ fn acknowledgeParentTurnContext(
 ) void {
     const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx));
     const subagent_host = ctx.subagent_host orelse return;
-    const retirement_ready = parent_delivery_projector
-        .acknowledgeWithRetirementSignal(
+    parent_delivery_projector.acknowledge(
         arena,
         subagent_host.sessions,
         subagent_host.manager.options.child_store,
         acknowledgements,
     );
-    if (retirement_ready) {
-        subagent_host.requestRetirementSweep(io_mod.milliTimestamp());
-    }
 }
 
 fn appendStaticContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {

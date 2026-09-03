@@ -357,7 +357,7 @@ pub const RouteRecoveryStatus = struct {
                 "Tool state needs review",
                 "context preserved",
             ),
-            .content_filter => self.fixedFailureLabel(buf, "blocked", "content filter"),
+            .content_filter => "⚠ blocked · content filter · change the request",
         };
     }
 
@@ -436,7 +436,14 @@ pub const RouteRecoveryStatus = struct {
     }
 
     fn pausedLabel(self: RouteRecoveryStatus, buf: []u8) []const u8 {
-        const cause = self.cause orelse return self.pausedCauseLabel(buf, "Provider unavailable");
+        if (self.required_action == .change_request) {
+            return self.fixedFailureLabel(
+                buf,
+                "Model call rejected",
+                "change the request or pick another model",
+            );
+        }
+        const cause = self.cause orelse return self.pausedCauseLabel(buf, "Model call failed");
         if (cause == .rate_limited and self.failed_attempt < self.attempt_limit) {
             if (self.diagnostic) |diagnostic| {
                 return std.fmt.bufPrint(
@@ -466,6 +473,7 @@ pub const RouteRecoveryStatus = struct {
             ) catch "⚠ Connection unavailable · recovery paused";
         }
         if (cause == .request_limit_reached) {
+            if (self.failed_attempt < self.attempt_limit) return self.pausedCauseLabel(buf, "Provider limit reached");
             if (self.diagnostic) |diagnostic| {
                 return std.fmt.bufPrint(
                     buf,
@@ -544,6 +552,30 @@ test "route recovery label includes a value-owned diagnostic" {
     try std.testing.expectEqualStrings(
         "⚠ Provider unavailable · HTTP 503 · no_available_providers: No providers are currently available · retrying request in 4s · attempt 4/10",
         copied.label(&label_buf),
+    );
+}
+
+test "route recovery label tells a rejected model call what to change" {
+    var label_buf: [RouteRecoveryStatus.label_max_bytes]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "⚠ Model call rejected · HTTP 400 · The 'gpt-5' model is not supported · change the request or pick another model",
+        (RouteRecoveryStatus{
+            .kind = .terminal_provider_error,
+            .failed_attempt = 1,
+            .attempt_limit = 10,
+            .required_action = .change_request,
+            .diagnostic = ModelFailureDiagnostic.init("HTTP 400 · The 'gpt-5' model is not supported"),
+        }).label(&label_buf),
+    );
+    try std.testing.expectEqualStrings(
+        "⚠ Provider unavailable · HTTP 503 · recovery paused after 2/2 attempts",
+        (RouteRecoveryStatus{
+            .kind = .terminal_provider_error,
+            .failed_attempt = 2,
+            .attempt_limit = 2,
+            .cause = .provider_unavailable,
+            .diagnostic = ModelFailureDiagnostic.init("HTTP 503"),
+        }).label(&label_buf),
     );
 }
 
@@ -855,7 +887,10 @@ pub const UserTurn = struct {
 
 pub const ChatCachePolicy = enum {
     default,
+    /// Never part of a cached prefix; the request builder keeps it after every cacheable message.
     no_cache,
+    /// Session-stable runtime context: hoisted into the cached prefix ahead of history.
+    prefix,
 };
 
 pub const ChatMessage = struct {

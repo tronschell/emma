@@ -50,7 +50,7 @@ export default function ResearchView({ snapshot, act, busy }: { snapshot: Snapsh
     <ResearchForm act={act} busy={busy} onSaved={setPicked} />
   </section>;
   return <section className="research-view">
-    <header className="research-head"><h2>Experiments</h2></header>
+    <header className="research-head"><span>Every experiment</span><h2>Autoresearch</h2></header>
     <div className="research-actions"><button type="button" disabled={busy} onClick={() => setPicked("new")}>+ New experiment</button></div>
     {!jobs.length && <div className="content-empty"><Mark /><h2>No experiments yet</h2><p>Create one here, or ask Emma to set one up on a folder you have already granted.</p></div>}
     <div className="job-list">{jobs.map((item) => <JobCard key={item.id} job={item} act={act} busy={busy} open={() => setPicked(item.id)} />)}</div>

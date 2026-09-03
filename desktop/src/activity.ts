@@ -85,7 +85,7 @@ export function activeYears(days: Record<string, number>, today = new Date()): n
 export function projectActivity(threads: Thread[], nameOf: (thread: Thread) => string): ProjectActivity[] {
   const rows = new Map<string, ProjectActivity>();
   for (const thread of threads) {
-    const name = nameOf(thread) || "Other";
+    const name = nameOf(thread) || "Unfiled";
     const row = rows.get(name) ?? { name, threads: 0, messages: 0, days: {}, lastAt: 0 };
     row.threads += 1;
     row.messages += threadMessageCount(thread);

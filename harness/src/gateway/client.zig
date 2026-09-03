@@ -2198,7 +2198,7 @@ fn captureProviderFailureObject(
     return false;
 }
 
-fn captureProviderFailureDetail(alloc: std.mem.Allocator, current: *?[]u8, root: std.json.Value) !void {
+pub fn captureProviderFailureDetail(alloc: std.mem.Allocator, current: *?[]u8, root: std.json.Value) !void {
     if (root != .object or current.* != null) return;
     if (try captureProviderFailureObject(alloc, current, root.object, false)) return;
     if (root.object.get("error")) |value| {
@@ -2546,7 +2546,9 @@ pub const SseEventReader = struct {
         if (std.mem.eql(u8, trimmed, "DONE")) return .done;
 
         const data_prefix = "data: ";
-        if (!std.mem.startsWith(u8, trimmed, data_prefix)) return .ignored;
+        if (!std.mem.startsWith(u8, trimmed, data_prefix)) {
+            return if (trimmed[0] == '{') .{ .data = trimmed } else .ignored;
+        }
 
         const json_text = trimmed[data_prefix.len..];
         if (std.mem.eql(u8, json_text, "[DONE]")) return .done;

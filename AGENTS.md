@@ -58,14 +58,13 @@ permissions, VoiceOver behavior, display geometry, signing, and non-macOS paths.
 
 ## Releasing
 
-The changelog is generated, never written. A PR title is its changelog entry and
-must be a conventional commit — `fix(notch): stop the island stealing focus` —
-which CI enforces. Feature branches start from and squash-merge into `dev`, the
-default branch. A generated release PR on `dev` writes `CHANGELOG.md` and the
-version; merging it prepares a tag and draft release. Promote that exact `dev`
-tree to `main` with a merge commit to check, build, sign, notarize, and publish
-the app. Never squash the promotion, hand-edit `CHANGELOG.md`, bump a version in
-a feature PR, or tag by hand.
+Feature branches start from and squash-merge into `dev`, the default branch.
+Every PR runs the full `ci` workflow. Only the owner can merge `dev` into
+`main`; that merge commit is the release. The `release` workflow reads the
+root `package.json` version, skips if that version is already published, and
+otherwise builds, signs, notarizes, and publishes the app with generated notes.
+Bump the version on `dev` before promoting. There is no changelog file, release
+PR, or hand-made tag.
 
 The workflows in `.github/workflows/` run the checks above and nothing else that
 cannot be run locally. They are config, so the no-comments rule applies to them.

@@ -71,9 +71,9 @@ Up to `MAX_CONTEXT_PAGES` (**4**) arrangements, each named in
 header becomes a `role="tablist"` row of page tabs; the chosen page id is
 remembered in `localStorage` under `emma.contextPage.v1`.
 
-Ships with three: **Context** (stats horizontal, then context, timeline, tasks,
-plan, subagents, sub threads), **Run** (timeline, tasks, plan, subagents, sub threads, git)
-and **Machine** (meters, graph, numbers). A component appears at most once per page — its type is the key the
+Ships with three: **Context** (stats horizontal, then context and timeline),
+**Run** (tasks, plan, subagents, sub threads, git) and **Machine** (meters,
+graph, numbers) — each component on exactly one of them. A component appears at most once per page — its type is the key the
 drag-and-drop sorts by, so there are no instance ids to mint.
 
 ## Arranging

@@ -8,7 +8,6 @@ import { inflateRawSync } from "node:zlib";
 import { extractFile, listPackage } from "@electron/asar";
 import { packager } from "@electron/packager";
 import { createWindowsInstaller } from "electron-winstaller";
-import { stableVersion } from "./release.mjs";
 import { commandShimArguments } from "./windows-command.mjs";
 
 assert.equal(process.platform, "win32", "package:win requires Windows.");
@@ -107,12 +106,14 @@ const verifyNupkg = (signTool, file) => {
     rmSync(extraction, { recursive: true, force: true });
   }
 };
-const version = stableVersion(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version);
+const version = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
+assert.match(version, /^\d+\.\d+\.\d+$/, "The root package.json needs a stable X.Y.Z version.");
 
 run("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root);
 run("zig", ["build", "-Doptimize=ReleaseSafe"], path.join(root, "harness"));
 run("npm.cmd", ["run", "build:native"]);
 run("npm.cmd", ["run", "vendor:ripgrep"]);
+run("npm.cmd", ["run", "vendor:zvec-grep"]);
 run("npm.cmd", ["run", "build"]);
 
 const notices = path.join(out, "notices");
@@ -140,6 +141,7 @@ const required = [
   path.join(root, "target/release/emma-host.exe"),
   path.join(root, "harness/zig-out/bin/emma-cli.exe"),
   path.join(desktop, "vendor/rg.exe"),
+  path.join(desktop, "vendor/zvec-grep"),
   ...nativeHelpers.map((name) => path.join(desktop, "dist-native", name)),
   path.join(desktop, "skills"),
   notices,

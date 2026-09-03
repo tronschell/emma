@@ -13,6 +13,7 @@ pub const Options = struct {
     permission_rules: types.PermissionRuleSet = .{},
     mcp_runtime: ?*mcp_runtime.McpRuntime = null,
     subagent_available: bool = false,
+    semantic_grep: ?*const gateway_schema.FunctionSchema = null,
 };
 
 const BuildKind = enum { full, read_only };
@@ -866,11 +867,19 @@ fn writeBuiltinTool(
     guidance_writer: *std.Io.Writer,
     first: *bool,
     first_custom_guidance: *bool,
-    tool: tool_dispatch.Tool,
+    registered: tool_dispatch.Tool,
     kind: BuildKind,
     tool_set: tool_set_contract.ToolSet,
     options: Options,
 ) !void {
+    var tool = registered;
+    if (options.semantic_grep) |schema| {
+        if (std.mem.eql(u8, tool.name, "semantic_search")) {
+            tool.advertisement = .always;
+            tool.description = schema.description;
+            tool.gateway_schema = schema.*;
+        }
+    }
     if (!includeBuiltinForKind(tool.name, kind, tool_set)) return;
     if (std.mem.eql(u8, tool.name, "subagent") and !options.subagent_available) return;
     if (tool.advertisement != .always) return;
@@ -879,17 +888,27 @@ fn writeBuiltinTool(
         if (permissions.rulesDenyAllTargetsForTool(options.permission_rules, tool.name)) return;
     }
     try writeComma(tools_writer, first);
+    if (options.semantic_grep != null and std.mem.eql(u8, tool.name, "semantic_search")) {
+        try writeCustomGuidance(guidance_writer, first_custom_guidance, semantic_grep_guidance);
+    }
     if (tool.write_gateway_advertisement_fn) |write_advertisement| {
         try write_advertisement(alloc, tools_writer);
-        if (first_custom_guidance.*) {
-            first_custom_guidance.* = false;
-        } else {
-            try guidance_writer.writeAll("\n\n");
-        }
-        try guidance_writer.writeAll(tool.description);
+        try writeCustomGuidance(guidance_writer, first_custom_guidance, tool.description);
         return;
     }
     try gateway_schema.writeBuiltinFunctionSchema(alloc, tools_writer, tool.gateway_schema);
+}
+
+const semantic_grep_guidance =
+    "Search starts with semantic_search: a query for where/why/how questions, a regex for a known identifier. Use grep_files only for per-line ERE, counts, or pagination.";
+
+fn writeCustomGuidance(guidance_writer: *std.Io.Writer, first_custom_guidance: *bool, text: []const u8) !void {
+    if (first_custom_guidance.*) {
+        first_custom_guidance.* = false;
+    } else {
+        try guidance_writer.writeAll("\n\n");
+    }
+    try guidance_writer.writeAll(text);
 }
 
 /// A provider-executed tool is never dispatched locally, so an unsettled `ask`

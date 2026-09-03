@@ -63,6 +63,12 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     return;
   }
 
+  if (method === "session/set_config_option") {
+    notify(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `cfg:${params.configId}=${params.value} ` } });
+    send({ jsonrpc: "2.0", id, result: {} });
+    return;
+  }
+
   if (method === "session/compact") {
     notify(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "compacted " } });
     send({ jsonrpc: "2.0", id, result: { compacted: true, summarizedTurns: 3, remainingTurns: 1 } });
@@ -87,6 +93,23 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
         notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "." } });
       }
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
+      return;
+    }
+
+    if (params.prompt.some((part) => part.text?.includes("longtool"))) {
+      notify(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_1", title: "bash", kind: "execute", status: "in_progress" });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      notify(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_1", status: "completed", content: [{ type: "content", content: { type: "text", text: "slept" } }] });
+      send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
+      return;
+    }
+
+    if (params.prompt.some((part) => part.text?.includes("filtered"))) {
+      notify(sessionId, {
+        sessionUpdate: "session_info_update",
+        _meta: { fx: { modelResponseRecovery: { state: "paused", kind: "content_filter", requiredAction: "change_request", message: "⚠ blocked · content filter · change the request" } } },
+      });
+      send({ jsonrpc: "2.0", id, error: { code: -32603, message: "ModelError" } });
       return;
     }
 

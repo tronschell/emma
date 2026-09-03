@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chatChunks, chunkState, readChatgptAuth, responsesRequest, upstreamFailure } from "../main/chatgpt";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chatChunks, chunkState, readChatgptAuth, responsesRequest, sessionIdFor, upstreamFailure } from "../main/chatgpt";
 import { codexCachedSlugs } from "../main/cli-models";
 import { CODEX_MODEL_ID, availableCodexModelKey, codexModelKey, codexSlug, planFor, planForGeneration, planProfile } from "../shared/settings";
 
@@ -59,7 +63,7 @@ test("a chat completion becomes a stored-free responses call", () => {
   assert.equal(request.store, false);
   assert.equal(request.stream, true);
   assert.equal(request.instructions, "Be terse.");
-  assert.equal(request.max_output_tokens, 4096);
+  assert.equal("max_output_tokens" in request, false);
   assert.deepEqual(request.reasoning, { effort: "high", summary: "auto" });
   assert.deepEqual(request.tools, [{ type: "function", name: "read_file", description: "read", parameters: { type: "object" }, strict: false }]);
   assert.deepEqual(request.input, [
@@ -68,6 +72,32 @@ test("a chat completion becomes a stored-free responses call", () => {
     { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
     { type: "function_call_output", call_id: "call_1", output: "hello" },
   ]);
+});
+
+test("a runtime overlay after the conversation stays out of the instructions head", () => {
+  const request = responsesRequest({
+    model: "gpt-5.6-sol",
+    prompt_cache_key: "emma-openrouter-session-v1:abc",
+    messages: [
+      { role: "system", content: "Be terse." },
+      { role: "developer", content: "Prefer tables." },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "system", content: "Runtime context: cwd=/tmp" },
+    ],
+  });
+  assert.equal(request.instructions, "Be terse.\n\nPrefer tables.");
+  assert.equal(request.prompt_cache_key, "emma-openrouter-session-v1:abc");
+  assert.deepEqual(request.input, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] },
+    { type: "message", role: "developer", content: [{ type: "input_text", text: "Runtime context: cwd=/tmp" }] },
+  ]);
+  assert.equal(sessionIdFor({ prompt_cache_key: "k" }), sessionIdFor({ prompt_cache_key: "k" }));
+  assert.notEqual(sessionIdFor({ prompt_cache_key: "k" }), sessionIdFor({ prompt_cache_key: "j" }));
+  assert.notEqual(sessionIdFor({}), sessionIdFor({}));
+  assert.match(sessionIdFor({ prompt_cache_key: "k" }), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal("prompt_cache_key" in responsesRequest({ model: "m", messages: [] }), false);
 });
 
 test("responses events become chat completion chunks", () => {
@@ -96,4 +126,55 @@ test("a refused or truncated run is not read as an answer", () => {
   assert.equal(upstreamFailure({ type: "response.failed", response: { error: { message: "quota" } } }), "quota");
   assert.equal(upstreamFailure({ type: "error", message: "bad token" }), "bad token");
   assert.equal(upstreamFailure({ type: "response.output_text.delta", delta: "hi" }), "");
+});
+
+test("a run that ran out of output ends as a length finish, and every other failure keeps its reason", () => {
+  const state = chunkState("gpt-5.6-sol");
+  const [truncated] = chatChunks({ type: "response.incomplete", response: { incomplete_details: { reason: "max_output_tokens" }, usage: { input_tokens: 12, output_tokens: 4 } } }, state);
+  assert.equal((truncated.choices as { finish_reason: string }[])[0].finish_reason, "length");
+  assert.equal(upstreamFailure({ type: "response.incomplete", response: { incomplete_details: { reason: "content_filter" } } }), "content_filter");
+  assert.deepEqual(chatChunks({ type: "response.incomplete", response: { incomplete_details: { reason: "content_filter" } } }, state), []);
+});
+
+test("the proxy forwards upstream liveness even when no event translates into a chunk", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "emma-chatgpt-relay-"));
+  mkdirSync(path.join(home, ".codex"), { recursive: true });
+  writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "a.b.c", account_id: "acct-1" } }));
+  const script = path.join(home, "relay.mjs");
+  writeFileSync(script, [
+    `const { chatgptRoute } = await import(${JSON.stringify(path.join(__dirname, "../main/chatgpt.js"))});`,
+    'const upstream = \'data: {"type":"response.in_progress"}\\n\\ndata: {"type":"response.completed","response":{}}\\n\\ndata: [DONE]\\n\\n\';',
+    "const real = globalThis.fetch;",
+    "globalThis.fetch = async () => new Response(upstream, { status: 200 });",
+    "const route = await chatgptRoute();",
+    'const answer = await real(route.chatUrl, { method: "POST", headers: { authorization: `Bearer ${route.apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] }) });',
+    "process.stdout.write(await answer.text());",
+  ].join("\n"));
+  const proxied = spawnSync(process.execPath, [script], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  assert.equal(proxied.status, 0, proxied.stderr);
+  assert.match(proxied.stdout, /^:$/m);
+  assert.match(proxied.stdout, /"finish_reason":"stop"/);
+});
+
+test("a buffered request is answered with one chat completion", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "emma-chatgpt-buffered-"));
+  mkdirSync(path.join(home, ".codex"), { recursive: true });
+  writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "a.b.c", account_id: "acct-1" } }));
+  const script = path.join(home, "buffered.mjs");
+  writeFileSync(script, [
+    `const { chatgptRoute } = await import(${JSON.stringify(path.join(__dirname, "../main/chatgpt.js"))});`,
+    'const upstream = \'data: {"type":"response.output_text.delta","delta":"he"}\\n\\ndata: {"type":"response.output_text.delta","delta":"llo"}\\n\\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2}}}\\n\\ndata: [DONE]\\n\\n\';',
+    "const real = globalThis.fetch;",
+    "globalThis.fetch = async () => new Response(upstream, { status: 200 });",
+    "const route = await chatgptRoute();",
+    'const answer = await real(route.chatUrl, { method: "POST", headers: { authorization: `Bearer ${route.apiKey}`, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", max_tokens: 4000, stream: false, messages: [{ role: "user", content: "hi" }] }) });',
+    'process.stdout.write(JSON.stringify({ type: answer.headers.get("content-type"), body: await answer.json() }));',
+  ].join("\n"));
+  const proxied = spawnSync(process.execPath, [script], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  assert.equal(proxied.status, 0, proxied.stderr);
+  const answered = JSON.parse(proxied.stdout) as { type: string; body: Record<string, unknown> };
+  assert.equal(answered.type, "application/json");
+  assert.equal(answered.body.object, "chat.completion");
+  assert.deepEqual(answered.body.choices, [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }]);
+  assert.equal((answered.body.usage as { completion_tokens: number }).completion_tokens, 2);
 });

@@ -111,9 +111,11 @@ pub const BuildRequest = struct {
     vision_mode: VisionMode = .unavailable,
     provider_options: model_capabilities.ResolvedProviderOptions,
     max_output_tokens: ?u32 = null,
+    stream: bool = true,
     budget: ?BuildBudget = null,
     verified_images: ?[]const image_attachments.VerifiedSnapshot = null,
     response_format: ?StructuredResponseFormat = null,
+    session_id: ?[]const u8 = null,
 };
 
 pub const Request = struct {

@@ -18,11 +18,12 @@ pub const all = threads_group.all ++
     shortcuts_group.all ++
     overrides_group.all;
 
-test "every Emma tool is dispatched by the client and hidden until searched" {
+test "every Emma tool is dispatched by the client, and only task_list is advertised" {
     const std = @import("std");
     for (all) |tool| {
         try std.testing.expectEqual(tool_dispatch.ExecutorKind.emma, tool.executor_kind);
-        try std.testing.expectEqual(tool_dispatch.Advertisement.on_select, tool.advertisement);
+        const expected: tool_dispatch.Advertisement = if (std.mem.eql(u8, tool.name, "task_list")) .always else .on_select;
+        try std.testing.expectEqual(expected, tool.advertisement);
         try std.testing.expect(!tool.requires_approval);
         try std.testing.expect(tool.name.len > 0 and tool.description.len > 0);
         try std.testing.expectEqualStrings(tool.name, tool.gateway_schema.name);

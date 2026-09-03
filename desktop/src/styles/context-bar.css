@@ -52,7 +52,7 @@
 
 /* Settings is one 720px column; this page is a palette beside a 288px bar, and
    at 720 the palette's cards wrap their own copy onto three lines. */
-.settings-view.settings-wide { --content-column: 980px; }
+.settings-view.settings-wide { --settings-column: 980px; }
 
 .bar-editor { display: grid; gap: var(--s-5); align-content: start; }
 

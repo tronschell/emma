@@ -113,7 +113,7 @@ pub noinline fn decide(evidence: Evidence) Decision {
             .strategy = .stop,
             .required_action = .change_request,
         },
-        .request_limit_reached => return .{
+        .request_limit_reached, .authentication => return .{
             .strategy = .pause,
             .required_action = .continue_later,
         },

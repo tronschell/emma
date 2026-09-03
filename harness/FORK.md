@@ -57,6 +57,12 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   failed to parse and the repaired text parses, so it can never rewrite a
   payload that was already valid. A repeat whose copies genuinely conflict
   still fails: last-wins would run a command the model did not ask for.
+- **Semantic search.** A `semantic_grep` session option (one stdio
+  MCP-server-shaped entry, parsed by the MCP config parser) hands the
+  `semantic_search` builtin to an external zvec-grep command, swaps in a schema
+  with a `regex` route beside `query` so vector, BM25 and ripgrep are one tool,
+  promotes it to `.always` as the default search, and clears back to upstream's
+  lexical ranker on an empty value.
 - **Tool call titles.** Upstream titles an ACP tool call with the tool's bare
   action label, so every shell call reads `Using terminal` and every read reads
   `Reading` with no path — a column of identical rows that hides what the turn
@@ -260,6 +266,16 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   cancel, empty, or unstructured output — falls back to upstream's
   deterministic summary. Only the ACP path is wired; `main.zig` and `cli_ask`
   stay deterministic.
+
+- **History budget from the session's own window.** The projected history budget
+  divided the model catalog's context window, and a provider model has no
+  catalog window, so every request carried a quarter of upstream's 24k default
+  no matter how large the real window was, and turns fell out of the projection
+  in silence. The budget now divides the same merged window `experimentSettings`
+  already uses — the window the host set over ACP unless it is zero, else the
+  catalog's — and `shouldAutoCompact` measures its trigger percent against that
+  budget rather than the whole window, so the summary is written and announced
+  before anything is dropped. `compact_percent = 0` still means off.
 
 - **History invariant repair.** Every provider request assembles through
   `buildGatewayMessages`, which now inserts a synthetic result for any tool call

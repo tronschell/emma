@@ -546,6 +546,19 @@ export function setThreadUnread(threadId: string, unread: boolean): void {
   dispatchEvent(new Event("emma-thread-unread-changed"));
 }
 
+const SEEN_RUNS_KEY = "emma.threadSeenRuns.v1";
+
+export function seenRuns(): Record<string, string> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SEEN_RUNS_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(stored).filter(([, value]) => typeof value === "string")) as Record<string, string>;
+  } catch { return {}; }
+}
+
+export function setSeenRuns(stamps: Record<string, string>): void {
+  localStorage.setItem(SEEN_RUNS_KEY, JSON.stringify(stamps));
+}
+
 export function handTags(): string[] {
   const counts = new Map<string, number>();
   for (const entry of Object.values(threadTags())) if (!entry.auto) counts.set(entry.tag, (counts.get(entry.tag) ?? 0) + 1);

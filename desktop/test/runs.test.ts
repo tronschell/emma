@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendText, arrived, compactionNotice, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, turnToRetry, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
+import { appendText, arrived, dropQueued, groupBlocks, joinPartial, mergeStep, pairBlocks, releaseHeld, restoreBlocks, runOf, sendTurn, turnToRetry, stopTurn, takeDraft, thinkingOf, tracedBlocks, wire, withoutThinking, wrote, type Block } from "../src/runs";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
-import type { TraceSpan } from "../shared/trace";
+import { compactionNotice, decodeSpans, type TraceSpan } from "../shared/trace";
 import { cachedBlocks, rememberBlocks, setThreadFolders, threadFolders } from "../src/context";
 import type { Message } from "../src/types";
 
@@ -394,6 +394,29 @@ test("a turn's notice takes the tool calls of a run that said nothing", () => {
   assert.deepEqual(pairBlocks(messages, [steps], {})[1], steps);
 });
 
+test("a run that said nothing waits for its own notice instead of claiming an earlier one", () => {
+  const messages = [
+    said("user", "sleep 70", "2026-09-02T23:58:15Z"),
+    said("system", "You stopped this run.", "2026-09-02T23:58:17Z"),
+    said("user", "sleep 70 again", "2026-09-02T23:59:48Z"),
+  ];
+  const steps: Block[] = [{ kind: "step", step: step("one", "failed") }];
+  assert.deepEqual(pairBlocks(messages, [steps], {}, 2), [undefined, undefined, undefined]);
+  const notice = said("system", "You stopped this run.", "2026-09-02T23:59:50Z");
+  assert.deepEqual(pairBlocks([...messages, notice], [steps], {}, 2), [undefined, undefined, undefined, steps]);
+});
+
+test("a repeated short answer lands on the turn that just ran, not the first that said it", () => {
+  const messages = [
+    said("user", "Reply with exactly the single word pong", "2026-09-02T23:39:37Z"),
+    said("assistant", "pong", "2026-09-02T23:39:37Z"),
+    said("user", "Reply with exactly the single word pong", "2026-09-03T00:42:24Z"),
+    said("assistant", "pong", "2026-09-03T00:42:24Z"),
+  ];
+  const blocks: Block[] = [{ kind: "text", text: "pong" }];
+  assert.deepEqual(pairBlocks(messages, [blocks], {}, 2), [undefined, undefined, undefined, blocks]);
+});
+
 test("the stall swap only resends a turn that is still running", async () => {
   sendTurn("stalling", turn("PING-F"), () => {});
   await settle();
@@ -413,6 +436,17 @@ test("a turn the host refuses hands its text back once", async () => {
   assert.equal(reloaded, 1);
   assert.equal(takeDraft("failed"), "lost prompt");
   assert.equal(takeDraft("failed"), "");
+});
+
+test("a refused turn keeps the reason beside the text it held back", async () => {
+  request = () => Promise.reject(new Error("host is down"));
+  sendTurn("refused", turn("lost prompt"), () => {});
+  await settle();
+  assert.equal(runOf("refused").draft, "lost prompt");
+  assert.equal(runOf("refused").failure, "host is down");
+  takeDraft("refused");
+  assert.equal(runOf("refused").draft, "");
+  assert.equal(runOf("refused").failure, "");
 });
 
 const traceOf = (thread: string, startedAt: number, calls: [string, string, number?][], recovered = false) => [
@@ -477,6 +511,38 @@ test("a call recorded before the answer was measured still reads in clock order"
   assert.deepEqual(blocks.map((block) => block.kind === "step" ? block.step.title : block.text), ["read", "write", "One answer, no offsets."]);
 });
 
+test("a stopped run keeps its interrupted step on the notice that closed it", () => {
+  const messages: Message[] = [
+    { role: "user", content: "sleep 40", timestamp: "2026-08-27T00:20:21Z" },
+    { role: "system", content: "This run stopped: you stopped it", timestamp: "2026-08-27T00:20:21Z" },
+    { role: "user", content: "Reply with exactly the single word pong", timestamp: "2026-08-27T00:20:45Z" },
+    { role: "system", content: compactionNotice(1, true), timestamp: "2026-08-27T00:20:40Z" },
+    { role: "assistant", content: "pong", timestamp: "2026-08-27T00:20:45Z" },
+  ];
+  const stopped = [
+    JSON.stringify({ v: 1, thread: "dither", model: "z-ai/glm-5.3-flash" }),
+    JSON.stringify({ id: "agent:dither", name: "This thread", kind: "agent", startedAt: 1787876421000, endedAt: 1787876421500, status: "failed" }),
+    JSON.stringify({ id: "call:one", parentId: "agent:dither", name: "Running sleep 40; echo finished", kind: "execute", startedAt: 1787876421001, endedAt: 1787876421400, status: "cancelled", input: "{}" }),
+  ].join("\n");
+  const turns = tracedBlocks("dither", messages, [
+    { timestamp: "2026-08-27T00:20:21Z", text: stopped },
+    { timestamp: "2026-08-27T00:20:45Z", text: traceOf("dither", 1787876445000, [["two", "read notes"]]) },
+  ]);
+  assert.deepEqual(turns["2026-08-27T00:20:21Z"].map((block) => block.kind === "step" ? `${block.step.title} ${block.step.status}` : block.kind), ["Running sleep 40; echo finished cancelled"]);
+  assert.deepEqual(turns["2026-08-27T00:20:45Z"].map((block) => block.kind === "step" ? block.step.title : block.kind), ["read notes", "text"]);
+  assert.deepEqual(Object.keys(turns), ["2026-08-27T00:20:21Z", "2026-08-27T00:20:45Z"]);
+});
+
+test("a trace lands on the turn it was recorded with, not on an earlier answer that has none", () => {
+  const messages: Message[] = [
+    { role: "assistant", content: "pong", timestamp: "2026-09-03T00:35:41Z" },
+    { role: "assistant", content: "The first entry printed was Applications.", timestamp: "2026-09-03T00:36:02Z" },
+  ];
+  const turns = tracedBlocks("dither", messages, [{ timestamp: "2026-09-03T00:36:02Z", text: traceOf("dither", 1788395762000, [["one", "Running ls / | head -5"]]) }]);
+  assert.equal(turns["2026-09-03T00:35:41Z"], undefined);
+  assert.deepEqual(turns["2026-09-03T00:36:02Z"].map((block) => block.kind === "step" ? block.step.title : block.kind), ["Running ls / | head -5", "text"]);
+});
+
 test("a compaction says how much history became a summary, and whether the model wrote it", () => {
   assert.equal(compactionNotice(12, true), "Context compacted — 12 turns became a summary");
   assert.equal(compactionNotice(1, false), "Context compacted — 1 turn became a rough summary the model did not write");
@@ -510,6 +576,16 @@ test("a steer is rebuilt from the trace at the point it cut into the answer", ()
   assert.equal(blocks.every((block) => block.kind !== "notice" || block.steer), true);
 });
 
+test("a compaction is rebuilt from the trace as a plain notice, not as a steer", () => {
+  const text = [
+    JSON.stringify({ v: 1, thread: "dither", model: "z-ai/glm-5.3-flash" }),
+    JSON.stringify({ id: "agent:dither", name: "This thread", kind: "agent", startedAt: 1787865075384, endedAt: 1787865075884, status: "ok" }),
+    JSON.stringify({ id: "compact:dither:1", parentId: "agent:dither", name: "compact", kind: "compact", startedAt: 1787865075385, endedAt: 1787865075385, status: "ok", input: compactionNotice(3, true) }),
+  ].join("\n");
+  const [block] = restoreBlocks("dither", decodeSpans(text));
+  assert.deepEqual(block, { kind: "notice", text: "Context compacted — 3 turns became a summary", plain: true, compact: true });
+});
+
 test("a turn that ends refetches the thread, so the answer it wrote is drawn", async () => {
   let reloads = 0;
   request = (_method, params) => { sent.push(params.content); return new Promise<void>((resolve) => { release = resolve; }); };
@@ -533,6 +609,9 @@ test("a retry notice is not the model answering, so the stall clock keeps runnin
   pushDelta({ threadId: "retrying", delta: "The model sent nothing (attempt 2 of 5), retrying in 4s\n", thinking: true, recovery: true });
   assert.equal(runOf("retrying").activeAt, startedAt);
   assert.match(runOf("retrying").recovery, /attempt 2 of 5/);
+  assert.deepEqual(runOf("retrying").blocks.at(-1), { kind: "notice", text: "The model sent nothing (attempt 2 of 5), retrying in 4s", plain: true });
+  pushDelta({ threadId: "retrying", delta: "The model sent nothing (attempt 2 of 5), retrying in 4s\n", thinking: true, recovery: true });
+  assert.equal(runOf("retrying").blocks.filter((block) => block.kind === "notice").length, 1);
   pushDelta({ threadId: "retrying", delta: "here it is" });
   assert.equal(runOf("retrying").recovery, "");
   assert.ok(runOf("retrying").activeAt >= startedAt);

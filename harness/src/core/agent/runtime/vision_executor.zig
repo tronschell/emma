@@ -74,6 +74,11 @@ pub fn executeRequest(
 
     var local_cancel = std.atomic.Value(bool).init(false);
     const cancel_flag = config.cancel_flag orelse &local_cancel;
+    var outage_messages: std.ArrayList([]u8) = .empty;
+    defer {
+        for (outage_messages.items) |message| alloc.free(message);
+        outage_messages.deinit(alloc);
+    }
     var records: std.ArrayList(vision_contracts.VisionImageResult) = .empty;
     defer {
         for (records.items) |record| record.deinit(alloc);
@@ -165,6 +170,7 @@ pub fn executeRequest(
             healthy_ids.items,
             cancel_flag,
             &total_usage,
+            &outage_messages,
             config,
         );
         if (attempt.retryable()) {
@@ -183,6 +189,7 @@ pub fn executeRequest(
                 healthy_ids.items,
                 cancel_flag,
                 &total_usage,
+                &outage_messages,
                 config,
             );
         }
@@ -206,11 +213,11 @@ pub fn executeRequest(
                 healthy_ids.items,
                 .{ .output_limit_exceeded = limit },
             ),
-            .unavailable => try appendBatchFailures(
+            .unavailable => |outage| try appendBatchFailures(
                 alloc,
                 &records,
                 healthy_ids.items,
-                .vision_unavailable,
+                .{ .vision_unavailable = outage },
             ),
         }
     }
@@ -224,15 +231,22 @@ pub fn executeRequest(
     const output = try vision_contracts.stringify_vision_result(alloc, merged);
     const any_success = hasSuccess(merged.images);
     const unavailable = !any_success and allUnavailable(merged.images);
+    const outage_line = if (unavailable) firstOutageMessage(merged.images) else null;
     return .{
         .model_output = output,
         .status = if (any_success) .success else .failure,
-        .status_detail = totalFailureStatusDetail(merged.images),
+        .status_detail = if (outage_line) |line|
+            try alloc.dupe(u8, line)
+        else
+            totalFailureStatusDetail(merged.images),
         .system_notice = if (unavailable) outage_system_notice else null,
         .interactive_notice = if (unavailable) .{
             .topic = "vision",
             .tone = .@"error",
-            .body = outage_tip,
+            .body = if (outage_line) |line|
+                try std.fmt.allocPrint(alloc, "Tip: This model doesn’t support OCR. {s}.", .{line})
+            else
+                outage_tip,
         } else null,
         .inner_usage = if (total_usage.input_tokens > 0 or total_usage.output_tokens > 0)
             total_usage
@@ -241,16 +255,12 @@ pub fn executeRequest(
     };
 }
 
-/// Outcome of one provider round trip for a single batch. Only `.parsed` owns memory.
 const BatchAttempt = union(enum) {
     parsed: vision_contracts.VisionResult,
     invalid_response,
-    unavailable,
+    unavailable: ?vision_contracts.ProviderOutage,
     output_limit_exceeded: vision_contracts.OutputLimit,
 
-    /// Only a structurally invalid successful response earns the single retry. An outage
-    /// and an over-limit response are terminal provider verdicts, and a parsed result is
-    /// already final even when its records report per-image failures.
     fn retryable(self: BatchAttempt) bool {
         return switch (self) {
             .invalid_response => true,
@@ -259,8 +269,6 @@ const BatchAttempt = union(enum) {
     }
 };
 
-/// Sends one batch of already-verified snapshots and classifies the response. Reuses the
-/// caller's verified bytes, so a retry never reopens a source path or re-authorizes.
 fn runBatchAttempt(
     alloc: Allocator,
     user_prompt: []const u8,
@@ -269,9 +277,11 @@ fn runBatchAttempt(
     healthy_ids: []const usize,
     cancel_flag: *std.atomic.Value(bool),
     total_usage: *types.ToolUsage,
+    outage_messages: *std.ArrayList([]u8),
     config: Config,
 ) !BatchAttempt {
     const output_limit_bytes = config.output_limit.effectiveBytes();
+    var provider_failure: ?image_provider.ProviderFailure = null;
     var provider_result = image_provider.inspect(
         alloc,
         system_prompt,
@@ -297,6 +307,7 @@ fn runBatchAttempt(
                 .description = vision_contracts.provider_response_format_description,
                 .schema_json = response_schema,
             },
+            .failure_out = &provider_failure,
         },
     ) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
@@ -312,14 +323,39 @@ fn runBatchAttempt(
             return .invalid_response;
         },
         else => {
+            const failure = provider_failure orelse {
+                debug_trace.eventf(
+                    "tool",
+                    "vision_provider_unavailable",
+                    config.trace_ctx,
+                    "reason={s} batch_ids={any}",
+                    .{ @errorName(err), healthy_ids },
+                );
+                return .{ .unavailable = null };
+            };
+            defer alloc.free(failure.diagnostic);
+            const status_code = @intFromEnum(failure.status);
             debug_trace.eventf(
                 "tool",
                 "vision_provider_unavailable",
                 config.trace_ctx,
-                "reason={s} batch_ids={any}",
-                .{ @errorName(err), healthy_ids },
+                "reason={s} status={d} detail={s} batch_ids={any}",
+                .{ @errorName(err), status_code, failure.diagnostic, healthy_ids },
             );
-            return .unavailable;
+            const message = try std.fmt.allocPrint(
+                alloc,
+                "Vision model {s} answered {s} — fix it in Settings → Tools → Vision",
+                .{
+                    image_provider.route(config.chat_url, config.api_key).model,
+                    failure.diagnostic,
+                },
+            );
+            errdefer alloc.free(message);
+            try outage_messages.append(alloc, message);
+            return .{ .unavailable = .{
+                .message = message,
+                .retryable = status_code >= 500 or status_code == 429,
+            } };
         },
     };
     defer provider_result.deinit(alloc);
@@ -442,6 +478,17 @@ fn hasSuccess(records: []const vision_contracts.VisionImageResult) bool {
     return false;
 }
 
+fn firstOutageMessage(records: []const vision_contracts.VisionImageResult) ?[]const u8 {
+    for (records) |record| switch (record.outcome) {
+        .ok => {},
+        .failed => |failure| switch (failure) {
+            .vision_unavailable => |outage| if (outage) |http| return http.message,
+            else => {},
+        },
+    };
+    return null;
+}
+
 fn allUnavailable(records: []const vision_contracts.VisionImageResult) bool {
     if (records.len == 0) return false;
     for (records) |record| switch (record.outcome) {
@@ -503,7 +550,7 @@ test "executor retry transitions preserve every terminal category" {
         .observed_bytes = 27_431,
         .configured_bytes = 20_480,
     } };
-    const outage: BatchAttempt = .unavailable;
+    const outage: BatchAttempt = .{ .unavailable = null };
 
     try std.testing.expectEqual(@as(usize, 2), modeledProviderCallCount(.invalid_response));
     try std.testing.expectEqual(@as(usize, 1), modeledProviderCallCount(parsed));
@@ -570,7 +617,7 @@ test "Vision total failures have status detail while mixed success remains succe
 
     const mixed_failure_records = [_]vision_contracts.VisionImageResult{
         .{ .image_id = 1, .outcome = .{ .failed = .image_unavailable } },
-        .{ .image_id = 2, .outcome = .{ .failed = .vision_unavailable } },
+        .{ .image_id = 2, .outcome = .{ .failed = .{ .vision_unavailable = null } } },
     };
     try std.testing.expectEqualStrings(
         "some images were unavailable and the remaining Vision requests failed",

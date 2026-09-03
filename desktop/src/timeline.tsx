@@ -30,11 +30,6 @@ type Turn = { key: string; label: string; spans: TraceSpan[]; live: boolean };
 /** What the axis measures: how long a span took, or what it left in the window. */
 type Axis = "time" | "context";
 
-/**
- * The thread's turns as one waterfall, newest first, under an "Overall" root.
- * Renders nothing until something has run, so it can be mounted unconditionally
- * beside the context ledger.
- */
 export function Timeline({ threadId, sending, carriedTokens, sample }: { threadId: string; sending: boolean; carriedTokens: number; sample?: { label: string; spans: TraceSpan[] } }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<string>();
@@ -161,9 +156,10 @@ export function Timeline({ threadId, sending, carriedTokens, sample }: { threadI
     }
     return [laid[0], ...groups.reverse().flat()];
   }, [measured, now, collapsed]);
-  // On the spans, not the rows: with Overall collapsed there is exactly one row,
-  // and that is a folded timeline rather than an empty one.
-  if (spans.length < 2) return null;
+  if (spans.length < 2) return <section className="trace" aria-label="Agent timeline">
+    <span className="trace-title">Timeline</span>
+    <p className="subagent-empty">Nothing has happened in this thread yet.</p>
+  </section>;
   const toggle = (id: string) => setCollapsed((current) => {
     const next = new Set(current);
     if (!next.delete(id)) next.add(id);

@@ -133,7 +133,16 @@ export function latestAssistantMessage(thread?: Thread) {
   return undefined;
 }
 
-export const latestReply = (thread?: Thread) => latestAssistantMessage(thread)?.content ?? "";
+function latestNotice(thread?: Thread): string {
+  const messages = thread?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") return "";
+    if (messages[index].role === "system") return messages[index].content;
+  }
+  return "";
+}
+
+export const latestReply = (thread?: Thread) => latestAssistantMessage(thread)?.content ?? latestNotice(thread);
 
 export const latestRate = (thread?: Thread) => {
   const generation = latestAssistantMessage(thread)?.generation;

@@ -243,6 +243,11 @@ function oneLine(value: string, max = MAX_SPAN_TEXT): string {
  * ended up — so the budget is spent from both ends and the repetitive middle,
  * which is exactly what a stuck agent produces, is what goes.
  */
+export function compactionNotice(removedTurns: number, modelWritten: boolean): string {
+  const summary = modelWritten ? "a summary" : "a rough summary the model did not write";
+  return `Context compacted — ${removedTurns} ${removedTurns === 1 ? "turn" : "turns"} became ${summary}`;
+}
+
 export function clampTrace(text: string, max = MAX_TRACE_CHARS): string {
   if (text.length <= max) return text;
   const lines = text.split("\n");

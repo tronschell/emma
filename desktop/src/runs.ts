@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { LiveAgent, ThreadStep } from "../shared/agents";
-import { decodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
+import { compactionNotice, decodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
 import { visualDrawn } from "../shared/visualize";
 import { charLabel } from "../shared/usage";
 import { splitThinking } from "../shared/thinking";
@@ -24,13 +24,13 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "step"; step: ThreadStep }
 
-  | { kind: "notice"; text: string; plain?: boolean; steer?: boolean };
+  | { kind: "notice"; text: string; plain?: boolean; steer?: boolean; compact?: boolean };
 
 const voice = (blocks: Block[], least: number) =>
   blocks.find((block) => (block.kind === "text" || block.kind === "thinking") && block.text.trim().length > least) as { text: string } | undefined;
 
-export function pairBlocks(messages: Message[], landed: Block[][], cached: Record<string, Block[]>): (Block[] | undefined)[] {
-  const spots = messages.flatMap((item, at) => item.role === "user" ? [] : [at]);
+export function pairBlocks(messages: Message[], landed: Block[][], cached: Record<string, Block[]>, from = 0): (Block[] | undefined)[] {
+  const spots = messages.flatMap((item, at) => item.role === "user" || at < from ? [] : [at]);
   const paired = new Map<number, Block[]>();
   const spare: Block[][] = [];
   for (const blocks of landed) {
@@ -107,12 +107,13 @@ export type Run = {
   held: QueuedTurn[];
   stopped: boolean;
   draft: string;
+  failure: string;
   activeAt: number;
   routed: string;
   recovery: string;
 };
 
-const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", activeAt: 0, routed: "", recovery: "" };
+const IDLE: Run = { sending: false, foreign: false, pending: null, blocks: [], landed: [], queue: [], held: [], stopped: false, draft: "", failure: "", activeAt: 0, routed: "", recovery: "" };
 const runs = new Map<string, Run>();
 const listeners = new Set<() => void>();
 let wired = false;
@@ -162,9 +163,9 @@ export function joinPartial(restored: string, held: string): string {
   return restored + held;
 }
 
-const marked = (span: TraceSpan) => span.id.startsWith("call:") || span.id.startsWith("steer:");
+const marked = (span: TraceSpan) => span.id.startsWith("call:") || span.id.startsWith("steer:") || span.id.startsWith("compact:");
 
-export const isSteer = (block: Block) => block.kind === "notice" && !!block.steer;
+const tracedNotice = (block: Block) => block.kind === "notice" && (!!block.steer || !!block.compact);
 
 export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { text: string; thinking: string }): Block[] {
   const byId = new Map(spans.map((span) => [span.id, span]));
@@ -183,6 +184,8 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
       said: span.said,
       block: (span.id.startsWith("steer:")
         ? { kind: "notice", text: span.input ?? "", plain: true, steer: true }
+        : span.id.startsWith("compact:")
+        ? { kind: "notice", text: span.input ?? "", plain: true, compact: true }
         : {
           kind: "step",
           step: {
@@ -211,6 +214,8 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
   return [...blocks, ...said(answer.slice(cut), "text")];
 }
 
+const stoppedRun = (spans: TraceSpan[]) => spans.some((span) => span.id.startsWith("agent:") && (span.status === "failed" || span.status === "cancelled"));
+
 const TRACE_OF_TURN_MS = 60_000;
 const RECOVERED_TRACE_OF_TURN_MS = 2 * TRACE_OF_TURN_MS;
 
@@ -219,19 +224,21 @@ export function tracedBlocks(threadId: string, messages: Message[], traces: read
     .map((trace) => ({ at: Date.parse(trace.timestamp), spans: decodeSpans(trace.text), within: traceHeader(trace.text).recovered === "session" ? RECOVERED_TRACE_OF_TURN_MS : TRACE_OF_TURN_MS }))
     .filter((trace) => Number.isFinite(trace.at) && trace.spans.some(marked))
     .sort((left, right) => left.at - right.at);
+  const spots = messages
+    .map((message, at) => ({ at, message, when: Date.parse(message.timestamp) }))
+    .filter((spot) => spot.message.role !== "user" && Number.isFinite(spot.when));
   const turns: Record<string, Block[]> = {};
-  let at = 0;
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    const when = Date.parse(message.timestamp);
-    if (!Number.isFinite(when)) continue;
-    while (at + 1 < recorded.length && Math.abs(recorded[at + 1].at - when) <= Math.abs(recorded[at].at - when)) at += 1;
-    const trace = recorded[at];
-    if (!trace || Math.abs(trace.at - when) > trace.within) continue;
-    at += 1;
-    const { answer, thinking } = splitThinking(message.content);
+  const taken = new Set<number>();
+  for (const trace of recorded) {
+    const near = (spot: typeof spots[number]) => Math.abs(spot.when - trace.at);
+    const found = spots
+      .filter((spot) => !taken.has(spot.at) && near(spot) <= trace.within && (spot.message.role !== "system" || stoppedRun(trace.spans)))
+      .reduce<typeof spots[number] | undefined>((best, spot) => best && near(best) <= near(spot) ? best : spot, undefined);
+    if (!found) continue;
+    taken.add(found.at);
+    const { answer, thinking } = found.message.role === "system" ? { answer: "", thinking: "" } : splitThinking(found.message.content);
     const blocks = restoreBlocks(threadId, trace.spans, { text: answer, thinking });
-    if (blocks.some((block) => block.kind === "step" || isSteer(block))) turns[message.timestamp] = blocks;
+    if (blocks.some((block) => block.kind === "step" || tracedNotice(block))) turns[found.message.timestamp] = blocks;
   }
   return turns;
 }
@@ -243,7 +250,7 @@ function rehydrate(threadId: string, token: number) {
       if (!restored.length || generations.get(threadId) !== token) return;
       write(threadId, (run) => {
         const calls = new Set(run.blocks.flatMap((block) => block.kind === "step" ? [block.step.toolCallId] : []));
-        const held = run.blocks.filter((block) => !isSteer(block));
+        const held = run.blocks.filter((block) => !tracedNotice(block));
         const blocks = restored.flatMap((block): Block[] => {
           if (block.kind === "step") return calls.has(block.step.toolCallId) ? [] : [block];
           if (block.kind !== "text" && block.kind !== "thinking") return [block];
@@ -287,7 +294,12 @@ export function wire() {
     if (!read(threadId).sending) adoptForeign(threadId);
 
     if (recovery) {
-      write(threadId, (run) => ({ blocks: appendText(run.blocks, "thinking", delta), recovery: delta.trim() }));
+      const text = delta.trim();
+      write(threadId, (run) => {
+        const last = run.blocks.at(-1);
+        const repeated = last?.kind === "notice" && last.text === text;
+        return { blocks: repeated ? run.blocks : [...run.blocks, { kind: "notice" as const, text, plain: true }], recovery: text };
+      });
       return;
     }
     if (!delta) {
@@ -302,7 +314,7 @@ export function wire() {
   });
   window.emma.onCompacted(({ threadId, removedTurns, modelWritten }) => {
     if (!read(threadId).sending) adoptForeign(threadId);
-    write(threadId, (run) => ({ blocks: [...run.blocks, { kind: "notice" as const, text: compactionNotice(removedTurns, modelWritten), plain: true }] }));
+    write(threadId, (run) => ({ blocks: [...run.blocks, { kind: "notice" as const, text: compactionNotice(removedTurns, modelWritten), plain: true, compact: true }] }));
   });
   window.emma.onContextExperiment((fired) => {
     const { threadId, prunedResults, reinjected, savedTokens, addedTokens } = fired;
@@ -319,11 +331,6 @@ export function wire() {
     });
   });
   window.emma.onContextBreakdown(({ threadId, ...parts }) => recordBreakdown(threadId, parts));
-}
-
-export function compactionNotice(removedTurns: number, modelWritten: boolean): string {
-  const summary = modelWritten ? "a summary" : "a rough summary the model did not write";
-  return `Context compacted — ${removedTurns} ${removedTurns === 1 ? "turn" : "turns"} became ${summary}`;
 }
 
 export function experimentNotice(prunedResults: number, reinjected: boolean, savedTokens = 0, addedTokens = 0): string {
@@ -346,7 +353,7 @@ export function settleRun(threadId: string, messages: Message[], cached: Record<
   const run = read(threadId);
   const settled = run.landed.at(-1);
   if (run.sending || run.foreign || run.queue.length || !settled?.length || run.blocks !== settled) return;
-  const paired = pairBlocks(messages, run.landed, {});
+  const paired = pairBlocks(messages, run.landed, {}, run.pending?.after ?? 0);
   if (paired.filter(Boolean).length < run.landed.length) return;
   for (const [at, blocks] of paired.entries()) {
     if (!blocks) continue;
@@ -441,7 +448,7 @@ export function dropHeld(threadId: string, index: number) {
 
 export function takeDraft(threadId: string) {
   const { draft } = read(threadId);
-  if (draft) write(threadId, { draft: "" });
+  if (draft) write(threadId, { draft: "", failure: "" });
   return draft;
 }
 
@@ -460,15 +467,16 @@ async function drain(threadId: string, reload: () => unknown) {
         Object.assign(next, await next.prepare());
         delete next.prepare;
       }
-      if (next.cancelled) write(threadId, { pending: null, draft: next.content, stopped: true });
+      if (next.cancelled) write(threadId, { pending: null, draft: next.content, failure: "", stopped: true });
       else {
         await window.emma.request("sendMessage", { threadId, content: next.content, ...next.params });
         next.delivered?.();
       }
     } catch (reason) {
       failed = true;
-      write(threadId, { pending: null, blocks: [], draft: next.content });
-      dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text: reasonText(reason) } }));
+      const text = reasonText(reason);
+      write(threadId, { pending: null, blocks: [], draft: next.content, failure: text });
+      dispatchEvent(new CustomEvent<RunFailure>(RUN_ERROR_EVENT, { detail: { threadId, text } }));
     }
 
     write(threadId, (run) => ({

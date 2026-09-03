@@ -6,7 +6,7 @@ import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { hookRuns, matchesPluginQuery, parseHooksFile, parseHostedApps, parseMarketplace, parseMarketplaceSource, parsePluginInterface, parsePluginManifest, pluginCategories, type HookEvent } from "../shared/plugins";
-import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
+import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, setHookTrust, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
 import { loadImportedSkill, mirrorSkillsToHarness, parseMcpConfig, searchImportedSkills } from "../main/capabilities";
 
 test("the plugins route stays lazy without making activity eager", () => {
@@ -399,6 +399,12 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
 
     const trusted = await trustPluginHooks(userData, "hooked/watcher", true);
     assert.deepEqual(trusted.installed[0].hooks.map((hook) => hook.trusted), [true, true]);
+    // The phone writes through setHookTrust, which skips the catalogue read on the way back; the
+    // record it leaves has to be the one trustPluginHooks would have written.
+    await setHookTrust(userData, "hooked/watcher", null);
+    assert.deepEqual((await readCatalog(userData)).installed[0].hooks.map((hook) => hook.trusted), [false, false]);
+    await setHookTrust(userData, "hooked/watcher", trusted.installed[0].hooks.map((hook) => hook.hash));
+    assert.deepEqual((await readCatalog(userData)).installed[0].hooks.map((hook) => hook.trusted), [true, true]);
     assert.deepEqual(await runPluginHooks(userData, "SessionStart", input), []);
     assert.equal(await readFile(fired, "utf8"), "x");
     assert.equal(await readFile(path.join(userData, "plugin-data", "hooked", "watcher", "root.txt"), "utf8"), root);

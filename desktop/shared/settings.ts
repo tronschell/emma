@@ -237,17 +237,56 @@ export const defaultWebSearch: WebSearchSettings = {
   providers: (["tinyfish", "fourget"] as const).map((provider) => ({ provider, endpoint: webSearchProvider(provider).endpoint, credentialEnv: webSearchCredentials[provider] })),
 };
 
+export const LOCAL_EMBEDDING_MODELS = [
+  { id: "local/potion-code-16m-v2", label: "Potion code 16M", detail: "seconds per repo · 16 KB download" },
+  { id: "local/potion-retrieval-32m", label: "Potion retrieval 32M", detail: "prose · fastest" },
+  { id: "local/potion-multilingual-128m", label: "Potion multilingual 128M", detail: "many languages · fast" },
+  { id: "local/all-minilm-l6-v2", label: "MiniLM L6", detail: "general · small" },
+  { id: "local/bge-small-en-v1.5", label: "BGE small", detail: "English · small" },
+  { id: "local/multilingual-e5-small", label: "E5 small", detail: "many languages · small" },
+  { id: "local/gte-modernbert-base", label: "GTE ModernBERT", detail: "long files · slower" },
+  { id: "local/embeddinggemma-300m", label: "EmbeddingGemma 300M", detail: "best local · minutes per repo on Apple GPU" },
+  { id: "local/qwen3-embedding-0.6b", label: "Qwen3 embedding 0.6B", detail: "hours per repo" },
+] as const;
+
+export const OPENROUTER_EMBEDDINGS_ENDPOINT = "https://openrouter.ai/api/v1/embeddings";
+
+export const HOSTED_EMBEDDING_MODELS = [
+  { id: "hosted/openrouter/openai/text-embedding-3-small", label: "OpenAI text-embedding-3 small", detail: "OpenRouter · $0.02/M tokens", endpoint: OPENROUTER_EMBEDDINGS_ENDPOINT, model: "openai/text-embedding-3-small", credentialEnv: "OPENROUTER_API_KEY", acceptsDimensions: true },
+  { id: "hosted/openrouter/openai/text-embedding-3-large", label: "OpenAI text-embedding-3 large", detail: "OpenRouter · $0.13/M tokens", endpoint: OPENROUTER_EMBEDDINGS_ENDPOINT, model: "openai/text-embedding-3-large", credentialEnv: "OPENROUTER_API_KEY", acceptsDimensions: true },
+  { id: "hosted/openrouter/google/gemini-embedding-001", label: "Gemini embedding 001", detail: "OpenRouter · $0.15/M tokens", endpoint: OPENROUTER_EMBEDDINGS_ENDPOINT, model: "google/gemini-embedding-001", credentialEnv: "OPENROUTER_API_KEY", acceptsDimensions: false },
+  { id: "hosted/openrouter/voyageai/voyage-code-4", label: "Voyage code 4", detail: "OpenRouter · code · $0.12/M tokens", endpoint: OPENROUTER_EMBEDDINGS_ENDPOINT, model: "voyageai/voyage-code-4", credentialEnv: "OPENROUTER_API_KEY", acceptsDimensions: false },
+  { id: "hosted/openrouter/mistralai/codestral-embed-2505", label: "Codestral embed", detail: "OpenRouter · code · $0.15/M tokens", endpoint: OPENROUTER_EMBEDDINGS_ENDPOINT, model: "mistralai/codestral-embed-2505", credentialEnv: "OPENROUTER_API_KEY", acceptsDimensions: false },
+  { id: "hosted/openrouter/qwen/qwen3-embedding-8b", label: "Qwen3 embedding 8B", detail: "OpenRouter · $0.01/M tokens", endpoint: OPENROUTER_EMBEDDINGS_ENDPOINT, model: "qwen/qwen3-embedding-8b", credentialEnv: "OPENROUTER_API_KEY", acceptsDimensions: false },
+  { id: "hosted/openai/text-embedding-3-small", label: "OpenAI text-embedding-3 small", detail: "OpenAI · $0.02/M tokens", endpoint: "https://api.openai.com/v1/embeddings", model: "text-embedding-3-small", credentialEnv: "OPENAI_API_KEY", acceptsDimensions: true },
+  { id: "hosted/openai/text-embedding-3-large", label: "OpenAI text-embedding-3 large", detail: "OpenAI · $0.13/M tokens", endpoint: "https://api.openai.com/v1/embeddings", model: "text-embedding-3-large", credentialEnv: "OPENAI_API_KEY", acceptsDimensions: true },
+  { id: "hosted/gemini/gemini-embedding-001", label: "Gemini embedding 001", detail: "Google · $0.15/M tokens", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/embeddings", model: "gemini-embedding-001", credentialEnv: "GEMINI_API_KEY", acceptsDimensions: false },
+] as const;
+
+export const EMBEDDING_MODELS = [...LOCAL_EMBEDDING_MODELS, ...HOSTED_EMBEDDING_MODELS] as const;
+
+export type EmbeddingModel = (typeof EMBEDDING_MODELS)[number]["id"];
+export type HostedEmbeddingModel = { id: EmbeddingModel; label: string; detail: string; endpoint: string; model: string; credentialEnv: string; acceptsDimensions: boolean };
+
+export const hostedEmbeddingModel = (id: string): HostedEmbeddingModel | undefined => HOSTED_EMBEDDING_MODELS.find((model) => model.id === id);
+
 export interface HarnessExperiments {
   autoCompactPercent: number;
   reinjectPromptSteps: number;
   reinjectPromptPercent: number;
   pruneToolsSteps: number;
   pruneToolsPercent: number;
+  commandTimeoutMinutes: number;
+  semanticGrep: boolean;
+  embeddingModel: EmbeddingModel;
 }
 
-export const defaultHarnessExperiments: HarnessExperiments = { autoCompactPercent: 70, reinjectPromptSteps: 0, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 0 };
+export const defaultHarnessExperiments: HarnessExperiments = { autoCompactPercent: 70, reinjectPromptSteps: 0, reinjectPromptPercent: 0, pruneToolsSteps: 0, pruneToolsPercent: 0, commandTimeoutMinutes: 10, semanticGrep: false, embeddingModel: "local/potion-code-16m-v2" };
 
 export const MAX_EXPERIMENT_STEPS = 120;
+
+export const MIN_COMMAND_TIMEOUT_MINUTES = 1;
+export const MAX_COMMAND_TIMEOUT_MINUTES = 120;
 
 export function validateHarnessExperiments(value: unknown): HarnessExperiments {
   if (value === undefined || value === null) return defaultHarnessExperiments;
@@ -258,13 +297,28 @@ export function validateHarnessExperiments(value: unknown): HarnessExperiments {
     if (!Number.isInteger(number) || (number as number) < 0 || (number as number) > ceiling) throw new Error("Harness experiments are invalid");
     return number as number;
   };
+  const minutes = (raw: unknown) => {
+    const number = raw ?? defaultHarnessExperiments.commandTimeoutMinutes;
+    if (!Number.isInteger(number) || (number as number) < MIN_COMMAND_TIMEOUT_MINUTES || (number as number) > MAX_COMMAND_TIMEOUT_MINUTES) throw new Error("Harness experiments are invalid");
+    return number as number;
+  };
   return {
     autoCompactPercent: trigger(experiments.autoCompactPercent ?? defaultHarnessExperiments.autoCompactPercent, 100),
     reinjectPromptSteps: trigger(experiments.reinjectPromptSteps, MAX_EXPERIMENT_STEPS),
     reinjectPromptPercent: trigger(experiments.reinjectPromptPercent, 100),
     pruneToolsSteps: trigger(experiments.pruneToolsSteps, MAX_EXPERIMENT_STEPS),
     pruneToolsPercent: trigger(experiments.pruneToolsPercent, 100),
+    commandTimeoutMinutes: minutes(experiments.commandTimeoutMinutes),
+    semanticGrep: experiments.semanticGrep === true,
+    embeddingModel: embeddingModel(experiments.embeddingModel),
   };
+}
+
+function embeddingModel(raw: unknown): EmbeddingModel {
+  if (raw === undefined) return defaultHarnessExperiments.embeddingModel;
+  const known = EMBEDDING_MODELS.find((model) => model.id === raw);
+  if (!known) throw new Error("Harness experiments are invalid");
+  return known.id;
 }
 
 export interface ReviewSettings {

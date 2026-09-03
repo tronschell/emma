@@ -531,6 +531,11 @@ pub fn Bindings(comptime App: type) type {
                 .turn_id = turn_id,
                 .outcome = outcome,
             });
+            if (comptime @hasField(App, "session_persistence")) {
+                if (app_session_runtime.Runtime(App).subagentHost(app)) |host| {
+                    host.requestRetirementSweep(io_mod.milliTimestamp());
+                }
+            }
         }
 
         fn agentAppendStaticContext(ctx: *anyopaque, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
@@ -566,16 +571,12 @@ pub fn Bindings(comptime App: type) type {
             const app: *App = @ptrCast(@alignCast(ctx));
             if (comptime @hasField(App, "session_persistence")) {
                 const host = app_session_runtime.Runtime(App).subagentHost(app) orelse return;
-                const retirement_ready = parent_delivery_projector
-                    .acknowledgeWithRetirementSignal(
+                parent_delivery_projector.acknowledge(
                     arena,
                     host.sessions,
                     host.manager.options.child_store,
                     acknowledgements,
                 );
-                if (retirement_ready) {
-                    host.requestRetirementSweep(io_mod.milliTimestamp());
-                }
             }
         }
 

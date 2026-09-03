@@ -115,6 +115,7 @@ export function ArtifactsView({ busy, select, openArtifact }: { busy: boolean; s
 
   return <section className="artifacts-view">
     <header>
+      <span>Kept from threads</span>
       <h2>Artifacts</h2>
     </header>
     {error && <p className="dialog-error">{error}</p>}

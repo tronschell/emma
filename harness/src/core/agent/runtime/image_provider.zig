@@ -6,6 +6,7 @@ const types = @import("../../shared/types.zig");
 const debug_trace = @import("../../shared/debug_trace.zig");
 const session_usage = @import("../../session/session_usage.zig");
 const runtime_gateway_step = @import("gateway_step.zig");
+const gateway_error_format = @import("../../shared/gateway_error_format.zig");
 const io_mod = @import("../../shared/io.zig");
 
 const Allocator = std.mem.Allocator;
@@ -55,6 +56,11 @@ fn routeFrom(
     };
 }
 
+pub const ProviderFailure = struct {
+    status: std.http.Status,
+    diagnostic: []u8,
+};
+
 pub const Request = struct {
     stream_provider: agent_stream_provider.Provider,
     api_key: []const u8,
@@ -68,6 +74,7 @@ pub const Request = struct {
     trace_ctx: debug_trace.TraceContext,
     capture_limit_bytes: usize,
     response_format: agent_stream_provider.StructuredResponseFormat,
+    failure_out: ?*?ProviderFailure = null,
 };
 
 pub const Result = struct {
@@ -144,7 +151,17 @@ pub fn inspect(
     );
 
     if (request.cancel_flag.load(.seq_cst)) return error.Cancelled;
-    if (streamed.status != .ok) return error.ImageProviderUnavailable;
+    if (streamed.status != .ok) {
+        if (request.failure_out) |out| out.* = .{
+            .status = streamed.status,
+            .diagnostic = try gateway_error_format.formatHttpRecoveryDiagnostic(
+                alloc,
+                streamed.status,
+                streamed.err_body orelse "",
+            ),
+        };
+        return error.ImageProviderUnavailable;
+    }
     if (capture.failed) return error.OutOfMemory;
 
     const tool_usage = types.ToolUsage{

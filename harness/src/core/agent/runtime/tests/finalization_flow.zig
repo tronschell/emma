@@ -333,6 +333,47 @@ test "processQueuedPrompt stops repeated malformed calls before another provider
     try std.testing.expectEqual(@as(usize, 0), hooks.executed_names.items.len);
 }
 
+test "processQueuedPrompt stops an identical failing tool call before another provider request" {
+    const alloc = std.testing.allocator;
+    const call_one = [_]ToolCall{toolCall("call_1", "read_file", "{\"path\":\"a\"}")};
+    const call_two = [_]ToolCall{toolCall("call_2", "read_file", "{\"path\":\"a\"}")};
+    const call_three = [_]ToolCall{toolCall("call_3", "read_file", "{\"path\":\"a\"}")};
+    const completions = [_]FakeCompletion{
+        .{ .tool_calls = &call_one },
+        .{ .tool_calls = &call_two },
+        .{ .tool_calls = &call_three },
+        .{ .content = "must not be requested" },
+    };
+    const failing_result = FakeExecPlan{ .result = .{
+        .status = .failure,
+        .model_output = "Tool read_file failed: bad",
+    } };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.permission_decisions = &.{ .once, .once, .once };
+    hooks.exec_plans = &.{ failing_result, failing_result, failing_result };
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+
+    try runFakePrompt(&gateway, &hooks, fixture.config(), fixture.job());
+
+    const notice = "Emma stopped this run: the model repeated the same failing tool call three times. Adjust the request or tell it what to do differently.";
+    try std.testing.expectEqual(@as(usize, 3), gateway.request_bodies.items.len);
+    try std.testing.expect(textContains(&hooks, notice));
+    try std.testing.expectEqual(@as(usize, 3), hooks.executed_names.items.len);
+    try std.testing.expectEqual(@as(usize, 1), hooks.finalization_count);
+    try std.testing.expectEqual(types.TurnPresentationOutcome.failed, hooks.finalized_outcome.?);
+    try std.testing.expectEqualStrings(notice, hooks.history_assistant_text.?);
+
+    const execution = hooks.history_turns.items[0].assistant.execution;
+    try std.testing.expectEqual(@as(usize, 3), execution.tool_steps.len);
+    for (execution.tool_steps) |step| {
+        try std.testing.expectEqual(@as(usize, 1), step.tool_results.len);
+        try std.testing.expectEqual(types.PersistedToolStatus.failure, step.tool_results[0].status);
+    }
+}
+
 test "processQueuedPrompt returns a final response after a repeated tool-name cycle" {
     const alloc = std.testing.allocator;
     const c1 = [_]ToolCall{toolCall("call_1", "read_file", "{\"path\":\"a\"}")};
