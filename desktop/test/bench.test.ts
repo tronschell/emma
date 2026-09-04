@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeSpans, type TraceSpan } from "../shared/trace";
 import { compare, readTurn, type Arm, type Improvement } from "../shared/improvement";
-import { attemptsOf, benchLine, benchMetricNames, MAX_BENCH_CASES, MAX_BENCH_RUNS, paired, pairsOf, provenCount, recordVerdict, runComplete, runMetric, scoreboard, signTest, tCritical, validateBench, type BenchMetric, type BenchResult, type BenchRun } from "../shared/bench";
+import { attemptsOf, benchLine, benchMetricNames, lastLine, MAX_BENCH_CASE_MINUTES, MAX_BENCH_CASES, MAX_BENCH_RUNS, MAX_BENCH_SHELL_CHARS, MAX_BENCH_STEP_LIMIT, MAX_JUDGE_NOTE_CHARS, paired, pairsOf, provenCount, recordVerdict, runComplete, runMetric, scoreboard, signTest, tCritical, validateBench, type BenchMetric, type BenchResult, type BenchRun } from "../shared/bench";
 
 const span = (over: Partial<TraceSpan>): TraceSpan => ({ id: `s-${over.name ?? "x"}-${over.startedAt ?? 0}`, name: "step", kind: "bash", startedAt: 1, endedAt: 2, status: "ok", ...over });
 const turnOf = (arm: Arm, steps: number, ok = true, bad = 0) =>
@@ -12,7 +12,7 @@ const turnOf = (arm: Arm, steps: number, ok = true, bad = 0) =>
   }, { id: `t-${arm}-${steps}`, title: "case" });
 const resultOf = (caseId: string, arm: Arm, steps: number, ok = true, bad = 0): BenchResult => {
   const turn = turnOf(arm, steps, ok, bad);
-  return { caseId, arm, failures: turn.failures, blocks: turn.blocks, steps: turn.steps, failed: turn.ok ? 0 : 1 };
+  return { caseId, arm, failures: turn.failures, blocks: turn.blocks, steps: turn.steps, requests: turn.requests, tokens: turn.tokens, cost: turn.cost, ms: turn.ms, failed: turn.ok ? 0 : 1 };
 };
 const runOf = (over: Partial<BenchRun>): BenchRun => ({ id: "r1", improvementId: "i1", attempt: 1, mode: "auto", model: "opus", metric: "steps", startedAt: 1, plannedCases: over.caseIds?.length ?? 0, caseIds: [], threads: [], state: "done", results: [], ...over });
 const armedRun = (a: readonly number[], b: readonly number[], over: Partial<BenchRun> = {}): BenchRun => {
@@ -101,6 +101,31 @@ test("a run is read only when it is done, and a junk store is no bench", () => {
   const overrun = validateBench({ cases: [], runs: [{ id: "r2", threads: Array.from({ length: MAX_BENCH_CASES * 3 }, (_, index) => `t${index}`) }] }).runs[0];
   assert.equal(overrun.threads.length, MAX_BENCH_CASES * 2);
   assert.equal(overrun.threads.at(-1), `t${MAX_BENCH_CASES * 3 - 1}`, "the newest case threads are the ones a crash left running, so they are the ones the sweep must keep");
+});
+
+test("a real task carries its own setup, its own check and its own caps", () => {
+  const store = validateBench({
+    cases: [
+      { id: "c1", prompt: "Do the thing.", folderId: "f1", setup: `git checkout -- .${"x".repeat(MAX_BENCH_SHELL_CHARS)}`, check: "  npm test  " },
+      { id: "c2", prompt: "Do the thing.", folderId: "f1", setup: "   ", check: 7 },
+    ],
+    runs: [
+      { id: "r1", stepLimit: 40.4, caseMinutes: 12 },
+      { id: "r2", stepLimit: MAX_BENCH_STEP_LIMIT * 3, caseMinutes: MAX_BENCH_CASE_MINUTES * 3 },
+      { id: "r3", stepLimit: -5, caseMinutes: 0 },
+    ],
+  });
+  assert.equal(store.cases[0].setup!.length, MAX_BENCH_SHELL_CHARS);
+  assert.equal(store.cases[0].check, "npm test");
+  assert.equal(store.cases[1].setup, undefined);
+  assert.equal(store.cases[1].check, undefined);
+  assert.deepEqual([store.runs[0].stepLimit, store.runs[0].caseMinutes], [40, 12]);
+  assert.deepEqual([store.runs[1].stepLimit, store.runs[1].caseMinutes], [MAX_BENCH_STEP_LIMIT, MAX_BENCH_CASE_MINUTES]);
+  assert.deepEqual([store.runs[2].stepLimit, store.runs[2].caseMinutes], [undefined, undefined], "no cap is the default cap, not a cap of nothing");
+
+  assert.equal(lastLine("ok\n2 passed\n\n"), "2 passed", "the check's verdict is the last thing it said, not the blank line after it");
+  assert.equal(lastLine(""), "");
+  assert.equal(lastLine("x".repeat(MAX_JUDGE_NOTE_CHARS + 50)).length, MAX_JUDGE_NOTE_CHARS);
 });
 
 test("the scoreboard only compares runs over the cases they share", () => {

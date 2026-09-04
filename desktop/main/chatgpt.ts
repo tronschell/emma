@@ -18,6 +18,7 @@ export type ChatgptAuth = { accessToken: string; accountId: string };
 type ChatMessage = {
   role?: string;
   content?: unknown;
+  reasoning_details?: unknown;
   tool_call_id?: string;
   tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
 };
@@ -65,7 +66,14 @@ function inputContent(content: unknown): Record<string, string>[] {
 
 const isInstruction = (message: ChatMessage) => message.role === "system" || message.role === "developer";
 
-export function responsesRequest(body: Record<string, unknown>): Record<string, unknown> {
+const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+
+export const retainsPromptCache = (model: string) => {
+  const family = /^gpt-5(?:\.(\d+))?\b/.exec(model);
+  return family ? Number(family[1] ?? 0) < 6 : false;
+};
+
+export function responsesRequest(body: Record<string, unknown>, withoutRetention = false): Record<string, unknown> {
   const messages = (Array.isArray(body.messages) ? body.messages : []) as ChatMessage[];
   let leading = 0;
   while (leading < messages.length && isInstruction(messages[leading])) leading += 1;
@@ -83,8 +91,12 @@ export function responsesRequest(body: Record<string, unknown>): Record<string, 
     }
     if (message.role === "assistant") {
       const text = flatText(message.content);
+      const calls = message.tool_calls ?? [];
+      const replayed = Array.isArray(message.reasoning_details) ? message.reasoning_details : [];
+      if (!calls.length) input.push(...replayed);
       if (text) input.push({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
-      for (const call of message.tool_calls ?? []) {
+      if (calls.length) input.push(...replayed);
+      for (const call of calls) {
         input.push({ type: "function_call", call_id: call.id ?? "", name: call.function?.name ?? "", arguments: call.function?.arguments || "{}" });
       }
       continue;
@@ -98,10 +110,14 @@ export function responsesRequest(body: Record<string, unknown>): Record<string, 
     return [{ type: "function", name: declared.name, description: declared.description ?? "", parameters: declared.parameters ?? { type: "object", properties: {} }, strict: false }];
   });
   const effort = typeof body.reasoning_effort === "string" ? body.reasoning_effort : "";
+  const model = typeof body.model === "string" ? body.model : "";
+  const maxOutput = count(body.max_output_tokens) || count(body.max_tokens);
   return {
-    model: typeof body.model === "string" ? body.model : "",
+    model,
     instructions,
     input,
+    ...(maxOutput ? { max_output_tokens: maxOutput } : {}),
+    ...(!withoutRetention && retainsPromptCache(model) ? { prompt_cache_retention: "24h" } : {}),
     ...(tools.length ? { tools, tool_choice: body.tool_choice ?? "auto", parallel_tool_calls: body.parallel_tool_calls === true } : {}),
     ...(effort ? { reasoning: { effort, summary: "auto" } } : {}),
     ...(typeof body.prompt_cache_key === "string" && body.prompt_cache_key ? { prompt_cache_key: body.prompt_cache_key } : {}),
@@ -116,11 +132,24 @@ const uuidShaped = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${he
 export const sessionIdFor = (body: Record<string, unknown>) =>
   typeof body.prompt_cache_key === "string" && body.prompt_cache_key ? uuidShaped(createHash("sha256").update(body.prompt_cache_key).digest("hex")) : randomUUID();
 
-export type ChunkState = { id: string; model: string; calls: Map<string, number>; calledTools: boolean };
+export function relayHeaders(auth: ChatgptAuth, body: Record<string, unknown>): Record<string, string> {
+  const session = sessionIdFor(body);
+  const keyed = typeof body.prompt_cache_key === "string" && body.prompt_cache_key !== "";
+  return {
+    authorization: `Bearer ${auth.accessToken}`,
+    "chatgpt-account-id": auth.accountId,
+    "OpenAI-Beta": "responses=experimental",
+    originator: "codex_cli_rs",
+    session_id: session,
+    ...(keyed ? { "session-id": session, "thread-id": session } : {}),
+    "content-type": "application/json",
+    accept: "text/event-stream",
+  };
+}
 
-export const chunkState = (model: string): ChunkState => ({ id: `chatcmpl-${randomUUID()}`, model, calls: new Map(), calledTools: false });
+export type ChunkState = { id: string; model: string; calls: Map<string, number>; calledTools: boolean; reasoning: unknown[] };
 
-const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+export const chunkState = (model: string): ChunkState => ({ id: `chatcmpl-${randomUUID()}`, model, calls: new Map(), calledTools: false, reasoning: [] });
 
 function chatUsage(usage: unknown) {
   const totals = (usage ?? {}) as Record<string, unknown>;
@@ -142,18 +171,24 @@ export function chatChunks(event: Record<string, unknown>, state: ChunkState): R
     choices: [{ index: 0, delta, finish_reason: finish }],
     ...(usage ? { usage } : {}),
   });
+  const replay = () => state.reasoning.length ? [chunk({ reasoning_details: state.reasoning.splice(0) })] : [];
   switch (event.type) {
     case "response.output_text.delta":
       return [chunk({ content: String(event.delta ?? "") })];
     case "response.reasoning_summary_text.delta":
       return [chunk({ reasoning: String(event.delta ?? "") })];
+    case "response.output_item.done": {
+      const item = event.item as { type?: string } | undefined;
+      if (item?.type === "reasoning") state.reasoning.push(item);
+      return [];
+    }
     case "response.output_item.added": {
       const item = event.item as { type?: string; name?: string; call_id?: string; id?: string } | undefined;
       if (item?.type !== "function_call") return [];
       const index = state.calls.size;
       state.calls.set(String(event.item_id ?? item.id ?? index), index);
       state.calledTools = true;
-      return [chunk({ tool_calls: [{ index, id: item.call_id || item.id || `call_${index}`, type: "function", function: { name: item.name ?? "", arguments: "" } }] })];
+      return [...replay(), chunk({ tool_calls: [{ index, id: item.call_id || item.id || `call_${index}`, type: "function", function: { name: item.name ?? "", arguments: "" } }] })];
     }
     case "response.function_call_arguments.delta": {
       const index = state.calls.get(String(event.item_id ?? ""));
@@ -161,11 +196,11 @@ export function chatChunks(event: Record<string, unknown>, state: ChunkState): R
       return [chunk({ tool_calls: [{ index, function: { arguments: String(event.delta ?? "") } }] })];
     }
     case "response.completed":
-      return [chunk({}, state.calledTools ? "tool_calls" : "stop", chatUsage((event.response as { usage?: unknown } | undefined)?.usage))];
+      return [...replay(), chunk({}, state.calledTools ? "tool_calls" : "stop", chatUsage((event.response as { usage?: unknown } | undefined)?.usage))];
     case "response.incomplete": {
       const response = (event.response ?? {}) as { usage?: unknown; incomplete_details?: { reason?: unknown } };
       if (response.incomplete_details?.reason !== "max_output_tokens") return [];
-      return [chunk({}, "length", chatUsage(response.usage))];
+      return [...replay(), chunk({}, "length", chatUsage(response.usage))];
     }
     default:
       return [];
@@ -178,6 +213,7 @@ function chatCompletion(chunks: Record<string, unknown>[], state: ChunkState): R
   let content = "";
   let finish = "stop";
   let usage: unknown;
+  const reasoning: unknown[] = [];
   const calls: ChatToolCall[] = [];
   for (const chunk of chunks) {
     if (chunk.usage) usage = chunk.usage;
@@ -185,6 +221,7 @@ function chatCompletion(chunks: Record<string, unknown>[], state: ChunkState): R
     if (choice?.finish_reason) finish = choice.finish_reason;
     const delta = choice?.delta ?? {};
     if (typeof delta.content === "string") content += delta.content;
+    if (Array.isArray(delta.reasoning_details)) reasoning.push(...delta.reasoning_details);
     for (const raw of (Array.isArray(delta.tool_calls) ? delta.tool_calls : []) as { index?: number; id?: string; function?: { name?: string; arguments?: string } }[]) {
       const index = raw.index ?? calls.length;
       const call = calls[index] ??= { id: raw.id ?? `call_${index}`, type: "function", function: { name: "", arguments: "" } };
@@ -198,7 +235,7 @@ function chatCompletion(chunks: Record<string, unknown>[], state: ChunkState): R
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: state.model,
-    choices: [{ index: 0, message: { role: "assistant", content, ...(calls.length ? { tool_calls: calls } : {}) }, finish_reason: finish }],
+    choices: [{ index: 0, message: { role: "assistant", content, ...(reasoning.length ? { reasoning_details: reasoning } : {}), ...(calls.length ? { tool_calls: calls } : {}) }, finish_reason: finish }],
     ...(usage ? { usage } : {}),
   };
 }
@@ -221,6 +258,8 @@ async function readBody(request: IncomingMessage): Promise<string> {
   return Buffer.concat(pieces).toString("utf8");
 }
 
+let retentionRefused = false;
+
 async function relay(request: IncomingMessage, response: ServerResponse, token: string) {
   const fail = (status: number, message: string) => {
     if (!response.headersSent) response.writeHead(status, { "content-type": "application/json" });
@@ -231,20 +270,16 @@ async function relay(request: IncomingMessage, response: ServerResponse, token: 
     if (request.method !== "POST") return fail(405, "Post a chat completion here.");
     const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
     const auth = await chatgptAuth();
-    const upstream = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${auth.accessToken}`,
-        "chatgpt-account-id": auth.accountId,
-        "OpenAI-Beta": "responses=experimental",
-        originator: "codex_cli_rs",
-        session_id: sessionIdFor(body),
-        "content-type": "application/json",
-        accept: "text/event-stream",
-      },
-      body: JSON.stringify(responsesRequest(body)),
-    });
-    if (!upstream.ok || !upstream.body) return fail(upstream.status, (await upstream.text()).slice(0, 2048) || "The ChatGPT endpoint refused the request.");
+    const headers = relayHeaders(auth, body);
+    const send = (withoutRetention: boolean) => fetch(ENDPOINT, { method: "POST", headers, body: JSON.stringify(responsesRequest(body, withoutRetention)) });
+    let upstream = await send(retentionRefused);
+    let refusal = upstream.ok && upstream.body ? "" : (await upstream.text()).slice(0, 2048);
+    if (!upstream.ok && upstream.status === 400 && !retentionRefused && refusal.includes("prompt_cache_retention")) {
+      retentionRefused = true;
+      upstream = await send(true);
+      refusal = upstream.ok && upstream.body ? "" : (await upstream.text()).slice(0, 2048);
+    }
+    if (!upstream.ok || !upstream.body) return fail(upstream.status, refusal || "The ChatGPT endpoint refused the request.");
     const buffered = body.stream === false;
     const collected: Record<string, unknown>[] = [];
     if (!buffered) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
@@ -272,13 +307,14 @@ async function relay(request: IncomingMessage, response: ServerResponse, token: 
         }
         const failure = upstreamFailure(event);
         if (failure) {
-          const [terminal] = chatChunks(event, state);
+          const ending = chatChunks(event, state);
           if (buffered) {
-            if (!terminal) return fail(502, failure);
-            collected.push(terminal);
+            if (!ending.length) return fail(502, failure);
+            collected.push(...ending);
             return answer();
           }
-          response.write(`data: ${JSON.stringify(terminal ?? { error: { message: failure } })}\n\n`);
+          for (const chunk of ending) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          if (!ending.length) response.write(`data: ${JSON.stringify({ error: { message: failure } })}\n\n`);
           response.write("data: [DONE]\n\n");
           response.end();
           return;

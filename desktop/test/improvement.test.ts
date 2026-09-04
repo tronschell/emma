@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeSpans, traceHeader, type TraceSpan } from "../shared/trace";
-import { applied, attemptIds, compare, frictionOf, heldBack, lessonBlock, lessonShaped, readTurn, retryDraft, room, startTrial, toolOf, unfixable, validateImprovements, MAX_IMPROVEMENTS, MAX_KEPT, MAX_RESULT_CHARS, MIN_ARM_TURNS, type Improvement, type Turn } from "../shared/improvement";
+import { additionValid, applied, attemptIds, compare, draftProposal, frictionOf, heldBack, lessonBlock, lessonShaped, readTurn, retryDraft, room, spendOf, startTrial, toolOf, unfixable, validateImprovements, MAX_IMPROVEMENTS, MAX_KEPT, MAX_RESULT_CHARS, MIN_ARM_TURNS, type Improvement, type Lever, type Spend, type Turn } from "../shared/improvement";
 
 const span = (over: Partial<TraceSpan>): TraceSpan => ({ id: `s-${over.name ?? "x"}-${over.startedAt ?? 0}`, name: "step", kind: "bash", startedAt: 1, endedAt: 2, status: "ok", ...over });
 const thread = { id: "thread-1", title: "Ship it" };
@@ -72,7 +72,7 @@ test("only kept improvements ride a turn, and a junk store is no improvements", 
   assert.match(use.kept.instructions, /Prefer rg over grep\./);
   assert.doesNotMatch(use.kept.instructions, /Never do this/);
   assert.equal(use.kept.verifier, "", "a trial is not kept text — it rides only arm b");
-  assert.deepEqual(use.trial, { lever: "verifier", addition: "Clear reads under the project root." });
+  assert.deepEqual(use.trial, [{ lever: "verifier", addition: "Clear reads under the project root." }, { lever: "instructions", addition: "Its own parent." }], "every lever on trial rides arm b together");
   assert.equal(lessonBlock([" ", ""]), "");
   assert.deepEqual(validateImprovements("nonsense"), { items: [] });
 
@@ -119,7 +119,8 @@ test("a decided record survives the second look, and the second look knows it is
   assert.equal(validateImprovements({ items: [{ ...kept[0], look: 9 }] }).items[0].look, 1, "and a lineage root cannot claim to be a later one");
 
   assert.deepEqual(startTrial(kept, { ...draft, addition: "   " }, 8), kept, "an empty change starts nothing");
-  assert.deepEqual(startTrial(again, draft, 9), again, "one trial at a time: a running trial is never replaced");
+  assert.deepEqual(startTrial(again, draft, 9), again, "one trial per lever: a running trial is never replaced by another under its own lever");
+  assert.equal(startTrial(again, { ...draft, lever: "advertise", addition: "memory, plan" }, 9).length, 3, "another lever joins the bundle rather than waiting for this one");
   assert.deepEqual(attemptIds(kept, ""), [], "a run with no improvement has no family");
   assert.deepEqual(attemptIds([], "imp-gone"), ["imp-gone"], "a run whose row aged out of the store is still its own attempt");
 });
@@ -196,7 +197,133 @@ test("a failed call is named by what it said, and a refusal is not a lesson", ()
   assert.equal(lessonShaped(grep!), true);
 });
 
-test("a turn carries the model that ran it, without its vendor prefix", () => {
+test("a turn preserves its model identity and infers missing family metadata", () => {
   const text = encodeSpans([span({ kind: "agent", name: "run" })], { thread: thread.id, model: "z-ai/glm-5.3-flash" });
-  assert.equal(readTurn({ timestamp: "2026-08-20T00:00:00Z", text }, thread).model, "glm-5.3-flash");
+  assert.equal(readTurn({ timestamp: "2026-08-20T00:00:00Z", text }, thread).model, "z-ai/glm-5.3-flash");
+});
+
+const proposal = (lever: Lever, addition: string, scope = "") => ({ title: lever, lever, metric: "failures" as const, addition, look: 1, ...(scope ? { scope } : {}) });
+
+test("a lever's payload is read before it is stored, and a payload that cannot be read is not a change", () => {
+  const good: [Lever, string, string][] = [
+    ["instructions", "Read the file first.", ""],
+    ["verifier", "Clear rm inside the workspace.", ""],
+    ["prompt", "Answer in Polish.", "family:glm"],
+    ["prompt", "Answer in Polish.", ""],
+    ["tools", '{"grep_files":"Take this before rg."}', ""],
+    ["advertise", "memory, plan", ""],
+    ["knobs", "autoCompactPercent=55", ""],
+  ];
+  const bad: [Lever, string, string][] = [
+    ["prompt", "Answer in Polish.", "family:nope"],
+    ["prompt", "Answer in Polish.", "whatever"],
+    ["tools", "grep_files is slow", ""],
+    ["tools", '["grep_files"]', ""],
+    ["tools", '{"grep_files":""}', ""],
+    ["tools", '{"grep_files":3}', ""],
+    ["advertise", " , ", ""],
+    ["knobs", "autoCompactPercent=101", ""],
+    ["knobs", "nonesuch=3", ""],
+    ["knobs", "autoCompactPercent=half", ""],
+    ["knobs", "semanticGrep=1", ""],
+  ];
+  for (const [lever, addition, scope] of good) {
+    assert.equal(additionValid(lever, addition, scope), true, `${lever} refused ${addition} ${scope}`);
+    assert.equal(startTrial([], proposal(lever, addition, scope), 9).length, 1, `${lever} did not start on ${addition}`);
+    assert.equal(validateImprovements({ items: [{ id: "x", lever, addition, scope, state: "kept" }] }).items.length, 1);
+  }
+  for (const [lever, addition, scope] of bad) {
+    assert.equal(additionValid(lever, addition, scope), false, `${lever} accepted ${addition} ${scope}`);
+    assert.deepEqual(startTrial([], proposal(lever, addition, scope), 9), [], `${lever} started on ${addition}`);
+    assert.deepEqual(validateImprovements({ items: [{ id: "x", lever, addition, scope, state: "kept" }] }).items, []);
+  }
+});
+
+test("what is kept reaches a turn as the payload its lever takes", () => {
+  const use = applied({ items: [
+    kept("p1", { lever: "prompt", addition: "Answer in Polish.", scope: "family:glm" }),
+    kept("t1", { lever: "tools", addition: '{"grep_files":"Take this before rg."}' }),
+    kept("t2", { lever: "tools", addition: '{"memory":"Read it first."}' }),
+    kept("a1", { lever: "advertise", addition: "memory, plan" }),
+    kept("k1", { lever: "knobs", addition: "autoCompactPercent=55" }),
+  ] }, "z-ai/glm-5.3-flash");
+  assert.deepEqual(use.kept.prompts, [{ body: "Answer in Polish.", scope: "family:glm" }]);
+  assert.deepEqual(use.kept.toolHints, { grep_files: "Take this before rg.", memory: "Read it first." });
+  assert.deepEqual(use.kept.preselect, ["memory", "plan"]);
+  assert.deepEqual(use.kept.knobs, { autoCompactPercent: 55 });
+});
+
+test("where the tokens go is read off the same traces, per tool, per family and on discovery", () => {
+  const text = encodeSpans([
+    span({ kind: "agent", name: "run" }),
+    span({ kind: "other", name: "select_tool", input: '{"name":"memory"}', tokens: 300 }),
+    span({ kind: "other", name: "select_tool", startedAt: 2, input: '{"name":"memory"}', tokens: 100 }),
+    span({ kind: "execute", name: "terminal", startedAt: 3, tokens: 1200 }),
+    span({ kind: "verifier", startedAt: 4, tokens: 999 }),
+  ], { thread: thread.id, model: "glm-5", family: "glm", requests: "4", in: "8000", out: "2000", cost: "70", discovery: "2" });
+  const read = readTurn({ timestamp: "2026-08-20T00:00:00Z", text }, thread);
+  assert.equal(read.family, "glm");
+  assert.equal(read.discovery, 2);
+
+  const rows = spendOf([read, { ...read, at: 2 }]);
+  const of = (kind: Spend["kind"], name: string) => rows.find((row) => row.kind === kind && row.name === name);
+  const terminal = of("tool", "terminal");
+  assert.equal(terminal?.tokens, 2400, "a tool row is the tokens its own calls put in the window");
+  assert.equal(terminal?.calls, 2);
+  assert.equal(terminal?.turns, 2);
+  assert.equal(of("tool", "verifier"), undefined, "a verifier review is not a tool");
+
+  const family = of("family", "glm");
+  assert.equal(family?.tokens, 10_000, "a family row is what an average turn on it costs");
+  assert.equal(family?.requests, 4);
+  assert.equal(family?.cost, 70);
+  assert.equal(family?.turns, 2);
+
+  const discovery = of("discovery", "discovery");
+  assert.equal(discovery?.turns, 2);
+  assert.equal(discovery?.steps, 2, "mean steps spent finding a tool");
+  assert.deepEqual(discovery?.picked, ["memory"], "and which tool it kept picking");
+  assert.equal(discovery?.tokens, 800);
+  assert.deepEqual(rows.map((row) => row.tokens), [...rows.map((row) => row.tokens)].sort((left, right) => right - left), "the ranking number is the tokens");
+  assert.deepEqual(spendOf([]), []);
+});
+
+test("a spend row proposes the lever that would move it, and a blank tool description starts nothing", () => {
+  const rows = spendOf([readTurn({
+    timestamp: "2026-08-20T00:00:00Z",
+    text: encodeSpans([
+      span({ kind: "agent", name: "run" }),
+      span({ kind: "other", name: "select_tool", input: '{"name":"memory"}', tokens: 300 }),
+    ], { thread: thread.id, model: "glm-5", family: "glm", requests: "3", in: "9000", out: "1000", discovery: "3" }),
+  }, thread)]);
+
+  const discovery = draftProposal(rows.find((row) => row.kind === "discovery")!)!;
+  assert.equal(discovery.lever, "advertise");
+  assert.equal(discovery.metric, "requests");
+  assert.equal(discovery.addition, "memory");
+  assert.equal(additionValid(discovery.lever, discovery.addition, discovery.scope ?? ""), true);
+
+  const family = draftProposal(rows.find((row) => row.kind === "family")!)!;
+  assert.equal(family.lever, "prompt");
+  assert.equal(family.metric, "tokens");
+  assert.equal(family.scope, "family:glm");
+  assert.equal(additionValid(family.lever, family.addition, family.scope ?? ""), true);
+
+  assert.equal(draftProposal(rows.find((row) => row.kind === "tool")!), null, "a tool's tokens are not by themselves a change to make");
+
+  const shaped = span({ kind: "other", name: "memory", status: "failed", output: 'Invalid arguments: "note" must be a bare JSON string' });
+  const turnText = encodeSpans([span({ kind: "agent", name: "run" }), shaped], { thread: thread.id });
+  const failing = readTurn({ timestamp: "2026-08-20T00:00:00Z", text: turnText }, thread);
+  const [item] = frictionOf([failing, { ...failing, at: 2 }]);
+  const tools = draftProposal(item);
+  assert.equal(tools.lever, "tools");
+  assert.equal(tools.metric, "failures");
+  assert.equal(tools.addition, '{"memory":""}');
+  assert.equal(additionValid(tools.lever, tools.addition), false, "the drafted hint is a blank the user fills, so nothing starts until it is written");
+  assert.deepEqual(startTrial([], { ...tools, title: tools.title }, 9), [], "and Start stays disabled on it");
+  assert.equal(additionValid(tools.lever, '{"memory":"Pass note as a string."}'), true);
+
+  const plain = span({ kind: "other", name: "memory", status: "failed", output: "the file was not there" });
+  const other = readTurn({ timestamp: "2026-08-20T00:00:00Z", text: encodeSpans([span({ kind: "agent", name: "run" }), plain], { thread: thread.id }) }, thread);
+  assert.equal(draftProposal(frictionOf([other, { ...other, at: 2 }])[0]).lever, "instructions", "a failure that is not an argument shape is still a lesson");
 });

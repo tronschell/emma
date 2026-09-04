@@ -26,7 +26,7 @@ test("the catalog caches to disk, reports what changed, and survives a dead fetc
     const thinker = offline.models.find((entry) => entry.reasoningEfforts?.length);
     assert.ok(thinker, "the seed publishes reasoning efforts");
     assert.ok(thinkingStops(thinker).length > 1, "so a reasoning model has slider stops before any fetch lands");
-    assert.equal(thinkingStops(thinker)[0], "", "starting, as always, on the model's own default");
+    assert.equal(thinkingStops(thinker)[0], thinker.reasoningMandatory ? "" : "off", "starting at the model's quietest rung");
     // A model that publishes nothing still gets no knob to move.
     const quiet = offline.models.find((entry) => !entry.reasoningEfforts?.length);
     assert.ok(quiet, "the seed carries models that do not think either");

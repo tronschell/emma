@@ -3,6 +3,7 @@ const gateway_schema = @import("gateway_schema.zig");
 const mcp_runtime = @import("../mcp/mcp_runtime.zig");
 const permissions = @import("../permissions/permissions.zig");
 const tool_dispatch = @import("tool_dispatch.zig");
+const tool_overrides = @import("tool_overrides.zig");
 const tool_set_contract = @import("tool_set.zig");
 const types = @import("../shared/types.zig");
 
@@ -14,6 +15,7 @@ pub const Options = struct {
     mcp_runtime: ?*mcp_runtime.McpRuntime = null,
     subagent_available: bool = false,
     semantic_grep: ?*const gateway_schema.FunctionSchema = null,
+    overrides: tool_overrides.Overrides = .{},
 };
 
 const BuildKind = enum { full, read_only };
@@ -873,6 +875,7 @@ fn writeBuiltinTool(
     options: Options,
 ) !void {
     var tool = registered;
+    options.overrides.apply(&tool);
     if (options.semantic_grep) |schema| {
         if (std.mem.eql(u8, tool.name, "semantic_search")) {
             tool.advertisement = .always;
@@ -1496,4 +1499,56 @@ test "terminal advertisement remains available for captured execution" {
     var available_names = try collectToolNames(std.testing.allocator, available.tools_json);
     defer freeNames(std.testing.allocator, &available_names);
     try expectContainsName(available_names.items, "terminal");
+}
+
+test "a tool hint replaces the advertised description and an unknown name changes nothing" {
+    const alloc = std.testing.allocator;
+    const hints = [_]tool_overrides.Hint{
+        .{ .name = "read_file", .description = "Hinted read." },
+        .{ .name = "no_such_tool", .description = "Ignored." },
+    };
+    var projection = try buildTestGatewayToolProjection(alloc, .{
+        .overrides = .{ .hints = hints[0..] },
+    });
+    defer projection.deinit(alloc);
+
+    try std.testing.expect(std.mem.find(u8, projection.tools_json, "\"name\":\"read_file\",\"description\":\"Hinted read.\"") != null);
+    try std.testing.expect(std.mem.find(u8, projection.tools_json, "Ignored.") == null);
+    try std.testing.expect(std.mem.find(u8, projection.tools_json, "no_such_tool") == null);
+
+    var cleared = try buildTestGatewayToolProjection(alloc, .{});
+    defer cleared.deinit(alloc);
+    try std.testing.expect(std.mem.find(u8, cleared.tools_json, "Hinted read.") == null);
+    try std.testing.expect(std.mem.find(u8, cleared.tools_json, "\"name\":\"read_file\",\"description\":\"Test file read.") != null);
+}
+
+test "preselect advertises an on_select tool and cannot reach a route-filtered one" {
+    const alloc = std.testing.allocator;
+    const hidden = blk: {
+        var spec = test_read_file;
+        spec.name = "emma_hidden";
+        spec.description = "Hidden until selected.";
+        spec.gateway_schema = .{ .name = "emma_hidden", .description = spec.description };
+        spec.advertisement = .on_select;
+        break :blk spec;
+    };
+    const tools = test_all_tools ++ [_]tool_dispatch.Tool{hidden};
+    const preselect = [_][]const u8{ "emma_hidden", "vision", "no_such_tool" };
+
+    var projection = try buildTestGatewayToolProjectionForRegistry(alloc, tools[0..], .{
+        .overrides = .{ .preselect = preselect[0..] },
+    });
+    defer projection.deinit(alloc);
+
+    var names = try collectToolNames(alloc, projection.tools_json);
+    defer freeNames(alloc, &names);
+    try expectContainsName(names.items, "emma_hidden");
+    try std.testing.expectEqual(@as(usize, 1), countName(names.items, "emma_hidden"));
+    try expectNotContainsName(names.items, "vision");
+
+    var cleared = try buildTestGatewayToolProjectionForRegistry(alloc, tools[0..], .{});
+    defer cleared.deinit(alloc);
+    var cleared_names = try collectToolNames(alloc, cleared.tools_json);
+    defer freeNames(alloc, &cleared_names);
+    try expectNotContainsName(cleared_names.items, "emma_hidden");
 }

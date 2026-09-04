@@ -5,6 +5,7 @@ const types = @import("../shared/types.zig");
 const gateway_schema = @import("gateway_schema.zig");
 const tool_dispatch = @import("tool_dispatch.zig");
 const tool_specs = @import("tool_specs.zig");
+const tool_overrides = @import("tool_overrides.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -110,6 +111,7 @@ pub fn callSearch(
         ctx.allocator,
         ctx.tool_registry,
         ctx.mcp_permission_rules,
+        ctx.tool_overrides,
         input.query,
         input.limit,
     ) catch return error.OutOfMemory;
@@ -121,8 +123,10 @@ pub fn callSelect(
     erased: tool_dispatch.ToolInput,
 ) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     const input = erased.as(SelectInput);
-    const spec = ctx.tool_registry.lookup(input.name) orelse
+    const found = ctx.tool_registry.lookup(input.name) orelse
         return notFound(ctx, input.name);
+    var spec = found.*;
+    ctx.tool_overrides.apply(&spec);
     if (spec.advertisement == .never or
         permissions.rulesDenyAllTargetsForTool(ctx.mcp_permission_rules, input.name))
         return notFound(ctx, input.name);
@@ -132,7 +136,7 @@ pub fn callSelect(
         .{spec.name},
     ) };
 
-    const schema_json = tool_specs.toolGatewaySchemaJson(ctx.allocator, spec.*) catch
+    const schema_json = tool_specs.toolGatewaySchemaJson(ctx.allocator, spec) catch
         return error.OutOfMemory;
     defer ctx.allocator.free(schema_json);
     try tool_dispatch.reportSelectedDynamicTool(ctx, spec.name, schema_json);
@@ -157,6 +161,7 @@ fn renderSearch(
     alloc: Allocator,
     registry: tool_dispatch.Registry,
     rules: types.PermissionRuleSet,
+    overrides: tool_overrides.Overrides,
     query: []const u8,
     requested_limit: usize,
 ) ![]u8 {
@@ -172,7 +177,9 @@ fn renderSearch(
     }
     var advertised: std.ArrayList([]const u8) = .empty;
     defer advertised.deinit(alloc);
-    for (registry.tools) |tool| {
+    for (registry.tools) |registered| {
+        var tool = registered;
+        overrides.apply(&tool);
         if (permissions.rulesDenyAllTargetsForTool(rules, tool.name)) continue;
         if (tool.advertisement == .always) {
             if (advertised.items.len < max_advertised_names and queryNamesTool(query, tool.name))
@@ -503,7 +510,18 @@ fn searchOutput(
     rules: types.PermissionRuleSet,
     args_json: []const u8,
 ) ![]u8 {
-    const ctx = testContext(alloc, tools, rules);
+    return searchOutputWithOverrides(alloc, tools, rules, .{}, args_json);
+}
+
+fn searchOutputWithOverrides(
+    alloc: Allocator,
+    tools: []const tool_dispatch.Tool,
+    rules: types.PermissionRuleSet,
+    overrides: tool_overrides.Overrides,
+    args_json: []const u8,
+) ![]u8 {
+    var ctx = testContext(alloc, tools, rules);
+    ctx.tool_overrides = overrides;
     const decoded = try decodeSearch(ctx, args_json);
     const input = switch (decoded) {
         .input => |value| value,
@@ -873,4 +891,24 @@ test "native tool search does not name an advertised tool denied by a rule" {
     );
     defer alloc.free(body);
     try std.testing.expect(std.mem.find(u8, body, "already_advertised") == null);
+}
+
+test "a hinted tool search result carries the hint, and a preselected one leaves the index" {
+    const alloc = std.testing.allocator;
+    const tools = [_]tool_dispatch.Tool{
+        testTool("threads", "Work with conversation threads.", .on_select),
+        testTool("knowledge", "Save a page to the knowledge base.", .on_select),
+    };
+    const hints = [_]tool_overrides.Hint{.{ .name = "threads", .description = "Hinted threads." }};
+
+    const hinted = try searchOutputWithOverrides(alloc, tools[0..], .{}, .{ .hints = hints[0..] }, "{\"query\":\"threads\"}");
+    defer alloc.free(hinted);
+    try std.testing.expect(std.mem.find(u8, hinted, "Hinted threads.") != null);
+    try std.testing.expect(std.mem.find(u8, hinted, "Work with conversation threads.") == null);
+
+    const preselect = [_][]const u8{"threads"};
+    const promoted = try searchOutputWithOverrides(alloc, tools[0..], .{}, .{ .preselect = preselect[0..] }, "{\"query\":\"threads\"}");
+    defer alloc.free(promoted);
+    try std.testing.expect(std.mem.find(u8, promoted, "\"tools\":[]") != null);
+    try std.testing.expect(std.mem.find(u8, promoted, "already_advertised") != null);
 }

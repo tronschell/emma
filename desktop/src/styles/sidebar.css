@@ -241,8 +241,6 @@
 .sidebar-label-actions { display: flex; margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0; }
 .sidebar-label:not(:hover):not(:focus-within) .project-new:not(.on):not([aria-expanded="true"]) { opacity: 0; }
 .project-new.on { color: var(--text-2); }
-.thread-menu button[aria-checked="true"] { color: var(--text); }
-.thread-menu button[aria-checked="true"]::before { content: "• "; }
 .project-new:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 .project-row { position: relative; }
 .project-row .thread-actions { position: absolute; top: 50%; right: var(--s-3); translate: 0 -50%; display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; color: var(--text-3); background: transparent; opacity: 0; pointer-events: none; transition: opacity var(--t), color var(--t), background var(--t); }
@@ -256,25 +254,27 @@
 .thread-home { margin-right: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
 .thread-menu-scrim { position: fixed; inset: 0; z-index: 40; }
-.thread-menu { position: fixed; margin: 0; padding: var(--s-1); min-width: 140px; border: 1px solid var(--border-strong); background: var(--surface-2); box-shadow: var(--shadow-md); }
-.thread-menu button { display: block; width: 100%; padding: var(--s-1) var(--s-3); color: var(--text-2); background: transparent; text-align: left; }
-.thread-menu button:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
-.thread-context-menu { width: 228px; padding: var(--s-1); overflow: visible; background: var(--bg); box-shadow: var(--shadow-lg); font: var(--fs-sm)/1 var(--font-mono); }
-.thread-context-menu > button, .thread-menu-branch > button { display: grid; grid-template-columns: 20px minmax(0, 1fr) 12px; align-items: center; gap: var(--s-2); min-height: 30px; padding: 0 var(--s-3); color: var(--text-2); white-space: nowrap; }
-.thread-context-menu > button:not(:disabled):hover, .thread-context-menu > button:focus-visible, .thread-menu-branch > button:hover, .thread-menu-branch > button:focus-visible, .thread-menu-branch > button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
-.thread-menu-icon { display: grid; place-items: center; width: 18px; height: 18px; color: currentColor; }
+.thread-menu { position: fixed; margin: 0; padding: var(--s-1); min-width: 196px; border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); font: var(--fs-sm)/1 var(--font-mono); }
+.thread-menu button { display: grid; grid-template-columns: 16px minmax(0, 1fr) 12px; align-items: center; gap: var(--s-3); width: 100%; min-height: 30px; padding: 0 var(--s-3); color: var(--text-2); background: transparent; text-align: left; white-space: nowrap; }
+.thread-menu button:not(:disabled):hover, .thread-menu button:focus-visible, .thread-menu-branch > button[aria-expanded="true"] { color: var(--text); background: var(--surface-3); }
+.thread-menu button[aria-checked="true"] { color: var(--text); }
+.thread-menu-head { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3) var(--s-1); color: var(--text-3); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.thread-menu-head + hr { margin-top: 0; }
+.thread-menu hr { height: 1px; margin: var(--s-1) var(--s-2); border: 0; background: var(--border); }
+.thread-menu-icon { display: grid; place-items: center; width: 16px; height: 16px; color: var(--text-3); }
+.thread-menu button:not(:disabled):hover .thread-menu-icon, .thread-menu button:focus-visible .thread-menu-icon, .thread-menu button[aria-checked="true"] .thread-menu-icon, .thread-menu-branch > button[aria-expanded="true"] .thread-menu-icon { color: var(--text-2); }
 .thread-menu-icon .project-folder { margin: 0; color: currentColor; }
-.thread-context-menu .caret { justify-self: end; }
-.thread-context-menu hr { height: 1px; margin: var(--s-1) var(--s-2); border: 0; background: var(--border); }
+.thread-menu-check { justify-self: end; color: var(--accent); visibility: hidden; }
+.thread-menu button[aria-checked="true"] .thread-menu-check { visibility: visible; }
+.thread-menu .caret { justify-self: end; color: var(--text-3); }
+.thread-context-menu { width: 228px; overflow: visible; }
 .thread-menu-branch { position: relative; }
-.thread-submenu { position: absolute; z-index: 1; top: calc(var(--s-1) * -1); left: calc(100% + var(--s-1)); width: 200px; max-height: min(300px, calc(100vh - var(--s-5) * 2)); overflow-y: auto; margin: 0; padding: var(--s-1); border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); }
-.thread-submenu > button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); min-height: 28px; padding: 0 var(--s-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thread-submenu > button > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.thread-submenu > button > span:last-child:not(:first-child) { color: var(--text-3); }
+.thread-submenu { position: absolute; z-index: 1; top: calc(var(--s-1) * -1); left: calc(100% + var(--s-1)); width: 208px; max-height: min(300px, calc(100vh - var(--s-5) * 2)); overflow-y: auto; margin: 0; padding: var(--s-1); border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); }
+.thread-submenu > button > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
 .thread-menu-tag { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1); padding: var(--s-1); }
 .thread-menu-tag input { min-width: 0; height: 28px; padding: 0 var(--s-2); color: var(--text); background: var(--surface-3); border: 1px solid var(--border); font: var(--fs-sm)/1 var(--font-mono); outline: none; }
 .thread-menu-tag input:focus { border-color: var(--accent); }
-.thread-menu-tag button { width: auto; min-height: 28px; padding: 0 var(--s-2); color: var(--text-2); background: var(--surface-3); }
+.thread-menu-tag button { display: block; width: auto; min-height: 28px; padding: 0 var(--s-2); color: var(--text-2); background: var(--surface-3); }
 .thread-menu-tag button:hover { color: var(--text); background: var(--surface-4); }
 .project-more { display: block; width: 100%; padding: var(--s-1) var(--pad) var(--s-1) calc(var(--pad) + var(--s-2) + var(--s-4) + var(--s-6)); border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; text-align: left; transition: color var(--t), background-color var(--t); }
 .project-more:hover { color: var(--text); background: var(--surface-3); }

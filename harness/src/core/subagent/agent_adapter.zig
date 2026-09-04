@@ -83,13 +83,6 @@ test "provider routes select independent streams and reviewers" {
     try std.testing.expect(routes.select(.gateway).permission_reviewer_provider.?.context.? == @as(*anyopaque, @ptrCast(&gateway_tag)));
 }
 
-/// A second home for a child's live presentation, besides the bounded buffer the
-/// TUI reads. A front end driving the harness over ACP has no other way to see
-/// inside a subagent: the child's runtime deps below publish to `appendLive*`,
-/// which the ACP path never reads.
-///
-/// Presentation only, and deliberately failure-swallowing at the call sites — a
-/// front end that cannot be written to is not a reason to fail the child's work.
 pub const LiveMirror = struct {
     ctx: *anyopaque,
     push_text: *const fn (*anyopaque, agent_runtime.TextEmission) anyerror!void,
@@ -106,6 +99,7 @@ pub const Config = struct {
     provider_routes: ProviderRoutes,
     system_prompt: []const u8,
     model_prompt_overlay: ?[]const u8 = null,
+    context_experiments: @import("../agent/runtime/context_experiments.zig").Settings = .{},
     skills_prompt_section: []const u8 = "",
     explicit_skills_prompt_section: []const u8 = "",
     gateway_tools_json: []const u8,
@@ -276,6 +270,7 @@ pub fn run(
         .{
             .system_prompt = config.system_prompt,
             .model_prompt_overlay = config.model_prompt_overlay,
+            .context_experiments = config.context_experiments,
             .skills_prompt_section = config.skills_prompt_section,
             .explicit_skills_prompt_section = config.explicit_skills_prompt_section,
             .gateway_retry_count = config.tool_context.gateway_retry_count,
@@ -669,9 +664,6 @@ fn formatToolExecutionError(_: *anyopaque, arena: Allocator, tool_name: []const 
 fn discardGrant(_: *anyopaque, _: []const u8, _: []const u8) !void {}
 fn pushLiveText(raw: *anyopaque, emission: agent_runtime.TextEmission) !void {
     const context: *Context = @ptrCast(@alignCast(raw));
-    // The mirror takes the emission whole, including the two the TUI drops: a
-    // markdown client wants `assistant_source` rather than the box-drawn
-    // projection, and it folds `reasoning` away itself.
     if (context.config.live_mirror) |mirror| mirror.push_text(mirror.ctx, emission) catch {};
     switch (emission) {
         .assistant_source, .reasoning => {},

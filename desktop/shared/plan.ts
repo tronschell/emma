@@ -64,7 +64,10 @@ export type Plan = {
 
 const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const HEADING = /^##\s+(\S+)\s*[·—-]\s*(.+)$/;
-const STATUS = /\s*`(\w+)`\s*$/;
+/* No leading `\s*`: unanchored, it matches nothing the rest of the pattern would not have
+   matched anyway, and is pure backtracking fuel — a heading with 100 000 spaces before its last
+   word took 16 seconds here, twice per heading. `clean()` trims what `.replace` now leaves. */
+const STATUS = /`(\w+)`\s*$/;
 const NEEDS = /^needs:\s*(.*)$/i;
 const THREAD = /^thread:\s*(\S+)$/i;
 const TASK = /^-\s*\[([ xX])]\s*(.*)$/;

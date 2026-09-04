@@ -1,4 +1,5 @@
 const std = @import("std");
+const tool_overrides_mod = @import("tool_overrides.zig");
 const builtin = @import("builtin");
 const agent_stream_provider = @import("../agent/stream_provider.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
@@ -178,6 +179,7 @@ pub const Context = struct {
     terminal_client: ?*terminal_client_runtime.Runtime = null,
     command_timeout_ms: ?usize = null,
     semantic_grep: ?*const mcp_contract.McpServerConfig = null,
+    tool_overrides: tool_overrides_mod.Overrides = .{},
     command_timeout_started_ms: ?i64 = null,
     command_replay_capture: ?*command_replay_store.Capture = null,
     command_replay_unavailable: bool = false,
@@ -906,6 +908,7 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
             .{}
         else
             ctx.permission_rules,
+        .tool_overrides = ctx.tool_overrides,
     };
 }
 

@@ -56,6 +56,11 @@ export function mergeSkillContext(attached: string, instructions = "", max = MAX
   let merged = [attached.trim(), instructions.trim()].filter(Boolean).join("\n\n");
 
   const encoder = new TextEncoder();
-  while (merged && encoder.encode(merged).length > max) merged = merged.slice(0, Math.floor(merged.length * 0.9));
+  while (merged && encoder.encode(merged).length > max) {
+    merged = merged.slice(0, Math.floor(merged.length * 0.9));
+    // A cut between the halves of a surrogate pair leaves a lone high surrogate, which is a
+    // replacement box wherever this is read back. Drop it rather than ship half a character.
+    if (/[\uD800-\uDBFF]$/.test(merged)) merged = merged.slice(0, -1);
+  }
   return merged;
 }

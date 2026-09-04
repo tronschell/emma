@@ -5,6 +5,8 @@ function csvCell(value: Cell): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+export const formulaSafe = (value: Cell): Cell => typeof value === "string" && /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+
 export function toCsv(rows: readonly Cell[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
 }

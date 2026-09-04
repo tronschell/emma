@@ -75,11 +75,11 @@ test("the composer says when a paste has hit the length it holds", () => {
   assert.match(app, /message\.length >= COMPOSER_MAX && <div className="composer-attachment">/);
 });
 
-test("the composer chip row wraps and every chip keeps a floor instead of overlapping", () => {
+test("the composer chip row stays single-line and lets the model label shrink", () => {
   const css = read("desktop/src/styles/conversation.css");
-  assert.match(css, /\.composer-row \{[^}]*flex-wrap: wrap/);
-  assert.match(css, /\.composer-tools \{[^}]*min-width: min-content/);
-  assert.match(css, /\.composer-row \.model-button \{[^}]*min-width: 88px/);
+  assert.match(css, /\.composer-row \{[^}]*flex-wrap: nowrap/);
+  assert.match(css, /\.composer-tools \{[^}]*min-width: 0/);
+  assert.match(css, /\.composer-row \.model-button \{[^}]*min-width: 0/);
 });
 
 test("collapsing the rail takes focus out of the sidebar so the peek does not stick open", () => {

@@ -639,7 +639,10 @@ export function thinkingStops(model?: { reasoningEfforts?: string[]; reasoningMa
   const efforts = [...new Set((model?.reasoningEfforts ?? []).filter((level) => isThinkingLevel(level) && level !== "" && level !== "off"))];
   if (!efforts.length) return [];
   const stops = [...THINKING_LEVELS.filter((level) => efforts.includes(level)), ...efforts.filter((level) => !(THINKING_LEVELS as readonly string[]).includes(level))];
-  return model?.reasoningMandatory || stops.includes("none") ? ["", ...stops] : ["", "off", ...stops];
+  if (model?.reasoningMandatory) return ["", ...stops];
+  // Off is the zero rung: nothing left of it, so the rail reads empty when thinking is off.
+  const quiet = stops.includes("none") ? "none" : "off";
+  return [quiet, "", ...stops.filter((level) => level !== quiet)];
 }
 
 export const FONT_CHOICES = [
@@ -899,6 +902,10 @@ export function validateSecret(value: unknown): SecretSettings {
 
 export function validateTagger(value: unknown): TaggerSettings {
   return validateSecondModel(value, defaultTagger, "categorizer");
+}
+
+export function validateJudge(value: unknown): TaggerSettings {
+  return validateSecondModel(value, defaultTagger, "judge");
 }
 
 export const SECOND_MODEL_IDS = ["verifier", "advisor", "vision", "secret", "tagger"] as const;

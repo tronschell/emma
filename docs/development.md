@@ -23,7 +23,7 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`desktop/native/`](../desktop/native) | macOS Objective-C/C helpers and Windows native equivalents: `quick_ask.m`/`quick_ask_win.cpp`, `computer.m`/`computer_win.cpp`, `transcribe.m`/`transcribe_win.cpp`, `pty.c`/`pty_win.c`, plus `Info.extra.plist` |
 | [`desktop/scripts/`](../desktop/scripts) | Development, packaging and release checks, vendoring, catalog generation, and the CDP drivers `drive.mjs`, `shot.mjs`, `dismiss.mjs` |
 | [`desktop/skills/`](../desktop/skills) | Seven bundled skills: `artifact`, `autoresearch`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
-| `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here |
+| `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here; `npm run vendor:zvec-grep` puts `zvec-grep/` beside it |
 | [`harness/`](../harness) | `emma-cli`. `src/acp/` (the ACP server), `src/builtins/` (registry; `builtins/emma/` holds Emma's tool *schemas*), `src/core/` (the engine), `src/gateway/` (model transport), `src/tools/`, `src/ui/` |
 
 `harness/` is Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx),
@@ -76,8 +76,8 @@ All in [`desktop/package.json`](../desktop/package.json).
 | Script | What it actually runs |
 | --- | --- |
 | `check` | `test` → `typecheck` → `lint` → `build:renderer` |
-| `test` | `build:main`, then `node --test dist-main/test/*.test.js test/*.test.mjs`. Run it from `desktop/` — `harness.test.ts` resolves `fake-acp-agent.mjs` off `process.cwd()`, and `panes.test.ts` reads the real CSS |
-| `typecheck` | `tsc --noEmit` over `tsconfig.main.json` and `tsconfig.renderer.json` |
+| `test` | `build:main`, then `node --test --test-timeout=60000 dist-main/test/*.test.js test/*.test.mjs`. Run it from `desktop/` — `harness.test.ts` resolves `fake-acp-agent.mjs` off `process.cwd()`, and `panes.test.ts` reads the real CSS |
+| `typecheck` | `tsc -p tsconfig.renderer.json --noEmit`; main TypeScript is compiled as part of `test` |
 | `lint` | `eslint . --max-warnings 0`. Browser globals for `src/`, Node globals for `main/`, `test/`, `scripts/` |
 | `build:main` | `tsc -p tsconfig.main.json` → `dist-main/`. `rootDir: "."`, `module: Node16`, so it emits CommonJS and pulls `shared/` and the `.ts` half of `src/` in transitively |
 | `build:renderer` | `vite build` → `dist-renderer/` |
@@ -86,9 +86,10 @@ All in [`desktop/package.json`](../desktop/package.json).
 | `build:harness` | `(cd ../harness && zig build)` → `harness/zig-out/bin/emma-cli` (`.exe` on Windows). **Nothing else builds the harness** |
 | `build:native` | Builds the four platform-specific helpers and runs their self-tests where supported: macOS uses `clang` and the `.m`/`.c` sources; Windows uses the SDK toolchain and the `_win` sources |
 | `vendor:ripgrep` | Downloads [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 and its license files into `desktop/vendor/`, checked against a pinned SHA-256, stamped in `vendor/rg.version`. A no-op once all files are present and stamped; warns when no pinned platform/architecture archive exists |
+| `vendor:zvec-grep` | `npm install`s `@zvec/zvec-grep` 0.2.1 into `desktop/vendor/zvec-grep/`, prunes every foreign `onnxruntime-node` binary, and stamps `vendor/zvec-grep/zvec-grep.version`. Only zvec-grep mode uses it — see [harness.md](harness.md#zvec-grep-mode) |
 | `seed:catalog` | Refetches OpenRouter's tool-capable model list into `main/catalog-seed.ts`. Needs no key |
 | `dev` | `node scripts/dev.mjs` |
-| `start` | `build:host` + `build:native` + `vendor:ripgrep` + `build`, then `electron .`. No Vite server; the built bundle |
+| `start` | `build:host` + `build:native` + `vendor:ripgrep` + `vendor:zvec-grep` + `build`, then `electron .`. No Vite server; the built bundle |
 | `package:mac` | See [Packaging](#packaging) |
 | `dmg:mac` | See [Packaging](#packaging) |
 | `package:win` | See [Packaging](#packaging) |
@@ -158,11 +159,18 @@ release workflow signs it after trimming.
 npm run dmg:mac
 ```
 
-[`dmg-mac.mjs`](../desktop/scripts/dmg-mac.mjs) wraps the packaged app beside an
-Applications alias for drag-to-install. It verifies the app version, bundle
-identifier, signature, bundled native resources, and mounted disk-image layout.
-Run it after `package:mac`; the release workflow signs, notarizes, and staples
-the image before publishing it.
+[`dmg-mac.mjs`](../desktop/scripts/dmg-mac.mjs) wraps a packaged app in the
+disk image users download, beside an alias to `/Applications` so the install is
+a drag. It takes the app and image paths as optional arguments, defaulting to
+the packaged app and `Emma-vX.Y.Z-darwin-arm64.dmg` in `desktop/release/`. It
+mounts what it built and verifies the version, bundle identifier, the alias,
+and the bundled host, harness and ripgrep before reporting the path.
+
+Run it after signing, notarizing and stapling, never before: the image captures
+whatever state the app is in, and a stapled ticket inside it is what lets the
+app launch offline. The release workflow then signs, notarizes and staples the
+image itself. The zip stays the asset the updater feed reads, so it ships
+whatever else is published beside it.
 
 To avoid replacing a running bundle, pass a separate output directory:
 
@@ -185,22 +193,22 @@ publication is pending release-workflow authorization.
 
 ### Continuous integration
 
-Feature PRs into `dev` run only branch/title validation and release-rule tests
-on Ubuntu, with no app dependency installation, compilation, or packaging.
-Pushes to `dev` only prepare the generated release PR.
+Pull requests run the full macOS desktop and Rust checks plus Zig tests in
+parallel. Promotion PRs targeting `main` also run the unsigned macOS package
+smoke; ordinary feature PRs targeting `dev` keep that packaging step out of the
+critical path. The Windows lane runs only for pull requests and covers the
+Windows-specific desktop tests, native helpers, Rust, and Zig.
 
-Promotion PRs into `main` and release pushes to `main` run the six checks and
-native self-tests on `macos-15`. Promotion PRs also run a `windows-2025` (x64)
-lane covering only what macOS cannot: the desktop tests, the native toolchain
-probe and helper build, `cargo test`, `cargo clippy`, `zig build test`, and the
-unsigned `package:win` rehearsal. That lane is skipped on release pushes so a
-Windows runner can never gate a macOS release. Main's release workflow remains
-macOS-only for signing, notarization, and publication. Public signed Windows x64
-publication is pending release-workflow authorization.
+Pushes to `main` rerun the exact promoted commit, package the unsigned release
+candidate, and upload it for the release workflow. After successful CI, the
+release workflow downloads and verifies that candidate before signing,
+notarizing, stapling, Gatekeeper validation, and publication. The manual release
+dispatch remains a direct packaging fallback.
 
-Features start from and squash-merge into `dev`. A generated release PR on
-`dev` prepares a version, tag, and draft release. Promote the exact candidate
-to `main` with a merge commit to build and publish it. See the
+Features start from and squash-merge into `dev`, preserving their PR release
+summaries. Bump the root `package.json` version on `dev`, then promote the exact
+candidate to `main` with a merge commit. The release job collects the changelog,
+consumes the verified main candidate, and publishes both. See the
 [release guide](releases.md) and the
 [release skill](../.claude/skills/releasing/SKILL.md).
 

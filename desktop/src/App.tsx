@@ -31,7 +31,7 @@ import { type ContextPage } from "../shared/context-bar";
 import { Markdown } from "./markdown";
 import { RunContext } from "./run-block";
 import { openPreview, PreviewHost } from "./preview";
-import { ArtifactCard, ArtifactsView } from "./artifacts";
+import { ArtifactCard, ArtifactPane, ArtifactsView } from "./artifacts";
 import { Visual } from "./visual";
 import { Region } from "./regions";
 import { Built, BuiltSettings } from "./components";
@@ -45,7 +45,7 @@ import { MobileSettings, PhoneGlyph, PhoneMark, usePhone } from "./mobile";
 import { OpenIn } from "./editors";
 import { worktreeName, type GitSnapshot } from "../shared/git";
 import { CouncilPanel } from "./council";
-import { BookIcon, BrandIcon, BranchIcon, CaretIcon, ChevronIcon, ClipIcon, CloseIcon, DockIcon, EmmaMark, GearIcon, GlobeIcon, InfoDot, LockIcon, Mark, PencilIcon, PinIcon, ReviewIcon, SidebarIcon, SparkIcon, StopIcon, TabIcon, TextIcon, ToolIcon, ToolMark } from "./icons";
+import { BookIcon, BrandIcon, BranchIcon, CaretIcon, ChevronIcon, ClipIcon, CloseIcon, DockIcon, EmmaMark, GearIcon, GlobeIcon, InfoDot, LockIcon, Mark, PencilIcon, PinIcon, ReviewIcon, SidebarIcon, SparkIcon, StopIcon, TabIcon, TextIcon, ToolIcon, ToolMark, TrashIcon } from "./icons";
 import { BrowserPane, browserPip } from "./browser";
 import { PaneSwitch } from "./pane-switch";
 import { embeddingModelLabel, embeddingModelMode, IndexStatus, indexStateLabel, useSemanticGrepStatus } from "./index-status";
@@ -180,12 +180,15 @@ function ContextCut() {
 }
 
 function ModelCut({ mark }: { mark: ModelSwitch }) {
-  return <p className="context-cut model-cut" role="separator" aria-label={`Switched to ${mark.label}`}>
-    <span>Switched to</span>
-    <span className="model-cut-name">
-      <BrandIcon brand={brandForProvider(mark.brand) ?? (mark.brand === routerBrand.id ? routerBrand : undefined)} className="model-cut-mark" />
-      {mark.label}
-    </span>
+  const effort = mark.effort === undefined ? "" : mark.effort === "" ? "Default" : thinkingLabel(mark.effort);
+  const said = [mark.label && `Switched to ${mark.label}`, effort && `thinking ${effort}`].filter(Boolean).join(" · ");
+  return <p className="context-cut model-cut" role="separator" aria-label={said}>
+    {mark.label && <><span>Switched to</span>
+      <span className="model-cut-name">
+        <BrandIcon brand={brandForProvider(mark.brand) ?? (mark.brand === routerBrand.id ? routerBrand : undefined)} className="model-cut-mark" />
+        {mark.label}
+      </span></>}
+    {effort && <><span>{mark.label ? "· thinking" : "Thinking"}</span><span className="model-cut-effort" data-level={mark.effort}>{effort}</span></>}
     {mark.after && <span>— last one was silent for <b>{mark.after}</b></span>}
   </p>;
 }
@@ -244,7 +247,7 @@ function Blocks({ blocks }: { blocks: Block[] }) {
   return <>{groupBlocks(withoutThinking(blocks), STEPS_SHOWN).map((block, index) => block.kind === "steps"
     ? <Steps key={index} steps={block.steps} shown={block.keep} />
     : block.kind === "visual"
-      ? <Visual key={index} id={block.id} onKept={openArtifactsPage} onPicked={pickIntoComposer} />
+      ? <Visual key={index} id={block.id} onKept={openArtifactPane} onPicked={pickIntoComposer} />
       : block.kind === "notice"
         ? block.steer
           ? <Steered key={index} text={block.text} />
@@ -352,7 +355,7 @@ function Step({ step }: { step: ThreadStep }) {
         <StepTitle step={step} />
       </>}
     {step.status === "cancelled" && <span className="step-note">interrupted</span>}
-    {made && <ArtifactCard id={made} onOpen={openArtifactsPage} />}
+    {made && <ArtifactCard id={made} onOpen={openArtifactPane} />}
     {started && <ThreadCard id={started.id} title={started.title} onOpen={openThreadPage} />}
     {goal && <GoalCard threadId={goal} onOpen={openGoalPage} />}
   </li>;
@@ -387,8 +390,8 @@ function InspectorIcon() {
 const OPEN_CHANGES_EVENT = "emma:open-changes";
 const openChangesPanel = () => dispatchEvent(new Event(OPEN_CHANGES_EVENT));
 
-const OPEN_ARTIFACTS_EVENT = "emma:open-artifacts";
-const openArtifactsPage = (id: string) => dispatchEvent(new CustomEvent(OPEN_ARTIFACTS_EVENT, { detail: id }));
+const OPEN_ARTIFACT_PANE_EVENT = "emma:open-artifact-pane";
+const openArtifactPane = (id: string) => dispatchEvent(new CustomEvent(OPEN_ARTIFACT_PANE_EVENT, { detail: id }));
 
 const OPEN_THREAD_EVENT = "emma:open-thread";
 const openThreadPage = (id: string) => dispatchEvent(new CustomEvent(OPEN_THREAD_EVENT, { detail: id }));
@@ -725,6 +728,15 @@ function Workspace() {
   const [busy, setBusy] = useState(false);
   const [threadQuery, setThreadQuery] = useState("");
   const [threadLimits, setThreadLimits] = useState<Record<string, number>>({});
+  const projectList = useRef<HTMLDivElement>(null);
+  const [listRows, setListRows] = useState(THREAD_PAGE);
+  useEffect(() => {
+    const box = projectList.current;
+    if (!box) return;
+    const watch = new ResizeObserver(() => setListRows(Math.floor(box.clientHeight / THREAD_ROW)));
+    watch.observe(box);
+    return () => watch.disconnect();
+  }, []);
   const searchInput = useRef<HTMLInputElement>(null);
   const [selection, setSelection] = useState<string[]>([]);
   const anchor = useRef("");
@@ -760,11 +772,7 @@ function Workspace() {
   const artifactCount = useArtifactCount();
   const { notes, notesError, reloadNotes } = useNotes();
   const [artifactPick, setArtifactPick] = useState({ id: "", at: 0 });
-  useEffect(() => {
-    const open = (event: Event) => { setArtifactPick((current) => ({ id: (event as CustomEvent<string>).detail, at: current.at + 1 })); setView("artifacts"); };
-    addEventListener(OPEN_ARTIFACTS_EVENT, open);
-    return () => removeEventListener(OPEN_ARTIFACTS_EVENT, open);
-  }, []);
+  const [artifactPaneId, setArtifactPaneId] = useState("");
   useEffect(() => {
     const open = (requested: string) => {
       if (!settingsPages.some((item) => item.id === requested)) return;
@@ -847,7 +855,6 @@ function Workspace() {
   }, [markedUnread, threadStatus, seenRuns]);
   const threadModelKey = settings.selectedModel;
   const threadModelLabel = modelKeyLabel(settings, threadModelKey);
-  const threadModelTag = modelKeyTag(threadModelKey);
   const threadModelBrand = modelKeyBrand(settings, threadModelKey);
   const { contextTokens } = useSelectedModel(settings, threadModelKey);
   useEffect(() => { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); }, [layout]);
@@ -884,10 +891,28 @@ function Workspace() {
     inspectorBefore.current = null;
     pane({ browserOpen: false, ...(before === false ? { inspectorCollapsed: false } : {}) });
   }, [layout.inspectorCollapsed, pane]);
+  const showArtifact = useCallback((id: string) => {
+    if (id) {
+      inspectorBefore.current ??= layout.inspectorCollapsed;
+      setArtifactPaneId(id);
+      setView("threads");
+      pane({ inspectorCollapsed: true });
+      return;
+    }
+    const before = inspectorBefore.current;
+    inspectorBefore.current = null;
+    setArtifactPaneId("");
+    if (before === false) pane({ inspectorCollapsed: false });
+  }, [layout.inspectorCollapsed, pane]);
+  useEffect(() => {
+    const open = (event: Event) => showArtifact((event as CustomEvent<string>).detail);
+    addEventListener(OPEN_ARTIFACT_PANE_EVENT, open);
+    return () => removeEventListener(OPEN_ARTIFACT_PANE_EVENT, open);
+  }, [showArtifact]);
   useEffect(() => window.emma.onBrowserShow((shown) => {
-    if (shown.threadId === thread?.id) showBrowser(true);
+    if (shown.threadId === thread?.id) { setArtifactPaneId(""); showBrowser(true); }
   }), [thread?.id, showBrowser]);
-  const fitted = fitPaneLayout(layout, window.innerWidth);
+  const fitted = fitPaneLayout(artifactPaneId ? { ...layout, browserOpen: true } : layout, window.innerWidth);
   const shellStyle = {
     "--sidebar-width": `${fitted.sidebarWidth}px`,
     "--inspector-width": `${fitted.inspectorCollapsed ? 0 : fitted.inspectorWidth}px`,
@@ -1170,10 +1195,10 @@ function Workspace() {
           onDragCancel={() => setDraggingProject(false)}
           onDragEnd={(event) => { setDraggingProject(false); dropped(projects, (projectOrder) => pane({ projectOrder }))(event); }}>
         <SortableContext items={visibleProjects.map((group) => group.id)} strategy={verticalListSortingStrategy}>
-        <div className="sidebar-projects" data-dragging={draggingProject || undefined}>
+        <div className="sidebar-projects" ref={projectList} data-dragging={draggingProject || undefined}>
           <span className="sidebar-label">Projects<span className="sidebar-label-actions"><button type="button" className={`project-new ${layout.projectSort === "priority" ? "on" : ""}`} aria-label="Group threads" title="Group threads" aria-haspopup="menu" aria-expanded={sortMenu !== null} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); setSortMenu({ x: box.left, y: box.bottom + 2 }); }}><FilterIcon /></button><button type="button" className="project-new" disabled={uiBusy} aria-label="Connect a folder" title="Connect a folder" onClick={connectProject}>＋</button></span></span>
           {selection.length > 0 && <div className="thread-selection"><span className="nav-label">{selection.length} selected</span><button type="button" disabled={uiBusy} onClick={() => void archiveThreads(selection)}>Archive</button><button type="button" onClick={() => setSelection([])} aria-label="Clear selection">×</button></div>}
-          {visibleProjects.map((group) => { const limit = threadLimits[group.id] ?? THREAD_PAGE; return <Sortable key={group.id} id={group.id} className="project-sort">{(handle) => <details className="project-group" open><summary {...handle} onContextMenu={(event) => { event.preventDefault(); setProjectMenu({ id: group.id, x: event.clientX, y: event.clientY }); }}>{group.id !== "unfiled" && <FolderIcon />}<span className="nav-label">{group.name}</span>{!virtualGroup(group.id) && <button type="button" className="project-new" disabled={uiBusy} aria-label={`New thread in ${group.name}`} title={`New thread in ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setError(""); void createThread(group.id === "unfiled" ? "" : group.id); }}>＋</button>}<b>{group.threads.length}</b></summary>{group.threads.slice(0, limit).map((item) => renaming?.id === item.id
+          {visibleProjects.map((group) => { const limit = threadLimits[group.id] ?? Math.max(THREAD_PAGE, Math.floor((listRows - visibleProjects.length - 1) / visibleProjects.length)); return <Sortable key={group.id} id={group.id} className="project-sort">{(handle) => <details className="project-group" open><summary {...handle} onContextMenu={(event) => { event.preventDefault(); setProjectMenu({ id: group.id, x: event.clientX, y: event.clientY }); }}>{group.id !== "unfiled" && <FolderIcon />}<span className="nav-label">{group.name}</span>{!virtualGroup(group.id) && <button type="button" className="project-new" disabled={uiBusy} aria-label={`New thread in ${group.name}`} title={`New thread in ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setError(""); void createThread(group.id === "unfiled" ? "" : group.id); }}>＋</button>}<b>{group.threads.length}</b></summary>{group.threads.slice(0, limit).map((item) => renaming?.id === item.id
             ? <form key={item.id} className="project-thread renaming" onSubmit={(event) => { event.preventDefault(); void renameThread(item.id, renaming.value); }}><ThreadStatus live={threadStatus.get(item.id)} unseen={unseen(item.id)} /><input autoFocus value={renaming.value} aria-label="Thread name" onChange={(event) => setRenaming({ id: item.id, value: event.target.value })} onBlur={() => void renameThread(item.id, renaming.value)} onKeyDown={(event) => { if (event.key === "Escape") setRenaming(null); }} /></form>
             : <div className={`project-row ${threadMenu?.id === item.id ? "menu-open" : ""}`} key={item.id}><button type="button" style={{ "--thread-depth": threadDepth(group.threads, item) } as CSSProperties} className={`project-thread ${item.id === thread?.id && view === "threads" && !selection.length ? "active" : ""} ${selection.includes(item.id) ? "selected" : ""}`} title={threadLabel(item)} disabled={uiBusy} onClick={(event) => clickThread(event, group, item.id)} onDoubleClick={() => setRenaming({ id: item.id, value: threadLabel(item) })} onContextMenu={(event) => { event.preventDefault(); showThreadMenu(item.id, event.clientX, event.clientY); }}><ThreadStatus live={threadStatus.get(item.id)} unseen={unseen(item.id)} /><span className="nav-label">{phone.threads.includes(item.id) && <PhoneGlyph />}{virtualGroup(group.id) && projectName(item) && <em className="thread-home">{projectName(item)}</em>}{threadLabel(item)}</span>{tags[item.id] && <em className={`thread-tag ${tags[item.id].auto ? "auto" : ""}`} title={tags[item.id].auto ? `${tags[item.id].tag} · Emma’s guess, right-click to change it` : tags[item.id].tag}>{tags[item.id].tag}</em>}</button><button type="button" className={`thread-pin ${pins.includes(item.id) ? "on" : ""}`} title={pins.includes(item.id) ? "Unpin thread" : "Pin thread"} aria-label={`${pins.includes(item.id) ? "Unpin" : "Pin"} ${threadLabel(item)}`} aria-pressed={pins.includes(item.id)} disabled={uiBusy} onClick={() => setThreadPinned(item.id, !pins.includes(item.id))}><PinIcon filled={pins.includes(item.id)} /></button><button type="button" className="thread-actions" title="Thread options" aria-label={`Options for ${threadLabel(item)}`} aria-haspopup="menu" aria-expanded={threadMenu?.id === item.id} disabled={uiBusy} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); showThreadMenu(item.id, box.left, box.bottom + 2); }}><DotsIcon /></button></div>)}{group.threads.length > limit && <button type="button" className="project-more" onClick={() => setThreadLimits((current) => ({ ...current, [group.id]: limit + THREAD_PAGE }))}>Load more ({group.threads.length - limit})</button>}{!group.threads.length && <p className="project-empty">No threads yet</p>}</details>}</Sortable>; })}
           {search && !visibleProjects.length && <p className="project-empty">No threads match that search</p>}
@@ -1189,11 +1214,12 @@ function Workspace() {
       </aside>
       </Region>
       <main id="content" className="content">
-        {view === "threads" ? thread ? <ThreadView key={thread.id} thread={thread} loadedSubthread={loadedSubthread} loadThread={loadThread} threadLoadError={threadLoadError} clearThreadLoadError={() => setThreadLoadError(undefined)} snapshot={snapshot} notes={notes} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={(seed?: string) => { setError(""); void createThread(undefined, seed); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={threadModelKey} modelLabel={threadModelLabel} modelTag={threadModelTag} modelBrand={threadModelBrand} thinkingLevel={settings.thinkingLevel} defaultMode={settings.defaultPermissionMode} reviewOffered={settings.review.enabled && !!settings.review.model.trim()} contextTokens={contextTokens} contextPages={settings.contextPages} onContextPages={(contextPages) => setSettings(persistSettings({ ...settings, contextPages }))} layout={layout} pane={pane} showBrowser={showBrowser} /> : <ThreadLoading loading={snapshotLoading || !!selectedSummary} error={threadLoadError?.id === selectedId ? threadLoadError.text : ""} busy={uiBusy} retry={() => { setError(""); setThreadLoadError(undefined); void loadThread(selectedId); }} newThread={() => { setError(""); void createThread(); }} /> : view === "knowledge" ? <NotesView notes={notes} notesError={notesError} busy={uiBusy} reload={reloadNotes} hues={settings.folderHues} setHues={(folderHues) => setSettings(persistSettings({ ...settings, folderHues }))} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} projectName={projectName} mode={settings.defaultPermissionMode} model={settings.selectedModel} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <Suspense fallback={<AgentLoading copy="Loading plugins…" />}><PluginsView busy={uiBusy} tools={settings.tools} onTools={saveToolSettings} /></Suspense> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} onAttach={attachComponent} />}
+        {view === "threads" ? thread ? <ThreadView key={thread.id} thread={thread} loadedSubthread={loadedSubthread} loadThread={loadThread} threadLoadError={threadLoadError} clearThreadLoadError={() => setThreadLoadError(undefined)} snapshot={snapshot} notes={notes} busy={uiBusy} act={act} reload={load} agents={agents} tab={tab} setTab={setTab} newThread={(seed?: string) => { setError(""); void createThread(undefined, seed); }} onSendingChange={setInteractionLocked} onModelChanged={setSettings} onManageModels={() => { setView("settings"); setSettingsPage("models"); }} onManageImports={() => { setView("settings"); setSettingsPage("imports"); }} modelKey={threadModelKey} modelLabel={threadModelLabel} modelBrand={threadModelBrand} thinkingLevel={settings.thinkingLevel} defaultMode={settings.defaultPermissionMode} reviewOffered={settings.review.enabled && !!settings.review.model.trim()} contextTokens={contextTokens} contextPages={settings.contextPages} onContextPages={(contextPages) => setSettings(persistSettings({ ...settings, contextPages }))} layout={layout} pane={pane} showBrowser={showBrowser} artifactPaneId={artifactPaneId} setArtifactPaneId={showArtifact} editArtifact={editArtifact} /> : <ThreadLoading loading={snapshotLoading || !!selectedSummary} error={threadLoadError?.id === selectedId ? threadLoadError.text : ""} busy={uiBusy} retry={() => { setError(""); setThreadLoadError(undefined); void loadThread(selectedId); }} newThread={() => { setError(""); void createThread(); }} /> : view === "knowledge" ? <NotesView notes={notes} notesError={notesError} busy={uiBusy} reload={reloadNotes} hues={settings.folderHues} setHues={(folderHues) => setSettings(persistSettings({ ...settings, folderHues }))} /> : view === "artifacts" ? <ArtifactsView key={artifactPick.at} busy={uiBusy} select={artifactPick.id} openArtifact={(artifact) => void editArtifact(artifact)} /> : view === "agent" ? <Suspense fallback={<AgentLoading />}><AgentView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} projectName={projectName} mode={settings.defaultPermissionMode} model={settings.selectedModel} pickers={{ run: (model, effort, onPick, busy) => <BenchRunPicker model={model} effort={effort} onPick={onPick} onSettingsChanged={setSettings} busy={busy} />, judge: (draft, onChange, busy) => <SecondModelPicker label="Judge model" off="Tagger model · scores with your tagger" draft={draft ?? { ...settings.tagger, model: "" }} providers={settings.providers} routers={settings.routers} busy={busy} onChange={(next) => onChange(next.model ? next : undefined)} />, describe: (key) => ({ label: modelKeyLabel(settings, key), brand: modelKeyBrand(settings, key)?.id ?? "" }) }} /></Suspense> : view === "scheduled" ? <ScheduledView snapshot={snapshot} act={act} busy={uiBusy} openThread={openThread} /> : view === "plugins" ? <Suspense fallback={<AgentLoading copy="Loading plugins…" />}><PluginsView busy={uiBusy} tools={settings.tools} onTools={saveToolSettings} /></Suspense> : view === "research" ? <Suspense fallback={<AgentLoading copy="Loading the autoresearch graph…" />}><ResearchView snapshot={snapshot} act={act} busy={uiBusy} /></Suspense> : view === "archive" ? <ArchiveView threads={archivedThreads} busy={uiBusy} restore={(id) => void setArchived(id, false)} /> : <SettingsView page={settingsPage} onSelectPage={setSettingsPage} act={act} busy={uiBusy} onModelChanged={setSettings} onAttach={attachComponent} />}
       </main>
       {(error || snapshot.warnings.length > 0) && <div className="notice" role="status"><button aria-label="Dismiss notice" onClick={() => setError("")}>×</button>{error || snapshot.warnings[0]}</div>}
       {threadMenu && menuThread && <div className="thread-menu-scrim" onClick={(event) => { if (event.target === event.currentTarget) setThreadMenu(null); }} onContextMenu={(event) => { event.preventDefault(); if (event.target === event.currentTarget) setThreadMenu(null); }}>
         <menu className="thread-menu thread-context-menu" aria-label={`Actions for ${threadLabel(menuThread)}`} style={{ left: `clamp(8px, ${threadMenu.x}px, calc(100vw - 236px))`, top: `clamp(8px, ${threadMenu.y}px, calc(100vh - 280px))` }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()} onKeyDown={(event) => { if (event.key === "Escape") setThreadMenu(null); }}>
+          <div className="thread-menu-head">Thread</div><hr />
           <button type="button" role="menuitem" autoFocus disabled={uiBusy} onClick={() => { setThreadPinned(menuThread.id, !pins.includes(menuThread.id)); setThreadMenu(null); }}><span className="thread-menu-icon"><PinIcon filled={pins.includes(menuThread.id)} /></span><span>{pins.includes(menuThread.id) ? "Unpin" : "Pin"}</span></button>
           <button type="button" role="menuitem" disabled={uiBusy} onClick={() => { setThreadMenu(null); setRenaming({ id: menuThread.id, value: threadLabel(menuThread) }); }}><span className="thread-menu-icon"><PencilIcon /></span><span>Rename</span></button>
           <button type="button" role="menuitem" onClick={() => markThreadUnread(menuThread.id, !unseen(menuThread.id))}><span className="thread-menu-icon"><UnreadIcon /></span><span>{unseen(menuThread.id) ? "Mark as read" : "Mark as unread"}</span></button>
@@ -1203,16 +1229,17 @@ function Workspace() {
             <div className="thread-menu-branch" onPointerEnter={() => setThreadSubmenu("project")}>
               <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={threadSubmenu === "project"} onClick={() => setThreadSubmenu("project")}><span className="thread-menu-icon"><FolderIcon /></span><span>Project</span><CaretIcon /></button>
               {threadSubmenu === "project" && <menu className="thread-submenu" aria-label="Move thread to project">
-                <button type="button" role="menuitemradio" aria-checked={!menuProjectId} onClick={() => { setThreadFolders(menuThread.id, []); setThreadMenu(null); }}><span>Unfiled</span><span>{!menuProjectId ? "✓" : ""}</span></button>
-                {grants.map((grant) => <button type="button" role="menuitemradio" aria-checked={menuProjectId === grant.id} key={grant.id} onClick={() => { setThreadFolders(menuThread.id, [grant.id]); setThreadMenu(null); }}><span>{grant.name}</span><span>{menuProjectId === grant.id ? "✓" : ""}</span></button>)}
+                <div className="thread-menu-head">Move to</div><hr />
+                <button type="button" role="menuitemradio" aria-checked={!menuProjectId} onClick={() => { setThreadFolders(menuThread.id, []); setThreadMenu(null); }}><span className="thread-menu-icon"><FolderIcon /></span><span>Unfiled</span><span className="thread-menu-check"><CheckIcon /></span></button>
+                {grants.map((grant) => <button type="button" role="menuitemradio" aria-checked={menuProjectId === grant.id} key={grant.id} onClick={() => { setThreadFolders(menuThread.id, [grant.id]); setThreadMenu(null); }}><span className="thread-menu-icon"><FolderIcon /></span><span>{grant.name}</span><span className="thread-menu-check"><CheckIcon /></span></button>)}
               </menu>}
             </div>
             <div className="thread-menu-branch" onPointerEnter={() => setThreadSubmenu("tag")}>
               <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={threadSubmenu === "tag"} onClick={() => setThreadSubmenu("tag")}><span className="thread-menu-icon"><TagIcon /></span><span>Tag</span><CaretIcon /></button>
               {threadSubmenu === "tag" && <menu className="thread-submenu thread-tag-submenu" aria-label="Set thread tag">
                 <form className="thread-menu-tag" key={menuThread.id} onSubmit={(event) => { event.preventDefault(); setThreadTag(menuThread.id, String(new FormData(event.currentTarget).get("tag") ?? "")); setThreadMenu(null); }}><input name="tag" list="thread-tag-names" autoComplete="off" maxLength={32} defaultValue={menuTag} placeholder="Type a tag" aria-label="Thread tag" /><button type="submit">Save</button><datalist id="thread-tag-names">{handTags().map((tag) => <option key={tag} value={tag} />)}</datalist></form>
-                {handTags().filter((tag) => tag !== menuTag).slice(0, 6).map((tag) => <button type="button" role="menuitem" key={tag} onClick={() => { setThreadTag(menuThread.id, tag); setThreadMenu(null); }}><span>{tag}</span></button>)}
-                {menuTag && <button type="button" role="menuitem" onClick={() => { setThreadTag(menuThread.id, ""); setThreadMenu(null); }}><span>Clear tag</span></button>}
+                {handTags().filter((tag) => tag !== menuTag).slice(0, 6).map((tag) => <button type="button" role="menuitem" key={tag} onClick={() => { setThreadTag(menuThread.id, tag); setThreadMenu(null); }}><span className="thread-menu-icon"><TagIcon /></span><span>{tag}</span></button>)}
+                {menuTag && <button type="button" role="menuitem" onClick={() => { setThreadTag(menuThread.id, ""); setThreadMenu(null); }}><span className="thread-menu-icon"><TrashIcon /></span><span>Clear tag</span></button>}
               </menu>}
             </div>
           </>}
@@ -1221,14 +1248,17 @@ function Workspace() {
           <div className="thread-menu-branch" onPointerEnter={() => setThreadSubmenu("copy")}>
             <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={threadSubmenu === "copy"} onClick={() => setThreadSubmenu("copy")}><span className="thread-menu-icon"><CopyIcon /></span><span>Copy</span><CaretIcon /></button>
             {threadSubmenu === "copy" && <menu className="thread-submenu" aria-label="Copy thread details">
-              <button type="button" role="menuitem" onClick={() => copyThreadValue(threadLabel(menuThread))}><span>Title</span></button>
-              <button type="button" role="menuitem" onClick={() => copyThreadValue(menuThread.id)}><span>Thread ID</span></button>
+              <button type="button" role="menuitem" onClick={() => copyThreadValue(threadLabel(menuThread))}><span className="thread-menu-icon"><CopyIcon /></span><span>Title</span></button>
+              <button type="button" role="menuitem" onClick={() => copyThreadValue(menuThread.id)}><span className="thread-menu-icon"><CopyIcon /></span><span>Thread ID</span></button>
             </menu>}
           </div>
         </menu>
       </div>}
-      {sortMenu && <div className="thread-menu-scrim" onClick={() => setSortMenu(null)}><menu className="thread-menu" role="menu" style={{ left: sortMenu.x, top: sortMenu.y }}>{(["project", "priority"] as const).map((sort) => <button type="button" key={sort} role="menuitemradio" aria-checked={layout.projectSort === sort} onClick={() => { pane({ projectSort: sort }); setSortMenu(null); }}>By {sort}</button>)}</menu></div>}
-      {projectMenu && <div className="thread-menu-scrim" onClick={() => setProjectMenu(null)} onContextMenu={(event) => { event.preventDefault(); setProjectMenu(null); }}><menu className="thread-menu" style={{ left: projectMenu.x, top: projectMenu.y }}><ProjectSweep threads={visibleProjects.find((group) => group.id === projectMenu.id)?.threads ?? []} busy={uiBusy} archive={archiveThreads} />{projectMenu.id !== "unfiled" && !virtualGroup(projectMenu.id) && <button type="button" disabled={uiBusy} onClick={() => forgetProject(projectMenu.id)}>Remove from sidebar</button>}</menu></div>}
+      {sortMenu && <div className="thread-menu-scrim" onClick={() => setSortMenu(null)}><menu className="thread-menu" role="menu" aria-label="Group threads" style={{ left: sortMenu.x, top: sortMenu.y }}>
+        <div className="thread-menu-head"><FilterIcon />Group threads</div><hr />
+        {(["project", "priority"] as const).map((sort) => <button type="button" key={sort} role="menuitemradio" aria-checked={layout.projectSort === sort} onClick={() => { pane({ projectSort: sort }); setSortMenu(null); }}><span className="thread-menu-icon">{sort === "project" ? <FolderIcon /> : <HourglassIcon />}</span><span>By {sort}</span><span className="thread-menu-check"><CheckIcon /></span></button>)}
+      </menu></div>}
+      {projectMenu && <div className="thread-menu-scrim" onClick={() => setProjectMenu(null)} onContextMenu={(event) => { event.preventDefault(); setProjectMenu(null); }}><menu className="thread-menu" aria-label="Project actions" style={{ left: projectMenu.x, top: projectMenu.y }}><div className="thread-menu-head">Project</div><hr /><ProjectSweep threads={visibleProjects.find((group) => group.id === projectMenu.id)?.threads ?? []} busy={uiBusy} archive={archiveThreads} />{projectMenu.id !== "unfiled" && !virtualGroup(projectMenu.id) && <button type="button" disabled={uiBusy} onClick={() => forgetProject(projectMenu.id)}><span className="thread-menu-icon"><TrashIcon /></span><span>Remove from sidebar</span></button>}</menu></div>}
       {setupOpen
         ? <SetupDialog onManageModels={() => { localStorage.setItem(SETUP_SEEN_KEY, "1"); localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setSetupOpen(false); setImportsOpen(false); setView("settings"); setSettingsPage("models"); }} close={() => { localStorage.setItem(SETUP_SEEN_KEY, "1"); localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setSetupOpen(false); setImportsOpen(false); }} later={() => { localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setSetupOpen(false); setImportsOpen(false); }} />
         : importsOpen && <ImportDialog close={() => { localStorage.setItem(IMPORTS_SEEN_KEY, "1"); setImportsOpen(false); }} />}
@@ -1263,13 +1293,16 @@ function UpdateReady() {
 
 const THREAD_PAGE = 6;
 
+// One .project-thread row, from sidebar.css — used to fit the default page to the pane.
+const THREAD_ROW = 26;
+
 const NAV_PINNED = 3;
 
 const SWEEP_DAYS = [7, 30, 90, 180];
 
 function ProjectSweep({ threads, busy, archive }: { threads: Thread[]; busy: boolean; archive: (ids: string[]) => Promise<void> }) {
   const stale = (days: number) => threads.filter((item) => Date.parse(item.updatedAt) < Date.now() - days * 86_400_000).map((item) => item.id);
-  return <>{SWEEP_DAYS.map((days) => { const ids = stale(days); return <button key={days} type="button" disabled={busy || !ids.length} onClick={() => void archive(ids)}>Archive older than {days} days ({ids.length})</button>; })}</>;
+  return <>{SWEEP_DAYS.map((days) => { const ids = stale(days); return <button key={days} type="button" disabled={busy || !ids.length} onClick={() => void archive(ids)}><span className="thread-menu-icon"><ArchiveIcon /></span><span>Archive older than {days} days ({ids.length})</span></button>; })}</>;
 }
 
 const navLabels: Record<string, string> = { knowledge: "Knowledge base", artifacts: "Artifacts", agent: "Agent", scheduled: "Scheduled", plugins: "Plugins", research: "Autoresearch" };
@@ -1305,6 +1338,10 @@ function Sortable({ id, className, children }: { id: string; className: string; 
 }
 
 const virtualGroup = (id: string) => id === "pinned" || id === "priority";
+
+function CheckIcon() {
+  return <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 8.4 6.3 11.7 13 5" /></svg>;
+}
 
 function FilterIcon() {
   return <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true"><path d="M2 4h12M4.5 8h7M7 12h2" /></svg>;
@@ -1390,7 +1427,6 @@ function TaskModelPicker({ model, onChange, busy, label = "The model this task r
     <button type="button" className="verifier-pick-trigger" disabled={busy} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
       <BrandIcon brand={model ? modelKeyBrand(settings, model) : undefined} className="model-brand" />
       <span>{model ? modelKeyLabel(settings, model) : inherit}</span>
-      {modelKeyTag(model) && <em className="model-route remote">{modelKeyTag(model)}</em>}
       <b aria-hidden="true">▾</b>
     </button>
     {open && <section className="source-popover model-menu" role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
@@ -1400,6 +1436,18 @@ function TaskModelPicker({ model, onChange, busy, label = "The model this task r
     </section>}
     {error && <small className="local-model-error" role="alert">{error}</small>}
   </div>;
+}
+
+function BenchRunPicker({ model, effort, onPick, onSettingsChanged, busy }: { model: string; effort: string; onPick: (next: { model: string; effort: string }) => void; onSettingsChanged: (settings: UserSettings) => void; busy: boolean }) {
+  const [catalog, setCatalog] = useState<OpenRouterCatalog>();
+  useEffect(() => { void window.emma.request<OpenRouterCatalog>("listOpenRouterModels").then(setCatalog).catch(() => undefined); }, []);
+  const stops = thinkingStops(reasoningFor(readSettings(), catalog, model));
+  return <>
+    <TaskModelPicker model={model} busy={busy} label="The model the cases are replayed under" inherit="Pick a model" onChange={(next, current) => { onSettingsChanged(current); onPick({ model: next, effort: "" }); }} />
+    {stops.length > 1 && <select aria-label="Thinking level for this run" value={stops.includes(effort) ? effort : ""} disabled={busy} onChange={(event) => onPick({ model, effort: event.target.value })}>
+      {stops.map((level) => <option key={level} value={level}>{level === "" ? "Default thinking" : thinkingLabel(level)}</option>)}
+    </select>}
+  </>;
 }
 
 function TaskEditor({ job, runs, act, busy, openThread, onSaved, onDeleted, commands }: {
@@ -1732,7 +1780,7 @@ function NotesView({ notes, notesError, busy, reload, hues, setHues }: { notes: 
   </section>;
 }
 
-type PaneProps = { layout: PaneLayout; pane: (change: Partial<PaneLayout>) => void; showBrowser: (open: boolean) => void };
+type PaneProps = { layout: PaneLayout; pane: (change: Partial<PaneLayout>) => void; showBrowser: (open: boolean) => void; artifactPaneId: string; setArtifactPaneId: (id: string) => void; editArtifact: (artifact: Artifact) => void };
 
 const kindLabel = (kind: ContextPick["kind"]) => kind === "note" ? KIND_LABELS.page : kind === "attachment" ? KIND_LABELS.file : KIND_LABELS[kind];
 
@@ -1972,8 +2020,16 @@ function SelectionQuote({ scroller, onQuote, onThread }: { scroller: RefObject<H
     document.getSelection()?.removeAllRanges();
     setPick(null);
   };
+  const copy = () => {
+    void navigator.clipboard.writeText(pick.text).catch(() => undefined);
+    document.getSelection()?.removeAllRanges();
+    setPick(null);
+  };
   return <div className="quote-menu" style={{ left: pick.x, top: pick.y }} role="toolbar" aria-label="Selected text" onMouseDown={(event) => event.preventDefault()}>
+    <button type="button" onClick={copy}>Copy</button>
+    <span className="quote-menu-separator" role="separator" aria-orientation="vertical" />
     <button type="button" onClick={() => take(onQuote)}>Add to chat</button>
+    <span className="quote-menu-separator" role="separator" aria-orientation="vertical" />
     <button type="button" onClick={() => take(onThread)}>New thread</button>
   </div>;
 }
@@ -1983,7 +2039,7 @@ const threadName = (thread: Thread) => threadLabel(thread, THREAD_NAME_MAX);
 
 const COMPOSER_MAX = 65_536;
 
-function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clearThreadLoadError, snapshot, notes, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelTag, modelBrand, thinkingLevel, defaultMode, reviewOffered, contextTokens, contextPages, onContextPages, layout, pane, showBrowser }: { thread: Thread; loadedSubthread?: Thread; loadThread: (id: string) => Promise<void>; threadLoadError?: { id: string; text: string }; clearThreadLoadError: () => void; snapshot: Snapshot; notes: KeptNote[]; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: (seed?: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelTag: string; modelBrand?: BrandDefinition; thinkingLevel: ThinkingLevel; defaultMode: PermissionMode; reviewOffered: boolean; contextTokens: number; contextPages: ContextPage[]; onContextPages: (pages: ContextPage[]) => void } & PaneProps) {
+function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clearThreadLoadError, snapshot, notes, busy, act, reload, agents, tab, setTab, newThread, onSendingChange, onModelChanged, onManageModels, onManageImports, modelKey, modelLabel, modelBrand, thinkingLevel, defaultMode, reviewOffered, contextTokens, contextPages, onContextPages, layout, pane, showBrowser, artifactPaneId, setArtifactPaneId, editArtifact }: { thread: Thread; loadedSubthread?: Thread; loadThread: (id: string) => Promise<void>; threadLoadError?: { id: string; text: string }; clearThreadLoadError: () => void; snapshot: Snapshot; notes: KeptNote[]; busy: boolean; act: (method: string, params?: Record<string, string>) => Promise<unknown>; reload: () => unknown; agents: LiveAgent[]; tab: string; setTab: (tab: string) => void; newThread: (seed?: string) => void; onSendingChange: (busy: boolean) => void; onModelChanged: (settings: UserSettings) => void; onManageModels: () => void; onManageImports: () => void; modelKey: string; modelLabel: string; modelBrand?: BrandDefinition; thinkingLevel: ThinkingLevel; defaultMode: PermissionMode; reviewOffered: boolean; contextTokens: number; contextPages: ContextPage[]; onContextPages: (pages: ContextPage[]) => void } & PaneProps) {
   const [message, setMessage] = useState(() => takeComposerSeed(thread.id) || threadDraft(thread.id).text);
   useEffect(() => { if (composerSeed.threadId === thread.id) composerSeed = { threadId: "", text: "" }; }, [thread.id]);
   const [mode, setMode] = useState<PermissionMode>(() => threadMode(thread.id, defaultMode));
@@ -2523,7 +2579,7 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
           hideNote="Keeps every shell running where it is" closeNote="Ends every shell and frees what it holds"><TerminalIcon /></PaneSwitch>
         <PaneSwitch open={layout.browserOpen}
           running={() => window.emma.browserStatus(thread.id).then((status) => status.running)}
-          onOpen={() => showBrowser(true)}
+          onOpen={() => { setArtifactPaneId(""); showBrowser(true); }}
           onHide={() => showBrowser(false)}
           onClose={() => { showBrowser(false); void window.emma.browserNav({ threadId: thread.id, action: "close" }).catch(() => undefined); }}
           openLabel="Open the browser pane" closeLabel="Close the browser pane"
@@ -2564,7 +2620,7 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
       {ask && <PermissionPrompt ask={ask} agents={agents} />}
       <TaskListBar threadId={thread.id} />
       <form className={`composer ${ask ? "asking" : ""}`} onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label>{run.draft && <div className="composer-attachment queued-turn"><span>Not sent{run.failure && ` · ${run.failure}`} · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}
-        <PickTray picks={picks} folders={folders} locked={locked} drop={dropPick} /><div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={COMPOSER_MAX} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, ⌘Enter steers (empty: oldest queued first), Esc Esc stops…" : thread.messages.length ? "Ask Emma to continue…" : "Ask Emma anything…"} rows={2} /></div>{message.length >= COMPOSER_MAX && <div className="composer-attachment"><span>Full — the composer holds {COMPOSER_MAX.toLocaleString()} characters, and anything past that was not taken. Attach the rest as a file.</span></div>}{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, saved notes and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} />{reviewOffered && <button type="button" className="review-toggle" disabled={locked} aria-pressed={review} aria-label={review ? "Second-model review is on for this thread" : "Second-model review is off for this thread"} title={review ? "A second model reviews every turn that changes something here" : "Nothing is reviewed in this thread"} onClick={() => setReview(!review)}><ReviewIcon /></button>}</div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}${modelTag ? ` · ${modelTag}` : ""}${thinkingLevel ? ` · thinking ${thinkingLabel(thinkingLevel)}` : ""}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span>{modelTag && <em className={`model-route ${modelTag === "Local" ? "local" : "remote"}`}>{modelTag}</em>}<ThinkingTag level={thinkingLevel} /><span aria-hidden="true">▾</span></button>{sending
+        <PickTray picks={picks} folders={folders} locked={locked} drop={dropPick} /><div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={COMPOSER_MAX} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, ⌘Enter steers (empty: oldest queued first), Esc Esc stops…" : thread.messages.length ? "Ask Emma to continue…" : "Ask Emma anything…"} rows={2} /></div>{message.length >= COMPOSER_MAX && <div className="composer-attachment"><span>Full — the composer holds {COMPOSER_MAX.toLocaleString()} characters, and anything past that was not taken. Attach the rest as a file.</span></div>}{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, saved notes and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} />{reviewOffered && <button type="button" className="review-toggle" disabled={locked} aria-pressed={review} aria-label={review ? "Second-model review is on for this thread" : "Second-model review is off for this thread"} title={review ? "A second model reviews every turn that changes something here" : "Nothing is reviewed in this thread"} onClick={() => setReview(!review)}><ReviewIcon /></button>}</div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span><span aria-hidden="true">▾</span></button><ThinkingControl level={thinkingLevel} act={act} busy={locked} onSettingsChanged={onModelChanged} onPicked={(effort) => { if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: "", brand: "", effort }); }} />{sending
           ? (message.trim()
             ? <button className="composer-send" disabled={locked} aria-label="Queue message" title="Queue — sent when this turn ends. Steer it from the queue to interrupt and send it now">↑</button>
             : <button type="button" className="composer-send stopping" onClick={interrupt} aria-label="Stop this turn" title="Stop this turn — Esc Esc">■</button>)
@@ -2589,7 +2645,11 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
       </button>}
       <ContextWidgets page={page} context={{ ledger, messages: carried?.messages ?? NO_MESSAGES, threadId: inspectedId || thread.id, sending, subagents, subthreads, agents, onOpenThread: openThreadPage, tab, onPick: setTab, git, onOpenGit: () => setTab("git") }} onChange={(widgets) => onContextPages(contextPages.map((item) => item.id === page.id ? { ...item, widgets } : item))} /></div>}
     </aside></Region>
-    {layout.browserOpen && !browserFloat && <div className="browser-column">
+    {artifactPaneId ? <div className="artifact-column">
+      <ResizeHandle label="Resize artifact" value={layout.browserWidth} min={MIN_BROWSER_WIDTH} max={720} direction={-1} onChange={(browserWidth) => pane({ browserWidth })} />
+      <ArtifactPane id={artifactPaneId} busy={locked} close={() => setArtifactPaneId("")} edit={(artifact) => { setArtifactPaneId(""); void editArtifact(artifact); }} />
+    </div> : null}
+    {layout.browserOpen && !browserFloat && !artifactPaneId && <div className="browser-column">
       <ResizeHandle label="Resize browser" value={layout.browserWidth} min={MIN_BROWSER_WIDTH} max={720} direction={-1} onChange={(browserWidth) => pane({ browserWidth })} />
       <BrowserPane threadId={thread.id}
         wide={layout.browserWidth >= WIDE_BROWSER_WIDTH}
@@ -2751,8 +2811,6 @@ function modelKeyRoute(settings: UserSettings, key: string): string {
   return "Unknown route";
 }
 
-const modelKeyTag = (key: string) => key.startsWith(CODEX_PREFIX) ? "Plan" : key.startsWith("provider:") ? "Direct" : routerIdFor(key) ? "Router" : key === "fallback" || isFreeModel(key) ? "Free" : key.startsWith("openrouter:") ? "API" : "";
-
 const selectedModelLabel = (settings: UserSettings) => modelKeyLabel(settings, settings.selectedModel);
 
 function useSelectedModel(settings: UserSettings, selectedModel: string): { contextTokens: number } {
@@ -2779,15 +2837,105 @@ function useSelectedModel(settings: UserSettings, selectedModel: string): { cont
   return { contextTokens: profile?.contextWindow || windows[selectedModel] || 0 };
 }
 
-function ThinkingTag({ level }: { level: ThinkingLevel }) {
-  return level ? <em className="model-effort" data-level={level}>{thinkingLabel(level)}</em> : null;
+/** What a model key advertises about reasoning, from the catalog it was picked out of. */
+function reasoningFor(settings: UserSettings, catalog: OpenRouterCatalog | undefined, key: string): { reasoningEfforts?: string[]; reasoningMandatory?: boolean } | undefined {
+  const routed = catalog?.routes?.[key];
+  if (key.startsWith(CODEX_PREFIX)) return routed;
+  if (key.startsWith("openrouter:")) return catalog?.models.find((model) => model.id === key.slice("openrouter:".length));
+  const profile = key.startsWith("provider:") ? settings.providers.find((item) => item.id === key.slice("provider:".length)) : undefined;
+  const plan = profile && planForProfile(profile);
+  const listed = plan && catalog?.models.find((model) => planForModel(model.id)?.id === plan.id && planModelId(plan, model.id) === profile.modelId);
+  return routed?.reasoningEfforts ? { ...listed, reasoningEfforts: routed.reasoningEfforts } : listed;
 }
 
-function ThinkingSlider({ level, stops, setLevel, disabled }: { level: ThinkingLevel; stops: ThinkingLevel[]; setLevel: (level: ThinkingLevel) => void | Promise<void>; disabled: boolean }) {
+/** Stops the selected model offers, and the one write that saves a pick. */
+function useThinking(act: (method: string, params?: Record<string, string>) => Promise<unknown>, onSettingsChanged: (settings: UserSettings) => void) {
+  const [catalog, setCatalog] = useState<OpenRouterCatalog>();
+  useEffect(() => { void window.emma.request<OpenRouterCatalog>("listOpenRouterModels").then(setCatalog).catch(() => undefined); }, []);
+  const settings = readSettings();
+  const stops = thinkingStops(reasoningFor(settings, catalog, settings.selectedModel));
+  const setLevel = async (next: ThinkingLevel) => {
+    const selected = await selectModelKey(settings, settings.selectedModel, act, next);
+    if (!selected) return;
+    onSettingsChanged(persistSettings({ ...selected, thinkingLevel: next }));
+  };
+  return { stops, setLevel };
+}
+
+/** The chip beside the model: bars for the rung, the word for which one, a menu for changing it. */
+function ThinkingChip({ level, stops, open, disabled, onToggle, ref }: { level: ThinkingLevel; stops: ThinkingLevel[]; open: boolean; disabled: boolean; onToggle: () => void; ref?: RefObject<HTMLButtonElement | null> }) {
+  const index = Math.max(0, stops.indexOf(level));
+  /* A model can advertise anything from two rungs to ten, so the bars stay a coarse
+     gauge — at most five — and the word beside them carries which rung exactly. */
+  const bars = Math.min(stops.length - 1, 5);
+  const filled = Math.round(index / Math.max(1, stops.length - 1) * bars);
+  return <button ref={ref} type="button" className="thinking-chip" data-level={level} disabled={disabled} aria-haspopup="dialog" aria-expanded={open} onClick={onToggle}
+    title={`Thinking · ${thinkingLabel(level)}`} aria-label={`Thinking effort, ${thinkingLabel(level)} of ${stops.length} levels`}>
+    <span className="thinking-bars" aria-hidden="true">{Array.from({ length: bars }, (_, bar) => <i key={bar} data-on={bar < filled ? "true" : "false"} />)}</span>
+    <span className="thinking-value">{thinkingLabel(level)}</span>
+    <span aria-hidden="true">▾</span>
+  </button>;
+}
+
+/** Dot-matrix dither over the ramp: the grid is carved out of a dark veil, and cells
+    inside the lit stretch twinkle, so a hotter rung reads as a busier panel. */
+function ThinkingDither({ fill }: { fill: number }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const node = canvas.current;
+    const context = node?.getContext("2d");
+    if (!node || !context) return;
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let raf = 0;
+    let last = 0;
+    let tick = 0;
+    const paint = () => {
+      const width = node.clientWidth;
+      const height = node.clientHeight;
+      if (!width || !height) return;
+      const scale = devicePixelRatio || 1;
+      if (node.width !== Math.round(width * scale)) { node.width = Math.round(width * scale); node.height = Math.round(height * scale); }
+      context.setTransform(scale, 0, 0, scale, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#0e0e10e6";
+      context.fillRect(0, 0, width, height);
+      const lit = width * fill;
+      context.globalCompositeOperation = "destination-out";
+      for (let x = 1; x < width - 1; x += CELL) {
+        for (let y = 1; y < height - 1; y += CELL) {
+          const noise = Math.abs(Math.sin(x * 91.7 + y * 47.3 + tick * 1.7) * 43758.5453) % 1;
+          const inside = x < lit;
+          const alpha = inside ? (noise > 0.94 ? 1 : 0.62 + noise * 0.2) : (noise > 0.97 ? 0.4 : 0.16);
+          context.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+          context.fillRect(x, y, CELL - 1, CELL - 1);
+        }
+      }
+      context.globalCompositeOperation = "source-over";
+    };
+    const loop = (now: number) => {
+      raf = requestAnimationFrame(loop);
+      if (now - last < SPARKLE_MS) return;
+      last = now;
+      tick += 1;
+      paint();
+    };
+    paint();
+    // Nothing is lit at zero, so nothing twinkles: the grid sits still until effort climbs.
+    if (!still && fill > 0) raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [fill]);
+  return <canvas ref={canvas} className="thinking-dither" aria-hidden="true" />;
+}
+
+const CELL = 4;
+const SPARKLE_MS = 110;
+
+/** Every level the model offers on one rail, so max to low is a drag rather than eight clicks. */
+function ThinkingMenu({ level, stops, setLevel, close, ref }: { level: ThinkingLevel; stops: ThinkingLevel[]; setLevel: (level: ThinkingLevel) => void | Promise<void>; close: () => void; ref?: RefObject<HTMLDivElement | null> }) {
   const [dragged, setDragged] = useState<ThinkingLevel | null>(null);
   const [saved, setSaved] = useState(level);
   if (saved !== level) { setSaved(level); setDragged(null); }
-  const shown = dragged !== null && stops.includes(dragged) ? dragged : level;
+  const shown = dragged !== null && stops.includes(dragged) ? dragged : stops.includes(level) ? level : "";
   const index = Math.max(0, stops.indexOf(shown));
   const style = { "--stop": String(index), "--stops": String(Math.max(1, stops.length - 1)) } as CSSProperties;
   const save = (next: ThinkingLevel) => {
@@ -2795,14 +2943,45 @@ function ThinkingSlider({ level, stops, setLevel, disabled }: { level: ThinkingL
     setDragged(next);
     void Promise.resolve(setLevel(next)).finally(() => setDragged((current) => current === next ? null : current));
   };
-  return <label className="thinking-slider" data-level={shown} style={style} title={`Thinking · ${thinkingLabel(shown)}`}>
-    <span className="sr-only">Thinking effort</span>
-    <span className="thinking-control">
-      <span className="thinking-track" aria-hidden="true"><span className="thinking-fill" />{stops.map((stop, position) => <i key={stop} data-on={position <= index ? "true" : "false"} />)}<span className="thinking-knob" /></span>
-      <input type="range" min={0} max={stops.length - 1} step={1} value={index} disabled={disabled || stops.length < 2} aria-label="Thinking effort" aria-valuetext={thinkingLabel(shown)} onChange={(event) => setDragged(stops[Number(event.target.value)])} onPointerUp={(event) => save(stops[Number(event.currentTarget.value)])} onKeyUp={(event) => save(stops[Number(event.currentTarget.value)])} />
-    </span>
-    <em>{stops.length < 2 && shown === "" ? "None" : thinkingLabel(shown)}</em>
-  </label>;
+  return <div ref={ref} className="source-popover thinking-menu" data-level={shown} style={style} role="dialog" aria-label="Thinking effort" onKeyDown={(event) => { if (event.key === "Escape") close(); }}>
+    <header><span>Thinking</span><b>{thinkingLabel(shown)}</b></header>
+    <label className="thinking-rail">
+      <span className="sr-only">Thinking effort</span>
+      <span className="thinking-ramp" aria-hidden="true" />
+      <ThinkingDither fill={index / Math.max(1, stops.length - 1)} />
+      <span className="thinking-ticks" aria-hidden="true">{stops.map((stop, at) => <i key={stop} data-on={index > 0 && at <= index ? "true" : "false"} />)}</span>
+      <span className="thinking-knob" aria-hidden="true" />
+      <input type="range" min={0} max={stops.length - 1} step={1} value={index} autoFocus aria-label="Thinking effort" aria-valuetext={thinkingLabel(shown)}
+        onChange={(event) => setDragged(stops[Number(event.target.value)])}
+        onPointerUp={(event) => save(stops[Number(event.currentTarget.value)])}
+        onKeyUp={(event) => save(stops[Number(event.currentTarget.value)])} />
+    </label>
+    <footer><span>{thinkingLabel(stops[0])}</span><span>{stops.length} levels</span><span>{thinkingLabel(stops[stops.length - 1])}</span></footer>
+  </div>;
+}
+
+/** Chip and menu together, for surfaces that can float a popover over their own content. */
+function ThinkingControl({ level, act, busy, onSettingsChanged, onPicked }: { level: ThinkingLevel; act: (method: string, params?: Record<string, string>) => Promise<unknown>; busy: boolean; onSettingsChanged: (settings: UserSettings) => void; onPicked?: (level: ThinkingLevel) => void }) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const { stops, setLevel } = useThinking(act, onSettingsChanged);
+  const close = () => { setOpen(false); queueMicrotask(() => trigger.current?.focus()); };
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      const node = event.target as Node;
+      if (!menu.current?.contains(node) && !trigger.current?.contains(node)) setOpen(false);
+    };
+    addEventListener("pointerdown", outside);
+    return () => removeEventListener("pointerdown", outside);
+  }, [open]);
+  if (stops.length < 2) return null;
+  const shown = stops.includes(level) ? level : "";
+  return <span className="thinking-control">
+    <ThinkingChip ref={trigger} level={shown} stops={stops} open={open} disabled={busy} onToggle={() => setOpen(!open)} />
+    {open && !busy && <ThinkingMenu ref={menu} level={shown} stops={stops} close={close} setLevel={async (next) => { await setLevel(next); onPicked?.(next); }} />}
+  </span>;
 }
 
 async function selectModelKey(settings: UserSettings, key: string, act: (method: string, params?: Record<string, string>) => Promise<unknown>, effort = ""): Promise<UserSettings | undefined> {
@@ -3422,8 +3601,8 @@ function ModelRow({ entry, active, providers, busy, onPick, starred, onStar, dra
   const current = modelEntryCurrent(entry, active, providers);
   return <div className={`model-row ${current ? "current" : ""}`} {...drag}>
     <button type="button" className="model-row-pick" disabled={busy} aria-current={current} title={entry.detail} onClick={() => onPick(route.key, route.plan)}>
-      <strong><span>{entry.name}</span>{modalityMarks(entry.modalities)}{entry.free ? priceBadge(true) : null}</strong>
-      <small><BrandIcon brand={entry.brand} className="model-brand" /><span>{entry.brand?.label ?? entry.detail}</span></small>
+      <strong><BrandIcon brand={entry.brand} className="model-brand" /><span>{entry.name}</span>{modalityMarks(entry.modalities)}{entry.free ? priceBadge(true) : null}</strong>
+      <small><span>{entry.brand?.label ?? entry.detail}</span></small>
     </button>
     <span className="model-context" title={entry.context ? `${entry.context.toLocaleString()}-token context window` : ""}>{entry.context ? contextMark.format(entry.context) : ""}</span>
     {onStar && <button type="button" className="model-star" aria-pressed={starred} aria-label={`${starred ? "Unstar" : "Star"} ${entry.name}`} title={starred ? "Remove from the composer's picker" : "Show in the composer's picker"} onClick={() => onStar()}>{starred ? "★" : "☆"}</button>}
@@ -3458,6 +3637,9 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
   const starred = favorites ?? [];
   const favorite = (entry: CatalogEntry) => modelEntryFavorite(entry, starred, providers);
   const listed = freeOnly ? entries.filter((entry) => entry.free === true || modelEntryCurrent(entry, active, providers)) : entries;
+  const routerEntries = (routers ?? []).map(routerEntry);
+  const freeRouter = routerEntries.find((entry) => entry.key === routerKey(FREE_ROUTER_ID));
+  const visibleRouters = routerEntries.filter((entry) => entry.key !== routerKey(FREE_ROUTER_ID) && (!freeOnly || entry.free === true || modelEntryCurrent(entry, active, providers)));
   const needle = query.trim().toLowerCase();
   const searched = listed.filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle));
   const counts = new Map<string, number>([[STAR_MARK, searched.filter((entry) => favorite(entry)).length]]);
@@ -3506,8 +3688,9 @@ function ModelPicker({ entries, active, onPick, busy, providers = [], favorites,
         <button type="button" className="model-free-only" aria-pressed={freeOnly} title="Only the models the catalog lists as free" onClick={() => showFree(!freeOnly)}>Free only</button>
       </div>
       <div className="model-rows">
+        {freeOnly && freeRouter && (!needle || `${freeRouter.name} ${freeRouter.key}`.toLowerCase().includes(needle)) && <ModelRow entry={freeRouter} active={active} providers={providers} busy={busy} onPick={onPick} codex={codex} />}
         {lead && <ModelRow entry={lead} active={active} providers={providers} busy={busy} onPick={onPick} codex={codex} />}
-        {(routers ?? []).map(routerEntry).filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle)).map((entry) =>
+        {visibleRouters.filter((entry) => !needle || `${entry.name} ${entry.key}`.toLowerCase().includes(needle)).map((entry) =>
           <ModelRow key={entry.key} entry={entry} active={active} providers={providers} busy={busy} onPick={onPick} codex={codex} />)}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={dropStar}>
           <SortableContext items={shown.map(favorite).filter(Boolean)} strategy={verticalListSortingStrategy}>
@@ -3963,7 +4146,6 @@ function SecondModelPicker({ label, off, draft, providers, routers, onChange, bu
       <button type="button" className="verifier-pick-trigger" disabled={busy} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
         <BrandIcon brand={picked === "custom" ? undefined : chosen?.brand} className="model-brand" />
         <span>{picked === "custom" ? draft.model || "Custom endpoint" : chosen?.name ?? (draft.model || off)}</span>
-        {modelKeyTag(picked) && <em className="model-route remote">{modelKeyTag(picked)}</em>}
         <b aria-hidden="true">▾</b>
       </button>
       {open && <section className="source-popover model-menu" role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
@@ -4736,15 +4918,6 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
       .then(setCatalog)
       .catch((reason: unknown) => setError(reasonText(reason)));
   }, []);
-  const modelFor = (key: string): { reasoningEfforts?: string[]; reasoningMandatory?: boolean } | undefined => {
-    const routed = catalog?.routes?.[key];
-    if (key.startsWith(CODEX_PREFIX)) return routed;
-    if (key.startsWith("openrouter:")) return catalog?.models.find((model) => model.id === key.slice("openrouter:".length));
-    const profile = key.startsWith("provider:") ? settings.providers.find((item) => item.id === key.slice("provider:".length)) : undefined;
-    const plan = profile && planForProfile(profile);
-    const listed = plan && catalog?.models.find((model) => planForModel(model.id)?.id === plan.id && planModelId(plan, model.id) === profile.modelId);
-    return routed?.reasoningEfforts ? { ...listed, reasoningEfforts: routed.reasoningEfforts } : listed;
-  };
   const choose = async (key: string, plan?: ModelPlan) => {
     if (busy) return;
     setError("");
@@ -4764,14 +4937,6 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
       setSettings(next);
       onSettingsChanged(next);
     } catch (reason) { setError(reasonText(reason)); }
-  };
-  const setThinking = async (thinkingLevel: ThinkingLevel) => {
-    if (busy) return;
-    const selected = await selectModelKey(settings, settings.selectedModel, act, thinkingLevel);
-    if (!selected) return;
-    const next = persistSettings({ ...settings, thinkingLevel });
-    setSettings(next);
-    onSettingsChanged(next);
   };
   const star = (key: string) => {
     setError("");
@@ -4800,7 +4965,6 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
       await sendSecondModel(role.id, next);
     } catch (reason) { setError(reasonText(reason)); }
   };
-  const stops = thinkingStops(modelFor(settings.selectedModel));
   const active = pinned ? pinned.key : settings.selectedModel;
   const entries = useMemo(() => {
     const all = modelEntries(settings.providers, catalog?.models ?? [], codexSlugs, catalog?.routes, active);
@@ -4815,9 +4979,6 @@ function ModelMenu({ ref, close, act, busy, onSettingsChanged, onManage, pinned 
       onPick={(key, plan) => { if (role) { void chooseRole(key, plan); return; } void choose(key, plan); }}
       strip={<RoleStrip settings={settings} agent={active} role={roleId} onPick={setRoleId} />}
       lead={role ? { key: "", name: role.spec.off, detail: "Off" } : pinned ? { key: "", name: "Same as the workspace", detail: pinned.key ? selectedModelLabel(settings) : "Active" } : undefined}>
-      {!pinned && !role && <div className="model-menu-thinking"><span>Thinking</span>
-        <ThinkingSlider level={stops.includes(settings.thinkingLevel) ? settings.thinkingLevel : ""} stops={stops.length ? stops : [""]} setLevel={setThinking} disabled={busy || !stops.length} />
-      </div>}
       {!catalog && !error && <p className="model-menu-note">Loading the OpenRouter catalog…</p>}
       {error && <p className="capability-error" role="alert">{error}</p>}
       <div className="model-menu-foot"><button type="button" className="model-menu-row quiet" onClick={onManage}><span>All models, keys, and local profiles</span><b aria-hidden="true">↗</b></button></div>
@@ -4967,6 +5128,8 @@ function Overlay() {
   const pickMode = useCallback((next: PermissionMode) => { setMode(next); setOverlayMode(next); }, []);
   const [modesOpen, setModesOpen] = useState(false);
   const modeMenu = useRef<HTMLDivElement>(null);
+  const thinkMenu = useRef<HTMLDivElement>(null);
+  const thinkTrigger = useRef<HTMLButtonElement>(null);
   const [modeBand, setModeBand] = useState(0);
   const [thread, setThread] = useState<Thread>();
   const [turns, setTurns] = useState<QuickTurn[]>([]);
@@ -4980,6 +5143,8 @@ function Overlay() {
   const [slashPick, setSlashPick] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashBand, setSlashBand] = useState(0);
+  const [thinkBand, setThinkBand] = useState(0);
+  const [thinkOpen, setThinkOpen] = useState(false);
   const slashMenu = useRef<HTMLElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const [stream, setStream] = useState<{ text: string; steps: ThreadStep[] }>({ text: "", steps: [] });
@@ -5145,11 +5310,11 @@ function Overlay() {
   useEffect(() => {
     const node = transcript.current;
     if (!node) return;
-    const height = Math.min(MAX_TRANSCRIPT, node.scrollHeight + menuBand + modeBand + slashBand + (annotationId ? ATTACHMENT_BAND : 0));
+    const height = Math.min(MAX_TRANSCRIPT, node.scrollHeight + menuBand + modeBand + slashBand + thinkBand + (annotationId ? ATTACHMENT_BAND : 0));
     setGrow(height);
     window.emma.setOverlayHeight(height);
     node.scrollTop = node.scrollHeight;
-  }, [turns, busy, stream, menuBand, modeBand, slashBand, annotationId, surface]);
+  }, [turns, busy, stream, menuBand, modeBand, slashBand, thinkBand, annotationId, surface]);
   useEffect(() => {
     const node = modelMenu.current;
     if (!node) { setMenuBand(0); return; }
@@ -5164,6 +5329,22 @@ function Overlay() {
     observer.observe(node);
     return () => observer.disconnect();
   }, [modesOpen]);
+  useEffect(() => {
+    const node = thinkMenu.current;
+    if (!node) { setThinkBand(0); return; }
+    const observer = new ResizeObserver(() => setThinkBand(node.offsetHeight));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [thinkOpen]);
+  useEffect(() => {
+    if (!thinkOpen) return;
+    const outside = (event: PointerEvent) => {
+      const node = event.target as Node;
+      if (!thinkMenu.current?.contains(node) && !thinkTrigger.current?.contains(node)) setThinkOpen(false);
+    };
+    addEventListener("pointerdown", outside);
+    return () => removeEventListener("pointerdown", outside);
+  }, [thinkOpen]);
   useEffect(() => {
     const node = slashMenu.current;
     if (!node) { setSlashBand(0); return; }
@@ -5183,6 +5364,7 @@ function Overlay() {
     try { return await window.emma.request<unknown>(method, params); }
     catch (reason) { setError(reasonText(reason)); return undefined; }
   }, [setError]);
+  const { stops: thinkingStopsHere, setLevel: setThinkingHere } = useThinking(act, setSettings);
   const clearDrawing = async () => { if (!annotationId) return; await window.emma.clearScreenAnnotation(annotationId); setAnnotationId(""); setThumbnail(""); setAttachedApp(""); };
   const captureScreen = useCallback(async () => {
     try {
@@ -5273,9 +5455,10 @@ function Overlay() {
       </div>
       {modelsOpen && <ModelMenu ref={modelMenu} close={() => setModelsOpen(false)} act={act} busy={busy} onSettingsChanged={setSettings} onManage={() => window.emma.openWorkspace()} pinned={settings.notchModel ? { key: settings.notchModel, onPick: pickModel } : undefined} />}
       {modesOpen && <ModeMenu ref={modeMenu} mode={mode} setMode={pickMode} close={() => setModesOpen(false)} />}
+      {thinkOpen && !settings.notchModel && <ThinkingMenu ref={thinkMenu} level={effort} stops={thinkingStopsHere} close={() => { setThinkOpen(false); thinkTrigger.current?.focus(); }} setLevel={setThinkingHere} />}
       <footer className="island-foot">
         <div className="mode-picker" data-mode={mode}><ModeTrigger mode={mode} open={modesOpen} onToggle={() => { setModesOpen((open) => !open); setModelsOpen(false); }} /></div>
-        <button type="button" className="model-button" disabled={busy} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelKeyLabel(settings, modelKey)}${modelKeyTag(modelKey) ? ` · ${modelKeyTag(modelKey)}` : ""}${effort ? ` · thinking ${thinkingLabel(effort)}` : ""}`} onClick={() => { setModelsOpen((open) => !open); setModesOpen(false); }}><BrandIcon brand={modelKeyBrand(settings, modelKey)} className="model-brand" /><span className="model-label">{modelKeyLabel(settings, modelKey)}</span>{modelKeyTag(modelKey) && <em className={`model-route ${modelKeyTag(modelKey) === "Direct" ? "local" : "remote"}`}>{modelKeyTag(modelKey)}</em>}<ThinkingTag level={effort} /><span aria-hidden="true">▾</span></button>
+        <span className="island-model"><button type="button" className="model-button" disabled={busy} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelKeyLabel(settings, modelKey)}`} onClick={() => { setModelsOpen((open) => !open); setModesOpen(false); }}><BrandIcon brand={modelKeyBrand(settings, modelKey)} className="model-brand" /><span className="model-label">{modelKeyLabel(settings, modelKey)}</span><span aria-hidden="true">▾</span></button>{!settings.notchModel && thinkingStopsHere.length > 1 && <ThinkingChip ref={thinkTrigger} level={thinkingStopsHere.includes(effort) ? effort : ""} stops={thinkingStopsHere} open={thinkOpen} disabled={busy} onToggle={() => { setThinkOpen((open) => !open); setModelsOpen(false); setModesOpen(false); }} />}</span>
         <span className="island-stats"><span title="Context window of the selected model">{contextTokens ? `${Math.round(contextTokens / 1000)}K ctx` : "— ctx"}</span><span title="Output tokens per second of the last answer">{rate ? `${rate} tok/s` : "— tok/s"}</span></span>
       </footer>
     </div>

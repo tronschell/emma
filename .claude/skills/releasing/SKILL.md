@@ -1,6 +1,6 @@
 ---
 name: releasing
-description: Prepare and publish Emma releases; feature PRs land on dev, the owner merges dev into main, and main publishes the signed macOS app from the root package.json version. Use for release workflows, versioning, packaging, and distribution changes.
+description: Capture Emma changelog entries when preparing feature PRs and prepare or publish releases. Feature PRs land on dev, the owner merges dev into main, and main publishes the signed macOS app from the root package.json version. Use for PR release summaries, release workflows, versioning, packaging, and distribution changes.
 ---
 
 # Releasing Emma
@@ -12,19 +12,49 @@ automation.
 ## Invariants
 
 - Feature branches start from and squash-merge into `dev`, the default branch.
-  `ci.yml` runs the full checks on every PR, on macOS only. There is no Windows
-  lane; it never passed and was removed.
+  `ci.yml` runs the full macOS checks and targeted Windows checks on every PR.
+  Windows is test-only; it packages nothing.
 - The root `package.json` version is the release version. Bump it on `dev`.
   Nothing else carries version metadata, and there is no changelog file.
 - Only the owner can update `main`, enforced by a GitHub ruleset, not by code.
   Promote `dev` to `main` with a merge commit.
-- `release.yml` runs on push to `main`. It skips when the `vX.Y.Z` release
-  already exists. Otherwise signing, notarization, stapling, Gatekeeper
-  validation, and asset upload must all succeed before `gh release create`
-  publishes with generated notes. Published releases are never replaced.
+- `ci.yml` runs on every pull request and on pushes to `main`. A successful
+  main run uploads the unsigned package candidate for that exact commit.
+  `release.yml` consumes that candidate from the completed main CI run. It
+  skips when the `vX.Y.Z` release already exists. Otherwise signing,
+  notarization, stapling, Gatekeeper validation, and asset upload must all
+  succeed before `gh release create` publishes with generated notes. Published
+  releases are never replaced.
 - PR checks receive no Apple secrets. Only the release job has `contents: write`.
 - Keep release names exactly `vX.Y.Z` and the stable zip suffix
   `darwin-arm64.zip`, as expected by the existing updater.
+
+## Capture changes in feature PRs
+
+Write the release summary while preparing or updating the PR, using its complete
+diff against `dev`. Describe the final shipped behavior and relevant fixes,
+compatibility changes, and migration steps. The agent doing the work writes the
+summary without asking the owner to compose changelog entries.
+
+Use a descriptive conventional title: `feat`, `fix`, `perf`, or `docs` selects
+the release section; other titles remain under Other changes. Mark incompatible
+changes with `!` or a `BREAKING CHANGE:` footer.
+
+Add a `## Release notes` section to the PR body with plain Markdown bullets for
+each meaningful change. Keep implementation discussion and validation under
+separate level-two headings. Update the notes when the scope changes; describe
+only changes present in the final diff. For direct commits, put the same section
+in the commit body when the title alone is insufficient.
+
+GitHub already uses `PR_TITLE` and `PR_BODY` for Emma squash commits. Preserve
+the release section when supplying a custom squash message. The release job
+reads this committed snapshot, so edits to a merged PR do not rewrite history.
+Older commits without this section fall back to their titles. No extra labels,
+changelog file, version bump, or release action is needed to record a change.
+
+`npm run release:notes` previews the published-release-to-remote-`dev` range.
+Use `npm run release:notes -- v0.3.1 v0.4.1` to inspect a specific GitHub range.
+Both commands only print Markdown; they create no release, tag, or file.
 
 ## Workflow edits
 

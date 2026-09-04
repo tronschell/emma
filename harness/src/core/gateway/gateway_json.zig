@@ -237,8 +237,6 @@ pub fn buildGatewayPendingToolReviewRequestBodyWithMaxOutputTokens(
     );
 }
 
-/// Returns an owned message slice that closes the pending tool call before the
-/// reviewer instruction. Message contents remain borrowed from `messages`.
 pub fn expandPendingToolReviewMessages(
     alloc: std.mem.Allocator,
     messages: []const ChatMessage,
@@ -251,23 +249,21 @@ pub fn expandPendingToolReviewMessages(
     try validatePendingToolReviewMessages(alloc, messages, target_call_id, budget);
     try budget.check();
 
-    const pending_index = messages.len - 2;
-    const pending = messages[pending_index];
+    const pending = messages[messages.len - 1];
     const expanded_len = try std.math.add(usize, messages.len, pending.tool_calls.len);
     const expanded = try alloc.alloc(ChatMessage, expanded_len);
     errdefer alloc.free(expanded);
 
-    @memcpy(expanded[0 .. pending_index + 1], messages[0 .. pending_index + 1]);
+    @memcpy(expanded[0..messages.len], messages);
     for (pending.tool_calls, 0..) |call, i| {
         try budget.check();
-        expanded[pending_index + 1 + i] = .{
+        expanded[messages.len + i] = .{
             .role = .tool,
             .content = pending_tool_review_result_text,
             .tool_call_id = call.id,
             .tool_name = call.name,
         };
     }
-    expanded[expanded.len - 1] = messages[messages.len - 1];
     try budget.check();
     try validateToolMessageHistory(alloc, expanded);
     try budget.check();
@@ -433,11 +429,11 @@ fn validatePendingToolReviewMessages(
 ) !void {
     try budget.check();
     if (messages.len < 2 or target_call_id.len == 0) return error.InvalidGatewayHistory;
-    const pending = messages[messages.len - 2];
-    const instruction = messages[messages.len - 1];
-    if (pending.role != .assistant or pending.tool_calls.len == 0) return error.InvalidGatewayHistory;
+    const instruction = messages[0];
+    const pending = messages[messages.len - 1];
     if (instruction.role != .system or instruction.content == null) return error.InvalidGatewayHistory;
-    try validateToolMessageHistory(alloc, messages[0 .. messages.len - 2]);
+    if (pending.role != .assistant or pending.tool_calls.len == 0) return error.InvalidGatewayHistory;
+    try validateToolMessageHistory(alloc, messages[1 .. messages.len - 1]);
     try budget.check();
     try validateAssistantToolCalls(alloc, pending.tool_calls);
     try budget.check();
@@ -1015,6 +1011,7 @@ fn parseMicroDollarsValue(value: ?std.json.Value) ?u64 {
             std.math.mul(u64, std.math.cast(u64, number) orelse return null, 1_000_000) catch null
         else
             null,
+        .float => |number| types.microDollarsFromFloat(number),
         .object => parseMicroDollarsValue(actual.object.get("total")),
         else => null,
     };
@@ -1029,6 +1026,7 @@ pub fn freeGatewayCompletion(alloc: std.mem.Allocator, completion: GatewayComple
     }
     if (completion.tool_calls.len > 0) alloc.free(completion.tool_calls);
     if (completion.provider_state_json) |state| alloc.free(state);
+    if (completion.reasoning_details_json) |details| alloc.free(@constCast(details));
 }
 
 fn checkParseGatewayCompletionAllocFailures(alloc: std.mem.Allocator) !void {
@@ -1347,12 +1345,12 @@ test "pending tool review closes the exact assistant step with synthetic pending
         .raw = .fromMilliseconds(1000),
     });
     const messages = [_]ChatMessage{
+        .{ .role = .system, .content = "Review only install." },
         .{ .role = .user, .content = "Install dependencies." },
         .{ .role = .assistant, .tool_calls = &.{
             .{ .id = "install", .name = "run_command", .arguments_json = "{\"command\":\"pnpm install\"}" },
             .{ .id = "read", .name = "read_file", .arguments_json = "{\"path\":\"package.json\"}" },
         } },
-        .{ .role = .system, .content = "Review only install." },
     };
 
     const body = try buildGatewayPendingToolReviewRequestBodyWithMaxOutputTokens(
@@ -1389,12 +1387,12 @@ test "pending tool review rejects missing or duplicate target ids" {
         .raw = .fromMilliseconds(1000),
     });
     const messages = [_]ChatMessage{
+        .{ .role = .system, .content = "Review it." },
         .{ .role = .user, .content = "Run this." },
         .{ .role = .assistant, .tool_calls = &.{
             .{ .id = "duplicate", .name = "run_command", .arguments_json = "{}" },
             .{ .id = "duplicate", .name = "read_file", .arguments_json = "{}" },
         } },
-        .{ .role = .system, .content = "Review it." },
     };
 
     try std.testing.expectError(
@@ -1700,6 +1698,15 @@ test "gateway request validation rejects mismatched tool result names" {
     };
 
     try std.testing.expectError(error.InvalidGatewayHistory, buildGatewayRequestBodyWithOptions(alloc, "[]", &messages, .{}, .auto));
+}
+
+test "parseMicroDollarsValue converts a JSON float cost to micro-dollars" {
+    try std.testing.expectEqual(@as(?u64, 4200), parseMicroDollarsValue(.{ .float = 0.0042 }));
+    try std.testing.expectEqual(@as(?u64, 0), parseMicroDollarsValue(.{ .float = 0.0 }));
+    try std.testing.expectEqual(@as(?u64, 1), parseMicroDollarsValue(.{ .float = 0.0000006 }));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollarsValue(.{ .float = -0.5 }));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollarsValue(.{ .float = std.math.nan(f64) }));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollarsValue(.{ .float = std.math.inf(f64) }));
 }
 
 test "parseGatewayCompletion duplicates returned strings" {
