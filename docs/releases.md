@@ -39,16 +39,30 @@ GitHub Releases page is the changelog, built from merged PR titles. Merging
 
 Published macOS assets appear in [GitHub Releases](https://github.com/tronschell/emma/releases):
 
+- `Emma-vX.Y.Z-darwin-arm64.dmg`
+- `Emma-vX.Y.Z-darwin-arm64.dmg.sha256`
 - `Emma-vX.Y.Z-darwin-arm64.zip`
 - `Emma-vX.Y.Z-darwin-arm64.zip.sha256`
 
-Extract the zip and move `Emma.app` into Applications. The package includes its
-Rust host, Zig harness, ripgrep, native helpers, bundled skills, and dependency
-notices. End users do not need Node, Rust, Zig, or Xcode installed.
+The disk image is the human download: open it and drag Emma onto the
+Applications alias beside it. Quit Emma before replacing an installed copy,
+choose **Replace** if Finder asks, eject the image, and open Emma from
+Applications. This replaces only the app bundle; `app.getPath('userData')`, the
+separate `EMMA_DATA_DIR` store, and the user's notes vault stay in place. The
+package includes its Rust host, Zig harness, ripgrep, native helpers, bundled
+skills, and dependency notices. End users do not need Node, Rust, Zig, or Xcode
+installed.
+
+The single-instance lock belongs to the running process, regardless of which
+version or bundle was opened next. A packaged Mac copy that cannot acquire it
+shows its own version and bundle path and explains how to quit, replace, and
+reopen Emma. A newer primary also refuses to focus its older window for a newer
+launch. Older releases cannot participate in that handoff, so quitting before
+installation remains required.
 
 The release title is exactly `vX.Y.Z` and the stable `darwin-arm64.zip` asset
-is the one the `update.electronjs.org` feed selects. Keep both. Drafts and
-prereleases are not stable updates.
+is the one the `update.electronjs.org` feed selects. Keep both the DMG and ZIP.
+Drafts and prereleases are not stable updates.
 
 On macOS, a packaged app checks the feed at launch and every six hours. Squirrel
 downloads a newer eligible version in the background. Only after the download
@@ -82,6 +96,7 @@ Run the six checks in [`AGENTS.md`](../AGENTS.md), then:
 
 ```sh
 npm run package:mac
+npm run dmg:mac
 ```
 
 On a native Windows x64 host:
@@ -106,6 +121,9 @@ npm --prefix desktop run package:mac -- /tmp/emma-release-check
 Launch the resulting app with an isolated profile and data directory and
 exercise the workspace before release. A local unsigned package does not prove
 signing, notarization, Gatekeeper acceptance, or update installation.
+The DMG builder requires a structurally valid app signature, verifies the
+mounted app and Applications link, and refuses to overwrite an existing image.
+Use a fresh output path for each verification run.
 
 ## Recovery
 

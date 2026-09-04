@@ -42,6 +42,7 @@ import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRo
 import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
 import { branchPrefixName, validateGitArgs } from "../shared/git";
 import { installUpdate, readyUpdate, startUpdates } from "./update";
+import { newerVersion } from "../shared/update";
 import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "./git";
 import { installedEditors, openInEditor } from "./editors";
 import { machineSample } from "./machine";
@@ -4165,9 +4166,18 @@ function handleSquirrelEvent(): boolean {
 }
 
 const squirrelHandled = handleSquirrelEvent();
-const primaryInstance = squirrelHandled ? false : app.requestSingleInstanceLock();
-if (!primaryInstance && !squirrelHandled) app.quit();
-else app.on("second-instance", () => { void app.whenReady().then(openMain); });
+const primaryInstance = squirrelHandled ? false : app.requestSingleInstanceLock({ version: app.getVersion() });
+if (!primaryInstance && !squirrelHandled) {
+  if (isMac && app.isPackaged) dialog.showErrorBox(
+    "Another copy of Emma is running",
+    `Emma ${app.getVersion()} at ${path.resolve(process.execPath, "../../..")} could not start because Emma is already running. Any Emma window shown belongs to that running copy.\n\nQuit the running Emma with Command-Q. Drag Emma.app from the disk image into Applications, choose Replace if asked, then open Emma from Applications. Replacing the app keeps your settings and conversations.`,
+  );
+  app.quit();
+}
+else app.on("second-instance", (_event, _argv, _cwd, data: unknown) => {
+  if (isMac && app.isPackaged && data && typeof data === "object" && "version" in data && newerVersion(app.getVersion(), data.version)) return;
+  void app.whenReady().then(openMain);
+});
 
 if (primaryInstance) app.whenReady().then(() => {
   if (!app.isPackaged) app.dock?.setIcon(path.join(app.getAppPath(), "assets", "emma-dock.png"));
