@@ -51,8 +51,6 @@ const promptBlock = (context: PromptContext) =>
 
 const settingsBlock = () => improvements.kept.instructions;
 
-export const systemPrompt = () => prompt;
-
 const arms = new Map<string, Arm>();
 const forced = new Map<string, { arm: Arm; at: number }>();
 const MAX_ARMS = 64;
@@ -87,11 +85,6 @@ export function takeArm(threadId: string): Arm | "" {
   const arm = arms.get(threadId) ?? "";
   arms.delete(threadId);
   return arm;
-}
-
-export function verifierLessons(threadId: string): string {
-  const trial = improvements.trial?.lever === "verifier" && armOf(threadId) === "b" ? [improvements.trial.addition] : [];
-  return [improvements.kept.verifier, lessonBlock(trial)].filter(Boolean).join("\n\n");
 }
 
 export function withTrialArm(turn: TurnRequest): TurnRequest {

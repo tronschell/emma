@@ -83,7 +83,6 @@ export function costLabel(costMicroUsd: number | undefined): string {
   return costMicroUsd === undefined ? "—" : `$${(costMicroUsd / 1_000_000).toFixed(6)}`;
 }
 
-export const metricDefinition = (id: ContextMetric) => CONTEXT_METRICS.find((metric) => metric.id === id)!;
 const isMetric = (value: unknown): value is ContextMetric => CONTEXT_METRICS.some((metric) => metric.id === value);
 
 export type WidgetOrientation = "vertical" | "horizontal";

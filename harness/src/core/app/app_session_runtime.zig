@@ -9801,12 +9801,6 @@ const ReconciliationOriginAuth = struct {
     }
 };
 
-const ReconciliationOriginApp = struct {
-    alloc: Allocator = std.testing.allocator,
-    auth: ReconciliationOriginAuth,
-    session: struct { usage: ReconciliationOriginUsage = .{} } = .{},
-};
-
 test "ensureCachedSessionTitle derives from the first prompt and then freezes" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

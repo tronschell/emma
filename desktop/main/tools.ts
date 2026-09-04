@@ -54,7 +54,6 @@ export type TaskListAction = (typeof TASK_LIST_ACTIONS)[number];
 const TASK_LIST_VERBS: Record<TaskListAction, string> = { read: "reading", write: "writing", update: "updating", delete: "deleting" };
 
 export const BROWSER_NAVIGATIONS = ["back", "forward", "reload", "close"] as const;
-export type BrowserNavigation = (typeof BROWSER_NAVIGATIONS)[number];
 export const BROWSER_ACTIONS = ["open", "snapshot", "click", "fill", "type", "press", "hover", "scroll", "get", "eval", "screenshot", "wait", ...BROWSER_NAVIGATIONS] as const;
 export type BrowserAction = (typeof BROWSER_ACTIONS)[number];
 export const BROWSER_FIELDS = ["text", "html", "value", "attr", "title", "url", "count"] as const;
