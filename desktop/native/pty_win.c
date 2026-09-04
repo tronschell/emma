@@ -272,6 +272,7 @@ static int run_pty(int columns, int rows, wchar_t **argv, int argc, HANDLE input
   }
   STARTUPINFOEXW startup = { 0 };
   startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
   startup.lpAttributeList = attributes;
   PROCESS_INFORMATION process = { 0 };
   const BOOL started = CreateProcessW(NULL, command, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, NULL, NULL, &startup.StartupInfo, &process);
