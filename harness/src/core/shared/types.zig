@@ -993,6 +993,13 @@ pub fn parseMicroDollars(text: []const u8) ?u64 {
     return @intCast(micros);
 }
 
+pub fn microDollarsFromFloat(dollars: f64) ?u64 {
+    if (std.math.isNan(dollars) or std.math.isInf(dollars) or dollars < 0) return null;
+    const micros = @round(dollars * 1_000_000.0);
+    if (micros > @as(f64, @floatFromInt(std.math.maxInt(u64)))) return null;
+    return @intFromFloat(micros);
+}
+
 test "parseMicroDollars accepts exact decimal provider costs" {
     try std.testing.expectEqual(@as(?u64, 0), parseMicroDollars("0"));
     try std.testing.expectEqual(@as(?u64, 1), parseMicroDollars("0.000001"));

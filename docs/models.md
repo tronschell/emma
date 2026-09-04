@@ -63,12 +63,12 @@ The picker deals in keys, not raw model ids ([settings.ts](../desktop/shared/set
 | `openrouter:<id>` | A model from the OpenRouter catalog | that id |
 | `router:<id>` | One of the router profiles | that router's whole chain, comma-separated |
 | `provider:<profileId>` | A provider profile | that profile's `modelId`, to that profile's endpoint |
-| `codex:<slug>` | A ChatGPT subscription model exposed by Codex | `codex exec --model <slug>` |
+| `codex:<slug>` | A ChatGPT subscription model | that slug, to Emma's loopback relay onto the ChatGPT plan endpoint |
 | `fallback` | The shipped default | nothing — see below |
 
 `defaultSettings.selectedModel` is `"fallback"` and `favoriteModels` starts as
 `["fallback"]`. `harnessModel()` sends a `model` config option for `openrouter:`,
-`router:` and `provider:`; `codex:` runs the Codex CLI instead of the harness.
+`router:`, `provider:` and `codex:` alike.
 Only `fallback` sends **nothing**, leaving the harness on its own `default_model`.
 
 A key saved as `local:<profileId>` is rewritten to `provider:<profileId>` by
@@ -201,7 +201,7 @@ model catalogs** button sends `force`, which drops the age gate.
 
 [catalog-seed.ts](../desktop/main/catalog-seed.ts) compiles a model snapshot into the
 app for a first launch with neither cache nor network. Regenerate with
-`npm run seed:catalog`, which hits the same public endpoint and needs no
+`npm --prefix desktop run seed:catalog`, which hits the same public endpoint and needs no
 credential.
 
 `contextLength(id)` and `reasoningEfforts(id)` exist because the harness knows
@@ -425,49 +425,49 @@ still: the Gemini CLI terms forbid third-party software reaching Gemini Code
 Assist through that OAuth login, and the sanction falls on the user's account —
 so the binary spawns as itself or not at all. Google AI Plus is not supported.
 
-**A CLI run is a delegated side channel, not the thread model — except Codex.**
-For Claude Code and Gemini CLI the call goes out through the `cli` tool and comes
-back as one tool result; [harness.ts](../desktop/main/harness.ts) only ever
-speaks ACP to `emma-cli`, so neither plan changes which process runs the loop.
-This is not "use Claude as your model" and should not be read as one. Codex is
-the single exception, and the next section says what that costs.
+**A CLI run is a delegated side channel, not the thread model.** The call goes
+out through the `cli` tool and comes back as one tool result;
+[harness.ts](../desktop/main/harness.ts) only ever speaks ACP to `emma-cli`, so
+no plan changes which process runs the loop. This is not "use Claude as your
+model" and should not be read as one. A ChatGPT plan can also answer as a model,
+and that route spawns no binary at all — the next section says how.
 
-### The ChatGPT route runs someone else's agent
+### The ChatGPT route
 
 A GPT row in the catalog offers three buttons, not two: OpenRouter, the metered
-OpenAI key, and **ChatGPT**. The third picks the key `codex:<slug>`, and
-[main.ts](../desktop/main/main.ts) sends that turn to
-[codex.ts](../desktop/main/codex.ts) instead of the harness — `codex exec --json`
-in the workspace, one process per turn, resumed by the `thread_id` Codex hands
-back on `thread.started`.
+OpenAI key, and **ChatGPT**. The third picks the key `codex:<slug>`. The turn
+still runs on Emma's own loop in the harness; only the endpoint changes.
+`chatgptRoute` in [chatgpt.ts](../desktop/main/chatgpt.ts) opens a loopback
+server on `127.0.0.1`, hands the harness that `chatUrl` and a random bearer
+token, and relays each call to
+`https://chatgpt.com/backend-api/codex/responses` — Chat Completions in, the
+Responses API out, streamed back as chat chunks with usage and cached-token
+counts. Emma's system prompt, tool permissions, disabled-tool list and approval
+prompts all apply, because it is Emma's loop.
 
-Be clear about what changes. **Codex runs its own agent loop, its own tools and
-its own sandbox.** Emma's system prompt, its tool permissions, its disabled-tool
-list and its approval prompts do not reach it. Emma passes `sandbox_mode` as
-`workspace-write` and `approval_policy` as `never`, so a ChatGPT-routed turn can
-write anywhere in the workspace without asking. The steps you see in the timeline
-are Codex's `item.started` and `item.completed` events mapped onto Emma's, and
-there is no token-level streaming in `--json`: an answer lands whole, not
-letter by letter.
+No binary is spawned. The credential is the ChatGPT sign-in `codex login` wrote
+to `~/.codex/auth.json`: Emma reads that file, sends its access token as
+`authorization` and the account id as `chatgpt-account-id`, and never writes it
+back or stores a copy. Turns draw on the plan's five-hour window, shared with
+your other ChatGPT use. This is the shape OpenAI documents and ships itself —
+its own [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc)
+drives Codex from a competitor's product under the user's ChatGPT subscription,
+and the [pricing page](https://learn.chatgpt.com/docs/pricing) lists scriptable
+workflows as available on Plus, Pro, Business and Enterprise.
 
-What does not change is the trust story. Emma spawns the unmodified `codex`
-binary you signed in to yourself with `codex login`, and never reads, stores or
-forwards that login — `~/.codex/auth.json` is Codex's file and Emma does not open
-it. This is the shape OpenAI documents and ships itself: its own
-[Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) drives
-Codex from a competitor's product under the user's ChatGPT subscription, and the
-[pricing page](https://learn.chatgpt.com/docs/pricing) lists `codex exec` and
-scriptable workflows as available on Plus, Pro, Business and Enterprise. Turns
-draw on the plan's five-hour window, shared with your other ChatGPT use.
+`responsesRequest` shapes the call the way the plan endpoint expects: leading
+system and developer messages become `instructions`, everything after becomes
+`input`, reasoning items are replayed from `reasoning_details` so the prefix
+stays byte-stable, `store` is false and `include` carries
+`reasoning.encrypted_content`. `prompt_cache_key` becomes the session id on
+every header that names one, and `retainsPromptCache` asks for
+`prompt_cache_retention: "24h"` on the GPT-5 models that still honour it —
+once refused with a 400, it is dropped for the rest of the process.
 
 Picking the route fails loudly rather than silently: `selectCodexModel` refuses a
-slug that is not a plain model id, and refuses outright if `codex` is not on the
-PATH. The same guard sits in `codexArgs`, because a thread's pinned model is a
-second way into the runner and a pin is only length-checked. **Emma always sends
-its own `model_reasoning_effort`**, defaulting to `medium` when the turn has
-none: without that, a `model_reasoning_effort` in your own
-`~/.codex/config.toml` decides Emma's turns, and a global `max` is rejected
-outright by the smaller models.
+slug that is not a plain model id, and refuses outright when
+`~/.codex/auth.json` holds no ChatGPT sign-in. A ChatGPT-plan model cannot take
+a council seat either; the seats call the chat endpoint directly.
 
 The button only appears on rows Codex can actually run. `useCodexSlugs` reads the
 route metadata returned with the live catalog and falls back to Codex's model
@@ -482,12 +482,11 @@ Those rows have one route and no provider buttons.
 
 **Ceilings.** Codex-only rows appear in Settings → Models and in the workspace
 and per-task pickers, with their effective local context window. Quota is not
-read — `codex exec --json` reports per-turn tokens on
-`turn.completed` and nothing about the five-hour window, so a ChatGPT turn shows
-up in the local ledger like any other and the remaining-quota line stays empty.
-Reading quota, and signing in from inside Emma, both need `codex app-server`,
-which is the upgrade path when either becomes worth an experimental JSON-RPC
-surface that has no compatibility policy.
+read — the endpoint reports per-response usage and nothing about the five-hour
+window, so a ChatGPT turn shows up in the local ledger like any other and the
+remaining-quota line stays empty. Signing in from inside Emma still needs
+`codex app-server`, which is the upgrade path when it becomes worth an
+experimental JSON-RPC surface that has no compatibility policy.
 
 **Emma detects installed, not signed in.** `installedClis` resolves each binary
 with `command -v` in a login shell, and the row reads **Installed** with the

@@ -2,7 +2,13 @@
 
 Use one protected development branch (`dev`), one trusted candidate build, and one owner-approved signing/publication job. Keep the current Electron, Rust, Zig, and GitHub toolchain. The actionable problems are repeated builds, branch promotion friction, and a secondary dependency installation that is not locked.
 
-This is a proposal, not an implementation. The reviewed checkout was `d51d07a9f744c78e7a972cb51041a3b4e4a0fbc7`, tree `373111a9e0b96b1f1ec61c75a21d94e5504f5b75`, matching released `main` at `e023f351f41131b07bde759af6cdb0e3f28eea7f`. The dirty development checkout was not used as source evidence. [v0.4.1 is published](https://github.com/tronschell/emma/releases/tag/v0.4.1).
+The CI lane split, promotion packaging gate, and exact-main candidate handoff
+are implemented in the current workflows. Trusted `dev` dispatch, vendor
+locking, and branch-retirement changes below remain proposals. The reviewed
+checkout was `d51d07a9f744c78e7a972cb51041a3b4e4a0fbc7`, tree
+`373111a9e0b96b1f1ec61c75a21d94e5504f5b75`, matching released `main` at
+`e023f351f41131b07bde759af6cdb0e3f28eea7f`. The dirty development checkout was
+not used as source evidence. [v0.4.1 is published](https://github.com/tronschell/emma/releases/tag/v0.4.1).
 
 ## What this release measured
 
@@ -62,9 +68,15 @@ This is evidence of a feature compatibility gap, not proof that the entire app f
 
 ### 3. Run Zig tests alongside desktop/Rust/package checks
 
-The current single macOS job serializes everything. Put `zig build test` on a second macOS runner while the existing desktop/Rust/package sequence runs on the first. Keep one required final `check` that fails if either lane fails, is cancelled, or is unexpectedly skipped. Apply the same commands to trusted release preparation. Use existing scripts; no task scheduler or build framework is needed. [Current CI](https://github.com/tronschell/emma/blob/e023f351f41131b07bde759af6cdb0e3f28eea7f/.github/workflows/ci.yml)
+The current CI runs `zig build test` on a second macOS runner while the desktop
+and Rust checks run on the first. A required final `check` fails if either lane
+fails, is cancelled, or is unexpectedly skipped. Promotion PRs and main pushes
+use a separate package lane; main packages the exact commit for the trusted
+handoff. [Current CI](https://github.com/tronschell/emma/blob/e023f351f41131b07bde759af6cdb0e3f28eea7f/.github/workflows/ci.yml)
 
-Delete the standalone CI `build:native` invocation: packaging already builds the helpers and runs their self-tests. That duplication cost 6–8s in the measured runs. Leave fresh production builds under `package:mac`'s ownership instead of adding general “skip build” flags. Keep Debug tests and the packaged ReleaseSafe harness; one does not substitute for the other.
+The standalone CI `build:native` invocation remains on ordinary feature PRs and
+is omitted where `package:mac` owns the helper build. Keep Debug tests and the
+packaged ReleaseSafe harness; one does not substitute for the other.
 
 **Estimate:** observed lane timings suggest **6–8 minutes** per complete validation/package stage after splitting, plus approximately **3–4 minutes** for signing/publication and transfer. Together with proposal 1, a release could take roughly **10–14 minutes after dispatch**, excluding owner waiting. These are critical-path estimates, not measured results or billing savings; extra runner setup and cache misses may offset some gain. Measure the first three runs before further optimization.
 
@@ -94,7 +106,7 @@ If those features matter, retain the locked payload. Downloading executable back
 1. Land vendor locking, recursive native checks, documentation cleanup, the duplicate native-build deletion, and the verified cache-action update through normal PRs. Re-run all six checks, package, and exercise the real app. Resolve the backend OS support decision explicitly.
 2. Add the trusted preparation artifact and local seal/verify command. Rehearse the artifact handoff without Apple secrets, including permissions, symlinks, checksum failure, and the packaged backend imports. Compare its reported source SHA with its embedded harness commit.
 3. Have the owner configure the publication environment and future immutability. Rehearse a non-publishing run from protected `dev`; verify that other refs cannot use signing credentials and failed preparation cannot reach publication. Keep today's release path until this is proven. Then update the repository contract and retire promotion PRs.
-4. Split the Zig lane, retaining the required aggregate check. Use the first three successful runs to decide whether caches or more parallelism are worth additional configuration.
+4. Measure the split Zig lane and candidate handoff across the first three successful runs before deciding whether caches or more parallelism are worth additional configuration.
 
 Retain full PR and candidate checks; production ReleaseSafe packaging; portable symlinks and dependency notices; native architecture/OS/dependency validation; real-app exercise of changed interactions; strict signature verification; notarization acceptance; stapler validation; Gatekeeper acceptance; and temporary credential cleanup. Keep the root version authoritative, release title exactly `vX.Y.Z`, and asset suffix `darwin-arm64.zip`. The updater uses the published release name and platform/architecture asset selection. [Emma updater](https://github.com/tronschell/emma/blob/e023f351f41131b07bde759af6cdb0e3f28eea7f/desktop/main/update.ts), [feed naming contract](https://github.com/electron/update.electronjs.org#asset-naming-convention)
 

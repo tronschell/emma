@@ -16,10 +16,11 @@
     "seed:catalog": "npm run build:main && node scripts/seed-catalog.mjs",
     "start": "npm run build:host && npm run build:native && npm run vendor:ripgrep && npm run vendor:zvec-grep && npm run build && electron .",
     "test": "npm run build:main && node --test --test-timeout=60000 dist-main/test/*.test.js test/*.test.mjs",
-    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "typecheck": "tsc -p tsconfig.renderer.json --noEmit",
     "lint": "eslint . --max-warnings 0",
     "check": "npm run test && npm run typecheck && npm run lint && npm run build:renderer",
     "package:mac": "node scripts/package-mac.mjs",
+    "dmg:mac": "node scripts/dmg-mac.mjs",
     "package:win": "node scripts/package-windows.mjs"
   },
   "devDependencies": {

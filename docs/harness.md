@@ -87,18 +87,20 @@ way out.
 
 ### Emma's, appended natively
 
-Emma's 26 tools are appended to the same registry as `++ emma_tools.all`, so the
+Emma's 28 tools are appended to the same registry as `++ emma_tools.all`, so the
 harness advertises and dispatches them and Electron runs them. One shared
 implementation, [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig);
 only the spec differs per tool.
 
 | Group | File | Tools |
 | --- | --- | --- |
-| Threads and agents | [`emma/threads.zig`](../harness/src/builtins/emma/threads.zig) | `threads`, `context`, `plan`, `agents`, `read_trace` |
-| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `workflow`, `visualize`, `autoresearch` |
-| System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `computer`, `advisor`, `install_mcp` |
+| Threads and agents | [`emma/threads.zig`](../harness/src/builtins/emma/threads.zig) | `threads`, `context`, `plan`, `goal`, `agents`, `read_trace` |
+| Task list | [`emma/task_list.zig`](../harness/src/builtins/emma/task_list.zig) | `task_list` — the one Emma tool advertised without a `select_tool` |
+| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `component`, `workflow`, `visualize`, `autoresearch` |
+| System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `advisor`, `install_mcp`, `computer`, `secret` |
 | Extensions | [`emma/extensions.zig`](../harness/src/builtins/emma/extensions.zig) | `write_tool`, `run_tool`, `write_skill`, `write_plugin` |
 | Browser | [`emma/browser.zig`](../harness/src/builtins/emma/browser.zig) | `browser` |
+| Shortcuts | [`emma/shortcuts.zig`](../harness/src/builtins/emma/shortcuts.zig) | `shortcut` |
 | Name collisions | [`emma/overrides.zig`](../harness/src/builtins/emma/overrides.zig) | `memory`, `look_at_image`, `web_search` |
 
 `Registry.lookup` returns the first match, so a duplicate name is a bug.
@@ -134,6 +136,18 @@ for.
 - `select_tool {name}` — splices one exact schema into the next model step. No
   preceding search needed. A denied, `.never`, or unknown name answers
   `Tool not found: <name>`.
+- `session/set_config_option {configId: "tool_hints"}` — a JSON object string
+  `{"<tool name>": "<description>"}`. Each named registered tool is advertised,
+  and returned by `search_tools`, with that description instead of its own.
+  Unknown names are ignored, the value is capped at 16 KiB and each description
+  at 2 KiB, invalid JSON is rejected and leaves the previous hints in place, and
+  an empty object clears them.
+- `session/set_config_option {configId: "preselect"}` — comma-separated tool
+  names. Each named `.on_select` tool is advertised as if it were `.always` from
+  the next step on, in addition to the base set. Unknown names are ignored,
+  `.never` tools cannot be promoted, and an empty value clears the list. Both
+  options are per session, and Emma re-sends them every turn so an experiment
+  arm cannot leak into the next one.
 
 This is a prompt-cost mechanism, **not** a security boundary. A hidden tool is
 still registered and still runs under exactly its usual permission rules.
@@ -284,7 +298,7 @@ fourteen:
 | `session/close` | Flushes usage, drops the active session |
 | `session/prompt` | Runs one turn |
 | `session/compact` | Folds history. Refused mid-turn |
-| `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments`, `semantic_grep` |
+| `session/set_config_option` | `model`, `mode`, `context_window`, `reasoning_effort`, `context_experiments`, `semantic_grep`, `tool_hints`, `preselect`, `agent_step_limit`, `image_input` |
 | `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
 | `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
 | `session/steer` | Cuts into the running turn: the tool call or model stream in flight is aborted, and the same turn carries on with `content` as its next user message. Refused when no turn is running, over 16 KiB, or more than 8 deep |
@@ -601,17 +615,17 @@ permission-denied result is sent whole, not previewed.
 ## Standing instructions
 
 Emma does not send her system prompt over the wire. `writeHarnessPrompt` in
-[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes two files instead,
-both read by [`builtins/context.zig`](../harness/src/builtins/context.zig) out of
+[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes a file instead,
+read by [`builtins/context.zig`](../harness/src/builtins/context.zig) out of
 the `HOME` Emma gives the child:
 
 | File | Is |
 | --- | --- |
-| `.fx/system-prompt.md` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. |
-| `.fx/AGENTS.md` | Any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
+| `.fx/system-prompt-<hash>.md`, named in `EMMA_SYSTEM_PROMPT` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. `.fx/system-prompt.md` is the fallback when the variable is unset. |
+| `.fx/AGENTS.md` | Written empty. Kept improvements loaded here as `<global-rules>` until they moved into the prompt file. |
 
-Both are rewritten per turn, and only when they changed. The one thing that can
-live in neither is a per-turn A/B arm; that rides the turn's skill context.
+It is rewritten per turn, so a kept improvement, a scoped preset and a per-turn
+A/B arm all ride it directly.
 
 Skills work the same way — see
 [plugins.md](plugins.md#bundled-skills) for `mirrorSkillsToHarness`.
@@ -642,10 +656,10 @@ npm --prefix desktop run build:harness   # the one script
 (cd harness && zig build test)           # the only Zig test suite in the repo
 ```
 
-`build:host` chains it after `emma-host`, and the package scripts run
-`zig build -Doptimize=ReleaseSafe` inline. Nothing else builds `emma-cli` —
-`npm start`, `npm run build`, and `npm run check` do not, so a stale binary
-survives all three. A checkout uses `harness/zig-out/bin/emma-cli` on macOS or
+`build:host` chains it after `emma-host` — so `npm run dev` and `npm start`
+reach it that way — and the package scripts run `zig build -Doptimize=ReleaseSafe`
+inline. Nothing else builds `emma-cli`: `npm run build` and `npm run check` do
+not, so a stale binary survives both. A checkout uses `harness/zig-out/bin/emma-cli` on macOS or
 `harness/zig-out/bin/emma-cli.exe` on Windows (`DEV_BINARIES` in `main.ts`); a
 packaged app has it in its resources directory (`Emma.app/Contents/Resources/`
 on macOS, `resources/` on Windows).

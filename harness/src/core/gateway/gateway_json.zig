@@ -1011,6 +1011,7 @@ fn parseMicroDollarsValue(value: ?std.json.Value) ?u64 {
             std.math.mul(u64, std.math.cast(u64, number) orelse return null, 1_000_000) catch null
         else
             null,
+        .float => |number| types.microDollarsFromFloat(number),
         .object => parseMicroDollarsValue(actual.object.get("total")),
         else => null,
     };
@@ -1697,6 +1698,15 @@ test "gateway request validation rejects mismatched tool result names" {
     };
 
     try std.testing.expectError(error.InvalidGatewayHistory, buildGatewayRequestBodyWithOptions(alloc, "[]", &messages, .{}, .auto));
+}
+
+test "parseMicroDollarsValue converts a JSON float cost to micro-dollars" {
+    try std.testing.expectEqual(@as(?u64, 4200), parseMicroDollarsValue(.{ .float = 0.0042 }));
+    try std.testing.expectEqual(@as(?u64, 0), parseMicroDollarsValue(.{ .float = 0.0 }));
+    try std.testing.expectEqual(@as(?u64, 1), parseMicroDollarsValue(.{ .float = 0.0000006 }));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollarsValue(.{ .float = -0.5 }));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollarsValue(.{ .float = std.math.nan(f64) }));
+    try std.testing.expectEqual(@as(?u64, null), parseMicroDollarsValue(.{ .float = std.math.inf(f64) }));
 }
 
 test "parseGatewayCompletion duplicates returned strings" {

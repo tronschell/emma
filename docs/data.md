@@ -187,7 +187,7 @@ Scheduled jobs are `emma-scheduled-job-format: 4`, research records
 | `installed-plugins.json` | | Plugins installed from the Plugins page: id, marketplace, version, contributed skill and MCP paths |
 | `plugin-hooks.json` | | Hash of each plugin lifecycle hook you reviewed. Nothing runs without a match, so editing a hook on disk turns it off |
 | `mobile-peers.json` | `0600` in `0700` | A list of up to three `{key, name, addr, pin, verified, pairedAt}` records, one per paired phone, where `pairedAt` doubles as the device's id. A single-object `mobile-peer.json` written by an older Emma is read once and retired. `key` is base64 `safeStorage` ciphertext and `pin` is a scrypt hash, never the PIN; pairing is refused outright when the keychain is unavailable. A record that fails to decrypt, whose `addr` is not a `ws://host:port`, or that was never proved with a PIN, loads as no pairing ([pairing.ts](../desktop/main/pairing.ts)) |
-| `openrouter-catalog.json` | `0600` | `{fetchedAt, models[]}`. Prices are micro-dollars per million tokens so the math stays integer. The offline first-launch list is compiled into [catalog-seed.ts](../desktop/main/catalog-seed.ts); `npm run seed:catalog` refreshes it |
+| `openrouter-catalog.json` | `0600` | `{fetchedAt, models[]}`. Prices are micro-dollars per million tokens so the math stays integer. The offline first-launch list is compiled into [catalog-seed.ts](../desktop/main/catalog-seed.ts); `npm --prefix desktop run seed:catalog` refreshes it |
 | `artifacts/<id>/meta.json` | `0600` in `0700` | `{id, title, kind, language, createdAt, updatedAt, version, surface?, sourceThreadId?, sourceJobId?}` |
 | `artifacts/<id>/content.<ext>` | `0600` | `markdown`→`md`, `code`→`txt`, `html`/`app`→`html`, `svg`→`svg`, `mermaid`→`mmd`, `react`→`jsx`. An `app` artifact may also hold `data.sqlite` |
 | `components/<id>/meta.json` | `0600` in `0700` | `{id, title, createdAt, updatedAt, version, expands?, variables?, disabled?, sourceThreadId?}` |
@@ -207,6 +207,7 @@ Scheduled jobs are `emma-scheduled-job-format: 4`, research records
 | `marketplaces/<id>/` | | A Git marketplace's shallow checkout. A local marketplace is read where it sits |
 | `marketplaces/.remote/<marketplace>/<plugin>/` | | A plugin whose entry points elsewhere: cloned there, or unpacked under `package/` from `npm pack`. Replaced wholesale on reinstall |
 | `marketplaces/emma/` | | The marketplace Emma writes into: `.agents/plugins/marketplace.json` plus `plugins/<name>/` per `write_plugin` |
+| `update-ready.json` | | `{version}` of an update Squirrel downloaded, so the notice survives a quit. Deleted once the running version is no longer older ([update.ts](../desktop/main/update.ts)) |
 | `harness/` | | `emma-cli`'s entire `HOME` — see below |
 
 Chromium adds `Cache`, `Code Cache`, `Cookies`, `Local Storage`,
@@ -214,7 +215,7 @@ Chromium adds `Cache`, `Code Cache`, `Cookies`, `Local Storage`,
 and friends to the same directory. Emma writes none of those.
 
 Two things Emma deliberately keeps **off** disk: `visualize` output lives in an
-in-memory `Map` served over the `visual:` scheme
+in-memory `Map` served over the `emma-visual:` scheme
 ([visuals.ts](../desktop/main/visuals.ts)), and terminal sessions
 ([terminal.ts](../desktop/main/terminal.ts)) write nothing. Git worktrees the
 agent creates go to `<parent>/<repo>-worktrees/<name>`, beside your checkout,
@@ -251,7 +252,8 @@ inside Emma's data. Names from
 
 | Path | What it is |
 | --- | --- |
-| `.fx/AGENTS.md` | Instructions Emma writes for the harness — model, workspace, mode, disabled tools ([system-prompt.ts:164](../desktop/main/system-prompt.ts#L164)) |
+| `.fx/system-prompt-<hash>.md` | The resolved system prompt for one model key — model, workspace, mode, disabled tools, kept improvements. Named to the child in `EMMA_SYSTEM_PROMPT` ([system-prompt.ts](../desktop/main/system-prompt.ts)) |
+| `.fx/AGENTS.md` | Written empty every turn |
 | `.fx/skills/<slug>/SKILL.md` | A mirror of every skill Emma can see, minus anything disabled. Rewritten on every capability change; a slug the mirror no longer covers is deleted |
 | `.fx/sessions/<id>/` | One harness session: `session.json`, `events.jsonl`, `checkpoint.json`, `authority.json`, `usage-v2.json`, lock files, `artifacts/`, `subagent/` |
 | `.fx/settings.json`, `.fx/mcp.json` | The harness's own settings and MCP config |
@@ -262,8 +264,10 @@ inside Emma's data. Names from
 | `.fx/logs/trace.log`, `.fx/recordings/`, `.fx/backups/` | Trace log, `.fxtape` recordings, backups |
 
 `~/.codex/config.toml` and the other agent-tool config files are **read** at
-import time ([imports.ts](../desktop/main/imports.ts)); Emma writes nothing into
-them and copies nothing here.
+import time ([imports.ts](../desktop/main/imports.ts)), and
+`~/.codex/auth.json` is read on every ChatGPT-plan turn
+([chatgpt.ts](../desktop/main/chatgpt.ts)); Emma writes nothing into them and
+copies nothing here.
 
 ## Inside the app bundle
 

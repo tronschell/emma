@@ -1,4 +1,5 @@
 const std = @import("std");
+const tool_overrides_mod = @import("tool_overrides.zig");
 const background_runtime = @import("../background/background_runtime.zig");
 const command_admission = @import("../permissions/command_admission.zig");
 const core_permissions = @import("../permissions/permissions.zig");
@@ -288,6 +289,7 @@ pub const DispatchContext = struct {
     mcp_call_status_sink: ?*?tool_mcp_runtime.CallStatus = null,
     mcp_execution_error_sink: ?*?anyerror = null,
     mcp_permission_rules: core_types.PermissionRuleSet = .{},
+    tool_overrides: tool_overrides_mod.Overrides = .{},
     selected_dynamic_tool_ctx: ?*anyopaque = null,
     on_selected_dynamic_tool: ?SelectedDynamicToolSinkFn = null,
     context_notice_ctx: ?*anyopaque = null,

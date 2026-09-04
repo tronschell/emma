@@ -17,12 +17,12 @@ test("plain replies are left alone, and an unclosed block is all scratchpad", ()
 
 test("a model's thinking stops are its own, and every model starts on its own default", () => {
   const three = { reasoningEfforts: ["max", "high", "low"], reasoningMandatory: false };
-  assert.deepEqual(thinkingStops(three), ["", "off", "low", "high", "max"]);
-  assert.equal(thinkingStops(three)[0], "");
+  assert.deepEqual(thinkingStops(three), ["off", "", "low", "high", "max"]);
+  assert.equal(thinkingStops(three)[0], "off", "off is the zero rung, default the one above it");
 
   assert.deepEqual(thinkingStops({ reasoningEfforts: ["high", "medium", "low"], reasoningMandatory: true }), ["", "low", "medium", "high"]);
-  assert.deepEqual(thinkingStops({ reasoningEfforts: ["none", "high"] }), ["", "none", "high"]);
-  assert.deepEqual(thinkingStops({ reasoningEfforts: ["future_mode", "ultra", "low"] }), ["", "off", "low", "ultra", "future_mode"]);
+  assert.deepEqual(thinkingStops({ reasoningEfforts: ["none", "high"] }), ["none", "", "high"]);
+  assert.deepEqual(thinkingStops({ reasoningEfforts: ["future_mode", "ultra", "low"] }), ["off", "", "low", "ultra", "future_mode"]);
 
   assert.deepEqual(thinkingStops({}), []);
 });

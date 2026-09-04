@@ -1,7 +1,9 @@
 name: release
 
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -14,27 +16,111 @@ concurrency:
 
 jobs:
   release:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'ci' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
+      actions: read
       contents: write
     env:
       MACOSX_DEPLOYMENT_TARGET: '12.0'
       GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
 
       - name: skip when this version is already released
         id: version
         run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           TAG="v$(node -p 'require("./package.json").version')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "$TAG is already released; bump the root package.json version on dev to publish again."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: download the release candidate
+        if: github.event_name == 'workflow_run' && steps.version.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: emma-release-candidate
+          path: ${{ runner.temp }}/emma-release-candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: verify and extract the release candidate
+        if: github.event_name == 'workflow_run' && steps.version.outputs.skip != 'true'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          CANDIDATE="$RUNNER_TEMP/emma-release-candidate"
+          ARCHIVE_NAME="Emma-darwin-arm64.zip"
+          CHECKSUM_NAME="Emma-darwin-arm64.zip.sha256"
+          ARCHIVE="$CANDIDATE/$ARCHIVE_NAME"
+          CHECKSUM="$CANDIDATE/$CHECKSUM_NAME"
+          MANIFEST="$CANDIDATE/manifest.json"
+          test -f "$ARCHIVE"
+          test -f "$CHECKSUM"
+          test -f "$MANIFEST"
+          SOURCE_SHA="$(jq -er '.source_sha | strings' "$MANIFEST")"
+          VERSION="$(jq -er '.version | strings' "$MANIFEST")"
+          RUN_ID="$(jq -er '.workflow_run_id | tostring' "$MANIFEST")"
+          EXPECTED_VERSION="$(node -p 'require("./package.json").version')"
+          test "$SOURCE_SHA" = "$EXPECTED_SOURCE_SHA"
+          test "$VERSION" = "$EXPECTED_VERSION"
+          test "$RUN_ID" = "$EXPECTED_RUN_ID"
+          test "$(awk 'NF == 2 { print $2; next } { exit 1 }' "$CHECKSUM")" = "$ARCHIVE_NAME"
+          (cd "$CANDIDATE" && shasum -a 256 -c "$CHECKSUM_NAME")
+          mkdir -p desktop/release
+          ditto -x -k "$ARCHIVE" desktop/release
+          APP="desktop/release/Emma-darwin-arm64/Emma.app"
+          test -x "$APP/Contents/MacOS/Emma"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
+          test "$(plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = 'com.tronschell.emma'
+
+      - uses: actions/setup-node@v5
+        if: steps.version.outputs.skip != 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: collect the changelog since the last published release
+        if: steps.version.outputs.skip != 'true'
+        run: GITHUB_SHA="$RELEASE_SHA" node desktop/scripts/release-notes.mjs > "$RUNNER_TEMP/emma-release-notes.md"
+
+      - name: setup-zig v2.2.1
+        if: steps.version.outputs.skip != 'true' && github.event_name == 'workflow_dispatch'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+
+      - name: install the locked release dependencies
+        if: steps.version.outputs.skip != 'true'
+        env:
+          npm_config_ignore_scripts: ${{ github.event_name == 'workflow_run' }}
+        run: npm ci --no-audit --no-fund
+        working-directory: desktop
+
+      - if: steps.version.outputs.skip != 'true' && github.event_name == 'workflow_dispatch'
+        run: npm run package:mac
 
       - name: require the Apple signing and notarization credentials
         if: steps.version.outputs.skip != 'true'
@@ -51,30 +137,6 @@ jobs:
               exit 1
             fi
           done
-
-      - uses: actions/setup-node@v5
-        if: steps.version.outputs.skip != 'true'
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-
-      - name: collect the changelog since the last published release
-        if: steps.version.outputs.skip != 'true'
-        run: node desktop/scripts/release-notes.mjs > "$RUNNER_TEMP/emma-release-notes.md"
-
-      - name: setup-zig v2.2.1
-        if: steps.version.outputs.skip != 'true'
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        with:
-          version: 0.16.0
-
-      - if: steps.version.outputs.skip != 'true'
-        run: npm ci
-        working-directory: desktop
-
-      - if: steps.version.outputs.skip != 'true'
-        run: npm run package:mac
 
       - name: import the Developer ID Application certificate
         if: steps.version.outputs.skip != 'true'
@@ -119,19 +181,42 @@ jobs:
           xcrun stapler validate desktop/release/Emma-darwin-arm64/Emma.app
           spctl --assess --type execute --verbose=2 desktop/release/Emma-darwin-arm64/Emma.app
 
+      - name: build, sign, notarize and staple the disk image
+        if: steps.version.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          umask 077
+          npm run dmg:mac
+          DMG="desktop/release/Emma-$TAG-darwin-arm64.dmg"
+          IDENTITY="$(security find-identity -v -p codesigning "$RUNNER_TEMP/emma-signing.keychain-db" | awk -F'"' '/Developer ID Application:/ { print $2; exit }')"
+          codesign --sign "$IDENTITY" --keychain "$RUNNER_TEMP/emma-signing.keychain-db" --timestamp --force "$DMG"
+          codesign --verify --strict --verbose=2 "$DMG"
+          xcrun notarytool submit "$DMG" --key "$RUNNER_TEMP/emma-api-key.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER" --wait --timeout 20m --output-format json > "$RUNNER_TEMP/emma-dmg-notary-result.json"
+          if ! jq -e '.status == "Accepted"' "$RUNNER_TEMP/emma-dmg-notary-result.json"; then
+            xcrun notarytool log "$(jq -r '.id' "$RUNNER_TEMP/emma-dmg-notary-result.json")" --key "$RUNNER_TEMP/emma-api-key.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
       - name: publish the release with generated notes
         if: steps.version.outputs.skip != 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "Emma-$TAG-darwin-arm64.zip"
+          cp "desktop/release/Emma-$TAG-darwin-arm64.dmg" "Emma-$TAG-darwin-arm64.dmg"
           shasum -a 256 "Emma-$TAG-darwin-arm64.zip" > "Emma-$TAG-darwin-arm64.zip.sha256"
-          gh release create "$TAG" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/emma-release-notes.md" --latest
+          shasum -a 256 "Emma-$TAG-darwin-arm64.dmg" > "Emma-$TAG-darwin-arm64.dmg.sha256"
+          gh release create "$TAG" "Emma-$TAG-darwin-arm64.dmg" "Emma-$TAG-darwin-arm64.dmg.sha256" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/emma-release-notes.md" --latest
 
       - name: remove the temporary signing credentials
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/emma-cert.p12" "$RUNNER_TEMP/emma-api-key.p8" "$RUNNER_TEMP/emma-notarize.zip" "$RUNNER_TEMP/emma-notary-result.json"
+          rm -f "$RUNNER_TEMP/emma-cert.p12" "$RUNNER_TEMP/emma-api-key.p8" "$RUNNER_TEMP/emma-notarize.zip" "$RUNNER_TEMP/emma-notary-result.json" "$RUNNER_TEMP/emma-dmg-notary-result.json"
           if [ -f "$RUNNER_TEMP/emma-signing.keychain-db" ]; then
             security delete-keychain "$RUNNER_TEMP/emma-signing.keychain-db"
           fi

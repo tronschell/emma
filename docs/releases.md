@@ -26,10 +26,12 @@ gh pr create --base dev
 1. On `dev`, bump the root `package.json` version in a normal PR, or run
    `npm version patch --no-git-tag-version` and commit it.
 2. Open a `dev` → `main` PR and merge it with **Create a merge commit**.
-3. The push to `main` runs the `release` workflow. It reads the version from
-   the root `package.json`, skips if that release already exists, and otherwise
-   packages, signs, notarizes, staples, checks Gatekeeper, and publishes
-   `vX.Y.Z` with the automatically collected changelog.
+3. The promotion PR carries the required checks. After it is merged, the push
+   to `main` runs `ci` against the exact promoted commit and packages an unsigned
+   candidate. The successful candidate workflow then triggers `release`, which
+   verifies that candidate, signs, notarizes, staples, checks Gatekeeper, and
+   publishes `vX.Y.Z` with the automatically collected changelog. A manual
+   release dispatch retains a direct package fallback.
 
 There is no changelog file, release PR, manifest, or tag to manage. The
 GitHub Releases page is the changelog. Merging `main` again with an unchanged
@@ -71,21 +73,46 @@ or changing anything. References resolve on GitHub, independent of local tags.
 
 Published macOS assets appear in [GitHub Releases](https://github.com/tronschell/emma/releases):
 
+- `Emma-vX.Y.Z-darwin-arm64.dmg`
+- `Emma-vX.Y.Z-darwin-arm64.dmg.sha256`
 - `Emma-vX.Y.Z-darwin-arm64.zip`
 - `Emma-vX.Y.Z-darwin-arm64.zip.sha256`
 
-Extract the zip and move `Emma.app` into Applications. The package includes its
-Rust host, Zig harness, ripgrep, native helpers, bundled skills, and dependency
-notices. End users do not need Node, Rust, Zig, or Xcode installed.
+The disk image is the human download: open it and drag Emma onto the
+Applications alias beside it. `scripts/dmg-mac.mjs` builds it from the stapled
+app, and the release job signs, notarizes and staples the image itself.
+
+Installing into Applications is not cosmetic. Squirrel replaces the bundle it
+is running from, so a copy left in Downloads updates itself and leaves the one
+in Applications behind. Worse, a browser marks that copy with the quarantine
+attribute, and macOS runs a quarantined app the user never moved from a
+read-only translocated path, where Squirrel cannot write at all and updates can
+never apply.
+
+The package includes its Rust host, Zig harness, ripgrep, native helpers,
+bundled skills, and dependency notices. End users do not need Node, Rust, Zig,
+or Xcode installed.
 
 The release title is exactly `vX.Y.Z` and the stable `darwin-arm64.zip` asset
-is the one the `update.electronjs.org` feed selects. Keep both. Drafts and
-prereleases are not stable updates.
+is the one the `update.electronjs.org` feed selects. Keep both, and keep
+publishing the zip whatever else ships beside it. Drafts and prereleases are
+not stable updates.
 
-On macOS, a packaged app checks the feed at launch and every six hours. Squirrel
-downloads a newer eligible version in the background. Only after the download
-finishes does Emma show **Update ready · X.Y.Z** with **Install and relaunch**.
-The unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
+On macOS, a packaged app checks the feed at launch, on a five-minute tick, when
+the machine wakes, and when a window takes focus, with any check inside thirty
+minutes of the last one skipped. Wake and focus matter because a sleeping Mac
+suspends the timer, so a window left open for days would otherwise never check
+again. **Check for Updates…** in the Emma menu forces one past that gap and
+reports the result either way. Squirrel downloads a newer eligible version in
+the background, and Emma shows **Update ready · X.Y.Z** with **Install and
+relaunch** once the download finishes.
+
+The downloaded version is recorded in `update-ready.json` under the user data
+directory, so quitting no longer forgets it and the notice returns on the next
+launch. Squirrel can only install an update this process downloaded, so
+installing from a restored notice re-downloads first and then relaunches. The
+record is deleted once the running version is no longer older than it. The
+unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
 
 Windows CI runs tests only. Windows packaging, signing, and publication are not
 wired into any workflow yet.

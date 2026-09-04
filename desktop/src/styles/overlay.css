@@ -86,9 +86,11 @@
 .island .mode-menu { order: 5; flex: none; position: static; width: auto; max-height: 190px; overflow-y: auto; padding: 0; border: 0; border-top: 1px solid var(--border); box-shadow: none; animation: model-band var(--t) ease-out; }
 .island .mode-row { padding-inline: var(--s-4); }
 
+.island .thinking-menu { order: 6; flex: none; position: static; width: auto; padding: var(--s-3) var(--s-4); border: 0; border-top: 1px solid var(--border); box-shadow: none; animation: model-band var(--t) ease-out; }
+
 .island-foot .mode-picker { flex: 0 0 auto; }
 .island-foot .mode-trigger { font-size: var(--fs-xs); }
-.island-foot .model-button { margin-right: auto; }
+.island-model { display: flex; align-items: center; gap: var(--s-1); flex: 0 1 auto; min-width: 0; margin-right: auto; }
 
 .island .slash-menu { order: 2; flex: none; position: static; width: auto; max-height: 170px; overflow-y: auto; padding: var(--s-1) 0; border: 0; border-top: 1px solid var(--border); box-shadow: none; animation: model-band var(--t) ease-out; }
 .island .slash-row { padding-inline: var(--s-4); }

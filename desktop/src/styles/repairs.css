@@ -40,14 +40,33 @@
 
 i.repairs-hue-instructions { background: var(--teal); }
 i.repairs-hue-verifier { background: var(--violet); }
+i.repairs-hue-tools { background: var(--orange); }
 i.repairs-hue-none { background: var(--text-3); }
 
 .repairs-rows { display: grid; }
-.repairs-rows > div { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); margin-inline: calc(var(--s-4) * -1); padding: var(--s-2) var(--s-4); color: var(--text-2); font: var(--fs-2xs)/1.5 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; overflow: hidden; }
-.repairs-rows > div + div { border-top: 1px solid var(--border); }
-.repairs-rows > div > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repairs-rows > :is(div, button) { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); margin-inline: calc(var(--s-4) * -1); padding: var(--s-2) var(--s-4); color: var(--text-2); font: var(--fs-2xs)/1.5 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; overflow: hidden; }
+.repairs-rows > :is(div, button) + :is(div, button) { border-top: 1px solid var(--border); }
+.repairs-rows > :is(div, button) > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repairs-rows > button { border: 0; background: transparent; text-align: left; }
+.repairs-rows > button:hover { background: var(--surface-2); }
+.repairs-rows > button[aria-pressed="true"] { background: var(--surface-4); box-shadow: inset 2px 0 var(--accent); color: var(--text); }
+.repairs-rows > button small { display: block; color: var(--text-3); letter-spacing: normal; text-transform: none; }
+.repairs-models { display: grid; gap: var(--s-3); }
+.repairs-models .repairs-rows { max-height: 260px; overflow-y: auto; margin-inline: calc(var(--s-4) * -1); }
+.repairs-models .repairs-rows > button { margin-inline: 0; }
+.repairs-all { display: flex; justify-content: space-between; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-xs)/1.4 var(--font-mono); }
+.repairs-all[aria-pressed="true"] { border-color: var(--accent); color: var(--text); }
+.repairs-scope, .repairs-scope-select { display: inline-flex; align-items: center; gap: var(--s-2); min-width: 0; color: var(--text-2); font: var(--fs-2xs)/1.5 var(--font-mono); }
+.repairs-scope .repairs-mark, .repairs-scope-select .repairs-mark { flex-shrink: 0; }
+.repairs-scope-select select { min-width: 0; max-width: 100%; }
+.repairs-evidence-models { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-block: var(--s-3); }
+.repairs-evidence-models button { display: inline-flex; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--border); background: transparent; color: var(--text-2); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.repairs-evidence-models small { color: var(--text-3); }
 .repairs-rows b { color: var(--text-2); font: var(--fs-sm)/1 var(--font-mono); font-weight: 400; }
 .repairs-rows svg { color: var(--text-3); }
+.repairs-spend > div { grid-template-columns: 16px minmax(0, 1fr) auto auto; }
+.repairs-spend button { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.repairs-spend button:disabled { color: var(--text-3); }
 .repairs-mark { display: block; width: 14px; height: 14px; object-fit: contain; }
 
 .repairs-foot { display: grid; gap: var(--s-3); }
@@ -63,6 +82,14 @@ i.repairs-hue-none { background: var(--text-3); }
 .repairs-list { min-width: 0; }
 .repairs-list > header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--s-3); padding: var(--s-4); border-bottom: 1px solid var(--border); }
 .repairs-list > header small { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.repairs-list > header > button { padding: var(--s-2); border: 1px solid var(--border-strong); background: transparent; color: var(--text); font: var(--fs-2xs)/1.4 var(--font-mono); }
+.repairs-list > header > button:disabled { color: var(--text-3); }
+.repairs-evidence { margin-top: var(--s-4); border: 1px solid var(--border); }
+.repairs-evidence summary { padding: var(--s-3); cursor: pointer; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); }
+.repairs-evidence > details, .repairs-evidence details details { border-top: 1px solid var(--border); }
+.repairs-evidence > details > summary { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-3); }
+.repairs-evidence pre { max-height: 400px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: var(--s-3); font: var(--fs-xs)/1.5 var(--font-mono); }
+.repairs-evidence > p { padding: var(--s-3); }
 .repairs-list > details { border-bottom: 1px solid var(--border); }
 .repairs-list > details > summary { display: grid; grid-template-columns: 16px 16px 108px minmax(0, 1fr) auto; align-items: baseline; gap: var(--s-3); padding: var(--s-3) var(--s-4); cursor: pointer; list-style: none; transition: background-color var(--t); }
 .repairs-list > details > summary::-webkit-details-marker { display: none; }
@@ -78,6 +105,7 @@ i.repairs-hue-none { background: var(--text-3); }
 .repairs-lever { font: var(--fs-xs)/1.4 var(--font-mono); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .repairs-lever.repairs-hue-instructions { color: var(--teal); }
 .repairs-lever.repairs-hue-verifier { color: var(--violet); }
+.repairs-lever.repairs-hue-tools { color: var(--orange); }
 .repairs-lever.repairs-hue-none { color: var(--text-3); }
 
 .repairs-what { min-width: 0; }
@@ -87,11 +115,12 @@ i.repairs-hue-none { background: var(--text-3); }
 .repairs-body { padding: 0 var(--s-4) var(--s-4) calc(var(--s-4) + 32px + var(--s-3) * 2); }
 .repairs-body p { max-width: 90ch; margin: 0 0 var(--s-3); color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
 .repairs-body textarea { width: 100%; min-height: 64px; padding: var(--s-3); border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); font: var(--fs-sm)/1.5 var(--font); resize: vertical; }
-.repairs-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--s-3) 0 0; border: 1px solid var(--border); }
+.repairs-pair { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: var(--s-3) 0 0; border: 1px solid var(--border); }
 .repairs-pair > div { padding: var(--s-3); }
 .repairs-pair > div + div { border-left: 1px solid var(--border); }
 .repairs-pair dt { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .repairs-pair dd { margin: var(--s-1) 0 0; color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
+.repairs-pair select { width: 100%; padding: var(--s-1); border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .repairs-chart i, .repairs-seg i, .repairs-line polyline, .repairs-fill { animation: none; }
@@ -102,4 +131,6 @@ i.repairs-hue-none { background: var(--text-3); }
 @media (max-width: 900px) {
   .repairs { grid-template-columns: minmax(0, 1fr); }
   .repairs-rail { border-right: 0; border-bottom: 1px solid var(--border); }
+  .repairs-pair { grid-template-columns: minmax(0, 1fr); }
+  .repairs-pair > div + div { border-left: 0; border-top: 1px solid var(--border); }
 }

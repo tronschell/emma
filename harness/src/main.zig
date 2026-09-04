@@ -3823,6 +3823,7 @@ test {
     _ = @import("core/tasks/task_helpers.zig");
     _ = @import("core/shared/text_utils.zig");
     _ = @import("core/tooling/tool_advertisement.zig");
+    _ = @import("core/tooling/tool_overrides.zig");
     _ = @import("core/tooling/tool_dispatch.zig");
     _ = @import("core/tooling/tool_set.zig");
     _ = @import("core/hosts/js_host_workspace.zig");

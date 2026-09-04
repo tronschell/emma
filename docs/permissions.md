@@ -33,6 +33,7 @@ its implementation asks for the resolved app rather than each individual call.
 | `cli` | ask | ask | verifier | auto |
 | `cli_runs` | auto | auto | auto | auto |
 | `computer` | app approval | app approval | app approval | app approval |
+| `shortcut` | auto | auto | auto | auto |
 | `write_skill` | auto | auto | auto | auto |
 | `write_tool` | auto | auto | auto | auto |
 | `write_plugin` | auto | auto | auto | auto |
@@ -41,6 +42,7 @@ its implementation asks for the resolved app rather than each individual call.
 | `advisor` | auto | auto | auto | auto |
 | `vision` | auto | auto | auto | auto |
 | `web_search` | auto | auto | auto | auto |
+| `task_list` | auto | auto | auto | auto |
 | `plan` | auto | auto | auto | auto |
 | `goal` | auto | auto | auto | auto |
 | `threads` | auto | auto | auto | auto |
@@ -69,7 +71,7 @@ See [components.md](components.md).
 Tools switch or an unknown name, checked first, and applies in every mode. A
 hidden tool is never advertised and is refused if the model guesses the name.
 
-`acceptEdits` is identical to `ask` for all 26 of Emma's own tools. The whole
+`acceptEdits` is identical to `ask` for all 28 of Emma's own tools. The whole
 difference between those two modes is on the harness's side: `onPermission` in
 [main.ts](../desktop/main/main.ts) allows a harness `kind === "edit"` call
 silently under `acceptEdits`, and asks for everything else.

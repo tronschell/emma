@@ -45,6 +45,7 @@ const elicitation = @import("../core/mcp/elicitation.zig");
 const tool_mcp_runtime = @import("../core/tooling/tool_mcp_runtime.zig");
 const permissions = @import("../core/permissions/permissions.zig");
 const context_experiments = @import("../core/agent/runtime/context_experiments.zig");
+const tool_overrides = @import("../core/tooling/tool_overrides.zig");
 const mcp_servers = @import("mcp_servers.zig");
 const mcp_contract = @import("../core/mcp/mcp_contract.zig");
 const model_capabilities = @import("../core/config/model_capabilities.zig");
@@ -202,6 +203,8 @@ pub const ActiveSessionState = struct {
     /// pair inside the `context_experiments` config option.
     command_timeout_ms: ?usize = null,
     semantic_grep: ?mcp_contract.McpServerConfig = null,
+    tool_hints: tool_overrides.Hints = .{},
+    preselected_tools: tool_overrides.Names = .{},
     /// What `effort` above is allowed to be: the stops the client says this model
     /// publishes, empty unless it sent them with the `reasoning_effort` option.
     reasoning_efforts: model_capabilities.ReasoningEffortOptions = .{},
@@ -209,6 +212,10 @@ pub const ActiveSessionState = struct {
     mcp: ?*mcp_runtime.McpRuntime = null,
     cancel_flag: std.atomic.Value(bool),
     pending_prompt_id: ?jsonrpc.RequestId,
+
+    pub fn toolOverrides(self: *const ActiveSessionState) tool_overrides.Overrides {
+        return .{ .hints = self.tool_hints.items, .preselect = self.preselected_tools.items };
+    }
 
     pub fn retainGrant(self: *ActiveSessionState, alloc: Allocator, tool_name: []const u8, target_path: []const u8) !void {
         for (self.session_grants) |grant| {
@@ -442,6 +449,8 @@ fn destroyActiveSession(state: *ServerState) void {
     state.alloc.free(active.model);
     types.freePermissionGrantSlice(state.alloc, active.session_grants);
     if (active.semantic_grep) |*config| config.deinit(state.alloc);
+    active.tool_hints.deinit(state.alloc);
+    active.preselected_tools.deinit(state.alloc);
     if (comptime !host_target.is_wasm) {
         if (active.mcp) |runtime| {
             runtime.retireAndWait();
@@ -1619,6 +1628,41 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
             });
         if (session.semantic_grep) |*previous| previous.deinit(state.alloc);
         session.semantic_grep = next;
+    } else if (std.mem.eql(u8, config_id, "tool_hints")) {
+        const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No active session",
+        });
+        const next = tool_overrides.parseHints(state.alloc, value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid tool_hints",
+            });
+        session.tool_hints.deinit(state.alloc);
+        session.tool_hints = next;
+    } else if (std.mem.eql(u8, config_id, "preselect")) {
+        const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No active session",
+        });
+        const next = tool_overrides.parseNames(state.alloc, value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid preselect",
+            });
+        session.preselected_tools.deinit(state.alloc);
+        session.preselected_tools = next;
+    } else if (std.mem.eql(u8, config_id, "agent_step_limit")) {
+        const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
+            .code = ErrorCode.invalid_request,
+            .message = "No active session",
+        });
+        const next = parseAgentStepLimit(value) catch
+            return state.writer.writeError(alloc, msg.id, .{
+                .code = ErrorCode.invalid_params,
+                .message = "Invalid agent_step_limit",
+            });
+        session.agent_step_limit = next orelse state.agent_step_limit;
     } else if (std.mem.eql(u8, config_id, "image_input")) {
         const session = if (state.active_session) |*active| active else return state.writer.writeError(alloc, msg.id, .{
             .code = ErrorCode.invalid_request,
@@ -1671,6 +1715,27 @@ fn parseCommandTimeoutMs(value: []const u8) !?usize {
         return minutes * std.time.ms_per_min;
     }
     return null;
+}
+
+pub const max_session_step_limit: usize = 10_000;
+
+fn parseAgentStepLimit(value: []const u8) !?usize {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const parsed = std.fmt.parseUnsigned(usize, trimmed, 10) catch return error.InvalidValue;
+    if (parsed == 0 or parsed > max_session_step_limit) return error.InvalidValue;
+    return parsed;
+}
+
+test "the agent step limit option takes a session cap and an empty value restores the default" {
+    try std.testing.expectEqual(@as(usize, 1), (try parseAgentStepLimit("1")).?);
+    try std.testing.expectEqual(@as(usize, 42), (try parseAgentStepLimit(" 42 ")).?);
+    try std.testing.expectEqual(max_session_step_limit, (try parseAgentStepLimit("10000")).?);
+    try std.testing.expect((try parseAgentStepLimit("")) == null);
+    try std.testing.expectError(error.InvalidValue, parseAgentStepLimit("0"));
+    try std.testing.expectError(error.InvalidValue, parseAgentStepLimit("10001"));
+    try std.testing.expectError(error.InvalidValue, parseAgentStepLimit("-1"));
+    try std.testing.expectError(error.InvalidValue, parseAgentStepLimit("many"));
 }
 
 fn parseImageInput(value: []const u8) !bool {

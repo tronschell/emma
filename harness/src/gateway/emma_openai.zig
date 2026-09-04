@@ -1098,6 +1098,7 @@ fn costMicroUsd(value: ?std.json.Value) ?u64 {
             std.math.mul(u64, std.math.cast(u64, number) orelse return null, 1_000_000) catch null
         else
             null,
+        .float => |number| types.microDollarsFromFloat(number),
         else => null,
     };
 }

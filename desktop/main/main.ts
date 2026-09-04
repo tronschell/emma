@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, wr
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
-import { externalUrl, keepRequest, publicUrl, runCommandRequest, statsExportRequest, trustedSender, validJpegDataUrl, validateRequest, vaultRequest, type Request } from "./ipc";
+import { benchExportRequest, benchJudgeRequest, externalUrl, keepRequest, publicUrl, runCommandRequest, statsExportRequest, trustedSender, validJpegDataUrl, validateRequest, vaultRequest, type Request } from "./ipc";
+import { judgeCase } from "./bench-judge";
+import { workbook } from "./bench-export";
 import { roundComputerCursor, COMPUTER_CURSOR_MS, type ComputerRunProgress } from "../shared/computer";
 import { renderResults, webSearch } from "./web-search";
 import { clipPage, fetchReadablePage, frontmostApplication, frontmostPage, frontmostTab } from "./clip";
@@ -54,7 +56,7 @@ import { CODEX_MODEL_ID, CODEX_PREFIX, cliPlan, codexSlug, isEnvName, MODEL_PLAN
 import { nameThread } from "./thread-namer";
 import { suggestNextSteps } from "./next-steps";
 import { validateWorkState } from "../shared/next-steps";
-import { applied, validateImprovements, type Arm } from "../shared/improvement";
+import { validateImprovements, type Arm } from "../shared/improvement";
 import { frontApplicationNote, ScreenContextStore, validScreenContextId, type FrontApplication } from "../shared/screen-context";
 import { AgentRuntime, benchReplay, benchThread, haltBench, inheritBench, lastAssistantMessage, ownBench, OWN_TOOLS, refuseBenchTurn, towardGoal, type TurnRequest } from "./agent-loop";
 import { adoptCouncil, closeCouncil, configureCouncil, councilAnswer, councilState, startCouncil, stopCouncil, type CouncilRoute } from "./council";
@@ -65,7 +67,7 @@ import { proxyPort, SemanticGrep, ZG_ENTRY } from "./semantic-grep";
 import { chatgptAuth, chatgptRoute } from "./chatgpt";
 import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
-import { forceArm, harnessPromptFile, setImprovements, setPrompts, setSystemPrompt, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
+import { forceArm, harnessPromptFile, resolveHarnessPrompt, setImprovements, setPrompts, setSystemPrompt, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { Harness, RESTARTED_BY_YOU, escapesRoot, explainFailure, failedTurn, harnessKey, recoveredSessionTraces, type HarnessMcpServer, type HarnessToolCall, type StoredThreadTrace, type ThinkingRoute, type TurnUsage } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
 import { review } from "./verifier";
@@ -84,7 +86,8 @@ import { asPermissionMode, DEFAULT_PERMISSION_MODE, TOOL_CATALOG, toolGate, type
 import { agentName, editStat, sentByThread, MAX_LIVE_SUBAGENTS, type FileChange, type PermissionAsk, type SubagentRoute } from "../shared/agents";
 import { createBridge, type Bridge } from "./bridge";
 import { clampTrace, compactionNotice } from "../shared/trace";
-import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type PhoneList, type PluginEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type ThreadTrace, type TraceSpan } from "../shared/mobile-protocol";
+import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type PhoneList, type PluginEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type ThreadTrace, type TraceSpan as PhoneTraceSpan } from "../shared/mobile-protocol";
+import type { TraceSpan } from "../shared/trace";
 import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -191,8 +194,7 @@ class Host {
       if ("dueJob" in response) {
         const job = response.dueJob;
         this.storeChanged();
-        // The host stamps this row as it hands the job over and again when the run reports back,
-        // and a run sits between the two for as long as it takes, so both ends are said out loud.
+
         scheduledJobsChanged();
         void runScheduledWorkflow(job)
           .finally(scheduledJobsChanged)
@@ -255,11 +257,8 @@ let computerCursorHeld = false;
 let computerCursorIdle: ReturnType<typeof setTimeout> | undefined;
 const CURSOR_IDLE_MS = 60_000;
 let computerCursorAt = 0;
-type ThreadContextRecord = { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean };
-/* Which folder, permission mode and model each thread is set to. Every write goes through
-   `rememberThreadContext` so the file beside it stays the map — a `threadContexts.set` that
-   skips it is a setting that survives until the next restart and no further, which is exactly
-   the bug this used to be. */
+type ThreadContextRecord = { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean; stepLimit?: number };
+
 const threadContexts = new Map<string, ThreadContextRecord>();
 
 const DEFAULT_THREAD_TITLE = "New thread";
@@ -297,20 +296,16 @@ const GOAL_CONTINUATION = "Continue working toward this thread's goal.";
 const GOAL_OVERSPENT = "The token allowance ran out part-way through a turn, so Emma stopped it there. Each agent step re-sends the conversation, so a long turn spends more than the turn ledger records. Continue grants more.";
 
 const threadFolderIds = (threadId: string) => threadContexts.get(threadId)?.folderIds ?? [];
-/* Threads a phone started. A mark on the row, nothing more, so it lives beside the
-   store rather than in it. */
+
 const phoneThreads = new Set<string>();
 const phoneThreadsFile = () => path.join(app.getPath("userData"), "phone-threads.json");
 function loadPhoneThreads() {
   try {
     const ids = JSON.parse(readFileSync(phoneThreadsFile(), "utf8")) as unknown;
     if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") phoneThreads.add(id);
-  } catch { /* first run */ }
+  } catch { return; }
 }
-/* Beside phone-threads.json and for the same reason: this used to be memory only, so every Emma
-   restart silently reset each thread to no folder and the default permission mode. The window hid
-   that behind its own localStorage copy in src/context.ts and re-pushed it on thread open; the
-   phone had no such copy and showed the hole. */
+
 const threadContextsFile = () => path.join(app.getPath("userData"), "thread-contexts.json");
 function loadThreadContexts() {
   try {
@@ -328,18 +323,14 @@ function loadThreadContexts() {
         ...(typeof review === "boolean" ? { review } : {}),
       });
     }
-  } catch { /* first run */ }
+  } catch { return; }
 }
-/* The one write path. A folder or a mode is set by hand, so this is human-paced: written straight
-   through with no debounce, exactly as phone-threads.json is. A write that fails is the old
-   behaviour — a context lost on restart — not a failed turn, so it is swallowed.
-   ponytail: grows with the thread list, same as phone-threads.json; prune with the threads if it
-   ever matters. */
+
 function rememberThreadContext(threadId: string, record: ThreadContextRecord) {
   threadContexts.set(threadId, record);
   try {
     writeFileSync(threadContextsFile(), JSON.stringify(Object.fromEntries(threadContexts)));
-  } catch { /* nothing here is worth failing a turn over */ }
+  } catch { return; }
 }
 const mobileStatus = (activeAt?: number) => ({ ...bridge!.status(), threads: [...phoneThreads], ...(activeAt ? { activeAt } : {}) });
 function namedPath(value: unknown): string | undefined {
@@ -445,10 +436,7 @@ const annotationAttachment = new ScreenContextStore();
 let annotating = false;
 let capturing = false;
 let overlayPreferences: OverlayPreferences = { notchGap: defaultSettings.notchGap, cursorOrbsEnabled: defaultSettings.cursorOrbsEnabled, notchConcurrency: defaultSettings.notchConcurrency };
-// The renderer owns the default-mode picker and keeps it in localStorage, so main has no way to
-// know it — and getSettings hands that value to the phone, where a Settings row reports it as the
-// Mac's own. Mirrored here on every save the way the verifier and the tool switches are, rather
-// than answering with the constant, which was only ever right for a Mac nobody had changed.
+
 let defaultMode: PermissionMode = DEFAULT_PERMISSION_MODE;
 let verifier: VerifierSettings = defaultVerifier;
 let toolSettings: ToolSettings = defaultToolSettings;
@@ -643,6 +631,26 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
     const safe = externalUrl(url);
     if (safe) void shell.openExternal(safe.toString());
     return { action: "deny" };
+  });
+  window.webContents.on("context-menu", (event, params) => {
+    if (!params.isEditable && !params.selectionText) return;
+    event.preventDefault();
+    const selected = params.selectionText.trim();
+    const menu = Menu.buildFromTemplate([
+      ...(params.misspelledWord ? params.dictionarySuggestions.map((suggestion) => ({ label: suggestion, click: () => window.webContents.replaceMisspelling(suggestion) })) : []),
+      ...(selected ? [
+        { label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") },
+        { label: "Search with Google", click: () => void shell.openExternal(`https://www.google.com/search?q=${encodeURIComponent(selected)}`) },
+      ] : []),
+      ...((params.misspelledWord && params.dictionarySuggestions.length) || selected ? [{ type: "separator" as const }] : []),
+      ...(params.isEditable ? [
+        { role: "cut" as const, enabled: params.editFlags.canCut },
+        { role: "copy" as const, enabled: params.editFlags.canCopy },
+        { role: "paste" as const, enabled: params.editFlags.canPaste },
+        { role: "selectAll" as const, enabled: params.editFlags.canSelectAll },
+      ] : [{ role: "copy" as const, enabled: params.editFlags.canCopy }]),
+    ]);
+    menu.popup({ window, frame: params.frame ?? undefined, x: params.x, y: params.y, sourceType: params.menuSourceType });
   });
   window.webContents.on("will-navigate", (event, url) => {
     const current = window.webContents.getURL();
@@ -1008,18 +1016,15 @@ function setupStatus(): SetupStatus {
   };
 }
 
-/** Names that decide which executable runs, or what gets loaded into it. */
 const LOADER_ENV = /^(PATH|NODE_OPTIONS|NODE_PATH|npm_config_\w+|(DYLD|LD)_\w+|ELECTRON_RUN_AS_NODE|SHELL|IFS)$/i;
 
 function credentialSlot(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Provider key request is invalid");
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.env !== "string" || (candidate.secret !== undefined && typeof candidate.secret !== "string")) throw new Error("Provider key request is invalid");
-  // CredentialStore.set checks this too, but removal does not go through it, and a bridge peer
-  // is not the renderer's form: check the name once, here, where both callers pass.
+
   if (!isEnvName(candidate.env)) throw new Error("An environment variable name must start with a letter or underscore and hold only letters, digits, and underscores.");
-  // A credential is applied to this process's own environment, so a name that steers how a program
-  // is found or loaded is code execution wearing an API key's clothes. Never a slot, from anywhere.
+
   if (LOADER_ENV.test(candidate.env)) throw new Error("That environment variable controls how programs are loaded, so Emma will not hold it.");
   return { env: candidate.env, secret: candidate.secret as string | undefined };
 }
@@ -1120,16 +1125,11 @@ function cliSendRequest(value: unknown) {
   const candidate = value as Record<string, unknown>;
   const id = boundedCapabilityId(candidate.id, "CLI run");
   if (typeof candidate.prompt !== "string" || !candidate.prompt.trim() || candidate.prompt.length > MAX_CLI_PROMPT_CHARS) throw new Error("CLI send request is invalid");
-  // The prompt is the last positional token in the harness argv with nothing separating it from the
-  // flags, so a leading dash is not a prompt: every harness in the table has a single-token flag
-  // that turns its approvals off, and the `--flag=value` form fits in the one token a caller picks.
+
   if (/^\s*-/.test(candidate.prompt)) throw new Error("A CLI turn is a prompt, not a flag.");
   return { id, prompt: candidate.prompt };
 }
 
-/** The body a revert writes has to be one Emma recorded, never one the caller sent — a caller that
-    picks the bytes has a write to any path in a granted folder wearing a revert's clothes. Every
-    run is searched because neither the phone frame nor the renderer's request names a thread. */
 function recordedRevert(folderId: string, file: string): string {
   const recorded = agents!.list()
     .flatMap((agent) => agents!.changes(agent.threadId))
@@ -1141,18 +1141,10 @@ function recordedRevert(folderId: string, file: string): string {
 const MAX_DIALOG_CHARS = 600;
 let confirming = false;
 
-/** A phone frame is not a person. Anything that hands the agent reach it did not have asks this
-    Mac's own window first, so the same gesture backs it as a grant made at the keyboard.
-
-    Both questions quote strings the phone chose, and a modal is the one thing on the Mac nobody can
-    click past: unbounded text pushes the buttons off the screen, and a frame per millisecond stacks
-    modals until the Mac is unusable. So the text is clipped and a second question is refused while
-    one is still open — refused, not queued, because a queue is the same storm arriving slowly. */
 async function confirmOnMac(message: string, detail: string, accept: string): Promise<boolean> {
   if (!mainWindow || mainWindow.isDestroyed() || confirming) return false;
   confirming = true;
-  // Clipping silently is how a phone hides the payload: pad the front with harmless argv and the
-  // part that matters falls off the end of a dialog that still reads as the whole question.
+
   const clip = (text: string) => text.length > MAX_DIALOG_CHARS
     ? `${text.slice(0, MAX_DIALOG_CHARS)}\n\n… clipped. Cancel unless this is exactly what you asked for from your phone just now.`
     : text;
@@ -1203,12 +1195,13 @@ function threadMode(threadId: string): PermissionMode {
 
 const threadModel = (threadId: string) => threadContexts.get(threadId)?.model ?? "";
 const threadEffort = (threadId: string) => threadContexts.get(threadId)?.effort ?? "";
+const MAX_AGENT_STEP_LIMIT = 10_000;
+const threadStepLimit = (threadId: string) => threadContexts.get(threadId)?.stepLimit;
 const threadContext = (threadId: string) => threadContexts.get(threadId) ?? { folderIds: [], mode: DEFAULT_PERMISSION_MODE, model: "" };
-// setThreadContext replaces the whole record, so the effort has to survive it — but only
-// while the model it was picked for is still the one selected.
-function keepThreadContext(threadId: string, next: { folderIds: string[]; mode: PermissionMode; model: string; subagent?: SubagentRoute; review?: boolean }) {
+
+function keepThreadContext(threadId: string, next: { folderIds: string[]; mode: PermissionMode; model: string; effort?: ThinkingLevel; subagent?: SubagentRoute; review?: boolean; stepLimit?: number }) {
   const held = threadContexts.get(threadId);
-  rememberThreadContext(threadId, { ...next, effort: held?.model === next.model ? held.effort : "", review: next.review ?? held?.review });
+  rememberThreadContext(threadId, { ...next, effort: next.effort ?? (held?.model === next.model ? held.effort : ""), review: next.review ?? held?.review, stepLimit: next.stepLimit ?? held?.stepLimit });
 }
 const threadSubagent = (threadId: string) => threadContexts.get(threadId)?.subagent;
 
@@ -1226,7 +1219,9 @@ function threadContextRequest(value: unknown) {
   const threadId = boundedCapabilityId(candidate.threadId, "Thread context thread");
   const raw = Array.isArray(candidate.folderIds) ? candidate.folderIds.slice(0, 1) : [];
   const model = typeof candidate.model === "string" ? candidate.model.slice(0, 128) : "";
-  return { threadId, folderIds: raw.map((id) => boundedCapabilityId(id, "Thread folder")), mode: asPermissionMode(candidate.mode), model, subagent: subagentRoute(candidate), review: typeof candidate.review === "boolean" ? candidate.review : undefined };
+  if (candidate.effort !== undefined && !isThinkingLevel(candidate.effort)) throw new Error("Thread context request is invalid");
+  const stepLimit = Math.round(Number(candidate.stepLimit) || 0);
+  return { threadId, folderIds: raw.map((id) => boundedCapabilityId(id, "Thread folder")), mode: asPermissionMode(candidate.mode), model, effort: candidate.effort, subagent: subagentRoute(candidate), review: typeof candidate.review === "boolean" ? candidate.review : undefined, stepLimit: stepLimit > 0 ? Math.min(stepLimit, MAX_AGENT_STEP_LIMIT) : undefined };
 }
 
 function agentMessage(value: unknown) {
@@ -1326,9 +1321,7 @@ function broadcast(channel: string, payload?: unknown) {
 
 const CHANGED_COALESCE_MS = 150;
 const READ_ONLY_METHODS = new Set(["snapshot", "threadSummaries", "thread", "listOpenRouterModels"]);
-/* The requests that move a scheduled task's row, whether a phone frame or the Mac's own window
-   sent them. A run starting or finishing is not one of them — those reach the store from
-   runScheduledWorkflow, which says so itself. */
+
 const SCHEDULED_JOB_WRITES = new Set(["saveScheduledJob", "deleteScheduledJob", "runScheduledJob", "setScheduledJobEnabled"]);
 const scheduledJobsChanged = () => broadcast("emma:scheduled-jobs");
 let changedAt = 0;
@@ -2117,6 +2110,7 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
     onContextBreakdown: (threadId, parts) => broadcast("emma:context-breakdown", { threadId, ...parts }),
     onRoutedModel: (threadId, routed) => {
       harnessRouted.set(threadId, routed.model);
+      agents?.noteModel(threadId, routed.model);
       broadcast("emma:routed-model", { threadId, ...routed });
     },
     onUsage: (threadId, usage) => {
@@ -2144,10 +2138,37 @@ function harnessClient(cwd: string, key = cwd, route?: ProviderRoute): Harness {
         depth: (parent?.depth ?? 0) + 1,
         mode: agents!.mode(parentThreadId),
         model: modelName(parent?.model),
+        traceContext: parent?.traceContext,
         effort: parent?.effort ?? "",
         parentSpanId: agents!.spanFor(parentThreadId),
       });
       return threadId;
+    },
+    onModelContext: (parentThreadId, threadId, model, skills) => {
+      const parent = harnessTurns.get(parentThreadId);
+      const turn = withTrialArm({ threadId, parentThreadId, title: "Subagent", content: "", mode: parent?.mode ?? agents!.mode(parentThreadId), model }, model);
+      const systemPrompt = resolveHarnessPrompt({ model, addition: turn.promptAddition, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools });
+      const experiments = { ...harnessExperiments, ...turn.knobs };
+      agents!.noteModel(threadId, model);
+      agents!.noteContext(threadId, {
+        ...turn.traceContext,
+        systemPrompt,
+        skillContext: skills,
+        configuration: JSON.stringify({ version: app.getVersion(), model, workspace: cwd, mode: turn.mode, toolHints: turn.toolHints ?? {}, preselect: turn.preselect ?? [], experiments }),
+      });
+      return {
+        system_prompt: systemPrompt,
+        tool_hints: Object.entries(turn.toolHints ?? {}).map(([name, description]) => ({ name, description })),
+        preselect: turn.preselect ?? [],
+        command_timeout_ms: experiments.commandTimeoutMinutes * 60_000,
+        experiments: {
+          auto_compact_percent: experiments.autoCompactPercent,
+          reinject_prompt_steps: experiments.reinjectPromptSteps,
+          reinject_prompt_percent: experiments.reinjectPromptPercent,
+          prune_tools_steps: experiments.pruneToolsSteps,
+          prune_tools_percent: experiments.pruneToolsPercent,
+        },
+      };
     },
     onChildEnd: (threadId, reason) => {
       const child = harnessChildren.get(threadId);
@@ -2414,7 +2435,6 @@ function catalogued(modelId: string): string {
   return modelId;
 }
 
-/** A provider or router key, checked against what this Mac is actually set up to route to. */
 function routedModelKey(key: string): string {
   if (providerFor(key)) return key;
   const routerId = routerIdFor(key);
@@ -2426,10 +2446,7 @@ const thinkingLevel = (value: unknown): ThinkingLevel => isThinkingLevel(value) 
 
 async function selectModel(method: string, params: Record<string, string>): Promise<unknown> {
   if (method === "setThreadModel") {
-    // A provider profile or a router arrives already keyed, with no catalogue id to check it
-    // against, so it is checked against what this Mac holds; a bare catalogue id is checked and
-    // prefixed. Either way the thread holds the key harnessModel/modelName read, or picking a
-    // model on the phone changes nothing.
+
     const picked = params.modelId ?? "";
     rememberThreadContext(params.threadId, {
       ...threadContext(params.threadId),
@@ -2566,8 +2583,6 @@ function attachedImagePaths(value: unknown): string[] {
   }).slice(0, MAX_TURN_IMAGES);
 }
 
-// The phone has no attachment store of its own, so it hands over bytes and the ids stay here.
-// safeName and the store's own size check do the validating; this only bounds what reaches them.
 function bridgeImages(value: unknown): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > MAX_TURN_IMAGES) throw new Error("That is more photos than one message can carry.");
@@ -2605,7 +2620,13 @@ async function resumeAfterSleep() {
 
 async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key = cwd, resume = "") {
   const home = path.join(app.getPath("userData"), "harness");
-  writeHarnessPrompt(home, { model: turn.model, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools }, harnessPromptFile(home, key));
+  const systemPrompt = writeHarnessPrompt(home, { model: modelName(turn.model), addition: turn.promptAddition, workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools }, harnessPromptFile(home, key));
+  turn = { ...turn, traceContext: {
+    ...turn.traceContext,
+    systemPrompt,
+    skillContext: turn.params?.skillContext ?? "",
+    configuration: JSON.stringify({ version: app.getVersion(), model: modelName(turn.model), effort: turn.effort ?? "", workspace: cwd, mode: turn.mode, disabledTools: toolSettings.disabledTools, toolHints: turn.toolHints ?? {}, preselect: turn.preselect ?? [], stepLimit: turn.stepLimit, experiments: { ...harnessExperiments, ...turn.knobs } }),
+  } };
   computerRuntime?.end(turn.threadId);
   harnessText.set(turn.threadId, "");
   harnessThought.set(turn.threadId, "");
@@ -2624,7 +2645,10 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
       images: attachedImagePaths(turn.params?.attachedImages),
       contextWindow: contextWindowFor(turn.model, route),
       effort: thinkingRoute(turn.model, route, turn.effort),
-      experiments: harnessExperiments,
+      toolHints: turn.toolHints,
+      preselect: turn.preselect,
+      stepLimit: turn.stepLimit,
+      experiments: turn.knobs ? { ...harnessExperiments, ...turn.knobs } : harnessExperiments,
       semanticGrep: semanticGrep.option(harnessExperiments, threadFolder(turn.threadId) ? cwd : undefined),
       imageInput: metadataFor(turn.model, route)?.inputModalities?.includes("image"),
       compact: compactNext.delete(turn.threadId),
@@ -2637,7 +2661,7 @@ async function runOnHarness(client: Harness, cwd: string, turn: TurnRequest, key
       pausedRecovery.add(turn.threadId);
       throw new Error(client.paused.get(turn.threadId)?.message || "The run was refused.");
     }
-    agents!.finish(turn.threadId);
+    agents!.finish(turn.threadId, undefined, stopReason);
     return await recordTurn({
       threadId: turn.threadId,
       prompt: turn.content,
@@ -2718,6 +2742,7 @@ async function runTurn(turn: TurnRequest) {
   agents!.forget(turn.threadId);
   turn.subagent ??= threadSubagent(turn.threadId);
   turn.effort ??= threadEffort(turn.threadId) || (harnessModel(turn.model) === harnessModel(selectedModel) ? selectedEffort : "");
+  turn.stepLimit ??= threadStepLimit(turn.threadId);
   void recordUse(app.getPath("userData"), modelKey(modelName(turn.model) || "auto"));
   turn.objective ??= activeGoal(turn.threadId)?.objective;
   const cwd = harnessCwd(turn.threadId);
@@ -2725,7 +2750,7 @@ async function runTurn(turn: TurnRequest) {
   const route = await turnRoute(turn.model);
   const key = harnessKey(cwd, turn.threadId, route?.id);
   try {
-    return await runOnHarness(harnessClient(cwd, key, route), cwd, withGoal(withTrialArm(turn), activeGoal(turn.threadId)), key);
+    return await runOnHarness(harnessClient(cwd, key, route), cwd, withGoal(withTrialArm(turn, modelName(turn.model)), activeGoal(turn.threadId)), key);
   } finally {
     if (nested) {
       harnesses.get(key)?.close();
@@ -2781,7 +2806,7 @@ const freeRouter: VerifierSettings = {
 };
 
 const namingThreads = new Set<string>();
-/** Thread names as last seen, so a turn's sidebar chip opens with one. */
+
 const threadNames = new Map<string, string>();
 
 function noteThreadName(threadId: string, title: string) {
@@ -2819,10 +2844,7 @@ async function threadSummaryStore(): Promise<StoredThreadSummaries> {
 
 function threadSummary(thread: unknown): ThreadSummary {
   const { messages, ...rest } = thread as { messages?: { role?: string; content?: string }[]; labelPrompt?: string };
-  // The phone is sent counts, not messages, so it cannot fall back to the opening prompt the way
-  // threadLabel does on this side — a thread the namer has not reached yet would read "New thread"
-  // here and say what it is about on the Mac. This is that fallback, carried across. Clamped
-  // because a first message can be a pasted document, and this rides along with every summary.
+
   const asked = rest.labelPrompt ?? (Array.isArray(messages) ? messages.find((item) => item.role === "user")?.content : undefined);
   return {
     ...rest,
@@ -2847,14 +2869,11 @@ async function gitSynced(cwd: string, result: { ok: boolean; output: string }): 
 }
 
 const OPENROUTER_ENV = providerCredentials[0].env;
-/** What one bridge frame comfortably carries, and more than a phone list scrolls through. One
-    under the search ceiling, because the list is fetched one longer than it is sent and a search
-    asked for more rows than it may return is refused rather than clamped. */
+
 const MAX_PHONE_SKILLS = MAX_SKILL_RESULTS - 1;
 
 const toolSwitches = (): ToolSwitches => ({ tools: toolSettings.disabledTools, skills: toolSettings.disabledSkills, servers: toolSettings.disabledServers });
 
-/** Every key this Mac could hold, masked, the way Settings → Models lists them. */
 function credentialSlotsHeld(): CredentialSlot[] {
   const stored = credentials!.list();
   const slots = new Map<string, CredentialSlot>();
@@ -2873,7 +2892,6 @@ function credentialSlotsHeld(): CredentialSlot[] {
   return [...slots.values()];
 }
 
-/** stdio only: install_mcp's harness-side spec requires a command, so a remote server arrives by importing a Claude or Cursor config, not mid-turn. */
 function mcpServerRequest(params: Record<string, unknown>): McpServerDefinition {
   const name = boundedCapabilityId(params.name, "Server name");
   const command = boundedCapabilityId(params.command, "Server command");
@@ -2883,8 +2901,7 @@ function mcpServerRequest(params: Record<string, unknown>): McpServerDefinition 
   if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Server environment is invalid");
   const entries = Object.entries(env as Record<string, unknown>);
   if (entries.length > 32 || entries.some(([key, value]) => typeof value !== "string" || !isEnvName(key))) throw new Error("Server environment is invalid");
-  // The definition is spawned as a child process on the next turn, so a name that decides which
-  // executable runs or what gets loaded into it is code execution the same way a credential slot is.
+
   for (const [key] of entries) if (LOADER_ENV.test(key)) throw new Error("That environment variable controls how programs are loaded, so Emma will not pass it to a server.");
   return { name, command, args: args as string[], env: env as Record<string, string> };
 }
@@ -2895,9 +2912,6 @@ function bridgeVisual(id: unknown): Visual {
   return { title: visual.title, html: visual.html };
 }
 
-// The phone's outbox retries a send it never saw answered. Keyed by the id the phone
-// minted, so a retry gets the first answer back instead of posting the message twice.
-// ponytail: in-memory only, lost on restart; that is fine because the phone outbox TTL is 5 min.
 const bridgeReplies = new Map<string, Map<string, unknown>>();
 const MAX_REPLIES_PER_THREAD = 32;
 const MAX_REPLY_THREADS = 32;
@@ -2997,9 +3011,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return { threadId, folderIds: context.folderIds, mode: context.mode, model: context.model };
     }
     case "clearThreadContext": {
-      // The composer's /clear, reached from the phone's slash menu. Nothing is deleted: the thread
-      // keeps every message, and only the harness sessions replaying them are dropped, so the next
-      // turn opens an empty context window. Narrowing, so nobody at the Mac is asked.
+
       const threadId = boundedCapabilityId(params.threadId, "Clear context thread");
       compactNext.delete(threadId);
       for (const client of harnesses.values()) client.forgetSession(threadId);
@@ -3011,8 +3023,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "listModels": {
       const catalog = await runRequest(validateRequest({ method: "listOpenRouterModels", params: params.force === true ? { force: "true" } : {} }));
       const models = (catalog as { models?: CatalogModel[] }).models ?? [];
-      // The phone picks from everything this Mac can actually route to, not the OpenRouter
-      // catalogue alone: a local provider profile and a router are models to a person.
+
       return [
         ...models.map((model): ModelEntry => ({
           id: model.id,
@@ -3112,12 +3123,11 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "readImage": {
       const found = namedPath(params.path);
       const granted = found !== undefined && folders!.list().some((folder) => pathInside(folder.path, found));
-      // No filename-shaped fallback here: a bridge peer is remote, so only a granted
-      // folder or an attachment this Mac holds may be read off disk.
+
       if (found === undefined || !(granted || attachments!.holds(found))) throw new Error("Not an image Emma can show");
       const frame = nativeImage.createFromPath(found);
       if (frame.isEmpty()) throw new Error("Not an image Emma can show");
-      // Not previewImage: its 1600px PNG can be larger than one bridge frame holds.
+
       return { mime: "image/jpeg", base64: compressScreenFrame(frame).image.split(",")[1] };
     }
     case "readVisual":
@@ -3189,10 +3199,9 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return credentialSlotsHeld();
     case "saveCredential": {
       const slot = credentialSlot(params);
-      // A slot this Mac offers, not merely a string shaped like an env name: applyToEnv writes into
-      // this process's own environment, so PATH or NODE_OPTIONS from a phone would be code execution.
+
       if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error("That is not a key this Mac holds a slot for.");
-      // The secret goes to the store and the child environment only — never to a log or an event.
+
       if (slot.secret === undefined) credentials!.remove(slot.env);
       else credentials!.set(slot.env, slot.secret);
       startHost();
@@ -3217,11 +3226,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         review: { enabled: reviewSettings.enabled, model: reviewSettings.model },
       } satisfies MacSettings;
     case "setSettings": {
-      // A partial, so a screen showing one of these four can write it back without restating the
-      // three it never read — and a phone racing somebody at the keyboard can only lose the field
-      // it actually touched. Every value goes through the same validator the Mac's own panel uses,
-      // and the model through setThreadContext's line, so a phone cannot pin one this Mac has no
-      // route to. Nothing here widens what the agent may do, so nobody at the Mac is asked.
+
       if (params.defaultPermissionMode !== undefined) defaultMode = asPermissionMode(params.defaultPermissionMode);
       if (params.selectedModel !== undefined) {
         const picked = params.selectedModel;
@@ -3239,8 +3244,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "listToolTargets": {
       const [written, found, servers] = await Promise.all([
         listEmmaTools(userData),
-        // One more than the phone is sent, so a Mac holding more than fit can say so instead of
-        // handing over a short list that reads as the whole of what it has.
+
         capabilities!.searchSkills("", MAX_PHONE_SKILLS + 1),
         capabilities!.listMcpServers(),
       ]);
@@ -3255,8 +3259,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       } satisfies ToolTargets;
     }
     case "setToolSettings": {
-      // Only the three switch lists are the phone's to set; the advisor, vision, secret and
-      // web-search settings behind them stay where the Mac put them.
+
       toolSettings = validateToolSettings({
         ...toolSettings,
         disabledTools: params.disabledTools ?? toolSettings.disabledTools,
@@ -3267,9 +3270,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return toolSwitches();
     }
     case "installMcpServer": {
-      // The Mac spawns this command on the next turn. The agent's own install_mcp tool is gated at
-      // `ask` in every mode but full; a phone frame gets that same question, asked where the person
-      // is, because a validated-looking definition is still a definition nobody chose.
+
       const definition = mcpServerRequest(params);
       const approved = await confirmOnMac(
         `Install the MCP server “${definition.name}” from your phone?`,
@@ -3284,22 +3285,14 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "listPlugins":
       return await phonePlugins(userData);
     case "trustPluginHooks": {
-      // A trusted hook is a shell line this Mac runs on every turn its event fires, which is the
-      // same reach installMcpServer buys — so it asks the same question, in the same place. Only
-      // the widening direction is asked, the way setImportSources does it: withdrawing trust takes
-      // nothing away from the phone, and needing somebody at the keyboard to say yes to *less*
-      // would leave a phone that saw something it did not like unable to act on it.
+
       const id = boundedCapabilityId(params.id, "Plugin");
       const trusted = flag(params.trusted, "Trust");
       let hashes: string[] | null = null;
       if (trusted) {
         const plugin = (await installedHooks(userData)).find((entry) => entry.id === id);
         if (!plugin) throw new Error(`No plugin called "${id}" is installed.`);
-        // The dialog quotes the Mac's own copy of the commands, not the phone's — what the phone
-        // was shown is a claim about this Mac, and the trust is pinned to what is actually on disk.
-        // Every hook is quoted, not just the runnable ones, because the write below hashes every
-        // hook: a command Emma has no moment for today is one RUNNABLE_HOOK_EVENTS entry away from
-        // running, and nobody should discover it then. The other two surfaces mark them the same way.
+
         const running = plugin.hooks.filter((hook) => hookRuns(hook.event));
         if (!running.length) throw new Error(`"${plugin.displayName || plugin.name}" has no hook Emma would ever run.`);
         const approved = await confirmOnMac(
@@ -3318,14 +3311,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return (await discoverImports(homedir())).map((source) => ({ ...source, registered: registered.has(source.id) }));
     }
     case "setImportSources": {
-      // Nothing here is authored from the wire — the ids pick from the fixed table in imports.ts,
-      // and every file was already sitting in this Mac's home folder. But registering a source is
-      // still the widening direction: harnessMcpServers spawns every command that source's config
-      // names, on by default, from the next turn on. On the Mac the consent is the person typing
-      // /import; from the couch there is none, so a source arriving for the first time asks here
-      // the way installMcpServer does. Switching one off takes nothing away from the phone and is
-      // never asked. The manifest is replaced rather than added to, so the selection is the whole
-      // set the phone wants kept.
+
       const ids = params.ids;
       if (!Array.isArray(ids) || ids.length > MAX_IMPORT_SOURCES || ids.some((id) => typeof id !== "string")) throw new Error("Import selection is invalid");
       const known = await registeredImportIds(userData);
@@ -3369,23 +3355,19 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return threadSummary(thread);
     }
     case "listTaskLists": {
-      // The rail asks about one thread, and a list the Mac never stamped with a thread is nobody
-      // else's either. Filtering here rather than on the phone keeps every other thread's tasks
-      // off the wire, where 64 lists of 128 KiB do not fit.
+
       const threadId = typeof params.threadId === "string" ? params.threadId : "";
       const lists = await listTaskLists(userData);
       return phoneList(threadId ? lists.filter((list) => !list.threadId || list.threadId === threadId) : lists);
     }
     case "threadChanges": {
-      // The rewritten body is the renderer's diff, not the phone's: the rail shows a filename and
-      // a revert button, and the revert writes what Emma recorded. So `after` never goes out and
-      // `before` goes out clipped — it is read for whether there was one, never for what it said.
+
       const changes = agents!.changes(boundedCapabilityId(params.threadId, "Changes thread")).map(({ after: _after, ...change }) => ({
         ...change,
         before: change.before === null ? null : change.before.slice(0, MAX_PHONE_TEXT_CHARS),
         truncated: change.before !== null && change.before.length > MAX_PHONE_TEXT_CHARS,
       }));
-      // A thread over the budget keeps its newest rewrites: those are the ones still worth reverting.
+
       const { rows, capped } = phoneList(changes.reverse());
       return { rows: rows.reverse(), capped };
     }
@@ -3393,8 +3375,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const folderId = boundedCapabilityId(params.folderId, "Revert folder");
       const file = params.path;
       if (typeof file !== "string" || !file || Buffer.byteLength(file, "utf8") > 4096 || file.includes("\0")) throw new Error("Revert path is invalid");
-      // A revert names a file; the body it writes is the one Emma recorded, so no body comes off
-      // the wire. Containment stays as defence in depth, but the recorded change is the gate.
+
       const before = recordedRevert(folderId, file);
       if (escapesRoot(folders!.directory(folderId), file)) throw new Error("That file is outside the granted folder.");
       folders!.write(folderId, file, before);
@@ -3402,11 +3383,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return { reverted: true };
     }
     case "runCommand": {
-      // Every other write on this bridge hands the agent something, or moves a setting the Mac
-      // already offers. This one is a shell line, run as the person who is logged in, chosen on a
-      // device that is not in the room. So it asks this Mac's own window first, exactly as
-      // installMcpServer does — and the folder is resolved before the question, so a folder id
-      // this Mac never granted is refused without interrupting anyone.
+
       const { command, folderId } = runCommandRequest(params);
       const directory = folderId ? folders!.directory(folderId) : homedir();
       const approved = await confirmOnMac(
@@ -3426,8 +3403,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "listMemories":
       return await phoneMemories();
     case "readMemory": {
-      // The list trims every memory to MAX_PHONE_TEXT_CHARS, which is a preview row's worth and
-      // not a memory. This is the file, capped where the writer is capped so the two move together.
+
       const file = resolveMemoryPath(memoryRoot(), params.path);
       const stats = statSync(file);
       if (!stats.isFile()) throw new Error("That memory cannot be read.");
@@ -3441,7 +3417,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return await phoneMemories();
     case "listNotes": {
       const vault = readVault(userData);
-      // A vault holds up to MAX_VAULT_NOTES; a frame holds the first page of them.
+
       return vault ? phoneList(listNotes(vault)) : { rows: [], capped: false };
     }
     case "readNote": {
@@ -3450,8 +3426,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const note = path.join(notesRoot(vault), noteInVault(vault, params.path));
       const stats = statSync(note);
       if (!stats.isFile()) throw new Error("That note cannot be read.");
-      // The Mac's own handler refuses a note over MAX_NOTE_BYTES outright. A phone gets the
-      // first MAX_NOTE_BYTES of it instead: an error in place of a long note reads as a bug.
+
       return { text: readFileSync(note).subarray(0, MAX_NOTE_BYTES).toString("utf8"), truncated: stats.size > MAX_NOTE_BYTES };
     }
     case "keep":
@@ -3461,10 +3436,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       return vault ? listNoteFolders(vault) : [];
     }
     case "addFolder": {
-      // Every other grant went through a native directory dialog with a person in front of it, and
-      // a folder grant is the Mac's only boundary on file I/O. A path that resolves is not consent:
-      // a folder someone already granted goes straight through, and anything else has to be
-      // approved on this Mac's own window before it becomes a grant.
+
       const asked = params.path;
       if (typeof asked !== "string" || !path.isAbsolute(asked) || asked.length > 1024) throw new Error("Name the folder by its full path.");
       const directory = realpathSync(asked);
@@ -3509,9 +3481,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const run = clis.get(id);
       if (!run) throw new Error("There is no such CLI run.");
       const model = typeof params.model === "string" ? params.model : "";
-      // The model is a token in the harness argv beside the flags that turn approvals off, so a
-      // phone picks off the list this Mac discovered rather than naming one: a model nobody found
-      // is a flag wearing a model's clothes. Empty puts the run back on the CLI's own default.
+
       const { models } = await cliModels.read(run.cli, (cli) => clis.where(cli));
       if (model && !models.includes(model)) throw new Error("That is not a model this Mac found for that CLI.");
       return clis.setModel(id, model);
@@ -3519,12 +3489,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "listScheduledJobs":
       return await phoneJobs();
     case "saveScheduledJob": {
-      // Straight to the renderer's own validateRequest and answerRequest: the field list, the
-      // graph parse and the check that every script path sits in a granted folder are the ones
-      // the Mac applies to itself. What a phone must never choose is how much the job may do —
-      // a mode is a member of PERMISSION_MODES because it was typed, not because it was granted.
-      // An edit keeps what the Mac already recorded, a new task starts at the default, so no
-      // frame can write itself a standing full-access agent and then run it.
+
       const jobId = typeof params.jobId === "string" ? params.jobId : "";
       const existing = jobId ? (await scheduledJobs()).find((job) => job.id === jobId) : undefined;
       await runRequest(validateRequest({ method, params: {
@@ -3539,7 +3504,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
       return await phoneJobs();
     case "runScheduledJob":
-      // The run becomes its own thread on the Mac, which the phone already sees in its list.
+
       await runRequest(validateRequest({ method, params: { jobId: params.jobId } }));
       return { started: true };
     case "setScheduledJobEnabled":
@@ -3688,12 +3653,8 @@ async function scheduledJobs(): Promise<StoredJob[]> {
   return snapshot.scheduledJobs ?? [];
 }
 
-/** A reply the codec cannot seal is dropped unsent — bridge.ts answers TOO_LARGE at best and the
-    phone waits out its timeout at worst — so every list a phone asks for is trimmed here. The
-    Mac-side limits behind these lists are each sized for a disk: 256 memory files of 256 KiB, 2000
-    notes, 64 task lists of 128 KiB. MAX_FRAME_BYTES is 1 MiB for all of it. */
 const MAX_PHONE_LIST_BYTES = 256 * 1024;
-/** Enough of a body for a preview row; nothing on the phone reads more than that of one. */
+
 const MAX_PHONE_TEXT_CHARS = 2048;
 
 function phoneList<T>(rows: readonly T[]): PhoneList<T> {
@@ -3704,26 +3665,20 @@ function phoneList<T>(rows: readonly T[]): PhoneList<T> {
     if (used > MAX_PHONE_LIST_BYTES) break;
     kept.push(row);
   }
-  // A short list that looks complete is worse than the overflow this trimming replaced: the phone
-  // filters and searches what it was sent, and would answer "nothing matches" for a note the Mac
-  // still holds. So the shortfall rides along with the rows.
+
   return { rows: kept, capped: kept.length < rows.length };
 }
 
-/** The same trimming for the frames the phone did not ask for. Tool results are stored on a span
-    uncapped, and one live frame carries every open span of every running agent at once, so an
-    agent that read a few large files is a `live` or `spans` event the codec silently refuses to
-    seal — and the phone's trace view then freezes for the rest of the turn. */
-function phoneSpans(spans: Record<string, TraceSpan[]>): Record<string, TraceSpan[]> {
-  const out: Record<string, TraceSpan[]> = {};
+function phoneSpans(spans: Record<string, TraceSpan[]>): Record<string, PhoneTraceSpan[]> {
+  const out: Record<string, PhoneTraceSpan[]> = {};
   let used = 0;
   for (const [threadId, list] of Object.entries(spans)) {
     out[threadId] = list.map((span) => {
-      // Past the budget a span keeps its shape and loses its text: the timeline is drawn from the
-      // spans themselves, and a turn missing half its rows is the wrong answer to draw.
+
+      const preview = clipped(span);
       const kept = used > MAX_PHONE_LIST_BYTES
-        ? { ...span, input: undefined, output: undefined, truncated: true }
-        : clipped(span);
+        ? { ...preview, input: undefined, output: undefined, truncated: true }
+        : preview;
       used += Buffer.byteLength(JSON.stringify(kept), "utf8") + 1;
       return kept;
     });
@@ -3731,38 +3686,30 @@ function phoneSpans(spans: Record<string, TraceSpan[]>): Record<string, TraceSpa
   return out;
 }
 
-function clipped(span: TraceSpan): TraceSpan {
+function clipped(span: TraceSpan): PhoneTraceSpan {
   const max = MAX_PHONE_TEXT_CHARS;
-  if ((span.input?.length ?? 0) <= max && (span.output?.length ?? 0) <= max) return span;
+  const preview = { ...span };
+  delete preview.context;
+  if ((span.input?.length ?? 0) <= max && (span.output?.length ?? 0) <= max) return preview;
   return {
-    ...span,
+    ...preview,
     input: span.input === undefined ? undefined : span.input.slice(0, max),
     output: span.output === undefined ? undefined : span.output.slice(0, max),
     truncated: true,
   };
 }
 
-/** How much of one body the phone is sent — a step's tool result, a message. Far looser than a
-    span's preview because these are the bodies the phone renders whole, and only one no frame
-    could hold is worth cutting. */
 const MAX_PHONE_BODY_CHARS = 128 * 1024;
 
 function phoneStep(step: RemoteStep): RemoteStep {
   const output = step.output;
   if (output === undefined || output.length <= MAX_PHONE_BODY_CHARS) return step;
-  // Cut without a word said: every reader of a step's output reads its head — the phone draws the
-  // first 2000 characters of a tool result, and the artifact, visual and spawn markers all anchor
-  // at the top — so a notice at the tail is one nothing would ever show.
+
   return { ...step, output: output.slice(0, MAX_PHONE_BODY_CHARS) };
 }
 
-/** Room a trace needs to be worth sending at all, so the newest turn is never cut to a stub. */
 const MIN_TRACE_CHARS = 8 * 1024;
 
-/** The newest turns that fit one frame. The Mac keeps 64 traces a thread and clamps each at a
-    MiB — a disk's budget, not a socket's — so a long thread's whole record never arrives, and the
-    phone would draw every past turn as if it ran no tools and took no steers. A clipped trace
-    still parses: `clampTrace` cuts whole spans out of the middle. */
 function phoneTraces(traces: readonly StoredThreadTrace[]): ThreadTrace[] {
   const kept: ThreadTrace[] = [];
   let room = MAX_PHONE_LIST_BYTES;
@@ -3772,18 +3719,11 @@ function phoneTraces(traces: readonly StoredThreadTrace[]): ThreadTrace[] {
     room -= text.length + 64;
     kept.push(text.length < trace.text.length ? { ...trace, text, truncated: true } : trace);
   }
-  // The phone numbers turns from what it was sent, so a dropped one has to say so somewhere: the
-  // oldest turn that survived carries the shortfall.
+
   if (kept.length && kept.length < traces.length) kept[kept.length - 1] = { ...kept[kept.length - 1], truncated: true };
   return kept.reverse();
 }
 
-/** A page the codec can seal. Nothing caps a message body on the way here, so a thread with a few
-    pasted files in it is a page that never arrives. Each body is cut to what one frame holds first,
-    because dropping the oldest cannot save a page whose newest message is the oversized one; then
-    the oldest go until the page fits, and `from` already tells the phone where to ask for the rest.
-    Unlike a step, a message is drawn whole on the phone, so the cut is said in the text — the one
-    place the reader of a clipped message would see it. */
 function phonePage(messages: Message[], total: number, from: number): { messages: Message[]; total: number; from: number } {
   const page = messages.map((message) => message.content.length <= MAX_PHONE_BODY_CHARS ? message : {
     ...message,
@@ -3816,10 +3756,6 @@ function phoneJobs(): Promise<PhoneList<ScheduledJob>> {
   }))));
 }
 
-/** The installed plugins as the phone audits them. A hook command is what the person is being
-    asked to trust, so it is the one string here that is never summarised — only clipped, visibly,
-    at the same ceiling as every other body, because a plugin with a megabyte on one line would
-    otherwise take the whole list down to `capped` and leave the audit screen empty. */
 function phonePlugins(userData: string): Promise<PhoneList<PluginEntry>> {
   return installedHooks(userData).then((plugins) => phoneList(plugins.map((plugin) => ({
     id: plugin.id,
@@ -3852,9 +3788,6 @@ async function validateWorkflowScripts(nodes: WorkflowNode[]): Promise<void> {
   await Promise.all(scripts.map((node) => workflowScriptPath(node.text, roots)));
 }
 
-// The skill comes back rather than going into skillAttachment: that store holds one slot and
-// only the renderer's own send claims it, so stashing here left every other caller's skill
-// unread and let one surface plant an attachment on another's next message.
 async function resolveMentions(prompt: string): Promise<{ content: string; skillContext?: string }> {
   const named = mentions(prompt, "/");
   let skillContext: string | undefined;
@@ -3976,8 +3909,7 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
     case "run": {
       const job = named();
       await host!.request({ method: "runScheduledJob", params: { jobId: job.id, variables: args.variables ?? "" } });
-      // Starting a job stamps its run rows, same as the phone's own runScheduledJob does — and this
-      // path calls the host directly, so the SCHEDULED_JOB_WRITES broadcast in runRequest never sees it.
+
       changed();
       scheduledJobsChanged();
       return `Started "${job.title}". It runs as its own thread under Scheduled tasks; read it there when it finishes.`;
@@ -4334,12 +4266,10 @@ if (primaryInstance) app.whenReady().then(() => {
     request: (method, params) => answerRequest(method, params),
     ask: (request: PermissionAsk) => {
       const askedAt = Date.now();
-      // True only when a phone is connected *now*; a phone paired months ago and long
-      // gone must not stall every ask for MAX_ASK_MS.
+
       const reached = bridge?.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) === true;
       if (!mainWindow || mainWindow.isDestroyed()) {
-        // A phone that is asleep rather than gone still has the ask parked in the
-        // bridge's pending list; agent-loop's MAX_ASK_MS abort is the backstop.
+
         if (!reached) answerAsk(request.id, false);
         return;
       }
@@ -4836,7 +4766,7 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:set-improvements", (event, value: unknown) => {
     mainWindowSender(event);
     const store = validateImprovements(value);
-    setImprovements(applied(store));
+    setImprovements(store);
     return store;
   });
   ipcMain.handle("emma:force-arm", (event, value: unknown) => {
@@ -5036,6 +4966,24 @@ if (primaryInstance) app.whenReady().then(() => {
     if (choice.canceled || !choice.filePath) return "";
     await mkdir(choice.filePath, { recursive: true });
     for (const file of request.files) await writeFile(path.join(choice.filePath, file.name), file.text, "utf8");
+    return choice.filePath;
+  });
+  ipcMain.handle("emma:bench-judge", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = benchJudgeRequest(value);
+    return await judgeCase(request, request.judge ?? tagger);
+  });
+  ipcMain.handle("emma:export-bench", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const request = benchExportRequest(value);
+    const choice = await dialog.showSaveDialog(mainWindow!, {
+      title: "Export the bench",
+      buttonLabel: "Export",
+      defaultPath: path.join(app.getPath("documents"), `${request.name}.xlsx`),
+      filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
+    });
+    if (choice.canceled || !choice.filePath) return "";
+    await writeFile(choice.filePath, workbook(request.sheets));
     return choice.filePath;
   });
   ipcMain.handle("emma:list-folders", (event) => {

@@ -3,7 +3,7 @@ import type { ThreadStep } from "../shared/agents";
 import type { KeepRequest, VaultKind } from "../shared/vault";
 import type { GoalStatus } from "../shared/goal";
 import type { CouncilStart, CouncilState } from "../shared/council";
-import type { ShortcutRequest } from "../shared/settings";
+import type { ShortcutRequest, VerifierSettings } from "../shared/settings";
 
 let nextListener = 1;
 const listeners = new Map<number, () => void>();
@@ -170,6 +170,8 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:task-lists-changed", wrapped);
     return () => ipcRenderer.removeListener("emma:task-lists-changed", wrapped);
   },
+  benchJudge: (value: { prompt: string; rubric: string; answer: string; judge?: VerifierSettings }) => ipcRenderer.invoke("emma:bench-judge", value),
+  exportBench: (value: { name: string; sheets: { name: string; rows: (string | number)[][] }[] }) => ipcRenderer.invoke("emma:export-bench", value),
   exportThreadStats: (value: { folder: string; files: { name: string; text: string }[] }) => ipcRenderer.invoke("emma:export-thread-stats", value),
   listFolders: () => ipcRenderer.invoke("emma:list-folders"),
   pluginCatalog: () => ipcRenderer.invoke("emma:plugin-catalog"),
@@ -287,7 +289,7 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:council", wrapped);
     return () => ipcRenderer.removeListener("emma:council", wrapped);
   },
-  setThreadContext: (value: { threadId: string; folderIds: string[]; mode: string; model: string; subagentModel?: string; subagentEffort?: string; review?: boolean }) => ipcRenderer.invoke("emma:set-thread-context", value),
+  setThreadContext: (value: { threadId: string; folderIds: string[]; mode: string; model: string; effort?: string; subagentModel?: string; subagentEffort?: string; review?: boolean; stepLimit?: number }) => ipcRenderer.invoke("emma:set-thread-context", value),
   runCommand: (value: { command: string; folderId?: string }) => ipcRenderer.invoke("emma:run-command", value),
   listBackground: () => ipcRenderer.invoke("emma:list-background"),
   readBackground: (id: string) => ipcRenderer.invoke("emma:read-background", id),

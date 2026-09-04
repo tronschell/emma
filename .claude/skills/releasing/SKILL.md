@@ -12,16 +12,19 @@ automation.
 ## Invariants
 
 - Feature branches start from and squash-merge into `dev`, the default branch.
-  `ci.yml` runs the full checks on every PR, on macOS and Windows. Windows is
-  test-only; it packages nothing.
+  `ci.yml` runs the full macOS checks and targeted Windows checks on every PR.
+  Windows is test-only; it packages nothing.
 - The root `package.json` version is the release version. Bump it on `dev`.
   Nothing else carries version metadata, and there is no changelog file.
 - Only the owner can update `main`, enforced by a GitHub ruleset, not by code.
   Promote `dev` to `main` with a merge commit.
-- `release.yml` runs on push to `main`. It skips when the `vX.Y.Z` release
-  already exists. Otherwise signing, notarization, stapling, Gatekeeper
-  validation, and asset upload must all succeed before `gh release create`
-  publishes with generated notes. Published releases are never replaced.
+- `ci.yml` runs on every pull request and on pushes to `main`. A successful
+  main run uploads the unsigned package candidate for that exact commit.
+  `release.yml` consumes that candidate from the completed main CI run. It
+  skips when the `vX.Y.Z` release already exists. Otherwise signing,
+  notarization, stapling, Gatekeeper validation, and asset upload must all
+  succeed before `gh release create` publishes with generated notes. Published
+  releases are never replaced.
 - PR checks receive no Apple secrets. Only the release job has `contents: write`.
 - Keep release names exactly `vX.Y.Z` and the stable zip suffix
   `darwin-arm64.zip`, as expected by the existing updater.

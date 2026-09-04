@@ -704,12 +704,13 @@ export const pickIntoComposer = (pick: ContextPick) => dispatchEvent(new CustomE
 
 const MODEL_SWITCH_KEY = "emma.threadModelSwitches.v1";
 
-/** A model the user picked mid-thread, marked at the turn it takes effect from. */
+/** A model or thinking level the user picked mid-thread, marked at the turn it takes effect from. */
 export interface ModelSwitch {
   at: number;
   label: string;
   brand: string;
   after?: string;
+  effort?: string;
 }
 
 function allModelSwitches(): Record<string, ModelSwitch[]> {
@@ -727,8 +728,11 @@ export function modelSwitches(threadId: string): ModelSwitch[] {
   return allModelSwitches()[threadId] ?? [];
 }
 
-/** Switching twice before sending leaves one mark: the model that actually answers. */
+/** Switching twice before sending leaves one mark: the model and level that actually answer. */
 export function recordModelSwitch(threadId: string, mark: ModelSwitch): void {
-  const kept = modelSwitches(threadId).filter((item) => item.at !== mark.at);
-  localStorage.setItem(MODEL_SWITCH_KEY, JSON.stringify({ ...allModelSwitches(), [threadId]: [...kept, mark] }));
+  const marks = modelSwitches(threadId);
+  const held = marks.find((item) => item.at === mark.at);
+  const merged = held ? { ...held, ...mark, label: mark.label || held.label, brand: mark.label ? mark.brand : held.brand } : mark;
+  const kept = marks.filter((item) => item.at !== mark.at);
+  localStorage.setItem(MODEL_SWITCH_KEY, JSON.stringify({ ...allModelSwitches(), [threadId]: [...kept, merged] }));
 }

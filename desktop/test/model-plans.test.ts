@@ -131,13 +131,12 @@ function appSource(name: string): string {
   return `const ${bound.getText(app)};`;
 }
 
-const routing = ["isFreeModel", "modelEntryPlan", "modelEntryPlanProfile", "modelEntryCodexKey", "modelEntryCurrent", "modelEntryRoute", "modelEntryFavorite", "modelKeyTag"];
+const routing = ["isFreeModel", "modelEntryPlan", "modelEntryPlanProfile", "modelEntryCodexKey", "modelEntryCurrent", "modelEntryRoute", "modelEntryFavorite"];
 const picker = Function("planForModel", "planProfileFor", "planModelId", "availableCodexModelKey", "CODEX_PREFIX", "routerIdFor",
-  ts.transpile(`${routing.map(appSource).join("\n")}\nreturn { modelEntryRoute, modelEntryFavorite, modelKeyTag };`, { target: ts.ScriptTarget.ES2022 }))(
+  ts.transpile(`${routing.map(appSource).join("\n")}\nreturn { modelEntryRoute, modelEntryFavorite };`, { target: ts.ScriptTarget.ES2022 }))(
   planForModel, planProfileFor, planModelId, availableCodexModelKey, CODEX_PREFIX, routerIdFor) as {
   modelEntryRoute: (entry: { key: string }, active: string, providers: readonly ProviderProfile[], slugs: readonly string[]) => { key: string; plan?: { id: string } };
   modelEntryFavorite: (entry: { key: string }, favorites: readonly string[], providers: readonly ProviderProfile[]) => string;
-  modelKeyTag: (key: string) => string;
 };
 
 const glmEntry = { key: "openrouter:z-ai/glm-5.3-flash" };
@@ -175,12 +174,4 @@ test("a star on a plan or ChatGPT route belongs to the row that model sits on", 
   assert.equal(picker.modelEntryFavorite(glmEntry, [glmEntry.key], planned.providers), glmEntry.key);
   assert.equal(picker.modelEntryFavorite(glmEntry, ["codex:gpt-5.6-luna"], planned.providers), "");
   assert.equal(picker.modelEntryFavorite(glmEntry, [""], planned.providers), "");
-});
-
-test("the metered route is labelled too", () => {
-  assert.equal(picker.modelKeyTag("openrouter:openai/gpt-5.6-luna"), "API");
-  assert.equal(picker.modelKeyTag("openrouter:nvidia/nemotron:free"), "Free");
-  assert.equal(picker.modelKeyTag("codex:gpt-5.6-luna"), "Plan");
-  assert.equal(picker.modelKeyTag("provider:plan-zai"), "Direct");
-  assert.equal(picker.modelKeyTag(""), "");
 });

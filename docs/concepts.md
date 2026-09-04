@@ -166,10 +166,10 @@ with the count and whether the walk was cut short, so the Files picker reads
 `Showing 400 of N files` — or `of 2000+` when the count is a floor rather than a
 total. The count admits exactly what the listing admits, so an oversized file is
 neither shown nor counted. Any file can still be read by path past the cap. Emma's own standing
-text goes to two files under the `HOME` she hands the harness: the resolved
-Settings prompt to `<userData>/harness/.fx/system-prompt.md`, which stands in for
-the agent's own built-in prompt, and kept Agent-page improvements to
-`<userData>/harness/.fx/AGENTS.md` under it. A notch capture travels as an image
+text goes to one file under the `HOME` she hands the harness: the resolved
+Settings prompt, plus any kept Agent-page improvement, to
+`<userData>/harness/.fx/system-prompt-<hash>.md`, which stands in for the
+agent's own built-in prompt. A notch capture travels as an image
 plus a note naming the app and window that were in front.
 
 ## Inspector
@@ -297,7 +297,7 @@ ship in [`desktop/skills/`](../desktop/skills). An **MCP server** is an external
 process the harness starts and calls tools on — Emma speaks no
 [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) herself, she parses the configured
 servers and hands them to the harness at `session/new`. A **tool** is one
-callable the agent may reach for: Emma's own 26 are in `AGENT_TOOLS` and
+callable the agent may reach for: Emma's own 28 are in `AGENT_TOOLS` and
 `TOOL_CATALOG` ([`shared/permissions.ts`](../desktop/shared/permissions.ts)), the
 harness has its own builtins (file read/write/edit, ripgrep search, shell,
 subagent, skills, MCP), and Emma can write more with `write_tool`. See

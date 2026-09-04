@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 import { BlockList, isIP } from "node:net";
 import { MAX_ATTACHED_CONTEXT_CHARS } from "../shared/folders";
 import { clampBytes, isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
+import { MAX_JUDGE_ANSWER_CHARS, MAX_JUDGE_PROMPT_CHARS, MAX_JUDGE_RUBRIC_CHARS } from "./bench-judge";
+import { validateJudge, type VerifierSettings } from "../shared/settings";
 
 const MAX_HOST_REQUEST_BYTES = 128 * 1024;
 export const MAX_ANNOTATION_INPUT_CHARS = 16 * 1024 * 1024;
@@ -283,6 +285,57 @@ export function statsExportRequest(value: unknown): { folder: string; files: { n
     return { name: sheet.name, text: sheet.text };
   });
   return { folder, files };
+}
+
+export const MAX_BENCH_SHEETS = 8;
+export const MAX_BENCH_ROWS = 4096;
+export const MAX_BENCH_COLUMNS = 32;
+export const MAX_BENCH_CELL_CHARS = 8192;
+export const MAX_BENCH_EXPORT_BYTES = 32 * 1024 * 1024;
+
+export function benchJudgeRequest(value: unknown): { prompt: string; rubric: string; answer: string; judge?: VerifierSettings } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Judge request is invalid");
+  const candidate = value as { prompt?: unknown; rubric?: unknown; answer?: unknown; judge?: unknown };
+  const read = (field: unknown, max: number) => {
+    if (field !== undefined && typeof field !== "string") throw new Error("Judge request is invalid");
+    return (typeof field === "string" ? field : "").slice(0, max);
+  };
+  const prompt = read(candidate.prompt, MAX_JUDGE_PROMPT_CHARS).trim();
+  if (!prompt) throw new Error("Judge request has no prompt");
+  const judge = candidate.judge === undefined || candidate.judge === null ? undefined : validateJudge(candidate.judge);
+  return { prompt, rubric: read(candidate.rubric, MAX_JUDGE_RUBRIC_CHARS).trim(), answer: read(candidate.answer, MAX_JUDGE_ANSWER_CHARS), ...(judge?.model ? { judge } : {}) };
+}
+
+export function benchExportRequest(value: unknown): { name: string; sheets: { name: string; rows: (string | number)[][] }[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Bench export is invalid");
+  const candidate = value as { name?: unknown; sheets?: unknown };
+  const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+  if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(name)) throw new Error("Bench export name is invalid");
+  if (!Array.isArray(candidate.sheets) || !candidate.sheets.length || candidate.sheets.length > MAX_BENCH_SHEETS) throw new Error("Bench export is invalid");
+  let bytes = 0;
+  const sheets = candidate.sheets.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Bench sheet is invalid");
+    const sheet = entry as { name?: unknown; rows?: unknown };
+    if (typeof sheet.name !== "string" || !/^[A-Za-z0-9 _-]{1,31}$/.test(sheet.name)) throw new Error("Bench sheet name is invalid");
+    if (!Array.isArray(sheet.rows) || sheet.rows.length > MAX_BENCH_ROWS) throw new Error("Bench sheet is invalid");
+    const rows = sheet.rows.map((line) => {
+      if (!Array.isArray(line) || line.length > MAX_BENCH_COLUMNS) throw new Error("Bench sheet row is invalid");
+      return line.map((cell) => {
+        if (typeof cell === "number") {
+          if (!Number.isFinite(cell)) throw new Error("Bench sheet cell is invalid");
+          bytes += 8;
+          return cell;
+        }
+        if (typeof cell !== "string") throw new Error("Bench sheet cell is invalid");
+        const cut = cell.slice(0, MAX_BENCH_CELL_CHARS);
+        bytes += Buffer.byteLength(cut, "utf8");
+        if (bytes > MAX_BENCH_EXPORT_BYTES) throw new Error("Bench export is too large");
+        return cut;
+      });
+    });
+    return { name: sheet.name, rows };
+  });
+  return { name, sheets };
 }
 
 export function trustedSender(value: string, appRoot: string, devServer?: string): boolean {

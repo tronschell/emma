@@ -29,6 +29,8 @@ owns the agent harness. Keep those boundaries visible.
 - `desktop/main`: Electron lifecycle, windows, global shortcuts, trusted IPC,
   and the narrow preload bridge.
 - `desktop/src`: sandboxed React views and presentation state; no Node access.
+- `desktop/shared`: types and validation both processes agree on; no Electron
+  imports.
 - `crates/host`: NDJSON bridge onto the stores. It talks to no model and answers
   requests only — the app process drives every provider call.
 - `crates/core`: thread, scheduled, and research records, validation, and atomic
@@ -80,9 +82,10 @@ Full contract: [`.claude/skills/sibling-repos/SKILL.md`](.claude/skills/sibling-
 
 Feature branches start from and squash-merge into `dev`, the default branch.
 Every PR runs the full `ci` workflow. Only the owner can merge `dev` into
-`main`; that merge commit is the release. The `release` workflow reads the
-root `package.json` version, skips if that version is already published, and
-otherwise builds, signs, notarizes, and publishes the app with generated notes.
+`main`; that merge commit is the release. `ci` packages the candidate on that
+push. The `release` workflow reads the root `package.json` version, skips if
+that version is already published, and otherwise verifies that candidate, signs,
+notarizes, and publishes it with notes collected from the merged commits.
 Bump the version on `dev` before promoting. There is no changelog file, release
 PR, or hand-made tag.
 

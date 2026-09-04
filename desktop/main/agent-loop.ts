@@ -4,14 +4,17 @@ import { randomUUID } from "node:crypto";
 import { agentColor, collapseChanges, fromThread, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import { takeArm } from "./system-prompt";
-import { decodeSpans, encodeSpans, renderTrace, type TraceSpan, type TraceStatus } from "../shared/trace";
+import { decodeSpans, encodeSpans, renderTrace, traceHeader, type TraceSpan, type TraceStatus } from "../shared/trace";
 import { MAX_TOOL_OUTPUT_BYTES, MAX_TRACES_READ, type AnyToolArgs, type LoopArgs } from "./tools";
 import type { VerifierRequest, VerifierReview } from "./verifier";
 import type { Advice } from "./advisor";
+import { familiesOf, normalizeModel } from "../shared/prompts";
+import type { HarnessExperiments } from "../shared/settings";
 
 const MAX_ASK_MS = 10 * 60 * 1000;
 const CHARS_PER_TOKEN = 4;
 const LIVE_REFRESH_MS = 250;
+const DISCOVERY = new Set(["search_tools", "select_tool", "mcp_search_tools", "mcp_select_tool"]);
 
 export const OWN_TOOLS = new Set(["read_trace", "threads", "agents", "advisor"]);
 const ownedHere = (args: AnyToolArgs): args is LoopArgs => OWN_TOOLS.has(args.name);
@@ -86,6 +89,12 @@ export type TurnRequest = {
   nested?: boolean;
   subagent?: SubagentRoute;
   params?: Record<string, string>;
+  toolHints?: Record<string, string>;
+  preselect?: string[];
+  stepLimit?: number;
+  knobs?: Partial<HarnessExperiments>;
+  traceContext?: Record<string, string>;
+  promptAddition?: string;
   parentSpanId?: string;
   objective?: string;
   goalTurn?: boolean;
@@ -115,6 +124,7 @@ export type LoopDeps = {
 };
 
 type Run = Omit<LiveAgent, "tool"> & {
+  traceContext: Record<string, string>;
   goal: string;
   stopped: boolean;
   depth: number;
@@ -127,6 +137,9 @@ type Run = Omit<LiveAgent, "tool"> & {
 
   spans: TraceSpan[];
   said: number;
+  cacheRead: number;
+  cost: number;
+  stop: string;
 
   adopted: boolean;
 
@@ -182,7 +195,7 @@ export class AgentRuntime {
     run.outputTokens += Math.ceil(text.length / CHARS_PER_TOKEN);
     run.generationMs = Date.now() - run.startedAt - run.awaited;
     if (run.adopted && !run.spans.some((span) => span.kind === "model" && span.endedAt === undefined)) {
-      run.spans.push({ id: `model:${run.threadId}:${run.spans.length}`, parentId: run.spans[0].id, name: "model", kind: "model", startedAt: Date.now(), status: "running" });
+      run.spans.push({ id: `model:${run.threadId}:${run.spans.length}`, parentId: run.spans[0].id, name: "model", kind: "model", model: run.model, startedAt: Date.now(), status: "running" });
       this.deps.changed();
     }
     const answering = run.spans.find((span) => span.kind === "model" && span.endedAt === undefined);
@@ -209,7 +222,7 @@ export class AgentRuntime {
 
   private async runOwnTool(args: LoopArgs, turn: TurnRequest, run: Run | undefined): Promise<string> {
     switch (args.name) {
-      case "read_trace": return await this.readTrace(turn, args.thread, args.limit);
+      case "read_trace": return await this.readTrace(turn, args.thread, args.limit, args.offset);
       case "threads": return await this.runThreadsTool(args, turn);
       case "agents": return await this.runAgentsTool(args, turn);
       case "advisor": {
@@ -369,14 +382,19 @@ export class AgentRuntime {
       tools: new Set(),
       spans: [],
       said: 0,
+      cacheRead: 0,
+      cost: 0,
+      stop: "",
       adopted: false,
       traced: false,
+      traceContext: turn.traceContext ?? {},
     };
     run.spans.push({
       id: `agent:${run.threadId}`,
       parentId: turn.parentSpanId,
       name: turn.title || "Agent",
       kind: "agent",
+      model: turn.model,
       startedAt: run.startedAt,
       status: "running",
     });
@@ -411,14 +429,46 @@ export class AgentRuntime {
   }
 
   private flushTrace(run: Run) {
-    if (run.depth !== 0 || run.traced) return;
+    if (run.traced) return;
     run.traced = true;
     const at = Date.now();
-    const spans = this.subtree(run.threadId)
-      .flatMap((member) => member.spans)
+    const fields = (member: Run): Record<string, string> => ({
+      ...member.traceContext,
+      thread: member.threadId,
+      model: normalizeModel(member.model || "unknown"),
+      family: familiesOf(member.model ?? "")[0] ?? "",
+      mode: member.mode,
+      requests: String(member.spans.filter((span) => span.kind === "model").length),
+      in: String(member.inputTokens),
+      out: String(member.outputTokens),
+      cacheRead: String(member.cacheRead),
+      cost: String(member.cost),
+      ms: String(Math.max(0, (member.endedAt ?? at) - member.startedAt)),
+      discovery: String(member.spans.filter((span) => DISCOVERY.has(span.tool ?? span.name)).length),
+      stop: member.stop,
+    });
+    const spans = (run.depth === 0 ? this.subtree(run.threadId) : [run])
+      .flatMap((member) => member.spans.map((span, index) => member !== run && index === 0 ? { ...span, context: fields(member) } : span))
       .map((span) => span.endedAt === undefined ? { ...span, endedAt: Math.max(at, span.startedAt) } : span);
     const arm = takeArm(run.threadId);
-    const trace = encodeSpans(spans, { thread: run.threadId, model: run.model || "unknown", ...(arm ? { arm } : {}) });
+    const model = normalizeModel(run.model || "unknown");
+    const trace = encodeSpans(spans, {
+      ...fields(run),
+      thread: run.threadId,
+      model,
+      family: familiesOf(model)[0] ?? "",
+      mode: run.mode,
+      requests: String(spans.filter((span) => span.kind === "model").length),
+      in: String(run.inputTokens),
+      out: String(run.outputTokens),
+      cacheRead: String(run.cacheRead),
+      cost: String(run.cost),
+      ms: String(Math.max(0, (run.endedAt ?? at) - run.startedAt)),
+      discovery: String(spans.filter((span) => DISCOVERY.has(span.name)).length),
+      compactions: String(spans.filter((span) => span.id.startsWith("compact:")).length),
+      stop: run.stop,
+      ...(arm ? { arm } : {}),
+    });
     if (!trace) return;
     void this.deps.request("recordTrace", { threadId: run.threadId, trace })
       .catch((error: unknown) => console.error("Emma: could not record the turn's trace", error));
@@ -428,7 +478,16 @@ export class AgentRuntime {
     this.open(turn).adopted = true;
   }
 
-  /** The sidebar chip says which thread is running, so it follows the thread's name. */
+  noteModel(threadId: string, model: string): void {
+    const run = this.runs.get(threadId);
+    if (!run || !model.trim()) return;
+    run.model = normalizeModel(model);
+    run.spans[0].model = run.model;
+    const answering = run.spans.find((span) => span.kind === "model" && span.endedAt === undefined);
+    if (answering) answering.model = run.model;
+    this.deps.changed();
+  }
+
   noteTitle(threadId: string, title: string): void {
     const run = this.runs.get(threadId);
     if (!run || !title.trim() || run.title === title) return;
@@ -436,7 +495,11 @@ export class AgentRuntime {
     this.deps.changed();
   }
 
-  /** What the turn is waiting on while nothing has streamed yet — startup, hooks, the model. */
+  noteContext(threadId: string, context: Record<string, string>): void {
+    const run = this.runs.get(threadId);
+    if (run) run.traceContext = context;
+  }
+
   noteActivity(threadId: string, activity: string): void {
     const run = this.runs.get(threadId);
     if (!run || run.status === "done" || run.activity === activity) return;
@@ -444,11 +507,15 @@ export class AgentRuntime {
     this.deps.changed();
   }
 
-  noteUsage(threadId: string, usage: { inputTokens: number; outputTokens: number }): void {
+  noteUsage(threadId: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; costMicroUsd?: number }): void {
     const run = this.runs.get(threadId);
     if (!run) return;
     if (usage.inputTokens > 0) run.inputTokens = usage.inputTokens;
     if (usage.outputTokens > 0) run.outputTokens = usage.outputTokens;
+    if ((usage.cacheReadTokens ?? 0) > 0) run.cacheRead = usage.cacheReadTokens!;
+    if ((usage.costMicroUsd ?? 0) > 0) run.cost = usage.costMicroUsd!;
+    const answering = run.spans.find((span) => span.kind === "model" && span.endedAt === undefined);
+    if (answering) answering.tokens = usage.inputTokens + usage.outputTokens;
     this.deps.changed();
   }
 
@@ -466,6 +533,8 @@ export class AgentRuntime {
         parentId: run.spans[0].id,
         name: step?.title || activity || "tool call",
         kind: step?.kind ?? "other",
+        model: run.model,
+        tool: step?.toolName,
         startedAt: step?.at ?? Date.now(),
         status: "running",
         said: run.said,
@@ -490,9 +559,10 @@ export class AgentRuntime {
     return this.runs.get(threadId)?.spans[0]?.id;
   }
 
-  finish(threadId: string, error?: string): void {
+  finish(threadId: string, error?: string, stop?: string): void {
     const run = this.runs.get(threadId);
     if (!run) return;
+    if (stop) run.stop = stop;
     run.status = run.stopped ? "stopped" : error ? "failed" : "done";
     run.activity = error ?? "finished";
     run.error = error;
@@ -510,16 +580,17 @@ export class AgentRuntime {
     this.deps.changed();
   }
 
-  private async readTrace(turn: TurnRequest, thread: string | undefined, limit: number): Promise<string> {
+  private async readTrace(turn: TurnRequest, thread: string | undefined, limit: number, offset = 0): Promise<string> {
     const result = await this.deps.request("readTrace", { threadId: thread ?? turn.threadId });
     const traces = Array.isArray(result) ? result : [];
-    const recent = traces.slice(-Math.min(limit, MAX_TRACES_READ));
-    if (!recent.length) return "That thread has no recorded traces. Emma stores one when a turn ends, so the turn you are in now is not in there yet.";
-    return recent
+    const end = Math.max(0, traces.length - offset);
+    const recent = traces.slice(Math.max(0, end - Math.min(limit, MAX_TRACES_READ)), end);
+    if (!recent.length) return offset ? "No older traces remain at this offset." : "That thread has no recorded traces. Emma stores one when a turn ends, so the turn you are in now is not in there yet.";
+    return `Read ${recent.length} of ${traces.length} stored traces; ${end > recent.length ? `next offset ${offset + recent.length}` : "no older traces remain"}.\n\n` + recent
       .map((entry) => {
         const text = String((entry as { text?: unknown }).text ?? "");
         const spans = decodeSpans(text);
-        const body = spans.length ? renderTrace(spans, Date.now()) : text;
+        const body = spans.length ? renderTrace(spans, Date.now(), traceHeader(text)) : text;
         return `--- recorded ${(entry as { timestamp?: unknown }).timestamp ?? "unknown"}\n${body}`;
       })
       .join("\n\n");

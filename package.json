@@ -1,12 +1,13 @@
 {
   "name": "emma",
-  "version": "0.3.1",
+  "version": "0.4.4",
   "private": true,
   "scripts": {
     "dev": "npm --prefix desktop run dev",
     "check": "npm --prefix desktop run check",
     "release:notes": "node desktop/scripts/release-notes.mjs",
     "package:mac": "npm --prefix desktop run package:mac",
+    "dmg:mac": "npm --prefix desktop run dmg:mac",
     "package:win": "npm --prefix desktop run package:win"
   }
 }
