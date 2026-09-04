@@ -227,5 +227,8 @@ jobs:
         with:
           version: 0.16.0
 
+      - run: zig test src/core/shared/windows_acl.zig
+        working-directory: harness
+
       - run: zig build test --test-timeout 2m --verbose --summary all
         working-directory: harness
