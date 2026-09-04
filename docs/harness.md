@@ -87,18 +87,20 @@ way out.
 
 ### Emma's, appended natively
 
-Emma's 26 tools are appended to the same registry as `++ emma_tools.all`, so the
+Emma's 28 tools are appended to the same registry as `++ emma_tools.all`, so the
 harness advertises and dispatches them and Electron runs them. One shared
 implementation, [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig);
 only the spec differs per tool.
 
 | Group | File | Tools |
 | --- | --- | --- |
-| Threads and agents | [`emma/threads.zig`](../harness/src/builtins/emma/threads.zig) | `threads`, `context`, `plan`, `agents`, `read_trace` |
-| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `workflow`, `visualize`, `autoresearch` |
-| System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `computer`, `advisor`, `install_mcp` |
+| Threads and agents | [`emma/threads.zig`](../harness/src/builtins/emma/threads.zig) | `threads`, `context`, `plan`, `goal`, `agents`, `read_trace` |
+| Task list | [`emma/task_list.zig`](../harness/src/builtins/emma/task_list.zig) | `task_list` — the one Emma tool advertised without a `select_tool` |
+| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `component`, `workflow`, `visualize`, `autoresearch` |
+| System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `advisor`, `install_mcp`, `computer`, `secret` |
 | Extensions | [`emma/extensions.zig`](../harness/src/builtins/emma/extensions.zig) | `write_tool`, `run_tool`, `write_skill`, `write_plugin` |
 | Browser | [`emma/browser.zig`](../harness/src/builtins/emma/browser.zig) | `browser` |
+| Shortcuts | [`emma/shortcuts.zig`](../harness/src/builtins/emma/shortcuts.zig) | `shortcut` |
 | Name collisions | [`emma/overrides.zig`](../harness/src/builtins/emma/overrides.zig) | `memory`, `look_at_image`, `web_search` |
 
 `Registry.lookup` returns the first match, so a duplicate name is a bug.
@@ -134,6 +136,18 @@ for.
 - `select_tool {name}` — splices one exact schema into the next model step. No
   preceding search needed. A denied, `.never`, or unknown name answers
   `Tool not found: <name>`.
+- `session/set_config_option {configId: "tool_hints"}` — a JSON object string
+  `{"<tool name>": "<description>"}`. Each named registered tool is advertised,
+  and returned by `search_tools`, with that description instead of its own.
+  Unknown names are ignored, the value is capped at 16 KiB and each description
+  at 2 KiB, invalid JSON is rejected and leaves the previous hints in place, and
+  an empty object clears them.
+- `session/set_config_option {configId: "preselect"}` — comma-separated tool
+  names. Each named `.on_select` tool is advertised as if it were `.always` from
+  the next step on, in addition to the base set. Unknown names are ignored,
+  `.never` tools cannot be promoted, and an empty value clears the list. Both
+  options are per session, and Emma re-sends them every turn so an experiment
+  arm cannot leak into the next one.
 
 This is a prompt-cost mechanism, **not** a security boundary. A hidden tool is
 still registered and still runs under exactly its usual permission rules.
@@ -284,7 +298,7 @@ fourteen:
 | `session/close` | Flushes usage, drops the active session |
 | `session/prompt` | Runs one turn |
 | `session/compact` | Folds history. Refused mid-turn |
-| `session/set_config_option` | `model`, `mode`, `context_window`, `context_experiments`, `semantic_grep` |
+| `session/set_config_option` | `model`, `mode`, `context_window`, `reasoning_effort`, `context_experiments`, `semantic_grep`, `tool_hints`, `preselect`, `agent_step_limit`, `image_input` |
 | `session/set_mode` | `modeId` from [`builtins/modes.zig`](../harness/src/builtins/modes.zig): `plan`, `ask`, `acceptEdits`, `full`. Emma always sends `ask` |
 | `session/cancel` | A notification, not a request — cancellation has no reply and must not hang on a wedged peer |
 | `session/steer` | Cuts into the running turn: the tool call or model stream in flight is aborted, and the same turn carries on with `content` as its next user message. Refused when no turn is running, over 16 KiB, or more than 8 deep |
@@ -469,6 +483,30 @@ step of the previous one. Anything in the `prefix` half that does change (a
 permission-mode switch, a new directory grant, UTC midnight) costs one history
 re-read, the same as before the split, and never recurs per call.
 
+Project instructions follow the same rule. The root `AGENTS.md`, the global
+`.fx/AGENTS.md`, and the rules for anything named in the prompt are gathered
+once at the start of the turn and ride in the static prefix. Rules for a
+directory the model only reaches mid-turn — a first `read_file` under `docs/`
+whose folder has its own `AGENTS.md` — are append-only. The gate in
+[`orchestrator.zig`](../harness/src/core/agent/runtime/orchestrator.zig) holds
+the selected block until the step's tool results are in, then appends it to the
+content of the last of those tool results, after two newlines. Nothing is
+inserted into the prefix, so the bytes before history are identical on every
+step of a turn and from turn to turn.
+
+Riding inside the tool result is what makes it durable. `ExecutionMemory` is
+built from the same message content, and the history projection sends
+`result.output` back verbatim — including for a result large enough that its
+output is already a `<tool_result_preview>` wrapper — so the next turn replays
+the block from history at the byte offset it had in the turn that found it. At
+the start of every turn `seedDeliveredScopedRules` scans the persisted tool
+results for `<scoped-rules from="…">` and seeds those paths into
+`DeliveryState`, so a later turn that touches the same directory selects
+nothing and appends nothing. Within a turn `DeliveryState` already stops a
+source from rendering twice. Compaction that drops the turn carrying a block
+drops the seed with it, and the next touch renders it again into a new tool
+result.
+
 The history budget in [`session.zig`](../harness/src/core/session/session.zig)
 trims contiguously from the oldest turn and remembers the oldest turn it kept
 (`history_budget_floor`, a fingerprint held on the session). While the tail
@@ -499,12 +537,55 @@ request carries a
 `prompt_cache_key` derived from the session id, the same opaque hash as the
 `x-session-id` affinity header, so consecutive steps land on the same cache.
 
+Z.AI (`api.z.ai`) strips the previous turns' `reasoning_content` server-side
+unless told otherwise, and regenerates the chain of thought from scratch on
+every step, which burns quota and moves the prefix. So requests to that host
+carry `"thinking":{"type":"enabled","clear_thinking":false}`, a `user_id` set to
+the same opaque session hash as `prompt_cache_key`, and every assistant message
+that has reasoning carries it back as `"reasoning_content"`. The bytes have to
+be the same in both places a step is sent from, so `reasoning` rides on
+`ChatMessage`, on the within-turn suffix built in
+[`tool_batch.zig`](../harness/src/core/agent/runtime/tool_batch.zig), and on the
+durable `ToolExecutionStep` the session writes and replays. The session file
+keeps `schema_version` 3 and gains a `reasoning` key on a tool step only when
+there is one, so a step without reasoning encodes exactly as before. The final
+assistant message of a turn is never replayed within that turn, so its reasoning
+is not persisted. No other host sees any of this.
+
+A `reasoning_details` value on a streamed delta is kept as raw JSON on the
+completion and on the assistant message, and echoed back verbatim to
+`127.0.0.1` and `localhost` for the ChatGPT relay. It lives only for the turn.
+
+The automatic permission reviewer in
+[`auto_classifier.zig`](../harness/src/core/permissions/auto_classifier.zig)
+sends its ~16 KB instruction as the first message, a system one, and only then
+the request being reviewed and the pending call. It used to send them the other
+way round, which made every review a cold prefix.
+
 The ChatGPT relay in [`chatgpt.ts`](../desktop/main/chatgpt.ts) keeps only the
 leading system messages in `instructions`; a system message after the
 conversation becomes a `developer` item at the end of `input`, and the
 `session_id` header is derived from the same key rather than drawn fresh per
-request. `cache_read_tokens` and `cache_write_tokens` in every turn's usage are
+request, and is repeated as `session-id` and `thread-id` whenever a cache key is
+known. `cache_read_tokens` and `cache_write_tokens` in every turn's usage are
 the measure of whether this is working.
+
+Because the relay sends `store: false`, the server keeps nothing between steps:
+every reasoning item the model produced has to come back with the next request
+or the prefix diverges the moment a tool call lands. So the relay captures each
+`response.output_item.done` whose item is a `reasoning` item and hands it to the
+harness verbatim as a `reasoning_details` array on the assistant delta, once,
+ahead of that step's `tool_calls` and finish chunks. An inbound assistant
+message carrying `reasoning_details` puts those items straight back into
+`input`, immediately before that message's `function_call` items, or before the
+message itself when the step called nothing. A harness that drops the field
+silently loses reasoning and roughly a third of the cache hits.
+
+`prompt_cache_retention: "24h"` rides along for `gpt-5` through `gpt-5.5`,
+`-codex` variants included. From `gpt-5.6` on, that family uses
+`prompt_cache_options` instead and the backend rejects retention, so the relay
+omits it; a 400 naming `prompt_cache_retention` retries once without it and
+stops sending it for the life of the process.
 
 ## Limits the code enforces
 
@@ -534,17 +615,17 @@ permission-denied result is sent whole, not previewed.
 ## Standing instructions
 
 Emma does not send her system prompt over the wire. `writeHarnessPrompt` in
-[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes two files instead,
-both read by [`builtins/context.zig`](../harness/src/builtins/context.zig) out of
+[`system-prompt.ts`](../desktop/main/system-prompt.ts) writes a file instead,
+read by [`builtins/context.zig`](../harness/src/builtins/context.zig) out of
 the `HOME` Emma gives the child:
 
 | File | Is |
 | --- | --- |
-| `.fx/system-prompt.md` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. |
-| `.fx/AGENTS.md` | Any kept Agent-page improvement, loaded as `<global-rules>` under the prompt. Gathered per session, so an edit lands on the next one. |
+| `.fx/system-prompt-<hash>.md`, named in `EMMA_SYSTEM_PROMPT` | The resolved Settings prompt, in place of the agent's own. `systemPrompt()` reads it at the top of each turn and appends its `# Tools and verification` section back under it — that section is not replaceable, because an agent never told to call `search_tools` cannot reach a single tool. An empty or missing file leaves the built-in prompt whole. `.fx/system-prompt.md` is the fallback when the variable is unset. |
+| `.fx/AGENTS.md` | Written empty. Kept improvements loaded here as `<global-rules>` until they moved into the prompt file. |
 
-Both are rewritten per turn, and only when they changed. The one thing that can
-live in neither is a per-turn A/B arm; that rides the turn's skill context.
+It is rewritten per turn, so a kept improvement, a scoped preset and a per-turn
+A/B arm all ride it directly.
 
 Skills work the same way — see
 [plugins.md](plugins.md#bundled-skills) for `mirrorSkillsToHarness`.
@@ -575,10 +656,10 @@ npm --prefix desktop run build:harness   # the one script
 (cd harness && zig build test)           # the only Zig test suite in the repo
 ```
 
-`build:host` chains it after `emma-host`, and the package scripts run
-`zig build -Doptimize=ReleaseSafe` inline. Nothing else builds `emma-cli` —
-`npm start`, `npm run build`, and `npm run check` do not, so a stale binary
-survives all three. A checkout uses `harness/zig-out/bin/emma-cli` on macOS or
+`build:host` chains it after `emma-host` — so `npm run dev` and `npm start`
+reach it that way — and the package scripts run `zig build -Doptimize=ReleaseSafe`
+inline. Nothing else builds `emma-cli`: `npm run build` and `npm run check` do
+not, so a stale binary survives both. A checkout uses `harness/zig-out/bin/emma-cli` on macOS or
 `harness/zig-out/bin/emma-cli.exe` on Windows (`DEV_BINARIES` in `main.ts`); a
 packaged app has it in its resources directory (`Emma.app/Contents/Resources/`
 on macOS, `resources/` on Windows).

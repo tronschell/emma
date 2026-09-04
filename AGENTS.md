@@ -29,6 +29,8 @@ owns the agent harness. Keep those boundaries visible.
 - `desktop/main`: Electron lifecycle, windows, global shortcuts, trusted IPC,
   and the narrow preload bridge.
 - `desktop/src`: sandboxed React views and presentation state; no Node access.
+- `desktop/shared`: types and validation both processes agree on; no Electron
+  imports.
 - `crates/host`: NDJSON bridge onto the stores. It talks to no model and answers
   requests only — the app process drives every provider call.
 - `crates/core`: thread, scheduled, and research records, validation, and atomic
@@ -56,15 +58,41 @@ Visible or platform work is not complete until the real app has been launched
 and the changed interaction exercised. Report unverified shortcuts, privacy
 permissions, VoiceOver behavior, display geometry, signing, and non-macOS paths.
 
+## Sibling repositories
+
+Emma ships as three repos: `emma` (this one, the desktop app), `emma-mobile`
+(`~/Documents/emma-mobile`, the iPhone client that acts as a remote for this app
+and as a local agent), and `emma-website` (`~/Documents/emma-website`, the public
+site, docs, and roadmap). A change here usually needs a change there.
+
+- A new feature lands on the website: the page or tile that covers it, its
+  `ROADMAP.md` entry, and screenshots of the real app in `public/shots/` if it
+  is major enough to see.
+- A change to tools, models, permissions, or anything inherent to the app lands
+  in the website docs, and in mobile if it touches the bridge protocol.
+- Anything that breaks or extends what the phone talks to is a mobile change in
+  the same batch.
+
+Do that work in a subagent, one per repository, so it starts with a clean
+context window and reads that repo's own standards.
+
+Full contract: [`.claude/skills/sibling-repos/SKILL.md`](.claude/skills/sibling-repos/SKILL.md).
+
 ## Releasing
 
 Feature branches start from and squash-merge into `dev`, the default branch.
 Every PR runs the full `ci` workflow. Only the owner can merge `dev` into
-`main`; that merge commit is the release. The `release` workflow reads the
-root `package.json` version, skips if that version is already published, and
-otherwise builds, signs, notarizes, and publishes the app with generated notes.
+`main`; that merge commit is the release. `ci` packages the candidate on that
+push. The `release` workflow reads the root `package.json` version, skips if
+that version is already published, and otherwise verifies that candidate, signs,
+notarizes, and publishes it with notes collected from the merged commits.
 Bump the version on `dev` before promoting. There is no changelog file, release
 PR, or hand-made tag.
+
+When preparing or updating a feature PR, write its `## Release notes` section
+from the completed diff using the release skill below. The squash commit keeps
+that section, and the release job collects it automatically. The agent doing
+the work writes these notes; the owner does not maintain a separate changelog.
 
 The workflows in `.github/workflows/` run the checks above and nothing else that
 cannot be run locally. They are config, so the no-comments rule applies to them.

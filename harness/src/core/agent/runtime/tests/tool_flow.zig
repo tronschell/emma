@@ -242,9 +242,11 @@ const FailingApplicableContext = struct {
 };
 
 const ApplicableContextDelta = struct {
-    const content = "SCOPED_CONTEXT_DELTA";
+    const marker = "SCOPED_CONTEXT_DELTA";
     const source = "/test/scoped/AGENTS.md";
     const endpoint = "/test/scoped";
+    const content = "<scoped-rules from=\"" ++ source ++ "\" scope=\"" ++ endpoint ++ "\">\n" ++
+        marker ++ "\n</scoped-rules>";
 
     var expected_target: []const u8 = "";
     var cancel_flag: ?*std.atomic.Value(bool) = null;
@@ -276,6 +278,9 @@ const ApplicableContextDelta = struct {
             input.delivered_sources.len == 0 and
             input.evaluated_endpoints.len == 0;
         if (cancel_flag) |flag| flag.store(true, .seq_cst);
+        for (input.delivered_sources) |delivered| {
+            if (std.mem.eql(u8, delivered, source)) return .{};
+        }
 
         var selected: context_contract.ProviderContext = .{};
         errdefer selected.deinit(alloc);
@@ -3054,7 +3059,10 @@ test "same-batch retarget defers stale scoped call before permission and reloads
     try std.testing.expectEqualStrings("Not executed", execution.tool_steps[0].tool_results[1].output);
     try std.testing.expectEqual(types.PersistedToolStatus.failure, execution.tool_steps[0].tool_results[1].status);
     try std.testing.expectEqualStrings("stable info", execution.tool_steps[0].tool_results[2].output);
-    try std.testing.expectEqualStrings("new scope access", execution.tool_steps[1].tool_results[0].output);
+    try std.testing.expectEqualStrings(
+        "new scope access\n\n" ++ FreshnessApplicableContext.content,
+        execution.tool_steps[1].tool_results[0].output,
+    );
     try std.testing.expectEqual(types.PersistedToolStatus.success, execution.tool_steps[1].tool_results[0].status);
 }
 
@@ -3219,7 +3227,10 @@ test "same-batch missing target defers newly resolvable scope until reissue" {
     try std.testing.expectEqual(@as(usize, 2), execution.tool_steps.len);
     try std.testing.expectEqualStrings("scope resolved", execution.tool_steps[0].tool_results[0].output);
     try std.testing.expectEqualStrings("Not executed", execution.tool_steps[0].tool_results[1].output);
-    try std.testing.expectEqualStrings("new scope access", execution.tool_steps[1].tool_results[0].output);
+    try std.testing.expectEqualStrings(
+        "new scope access\n\n" ++ FreshnessApplicableContext.content,
+        execution.tool_steps[1].tool_results[0].output,
+    );
 }
 
 test "modern mixed batch materializes unsupported terminal before admission" {
@@ -3447,7 +3458,7 @@ test "modern cancellation during later context selection stops before context or
 
     try std.testing.expect(fixture.cancel_flag.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 1), gateway.request_bodies.items.len);
-    try expectBodyNotContains(&gateway, 0, ApplicableContextDelta.content);
+    try expectBodyNotContains(&gateway, 0, ApplicableContextDelta.marker);
     try std.testing.expectEqual(@as(usize, 1), ApplicableContextDelta.select_calls);
     try std.testing.expect(ApplicableContextDelta.saw_expected_input);
     try std.testing.expectEqual(@as(usize, 0), hooks.permission_names.items.len);
@@ -3514,8 +3525,8 @@ test "modern context delta defers effectful call exactly once" {
     try runFakePrompt(&gateway, &hooks, fixture.config(), fixture.job());
 
     try std.testing.expectEqual(@as(usize, 2), gateway.request_bodies.items.len);
-    try expectBodyNotContains(&gateway, 0, ApplicableContextDelta.content);
-    try expectBodyContains(&gateway, 1, ApplicableContextDelta.content);
+    try expectBodyNotContains(&gateway, 0, ApplicableContextDelta.marker);
+    try expectBodyContains(&gateway, 1, ApplicableContextDelta.marker);
     try expectBodyContains(&gateway, 1, types.context_deferred_tool_result_output);
     try std.testing.expectEqual(@as(usize, 1), ApplicableContextDelta.select_calls);
     try std.testing.expect(ApplicableContextDelta.saw_expected_input);
@@ -3531,6 +3542,98 @@ test "modern context delta defers effectful call exactly once" {
     const terminal = hooks.lifecycle_events.items[2].terminal;
     try std.testing.expectEqual(types.ToolOutcomeKind.deferred, terminal.outcome.kind);
     try std.testing.expectEqualStrings("Context updated write_file", terminal.outcome.summary);
+}
+
+test "scoped context discovered mid turn appends after the tool result and leaves the prefix byte identical" {
+    const alloc = std.testing.allocator;
+    defer ApplicableContextDelta.reset("", null);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "workspace/docs");
+    {
+        var file = try tmp.dir.createFile(std.testing.io, "workspace/docs/guide.md", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "guide");
+    }
+    const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
+    defer alloc.free(workspace);
+    const target = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace/docs/guide.md");
+    defer alloc.free(target);
+
+    const calls = [_]ToolCall{toolCall("read_guide", "read_file", "{\"path\":\"docs/guide.md\"}")};
+    const completions = [_]FakeCompletion{
+        .{ .tool_calls = &calls },
+        .{ .content = "Final" },
+    };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    hooks.context_enabled = true;
+    hooks.context_registry = ApplicableContextDelta.registry;
+    hooks.exec_plans = &.{.{ .result = .{ .model_output = "SCOPED_TOOL_OUTPUT" } }};
+    var fixture = PromptFixture{ .workspace_root = workspace };
+    var job = fixture.job();
+    job.permission_mode = .auto;
+    ApplicableContextDelta.reset(target, null);
+
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+
+    try std.testing.expectEqual(@as(usize, 2), gateway.request_bodies.items.len);
+    const first = gateway.request_bodies.items[0];
+    const second = gateway.request_bodies.items[1];
+    try expectBodyNotContains(&gateway, 0, ApplicableContextDelta.marker);
+    try expectBodyContainsInOrder(&gateway, 1, &.{
+        "user prompt",
+        "SCOPED_TOOL_OUTPUT",
+        ApplicableContextDelta.marker,
+    });
+
+    var shared: usize = 0;
+    while (shared < first.len and shared < second.len and first[shared] == second[shared]) shared += 1;
+    const user_message = std.mem.find(u8, first, "{\"role\":\"user\"") orelse
+        return error.TestExpectedEqual;
+    try std.testing.expect(shared >= user_message);
+
+    const embedded = "SCOPED_TOOL_OUTPUT\n\n" ++ ApplicableContextDelta.content;
+    const execution = hooks.history_turns.items[0].assistant.execution;
+    try std.testing.expectEqual(@as(usize, 1), execution.tool_steps.len);
+    try std.testing.expectEqualStrings(embedded, execution.tool_steps[0].tool_results[0].output);
+
+    var history = [_]types.HistoryTurn{hooks.history_turns.items[0]};
+    const next_completions = [_]FakeCompletion{
+        .{ .tool_calls = &calls },
+        .{ .content = "Final" },
+    };
+    var next_gateway = FakeGateway.init(alloc, &next_completions);
+    defer next_gateway.deinit();
+    var next_hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer next_hooks.deinit();
+    next_hooks.context_enabled = true;
+    next_hooks.context_registry = ApplicableContextDelta.registry;
+    next_hooks.exec_plans = &.{.{ .result = .{ .model_output = "SCOPED_TOOL_OUTPUT" } }};
+    var next_job = fixture.job();
+    next_job.permission_mode = .auto;
+    next_job.history = history[0..];
+    ApplicableContextDelta.reset(target, null);
+
+    try runFakePrompt(&next_gateway, &next_hooks, fixture.config(), next_job);
+
+    try expectBodyContainsInOrder(&next_gateway, 0, &.{
+        "SCOPED_TOOL_OUTPUT",
+        ApplicableContextDelta.marker,
+        "user prompt",
+    });
+    const next_execution = next_hooks.history_turns.items[0].assistant.execution;
+    try std.testing.expectEqualStrings(
+        "SCOPED_TOOL_OUTPUT",
+        next_execution.tool_steps[0].tool_results[0].output,
+    );
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(
+        u8,
+        next_gateway.request_bodies.items[1],
+        ApplicableContextDelta.marker,
+    ));
 }
 
 test "modern context delta does not defer unrelated effectful call" {

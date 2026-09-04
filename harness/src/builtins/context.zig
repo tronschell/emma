@@ -103,7 +103,7 @@ const task_tracking_section =
     \\
 ;
 
-const tools_and_verification_section =
+pub const tools_and_verification_section =
     \\# Tools and verification
     \\
     \\- Every tool already in the advertised list is callable right now: call it directly, and never spend a step searching for or selecting one of them. The list is short on purpose, and a capability missing from it is loadable, not absent: call search_tools once with a phrase for what you need, then select_tool on the matches before using them.
@@ -132,7 +132,7 @@ pub fn modelPromptOverlay(model: []const u8) ?[]const u8 {
     return null;
 }
 
-const system_prompt_override_bytes = 16 * 1024;
+const system_prompt_override_bytes = 128 * 1024;
 var override_storage: [system_prompt_override_bytes * 4]u8 = undefined;
 
 pub const system_prompt_path_env = "EMMA_SYSTEM_PROMPT";
@@ -2236,7 +2236,6 @@ fn collectGitHubRepoIdentity(arena: Allocator, git_dir: []const u8, started_ns: 
 fn detectGitWorktreeState(arena: Allocator, workspace_root: []const u8, git_dir: []const u8, started_ns: i128) GitWorktreeState {
     if (gitReadExpired(started_ns)) return .unknown;
 
-    // This bounded hint can prove tracked-file changes but cannot detect untracked files.
     const dirty_markers = [_][]const u8{
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
@@ -2976,7 +2975,6 @@ fn appendTransient(input: TransientContextInput, arena: Allocator, messages: *st
             "{s}\nRuntime context: this is a noninteractive run without live question UI; when a user-owned decision remains after inspection, stop and surface a concrete blocker in freeform text with the available options. Do not recommend or label one option as preferred.",
             .{turn_context},
         );
-    // Session-stable lines ride in the cached prefix; only the per-turn state below trails the conversation.
     const split = try splitVolatileTurnContext(arena, content);
     try messages.append(arena, .{ .role = .system, .content = split.stable, .cache_policy = .prefix });
     try appendWorkspaceAccessContext(input.access_scope, arena, messages);
@@ -3019,8 +3017,6 @@ fn appendTransient(input: TransientContextInput, arena: Allocator, messages: *st
     if (split.live) |live| try messages.append(arena, .{ .role = .system, .content = live });
 }
 
-/// Lines of the turn context that change within a session (date, git branch, worktree state).
-/// They leave the cached prefix and trail the conversation in their own message.
 const volatile_turn_context_keys = [_][]const u8{ "date_utc: ", "git_branch: ", "git_worktree: " };
 
 fn splitVolatileTurnContext(arena: Allocator, fragment: []const u8) !struct { stable: []const u8, live: ?[]const u8 } {

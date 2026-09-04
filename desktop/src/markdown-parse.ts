@@ -39,8 +39,16 @@ export type Block =
    span carries one mark, never a mark inside a mark. */
 /* Bare URLs autolink last, so a `[text](url)` above still wins the address.
    The tail excludes closing punctuation: a link at the end of a sentence
-   must not swallow the period. */
-const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_|(!?)\[([^\]]*)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()[\]]*[^\s<>()[\].,;:!?'"])/g;
+   must not swallow the period.
+   Every open-ended class is bounded. `[^\]]*` scanned to the end of the message
+   from every `[` that never closes, so a model quoting a log of brackets cost
+   O(n²) — 100 000 of them froze the JS thread for 3.6 seconds, with no spinner
+   and nothing to cancel. No real link text or address comes near these limits.
+   The bound alone is what makes it linear; the classes deliberately still admit
+   a newline, because paragraphs are joined with one before this runs and link
+   text wrapped across two source lines is ordinary markdown. Excluding `\n`
+   measured no faster (119ms against 133ms at 100 000) and dropped that link. */
+const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_|(!?)\[([^\]]{0,512})\]\(([^)\s]{1,2048})\)|(https?:\/\/[^\s<>()[\]]{0,2048}[^\s<>()[\].,;:!?'"])/g;
 const FENCE = /^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;

@@ -7,7 +7,7 @@ They are different lists with different names; do not conflate them.
 
 ## Emma's tools
 
-The 27 names in `AGENT_TOOLS`. Schemas are in
+The 28 names in `AGENT_TOOLS`. Schemas are in
 [tools.ts](../desktop/main/tools.ts); `runEmmaTool` in
 [main.ts](../desktop/main/main.ts) checks the gate and dispatches. Gate column:
 `ask` means a dialog in `ask`/`acceptEdits`, the verifier in `auto`, and through
@@ -21,6 +21,7 @@ for each running app per turn, in every mode. Full matrix in
 | `cli` | Runs Claude Code, Codex, Pi, OpenCode or Cursor in a connected folder and takes turns with it. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
 | `cli_runs` | Lists installed CLIs and every run, reads one run's output, or stops its turn. | auto | [cli.ts](../desktop/main/cli.ts) |
 | `computer` | Reads and operates approved running macOS or Windows apps through accessibility or UI Automation, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
+| `shortcut` | Binds a Quick Action prompt to a global keyboard shortcut, in Electron accelerator form. Matching an existing label or combination replaces that slot; there are three. | auto | [main.ts](../desktop/main/main.ts) |
 | `write_skill` | Records a durable lesson as `<userData>/skills/<slug>/SKILL.md`. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_tool` | Writes an executable script into Emma's data folder, callable later by name. `code` must start with a `#!` line. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_plugin` | Packages skills as a ChatGPT/Codex plugin and installs it on the Plugins page. | auto | [marketplace.ts](../desktop/main/marketplace.ts) |
@@ -34,7 +35,7 @@ for each running app per turn, in every mode. Full matrix in
 | `plan` | Breaks a job into steps in a durable markdown file and hands each to its own subagent; independent steps run at once. Actions: `read`, `write`, `run`, `update`, `delete`. | auto | [plans.ts](../desktop/main/plans.ts) |
 | `goal` | The one objective this thread keeps working at, and the ledger under it. Actions: `set`, `get`, `update`, `extend`, `clear`. A subagent's call acts on its parent's goal. See [goals.md](goals.md). | auto | [main.ts](../desktop/main/main.ts) |
 | `threads` | Emma's threads: `spawn`, `list`, `read`, `message`, `rename`. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
-| `read_trace` | Reads past turns' execution traces in this thread, nested, with arguments and outcomes. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
+| `read_trace` | Reads past runs, nested: model identities, the recorded system prompt, skills, tool settings, applied changes, calls, arguments and outcomes. `offset` pages back through older traces. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
 | `context` | Reads how full this thread's context window is; `compact: true` folds earlier turns into one summary from the next turn on. | auto | [main.ts](../desktop/main/main.ts) |
 | `keep` | Saves one Markdown note into the user's vault. Replaced the old knowledge-save tool. | auto | [vault.ts](../desktop/main/vault.ts) |
 | `agents` | Lists what is running now; sends a message into a live run or stops it. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |

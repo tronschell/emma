@@ -20,6 +20,7 @@ test("turn admission preserves active same-thread ownership until its cleanup fi
     agents: { forget: (threadId: string) => forgotten.push(threadId) },
     threadSubagent: () => undefined,
     threadEffort: () => "",
+    threadStepLimit: () => undefined,
     harnessModel: (model: string) => model,
     modelName: (model?: string) => model ?? "",
     invocations_1: { recordUse: () => {}, modelKey: (name: string) => name },

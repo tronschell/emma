@@ -160,6 +160,18 @@ function GridPreview({ meta }: { meta: ArtifactMeta }) {
   return <div className="artifact-clip" inert>{artifact && <ArtifactRender artifact={artifact} loading="lazy" />}</div>;
 }
 
+function CodeIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5.8 4.6 2.4 8l3.4 3.4M10.2 4.6 13.6 8l-3.4 3.4M9.1 2.9 6.9 13.1" /></svg>;
+}
+
+function CopyIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5.6 5.6h7.1v7.1H5.6zM10.4 5.6V3.3H3.3v7.1h2.3" /></svg>;
+}
+
+function CheckIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3.2 8.4 6.3 11.5 12.8 5" /></svg>;
+}
+
 function PencilIcon() {
   return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11.1 2.3a1.3 1.3 0 0 1 1.9 0l.7.7a1.3 1.3 0 0 1 0 1.9l-7.6 7.6-3 .8.8-3zM10.2 3.2l2.6 2.6" /></svg>;
 }
@@ -168,35 +180,58 @@ function FolderIcon() {
   return <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.9 12.6V3.9a.9.9 0 0 1 .9-.9h3l1.6 1.8h5.8a.9.9 0 0 1 .9.9v6.9a.9.9 0 0 1-.9.9H2.8a.9.9 0 0 1-.9-.9z" /></svg>;
 }
 
-function ArtifactDialog({ id, busy, close, edit, remove }: { id: string; busy: boolean; close: () => void; edit: (artifact: Artifact) => void; remove: (meta: ArtifactMeta) => void }) {
+function ArtifactPanel({ id, className, busy, close, edit, remove }: { id: string; className: string; busy: boolean; close: () => void; edit: (artifact: Artifact) => void; remove: (meta: ArtifactMeta) => void }) {
   const artifact = useArtifact(id);
   const [source, setSource] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  return <section className={className}>
+    <header>
+      <div>
+        <span>{artifact ? `${ARTIFACT_LABELS[artifact.kind]} · v${artifact.version}` : "Artifact"}</span>
+        <h2 id="artifact-title">{artifact ? artifact.title : id}</h2>
+      </div>
+      {artifact && <button type="button" className="artifact-icon" aria-pressed={source} aria-label={source ? "Show the preview" : "Show the code"} title={source ? "Preview" : "Code"} onClick={() => setSource((current) => !current)}><CodeIcon /></button>}
+      {artifact && <button type="button" className="artifact-icon" aria-label={copied ? "Copied" : "Copy artifact"} title={copied ? "Copied" : "Copy"}
+        onClick={() => void navigator.clipboard.writeText(artifact.content).then(() => setCopied(true)).catch(() => undefined)}>{copied ? <CheckIcon /> : <CopyIcon />}</button>}
+      <button type="button" className="artifact-icon" onClick={close} aria-label="Close artifact" title="Close">×</button>
+    </header>
+    {artifact && <button type="button" className="artifact-location" title={REVEAL_LABEL} onClick={() => void window.emma.revealArtifact(artifact.id)}>{artifact.path}</button>}
+    {artifact === false && <p className="dialog-error">{GONE}</p>}
+    {artifact && <div className="artifact-body"><ArtifactRender artifact={artifact} source={source} /></div>}
+    {artifact && <div className="artifact-actions">
+      <button type="button" disabled={busy} onClick={() => edit(artifact)}>Edit in a thread</button>
+      <button type="button" className="artifact-danger" disabled={busy} onClick={() => remove(artifact)}>Delete</button>
+    </div>}
+  </section>;
+}
+
+export function ArtifactPane({ id, busy, close, edit }: { id: string; busy: boolean; close: () => void; edit: (artifact: Artifact) => void }) {
+  const [doomed, setDoomed] = useState<ArtifactMeta | null>(null);
+  const [error, setError] = useState("");
+  const remove = async () => {
+    if (!doomed) return;
+    try {
+      await window.emma.deleteArtifact(doomed.id);
+      setDoomed(null);
+      close();
+    } catch { setError("That artifact could not be deleted."); }
+  };
+  return <>
+    <ArtifactPanel id={id} className="artifact-pane" busy={busy} close={close} edit={edit} remove={setDoomed} />
+    {error && <p className="region-error">{error}</p>}
+    {doomed && <ConfirmDialog meta={doomed} busy={busy} close={() => setDoomed(null)} confirm={() => void remove()} />}
+  </>;
+}
+
+function ArtifactDialog({ id, busy, close, edit, remove }: { id: string; busy: boolean; close: () => void; edit: (artifact: Artifact) => void; remove: (meta: ArtifactMeta) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
 
   return <dialog ref={dialog} className="modal-backdrop" aria-labelledby="artifact-title" onClose={close}
     onCancel={(event) => { event.preventDefault(); close(); }}
     onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-    <section className="agent-dialog artifact-dialog">
-      <header>
-        <div>
-          <span>{artifact ? `${ARTIFACT_LABELS[artifact.kind]} · v${artifact.version}` : "Artifact"}</span>
-          <h2 id="artifact-title">{artifact ? artifact.title : id}</h2>
-        </div>
-        {artifact && <button type="button" className="artifact-toggle" onClick={() => setSource((current) => !current)}>{source ? "Preview" : "Code"}</button>}
-        {artifact && <button type="button" className="artifact-toggle" aria-label={copied ? "Copied" : "Copy artifact"}
-          onClick={() => void navigator.clipboard.writeText(artifact.content).then(() => setCopied(true)).catch(() => undefined)}>{copied ? "Copied" : "Copy"}</button>}
-        <button type="button" onClick={close} aria-label="Close artifact">×</button>
-      </header>
-      {artifact && <button type="button" className="artifact-location" title={REVEAL_LABEL} onClick={() => void window.emma.revealArtifact(artifact.id)}>{artifact.path}</button>}
-      {artifact === false && <p className="dialog-error">{GONE}</p>}
-      {artifact && <div className="artifact-body"><ArtifactRender artifact={artifact} source={source} /></div>}
-      {artifact && <div className="artifact-actions">
-        <button type="button" disabled={busy} onClick={() => edit(artifact)}>Edit in a thread</button>
-        <button type="button" className="artifact-danger" disabled={busy} onClick={() => remove(artifact)}>Delete</button>
-      </div>}
-    </section>
+    <ArtifactPanel id={id} className="agent-dialog artifact-dialog" busy={busy} close={close} edit={edit} remove={remove} />
   </dialog>;
 }
 

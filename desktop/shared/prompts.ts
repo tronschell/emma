@@ -95,7 +95,7 @@ You are Emma, a coding and knowledge assistant.
 - Show a picture when it makes a relationship materially easier to see than prose would, not because an answer has parts: a line of \`![what it shows](/absolute/path.png)\` draws that image in the conversation. It works for any image file on this Mac, whatever wrote it.`;
 
 export function normalizeModel(value: string): string {
-  return value.trim().toLowerCase().replace(/^(?:openrouter|local|model):/, "");
+  return value.trim().toLowerCase().replace(/^(?:openrouter|local|model|codex):/, "");
 }
 
 export function familiesOf(model: string): string[] {
@@ -112,12 +112,24 @@ function sameModel(a: string, b: string): boolean {
   return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
 }
 
+export function promptScopeValid(scope: string): boolean {
+  if (!scope) return true;
+  if (scope.length > 256) return false;
+  if (scope.startsWith("family:")) return MODEL_FAMILIES.some((family) => family.id === scope.slice("family:".length));
+  return scope.startsWith("model:") && !!normalizeModel(scope.slice(6)) && !/\s/.test(scope.slice(6)) && normalizeModel(scope.slice(6)) !== "unknown";
+}
+
+export function scopeApplies(scope: string, model: string): boolean {
+  if (!scope) return true;
+  if (scope.startsWith("family:")) return familiesOf(model).includes(scope.slice(7));
+  return scope.startsWith("model:") && sameModel(scope.slice(6), model);
+}
+
+export const scopeLabel = (scope: string) => scope.startsWith("family:") ? `${familyLabel(scope.slice(7))} family`
+  : scope.startsWith("model:") ? scope.slice(6) : scope === "unknown" ? "Unknown model" : "Every model";
+
 export function promptApplies(preset: PromptPreset, model: string): boolean {
-  if (!preset.enabled) return false;
-  if (!preset.scope) return true;
-  if (preset.scope.startsWith("family:")) return familiesOf(model).includes(preset.scope.slice("family:".length));
-  if (preset.scope.startsWith("model:")) return sameModel(preset.scope.slice("model:".length), model);
-  return false;
+  return preset.enabled && scopeApplies(preset.scope, model);
 }
 
 const rank = (preset: PromptPreset) => (!preset.scope ? 0 : preset.scope.startsWith("family:") ? 1 : 2);
@@ -170,9 +182,7 @@ export function validatePrompts(value: unknown, maxBodyChars: number): PromptPre
     if (typeof preset.name !== "string" || !preset.name.trim() || preset.name.length > MAX_PROMPT_NAME_CHARS) throw new Error("A prompt name is invalid");
     if (typeof preset.body !== "string" || preset.body.length > maxBodyChars) throw new Error(`Keep each prompt under ${maxBodyChars} characters`);
     const scope = preset.scope ?? "";
-    if (typeof scope !== "string" || scope.length > 256) throw new Error("A prompt condition is invalid");
-    if (scope && !scope.startsWith("family:") && !scope.startsWith("model:")) throw new Error("A prompt condition is invalid");
-    if (scope.startsWith("family:") && !MODEL_FAMILIES.some((family) => family.id === scope.slice("family:".length))) throw new Error("A prompt condition is invalid");
+    if (typeof scope !== "string" || !promptScopeValid(scope)) throw new Error("A prompt condition is invalid");
     return { id: preset.id, name: preset.name.trim(), body: preset.body, scope, enabled: preset.enabled !== false };
   });
 }

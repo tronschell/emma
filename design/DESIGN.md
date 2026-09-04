@@ -23,6 +23,7 @@ colors:
   violet: "#ae78f0"
   accent: "{colors.orange}"
   accent-soft: "color-mix(in srgb, #ff6a3d 14%, transparent)"
+  accent-2: "oklch(from #ff6a3d l c calc(h + 150))"
   danger: "{colors.rose}"
   danger-surface: "#2a1620"
   solid: "#e8e6df"
@@ -113,7 +114,7 @@ spacing:
   row: 28px
   titlebar: 46px
   sidebar: 260px
-  sidebar-collapsed: 46px
+  sidebar-collapsed: 0px
   content-column: 720px
   content-column-wide: 980px
 components:
@@ -195,7 +196,7 @@ components:
     textColor: "{colors.text-3}"
     borderColor: transparent
     typography: "{typography.label-xs}"
-    padding: 0px 4px
+    padding: 0px 6px
     height: 20px
   tag-hover:
     backgroundColor: "{colors.surface-4}"
@@ -226,8 +227,6 @@ components:
     borderColor: "{colors.border-strong}"
     rounded: "{rounded.none}"
     width: 720px
-  composer-focus:
-    borderColor: "{colors.text-3}"
   menu:
     backgroundColor: "{colors.surface-2}"
     borderColor: "{colors.border}"
@@ -313,7 +312,8 @@ downstream of one of them:
 
 The same tokens draw every surface: the workspace window and the notch surfaces
 (`.overlay`, `.island*`, `.orb`, `.radial`, `.notch-*`, `.screen-annotation`,
-`.run-banner`). One visual language, no per-surface theme.
+`.run-banner`, `.status-pill`, `.command-orbs`, `.computer-cursor*`). One visual
+language, no per-surface theme.
 
 ## Colors
 
@@ -378,8 +378,8 @@ decision, not a convenience.
 ### The accent
 
 `accent` aliases `orange`; `danger` aliases `rose`. Settings → Appearance
-repoints `accent` at another palette hue and everything derived from it follows,
-so **never hard-code `#ff6a3d`** — use the token.
+repoints `accent` at another palette hue or at any hex, and everything derived
+from it follows, so **never hard-code `#ff6a3d`** — use the token.
 
 The accent is for **action and state only**: the primary action, the active
 state, the focus ring, a checked control, and any literal quantity meant to be
@@ -388,7 +388,8 @@ status classes — give the set distinct hues in palette order instead of tintin
 all of them accent.
 
 `accent-soft` is the accent at 14% and is the only accent fill that touches a
-large area.
+large area. `accent-2` is its oklch complement (`h + 150`), used only by the
+computer cursor and the Built-by-Emma reveal.
 
 The spec's conventional names are provided as aliases — `primary` → `accent`,
 `secondary` → `text-2`, `tertiary` → `blue`, `neutral` → `bg`, `on-surface` →
@@ -410,6 +411,9 @@ Two faces, split by *what the text is*, not by hierarchy level.
   text. Nothing structural.
 - **`ui-monospace`** is for text that must survive being copied out — code
   blocks, paths, diffs, terminal output.
+
+These two are defaults: Settings → Appearance swaps the interface face and the
+agent face independently for any of six stacks.
 
 Hierarchy comes from **rules, case, and colour — not from size.** The scale tops
 out at 20px, only 7px above body text, because a heading here is a label, not a
@@ -438,11 +442,12 @@ The shell is a two-column grid: `sidebar` then content.
 | Surface | Contract |
 | --- | --- |
 | Titlebar | 46px, `chrome` as-is, macOS traffic lights reserved to 117px |
-| Sidebar | One pane, 260px default, user-resizable 200–340, 46px collapsed. Row 28px, pad 12px. Right edge `border-strong`; ground is `chrome` at 35% over `vibrancy: "sidebar"` |
-| Content | Single centred column at 720px (settings-wide overrides to 980px), gutters `clamp(12px, 3vw, 28px)` |
-| Messages | User turns right-aligned on `surface-2`; assistant turns are plain text flush left at 13px — no avatar, no card, no bubble. Metadata is `text-3` |
-| Composer | Floats above the transcript bottom on `surface-2` with `shadow-lg` and a hairline that brightens on focus-within |
-| Context bar | Floating card inset from the window edge, not a flush column |
+| Sidebar | One pane, 260px default, user-resizable 200–340; collapsed, its column is 0 and the pane floats behind an 8px hover strip. Row 28px, pad 12px. Right edge `border-strong`; ground is `chrome` at 35% over `vibrancy: "sidebar"` |
+| Content | Single centred column at 720px (Settings → Appearance widens a thread to 1080px or the full pane; settings-wide overrides to 980px), gutters `clamp(12px, 3vw, 28px)` |
+| Messages | User turns right-aligned on `surface-3`; assistant turns are plain text flush left at 13px — no avatar, no card, no bubble. Metadata is `text-3` |
+| Composer | The last row of the thread grid, centred on the conversation column: `bg` ground, `border-strong` box, no shadow |
+| Context bar | Flush right column, 288px, user-resizable 260–360, `chrome` ground behind a `border-strong` left edge |
+| Panes | Browser 420px (260–720) right of the context bar; terminal 260px (120–720) across the bottom, capped at 60% |
 | Settings | Full-content takeover with its own sub-nav grouped Personal / Coding / Integrations / Emma |
 
 Spacing is an eight-step scale (4, 6, 8, 12, 16, 20, 24, 32). Nothing between
@@ -475,8 +480,8 @@ sit flat on the paper and are separated by lines; they cast nothing.
 | 0 | `bg`, no border | The window |
 | 1 | `surface` / `surface-2` ground or a `border` rule | Panels, bands, rows |
 | 2 | `border-strong` outline | An addressable region |
-| 3 | `surface-2` + `shadow-md` | Menus, popovers |
-| 4 | `surface-2` + `shadow-lg` | The composer, floating overlays, the notch surfaces |
+| 3 | `surface-2` + `shadow-md` | Dropdown menus |
+| 4 | `bg` + `border-strong` + `shadow-lg` | Popovers, the thread menu, the notch surfaces |
 
 Only a surface that genuinely floats above the page casts a shadow. Shadows are
 pure black at high alpha (`0 1px 2px #0006`, `0 8px 24px #0007`,
@@ -564,10 +569,7 @@ floating grey pill.
 ### Data and status
 
 - **Series** — `series-1` through `series-7` are the palette in order, and they
-  are the only way to colour a set. A chart, a legend, a source-kind key, and a
-  status class all draw from the same sequence, so the same hue means the same
-  ordinal position everywhere. Never restart the sequence at a different hue to
-  "match" a view.
+  are the only way to colour a set.
 - **Status pip** — a 6px filled square, accent by default, tinted per state. It
   is the shape of an empty `<i />` and nothing else; an `<i>` with text in it is
   a count or a delta, and painting a square over the glyph turns it into tofu.
@@ -577,9 +579,10 @@ floating grey pill.
 
 ### Menus and overlays
 
-Menus are `surface-2` with a `border` outline, 4px padding, `shadow-md`, and
-30px rows. They are positioned `fixed` under a full-viewport scrim so they
-escape scroll containers.
+Menus are `surface-2` with a `border` outline, 4px padding, and `shadow-md`. The
+thread context menu is `bg` with a `border-strong` outline, `shadow-lg`, and 30px
+rows, positioned `fixed` under a full-viewport scrim so it escapes scroll
+containers.
 
 The notch surfaces (island, orb, radial, run banner) use level 4 and the same
 tokens as the window. They are not a separate theme.
@@ -632,11 +635,10 @@ motion past it.
 ## Iconography & The Mark
 
 Emma herself is the logo: `desktop/assets/emma.webp` (eyes open) and
-`emma-blink.webp` (shut), both 1800×1253 and trimmed to the ink — set a width
+`emma-blink.webp` (shut), both 1852×1253 and trimmed to the ink — set a width
 and let the height follow. `EmmaMark` stacks both frames and crosses their
-opacities on the same keyframe. She appears at 28px in the setup flow, the
-quick-ask island, and the settings header. The sidebar shows no wordmark; its
-first row is the search field.
+opacities on the same keyframe. She appears at 22px in the quick-ask island. The
+sidebar shows no wordmark; its first row is the search field.
 
 `Mark` is the other one: a bow on a 16×16 pixel grid, drawn in `currentColor` so
 a context tints it rather than swapping the art — `lime` for a good state,
@@ -648,9 +650,8 @@ where the brand mark is black, the real brand colour where it is not), fitted to
 their own viewBox and padded 2px absolute. Never apply a blanket CSS filter to
 them — it flattens the ones that are meant to be coloured.
 
-The app icon is Emma on a macOS squircle. A bundle icon cannot follow system
-appearance, so `dockIcon()` repaints the Dock tile on `nativeTheme` "updated"
-while Finder keeps the dark tile.
+The app icon is Emma on a macOS squircle (`emma.icns`); an unpackaged dev run
+puts `emma-dock.png` on the Dock tile instead.
 
 ## Accessibility Floor
 
@@ -721,7 +722,7 @@ Validate changes with the reference linter:
 npx @google/design.md lint design/DESIGN.md
 ```
 
-It reports zero errors and 23 warnings, all of them `borderColor` on a
+It reports zero errors and 22 warnings, all of them `borderColor` on a
 component. That property is not in the spec's sub-token list, which covers fill,
 ink, type, radius, and size but not the edge. Emma is drawn with edges, so the
 warnings are the correct output — do not silence them by deleting the property.

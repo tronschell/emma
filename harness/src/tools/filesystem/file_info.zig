@@ -262,23 +262,6 @@ fn writeTempFileWithMtime(alloc: Allocator, tmp: *std.testing.TmpDir, sub_path: 
     return io_mod.dirRealpathAlloc(alloc, tmp.dir, sub_path);
 }
 
-fn setMode(path: []const u8, mode: std.posix.mode_t) !void {
-    if (comptime builtin.os.tag == .windows) {
-        var file = try io_mod.openExistingRegularFile(
-            std.Io.Dir.cwd(),
-            path,
-            .read_write,
-        );
-        defer file.close(io_mod.getIo());
-        const permissions = io_mod.permissionsFromMode(mode);
-        return file.setPermissions(
-            io_mod.getIo(),
-            permissions.setReadOnly(mode & 0o222 == 0),
-        );
-    }
-    try std.Io.Dir.cwd().setFilePermissions(io_mod.getIo(), path, io_mod.permissionsFromMode(mode), .{});
-}
-
 fn expectNoExtension(body: []const u8) !void {
     try std.testing.expect(std.mem.find(u8, body, "extension:") == null);
 }
@@ -480,9 +463,19 @@ test "file_info active output omits readonly" {
     defer tmp.cleanup();
     const path = try writeTempFile(alloc, &tmp, "readonly.txt", "x");
     defer alloc.free(path);
-    setMode(path, 0o444) catch return error.SkipZigTest;
+    const file = try io_mod.openExistingRegularFile(std.Io.Dir.cwd(), path, .read_write);
+    defer file.close(io_mod.getIo());
+    const original_permissions = (try file.stat(io_mod.getIo())).permissions;
+    const readonly_permissions = if (comptime builtin.os.tag == .windows) blk: {
+        var attributes = original_permissions.toAttributes();
+        attributes.NORMAL = false;
+        attributes.READONLY = true;
+        break :blk @as(std.Io.File.Permissions, @enumFromInt(@as(u32, @bitCast(attributes))));
+    } else io_mod.permissionsFromMode(0o444);
+    try file.setPermissions(io_mod.getIo(), readonly_permissions);
+    defer file.setPermissions(io_mod.getIo(), original_permissions) catch {};
     const stat = try std.Io.Dir.cwd().statFile(io_mod.getIo(), path, .{});
-    if (!stat.permissions.readOnly()) return error.SkipZigTest;
+    try std.testing.expect(!io_mod.permissionsWritable(stat.permissions));
     const workspace = try workspaceRoot(alloc, tmp);
     defer alloc.free(workspace);
 

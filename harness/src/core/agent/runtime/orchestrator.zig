@@ -508,22 +508,73 @@ pub const TestHooks = if (builtin.is_test) struct {
 
 fn commitSelectedContext(
     arena: Allocator,
-    stable_prefix: *std.ArrayList(ChatMessage),
+    pending_scoped_context: *?[]const u8,
     context_delivery_state: *context_contract.DeliveryState,
     selected: *context_contract.ProviderContext,
 ) Allocator.Error!void {
     if (comptime builtin.is_test) {
         if (TestHooks.context_gate_commit) |hook| try hook();
     }
-    if (selected.content != null) try stable_prefix.ensureUnusedCapacity(arena, 1);
+    const merged: ?[]const u8 = if (selected.content) |content|
+        if (pending_scoped_context.*) |pending|
+            try std.mem.concat(arena, u8, &.{ pending, "\n", content })
+        else
+            content
+    else
+        null;
     try context_delivery_state.commit(arena, selected);
-    if (selected.content) |content| {
-        stable_prefix.appendAssumeCapacity(.{
-            .role = .system,
-            .content = content,
-        });
+    if (merged) |content| {
+        pending_scoped_context.* = content;
         selected.content = null;
     }
+}
+
+const scoped_rules_open_tag = "<scoped-rules from=\"";
+
+fn appendScopedContextToLastToolResult(
+    arena: Allocator,
+    within_turn_suffix: *std.ArrayList(ChatMessage),
+    scoped_context: []const u8,
+) Allocator.Error!void {
+    var index = within_turn_suffix.items.len;
+    while (index > 0) {
+        index -= 1;
+        const message = &within_turn_suffix.items[index];
+        if (message.role != .tool) continue;
+        const output = message.content orelse "";
+        message.content = try std.mem.concat(arena, u8, &.{ output, "\n\n", scoped_context });
+        return;
+    }
+    try within_turn_suffix.append(arena, .{ .role = .system, .content = scoped_context });
+}
+
+fn seedDeliveredScopedRules(
+    arena: Allocator,
+    context_delivery_state: *context_contract.DeliveryState,
+    history: []const types.HistoryTurn,
+) Allocator.Error!void {
+    for (history) |turn| {
+        for (session_runtime.turnExecution(turn).tool_steps) |step| {
+            for (step.tool_results) |result| {
+                var rest: []const u8 = result.output;
+                while (std.mem.find(u8, rest, scoped_rules_open_tag)) |start| {
+                    const from = rest[start + scoped_rules_open_tag.len ..];
+                    const end = std.mem.indexOfScalar(u8, from, '"') orelse break;
+                    const source = from[0..end];
+                    rest = from[end..];
+                    if (containsScopedSource(context_delivery_state.delivered_sources.items, source)) continue;
+                    try context_delivery_state.delivered_sources.append(arena, try arena.dupe(u8, source));
+                }
+            }
+        }
+    }
+}
+
+fn containsScopedSource(sources: []const []u8, source: []const u8) bool {
+    for (sources) |existing| {
+        if (std.mem.eql(u8, existing, source)) return true;
+    }
+    return false;
 }
 
 fn candidateHasApplicableContextDelta(
@@ -835,6 +886,8 @@ fn materializeConfirmedProviderTools(
         null,
         novel_calls,
         completion.provider_state_json,
+        completion.reasoning,
+        completion.reasoning_details_json,
     );
     var batch: runtime_tool_batch.StepBatchState = .{};
     for (novel_calls) |call| {
@@ -2947,8 +3000,7 @@ fn processQueuedPromptLoop(
     current_user_message: ChatMessage,
     stop_state: *CommonStopState,
 ) !void {
-    var stable_prefix = stable_prefix_ptr.*;
-    defer stable_prefix_ptr.* = stable_prefix;
+    const stable_prefix = stable_prefix_ptr.*;
     const history_messages = history_messages_ptr.*;
     var within_turn_suffix = within_turn_suffix_ptr.*;
     defer within_turn_suffix_ptr.* = within_turn_suffix;
@@ -2971,6 +3023,8 @@ fn processQueuedPromptLoop(
     else
         .{};
     defer context_delivery_state.deinit(arena);
+    if (deps.context_enabled) try seedDeliveredScopedRules(arena, &context_delivery_state, job.history);
+    var pending_scoped_context: ?[]const u8 = null;
     const root_user_intent_context = switch (config.origin) {
         .subagent => config.root_user_intent_context,
         .root => if (job.root_user_intent_context.len > 0)
@@ -5025,6 +5079,8 @@ fn processQueuedPromptLoop(
                 partial_assistant,
             .tool_calls = effective_tool_calls,
             .provider_state_json = completion.provider_state_json,
+            .reasoning = completion.reasoning,
+            .reasoning_details_json = completion.reasoning_details_json,
         };
 
         var preparation_batch = tool_preparation.ReadyCallBatch.init(
@@ -5236,7 +5292,7 @@ fn processQueuedPromptLoop(
 
             commitSelectedContext(
                 arena,
-                &stable_prefix,
+                &pending_scoped_context,
                 &context_delivery_state,
                 &selected,
             ) catch |err| {
@@ -5257,6 +5313,8 @@ fn processQueuedPromptLoop(
             if (terminal_provider_completion) null else completion.content,
             effective_tool_calls,
             completion.provider_state_json,
+            completion.reasoning,
+            completion.reasoning_details_json,
         );
 
         const step_has_content = !terminal_provider_completion and completion.content != null and completion.content.?.len > 0;
@@ -7837,6 +7895,10 @@ fn processQueuedPromptLoop(
                 .{ .valid = settled_vision_ids.items },
             );
             pending_image_ids = transition.pending_ids;
+        }
+        if (pending_scoped_context) |scoped_context| {
+            try appendScopedContextToLastToolResult(arena, &within_turn_suffix, scoped_context);
+            pending_scoped_context = null;
         }
         try runtime_tool_batch.appendReviewContinuationSuffix(
             config.review_enabled,

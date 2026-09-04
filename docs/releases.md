@@ -11,7 +11,7 @@ feature branch → dev → main → signed macOS download
 ```
 
 `dev` is the default branch. Anyone opens feature PRs against it, and every PR
-runs the full `ci` workflow on macOS. `main` holds released code.
+runs the full `ci` workflow on macOS and Windows. `main` holds released code.
 Only the repository owner can update `main`; a GitHub ruleset blocks everyone
 else from merging into it.
 
@@ -26,14 +26,48 @@ gh pr create --base dev
 1. On `dev`, bump the root `package.json` version in a normal PR, or run
    `npm version patch --no-git-tag-version` and commit it.
 2. Open a `dev` → `main` PR and merge it with **Create a merge commit**.
-3. The push to `main` runs the `release` workflow. It reads the version from
-   the root `package.json`, skips if that release already exists, and otherwise
-   packages, signs, notarizes, staples, checks Gatekeeper, and publishes
-   `vX.Y.Z` with GitHub's generated release notes.
+3. The promotion PR carries the required checks. After it is merged, the push
+   to `main` runs `ci` against the exact promoted commit and packages an unsigned
+   candidate. The successful candidate workflow then triggers `release`, which
+   verifies that candidate, signs, notarizes, staples, checks Gatekeeper, and
+   publishes `vX.Y.Z` with the automatically collected changelog. A manual
+   release dispatch retains a direct package fallback.
 
 There is no changelog file, release PR, manifest, or tag to manage. The
-GitHub Releases page is the changelog, built from merged PR titles. Merging
-`main` again with an unchanged version publishes nothing.
+GitHub Releases page is the changelog. Merging `main` again with an unchanged
+version publishes nothing.
+
+## Automatic changelog
+
+The existing release job runs [`release-notes.mjs`](../desktop/scripts/release-notes.mjs)
+before building. It compares the most recently published stable release with the
+exact commit being released. Drafts, prereleases, and unpublished tags do not
+move that starting point. GitHub supplies the commit range with pagination, so
+changes merged through `dev` and direct commits are included even in large
+releases. Promotion merge commits do not become changelog entries.
+
+Conventional titles group entries into Breaking changes, Features, Fixes,
+Performance, Documentation, and Other changes. Each entry links to its PR or
+commit and credits its author. Its committed `## Release notes` section supplies
+the detailed bullets; older commits without that section use their titles.
+Breaking-change footers retain their migration instructions. A full comparison
+link connects the previous release to the exact source commit.
+
+The [contribution skill](../.claude/skills/contributing/SKILL.md) routes agents to
+the [release skill](../.claude/skills/releasing/SKILL.md) to write these summaries
+as part of normal PR preparation. Emma's squash-merge settings already preserve
+the PR title and body. There is no release-time collection or editing step for
+the owner. A GitHub API failure stops the job before publication.
+
+To preview the remote `dev` changelog with an authenticated GitHub CLI:
+
+```sh
+npm run release:notes
+```
+
+Optional arguments select a previous release and target GitHub ref, for example
+`npm run release:notes -- v0.3.1 v0.4.1`. This prints Markdown without publishing
+or changing anything. References resolve on GitHub, independent of local tags.
 
 ## Downloads and updates
 
@@ -45,34 +79,43 @@ Published macOS assets appear in [GitHub Releases](https://github.com/tronschell
 - `Emma-vX.Y.Z-darwin-arm64.zip.sha256`
 
 The disk image is the human download: open it and drag Emma onto the
-Applications alias beside it. Quit Emma before replacing an installed copy,
-choose **Replace** if Finder asks, eject the image, and open Emma from
-Applications. This replaces only the app bundle; `app.getPath('userData')`, the
-separate `EMMA_DATA_DIR` store, and the user's notes vault stay in place. The
-package includes its Rust host, Zig harness, ripgrep, native helpers, bundled
-skills, and dependency notices. End users do not need Node, Rust, Zig, or Xcode
-installed.
+Applications alias beside it. `scripts/dmg-mac.mjs` builds it from the stapled
+app, and the release job signs, notarizes and staples the image itself.
 
-The single-instance lock belongs to the running process, regardless of which
-version or bundle was opened next. A packaged Mac copy that cannot acquire it
-shows its own version and bundle path and explains how to quit, replace, and
-reopen Emma. A newer primary also refuses to focus its older window for a newer
-launch. Older releases cannot participate in that handoff, so quitting before
-installation remains required.
+Installing into Applications is not cosmetic. Squirrel replaces the bundle it
+is running from, so a copy left in Downloads updates itself and leaves the one
+in Applications behind. Worse, a browser marks that copy with the quarantine
+attribute, and macOS runs a quarantined app the user never moved from a
+read-only translocated path, where Squirrel cannot write at all and updates can
+never apply.
+
+The package includes its Rust host, Zig harness, ripgrep, native helpers,
+bundled skills, and dependency notices. End users do not need Node, Rust, Zig,
+or Xcode installed.
 
 The release title is exactly `vX.Y.Z` and the stable `darwin-arm64.zip` asset
-is the one the `update.electronjs.org` feed selects. Keep both the DMG and ZIP.
-Drafts and prereleases are not stable updates.
+is the one the `update.electronjs.org` feed selects. Keep both, and keep
+publishing the zip whatever else ships beside it. Drafts and prereleases are
+not stable updates.
 
-On macOS, a packaged app checks the feed at launch and every six hours. Squirrel
-downloads a newer eligible version in the background. Only after the download
-finishes does Emma show **Update ready · X.Y.Z** with **Install and relaunch**.
-The unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
+On macOS, a packaged app checks the feed at launch, on a five-minute tick, when
+the machine wakes, and when a window takes focus, with any check inside thirty
+minutes of the last one skipped. Wake and focus matter because a sleeping Mac
+suspends the timer, so a window left open for days would otherwise never check
+again. **Check for Updates…** in the Emma menu forces one past that gap and
+reports the result either way. Squirrel downloads a newer eligible version in
+the background, and Emma shows **Update ready · X.Y.Z** with **Install and
+relaunch** once the download finishes.
 
-There is no Windows CI. The desktop suite is written against POSIX fixtures and
-`build-native.mjs` calls `rc.exe`, so the lane never passed; it was removed
-rather than left red. Windows packaging, signing, and publication are not wired
-into any workflow either.
+The downloaded version is recorded in `update-ready.json` under the user data
+directory, so quitting no longer forgets it and the notice returns on the next
+launch. Squirrel can only install an update this process downloaded, so
+installing from a restored notice re-downloads first and then relaunches. The
+record is deleted once the running version is no longer older than it. The
+unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
+
+Windows CI runs tests only. Windows packaging, signing, and publication are not
+wired into any workflow yet.
 
 ## Signing credentials
 
@@ -96,7 +139,6 @@ Run the six checks in [`AGENTS.md`](../AGENTS.md), then:
 
 ```sh
 npm run package:mac
-npm run dmg:mac
 ```
 
 On a native Windows x64 host:
@@ -121,9 +163,6 @@ npm --prefix desktop run package:mac -- /tmp/emma-release-check
 Launch the resulting app with an isolated profile and data directory and
 exercise the workspace before release. A local unsigned package does not prove
 signing, notarization, Gatekeeper acceptance, or update installation.
-The DMG builder requires a structurally valid app signature, verifies the
-mounted app and Applications link, and refuses to overwrite an existing image.
-Use a fresh output path for each verification run.
 
 ## Recovery
 

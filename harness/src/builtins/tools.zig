@@ -7,6 +7,7 @@ const terminal_monitor = @import("../core/terminal/monitor.zig");
 const gateway_schema = @import("../core/tooling/gateway_schema.zig");
 const subagent_domain = @import("../core/subagent/domain.zig");
 const tool_advertisement = @import("../core/tooling/tool_advertisement.zig");
+const tool_overrides = @import("../core/tooling/tool_overrides.zig");
 const tool_dispatch = @import("../core/tooling/tool_dispatch.zig");
 const tool_mcp_dispatch = @import("../core/tooling/tool_mcp_dispatch.zig");
 const tool_mcp_feature_dispatch = @import("../core/tooling/tool_mcp_feature_dispatch.zig");
@@ -1451,8 +1452,8 @@ pub const read_tool_result = ToolSpec{
         .input_schema = .{
             .properties = &.{
                 .{ .name = "handle", .json_type = .string, .description = "Stable handle from a prior tool_result_preview." },
-                .{ .name = "start_byte", .json_type = .integer, .description = "Optional 1-based byte offset for range reads. Defaults to 1." },
-                .{ .name = "byte_count", .json_type = .integer, .description = "Optional positive byte count for range reads. Bounded by the tool." },
+                .{ .name = "start_byte", .json_type = .integer, .description = "Optional plain number, 1-based, for range reads. Defaults to 1, and 0 reads as 1." },
+                .{ .name = "byte_count", .json_type = .integer, .description = "Optional plain number of bytes to read. Bounded by the tool." },
                 .{ .name = "query", .json_type = .string, .description = "Optional literal line query. When set, range fields are ignored." },
             },
             .required = &.{"handle"},
@@ -3132,4 +3133,23 @@ test "production registry keeps vision route-filtered from ordinary projections"
     inline for (&.{ &full, &read_only }) |projection| {
         try std.testing.expect(std.mem.find(u8, projection.tools_json, "\"name\":\"vision\"") == null);
     }
+}
+
+test "preselect advertises an Emma tool the model would otherwise have to search for" {
+    const alloc = std.testing.allocator;
+    const preselect = [_][]const u8{ "threads", "vision" };
+    const hints = [_]tool_overrides.Hint{.{ .name = "threads", .description = "Hinted threads." }};
+
+    var projection = try tool_advertisement.buildGatewayToolProjectionForSet(alloc, advertisement_set, .{
+        .overrides = .{ .preselect = preselect[0..], .hints = hints[0..] },
+    });
+    defer projection.deinit(alloc);
+
+    try std.testing.expect(std.mem.find(u8, projection.tools_json, "\"name\":\"threads\"") != null);
+    try std.testing.expect(std.mem.find(u8, projection.tools_json, "Hinted threads.") != null);
+    try std.testing.expect(std.mem.find(u8, projection.tools_json, "\"name\":\"vision\"") == null);
+
+    var cleared = try tool_advertisement.buildGatewayToolProjectionForSet(alloc, advertisement_set, .{});
+    defer cleared.deinit(alloc);
+    try std.testing.expect(std.mem.find(u8, cleared.tools_json, "\"name\":\"threads\"") == null);
 }

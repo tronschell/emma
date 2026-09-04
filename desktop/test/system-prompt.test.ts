@@ -4,45 +4,87 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { forceArm, harnessPromptFile, setImprovements, setPrompts, setSystemPrompt, takeArm, turnArm, withTrialArm, writeHarnessPrompt } from "../main/system-prompt";
+import { validateImprovements, type Lever } from "../shared/improvement";
 import { DEFAULT_SYSTEM_PROMPT, familiesOf, forkPreset, promptSegments, resolvePrompt, validatePrompts, type PromptPreset } from "../shared/prompts";
-import { defaultSettings, MAX_SYSTEM_PROMPT_CHARS, validateOverlayPreferences, validateSettings } from "../shared/settings";
+import { defaultHarnessExperiments, defaultSettings, MAX_SYSTEM_PROMPT_CHARS, validateOverlayPreferences, validateSettings } from "../shared/settings";
+
+const change = (lever: Lever, addition: string, state = "trial", scope = "") => validateImprovements({ items: [{ id: `${lever}-${state}`, lever, addition, state, scope }] }).items[0];
 
 const turn = { threadId: "thread-1", content: "Hi", mode: "ask", title: "This thread" } as const;
 
 test("only the change on trial rides the turn, and only on the half that drew it", () => {
-  // Nothing on trial: every turn goes out exactly as it came in, because the
-  // standing instructions reach the harness through its own file.
-  setImprovements({ kept: { instructions: "Answer in French.", verifier: "" } });
-  assert.equal(withTrialArm({ ...turn }).params, undefined);
 
-  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
-  // One turn lands on one arm, so this is read across enough of them to see both.
+  setImprovements({ items: [change("instructions", "Answer in French.", "kept")] });
+  assert.match(withTrialArm({ ...turn }).promptAddition ?? "", /Answer in French/);
+
+  setImprovements({ items: [change("instructions", "Cite the file you read it in.")] });
+
   const carried = Array.from({ length: 40 }, (_value, index) => withTrialArm({ ...turn, threadId: `thread-${index}`, params: { skillContext: "Follow the review procedure." } }));
-  const b = carried.filter((sent) => /Cite the file you read it in\./.test(sent.params!.skillContext));
+  const b = carried.filter((sent) => /Cite the file you read it in\./.test(sent.promptAddition ?? ""));
   assert.ok(b.length > 0 && b.length < carried.length, `every turn landed on the same arm (${b.length} of ${carried.length})`);
-  // The attached skill is still there underneath it, whichever way the turn landed.
+
   assert.ok(carried.every((sent) => /Follow the review procedure\./.test(sent.params!.skillContext)));
-  setImprovements({ kept: { instructions: "", verifier: "" } });
+  setImprovements({ items: [] });
+});
+
+test("each lever lands where it says it does, on arm b and nowhere else", () => {
+  const armed = (threadId: string, arm: "a" | "b", model = "") => { forceArm(threadId, arm); return withTrialArm({ ...turn, threadId, model }); };
+
+  setImprovements({ items: [change("prompt", "Cite the path.", "kept"), change("prompt", "Answer in Polish.", "trial", "family:glm")] });
+  assert.match(armed("lever-1", "b", "z-ai/glm-5.3-flash").promptAddition ?? "", /Cite the path\.[\s\S]*Answer in Polish\./);
+  assert.doesNotMatch(armed("lever-2", "b", "anthropic/claude-opus-5").promptAddition ?? "", /Answer in Polish\./);
+  assert.doesNotMatch(armed("lever-3", "a", "z-ai/glm-5.3-flash").promptAddition ?? "", /Answer in Polish\./);
+
+  setImprovements({ items: [change("tools", '{"grep_files":"Take this before rg."}')] });
+  assert.deepEqual(armed("lever-4", "b").toolHints, { grep_files: "Take this before rg." });
+  assert.equal(armed("lever-5", "a").toolHints, undefined);
+
+  setImprovements({ items: [change("advertise", "memory, plan")] });
+  assert.deepEqual(armed("lever-6", "b").preselect, ["memory", "plan"]);
+  assert.equal(armed("lever-7", "a").preselect, undefined);
+
+  setImprovements({ items: [change("knobs", "autoCompactPercent=55")] });
+  assert.deepEqual({ ...defaultHarnessExperiments, ...armed("lever-8", "b").knobs }, { ...defaultHarnessExperiments, autoCompactPercent: 55 });
+  assert.equal(armed("lever-9", "a").knobs, undefined);
+  setImprovements({ items: [] });
+});
+
+test("a bundle of trials rides arm b together, and none of it rides arm a", () => {
+  const armed = (threadId: string, arm: "a" | "b") => { forceArm(threadId, arm); return withTrialArm({ ...turn, threadId }); };
+  setImprovements({ items: [
+    change("instructions", "Cite the file you read it in."),
+    change("tools", '{"grep_files":"Take this before rg."}'),
+    change("advertise", "memory, plan"),
+  ] });
+  const b = armed("bundle-b", "b");
+  assert.match(b.promptAddition ?? "", /Cite the file you read it in\./);
+  assert.deepEqual(b.toolHints, { grep_files: "Take this before rg." });
+  assert.deepEqual(b.preselect, ["memory", "plan"]);
+  const a = armed("bundle-a", "a");
+  assert.equal(a.promptAddition, undefined);
+  assert.equal(a.toolHints, undefined);
+  assert.equal(a.preselect, undefined);
+  setImprovements({ items: [] });
 });
 
 test("a pinned arm decides the turn it was pinned for, and no turn after it", () => {
-  setImprovements({ kept: { instructions: "", verifier: "" } });
+  setImprovements({ items: [] });
   assert.equal(turnArm("bench-1"), "");
   forceArm("bench-1", "b");
   assert.equal(turnArm("bench-1"), "b");
   assert.equal(turnArm("bench-1"), "");
 
-  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  setImprovements({ items: [change("instructions", "Cite the file you read it in.")] });
   forceArm("bench-2", "a");
   assert.equal(withTrialArm({ ...turn, threadId: "bench-2" }).params, undefined);
   forceArm("bench-3", "b");
-  assert.match(withTrialArm({ ...turn, threadId: "bench-3" }).params!.skillContext, /Cite the file you read it in\./);
+  assert.match(withTrialArm({ ...turn, threadId: "bench-3" }).promptAddition ?? "", /Cite the file you read it in\./);
 
   forceArm("bench-4", "b");
   assert.equal(turnArm("bench-4"), "b");
   const after = Array.from({ length: 40 }, () => turnArm("bench-4"));
   assert.ok(after.includes("a") && after.includes("b"), `the pin outlived its turn (${after.join("")})`);
-  setImprovements({ kept: { instructions: "", verifier: "" } });
+  setImprovements({ items: [] });
 });
 
 const later = <T>(read: () => T): T => {
@@ -52,11 +94,11 @@ const later = <T>(read: () => T): T => {
 };
 
 test("a pin whose turn never came goes stale, and the turn that finds it runs as if it had never been made", () => {
-  setImprovements({ kept: { instructions: "", verifier: "" } });
+  setImprovements({ items: [] });
   forceArm("stale-1", "b");
   assert.equal(later(() => turnArm("stale-1")), "");
 
-  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  setImprovements({ items: [change("instructions", "Cite the file you read it in.")] });
   for (let index = 0; index < 40; index += 1) forceArm(`stale-b-${index}`, "b");
   const drawn = later(() => Array.from({ length: 40 }, (_value, index) => turnArm(`stale-b-${index}`)));
   assert.ok(drawn.includes("a") && drawn.includes("b"), `a stale pin still decided the turn (${drawn.join("")})`);
@@ -65,17 +107,17 @@ test("a pin whose turn never came goes stale, and the turn that finds it runs as
   assert.equal(turnArm("fresh-1"), "b");
   const after = Array.from({ length: 40 }, () => turnArm("fresh-1"));
   assert.ok(after.includes("a") && after.includes("b"), `the pin outlived its turn (${after.join("")})`);
-  setImprovements({ kept: { instructions: "", verifier: "" } });
+  setImprovements({ items: [] });
 });
 
 test("the arm map fills with subagents without ever evicting the turn still running", () => {
-  setImprovements({ kept: { instructions: "", verifier: "" }, trial: { lever: "instructions", addition: "Cite the file you read it in." } });
+  setImprovements({ items: [change("instructions", "Cite the file you read it in.")] });
   forceArm("root-1", "b");
   assert.equal(turnArm("root-1"), "b");
   const spawned = Array.from({ length: 200 }, (_value, index) => turnArm(`sub-${index}`, "root-1"));
   assert.ok(spawned.every((arm) => arm === "b"), `${spawned.filter((arm) => arm !== "b").length} of ${spawned.length} subagents flipped their own coin`);
   assert.equal(takeArm("root-1"), "b");
-  setImprovements({ kept: { instructions: "", verifier: "" } });
+  setImprovements({ items: [] });
 });
 
 test("the Settings prompt is the harness's own prompt, not a note under it", () => {
@@ -117,7 +159,7 @@ test("a conditional prompt reaches the harness only on the models it names", () 
   writeHarnessPrompt(home, { model: "deepseek/deepseek-chat" });
   assert.match(read(), /Keep it terse\./);
   assert.doesNotMatch(read(), /Plan before you edit\./);
-  // Nothing matches, so the global text is the whole of it.
+
   writeHarnessPrompt(home, { model: "meta-llama/llama-4" });
   assert.equal(read().trim(), "Answer in French.");
   setPrompts([]);
@@ -169,7 +211,7 @@ test("a variable is painted, a brace Emma cannot fill is not", () => {
 test("a corrupt prompt list is refused rather than half-loaded", () => {
   assert.deepEqual(validatePrompts(undefined, 100), []);
   assert.equal(validatePrompts([{ id: "abc", name: " Named ", body: "x" }], 100)[0].name, "Named");
-  // Missing means on: a prompt written before this field existed still rides.
+
   assert.equal(validatePrompts([{ id: "abc", name: "Named", body: "x" }], 100)[0].enabled, true);
   assert.throws(() => validatePrompts([{ id: "abc", name: "A", body: "x" }, { id: "abc", name: "B", body: "y" }], 100));
   assert.throws(() => validatePrompts([{ id: "abc", name: "A", body: "x".repeat(101) }], 100));
@@ -182,12 +224,12 @@ test("an over-long prompt is refused on the way in, and a missing one falls back
   const settings = { ...defaultSettings, systemPrompt: "x".repeat(MAX_SYSTEM_PROMPT_CHARS + 1) };
   assert.throws(() => validateSettings(settings));
   assert.equal(validateSettings({ ...defaultSettings, systemPrompt: undefined }).systemPrompt, DEFAULT_SYSTEM_PROMPT);
-  // A store written while this field was an addition holds "", which is not a choice to keep.
+
   assert.equal(validateSettings({ ...defaultSettings, systemPrompt: "" }).systemPrompt, DEFAULT_SYSTEM_PROMPT);
   assert.throws(() => validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, systemPrompt: "x".repeat(MAX_SYSTEM_PROMPT_CHARS + 1) }));
   assert.equal(validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true }).systemPrompt, undefined);
   assert.equal(validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, systemPrompt: "Answer in French." }).systemPrompt, "Answer in French.");
-  // The conditional prompts ride the same message, so they are held to the same validation.
+
   const carried = validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true, prompts: [{ id: "abc", name: "Opus", body: "Plan first.", scope: "family:opus", enabled: true }] });
   assert.deepEqual(carried.prompts, [{ id: "abc", name: "Opus", body: "Plan first.", scope: "family:opus", enabled: true }]);
   assert.equal(validateOverlayPreferences({ notchGap: 180, cursorOrbsEnabled: true }).prompts, undefined);

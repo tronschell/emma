@@ -1,5 +1,7 @@
 const std = @import("std");
 const std_builtin = @import("builtin");
+const builtin_context = @import("../builtins/context.zig");
+const tool_overrides = @import("../core/tooling/tool_overrides.zig");
 const app_runtime_setup = @import("../core/app/app_runtime_setup.zig");
 const compaction_summarizer = @import("../builtins/gateway/compaction_summarizer.zig");
 const command_admission = @import("../core/permissions/command_admission.zig");
@@ -310,6 +312,7 @@ const AcpContext = struct {
             .max_tool_result_bytes = session.max_tool_result_bytes,
             .command_timeout_ms = session.command_timeout_ms,
             .semantic_grep = if (session.semantic_grep) |*cfg| cfg else null,
+            .tool_overrides = session.toolOverrides(),
             .api_key = session.api_key,
             .agent_stream_provider = server.streamProviderFor(self.state, session.provider),
             .credential_source = session.credential_source,
@@ -814,6 +817,7 @@ pub fn handlePrompt(
         .mcp_runtime = session.mcp,
         .subagent_available = state.subagent_host != null,
         .semantic_grep = if (session.semantic_grep != null) &semantic_search_impl.grep_schema else null,
+        .overrides = session.toolOverrides(),
     });
     defer tool_projection.deinit(alloc);
 
@@ -987,6 +991,41 @@ pub fn handlePrompt(
     } };
 }
 
+const ChildModelContext = struct {
+    system_prompt: []const u8,
+    tool_hints: []const tool_overrides.Hint,
+    preselect: []const []const u8,
+    command_timeout_ms: usize,
+    experiments: context_experiments.Settings,
+
+    fn overrides(self: ChildModelContext) tool_overrides.Overrides {
+        return .{ .hints = self.tool_hints, .preselect = self.preselect };
+    }
+};
+
+fn parseChildModelContext(alloc: Allocator, output: []const u8) !ChildModelContext {
+    if (output.len > 256 * 1024) return error.InvalidValue;
+    const config = try std.json.parseFromSliceLeaky(ChildModelContext, alloc, output, .{});
+    if (config.system_prompt.len > 128 * 1024 or config.command_timeout_ms > 120 * 60 * 1000 or config.experiments.auto_compact_percent > 100 or config.experiments.reinject_prompt_percent > 100 or config.experiments.prune_tools_percent > 100) return error.InvalidValue;
+    for (config.tool_hints) |hint| {
+        if (hint.name.len == 0 or hint.description.len == 0 or hint.description.len > tool_overrides.max_hint_bytes) return error.InvalidValue;
+    }
+    return config;
+}
+
+test "child model context replaces inherited prompt and tool settings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const config = try parseChildModelContext(arena.allocator(),
+        \\{"system_prompt":"GPT only","tool_hints":[{"name":"read_file","description":"GPT hint"}],"preselect":[],"command_timeout_ms":60000,"experiments":{}}
+    );
+    try std.testing.expectEqualStrings("GPT only", config.system_prompt);
+    try std.testing.expectEqualStrings("GPT hint", config.overrides().hintFor("read_file").?);
+    try std.testing.expectError(error.InvalidValue, parseChildModelContext(arena.allocator(),
+        \\{"system_prompt":"","tool_hints":[],"preselect":[],"command_timeout_ms":99999999,"experiments":{}}
+    ));
+}
+
 pub fn runSubagentChild(
     raw: ?*anyopaque,
     turn: *subagent_execution.TurnContext,
@@ -1018,20 +1057,6 @@ pub fn runSubagentChild(
     };
     defer ctx.deinitPublishedToolCalls();
     defer ctx.sendChildEnded() catch {};
-    var child_projection = state.cfg.mode_registry.buildGatewayToolProjection(
-        alloc,
-        builtin_tools.advertisement_set,
-        captured_mode,
-        .{
-            .permission_mode = admission.permission_mode,
-            .permission_rules = admission.rules,
-            .mcp_runtime = mcp,
-            .subagent_available = true,
-            // Same tool list as the parent, so the child's request prefix hits the parent's cache.
-            .semantic_grep = if (semantic_grep_available) &semantic_search_impl.grep_schema else null,
-        },
-    ) catch return error.OutOfMemory;
-    defer child_projection.deinit(alloc);
     var bounded_skills = state.skills.buildBoundedSystemPromptSection(
         alloc,
         state.context_limits,
@@ -1050,8 +1075,43 @@ pub fn runSubagentChild(
         .tool_call_id = if (turn.child_id) |child_id| child_id else session_id,
         .operation_cancel_flag = cancel,
     };
+    var child_arena = std.heap.ArenaAllocator.init(alloc);
+    defer child_arena.deinit();
+    const child_alloc = child_arena.allocator();
+    const model_context = if (io_mod.getenv("EMMA_SYSTEM_PROMPT") != null and turn.child_id != null) context: {
+        const args = std.json.Stringify.valueAlloc(child_alloc, .{
+            .model = admission.model,
+            .childId = turn.child_id.?,
+            .title = childTitle(message.content),
+            .skills = std.fmt.allocPrint(child_alloc, "{s}\n\n{s}", .{ bounded_skills.text, explicit_skills.text }) catch return error.OutOfMemory,
+        }, .{}) catch return error.OutOfMemory;
+        const output = callEmmaTool(@ptrCast(&emma_responder), child_alloc, "_model_context", args) catch return error.ProviderFailed;
+        break :context parseChildModelContext(child_alloc, output) catch return error.ProviderFailed;
+    } else null;
+    var child_projection = state.cfg.mode_registry.buildGatewayToolProjection(
+        alloc,
+        builtin_tools.advertisement_set,
+        captured_mode,
+        .{
+            .permission_mode = admission.permission_mode,
+            .permission_rules = admission.rules,
+            .mcp_runtime = mcp,
+            .subagent_available = true,
+            .overrides = if (model_context) |config| config.overrides() else active.toolOverrides(),
+            .semantic_grep = if (semantic_grep_available) &semantic_search_impl.grep_schema else null,
+        },
+    ) catch return error.OutOfMemory;
+    defer child_projection.deinit(alloc);
     var child_tool_context = ctx.toolContext();
     child_tool_context.emma_tool_responder = emma_responder.responder();
+    if (model_context) |config| {
+        child_tool_context.tool_overrides = config.overrides();
+        child_tool_context.command_timeout_ms = config.command_timeout_ms;
+    }
+    const child_system_prompt = if (model_context) |config|
+        if (config.system_prompt.len == 0) state.cfg.prompt_policy.system_prompt else std.fmt.allocPrint(child_alloc, "{s}\n\n{s}", .{ config.system_prompt, builtin_context.tools_and_verification_section }) catch return error.OutOfMemory
+    else
+        state.cfg.prompt_policy.systemPrompt();
     return subagent_agent_adapter.run(.{
         .host = subagent_host,
         .tool_context = child_tool_context,
@@ -1069,7 +1129,8 @@ pub fn runSubagentChild(
                 .permission_reviewer_provider = state.cfg.permission_reviewer_provider,
             },
         },
-        .system_prompt = state.cfg.prompt_policy.systemPrompt(),
+        .system_prompt = child_system_prompt,
+        .context_experiments = if (model_context) |config| config.experiments else .{},
         .model_prompt_overlay = state.cfg.prompt_policy.modelPromptOverlay(admission.model),
         .skills_prompt_section = bounded_skills.text,
         .explicit_skills_prompt_section = explicit_skills.text,

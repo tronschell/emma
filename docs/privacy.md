@@ -43,7 +43,10 @@ This sends the most. [main.ts](../desktop/main/main.ts) catches the renderer's
 call: [emma_openai.zig](../harness/src/gateway/emma_openai.zig) builds the body and
 posts it to `EMMA_PROVIDER_CHAT_URL`. The bearer token is
 `EMMA_PROVIDER_API_KEY`, set by [harness.ts](../desktop/main/harness.ts) from the
-selected provider's credential, or the stored OpenRouter key for that route.
+selected provider's credential, or the stored OpenRouter key for that route. A
+`codex:` model points that URL at a loopback relay in Emma's main process, which
+forwards the same turn to `https://chatgpt.com/backend-api/codex/responses`
+under your `codex login` token — see [models.md](models.md).
 
 The harness runs with `cwd` set to the thread's connected folder. A thread with no
 folder gets a scratch directory under `<userData>/workspaces/<threadId>`, because

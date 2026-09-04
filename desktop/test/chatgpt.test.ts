@@ -4,7 +4,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { chatChunks, chunkState, readChatgptAuth, responsesRequest, sessionIdFor, upstreamFailure } from "../main/chatgpt";
+import { chatChunks, chunkState, readChatgptAuth, relayHeaders, responsesRequest, retainsPromptCache, sessionIdFor, upstreamFailure } from "../main/chatgpt";
 import { codexCachedSlugs } from "../main/cli-models";
 import { CODEX_MODEL_ID, availableCodexModelKey, codexModelKey, codexSlug, planFor, planForGeneration, planProfile } from "../shared/settings";
 
@@ -63,7 +63,8 @@ test("a chat completion becomes a stored-free responses call", () => {
   assert.equal(request.store, false);
   assert.equal(request.stream, true);
   assert.equal(request.instructions, "Be terse.");
-  assert.equal("max_output_tokens" in request, false);
+  assert.equal(request.max_output_tokens, 4096);
+  assert.equal("prompt_cache_retention" in request, false);
   assert.deepEqual(request.reasoning, { effort: "high", summary: "auto" });
   assert.deepEqual(request.tools, [{ type: "function", name: "read_file", description: "read", parameters: { type: "object" }, strict: false }]);
   assert.deepEqual(request.input, [
@@ -177,4 +178,89 @@ test("a buffered request is answered with one chat completion", () => {
   assert.equal(answered.body.object, "chat.completion");
   assert.deepEqual(answered.body.choices, [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }]);
   assert.equal((answered.body.usage as { completion_tokens: number }).completion_tokens, 2);
+});
+
+test("reasoning items are replayed ahead of the calls they preceded", () => {
+  const reasoning = [{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "gAAAA" }];
+  const called = responsesRequest({
+    model: "gpt-5.4",
+    messages: [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "on it", reasoning_details: reasoning, tool_calls: [{ id: "call_1", function: { name: "read_file", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_1", content: "hello" },
+    ],
+  });
+  assert.deepEqual(called.input, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "on it" }] },
+    { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "gAAAA" },
+    { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_1", output: "hello" },
+  ]);
+  const answered = responsesRequest({ model: "gpt-5.4", messages: [{ role: "assistant", content: "done", reasoning_details: reasoning }] });
+  assert.deepEqual(answered.input, [
+    { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "gAAAA" },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+  ]);
+  assert.deepEqual(responsesRequest({ model: "gpt-5.4", messages: [{ role: "assistant", content: "done", reasoning_details: "junk" }] }).input, [
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+  ]);
+  assert.deepEqual(called.include, ["reasoning.encrypted_content"]);
+});
+
+test("a later step extends the input of the step before it byte for byte", () => {
+  const messages = [
+    { role: "system", content: "Be terse." },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "", reasoning_details: [{ type: "reasoning", id: "rs_1", encrypted_content: "one" }], tool_calls: [{ id: "call_1", function: { name: "read_file", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "call_1", content: "hello" },
+  ];
+  const first = JSON.stringify(responsesRequest({ model: "gpt-5.4", messages }).input);
+  const next = JSON.stringify(responsesRequest({
+    model: "gpt-5.4",
+    messages: [...messages,
+      { role: "assistant", content: "", reasoning_details: [{ type: "reasoning", id: "rs_2", encrypted_content: "two" }], tool_calls: [{ id: "call_2", function: { name: "read_file", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_2", content: "again" },
+    ],
+  }).input);
+  assert.ok(first.length > 2);
+  assert.ok(next.startsWith(`${first.slice(0, -1)},`), `${first}\n${next}`);
+});
+
+test("only the gpt-5 models below 5.6 are asked to retain a cached prefix", () => {
+  for (const model of ["gpt-5", "gpt-5-codex", "gpt-5.1", "gpt-5.2-codex", "gpt-5.4", "gpt-5.5"]) assert.equal(retainsPromptCache(model), true, model);
+  for (const model of ["gpt-5.6", "gpt-5.6-luna", "gpt-5.7-codex", "gpt-6", "gpt-4o", "gpt-51", ""]) assert.equal(retainsPromptCache(model), false, model);
+  assert.equal(responsesRequest({ model: "gpt-5.4", messages: [] }).prompt_cache_retention, "24h");
+  assert.equal("prompt_cache_retention" in responsesRequest({ model: "gpt-5.4", messages: [] }, true), false);
+  assert.equal("prompt_cache_retention" in responsesRequest({ model: "gpt-5.6-luna", messages: [] }), false);
+});
+
+test("a cache key names the session, the thread, and the legacy header alike", () => {
+  const auth = { accessToken: "a.b.c", accountId: "acct-1" };
+  const keyed = relayHeaders(auth, { prompt_cache_key: "emma:abc" });
+  assert.equal(keyed.session_id, sessionIdFor({ prompt_cache_key: "emma:abc" }));
+  assert.equal(keyed["session-id"], keyed.session_id);
+  assert.equal(keyed["thread-id"], keyed.session_id);
+  assert.equal(keyed["chatgpt-account-id"], "acct-1");
+  const bare = relayHeaders(auth, {});
+  assert.equal("session-id" in bare, false);
+  assert.equal("thread-id" in bare, false);
+  assert.match(bare.session_id, /^[0-9a-f-]{36}$/);
+});
+
+test("reasoning output items reach the harness before the calls they explain", () => {
+  const state = chunkState("gpt-5.4");
+  const item = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "thinking" }], encrypted_content: "gAAAA" };
+  assert.deepEqual(chatChunks({ type: "response.output_item.done", item }, state), []);
+  assert.deepEqual(chatChunks({ type: "response.output_item.done", item: { type: "message" } }, state), []);
+  const emitted = chatChunks({ type: "response.output_item.added", item_id: "item_1", item: { type: "function_call", name: "read_file", call_id: "call_1" } }, state);
+  assert.deepEqual(emitted.map((chunk) => (chunk.choices as { delta: unknown }[])[0].delta), [
+    { reasoning_details: [item] },
+    { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "read_file", arguments: "" } }] },
+  ]);
+  assert.equal(chatChunks({ type: "response.completed", response: {} }, state).length, 1);
+  chatChunks({ type: "response.output_item.done", item }, state);
+  const finished = chatChunks({ type: "response.completed", response: {} }, state);
+  assert.deepEqual((finished[0].choices as { delta: unknown }[])[0].delta, { reasoning_details: [item] });
+  assert.equal((finished[1].choices as { finish_reason: string }[])[0].finish_reason, "tool_calls");
 });
