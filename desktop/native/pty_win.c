@@ -344,7 +344,7 @@ static int self_test(void) {
     close_handle(resize_write);
     return 1;
   }
-  const char input[] = "Emma\r\n";
+  const char input[] = "Emma\r";
   const char resize[] = "100 30\n";
   const DWORD input_length = (DWORD)strlen(input);
   const DWORD resize_length = (DWORD)strlen(resize);
@@ -360,8 +360,8 @@ static int self_test(void) {
   }
   close_handle(input_write);
   close_handle(resize_write);
-  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"& { $value=[Console]::ReadLine(); Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$value+':'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
-  const int status = run_pty(80, 24, command, 7, input_read, output_write, resize_read);
+  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-Command", L"& { $value=$Host.UI.ReadLine(); Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$value+':'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
+  const int status = run_pty(80, 24, command, 6, input_read, output_write, resize_read);
   close_handle(input_read);
   close_handle(output_write);
   close_handle(resize_read);
