@@ -3,6 +3,9 @@ import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import { installBenchHook } from "./bench";
+
+installBenchHook();
 
 export class RootBoundary extends Component<{ children: ReactNode }, { failed: string }> {
   state = { failed: "" };

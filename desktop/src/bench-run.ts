@@ -1,12 +1,22 @@
-import { runArms, runExpected } from "../shared/bench";
+import { lastLine, runArms, runExpected, MAX_BENCH_ANSWER_CHARS } from "../shared/bench";
 import { readTurn, type Arm } from "../shared/improvement";
 import { setThreadFolders, setThreadMode } from "./context";
 import type { BenchCase, BenchResult, BenchRun } from "../shared/bench";
 import type { FolderGrant } from "../shared/folders";
 import type { PermissionMode } from "../shared/permissions";
+import type { VerifierSettings } from "../shared/settings";
+import { reasonText } from "./errors";
 import type { Thread } from "./types";
 
 export type BenchProgress = { runId: string; done: number; total: number; caseTitle: string; arm: Arm };
+
+export type ThreadRead = { id: string; title: string; messages: { role: string; content: string }[] };
+
+export async function finalAnswer(threadId: string): Promise<string> {
+  const read = await window.emma.request<ThreadRead>("thread", { threadId }).catch(() => undefined);
+  const said = read?.messages.filter((message) => message.role === "assistant").at(-1)?.content ?? "";
+  return said.trim().slice(-MAX_BENCH_ANSWER_CHARS);
+}
 
 const TRACE_RETRY_MS = 250;
 
@@ -33,6 +43,33 @@ export function benchBlocker(cases: readonly BenchCase[], mode: string, folders:
 
 const tick = () => new Promise<void>((resolve) => { setTimeout(resolve, TRACE_RETRY_MS); });
 
+const SHELL_MS = 10 * 60_000;
+const STOPPED_TRACE_MS = 60_000;
+
+async function runShell(command: string, folderId: string): Promise<{ code: number; note: string }> {
+  const task = await window.emma.runCommand({ command, folderId }).catch(() => undefined);
+  if (!task) return { code: 1, note: "That command could not start." };
+  const deadline = Date.now() + SHELL_MS;
+  for (;;) {
+    const found = await window.emma.readBackground(task.id).catch(() => null);
+    if (found?.task.status === "exited") return { code: found.task.exitCode ?? 1, note: lastLine(found.output) };
+    if (Date.now() >= deadline) {
+      void window.emma.stopBackground(task.id);
+      return { code: 1, note: `That command was still running after ${SHELL_MS / 60_000} minutes.` };
+    }
+    await tick();
+  }
+}
+
+async function lastTrace(threadId: string, waitMs = TRACE_RETRY_MS) {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const traces = await window.emma.threadTraces(threadId);
+    if (traces.length || Date.now() >= deadline) return traces.at(-1);
+    await tick();
+  }
+}
+
 export function benchKin(threads: readonly Thread[], roots: readonly string[]): Set<string> {
   const found = new Set(roots);
   for (let again = true; again;) {
@@ -50,7 +87,7 @@ export function containBench(roots: readonly string[]): void {
   for (const root of roots) window.emma.stopAgent(root);
 }
 
-async function driveCase(run: BenchRun, item: BenchCase, arm: Arm, onThread: (runId: string, threadId: string) => void, onResult: (runId: string, result: BenchResult) => void) {
+async function driveCase(run: BenchRun, item: BenchCase, arm: Arm, judge: VerifierSettings | undefined, onThread: (runId: string, threadId: string) => void, onResult: (runId: string, result: BenchResult) => void, onJudgeError: (note: string) => void) {
   const thread = await window.emma.request<Thread>("createThread");
   live = thread.id;
   onThread(run.id, thread.id);
@@ -61,21 +98,46 @@ async function driveCase(run: BenchRun, item: BenchCase, arm: Arm, onThread: (ru
     if (benchLive() !== run.id) return;
     setThreadFolders(thread.id, [item.folderId]);
     setThreadMode(thread.id, run.mode as PermissionMode);
-    await window.emma.setThreadContext({ threadId: thread.id, folderIds: [item.folderId], mode: run.mode as PermissionMode, model: run.model });
+    await window.emma.setThreadContext({ threadId: thread.id, folderIds: [item.folderId], mode: run.mode as PermissionMode, model: run.model, ...(run.effort ? { effort: run.effort } : {}), ...(run.stepLimit ? { stepLimit: run.stepLimit } : {}) });
     if (benchLive() !== run.id) return;
     await window.emma.forceArm({ threadId: thread.id, arm });
     if (benchLive() !== run.id) return;
-    let hard = false;
-    try { await window.emma.request("sendMessage", { threadId: thread.id, content: item.prompt }); }
-    catch { hard = true; }
+    if (item.setup) await runShell(item.setup, item.folderId);
     if (benchLive() !== run.id) return;
-    let traces = await window.emma.threadTraces(thread.id);
-    if (!traces.length) { await tick(); traces = await window.emma.threadTraces(thread.id); }
-    const trace = traces.at(-1);
+    let hard = false;
+    const sent = window.emma.request("sendMessage", { threadId: thread.id, content: item.prompt }).then(() => false, () => { hard = true; return false; });
+    const overran = run.caseMinutes
+      ? await Promise.race([sent, new Promise<boolean>((resolve) => { setTimeout(() => resolve(true), run.caseMinutes! * 60_000); })])
+      : await sent;
+    if (overran) window.emma.stopAgent(thread.id);
+    if (benchLive() !== run.id) return;
+    const trace = await lastTrace(thread.id, overran ? STOPPED_TRACE_MS : TRACE_RETRY_MS);
     if (!trace || benchLive() !== run.id) return;
     const turn = readTurn(trace, { id: thread.id, title: item.title });
     if (turn.arm !== arm) return;
-    onResult(run.id, { caseId: item.id, arm, failures: turn.failures, blocks: turn.blocks, steps: turn.steps, failed: turn.ok && !hard ? 0 : 1 });
+    const answer = await finalAnswer(thread.id);
+    if (benchLive() !== run.id) return;
+    const checked = item.check ? await runShell(item.check, item.folderId) : undefined;
+    if (benchLive() !== run.id) return;
+    const scored = checked ? { score: checked.code === 0 ? 1 : 0, note: checked.note }
+      : await window.emma.benchJudge({ prompt: item.prompt, rubric: item.rubric ?? "", answer, ...(judge ? { judge } : {}) })
+        .catch((reason: unknown) => { onJudgeError(reasonText(reason)); return undefined; });
+    onResult(run.id, {
+      caseId: item.id,
+      arm,
+      failures: turn.failures,
+      blocks: turn.blocks,
+      steps: turn.steps,
+      requests: turn.requests,
+      tokens: turn.tokens,
+      cost: turn.cost,
+      ms: turn.ms,
+      failed: turn.ok && !hard && !overran ? 0 : 1,
+      out: turn.out,
+      threadId: thread.id,
+      ...(answer ? { answer } : {}),
+      ...(scored ? { judge: scored.score, ...(scored.note ? { judgeNote: scored.note } : {}) } : {}),
+    });
   } finally {
     if (live === thread.id) live = "";
     containBench([thread.id]);
@@ -85,11 +147,13 @@ async function driveCase(run: BenchRun, item: BenchCase, arm: Arm, onThread: (ru
 export async function driveBench(input: {
   run: BenchRun;
   cases: readonly BenchCase[];
+  judge?: VerifierSettings;
   onThread: (runId: string, threadId: string) => void;
   onResult: (runId: string, result: BenchResult) => void;
   onProgress: (progress: BenchProgress | null) => void;
+  onJudgeError: (note: string) => void;
 }): Promise<void> {
-  const { run, cases, onThread, onResult, onProgress } = input;
+  const { run, cases, judge, onThread, onResult, onProgress, onJudgeError } = input;
   const blocker = benchBlocker(cases, run.mode, await window.emma.listFolders().catch(() => []));
   if (blocker) throw new Error(blocker);
   const arms: Arm[] = runArms(run) === 2 ? ["a", "b"] : ["a"];
@@ -104,7 +168,7 @@ export async function driveBench(input: {
         if (benchLive() !== run.id) return;
         if (!grants.some((grant) => grant.id === item.folderId)) throw new Error(`The folder for ${item.title} was disconnected mid-run.`);
         onProgress({ runId: run.id, done, total, caseTitle: item.title, arm });
-        await driveCase(run, item, arm, onThread, onResult);
+        await driveCase(run, item, arm, judge, onThread, onResult, onJudgeError);
         done += 1;
       }
     }

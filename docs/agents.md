@@ -18,12 +18,22 @@ under both arms back to back, at a case count declared before the run starts.
 
 ## The levers
 
-A proposed change is written into one of two standing texts, and nothing else:
+A proposed change is written into one of six levers, and nothing else. The
+addition is at most 1024 characters, and each lever reads it its own way — an
+addition that will not parse is dropped rather than stored:
 
-| Lever | What it edits |
-| --- | --- |
-| `instructions` | The standing instructions every turn carries |
-| `verifier` | The rules the auto verifier reviews a call against |
+| Lever | What it edits | The addition is |
+| --- | --- | --- |
+| `instructions` | The standing instructions every turn carries | The line itself |
+| `verifier` | The rules the auto verifier reviews a call against | The line itself |
+| `prompt` | The system prompt, under an optional scope | The prompt body; `scope` is a preset scope — `family:glm`, `model:<id>`, or empty for every model |
+| `tools` | What a tool's description says this turn | JSON: `{"<tool>": "<description>"}` |
+| `advertise` | Which tools are offered without a search | A comma-separated tool list |
+| `knobs` | One harness experiment field | `<field>=<integer>`, held to the ceilings in `validateHarnessExperiments` |
+
+A `tools` or `advertise` trial reaches the turn it rides and no further: the
+harness sends the overrides per turn and does not pass them to subagents, so a
+child turn runs with the shipped descriptions on either arm.
 
 Four other levers were considered and cut, each for a mechanical reason rather
 than a stylistic one:
@@ -43,7 +53,7 @@ than a stylistic one:
 
 ## What a turn is worth
 
-One stored trace is one finished turn. Four numbers come off it, and **all four
+One stored trace is one finished turn. Eight numbers come off it, and **all eight
 are costs — lower is better**, so no surface anywhere inverts a sign.
 
 | Metric | Counted from the trace |
@@ -51,13 +61,33 @@ are costs — lower is better**, so no surface anywhere inverts a sign.
 | `failures` | Tool calls that came back failed |
 | `blocks` | Calls the auto verifier would not clear |
 | `steps` | Tool calls made |
+| `requests` | Requests to the model, from the trace header |
+| `tokens` | The turn's `in` + `out`, from the trace header |
+| `cost` | Micro USD the provider charged, from the trace header |
+| `ms` | Wall clock the run took, from the trace header |
 | `failed` | `1` when the run itself ended failed, `0` otherwise |
 
-The first three are all cost proxies, and each of them is also what *giving up
-early* looks like: a turn that quits after two calls scores beautifully. `failed`
-is the fourth number for exactly that reason — it is the one that goes up when
+The header numbers are zero on a turn recorded before they existed. The cost
+proxies are each also what *giving up early* looks like: a turn that quits after
+two calls scores beautifully. `failed` is the last number for exactly that reason — it is the one that goes up when
 Emma buys a low step count by not finishing. Read it alongside whichever of the
 three a trial is being judged on.
+
+### Where the tokens go
+
+Beside the friction list the Agents page ranks the same window by tokens, six
+rows deep, from `spendOf` in improvement.ts. Each row proposes the lever that
+could move its number:
+
+| Row | The number | Proposes |
+| --- | --- | --- |
+| A tool | Tokens its calls put in the window, with the call and turn counts | Nothing — a tool's cost is not by itself a change to make |
+| A model family | Tokens an average turn on it costs, beside mean `requests` and `cost` | A `prompt` trial scoped `family:<id>`, judged on `tokens` |
+| Discovery | Tokens spent in `search_tools` and `select_tool`, with mean steps a turn and the tools picked most | An `advertise` trial offering those tools up front, judged on `requests` |
+
+A tool whose failures are mostly argument-shape errors proposes a `tools` trial
+instead of a lesson, drafted as `{"<tool>": ""}` — the description is yours to
+write, and the trial will not start until it is.
 
 ## The replay bench
 

@@ -983,6 +983,33 @@ test("the model's own image input is published to the harness, and stays unsent 
   }
 });
 
+test("a trial's tool hints and preselected tools reach the session, and clear on the turn that drops them", async () => {
+  const { client, text } = harness(async () => "allow_once");
+  try {
+    await client.prompt("thread-trial", workspace, "arm b", "ask", undefined, {
+      toolHints: { threads: "Hinted threads." },
+      preselect: ["threads", "knowledge"],
+    });
+    const armed = text().join("");
+    assert.ok(armed.includes(`cfg:tool_hints={"threads":"Hinted threads."}`), armed);
+    assert.ok(armed.includes("cfg:preselect=threads,knowledge"), armed);
+
+    const before = text().join("").length;
+    await client.prompt("thread-trial", workspace, "arm a", "ask");
+    const cleared = text().join("").slice(before);
+    assert.ok(cleared.includes("cfg:tool_hints= "), cleared);
+    assert.ok(cleared.includes("cfg:preselect= "), cleared);
+
+    const after = text().join("").length;
+    await client.prompt("thread-trial", workspace, "arm a again", "ask");
+    const quiet = text().join("").slice(after);
+    assert.ok(!quiet.includes("cfg:tool_hints"), quiet);
+    assert.ok(!quiet.includes("cfg:preselect"), quiet);
+  } finally {
+    client.close();
+  }
+});
+
 test("a content filter that ends the turn is reported as blocked, not as a model error", async () => {
   const { client } = harness(async () => "allow_once");
   await assert.rejects(

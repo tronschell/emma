@@ -39,15 +39,18 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
     var byte_count: usize = result_store.read_default_bytes;
     var query: ?[]const u8 = null;
     if (parsed.value.object.get("start_byte")) |value| {
-        const raw = parsePositiveInteger(value) orelse {
+        const raw = parseRangeInteger(value) orelse {
             return .{ .failure = try positiveIntegerFailure(ctx.allocator, "start_byte", value) };
         };
-        start_byte = @intCast(raw);
+        start_byte = @intCast(@max(raw, 1));
     }
     if (parsed.value.object.get("byte_count")) |value| {
-        const raw = parsePositiveInteger(value) orelse {
+        const raw = parseRangeInteger(value) orelse {
             return .{ .failure = try positiveIntegerFailure(ctx.allocator, "byte_count", value) };
         };
+        if (raw < 1) {
+            return .{ .failure = try positiveIntegerFailure(ctx.allocator, "byte_count", .{ .integer = raw }) };
+        }
         byte_count = @intCast(@min(raw, result_store.read_max_bytes));
     }
     if (parsed.value.object.get("end_byte")) |_| {
@@ -88,9 +91,21 @@ fn positiveIntegerFailure(alloc: Allocator, field: []const u8, value: std.json.V
     );
 }
 
-fn parsePositiveInteger(value: std.json.Value) ?i64 {
-    if (value != .integer or value.integer < 1) return null;
-    return value.integer;
+fn parseRangeInteger(value: std.json.Value) ?i64 {
+    return switch (value) {
+        .integer => |number| if (number >= 0) number else null,
+        .string => |text| digitsToInteger(text),
+        else => null,
+    };
+}
+
+fn digitsToInteger(text: []const u8) ?i64 {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    for (trimmed) |byte| {
+        if (byte < '0' or byte > '9') return null;
+    }
+    return std.fmt.parseInt(i64, trimmed, 10) catch null;
 }
 
 fn inputDeinit(ptr: *anyopaque, alloc: Allocator) void {
@@ -157,14 +172,37 @@ pub fn isIrreversible(_: tool_dispatch.ToolInput) bool {
     return false;
 }
 
-test "read_tool_result names a quoted range value as the fault" {
+test "read_tool_result accepts a quoted range value" {
     const alloc = std.testing.allocator;
-    const decoded = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":\"8193\"}");
-    const failure = decoded.failure;
-    defer alloc.free(failure);
-    try std.testing.expect(std.mem.find(u8, failure, "must be a bare JSON number") != null);
-    try std.testing.expect(std.mem.find(u8, failure, "\"8193\"") != null);
-    try std.testing.expect(std.mem.find(u8, failure, "\"start_byte\": 1") != null);
+    const quoted = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":\"8193\"}");
+    const quoted_input = switch (quoted) {
+        .input => |value| value,
+        .failure => return error.TestUnexpectedDecodeFailure,
+    };
+    defer quoted_input.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 8193), quoted_input.as(Input).start_byte);
+
+    const quoted_zero = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":\"0\"}");
+    const quoted_zero_input = switch (quoted_zero) {
+        .input => |value| value,
+        .failure => return error.TestUnexpectedDecodeFailure,
+    };
+    defer quoted_zero_input.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 1), quoted_zero_input.as(Input).start_byte);
+
+    const bare_zero = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":0}");
+    const bare_zero_input = switch (bare_zero) {
+        .input => |value| value,
+        .failure => return error.TestUnexpectedDecodeFailure,
+    };
+    defer bare_zero_input.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 1), bare_zero_input.as(Input).start_byte);
+
+    const words = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"start_byte\":\"abc\"}");
+    const words_failure = words.failure;
+    defer alloc.free(words_failure);
+    try std.testing.expect(std.mem.find(u8, words_failure, "must be a bare JSON number") != null);
+    try std.testing.expect(std.mem.find(u8, words_failure, "\"abc\"") != null);
 
     const zero = try decode(.{ .allocator = alloc }, "{\"handle\":\"h.txt\",\"byte_count\":0}");
     const zero_failure = zero.failure;

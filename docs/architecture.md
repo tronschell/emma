@@ -127,10 +127,12 @@ are frontmost; only the 60-second backstop poll waits for the page to be visible
 - `setPermissionRequestHandler` and `setPermissionCheckHandler` answer through
   `pageMayAsk`: sanitized clipboard writes and audio-only media, from Emma's own
   windows. Everything else is refused.
-- Two privileged schemes are registered. `emma-artifact://<id>` serves a stored
+- Three privileged schemes are registered. `emma-artifact://<id>` serves a stored
   artifact with its own restrictive CSP, framed `sandbox="allow-scripts"` and
   never `allow-same-origin`; `emma-visual://<id>` serves an inline visual the
-  same way. The workspace CSP permits framing those two schemes and no other.
+  same way; `emma-component://<id>` serves a context-bar widget's module and
+  screenshot into the workspace itself. The workspace CSP permits framing the
+  first two and no other.
 - `app.requestSingleInstanceLock()` keeps the Markdown stores under one host
   writer; a second launch focuses the first.
 

@@ -170,9 +170,10 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 
 [`AGENTS.md`](AGENTS.md) is the source of truth for anyone — human or agent — changing this repo. `just check`, `just test`, and `just package` wrap the rest; `npm run package:mac` builds macOS and `npm run package:win` builds the current native Windows x64 or ARM64 target.
 
-Release flow: feature branches → `dev` → `main`. PR titles drive the generated
-changelog and version; promoting a prepared release to `main` checks, builds,
-signs, notarizes, and publishes the macOS release. Windows CI builds an unsigned
+Release flow: feature branches → `dev` → `main`. PR titles and release summaries
+feed the automatic changelog; the root `package.json` sets the version. Promoting
+a prepared release to `main` checks, builds, signs, notarizes, and publishes the
+macOS release. Windows CI builds an unsigned
 x64 target package and an ARM64 compile/package rehearsal; public signed Windows
 x64 publication is pending release-workflow authorization.
 → **[Release guide](docs/releases.md)** · **[Development](docs/development.md)**

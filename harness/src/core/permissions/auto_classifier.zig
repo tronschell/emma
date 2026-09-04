@@ -419,23 +419,21 @@ pub const Reviewer = struct {
 
         const messages = alloc.alloc(types.ChatMessage, 3) catch |err| return constructionFailure(err);
         defer alloc.free(messages);
-        messages[0] = .{
-            .role = .user,
-            .content = review_turn.current_root_request,
-        };
-        var message_index: usize = 1;
         const target_call_index = for (review_turn.pending_assistant.tool_calls, 0..) |call, index| {
             if (std.mem.eql(u8, call.id, review_turn.target_call_id)) break index;
         } else return .invalid;
         var target_pending_assistant = review_turn.pending_assistant;
         target_pending_assistant.tool_calls = review_turn.pending_assistant.tool_calls[target_call_index .. target_call_index + 1];
-        // Forward only the exact pending call. Assistant prose and native
-        // attachments are untrusted and do not identify the action.
         target_pending_assistant.images = &.{};
         target_pending_assistant.content = null;
-        messages[message_index] = target_pending_assistant;
-        message_index += 1;
-        messages[message_index] = .{ .role = .system, .content = instruction };
+        target_pending_assistant.reasoning = null;
+        target_pending_assistant.reasoning_details_json = null;
+        messages[0] = .{ .role = .system, .content = instruction };
+        messages[1] = .{
+            .role = .user,
+            .content = review_turn.current_root_request,
+        };
+        messages[2] = target_pending_assistant;
 
         const payload = if (transport.build_fn) |build_fn|
             build_fn(
@@ -1402,7 +1400,7 @@ test "automatic review serializes the pending call structurally" {
             const assistant_index = std.mem.find(u8, payload, "\"role\":\"assistant\"") orelse return error.TestExpectedReviewOrder;
             const result_index = std.mem.find(u8, payload, "\"role\":\"tool\"") orelse return error.TestExpectedReviewOrder;
             const instruction_index = std.mem.find(u8, payload, "<permission_review>") orelse return error.TestExpectedReviewOrder;
-            self.saw_message_order = user_index < assistant_index and assistant_index < result_index and result_index < instruction_index;
+            self.saw_message_order = instruction_index < user_index and user_index < assistant_index and assistant_index < result_index;
             return .{ .completion = .{ .completion = .{
                 .tool_calls = &.{.{
                     .id = "review",

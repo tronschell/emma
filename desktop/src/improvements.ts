@@ -1,4 +1,4 @@
-import { validateImprovements, MAX_ADDITION_CHARS, type Draft, type Improvements } from "../shared/improvement";
+import { additionValid, leverNames, metricNames, validateImprovements, MAX_ADDITION_CHARS, type Draft, type Improvements, type Lever, type Metric } from "../shared/improvement";
 
 const KEY = "emma.improvements.v1";
 
@@ -28,12 +28,16 @@ export function readQueue(): Draft[] {
     return raw.flatMap((entry): Draft[] => {
       const item = (entry ?? {}) as Record<string, unknown>;
       const addition = (typeof item.addition === "string" ? item.addition : "").slice(0, MAX_ADDITION_CHARS).trim();
-      if (!addition) return [];
+      if (item.scope !== undefined && typeof item.scope !== "string") return [];
+      const scope = typeof item.scope === "string" ? item.scope.trim() : "";
+      const lever: Lever = typeof item.lever === "string" && Object.hasOwn(leverNames, item.lever) ? item.lever as Lever : "instructions";
+      if (!additionValid(lever, addition, scope)) return [];
       return [{
         title: (typeof item.title === "string" ? item.title : "").slice(0, 200) || "Untitled change",
-        lever: item.lever === "verifier" ? "verifier" : "instructions",
-        metric: item.metric === "blocks" ? "blocks" : item.metric === "steps" ? "steps" : "failures",
+        lever,
+        metric: typeof item.metric === "string" && Object.hasOwn(metricNames, item.metric) ? item.metric as Metric : "failures",
         addition,
+        ...(scope ? { scope } : {}),
         look: Math.max(1, Math.round(Number(item.look)) || 1),
       }];
     }).slice(0, MAX_QUEUE);

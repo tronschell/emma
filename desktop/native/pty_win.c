@@ -115,7 +115,7 @@ static DWORD WINAPI relay_resize(void *value) {
       held[index] = 0;
       int columns = 0;
       int rows = 0;
-      if (sscanf(held + start, "%d %d", &columns, &rows) == 2 && columns > 0 && rows > 0 && columns <= 4096 && rows <= 4096) {
+      if (sscanf_s(held + start, "%d %d", &columns, &rows) == 2 && columns > 0 && rows > 0 && columns <= 4096 && rows <= 4096) {
         if (FAILED(resize(context->console, (COORD){ (SHORT)columns, (SHORT)rows }))) InterlockedExchange(&context->relay_failure, 1);
       }
       start = index + 1;
@@ -272,6 +272,7 @@ static int run_pty(int columns, int rows, wchar_t **argv, int argc, HANDLE input
   }
   STARTUPINFOEXW startup = { 0 };
   startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
   startup.lpAttributeList = attributes;
   PROCESS_INFORMATION process = { 0 };
   const BOOL started = CreateProcessW(NULL, command, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, NULL, NULL, &startup.StartupInfo, &process);
@@ -344,7 +345,7 @@ static int self_test(void) {
     close_handle(resize_write);
     return 1;
   }
-  const char input[] = "Emma\r\n";
+  const char input[] = "Emma\r";
   const char resize[] = "100 30\n";
   const DWORD input_length = (DWORD)strlen(input);
   const DWORD resize_length = (DWORD)strlen(resize);
@@ -360,8 +361,8 @@ static int self_test(void) {
   }
   close_handle(input_write);
   close_handle(resize_write);
-  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-NonInteractive", L"-Command", L"$value=[Console]::ReadLine(); Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$value+':'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0]))", L"東京", NULL };
-  const int status = run_pty(80, 24, command, 7, input_read, output_write, resize_read);
+  wchar_t *command[] = { L"powershell.exe", L"-NoLogo", L"-NoProfile", L"-Command", L"& { $value=$Host.UI.ReadLine(); Start-Sleep -Milliseconds 100; $size=$Host.UI.RawUI.WindowSize; Write-Output ('received:'+$value+':'+$size.Width+'x'+$size.Height+':'+([int][char]$args[0][0])) }", L"東京", NULL };
+  const int status = run_pty(80, 24, command, 6, input_read, output_write, resize_read);
   close_handle(input_read);
   close_handle(output_write);
   close_handle(resize_read);

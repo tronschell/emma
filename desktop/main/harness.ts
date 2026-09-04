@@ -31,7 +31,7 @@ export type TurnUsage = { inputTokens: number; outputTokens: number; cacheInputT
 
 const mediaType =(file: string) => `image/${path.extname(file).slice(1).toLowerCase().replace("jpg", "jpeg")}`;
 
-export type TurnExtras = { skillContext?: string; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; semanticGrep?: string; imageInput?: boolean; compact?: boolean; images?: string[]; continueRecovery?: boolean };
+export type TurnExtras = { skillContext?: string; toolHints?: Record<string, string>; preselect?: string[]; stepLimit?: number; contextWindow?: number; effort?: ThinkingRoute; experiments?: HarnessExperiments; semanticGrep?: string; imageInput?: boolean; compact?: boolean; images?: string[]; continueRecovery?: boolean };
 
 export type ThinkingRoute = { level: string; published: string[] };
 
@@ -47,7 +47,7 @@ export const experimentOption = (experiments: HarnessExperiments) =>
     `command_timeout_minutes=${experiments.commandTimeoutMinutes}`,
   ].join(",");
 
-// stdio is signalled by the absence of `type`; a remote entry carries url and headers instead.
+
 export type HarnessMcpServer = { name: string; command?: string; args?: string[]; env?: Array<{ name: string; value: string }>; type?: "http" | "sse"; url?: string; headers?: Array<{ name: string; value: string }> };
 
 const SECRET_OPTION_ENV = /(\\?"(?:ZVEC_GREP_API_KEY|ZVEC_GREP_SERVER_TOKEN)\\?",\\?"value\\?":\\?")[^"\\]*/g;
@@ -164,6 +164,7 @@ export type HarnessDeps = {
   onUsage: (threadId: string, usage: TurnUsage) => void;
 
   onChildStart: (child: { parentThreadId: string; childId: string; title: string }) => Promise<string>;
+  onModelContext?: (parentThreadId: string, threadId: string, model: string, skills: string) => Record<string, unknown>;
 
   onChildEnd: (threadId: string, reason?: string) => void;
   onPlan: (threadId: string, entries: unknown) => void;
@@ -413,6 +414,7 @@ export class Harness {
   private readonly lines = new BoundedLines(MAX_LINE_BYTES);
   private readonly pending = new Map<number, Pending>();
   private readonly threadsBySession = new Map<string, string>();
+  private readonly trialOptions = new Map<string, Record<string, string>>();
 
   private active: string | undefined;
 
@@ -575,6 +577,18 @@ export class Harness {
       await this.request("session/set_config_option", { sessionId, configId: "image_input", value: String(extra.imageInput) });
     }
 
+    const trial: Record<string, string> = {
+      tool_hints: extra.toolHints ? JSON.stringify(extra.toolHints) : "",
+      preselect: (extra.preselect ?? []).join(","),
+      agent_step_limit: extra.stepLimit ? String(extra.stepLimit) : "",
+    };
+    const previousTrial = this.trialOptions.get(threadId) ?? {};
+    for (const [configId, value] of Object.entries(trial)) {
+      if (value === "" && !previousTrial[configId]) continue;
+      await this.request("session/set_config_option", { sessionId, configId, value });
+    }
+    this.trialOptions.set(threadId, trial);
+
     if (extra.compact) {
       this.phase(threadId, "compacting the context");
       await this.request("session/compact", { sessionId }).catch((error: unknown) => console.error("Emma: the harness would not compact", error));
@@ -735,6 +749,7 @@ export class Harness {
 
   forgetSession(threadId: string) {
     this.sessions.delete(threadId);
+    this.trialOptions.delete(threadId);
     this.remember();
   }
 
@@ -1008,6 +1023,14 @@ export class Harness {
     }
     let output: string;
     try {
+      if (name === "_model_context") {
+        const { model, childId, title, skills } = args;
+        if (!this.deps.onModelContext || typeof model !== "string" || !model.trim() || model.length > 256 || /[\s\0]/.test(model) || typeof childId !== "string" || !childId || childId.length > 256 || typeof skills !== "string" || skills.length > 128 * 1024) throw new Error("Invalid model context request");
+        const childThreadId = await this.childThread(threadId, { id: childId, title: typeof title === "string" ? title.slice(0, 120) : "Subagent", ended: false });
+        output = JSON.stringify(this.deps.onModelContext(threadId, childThreadId, model, skills));
+        this.send({ jsonrpc: "2.0", id, result: { output } });
+        return;
+      }
       if (name === "computer") {
         const turn = this.computerTurn;
         const toolCallId = typeof params.toolCallId === "string" ? params.toolCallId : "";

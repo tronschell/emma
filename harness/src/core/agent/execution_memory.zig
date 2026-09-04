@@ -274,6 +274,10 @@ const ChatMessageAdapter = struct {
     fn content(value: Message) ?[]const u8 {
         return value.content;
     }
+
+    fn reasoning(value: Message) ?[]const u8 {
+        return value.reasoning;
+    }
 };
 
 const MessageAdapter = struct {
@@ -317,6 +321,10 @@ const MessageAdapter = struct {
 
     fn content(value: Message) ?[]const u8 {
         return if (value.content) |content_value| content_value.asText() else null;
+    }
+
+    fn reasoning(_: Message) ?[]const u8 {
+        return null;
     }
 };
 
@@ -417,6 +425,11 @@ fn buildNormalExecutionMemory(
         else
             null;
         errdefer if (assistant) |text| alloc.free(text);
+        const step_reasoning = if (Adapter.reasoning(msg)) |text|
+            try redactText(alloc, text)
+        else
+            null;
+        errdefer if (step_reasoning) |text| alloc.free(text);
         const persisted_calls = try dupeCompletedRedactedToolCalls(
             alloc,
             tool_calls,
@@ -427,6 +440,7 @@ fn buildNormalExecutionMemory(
         errdefer types.freePersistedToolResults(alloc, owned_results);
         const step = types.ToolExecutionStep{
             .assistant = assistant,
+            .reasoning = step_reasoning,
             .tool_calls = persisted_calls,
             .tool_results = owned_results,
         };
@@ -468,6 +482,7 @@ pub fn freeTransientToolExecutionStep(
     step: types.ToolExecutionStep,
 ) void {
     if (step.assistant) |assistant| alloc.free(assistant);
+    if (step.reasoning) |reasoning| alloc.free(reasoning);
     types.freeToolCallSlice(alloc, step.tool_calls);
     types.freePersistedToolResults(alloc, step.tool_results);
 }
@@ -1737,4 +1752,40 @@ fn expectOptionalStringEqual(
     } else {
         try std.testing.expect(actual == null);
     }
+}
+
+test "an assistant tool step keeps its reasoning through execution memory and history projection" {
+    const runtime_execution_memory = @import("runtime/execution_memory.zig");
+    const session_runtime = @import("../session/session.zig");
+    const ChatMessage = types.ChatMessage;
+    const alloc = std.testing.allocator;
+    var calls = [_]ToolCall{.{
+        .id = "call_reason",
+        .name = "run_command",
+        .arguments_json = "{\"command\":\"echo hi\"}",
+    }};
+    const messages = [_]ChatMessage{
+        .{
+            .role = .assistant,
+            .content = "reading",
+            .reasoning = "the working out",
+            .tool_calls = calls[0..],
+        },
+        .{
+            .role = .tool,
+            .content = "contents",
+            .tool_call_id = "call_reason",
+            .tool_name = "run_command",
+            .tool_result_status = .success,
+        },
+    };
+
+    const memory = try runtime_execution_memory.buildExecutionMemory(alloc, &messages);
+    defer types.freeExecutionMemory(alloc, memory);
+    try std.testing.expectEqualStrings("the working out", memory.tool_steps[0].reasoning.?);
+
+    var projected: std.ArrayList(ChatMessage) = .empty;
+    defer projected.deinit(alloc);
+    try session_runtime.appendExecutionMemoryChatMessages(alloc, &projected, memory);
+    try std.testing.expectEqualStrings("the working out", projected.items[0].reasoning.?);
 }

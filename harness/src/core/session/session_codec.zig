@@ -1015,6 +1015,10 @@ fn writeExecutionMemory(writer: *std.Io.Writer, execution: session.ExecutionMemo
         if (i > 0) try writer.writeByte(',');
         try writer.writeAll("{\"assistant\":");
         try writeOptionalDurableBytes(writer, step.assistant);
+        if (step.reasoning) |reasoning| {
+            try writer.writeAll(",\"reasoning\":");
+            try writeDurableBytes(writer, reasoning);
+        }
         try writer.writeAll(",\"tool_calls\":[");
         for (step.tool_calls, 0..) |tool_call, call_index| {
             if (call_index > 0) try writer.writeByte(',');
@@ -1333,13 +1337,24 @@ fn parseToolSteps(
     var parsed_count: usize = 0;
     errdefer for (steps[0..parsed_count]) |step| {
         if (step.assistant) |assistant| alloc.free(assistant);
+        if (step.reasoning) |reasoning| alloc.free(reasoning);
         session.freeToolCallSlice(alloc, step.tool_calls);
         session.freePersistedToolResults(alloc, step.tool_results);
     };
     for (value.array.items, 0..) |step_value, i| {
-        const object = try exactObject(step_value, &.{ "assistant", "tool_calls", "tool_results" });
+        const step_shape = try exactVariantObject(
+            step_value,
+            &.{ "assistant", "tool_calls", "tool_results" },
+            &.{ "assistant", "reasoning", "tool_calls", "tool_results" },
+        );
+        const object = step_shape.object;
         const assistant = try parseOptionalDurableBytes(alloc, object.get("assistant") orelse return error.InvalidSessionFormat);
         errdefer if (assistant) |owned| alloc.free(owned);
+        const reasoning = if (step_shape.extended)
+            try parseRequiredDurableBytes(alloc, object, "reasoning")
+        else
+            null;
+        errdefer if (reasoning) |owned| alloc.free(owned);
         const tool_calls = try parseToolCalls(alloc, object.get("tool_calls") orelse return error.InvalidSessionFormat);
         errdefer session.freeToolCallSlice(alloc, tool_calls);
         const tool_results = try parseToolResults(
@@ -1351,6 +1366,7 @@ fn parseToolSteps(
         try session.repairPersistedToolArguments(alloc, tool_calls, tool_results, .schema_v3);
         steps[i] = .{
             .assistant = assistant,
+            .reasoning = reasoning,
             .tool_calls = tool_calls,
             .tool_results = tool_results,
         };
@@ -3447,4 +3463,72 @@ fn fuzzDurableSessionOptionalFields(_: void, smith: *std.testing.Smith) !void {
         .max_value_bytes = buffer.len,
     }) catch return;
     state.deinit(std.testing.allocator);
+}
+
+test "durable execution steps carry assistant reasoning and stay legacy-shaped without it" {
+    const alloc = std.testing.allocator;
+    var calls = [_]session.ToolCall{.{
+        .id = "call_reason",
+        .name = "read_file",
+        .arguments_json = "{\"path\":\"a.txt\"}",
+    }};
+    var results = [_]session.PersistedToolResult{.{
+        .tool_call_id = @constCast("call_reason"),
+        .tool_name = @constCast("read_file"),
+        .status = .success,
+        .output = @constCast("contents"),
+        .output_bytes = 8,
+        .stored_output_bytes = 8,
+        .created_at_ms = 1,
+    }};
+    var steps = [_]session.ToolExecutionStep{.{
+        .assistant = @constCast("reading"),
+        .reasoning = @constCast("the working out"),
+        .tool_calls = calls[0..],
+        .tool_results = results[0..],
+    }};
+    const history = [_]session.HistoryTurn{.{ .assistant = .{
+        .user = .{ .text = @constCast("read it") },
+        .assistant = @constCast("done"),
+        .execution = .{ .tool_steps = steps[0..] },
+    } }};
+    const state = DurableSessionState{
+        .id = @constCast("session-1"),
+        .origin_workspace_root = @constCast("/tmp/origin"),
+        .workspace_root = @constCast("/tmp/current"),
+        .created_at_ms = 1,
+        .updated_at_ms = 2,
+        .conversation_language = session.ConversationLanguage.literal("en"),
+        .preferences = .{
+            .model = @constCast("openai/gpt-test"),
+            .effort = .auto,
+            .fast_mode = false,
+        },
+        .history = @constCast(history[0..]),
+        .total_input_tokens = 0,
+        .total_output_tokens = 0,
+    };
+
+    var encoded: std.Io.Writer.Allocating = .init(alloc);
+    defer encoded.deinit();
+    _ = try encodeState(state, &encoded.writer);
+    try std.testing.expect(std.mem.find(u8, encoded.written(), "\"reasoning\":\"the working out\"") != null);
+    try std.testing.expect(std.mem.find(u8, encoded.written(), "\"schema_version\":3") != null);
+
+    var source = std.Io.Reader.fixed(encoded.written());
+    var decoded = try decodeState(alloc, &source, .{});
+    defer decoded.deinit(alloc);
+    const decoded_step = decoded.history[0].assistant.execution.tool_steps[0];
+    try std.testing.expectEqualStrings("the working out", decoded_step.reasoning.?);
+
+    steps[0].reasoning = null;
+    var plain: std.Io.Writer.Allocating = .init(alloc);
+    defer plain.deinit();
+    _ = try encodeState(state, &plain.writer);
+    try std.testing.expect(std.mem.find(u8, plain.written(), "\"reasoning\"") == null);
+
+    var plain_source = std.Io.Reader.fixed(plain.written());
+    var plain_decoded = try decodeState(alloc, &plain_source, .{});
+    defer plain_decoded.deinit(alloc);
+    try std.testing.expect(plain_decoded.history[0].assistant.execution.tool_steps[0].reasoning == null);
 }

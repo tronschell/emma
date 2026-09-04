@@ -1896,6 +1896,7 @@ fn createShellDispatcher(script: []const u8) !struct {
 }
 
 fn expectProcessReaped(pid: std.posix.pid_t) !void {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
     for (0..100) |_| {
         std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
             error.ProcessNotFound => return,

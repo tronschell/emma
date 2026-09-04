@@ -22,6 +22,12 @@ renaming and rebranding, so it is not something the fork may drop.
 Emma keeps fx's agent loop, permission model, hooks, skills, subagents, tools,
 and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
 
+- **Model-scoped subagent context.** Native ACP children ask Electron for the
+  prompt, tool descriptions, preselected tools and context settings for their
+  actual model before calling it. The response is validated and replaces the
+  parent's settings. The request also records the child's skill context for
+  run analysis. System prompt file reads allow 128 KiB to cover the desktop's
+  character limit in UTF-8.
 - **Binary and package name.** `fx` becomes `emma-cli`. The `build.zig.zon`
   fingerprint is regenerated, because upstream's own comment on that field says
   a fork that keeps it is attempting to take over the original project's
@@ -111,6 +117,12 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   workspace and reads files one at a time instead — hundreds of calls to answer
   what one grep answers. The other eighteen searchable tools are unchanged, and
   they are where the deferral was ever worth its round trip.
+- **Per-session tool hints and preselection.** Two config options let a trial
+  change what the model sees without a rebuild: `tool_hints`, a JSON object of
+  tool name to replacement description applied at advertisement time and in
+  `search_tools` results, and `preselect`, a comma-separated list of `.on_select`
+  tools advertised as if `.always` for that session. `.never` tools stay
+  unreachable, unknown names are ignored, and an empty value clears either one.
 - **Lazy MCP startup.** Emma validates and retains ACP MCP configs at session
   creation but defers process startup and discovery until the first MCP search,
   selection, or call. A turn that does not use MCP never starts those servers.
@@ -188,6 +200,14 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   one keep sending it. `tool_admission`'s mutation-identity hash folds every
   entry rather than the first pair, or an approved multi-edit call could be
   swapped for a different one.
+- **Quoted range arguments.** `read_tool_result` took `start_byte` and
+  `byte_count` as bare JSON integers only, so a model sending `"8192"` or `"0"`
+  was refused — fifty-four measured failures, the largest single failure class
+  in the stored traces. A JSON string that is entirely ASCII digits now decodes
+  as that integer, and `start_byte` 0 reads as 1 because the field is 1-based
+  and defaults to 1. Everything else still fails with the message it always
+  had, and `byte_count` must still be positive.
+
 - **Tool search ranking.** Upstream ranks `search_tools` by keyword overlap,
   which cannot tell a name match from a body match and gives a rare term no
   more weight than a common one. Emma ranks by BM25 over two fields, name

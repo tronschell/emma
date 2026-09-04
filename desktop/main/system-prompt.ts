@@ -3,18 +3,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { platform, release } from "node:os";
 import path from "node:path";
 import { mergeSkillContext } from "../shared/folders";
-import { familiesOf, familyLabel, normalizeModel, resolvePrompt, type PromptPreset, type PromptVariables } from "../shared/prompts";
+import { familiesOf, familyLabel, normalizeModel, scopeApplies, resolvePrompt, type PromptPreset, type PromptVariables } from "../shared/prompts";
 import { MAX_SYSTEM_PROMPT_CHARS, systemPromptBlock } from "../shared/settings";
 import { toolDefinitions } from "./tools";
 import type { PermissionMode } from "../shared/permissions";
-import { lessonBlock, type AppliedImprovements, type Arm } from "../shared/improvement";
+import { applied, knobOf, lessonBlock, preselectOf, toolHintsOf, type Improvements, type Arm } from "../shared/improvement";
 import type { TurnRequest } from "./agent-loop";
 import { GOAL_BLOCKED_TURNS, GOAL_LABELS, MAX_GOAL_TURNS, goalTokensLeft, type Goal } from "../shared/goal";
 
 let prompt = "";
 let presets: PromptPreset[] = [];
-let written: string | undefined;
-let improvements: AppliedImprovements = { kept: { instructions: "", verifier: "" } };
+let improvements: Improvements = { items: [] };
 
 export function setSystemPrompt(value: string) {
   prompt = value.slice(0, MAX_SYSTEM_PROMPT_CHARS);
@@ -26,6 +25,7 @@ export function setPrompts(value: readonly PromptPreset[]) {
 
 export interface PromptContext {
   model?: string;
+  addition?: string;
   workspace?: string;
   mode?: PermissionMode;
   disabledTools?: readonly string[];
@@ -46,17 +46,15 @@ function promptVariables(context: PromptContext): PromptVariables {
   };
 }
 
-const promptBlock = (context: PromptContext) =>
-  systemPromptBlock(resolvePrompt(prompt, presets, context.model ?? "", promptVariables(context)));
-
-const settingsBlock = () => improvements.kept.instructions;
+export const resolveHarnessPrompt = (context: PromptContext) =>
+  systemPromptBlock([resolvePrompt(prompt, presets, context.model ?? "", promptVariables(context)), context.addition].filter(Boolean).join("\n\n"));
 
 const arms = new Map<string, Arm>();
 const forced = new Map<string, { arm: Arm; at: number }>();
 const MAX_ARMS = 64;
 const PIN_MS = 2 * 60_000;
 
-export function setImprovements(value: AppliedImprovements) {
+export function setImprovements(value: Improvements) {
   improvements = value;
   forced.clear();
 }
@@ -66,11 +64,14 @@ export function forceArm(threadId: string, arm: Arm) {
   forced.set(threadId, { arm, at: Date.now() });
 }
 
-export function turnArm(threadId: string, parentThreadId?: string): Arm | "" {
+export function turnArm(threadId: string, parentThreadId?: string, model = ""): Arm | "" {
   const pin = forced.get(threadId);
   forced.delete(threadId);
   const pinned = pin && Date.now() - pin.at < PIN_MS ? pin.arm : undefined;
-  if (!improvements.trial && !pinned) return "";
+  if (!pinned && !improvements.items.some((item) => item.state === "trial" && scopeApplies(item.scope ?? "", model))) {
+    arms.delete(threadId);
+    return "";
+  }
   const arm: Arm = pinned ?? (parentThreadId && arms.has(parentThreadId) ? arms.get(parentThreadId)! : Math.random() < 0.5 ? "a" : "b");
   if (arms.size >= MAX_ARMS) {
     for (const key of arms.keys()) if (key !== threadId && key !== parentThreadId) { arms.delete(key); break; }
@@ -87,11 +88,36 @@ export function takeArm(threadId: string): Arm | "" {
   return arm;
 }
 
-export function withTrialArm(turn: TurnRequest): TurnRequest {
-  const arm = turnArm(turn.threadId, turn.parentThreadId);
-  if (improvements.trial?.lever !== "instructions" || arm !== "b") return turn;
-  const trial = lessonBlock([improvements.trial.addition]);
-  return { ...turn, params: { ...turn.params, skillContext: mergeSkillContext(trial, turn.params?.skillContext ?? "") } };
+export function withTrialArm(turn: TurnRequest, model = turn.model ?? ""): TurnRequest {
+  const arm = turnArm(turn.threadId, turn.parentThreadId, model);
+  const resolved = applied(improvements, model);
+  const trials = arm === "b" ? resolved.trial ?? [] : [];
+  const bodies = resolved.kept.prompts.map((preset) => preset.body);
+  const toolHints = { ...resolved.kept.toolHints };
+  const preselect = [...resolved.kept.preselect];
+  const knobs = { ...resolved.kept.knobs };
+  const lessons: string[] = [];
+  for (const trial of trials) {
+    if (trial.lever === "prompt") bodies.push(trial.addition);
+    if (trial.lever === "instructions") lessons.push(trial.addition);
+    if (trial.lever === "tools") Object.assign(toolHints, toolHintsOf(trial.addition));
+    if (trial.lever === "advertise") preselect.push(...preselectOf(trial.addition));
+    if (trial.lever === "knobs") Object.assign(knobs, knobOf(trial.addition));
+  }
+  const block = [resolved.kept.instructions, lessonBlock(lessons), ...bodies].filter(Boolean).join("\n\n");
+  return {
+    ...turn,
+    traceContext: {
+      ...turn.traceContext,
+      arm,
+      trials: improvements.items.filter((item) => item.state === "trial" && scopeApplies(item.scope ?? "", model)).map((item) => item.id).join(","),
+      changes: JSON.stringify({ kept: resolved.kept, trial: trials }),
+    },
+    ...(block ? { promptAddition: block } : {}),
+    ...(Object.keys(toolHints).length ? { toolHints } : {}),
+    ...(preselect.length ? { preselect: [...new Set(preselect)] } : {}),
+    ...(Object.keys(knobs).length ? { knobs } : {}),
+  };
 }
 
 const tokens = (value: number) => value.toLocaleString("en-US");
@@ -126,11 +152,10 @@ export const harnessPromptFile = (home: string, key: string) =>
   path.join(home, ".fx", `system-prompt-${createHash("sha256").update(key).digest("hex").slice(0, 16)}.md`);
 
 export function writeHarnessPrompt(home: string, context: PromptContext = {}, file = path.join(home, ".fx", "system-prompt.md")) {
-  const resolved = promptBlock(context);
-  const block = settingsBlock();
+  const resolved = resolveHarnessPrompt(context);
   const directory = path.join(home, ".fx");
   mkdirSync(directory, { recursive: true });
   writeFileSync(file, resolved ? `${resolved}\n` : "");
-  if (written !== block) writeFileSync(path.join(directory, "AGENTS.md"), block ? `${block}\n` : "");
-  written = block;
+  writeFileSync(path.join(directory, "AGENTS.md"), "");
+  return resolved;
 }

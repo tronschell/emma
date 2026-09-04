@@ -315,7 +315,13 @@ test("mode changes reach descendants and newly adopted children without changing
 function lifted(name: string, globals: Record<string, unknown>) {
   const found = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name)!;
   assert.ok(found, `${name} is no longer a function declaration in main.ts`);
-  return runInNewContext(ts.transpileModule(`(${found.getText(source)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, globals);
+  /* main.ts routes every threadContexts write through rememberThreadContext, so the file beside
+     the map stays the map. What these tests are about is which record gets written, not where it
+     lands, so the persisting half is stubbed down to the Map a caller already passed in. */
+  return runInNewContext(ts.transpileModule(`(${found.getText(source)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
+    rememberThreadContext: (threadId: string, record: unknown) => (globals.threadContexts as Map<string, unknown> | undefined)?.set(threadId, record),
+    ...globals,
+  });
 }
 
 test("setThreadModel puts the phone's pick on the thread, keyed the way the harness reads it", async () => {

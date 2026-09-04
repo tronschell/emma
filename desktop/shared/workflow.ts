@@ -74,8 +74,16 @@ export function parseWorkflow(nodes: string, prompt = ""): { nodes: WorkflowNode
   return { nodes: parsed, errors };
 }
 
+/**
+ * `{{name}}` replaced by its variable, and an unknown name by nothing.
+ *
+ * `variables` is an object literal, so a workflow written around `{{constructor}}` — or
+ * `toString`, `valueOf`, `hasOwnProperty` — would otherwise resolve Object.prototype's and expand
+ * to native function source, which `evaluate` then reads as a non-empty value and branches on.
+ * Own keys only.
+ */
 export function expand(text: string, variables: Record<string, string>): string {
-  return text.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (_, name: string) => variables[name] ?? "");
+  return text.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (_, name: string) => (Object.hasOwn(variables, name) ? variables[name] : ""));
 }
 
 type Condition = { left: string; operator: string; right: string };

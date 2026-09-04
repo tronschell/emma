@@ -10,7 +10,8 @@ import type { MachineSample } from "../shared/machine";
 import type { HarnessLogLine, HarnessReport } from "../shared/harness-log";
 import type { Goal, GoalStatus } from "../shared/goal";
 import type { Visual } from "../shared/visualize";
-import type { Arm, Improvements } from "../shared/improvement";
+import type { Arm, Improvements, Lever } from "../shared/improvement";
+import type { Bench, BenchMetric } from "../shared/bench";
 import type { PermissionMode } from "../shared/permissions";
 import type { Plan } from "../shared/plan";
 import type { TaskList } from "../shared/task-list";
@@ -337,6 +338,8 @@ declare global {
       openInObsidian(path: string): Promise<void>;
       onNotesChanged(listener: () => void): () => void;
       resetData(): Promise<void>;
+      benchJudge(value: { prompt: string; rubric: string; answer: string; judge?: VerifierSettings }): Promise<{ score: number; note: string }>;
+      exportBench(value: { name: string; sheets: { name: string; rows: (string | number)[][] }[] }): Promise<string>;
       exportThreadStats(value: { folder: string; files: { name: string; text: string }[] }): Promise<string>;
       listFolders(): Promise<FolderGrant[]>;
       pluginCatalog(): Promise<PluginCatalog>;
@@ -401,7 +404,7 @@ declare global {
       closeCouncil(threadId: string): Promise<void>;
       councilState(threadId: string): Promise<CouncilState | null>;
       onCouncil(listener: (state: CouncilState) => void): () => void;
-      setThreadContext(value: { threadId: string; folderIds: string[]; mode: PermissionMode; model: string; subagentModel?: string; subagentEffort?: string; review?: boolean }): Promise<PermissionMode>;
+      setThreadContext(value: { threadId: string; folderIds: string[]; mode: PermissionMode; model: string; effort?: string; subagentModel?: string; subagentEffort?: string; review?: boolean; stepLimit?: number }): Promise<PermissionMode>;
       runCommand(value: { command: string; folderId?: string }): Promise<BackgroundTask>;
       listBackground(): Promise<BackgroundTask[]>;
       readBackground(id: string): Promise<{ task: BackgroundTask; output: string } | null>;
@@ -466,6 +469,13 @@ declare global {
       loadUiPlugins(): Promise<UiPlugin[]>;
       onChanged(listener: () => void): number;
       offChanged(id: number): void;
+    };
+    emmaBench: {
+      importCases(cases: { title: string; prompt: string; folderId: string; rubric?: string; setup?: string; check?: string }[]): string[];
+      start(options: { metric?: BenchMetric; arms?: "a" | "ab"; model?: string; effort?: string; mode?: string; stepLimit?: number; caseMinutes?: number; caseIds?: string[] }): string;
+      read(): Bench;
+      trial(items: { lever: Lever; addition: string; scope?: string }[]): string[];
+      revert(): void;
     };
   }
 }
