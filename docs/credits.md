@@ -56,7 +56,7 @@ build dependencies live in the same list.
 | Mermaid 11.17.0 | Diagrams in answers and artifacts | MIT | [mermaid-js/mermaid](https://github.com/mermaid-js/mermaid) |
 | Recharts 3.10.1 | Charts in answers and artifacts | MIT | [recharts/recharts](https://github.com/recharts/recharts) |
 | @dnd-kit/core 6.3.1, /sortable 10.0.0, /utilities 3.2.2 | Drag-and-drop reordering in the UI | MIT | [clauderic/dnd-kit](https://github.com/clauderic/dnd-kit) |
-| ESLint 10.0.1 + @eslint/js, typescript-eslint 8.67.0, eslint-plugin-react-hooks, eslint-plugin-react-refresh, globals | `npm run lint` | MIT | [eslint/eslint](https://github.com/eslint/eslint) |
+| ESLint 10.0.1 + @eslint/js, typescript-eslint 8.67.0, eslint-plugin-react-hooks, globals | `npm run lint` | MIT | [eslint/eslint](https://github.com/eslint/eslint) |
 | @electron/packager 20.0.4 | `npm run package:mac` and `npm run package:win` | BSD-2-Clause | [electron/packager](https://github.com/electron/packager) |
 | @types/node, @types/react, @types/react-dom | Type definitions (DefinitelyTyped) | MIT | [DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) |
 | Node.js 24+ | Build scripts and `node --test`, which is the whole test runner | MIT | [nodejs/node](https://github.com/nodejs/node) |
