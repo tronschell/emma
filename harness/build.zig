@@ -81,6 +81,10 @@ pub fn build(b: *std.Build) void {
         .root_module = exe.root_module,
     });
     const run_exe_tests = b.addRunArtifact(exe_tests);
+    if (target.result.os.tag == .windows) {
+        run_exe_tests.stdio = .inherit;
+        _ = run_exe_tests.argv.pop();
+    }
     run_exe_tests.step.dependOn(b.getInstallStep());
     run_exe_tests.setEnvironmentVariable(
         "FX_TEST_PRODUCT_EXE",
