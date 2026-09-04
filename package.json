@@ -1,11 +1,12 @@
 {
   "name": "emma",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "scripts": {
     "dev": "npm --prefix desktop run dev",
     "check": "npm --prefix desktop run check",
     "package:mac": "npm --prefix desktop run package:mac",
+    "dmg:mac": "npm --prefix desktop run dmg:mac",
     "package:win": "npm --prefix desktop run package:win"
   }
 }
