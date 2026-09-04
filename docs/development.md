@@ -90,6 +90,7 @@ All in [`desktop/package.json`](../desktop/package.json).
 | `dev` | `node scripts/dev.mjs` |
 | `start` | `build:host` + `build:native` + `vendor:ripgrep` + `build`, then `electron .`. No Vite server; the built bundle |
 | `package:mac` | See [Packaging](#packaging) |
+| `dmg:mac` | See [Packaging](#packaging) |
 | `package:win` | See [Packaging](#packaging) |
 
 ## The dev loop
@@ -152,6 +153,16 @@ microphone and speech-recognition access. The package check verifies the
 version, preload, renderer, executable architectures and deployment floors,
 and runs the packaged native self-tests. The output is unsigned until the
 release workflow signs it after trimming.
+
+```sh
+npm run dmg:mac
+```
+
+[`dmg-mac.mjs`](../desktop/scripts/dmg-mac.mjs) wraps the packaged app beside an
+Applications alias for drag-to-install. It verifies the app version, bundle
+identifier, signature, bundled native resources, and mounted disk-image layout.
+Run it after `package:mac`; the release workflow signs, notarizes, and staples
+the image before publishing it.
 
 To avoid replacing a running bundle, pass a separate output directory:
 
