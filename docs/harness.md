@@ -87,7 +87,7 @@ way out.
 
 ### Emma's, appended natively
 
-Emma's 28 tools are appended to the same registry as `++ emma_tools.all`, so the
+Emma's 27 tools are appended to the same registry as `++ emma_tools.all`, so the
 harness advertises and dispatches them and Electron runs them. One shared
 implementation, [`tools/emma/bridge.zig`](../harness/src/tools/emma/bridge.zig);
 only the spec differs per tool.
@@ -96,7 +96,7 @@ only the spec differs per tool.
 | --- | --- | --- |
 | Threads and agents | [`emma/threads.zig`](../harness/src/builtins/emma/threads.zig) | `threads`, `context`, `plan`, `goal`, `agents`, `read_trace` |
 | Task list | [`emma/task_list.zig`](../harness/src/builtins/emma/task_list.zig) | `task_list` — the one Emma tool advertised without a `select_tool` |
-| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `component`, `workflow`, `visualize`, `autoresearch` |
+| Knowledge | [`emma/knowledge.zig`](../harness/src/builtins/emma/knowledge.zig) | `keep`, `artifact`, `component`, `workflow`, `visualize` |
 | System | [`emma/system.zig`](../harness/src/builtins/emma/system.zig) | `cli`, `cli_runs`, `advisor`, `install_mcp`, `computer`, `secret` |
 | Extensions | [`emma/extensions.zig`](../harness/src/builtins/emma/extensions.zig) | `write_tool`, `run_tool`, `write_skill`, `write_plugin` |
 | Browser | [`emma/browser.zig`](../harness/src/builtins/emma/browser.zig) | `browser` |

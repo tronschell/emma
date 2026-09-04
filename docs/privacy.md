@@ -14,7 +14,6 @@ to a file in this repo.
 | `secret` tool | The output of the command it was given, up to 32 000 characters | The secrets route in Settings → Models. Off until you pick one |
 | Note tagger | A saved note's text, up to 6 000 characters | The tagger route. OpenRouter by default |
 | Commit-message suggestion | File names and up to 12 000 characters of the diff | The tagger route, when you request a suggested commit message |
-| Autoresearch judge | The eval command's output | The job's own proposer model |
 | Model catalog | Nothing but the HTTP request — no credential, no query | `openrouter.ai` |
 | App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org` for the public macOS feed, then GitHub release assets; at packaged-app launch and every six hours. Windows publication is pending release-workflow authorization |
 | `web_search` | Your query string, plus a result count on Brave, Tavily and Exa | Your configured provider. `4get.canine.tools` by default |

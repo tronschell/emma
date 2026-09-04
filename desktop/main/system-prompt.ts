@@ -80,8 +80,6 @@ export function turnArm(threadId: string, parentThreadId?: string, model = ""): 
   return arm;
 }
 
-export const armOf = (threadId: string): Arm | "" => arms.get(threadId) ?? "";
-
 export function takeArm(threadId: string): Arm | "" {
   const arm = arms.get(threadId) ?? "";
   arms.delete(threadId);

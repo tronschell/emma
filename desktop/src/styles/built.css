@@ -53,14 +53,14 @@
 
 .built-empty { color: var(--text-3); font-size: var(--fs-sm); }
 .built-list { display: grid; gap: var(--s-3); }
-.built-card { display: grid; grid-template-columns: 132px 1fr auto; align-items: center; gap: var(--s-4); padding: var(--s-3); background: var(--surface-2); border: 1px solid var(--border); }
+.built-card { display: grid; grid-template-columns: 132px minmax(0, 1fr) auto; align-items: center; gap: var(--s-4); padding: var(--s-4) 0; border-bottom: 1px solid var(--border); }
 .built-card[data-off] { opacity: .55; }
 .built-shot { width: 132px; max-height: 88px; object-fit: cover; object-position: left top; background: var(--surface-1); border: 1px solid var(--border); }
 .built-shot-none { display: block; height: 44px; }
 .built-card-body { display: grid; gap: 2px; min-width: 0; }
 .built-card-body strong { font-size: var(--fs-sm); }
 .built-card-body small { color: var(--text-3); font-size: var(--fs-2xs); }
-.built-card-acts { display: flex; gap: var(--s-2); }
+.built-card-acts { display: grid; justify-items: start; gap: var(--s-2); }
 .built-card-acts button { height: 26px; padding: 0 var(--s-3); color: var(--text-2); background: var(--surface-3); border: 1px solid var(--border); font-size: var(--fs-2xs); }
 .built-card-acts button:hover:not(:disabled) { color: var(--text); background: var(--surface-4); }
 .built-vars { display: grid; gap: var(--s-2); grid-column: 1 / -1; padding-top: var(--s-3); border-top: 1px solid var(--border); }
@@ -71,6 +71,22 @@
 .built-vars button:hover:not(:disabled) { color: var(--text); background: var(--surface-4); }
 .built-list footer { display: flex; justify-content: flex-end; }
 .built-list footer button { height: 26px; padding: 0 var(--s-3); background: var(--danger-surface); border: 1px solid var(--border); font-size: var(--fs-2xs); }
+.built-settings-empty { display: grid; gap: var(--s-4); max-width: 64ch; }
+.built-settings-empty h3 { font: var(--fs-sm)/1.5 var(--font-mono); font-weight: 400; }
+.built-settings-empty p { color: var(--text-2); font: var(--fs-sm)/1.6 var(--font); }
+.built-settings-empty > div { padding: var(--s-5) 0; border-block: 1px solid var(--border); }
+.built-settings-empty span { color: var(--text-3); font: var(--fs-xs)/1.5 var(--font-mono); }
+.built-settings-empty blockquote { margin: var(--s-2) 0 0; color: var(--text); font: var(--fs-md)/1.5 var(--font); }
+.built-card-options { grid-column: 2 / -1; min-width: 0; }
+.built-card-options summary { cursor: pointer; color: var(--text-2); font: var(--fs-xs)/1.5 var(--font-mono); }
+.built-card-options > div { display: grid; gap: var(--s-3); padding-top: var(--s-3); }
+@media (max-width: 1100px) {
+  .built-card { grid-template-columns: 100px minmax(0, 1fr); }
+  .built-card .built-shot { width: 100px; }
+  .built-card-acts { grid-column: 2; }
+  .built-vars label { grid-template-columns: minmax(0, 1fr) auto; }
+  .built-vars label > span { grid-column: 1 / -1; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .built-body { animation: none; }

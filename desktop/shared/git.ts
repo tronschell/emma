@@ -7,6 +7,7 @@ export type GitFileEntry = {
 
 export type GitSnapshot = {
   branch: string;
+  pullRequest?: GitPullRequest;
   head: string;
   upstream: string;
   ahead: number;
@@ -18,6 +19,33 @@ export type GitSnapshot = {
   diff: string;
   truncated: boolean;
 };
+
+export type GitPullRequest = {
+  number: number;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  mergeStateStatus: string;
+};
+
+export function parsePullRequest(text: string): GitPullRequest | undefined {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object") return;
+    const row = value as Record<string, unknown>;
+    if (!Number.isSafeInteger(row.number) || (row.number as number) < 1
+      || (row.state !== "OPEN" && row.state !== "CLOSED" && row.state !== "MERGED")
+      || typeof row.isDraft !== "boolean"
+      || typeof row.mergeStateStatus !== "string"
+      || !["BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE", ""].includes(row.mergeStateStatus)) return;
+    return { number: row.number as number, state: row.state as GitPullRequest["state"], isDraft: row.isDraft, mergeStateStatus: row.mergeStateStatus };
+  } catch { return; }
+}
+
+export function pullRequestBadge(pr: GitPullRequest): { state: string; label: string } {
+  const state = pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : pr.isDraft ? "draft" : pr.mergeStateStatus === "DIRTY" ? "conflict" : "open";
+  const detail = state === "conflict" ? "Merge conflicts" : state === "open" && pr.mergeStateStatus === "BLOCKED" ? "Merge blocked" : state === "open" && pr.mergeStateStatus === "BEHIND" ? "Branch behind" : state === "open" && pr.mergeStateStatus === "UNSTABLE" ? "Checks need attention" : state[0].toUpperCase() + state.slice(1);
+  return { state, label: `PR #${pr.number} · ${detail}` };
+}
 
 export type GitCommit = {
   hash: string;

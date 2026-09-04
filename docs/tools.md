@@ -7,7 +7,7 @@ They are different lists with different names; do not conflate them.
 
 ## Emma's tools
 
-The 28 names in `AGENT_TOOLS`. Schemas are in
+The 27 names in `AGENT_TOOLS`. Schemas are in
 [tools.ts](../desktop/main/tools.ts); `runEmmaTool` in
 [main.ts](../desktop/main/main.ts) checks the gate and dispatches. Gate column:
 `ask` means a dialog in `ask`/`acceptEdits`, the verifier in `auto`, and through
@@ -18,7 +18,7 @@ for each running app per turn, in every mode. Full matrix in
 | Tool | What it does | Gate | Implemented in |
 | --- | --- | --- | --- |
 | `browser` | Drives a real Chrome, mirrored in the browser pane. `snapshot` returns an accessibility tree with `@e1` refs; later actions take a ref or a CSS selector. | ask | [browser.ts](../desktop/main/browser.ts) |
-| `cli` | Runs Claude Code, Codex, Pi, OpenCode or Cursor in a connected folder and takes turns with it. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
+| `cli` | Runs Claude Code, Codex, Pi, OpenCode, Gemini CLI, Cursor or Antigravity CLI in a connected folder with explicit model/thinking options and output handoffs. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
 | `cli_runs` | Lists installed CLIs and every run, reads one run's output, or stops its turn. | auto | [cli.ts](../desktop/main/cli.ts) |
 | `computer` | Reads and operates approved running macOS or Windows apps through accessibility or UI Automation, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
 | `shortcut` | Binds a Quick Action prompt to a global keyboard shortcut, in Electron accelerator form. Matching an existing label or combination replaces that slot; there are three. | auto | [main.ts](../desktop/main/main.ts) |
@@ -41,7 +41,6 @@ for each running app per turn, in every mode. Full matrix in
 | `agents` | Lists what is running now; sends a message into a live run or stops it. | auto | [agent-loop.ts](../desktop/main/agent-loop.ts) |
 | `install_mcp` | Adds an MCP server to Emma's config; the harness connects it on the next turn. | ask | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `workflow` | Builds and runs the Scheduled tasks: a trigger plus a node graph. | ask | [workflow.ts](../desktop/shared/workflow.ts) |
-| `autoresearch` | Builds and runs the long experiment loops. | ask | [research.ts](../desktop/main/research.ts) |
 | `artifact` | Documents, code, pages, drawings and apps on the Artifacts page. Actions: `list`, `get`, `create`, `update`, `rewrite`. No delete. | auto | [artifacts.ts](../desktop/main/artifacts.ts) |
 | `component` | Widgets in Emma's own interface, built into the context bar. Actions: `list`, `get`, `create`, `rewrite`. No delete — the user switches one off or removes it from the ⋯ in its header. | auto | [components.ts](../desktop/main/components.ts) |
 | `visualize` | Draws one self-contained HTML document inline in the conversation. Nothing is saved. | auto | [visuals.ts](../desktop/main/visuals.ts) |
@@ -80,11 +79,6 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
   Rewriting keeps the status of every task whose id remains.
 - `workflow` `trigger` is a five-field UTC cron, `manual`, `after <job-id>`, or
   `on <event>`. `permissionMode` offers `ask` | `acceptEdits` | `full` only.
-- `autoresearch` — `metricName`, `metricKind`, `direction` and `projectDir` are
-  permanent and refused on a later save. `metricKind` `grep` reads a
-  `^<metricName>:` line out of the eval output; `judge` scores it with a model.
-  Budgets `maxSeconds`, `maxTokens`, `maxMicroDollars` ($1 = 1000000); 0 is no
-  limit.
 - `artifact` `surface` (`navbar`, `chat`, `notch`, `context`, `none`) replaces one
   whole region of Emma's own interface live, from a `code`/`js` artifact exporting
   `(api) => Component`. Adding something *new* to the interface is `component`
@@ -204,5 +198,5 @@ come back over ACP to `onPermission` in [main.ts](../desktop/main/main.ts).
 - [computer-use.md](computer-use.md) — the `computer` tool in full
 - [harness.md](harness.md) — `emma-cli`, ACP, and the fork
 - [knowledge.md](knowledge.md) — `keep` and the vault
-- [plugins.md](plugins.md) · [cli.md](cli.md) · [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md)
+- [plugins.md](plugins.md) · [cli.md](cli.md) · [jobs.md](jobs.md)
 - [privacy.md](privacy.md) — what each tool sends off this computer

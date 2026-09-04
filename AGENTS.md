@@ -33,7 +33,7 @@ owns the agent harness. Keep those boundaries visible.
   imports.
 - `crates/host`: NDJSON bridge onto the stores. It talks to no model and answers
   requests only — the app process drives every provider call.
-- `crates/core`: thread, scheduled, and research records, validation, and atomic
+- `crates/core`: thread and scheduled records, validation, and atomic
   Markdown persistence.
 - `harness`: `emma-cli`, the fork of vercel-labs/fx driven over ACP from
   `desktop/main/harness.ts`. Apache-2.0; keep `harness/FORK.md` honest.

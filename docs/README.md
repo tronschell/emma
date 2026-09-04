@@ -31,7 +31,6 @@ is the tour; this is the reference.
 | [Goals](goals.md) | One objective a thread keeps working at: the ledger, the continuation loop, evidence, the blocked audit |
 | [Agents](agents.md) | Self-improvement: friction, trials, the replay bench, and how a change is proved |
 | [Jobs](jobs.md) | Scheduled workflows: triggers, node graphs, validation, execution |
-| [Autoresearch](autoresearch.md) | The experiment loop, the immutable metric, budgets |
 | [CLI](cli.md) | Driving the user's other coding CLIs and using `emma-cli` directly |
 
 ## Building on Emma

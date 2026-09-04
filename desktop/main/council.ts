@@ -1,4 +1,4 @@
-import { COUNCIL_PASSES, councilAutoPicks, type CouncilRound, type CouncilSeat, type CouncilState, type CouncilStart, type CouncilVoice } from "../shared/council";
+import { COUNCIL_PASSES, councilAutoPicks, councilRunning, type CouncilRound, type CouncilSeat, type CouncilState, type CouncilStart, type CouncilVoice } from "../shared/council";
 import type { VerifierSettings } from "../shared/settings";
 import { chatCompletion, type ChatMessage } from "./verifier";
 
@@ -32,13 +32,11 @@ const sittings = new Map<string, Sitting>();
 
 export const councilState = (threadId: string) => sittings.get(threadId)?.state;
 
-const live = (phase: CouncilState["phase"]) => phase === "drafting" || phase === "discussing" || phase === "deciding";
-
 export function stopCouncil(threadId: string) {
   const sitting = sittings.get(threadId);
   if (!sitting) return;
   sitting.stopped = true;
-  if (live(sitting.state.phase)) {
+  if (councilRunning(sitting.state.phase)) {
     sitting.state = { ...sitting.state, phase: "stopped", floor: "" };
     deps!.emit(sitting.state);
   }
@@ -136,7 +134,7 @@ const spoke = (state: CouncilState, round: CouncilRound) => state.voices.some((v
 export async function startCouncil(request: CouncilStart): Promise<CouncilState> {
   if (!deps) throw new Error("The council is not wired up yet.");
   const running = sittings.get(request.threadId);
-  if (running && live(running.state.phase)) throw new Error("This thread already has a council sitting. Stop it before you seat another.");
+  if (running && councilRunning(running.state.phase)) throw new Error("This thread already has a council sitting. Stop it before you seat another.");
   const sitting: Sitting = {
     stopped: false,
     state: {

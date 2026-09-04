@@ -37,13 +37,8 @@ const Request = web_search_contract.ProviderRequest;
 const Response = web_search_contract.ProviderResponse;
 const ProgressFn = web_search_contract.ProgressFn;
 
-// Emma's provider seam: any OpenAI-compatible Chat Completions endpoint. The
-// default is the catalog Emma already restricts to free, tool-capable,
-// zero-retention models. See src/gateway/emma_openai.zig.
 pub const default_model = "nvidia/nemotron-3-super-120b-a12b:free";
 pub const default_chat_url = emma_openai.default_chat_url;
-// OpenAI-compatible catalogs expose the model list at `<base>/models`; the
-// `/coding-agent/v1/...` prefix belonged to upstream's hosted base URL.
 pub const models_path = "/models";
 pub const retry_count: usize = 3;
 pub const chat_url_env = emma_openai.chat_url_env;
@@ -113,10 +108,6 @@ pub const cli_model_catalog_provider = gateway_provider.CliModelCatalogProvider{
 
 pub const generation_usage_provider = gateway_generation_usage.provider;
 
-// Emma replaces upstream's AI SDK language-model transport wholesale rather
-// than wrapping it, so every route that selects this provider speaks OpenAI
-// Chat Completions. `buildAgentRequest` below is upstream's and still shapes
-// the request body the JS host transports serialize.
 pub const agent_stream_provider = emma_openai.provider;
 
 pub const provider = gateway_provider.Provider{
@@ -291,46 +282,6 @@ test "agent request builder keeps default reasoning silent and emits output limi
     try std.testing.expect(std.mem.find(u8, body, "\"max_tokens\":32000") != null);
     try std.testing.expect(std.mem.find(u8, body, "\"reasoning_effort\"") == null);
     try std.testing.expect(std.mem.find(u8, body, "\"parallel_tool_calls\"") == null);
-}
-
-test "agent request builder scopes the product user agent to GLM 5.2" {
-    // Waiting on a provider-visible product identity: the AI SDK carried it as a
-    // `headers` field inside the request body, which OpenAI Chat Completions has no
-    // equivalent for.
-    if (true) return error.SkipZigTest;
-    const alloc = std.testing.allocator;
-    const messages = [_]shared_types.ChatMessage{.{ .role = .user, .content = "question" }};
-    const cases = [_]struct {
-        model: []const u8,
-        include_user_agent: bool,
-    }{
-        .{ .model = "zai/glm-5.2", .include_user_agent = true },
-        .{ .model = "poolside/laguna-s-2.1-free", .include_user_agent = false },
-    };
-
-    for (cases) |case| {
-        const body = try agent_stream_provider.build(alloc, .{
-            .model = case.model,
-            .serialized_tools = "[]",
-            .messages = &messages,
-            .tool_choice = .auto,
-            .provider_options = model_capabilities.resolveProviderOptions(case.model, .auto, false),
-        });
-        defer alloc.free(body);
-
-        var parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
-        defer parsed.deinit();
-
-        const headers = parsed.value.object.get("headers");
-        if (!case.include_user_agent) {
-            try std.testing.expect(headers == null);
-            continue;
-        }
-        const user_agent = headers.?.object.get("user-agent") orelse
-            return error.TestExpectedGatewayUserAgent;
-        try std.testing.expect(user_agent == .string);
-        try std.testing.expectEqualStrings(gateway_client.user_agent, user_agent.string);
-    }
 }
 
 test "agent request builder overlays selected dynamic schemas" {
@@ -1552,54 +1503,6 @@ test "built-in CLI catalog provider preserves cancellation detail" {
     }
 }
 
-pub fn fetchModelIds(alloc: std.mem.Allocator, access: credentials.CatalogAccess, path: []const u8) !std.ArrayList([]u8) {
-    return fetchModelIdsForView(alloc, access, path, null, .full);
-}
-
-pub fn fetchModelIdsCancellable(
-    alloc: std.mem.Allocator,
-    access: credentials.CatalogAccess,
-    path: []const u8,
-    cancel_flag: *std.atomic.Value(bool),
-) !std.ArrayList([]u8) {
-    return fetchModelIdsForView(alloc, access, path, cancel_flag, .full);
-}
-
-pub fn fetchPickerModelIdsCancellable(
-    alloc: std.mem.Allocator,
-    access: credentials.CatalogAccess,
-    path: []const u8,
-    cancel_flag: *std.atomic.Value(bool),
-) !std.ArrayList([]u8) {
-    return fetchModelIdsForView(alloc, access, path, cancel_flag, .picker);
-}
-
-pub fn fetchModelCatalog(alloc: std.mem.Allocator, access: credentials.CatalogAccess, path: []const u8) !std.ArrayList(ModelCatalogEntry) {
-    return fetchModelCatalogForView(alloc, access, path, null, .full);
-}
-
-pub fn fetchModelCatalogCancellable(
-    alloc: std.mem.Allocator,
-    access: credentials.CatalogAccess,
-    path: []const u8,
-    cancel_flag: *std.atomic.Value(bool),
-) !std.ArrayList(ModelCatalogEntry) {
-    return fetchModelCatalogForView(alloc, access, path, cancel_flag, .full);
-}
-
-pub fn fetchPickerModelCatalog(alloc: std.mem.Allocator, access: credentials.CatalogAccess, path: []const u8) !std.ArrayList(ModelCatalogEntry) {
-    return fetchModelCatalogForView(alloc, access, path, null, .picker);
-}
-
-pub fn fetchPickerModelCatalogCancellable(
-    alloc: std.mem.Allocator,
-    access: credentials.CatalogAccess,
-    path: []const u8,
-    cancel_flag: *std.atomic.Value(bool),
-) !std.ArrayList(ModelCatalogEntry) {
-    return fetchModelCatalogForView(alloc, access, path, cancel_flag, .picker);
-}
-
 pub const model_catalog_provider = model_catalog.Provider{
     .fetch_fn = fetchCatalogForProvider,
 };
@@ -1640,36 +1543,6 @@ fn fetchCatalogForProvider(
         return .{ .failure = .{ .category = .malformed_response, .http_status = .ok } };
     };
     return .{ .catalog = catalog };
-}
-
-fn fetchModelIdsForView(
-    alloc: std.mem.Allocator,
-    access: credentials.CatalogAccess,
-    path: []const u8,
-    cancel_flag: ?*std.atomic.Value(bool),
-    view: ModelCatalogView,
-) !std.ArrayList([]u8) {
-    var catalog = try fetchModelCatalogForView(alloc, access, path, cancel_flag, view);
-    defer freeModelCatalog(alloc, &catalog);
-
-    return model_catalog.projectModelIds(alloc, catalog.items);
-}
-
-fn fetchModelCatalogForView(
-    alloc: std.mem.Allocator,
-    access: credentials.CatalogAccess,
-    path: []const u8,
-    cancel_flag: ?*std.atomic.Value(bool),
-    view: ModelCatalogView,
-) !std.ArrayList(ModelCatalogEntry) {
-    const response = try fetchModelCatalogResponse(alloc, access, path, cancel_flag);
-    const json_text = switch (response) {
-        .success => |body| body,
-        .http_status => |status| return model_catalog.failureForHttpStatus(status).asError(),
-    };
-    defer alloc.free(json_text);
-
-    return parseModelCatalogForView(alloc, json_text, view);
 }
 
 fn fetchModelCatalogResponse(
@@ -1805,12 +1678,18 @@ test "model catalog GET sends emma-cli user agent without attribution headers" {
     const env = try installLoopbackModelsEnv(std.testing.allocator, fixture.port());
     defer env.deinit();
 
-    var ids = try fetchModelIds(std.testing.allocator, credentials.catalogAccessForCredential(.emma_provider_api_key, "test-key"), models_path);
-    defer collections.freeStringList(std.testing.allocator, &ids);
+    const result = try model_catalog_provider.fetch(std.testing.allocator, .{
+        .access = credentials.catalogAccessForCredential(.emma_provider_api_key, "test-key"),
+        .endpoint = models_path,
+    });
+    var catalog = switch (result) {
+        .catalog => |entries| entries,
+        .failure => return error.TestExpectedCatalog,
+    };
+    defer freeModelCatalog(std.testing.allocator, &catalog);
 
     try std.testing.expectEqualStrings(gateway_client.user_agent, fixture.capturedHeaderValue("user-agent").?);
     try std.testing.expect(std.mem.find(u8, fixture.capturedHeaderValue("user-agent").?, "zig") == null);
-    // Attribution headers stay on model generation requests only.
     try std.testing.expect(fixture.capturedHeaderValue("http-referer") == null);
     try std.testing.expect(fixture.capturedHeaderValue("x-title") == null);
     if (fixture.failure()) |err| return err;

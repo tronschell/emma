@@ -6,7 +6,7 @@ Every path Emma reads or writes, and every environment variable it reads.
 
 | Root | Default | Written by | Holds |
 | --- | --- | --- | --- |
-| Rust data root | Electron's `userData` root by default: `%APPDATA%/Emma` on Windows, `~/Library/Application Support/Emma` on macOS | `emma-host` | `threads/`, `scheduled/`, `research/` |
+| Rust data root | Electron's `userData` root by default: `%APPDATA%/Emma` on Windows, `~/Library/Application Support/Emma` on macOS | `emma-host` | `threads/`, `scheduled/` |
 | Electron `userData` | `app.getPath("userData")`, normally `%APPDATA%/Emma` on Windows or `~/Library/Application Support/Emma` on macOS | Electron main | everything else Emma owns |
 | Your vault | wherever you picked | Electron main | your Markdown notes — **yours, not Emma's** |
 
@@ -23,7 +23,7 @@ The vault is outside both and is never deleted.
 
 | Variable | Read by | What it does | Default |
 | --- | --- | --- | --- |
-| `EMMA_DATA_DIR` | `emma-host`, Electron main | Root for `threads/`, `scheduled/`, `research/`. | `%APPDATA%/Emma` on Windows; `$HOME/Library/Application Support/Emma` on macOS. A standalone host errors when its platform home variables are unset |
+| `EMMA_DATA_DIR` | `emma-host`, Electron main | Root for `threads/`, `scheduled/`. | `%APPDATA%/Emma` on Windows; `$HOME/Library/Application Support/Emma` on macOS. A standalone host errors when its platform home variables are unset |
 | `EMMA_DEV_SERVER_URL` | Electron main | Windows `loadURL` the dev server instead of `loadFile`, **and** that origin joins the trusted-sender set gating every privileged IPC handler ([ipc.ts:240](../desktop/main/ipc.ts#L240)). Set by `scripts/dev.mjs`. | unset → `file://` only |
 | `EMMA_PROVIDER_API_KEY` | `emma-cli` | The harness's **only** credential source — no OAuth, no login ([credentials.zig:9](../harness/src/core/auth/credentials.zig#L9)). Whitespace-only counts as absent. Electron sets it at spawn from the stored `OPENROUTER_API_KEY`. | unset → public catalog only |
 | `EMMA_PROVIDER_CHAT_URL` | `emma-cli` | Chat-completions URL override ([emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41)). Empty is treated as unset. | OpenRouter |
@@ -137,10 +137,9 @@ link back.
 | --- | --- |
 | `threads/<id>.md` | One thread: front matter, then `## Message N` and `## Trace N` blocks |
 | `scheduled/job-<id>.md` | One scheduled job: cron line, prompt, workflow nodes, last run, last thread |
-| `research/research-<id>.md` | One autoresearch job and its per-iteration history |
 
 Ids look like `1787453493-cbe6-18ce4f7b7b4713c8-0` — seconds, a short random
-tag, a monotonic component, a counter. Research ids are prefixed `research-`.
+tag, a monotonic component, a counter.
 Every write is atomic: temp file, then rename.
 
 ### Thread — `threads/<id>.md`
@@ -172,8 +171,7 @@ front-matter keys between `archived-at` and `message-count` — `goal-objective`
 `Duration-Milliseconds:`, `Input-Tokens:`, `Model:`, then the quoted content.
 There are no `knowledge-base-id` fields any more.
 
-Scheduled jobs are `emma-scheduled-job-format: 4`, research records
-`emma-research-format: 2`.
+Scheduled jobs are `emma-scheduled-job-format: 4`.
 
 ## Electron `userData`
 

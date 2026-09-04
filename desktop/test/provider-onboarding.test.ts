@@ -30,6 +30,7 @@ test("privacy copy distinguishes agent routing from secondary models and backgro
     ts.forEachChild(node, visit);
   };
   visit(named(source, "SettingsBody"));
+  visit(named(source, "PrivacySettings"));
   const copy = parts.join(" ").replace(/\s+/g, " ");
   assert.match(copy, /main agent loop on OpenRouter/);
   assert.match(copy, /does not cover secondary models, tools or account logging/);

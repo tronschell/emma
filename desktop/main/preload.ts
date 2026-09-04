@@ -182,14 +182,6 @@ contextBridge.exposeInMainWorld("emma", {
   uninstallPlugin: (id: string) => ipcRenderer.invoke("emma:uninstall-plugin", id),
   pluginDetail: (value: { marketplace: string; plugin: string }) => ipcRenderer.invoke("emma:plugin-detail", value),
   trustPluginHooks: (value: { id: string; trusted: boolean }) => ipcRenderer.invoke("emma:trust-plugin-hooks", value),
-  onFolderAttached: (listener: (value: { threadId: string; folderId: string }) => void) => {
-    const wrapped = (_event: unknown, value: unknown) => {
-      const attached = value as { threadId?: unknown; folderId?: unknown };
-      if (typeof attached?.threadId === "string" && typeof attached.folderId === "string") listener({ threadId: attached.threadId, folderId: attached.folderId });
-    };
-    ipcRenderer.on("emma:folder-attached", wrapped);
-    return () => ipcRenderer.removeListener("emma:folder-attached", wrapped);
-  },
   setupStatus: () => ipcRenderer.invoke("emma:setup-status"),
   openPrivacySettings: (permission: string) => ipcRenderer.invoke("emma:open-privacy-settings", permission),
   demoQuickAsk: () => ipcRenderer.invoke("emma:demo-quick-ask"),
@@ -311,7 +303,8 @@ contextBridge.exposeInMainWorld("emma", {
   },
   signInCli: (value: { signIn: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:cli-sign-in", value),
   cliModels: (value: { cli: string; refresh?: boolean }) => ipcRenderer.invoke("emma:cli-models", value),
-  setCliRunModel: (value: { id: string; model: string }) => ipcRenderer.invoke("emma:cli-run-model", value),
+  setCliRunModel: (value: { id: string; model?: string; effort?: string }) => ipcRenderer.invoke("emma:cli-run-model", value),
+  handoffCliRun: (value: import("../shared/cli").CliHandoffRequest) => ipcRenderer.invoke("emma:handoff-cli-run", value),
   sendCliRun: (value: { id: string; prompt: string }) => ipcRenderer.invoke("emma:send-cli-run", value),
   onCliRuns: (listener: () => void) => {
     const wrapped = () => listener();

@@ -713,17 +713,14 @@ if (usage.inputTokens > 0) run.inputTokens = usage.inputTokens;
 if (usage.outputTokens > 0) run.outputTokens = usage.outputTokens;
 ```
 
-Without the real input count the autoresearch token budget would only see the
-output side and stop at roughly half the real spend.
-
 `recordTurn` stores `inputTokens`, `outputTokens`, `durationMilliseconds` and
 `model` per turn; a turn that failed before any usage arrived records `"0"` on
 both sides. Cost in micro-dollars is
-`estimateMicroDollars(tokens, rates) = Math.round((in * rates.input + out * rates.output) / 1_000_000)`,
+`Math.round((in * rates.input + out * rates.output) / 1_000_000)`,
 where `modelRates` reads `promptMicroUsdPerMtok` and `completionMicroUsdPerMtok`
-off the cached catalog ([research.ts](../desktop/main/research.ts)). The context
+off the cached catalog ([catalog.ts](../desktop/main/catalog.ts)). The context
 bar reads the rest of `usage.ts`: `MAX_USES` 32, `RATE_FLOOR` 4096. See
-[context-bar.md](context-bar.md) and [autoresearch.md](autoresearch.md).
+[context-bar.md](context-bar.md).
 
 ## Pointing Emma at a local server
 
@@ -790,6 +787,5 @@ before use.
 - [permissions.md](permissions.md) — the four modes the verifier plugs into
 - [tools.md](tools.md) — the tools Emma advertises every turn
 - [voice.md](voice.md) — the two dictation models
-- [autoresearch.md](autoresearch.md) — budgets and the judge
 - [data.md](data.md) — what lives in `<userData>`
 - [troubleshooting.md](troubleshooting.md) — when a model will not answer

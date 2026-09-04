@@ -78,12 +78,6 @@ function writeAtomic(file: string, data: string | Buffer, mode?: number): void {
   renameSync(temporary, file);
 }
 
-// Resolved, not lexical: a symlink dropped in the vault reads as a path inside it, so the name has
-// to be followed to whatever it really points at before the folder can be said to hold it.
-function contains(folder: string, target: string): boolean {
-  return realPathInside(folder, target);
-}
-
 function normalizeVault(value: unknown): VaultChoice {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pick the folder Emma should keep your notes in.");
   const choice = value as Partial<VaultChoice>;
@@ -221,7 +215,7 @@ function writeAttachment(vault: VaultChoice, stem: string, image: string): strin
   const folder = attachmentFolder(vault);
   const name = `${stem}.${match[1] === "jpeg" || match[1] === "jpg" ? "jpg" : match[1]}`;
   const file = path.join(folder, name);
-  if (!contains(folder, file)) throw new Error("Emma will not write outside your knowledge folder.");
+  if (!realPathInside(folder, file)) throw new Error("Emma will not write outside your knowledge folder.");
   mkdirSync(folder, { recursive: true });
   writeAtomic(file, data);
   return name;
@@ -246,7 +240,7 @@ function noteImage(folder: string, body: string): string {
   const name = (match?.[1] ?? match?.[2] ?? "").trim();
   if (!name || !IMAGE_FILE.test(name) || name.includes("..") || /^[a-z][a-z0-9+.-]*:/i.test(name)) return "";
   const file = path.join(folder, name);
-  return contains(folder, file) && existsSync(file) ? file : "";
+  return realPathInside(folder, file) && existsSync(file) ? file : "";
 }
 
 function noteBody(request: KeepRequest, embed: string): string {
@@ -264,7 +258,7 @@ export async function keepNote(vault: VaultChoice, request: KeepRequest): Promis
   const folder = notesRoot(choice);
   const title = clampBytes((((request.title ?? "").trim() || fallbackTitle(request)).replace(/\s+/g, " ")), MAX_TITLE_BYTES);
   const { file, relative } = freeNotePath(folder, noteSlug(title));
-  if (!contains(folder, file)) throw new Error("Emma will not write outside your knowledge folder.");
+  if (!realPathInside(folder, file)) throw new Error("Emma will not write outside your knowledge folder.");
   const sourceUrl = typeof request.sourceUrl === "string" ? request.sourceUrl.trim().slice(0, 2048) : "";
   const sourceApplication = typeof request.sourceApplication === "string" ? request.sourceApplication.trim().slice(0, 120) : "";
   const embed = request.kind === "screenshot" && typeof request.image === "string" && request.image
@@ -361,7 +355,7 @@ export function noteInVault(vault: VaultChoice, value: unknown): string {
   const root = notesRoot(vault);
   if (typeof value !== "string" || !value || value.length > 256) throw new Error("That note is not in your vault.");
   const full = path.resolve(root, value);
-  if (!contains(root, full)) throw new Error("That note is not in your vault.");
+  if (!realPathInside(root, full)) throw new Error("That note is not in your vault.");
   return path.relative(root, full);
 }
 
@@ -386,7 +380,7 @@ export function createNoteFolder(vault: VaultChoice, value: unknown): NoteFolder
   if (!validNoteFolder(value)) throw new Error("Name the folder without slashes, and keep it short.");
   const name = value.trim();
   const folder = path.join(root, name);
-  if (!contains(root, folder)) throw new Error("Emma will not write outside your knowledge folder.");
+  if (!realPathInside(root, folder)) throw new Error("Emma will not write outside your knowledge folder.");
   if (existsSync(folder)) throw new Error(`Your knowledge base already keeps a folder called ${name}.`);
   mkdirSync(folder, { recursive: true });
   return { name, changedAt: statSync(folder).mtime.toISOString() };
@@ -398,7 +392,7 @@ export function renameNoteFolder(vault: VaultChoice, current: unknown, next: unk
   const name = next.trim();
   const from = path.join(root, current.trim());
   const to = path.join(root, name);
-  if (!contains(root, from) || !contains(root, to)) throw new Error("Emma will not write outside your knowledge folder.");
+  if (!realPathInside(root, from) || !realPathInside(root, to)) throw new Error("Emma will not write outside your knowledge folder.");
   if (!isDirectory(from)) throw new Error(`Your knowledge base has no folder called ${current.trim()}.`);
   if (to !== from) {
     if (existsSync(to) && to.toLowerCase() !== from.toLowerCase()) throw new Error(`Your knowledge base already keeps a folder called ${name}.`);
@@ -410,14 +404,14 @@ export function renameNoteFolder(vault: VaultChoice, current: unknown, next: unk
 export function moveNote(vault: VaultChoice, relative: string, into: unknown): string {
   const root = notesRoot(vault);
   const from = path.join(root, relative);
-  if (!contains(root, from) || !existsSync(from)) throw new Error("That note is not in your vault.");
+  if (!realPathInside(root, from) || !existsSync(from)) throw new Error("That note is not in your vault.");
   const name = into === "" ? "" : validNoteFolder(into) ? into.trim() : null;
   if (name === null) throw new Error("That is not a folder in your knowledge base.");
   const folder = name ? path.join(root, name) : root;
   if (!isDirectory(folder)) throw new Error(`Your knowledge base has no folder called ${name}.`);
   const to = path.join(folder, path.basename(relative));
   if (to === from) return path.relative(root, to);
-  if (!contains(root, to) || existsSync(to)) throw new Error("A note by that name is already filed there.");
+  if (!realPathInside(root, to) || existsSync(to)) throw new Error("A note by that name is already filed there.");
   renameSync(from, to);
   return path.relative(root, to);
 }
