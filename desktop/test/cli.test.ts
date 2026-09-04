@@ -10,9 +10,7 @@ import { toolGate } from "../shared/permissions";
 test("terminal text drops escapes and lets a rewritten line win", () => {
   assert.equal(terminalText("\u001B[32mdone\u001B[0m"), "done");
   assert.equal(terminalText("\u001B]0;title\u0007ok"), "ok");
-  // A spinner rewrites its own line; only the last write is on screen.
   assert.equal(terminalText("working /\rworking -\rworking \\"), "working \\");
-  // A short rewrite does not erase what it did not cover — real terminal behaviour.
   assert.equal(terminalText("abcdef\rXY"), "XYcdef");
   assert.equal(terminalText("one\ntwo"), "one\ntwo");
 });
@@ -23,11 +21,8 @@ test("every harness builds a start and a resume argv carrying the prompt", () =>
     for (const argv of [harness.start("fix the parser", session), harness.resume("and the tests", session)]) {
       assert.ok(argv.length > 0, `${harness.id} built an empty argv`);
       assert.ok(argv.some((part) => part.includes("the")), `${harness.id} dropped the prompt`);
-      // The prompt is its own argv entry, never spliced into a flag: that is what
-      // keeps a prompt containing a space or a quote from becoming arguments.
       assert.ok(argv.includes("fix the parser") || argv.includes("and the tests"), `${harness.id} split the prompt`);
     }
-    // A CLI claiming to own the session must actually put the id on the line.
     if (harness.ownsSession) assert.ok(harness.resume("x", session).includes(session), `${harness.id} ignores its session id`);
   }
   assert.equal(cliHarness("nope"), undefined);
@@ -47,13 +42,11 @@ test("the cli tool refuses a call that would spawn nothing useful", () => {
 
 test("starting a CLI stops to ask; watching one does not", () => {
   assert.equal(toolGate("ask", "cli"), "ask");
-  // The one that matters: accepting edits must not silently accept another agent.
   assert.equal(toolGate("acceptEdits", "cli"), "ask");
   assert.equal(toolGate("full", "cli"), "auto");
   assert.equal(toolGate("ask", "cli_runs"), "auto");
   const names = toolDefinitions("ask", { folders: true, computer: false }).map((tool) => tool.name);
   assert.ok(names.includes("cli") && names.includes("cli_runs"));
-  // No folder, nothing to run in — so it is not advertised at all.
   assert.ok(!toolDefinitions("ask", { folders: false, computer: false }).map((tool) => tool.name).includes("cli"));
 });
 

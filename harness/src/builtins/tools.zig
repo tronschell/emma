@@ -2043,10 +2043,6 @@ pub fn lookup(name: []const u8) ?ToolSpec {
     return spec.*;
 }
 
-pub fn toolLabelValue(spec: ToolSpec, args: std.json.ObjectMap) ?[]const u8 {
-    return tool_specs.toolLabelValue(spec, args);
-}
-
 pub fn toolActivityKind(tool_name: []const u8) types.ToolActivityKind {
     return tool_dispatch.toolActivityKind(registry, tool_name);
 }

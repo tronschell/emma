@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { branchPrefixName, gitArgv, layoutHistory, matchesFilter, parseDiff, parseStatus, parseWorktrees, validateGitArgs, worktreeName, type GitCommit } from "../shared/git";
+import { branchPrefixName, parsePullRequest, pullRequestBadge, gitArgv, layoutHistory, matchesFilter, parseDiff, parseStatus, parseWorktrees, validateGitArgs, worktreeName, type GitCommit } from "../shared/git";
 import { addWorktree, cleanMessage, commit, discard, gitFailure, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, NO_GIT, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "../main/git";
 
 const DIFF = `diff --git a/src/one.ts b/src/one.ts
@@ -469,4 +469,26 @@ test("matchesFilter takes extensions, substrings, fuzzy names and every term", (
   assert.equal(matchesFilter("agtlp", "desktop/main/main.ts"), false);
   assert.equal(matchesFilter("main .md", "desktop/main/main.ts"), false);
   assert.equal(matchesFilter("readme .md", "docs/README.md"), true);
+});
+
+
+test("sidebar PR badges validate GitHub data and distinguish merge states", () => {
+  const pr = { number: 42, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN" };
+  const check = (patch: Record<string, unknown>, state: string, detail: string) => {
+    const parsed = parsePullRequest(JSON.stringify({ ...pr, ...patch }));
+    assert.ok(parsed);
+    assert.deepEqual(pullRequestBadge(parsed), { state, label: `PR #42 · ${detail}` });
+  };
+  check({}, "open", "Open");
+  check({ isDraft: true }, "draft", "Draft");
+  check({ state: "MERGED", isDraft: true }, "merged", "Merged");
+  check({ state: "CLOSED" }, "closed", "Closed");
+  check({ mergeStateStatus: "DIRTY" }, "conflict", "Merge conflicts");
+  check({ mergeStateStatus: "BLOCKED" }, "open", "Merge blocked");
+  check({ mergeStateStatus: "BEHIND" }, "open", "Branch behind");
+  check({ mergeStateStatus: "UNSTABLE" }, "open", "Checks need attention");
+  for (const value of [null, [], {}, { ...pr, number: -1 }, { ...pr, number: 1.5 }, { ...pr, state: ["OPEN"] }, { ...pr, isDraft: "false" }, { ...pr, mergeStateStatus: "invalid" }]) {
+    assert.equal(parsePullRequest(JSON.stringify(value)), undefined);
+  }
+  assert.equal(parsePullRequest("not JSON"), undefined);
 });

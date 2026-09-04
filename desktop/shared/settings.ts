@@ -640,7 +640,6 @@ export function thinkingStops(model?: { reasoningEfforts?: string[]; reasoningMa
   if (!efforts.length) return [];
   const stops = [...THINKING_LEVELS.filter((level) => efforts.includes(level)), ...efforts.filter((level) => !(THINKING_LEVELS as readonly string[]).includes(level))];
   if (model?.reasoningMandatory) return ["", ...stops];
-  // Off is the zero rung: nothing left of it, so the rail reads empty when thinking is off.
   const quiet = stops.includes("none") ? "none" : "off";
   return [quiet, "", ...stops.filter((level) => level !== quiet)];
 }
@@ -1150,10 +1149,6 @@ export function toggleFavoriteModel(settings: UserSettings, key: string): UserSe
   const favoriteModels = settings.favoriteModels.includes(key) ? settings.favoriteModels.filter((item) => item !== key) : [key, ...settings.favoriteModels];
   if (favoriteModels.length > MAX_FAVORITE_MODELS) throw new Error(`The picker holds ${MAX_FAVORITE_MODELS} models; unstar one first.`);
   return { ...settings, favoriteModels };
-}
-
-export function freeModels<T extends { key: string; free?: boolean }>(entries: T[], active: string): T[] {
-  return entries.filter((entry) => entry.free === true || entry.key === active);
 }
 
 export function routerChain(catalogued: readonly string[] = [], models: readonly string[] = FREE_ROUTER_MODELS): string {

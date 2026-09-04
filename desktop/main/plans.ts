@@ -1,28 +1,13 @@
-/* The plans folder: one markdown file per plan under `<userData>/plans`, named
- * after the plan. The file is the record — there is no meta.json beside it and
- * nothing in a database — so a plan opens in any editor, survives Emma, and is
- * the same document the thread's inspector draws.
- *
- * Nothing here is Electron. The tool dispatch, the IPC handlers and the tests all
- * run the same functions, which is what keeps the id checks in one place.
- */
-
-import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { MAX_PLAN_BYTES, MAX_PLANS, MAX_PLAN_TITLE_CHARS, parsePlan, planSlug, renderPlan, type Plan } from "../shared/plan";
+import { writeAtomic } from "./write-atomic";
 
 export const plansRoot = (userData: string) => path.join(userData, "plans");
 
-/** True for an id that may name a file. Anything else is refused before any I/O. */
 export const validPlanId = (value: unknown): value is string =>
   typeof value === "string" && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value);
 
-/**
- * One plan's file, or a refusal. The same two checks an artifact's directory gets:
- * the id shape rejects `../evil` before any I/O, and the resolved-parent check is
- * the belt to that pair of braces.
- */
 function planPath(userData: string, id: unknown): string {
   if (!validPlanId(id)) throw new Error(`"${String(id).slice(0, 64)}" is not a plan id. Ids are lowercase letters, digits and dashes — list the plans to see them.`);
   const root = path.resolve(plansRoot(userData));
@@ -38,29 +23,21 @@ export async function readPlan(userData: string, id: string): Promise<Plan> {
   return parsePlan(id, await readFile(file, "utf8"), information.mtime.toISOString());
 }
 
-/** Newest first, which is the order the section shows and the order the model reads. */
 export async function listPlans(userData: string): Promise<Plan[]> {
   let entries: string[];
   try { entries = (await readdir(plansRoot(userData))).slice(0, MAX_PLANS); } catch { return []; }
   const found: Plan[] = [];
   for (const entry of entries.filter((name) => name.endsWith(".md"))) {
-    // A file that is half-written or not a plan at all is skipped: one bad file
-    // must not take the whole section down with it.
-    try { found.push(await readPlan(userData, entry.slice(0, -3))); } catch { /* not a plan */ }
+    try { found.push(await readPlan(userData, entry.slice(0, -3))); } catch { continue; }
   }
   return found.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-/**
- * Writes a plan whole. An id that is already there is rewritten; without one the id
- * is minted from the title, so two plans called the same thing do not eat each other.
- */
 export async function savePlan(userData: string, plan: Omit<Plan, "id" | "updatedAt"> & { id?: string }): Promise<Plan> {
   const title = plan.title.trim();
   if (!title || title.length > MAX_PLAN_TITLE_CHARS) throw new Error(`A plan needs a title of 1 to ${MAX_PLAN_TITLE_CHARS} characters.`);
   const root = plansRoot(userData);
-  let taken: string[] = [];
-  try { taken = (await readdir(root)).filter((name) => name.endsWith(".md")).map((name) => name.slice(0, -3)); } catch { /* the first plan makes the folder */ }
+  const taken = (await readdir(root).catch(() => [])).filter((name) => name.endsWith(".md")).map((name) => name.slice(0, -3));
   const id = plan.id ?? unique(planSlug(title), taken);
   if (!taken.includes(id) && taken.length >= MAX_PLANS) throw new Error(`Emma already holds the maximum of ${MAX_PLANS} plans. Delete one before writing another.`);
   const written: Plan = { ...plan, id, title, updatedAt: new Date().toISOString() };
@@ -75,28 +52,18 @@ export async function deletePlan(userData: string, id: string): Promise<void> {
   await rm(planPath(userData, id), { force: true });
 }
 
-/* One plan is written by several agents at once — every subagent of a wave ticks
-   its own step off as it works — and a read-modify-write with an await in the
-   middle is a lost update waiting to happen. Every mutation goes through here, in
-   order.
-
-   ponytail: one queue for every plan, not one per plan. A wave is eight subagents
-   writing a few kilobytes; give it a queue per id if plans ever get hot. */
 let queue: Promise<unknown> = Promise.resolve();
 
-/** Reads a plan, hands it to `change`, and writes back whatever comes out. */
 export function editPlan(userData: string, id: string, change: (plan: Plan) => Plan): Promise<Plan> {
   const next = queue.then(async () => {
     const plan = await readPlan(userData, id);
     return await savePlan(userData, { ...change(plan), id });
   });
-  // The chain must not break on a failed edit, or every later write is rejected
-  // with someone else's error.
+
   queue = next.catch(() => undefined);
   return next;
 }
 
-/** The same lock around a whole-plan write, so a rewrite cannot cross a tick. */
 export function writePlan(userData: string, plan: Omit<Plan, "id" | "updatedAt"> & { id?: string }): Promise<Plan> {
   const next = queue.then(() => savePlan(userData, plan));
   queue = next.catch(() => undefined);
@@ -110,15 +77,4 @@ function unique(slug: string, taken: readonly string[]) {
     if (!taken.includes(`${stem}-${suffix}`)) return `${stem}-${suffix}`;
   }
   throw new Error(`Emma already holds too many plans called "${slug}". Rewrite one of them instead.`);
-}
-
-async function writeAtomic(file: string, content: string) {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
 }

@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from "react";
 import { brandRenderData } from "./brand-data";
 import { TerminalIcon } from "./terminal";
 import type { BrandDefinition } from "./brands";
+import { webSearchProvider, type WebSearchProvider } from "../shared/settings";
 
 const EMMA_OPEN = new URL("../assets/emma.webp", import.meta.url).href;
 const EMMA_SHUT = new URL("../assets/emma-blink.webp", import.meta.url).href;
@@ -14,10 +15,6 @@ export function EmmaMark({ className = "" }: { className?: string }) {
   </span>;
 }
 
-/* The mark: a bow drawn on a 16x16 pixel grid, rows 3..13. `#` is ribbon, `o` the
-   knot — the same colour held at half opacity, which is the only shading it gets.
-   The tile is one hue deep and takes `currentColor`, so a context tints the bow by
-   setting `color`; state lives in the colour, never in a second glyph. */
 const BOW = [
   ".####......####.",
   ".######..######.",
@@ -48,6 +45,20 @@ export function InfoDot({ children }: { children: ReactNode }) {
 export function BrandIcon({ brand, className }: { brand?: BrandDefinition; className: string }) {
   const data = brandRenderData(brand);
   return data.src ? <img className={`${className} brand-image`} draggable={false} src={data.src} alt="" aria-hidden="true" /> : <span className={`${className} brand-fallback`} aria-hidden="true">{data.fallback}</span>;
+}
+
+const SEARCH_LOGOS = {
+  tinyfish: new URL("../assets/search/tinyfish.webp", import.meta.url).href,
+  fourget: new URL("../assets/search/fourget.webp", import.meta.url).href,
+  searxng: new URL("../assets/search/searxng.webp", import.meta.url).href,
+  brave: new URL("../assets/search/brave.webp", import.meta.url).href,
+  tavily: new URL("../assets/search/tavily.webp", import.meta.url).href,
+  exa: new URL("../assets/search/exa.webp", import.meta.url).href,
+} satisfies Record<WebSearchProvider, string>;
+
+export function SearchProviderMark({ provider }: { provider: WebSearchProvider }) {
+  const label = webSearchProvider(provider).label;
+  return <img className="search-provider-mark" src={SEARCH_LOGOS[provider]} width="16" height="16" alt={label} title={label} draggable={false} />;
 }
 
 export function ExpandIcon() {
@@ -116,10 +127,6 @@ export function SidebarIcon() {
 
 export function BranchIcon() {
   return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="4.6" cy="3.3" r="1.8" /><circle cx="4.6" cy="12.7" r="1.8" /><circle cx="11.4" cy="5.6" r="1.8" /><path d="M4.6 5.1v5.8M11.4 7.4a3.6 3.6 0 0 1-3.6 3.6H4.6" /></svg>;
-}
-
-export function PinIcon({ filled }: { filled?: boolean }) {
-  return <svg viewBox="0 0 16 16" width="12" height="12" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5.6 1.9h4.8M6.4 1.9l-.5 4-2 1.7v1.3h8.2V7.6l-2-1.7-.5-4M8 8.9V14.1" /></svg>;
 }
 
 export function ChevronIcon({ back }: { back?: boolean }) {

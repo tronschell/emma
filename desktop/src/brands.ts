@@ -1,11 +1,7 @@
 import { matchesLocalAlias } from "./brand-data";
 
-export type BrandSurface = "importer" | "provider";
 export type ModelSource = "openrouter" | "local";
 
-/** Every mark is normalised on the same 24-unit grid — glyph ink fitted to the
- *  full box, monochrome marks recoloured #fff for the dark UI — so the mark
- *  column renders at one size with one margin regardless of source. */
 export type BrandAsset = {
   src: string;
   sourceUrl: string;
@@ -62,7 +58,6 @@ const lobeIconUrls = {
   ernie: new URL("../assets/brands/ernie.svg", import.meta.url).href,
 } as const;
 
-/** lobehub/lobe-icons is MIT for the packaging; each mark stays its owner's. */
 const lobeIcon = (file: keyof typeof lobeIconUrls, owner: string, sourceUrl = `https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/${file}.svg`): BrandAsset => ({
   src: lobeIconUrls[file],
   sourceUrl,
@@ -186,10 +181,6 @@ export const providerBrands: readonly BrandDefinition[] = [
 ];
 
 const providerById = new Map(providerBrands.map((brand) => [brand.id, brand]));
-/* A repeated id is silent: the Map keeps the last entry, so a duplicate added
-   below one that carries an asset drops that asset back to the fallback glyph
-   and nothing anywhere says so. Dev-only — the list is static, so this can only
-   ever catch an editing mistake, never anything a user does. */
 if (import.meta.env.DEV && providerById.size !== providerBrands.length) {
   throw new Error(`duplicate provider brand id in providerBrands (${providerBrands.length} entries, ${providerById.size} unique)`);
 }
@@ -202,7 +193,6 @@ export function brandForProvider(id: string): BrandDefinition | undefined {
   return providerById.get(id.trim().toLowerCase());
 }
 
-/** OpenRouter namespaces are authoritative; aliases apply only to local/custom IDs. */
 export function brandForModel(modelId: string, source?: ModelSource): BrandDefinition | undefined {
   const value = modelId.trim().toLowerCase().replace(/^openrouter:/, "");
   if (!value) return undefined;

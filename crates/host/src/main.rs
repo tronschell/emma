@@ -3,9 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use emma_core::{
-    DueJob, GoalStatus, LiveClient, ResearchJobId, ScheduledJobId, Thread, ThreadId, ThreadKind,
-};
+use emma_core::{DueJob, GoalStatus, LiveClient, ScheduledJobId, Thread, ThreadId, ThreadKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -123,60 +121,6 @@ struct FireScheduledEventParams {
     event: String,
     #[serde(default)]
     variables: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SaveResearchJobParams {
-    job_id: Option<String>,
-    title: String,
-    project_dir: String,
-    metric_name: String,
-    metric_kind: String,
-    metric_prompt: Option<String>,
-    direction: String,
-    eval_command: String,
-    prompt: Option<String>,
-    proposer_model: String,
-    permission_mode: String,
-    max_seconds: String,
-    max_tokens: String,
-    max_micro_dollars: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ResearchJobParams {
-    job_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetResearchJobStatusParams {
-    job_id: String,
-    status: String,
-    note: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetResearchJobThreadParams {
-    job_id: String,
-    thread_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RecordResearchIterationParams {
-    job_id: String,
-    outcome: String,
-    duration_milliseconds: String,
-    input_tokens: String,
-    output_tokens: String,
-    micro_dollars: String,
-    value: Option<String>,
-    note: Option<String>,
-    commit: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -580,7 +524,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                 encode(json!({
                     "threads": threads,
                     "scheduledJobs": snapshot.scheduled_jobs,
-                    "researchJobs": snapshot.research_jobs,
                     "warnings": snapshot.warnings,
                 }))
             }
@@ -775,69 +718,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
                     enabled,
                 ))?)
             }
-            "saveResearchJob" => {
-                let params: SaveResearchJobParams = params(request)?;
-                let job_id = params
-                    .job_id
-                    .map(ResearchJobId::parse)
-                    .transpose()
-                    .map_err(|error| error.to_string())?;
-                encode(call(live.save_research_job(
-                    job_id,
-                    params.title,
-                    params.project_dir,
-                    params.metric_name,
-                    params.metric_kind,
-                    params.metric_prompt.unwrap_or_default(),
-                    params.direction,
-                    params.eval_command,
-                    params.prompt.unwrap_or_default(),
-                    params.proposer_model,
-                    params.permission_mode,
-                    whole_number("maxSeconds", &params.max_seconds)?,
-                    whole_number("maxTokens", &params.max_tokens)?,
-                    whole_number("maxMicroDollars", &params.max_micro_dollars)?,
-                ))?)
-            }
-            "deleteResearchJob" => {
-                let params: ResearchJobParams = params(request)?;
-                encode(call(live.delete_research_job(
-                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
-                ))?)
-            }
-            "setResearchJobStatus" => {
-                let params: SetResearchJobStatusParams = params(request)?;
-                encode(call(live.set_research_job_status(
-                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
-                    params.status,
-                    params.note.unwrap_or_default(),
-                ))?)
-            }
-            "setResearchJobThread" => {
-                let params: SetResearchJobThreadParams = params(request)?;
-                encode(call(live.set_research_job_thread(
-                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
-                    ThreadId::parse(params.thread_id).map_err(|error| error.to_string())?,
-                ))?)
-            }
-            "recordResearchIteration" => {
-                let params: RecordResearchIterationParams = params(request)?;
-                let value = params
-                    .value
-                    .map(|value| measurement("value", &value))
-                    .transpose()?;
-                encode(call(live.record_research_iteration(
-                    ResearchJobId::parse(params.job_id).map_err(|error| error.to_string())?,
-                    value,
-                    params.outcome,
-                    params.note.unwrap_or_default(),
-                    params.commit.unwrap_or_default(),
-                    whole_number("durationMilliseconds", &params.duration_milliseconds)?,
-                    whole_number("inputTokens", &params.input_tokens)?,
-                    whole_number("outputTokens", &params.output_tokens)?,
-                    whole_number("microDollars", &params.micro_dollars)?,
-                ))?)
-            }
             _ => Err("method is not allowed".into()),
         }
     })()
@@ -848,17 +728,6 @@ fn dispatch(live: &LiveClient, request: &Request) -> Result<(String, Value), (St
 fn params<T: for<'de> Deserialize<'de>>(request: &Request) -> Result<T, String> {
     serde_json::from_value(request.params.clone())
         .map_err(|error| format!("invalid {} parameters: {error}", request.method))
-}
-
-fn whole_number(name: &str, value: &str) -> Result<u64, String> {
-    value.parse().map_err(|_| format!("{name} is not a number"))
-}
-
-fn measurement(name: &str, value: &str) -> Result<f64, String> {
-    match value.parse::<f64>() {
-        Ok(number) if number.is_finite() => Ok(number),
-        _ => Err(format!("{name} is not a number")),
-    }
 }
 
 fn encode(value: impl serde::Serialize) -> Result<Value, String> {

@@ -111,6 +111,12 @@ jobs:
 
       - run: npm run package:mac
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - run: npm run dmg:mac
+
       - name: archive the release candidate
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |

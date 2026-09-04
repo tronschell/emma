@@ -1,0 +1,33 @@
+.settings-personal, .settings-keybinds { container: personal-settings / inline-size; min-width: 0; }
+.personal-intro, .personal-hint { color: var(--text-2); font: var(--fs-sm)/1.55 var(--font); }
+.personal-hint { color: var(--text-3); font-size: var(--fs-xs); }
+.settings-personal .settings-lines > section, .settings-lines.settings-personal > section { grid-template-columns: minmax(0, 1fr) minmax(180px, .85fr); padding: var(--s-4) 0; }
+.settings-personal .settings-lines > section:hover, .settings-lines.settings-personal > section:hover { background: transparent; }
+.settings-personal .settings-lines > section > .check { justify-self: end; }
+.settings-personal .settings-section-body { padding-left: 0; }
+.settings-personal .settings-dependent { margin: 0; }
+.settings-personal .settings-field-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-voice .voice-values > button { justify-self: start; }
+.settings-voice .settings-section-body .settings-lines > section:first-child { padding-top: 0; }
+.settings-keybinds .settings-lines > header { padding: var(--s-3) 0; }
+.settings-keybinds .settings-lines > header > small { color: var(--text-3); font: var(--fs-xs)/1.4 var(--font); text-align: right; }
+.settings-keybinds .settings-lines > .keybind-row { grid-template-columns: 24px minmax(0, 1fr) minmax(150px, .75fr); padding: var(--s-4) 0; gap: var(--s-3); }
+.settings-keybinds .keybind-row > .orb { width: 24px; height: 28px; }
+.settings-keybinds .keybind-row p { font-size: var(--fs-xs); }
+.settings-keybinds .keybind-controls { align-content: start; }
+.settings-keybinds .keybind-capture { text-transform: none; letter-spacing: normal; line-height: 1.4; padding-block: var(--s-2); }
+.settings-keybinds .keybind-capture:not(.recording) { color: var(--text); }
+.settings-appearance .accent-values { align-items: center; }
+.settings-appearance .accent-values small { flex-basis: auto; }
+.appearance-preview { display: grid; gap: var(--s-2); padding: var(--s-4) 0 var(--s-4) var(--s-4); border-left: 2px solid var(--accent); }
+.appearance-preview > span { display: flex; gap: var(--s-3); align-items: baseline; color: var(--accent); font-size: var(--fs-sm); }
+.appearance-preview > span > span, .appearance-preview > small { color: var(--text-3); font-size: var(--fs-xs); }
+.appearance-preview > p { color: var(--text-2); font-size: var(--fs-sm); line-height: 1.55; }
+.appearance-preview > p:first-of-type { color: var(--text); font-size: var(--fs-lg); }
+
+@container personal-settings (max-width: 520px) {
+  .settings-personal .settings-lines > section, .settings-lines.settings-personal > section, .settings-personal .settings-field-pair { grid-template-columns: minmax(0, 1fr); }
+  .settings-personal .settings-lines > section > .check { justify-self: start; }
+  .settings-keybinds .settings-lines > .keybind-row { grid-template-columns: 24px minmax(0, 1fr); }
+  .settings-keybinds .keybind-controls { grid-column: 2; }
+}

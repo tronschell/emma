@@ -79,8 +79,15 @@ Published macOS assets appear in [GitHub Releases](https://github.com/tronschell
 - `Emma-vX.Y.Z-darwin-arm64.zip.sha256`
 
 The disk image is the human download: open it and drag Emma onto the
-Applications alias beside it. `scripts/dmg-mac.mjs` builds it from the stapled
-app, and the release job signs, notarizes and staples the image itself.
+Applications alias on the right. The centered Finder window uses Emma's rose
+dither background, a drag instruction, and the root package version at the
+bottom. `scripts/dmg-mac.mjs` draws the background at standard and Retina
+resolution with macOS AppKit, then saves the icon positions and window geometry
+with `ds_store` and `mac_alias`. The build needs Python 3.10 or later and installs
+these two checksum-pinned build dependencies in a temporary virtual environment.
+Packaging CI builds the image and verifies its layout, Retina artwork, and
+background reference after remounting. The release job rebuilds it from the
+stapled app, then signs, notarizes and staples the image itself.
 
 Installing into Applications is not cosmetic. Squirrel replaces the bundle it
 is running from, so a copy left in Downloads updates itself and leaves the one

@@ -40,7 +40,7 @@ import { applyNoteTags, createNoteFolder, detectObsidianVaults, keepNote, listNo
 import { tagNote } from "./vault-tags";
 import { DEFAULT_VAULT_FOLDER, keepKindLabel, MAX_NOTE_BYTES, obsidianOpenUrl, type KeepRequest, type KeptNote, type VaultChoice } from "../shared/vault";
 import { privacySettingsUrl, type SetupStatus } from "../shared/setup";
-import { CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider, type CatalogModel } from "./catalog";
+import { modelRates, CatalogCache, fetchDeepSeekBalance, fetchOpenRouterBalance, fetchOpenRouterCatalog, probeProvider, type CatalogModel } from "./catalog";
 import { ModelMetadataCatalog, type RouteModelMetadata } from "./model-metadata";
 import { branchPrefixName, validateGitArgs } from "../shared/git";
 import { checkForUpdates, installUpdate, readyUpdate, startUpdates } from "./update";
@@ -49,7 +49,6 @@ import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSna
 import { installedEditors, openInEditor } from "./editors";
 import { machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
-import { configureResearch, modelRates, researchJobs, resumeResearchJobs, startResearchJob, stopResearchJob, type ResearchJob } from "./research";
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
 import { captureDisplay, compressScreenFrame, ComputerUseRuntime, MAX_RUN_STEPS } from "./computer";
@@ -67,7 +66,7 @@ import { CliRuns } from "./cli";
 import { proxyPort, SemanticGrep, ZG_ENTRY } from "./semantic-grep";
 import { chatgptAuth, chatgptRoute } from "./chatgpt";
 import { CliModelCatalog } from "./cli-models";
-import { CLI_IDS, cliHarness, describeRuns } from "../shared/cli";
+import { CLI_IDS, cliHarness, describeRuns, cliOptions } from "../shared/cli";
 import { forceArm, harnessPromptFile, resolveHarnessPrompt, setImprovements, setPrompts, setSystemPrompt, withGoal, withTrialArm, writeHarnessPrompt } from "./system-prompt";
 import { Harness, RESTARTED_BY_YOU, escapesRoot, explainFailure, failedTurn, harnessKey, recoveredSessionTraces, type HarnessMcpServer, type HarnessToolCall, type StoredThreadTrace, type ThinkingRoute, type TurnUsage } from "./harness";
 import { MAX_LOG_LINES, type HarnessLogLine, type HarnessReport } from "../shared/harness-log";
@@ -347,19 +346,6 @@ function pathGrant(file: string) {
   return { grant, attached: !grant && attachments!.holds(file) };
 }
 
-function attachProject(threadId: string, directory: string) {
-  const resolved = realpathSync(directory);
-  const grant = folders!.add(resolved).find((folder) => samePath(folder.path, resolved));
-  if (!grant) throw new Error(`Emma could not open ${directory} as a folder`);
-  attachFolder(threadId, grant.id);
-}
-
-function attachFolder(threadId: string, folderId: string) {
-  const context = threadContexts.get(threadId) ?? { folderIds: [], mode: DEFAULT_PERMISSION_MODE, model: "" };
-  if (context.folderIds[0] !== folderId) rememberThreadContext(threadId, { ...context, folderIds: [folderId] });
-  broadcast("emma:folder-attached", { threadId, folderId });
-  changed();
-}
 const skillAttachment = new SkillAttachmentStore();
 const harnesses = new Map<string, Harness>();
 const harnessLog: HarnessLogLine[] = [];
@@ -422,9 +408,6 @@ async function steerThread(threadId: string, text: string) {
     }
   }
   agents!.steer(threadId, text);
-}
-function answerAsk(id: string, allowed: boolean) {
-  agents!.answer(id, allowed);
 }
 let hotkeyHelper: ChildProcess | undefined;
 let mainWindow: BrowserWindow | null = null;
@@ -1308,7 +1291,6 @@ const BRIDGE_EVENTS: Record<string, (payload: unknown) => BridgeEvent> = {
   "emma:step": (payload) => ({ k: "evt", t: "step", step: phoneStep(payload as RemoteStep) }),
   "emma:agents": (payload) => ({ k: "evt", t: "agents", agents: payload as LiveAgent[] }),
   "emma:spans": (payload) => ({ k: "evt", t: "spans", spans: phoneSpans(payload as Record<string, TraceSpan[]>) }),
-  "emma:folder-attached": (payload) => ({ k: "evt", ...(payload as { threadId: string; folderId: string }), t: "folder-attached" }),
   "emma:context-experiment": (payload) => ({ k: "evt", ...(payload as { threadId: string; prunedResults: number; reinjected: boolean; savedTokens: number; addedTokens: number }), t: "context-experiment" }),
   "emma:context-breakdown": (payload) => ({ k: "evt", ...(payload as { threadId: string; systemPromptBytes: number; systemToolsBytes: number; mcpToolsBytes: number; skillsBytes: number; memoryBytes: number }), t: "context-breakdown" }),
 };
@@ -1549,24 +1531,32 @@ const browserPage = (status: BrowserStatus) => `${status.url ?? "about:blank"}${
 async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
   switch (args.name) {
     case "cli": {
+      if (args.action === "send" && clis.get(args.id!)?.threadId !== turn.threadId) throw new Error("Choose a CLI run in this thread.");
       const run = args.action === "run"
         ? await clis.start({
           threadId: turn.threadId,
           cli: args.cli!,
           prompt: args.prompt!,
+          fromRuns: args.fromRuns,
+          ...cliOptions(args),
           cwd: folders!.directory(grantFor(turn.threadId, args.folder)),
           folder: folderNames([grantFor(turn.threadId, args.folder)])[0] ?? "",
           unattended: args.unattended,
         })
-        : await clis.send(args.id!, args.prompt!);
+        : await clis.send(args.id!, args.prompt!, args.fromRuns, cliOptions(args));
       const read = clis.output(run.id, MAX_COMMAND_OUTPUT);
       const harness = cliHarness(run.cli);
       const caveat = harness && !harness.ownsSession && args.action === "run"
         ? ` ${harness.label} resumes by "most recent session in this folder" rather than by id, so keep one ${run.cli} run going at a time here.`
         : "";
-      return `${run.cli} run ${run.id} finished turn ${run.turns} (${run.status === "failed" ? "failed to start" : `exit ${run.exitCode ?? "?"}`}). Send it more with cli {"action":"send","id":"${run.id}","prompt":"…"}.${caveat}\n\n${read?.output.trim() || "(no output)"}`;
+      return `${run.cli} run ${run.id} finished turn ${run.turns} (${run.status === "failed" ? `failed, exit ${run.exitCode ?? "unknown"}` : `exit ${run.exitCode ?? "?"}`}). Send it more with cli {"action":"send","id":"${run.id}","prompt":"…"}.${caveat}\n\n${(run.status === "failed" ? read?.output : read?.result)?.trim() || "(no output)"}`;
     }
     case "cli_runs": {
+      if (args.cli) {
+        const harness = cliHarness(args.cli)!;
+        const catalog = await cliModels.read(args.cli, (id) => clis.where(id), args.refresh);
+        return JSON.stringify({ ...catalog, efforts: harness.efforts, effortLabel: harness.effortLabel ?? "Thinking", note: "Model support depends on the installed harness and account. Use exact ids; never silently substitute a model or effort. OpenCode also accepts configured variant names. Empty model or effort uses the harness default." });
+      }
       if (!args.id) {
         const installed = await clis.installed();
         const available = installed.length
@@ -1581,7 +1571,7 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
       }
       const read = clis.output(args.id, MAX_COMMAND_OUTPUT);
       if (!read) return `There is no CLI run called ${args.id}. ${describeRuns(clis.list())}`;
-      const state = read.run.status === "running" ? `still working on turn ${read.run.turns}` : `idle after ${read.run.turns} ${read.run.turns === 1 ? "turn" : "turns"} (exit ${read.run.exitCode ?? "?"})`;
+      const state = read.run.status === "running" ? `still working on turn ${read.run.turns}` : `${read.run.status} after ${read.run.turns} ${read.run.turns === 1 ? "turn" : "turns"} (exit ${read.run.exitCode ?? "?"})`;
       return `${args.id} is ${state}.\n\n${read.output.trim() || "(no output yet)"}`;
     }
     case "computer": {
@@ -1679,8 +1669,6 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     }
     case "workflow":
       return await workflowTool(args);
-    case "autoresearch":
-      return await researchTool(args);
     case "artifact":
       return await artifactTool(args, turn.threadId);
     case "component":
@@ -2771,11 +2759,6 @@ async function runRequest(request: Request): Promise<unknown> {
   const result = request.method === "sendMessage"
     ? await driveTurn({ threadId, content, mode: threadMode(threadId), title: "This thread", model: threadModel(threadId), params: extra })
     : await answerRequest(request.method, request.params);
-  if (request.method === "setResearchJobStatus") {
-    if (request.params.status === "running") startResearchJob(request.params.jobId);
-    else stopResearchJob(request.params.jobId);
-  }
-  if (request.method === "deleteResearchJob") stopResearchJob(request.params.jobId);
   if (!READ_ONLY_METHODS.has(request.method)) changed();
   if (SCHEDULED_JOB_WRITES.has(request.method)) scheduledJobsChanged();
   return result;
@@ -2998,7 +2981,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         return { steered: true };
       });
     case "answerPermission":
-      answerAsk(boundedCapabilityId(params.id, "Permission"), flag(params.allowed, "Permission answer"));
+      agents!.answer(boundedCapabilityId(params.id, "Permission"), flag(params.allowed, "Permission answer"));
       return { answered: true };
     case "getThreadContext": {
       const threadId = boundedCapabilityId(params.threadId, "Thread");
@@ -3481,11 +3464,12 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const id = boundedCapabilityId(params.id, "CLI run");
       const run = clis.get(id);
       if (!run) throw new Error("There is no such CLI run.");
-      const model = typeof params.model === "string" ? params.model : "";
+      const selected = cliOptions(params);
+      const model = selected.model ?? run.model ?? "";
 
       const { models } = await cliModels.read(run.cli, (cli) => clis.where(cli));
       if (model && !models.includes(model)) throw new Error("That is not a model this Mac found for that CLI.");
-      return clis.setModel(id, model);
+      return clis.setOptions(id, selected);
     }
     case "listScheduledJobs":
       return await phoneJobs();
@@ -3954,94 +3938,6 @@ async function workflowTool(args: Extract<ToolArgs, { name: "workflow" }>): Prom
   }
 }
 
-function describeResearchJob(job: ResearchJob): string {
-  const budget = (spent: number, limit: number, unit: string) => `${spent}${unit} of ${limit ? `${limit}${unit}` : "unlimited"}`;
-  const recent = job.iterations.slice(-5).map((iteration) =>
-    `  ${iteration.index}  ${iteration.value ?? "no value"}  ${iteration.outcome}  ${iteration.note}`);
-  return [
-    `${job.title} (${job.id})`,
-    `${job.status} · ${job.projectDir} · ${job.metricName} ${job.direction} is better · ${job.metricKind}`,
-    `eval: ${job.evalCommand}`,
-    job.prompt ? `brief: ${job.prompt.replace(/\s+/g, " ").slice(0, 400)}` : "no brief",
-    `model ${job.proposerModel} · mode ${job.permissionMode} · ${budget(job.spentSeconds, job.maxSeconds, "s")} · ${budget(job.spentTokens, job.maxTokens, " tokens")} · ${budget(job.spentMicroDollars, job.maxMicroDollars, "µ$")}`,
-    job.iterations.length ? `${job.iterations.length} iterations:\n${recent.join("\n")}` : "no iterations yet",
-  ].join("\n");
-}
-
-async function researchTool(args: Extract<ToolArgs, { name: "autoresearch" }>): Promise<string> {
-  const jobs = await researchJobs();
-  const named = () => {
-    const job = jobs.find((candidate) => candidate.id === args.jobId);
-    if (!job) throw new Error(args.jobId ? `There is no autoresearch job with the id ${args.jobId}. List them first.` : "Say which job with jobId.");
-    return job;
-  };
-  const setStatus = async (job: ResearchJob, status: "running" | "paused", note: string) => {
-    await host!.request({ method: "setResearchJobStatus", params: { jobId: job.id, status, note } });
-    if (status === "running") startResearchJob(job.id); else stopResearchJob(job.id);
-    changed();
-  };
-  switch (args.action) {
-    case "list":
-      return jobs.length ? jobs.map(describeResearchJob).join("\n\n") : "There are no autoresearch jobs yet.";
-    case "get":
-      return describeResearchJob(named());
-    case "delete": {
-      const job = named();
-      stopResearchJob(job.id);
-      await host!.request({ method: "deleteResearchJob", params: { jobId: job.id } });
-      changed();
-      return `Deleted "${job.title}". Its thread and everything it committed are still there.`;
-    }
-    case "start": {
-      const job = named();
-      await setStatus(job, "running", "started by Emma");
-      return `Started "${job.title}". Every iteration is a turn on its own thread; the graph and the log are in the Autoresearch section.`;
-    }
-    case "pause": {
-      const job = named();
-      await setStatus(job, "paused", "paused by Emma");
-      return `Paused "${job.title}" after ${job.iterations.length} iterations. Nothing is lost — starting it again carries on.`;
-    }
-    case "save": {
-      const existing = args.jobId ? named() : undefined;
-      const title = args.title ?? existing?.title ?? "";
-      const projectDir = args.projectDir ?? existing?.projectDir ?? "";
-      const metricName = args.metricName ?? existing?.metricName ?? "";
-      const metricKind = args.metricKind ?? existing?.metricKind ?? "";
-      const direction = args.direction ?? existing?.direction ?? "";
-      const evalCommand = args.evalCommand ?? existing?.evalCommand ?? "";
-      const proposerModel = args.proposerModel ?? existing?.proposerModel ?? "";
-      if (!title || !projectDir || !metricName || !evalCommand || !proposerModel) throw new Error("A new job needs a title, projectDir, metricName, metricKind, direction, evalCommand and proposerModel. Send them all the first time you save it.");
-      if (!["grep", "judge"].includes(metricKind)) throw new Error('metricKind must be "grep" or "judge".');
-      if (!["lower", "higher"].includes(direction)) throw new Error('direction must be "lower" or "higher".');
-      const metricPrompt = args.metricPrompt ?? existing?.metricPrompt ?? "";
-      const prompt = args.prompt ?? existing?.prompt ?? "";
-      if (metricKind === "judge" && !metricPrompt) throw new Error("A judge metric needs metricPrompt: the rubric the model scores the output against.");
-      const saved = await host!.request({
-        method: "saveResearchJob",
-        params: {
-          ...(existing ? { jobId: existing.id } : {}),
-          title,
-          projectDir,
-          metricName,
-          metricKind,
-          direction,
-          evalCommand,
-          proposerModel,
-          permissionMode: asPermissionMode(args.permissionMode ?? existing?.permissionMode),
-          maxSeconds: String(args.maxSeconds ?? existing?.maxSeconds ?? 0),
-          maxTokens: String(args.maxTokens ?? existing?.maxTokens ?? 0),
-          maxMicroDollars: String(args.maxMicroDollars ?? existing?.maxMicroDollars ?? 0),
-          ...(metricPrompt ? { metricPrompt } : {}),
-          ...(prompt ? { prompt } : {}),
-        },
-      }) as { id?: string };
-      changed();
-      return `${existing ? "Updated" : "Saved"} "${title}" (${saved.id ?? existing?.id}). Nothing runs until it is started; ${metricName} (${direction} is better) is fixed for the life of the job.`;
-    }
-  }
-}
-
 function openRunBanner(threadId: string, task: string) {
   closeRunBanner();
   if (!globalShortcut.register("Escape", () => stopThread(threadId))) {
@@ -4280,7 +4176,7 @@ if (primaryInstance) app.whenReady().then(() => {
       const reached = bridge?.ask({ ...request, askedAt, expiresAt: askedAt + MAX_ASK_MS }) === true;
       if (!mainWindow || mainWindow.isDestroyed()) {
 
-        if (!reached) answerAsk(request.id, false);
+        if (!reached) agents!.answer(request.id, false);
         return;
       }
       needsYou("Emma needs your approval", request.summary);
@@ -4349,26 +4245,6 @@ if (primaryInstance) app.whenReady().then(() => {
       return (thread?.messages ?? []).slice(-6).map((message) => `${message.role}: ${message.content}`).join("\n\n");
     },
   });
-  configureResearch({
-    request: (method, params) => answerRequest(method, params),
-    turn: (request) => driveTurn(request),
-    stopTurn: (threadId) => agents!.stop(threadId),
-    run: runCommand,
-    runGit: async (cwd, args) => {
-      const result = await runGit(cwd, args);
-      if (!result.ok) throw new Error(result.output || "git failed");
-      return result.output;
-    },
-    attachProject,
-    resolve: resolveMentions,
-    usage: (threadId) => {
-      const run = agents!.list().find((agent) => agent.threadId === threadId);
-      return { inputTokens: run?.inputTokens ?? 0, outputTokens: run?.outputTokens ?? 0 };
-    },
-    catalogFile: path.join(app.getPath("userData"), "openrouter-catalog.json"),
-    changed,
-  });
-  void resumeResearchJobs().catch((error: unknown) => console.error("Emma: could not resume the autoresearch jobs", error));
   powerMonitor.on("resume", () => void resumeAfterSleep().catch((error: unknown) => console.error("Emma: could not pick a turn back up after sleep", error)));
   const stopComputerForLock = () => {
     if (computerRuntime?.threadId) stopThread(computerRuntime.threadId);
@@ -4534,9 +4410,9 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:cli-run-model", (event, value: unknown) => {
     mainWindowSender(event);
-    const request = (value ?? {}) as { id?: unknown; model?: unknown };
-    const model = typeof request.model === "string" ? request.model.slice(0, 128).trim() : "";
-    return clis.setModel(boundedCapabilityId(request.id, "CLI run"), model);
+    const selected = cliOptions(value);
+    const request = value as { id?: unknown };
+    return clis.setOptions(boundedCapabilityId(request.id, "CLI run"), selected);
   });
   ipcMain.handle("emma:installed-clis", (event) => {
     mainWindowSender(event);
@@ -4549,6 +4425,22 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!cliPlan(signIn)) throw new Error("Emma does not know that plan.");
     const { columns, rows } = terminalSize(candidate);
     return terminals.open({ threadId: SIGN_IN_THREAD, cwd: homedir(), columns, rows, signIn });
+  });
+  ipcMain.handle("emma:handoff-cli-run", async (event, value: unknown) => {
+    mainWindowSender(event);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid handoff request.");
+    const request = value as Record<string, unknown>;
+    const { id: sourceId, prompt } = cliSendRequest({ id: request.sourceId, prompt: request.prompt });
+    const source = clis.get(sourceId);
+    if (!source) throw new Error("The source run is no longer available.");
+    if (request.id !== undefined) {
+      const id = boundedCapabilityId(request.id, "CLI run");
+      if (clis.get(id)?.threadId !== source.threadId) throw new Error("Choose a destination in the same thread.");
+      return clis.send(id, prompt, [sourceId], cliOptions(request));
+    }
+    const cli = boundedCapabilityId(request.cli, "CLI");
+    const grant = grantFor(source.threadId, undefined);
+    return clis.start({ threadId: source.threadId, cli, prompt, cwd: folders!.directory(grant), folder: folderNames([grant])[0] ?? "", unattended: false, fromRuns: [sourceId], ...cliOptions(request) });
   });
   ipcMain.handle("emma:send-cli-run", async (event, value: unknown) => {
     mainWindowSender(event);
@@ -4662,7 +4554,7 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!value || typeof value !== "object") return;
     const answer = value as Record<string, unknown>;
     if (typeof answer.id !== "string" || typeof answer.allowed !== "boolean") return;
-    answerAsk(answer.id, answer.allowed);
+    agents!.answer(answer.id, answer.allowed);
   });
   ipcMain.on("emma:computer-run-ready", (event) => {
     if (event.senderFrame !== event.sender.mainFrame) return;
@@ -5180,7 +5072,7 @@ if (primaryInstance) app.whenReady().then(() => {
   });
   ipcMain.handle("emma:git-status", async (event, value: unknown) => {
     mainWindowSender(event);
-    return await gitSnapshot(folders!.directory(boundedCapabilityId(value, "Folder")));
+    return await gitSnapshot(folders!.directory(boundedCapabilityId(value, "Folder")), true);
   });
   ipcMain.handle("emma:git-ready", async (event, value: unknown) => {
     mainWindowSender(event);

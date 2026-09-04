@@ -11,10 +11,9 @@ use std::{
 };
 
 use crate::{
-    GenerationTelemetry, GoalStatus, MAX_TRIGGER_DEPTH, ResearchJob, ResearchJobId,
-    ResearchJobStore, ScheduledJob, ScheduledJobId, ScheduledJobStore, Thread, ThreadId,
-    ThreadKind, ThreadMessage, ThreadRole, ThreadStore, ThreadTrace, Timestamp, elide_middle,
-    validate_text,
+    GenerationTelemetry, GoalStatus, MAX_TRIGGER_DEPTH, ScheduledJob, ScheduledJobId,
+    ScheduledJobStore, Thread, ThreadId, ThreadKind, ThreadMessage, ThreadRole, ThreadStore,
+    ThreadTrace, Timestamp, elide_middle, validate_text,
 };
 use serde::Serialize;
 
@@ -27,7 +26,6 @@ pub const ARCHIVE_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 pub struct LiveSnapshot {
     pub threads: Vec<Arc<Thread>>,
     pub scheduled_jobs: Vec<ScheduledJob>,
-    pub research_jobs: Vec<ResearchJob>,
     pub warnings: Vec<String>,
 }
 
@@ -150,50 +148,6 @@ enum Command {
         event: String,
         variables: String,
         reply: Reply<Vec<ScheduledJob>>,
-    },
-    SaveResearchJob {
-        job_id: Option<ResearchJobId>,
-        title: String,
-        project_dir: String,
-        metric_name: String,
-        metric_kind: String,
-        metric_prompt: String,
-        direction: String,
-        eval_command: String,
-        prompt: String,
-        proposer_model: String,
-        permission_mode: String,
-        max_seconds: u64,
-        max_tokens: u64,
-        max_micro_dollars: u64,
-        reply: Reply<ResearchJob>,
-    },
-    DeleteResearchJob {
-        job_id: ResearchJobId,
-        reply: Reply<()>,
-    },
-    SetResearchJobStatus {
-        job_id: ResearchJobId,
-        status: String,
-        note: String,
-        reply: Reply<ResearchJob>,
-    },
-    SetResearchJobThread {
-        job_id: ResearchJobId,
-        thread_id: ThreadId,
-        reply: Reply<ResearchJob>,
-    },
-    RecordResearchIteration {
-        job_id: ResearchJobId,
-        value: Option<f64>,
-        outcome: String,
-        note: String,
-        commit: String,
-        duration_ms: u64,
-        input_tokens: u64,
-        output_tokens: u64,
-        micro_dollars: u64,
-        reply: Reply<ResearchJob>,
     },
 }
 
@@ -522,140 +476,6 @@ impl LiveClient {
             .recv()
             .map_err(|_| LiveError::new("Emma runtime stopped while updating the scheduled job"))?
     }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn save_research_job(
-        &self,
-        job_id: Option<ResearchJobId>,
-        title: String,
-        project_dir: String,
-        metric_name: String,
-        metric_kind: String,
-        metric_prompt: String,
-        direction: String,
-        eval_command: String,
-        prompt: String,
-        proposer_model: String,
-        permission_mode: String,
-        max_seconds: u64,
-        max_tokens: u64,
-        max_micro_dollars: u64,
-    ) -> Result<ResearchJob, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SaveResearchJob {
-                job_id,
-                title,
-                project_dir,
-                metric_name,
-                metric_kind,
-                metric_prompt,
-                direction,
-                eval_command,
-                prompt,
-                proposer_model,
-                permission_mode,
-                max_seconds,
-                max_tokens,
-                max_micro_dollars,
-                reply,
-            })
-            .map_err(|_| {
-                LiveError::new("Emma runtime stopped before saving the autoresearch job")
-            })?;
-        result
-            .recv()
-            .map_err(|_| LiveError::new("Emma runtime stopped while saving the autoresearch job"))?
-    }
-
-    pub fn delete_research_job(&self, job_id: ResearchJobId) -> Result<(), LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::DeleteResearchJob { job_id, reply })
-            .map_err(|_| {
-                LiveError::new("Emma runtime stopped before deleting the autoresearch job")
-            })?;
-        result.recv().map_err(|_| {
-            LiveError::new("Emma runtime stopped while deleting the autoresearch job")
-        })?
-    }
-
-    pub fn set_research_job_status(
-        &self,
-        job_id: ResearchJobId,
-        status: String,
-        note: String,
-    ) -> Result<ResearchJob, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SetResearchJobStatus {
-                job_id,
-                status,
-                note,
-                reply,
-            })
-            .map_err(|_| {
-                LiveError::new("Emma runtime stopped before updating the autoresearch job")
-            })?;
-        result.recv().map_err(|_| {
-            LiveError::new("Emma runtime stopped while updating the autoresearch job")
-        })?
-    }
-
-    pub fn set_research_job_thread(
-        &self,
-        job_id: ResearchJobId,
-        thread_id: ThreadId,
-    ) -> Result<ResearchJob, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::SetResearchJobThread {
-                job_id,
-                thread_id,
-                reply,
-            })
-            .map_err(|_| {
-                LiveError::new("Emma runtime stopped before updating the autoresearch job")
-            })?;
-        result.recv().map_err(|_| {
-            LiveError::new("Emma runtime stopped while updating the autoresearch job")
-        })?
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_research_iteration(
-        &self,
-        job_id: ResearchJobId,
-        value: Option<f64>,
-        outcome: String,
-        note: String,
-        commit: String,
-        duration_ms: u64,
-        input_tokens: u64,
-        output_tokens: u64,
-        micro_dollars: u64,
-    ) -> Result<ResearchJob, LiveError> {
-        let (reply, result) = mpsc::channel();
-        self.commands
-            .send(Command::RecordResearchIteration {
-                job_id,
-                value,
-                outcome,
-                note,
-                commit,
-                duration_ms,
-                input_tokens,
-                output_tokens,
-                micro_dollars,
-                reply,
-            })
-            .map_err(|_| {
-                LiveError::new("Emma runtime stopped before recording the autoresearch iteration")
-            })?;
-        result.recv().map_err(|_| {
-            LiveError::new("Emma runtime stopped while recording the autoresearch iteration")
-        })?
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -677,14 +497,13 @@ pub type JobSink = Arc<dyn Fn(DueJob) + Send + Sync>;
 pub fn start_live_runtime(
     thread_root: PathBuf,
     scheduled_root: PathBuf,
-    research_root: PathBuf,
     jobs: JobSink,
 ) -> Result<LiveClient, LiveError> {
     let (commands, receiver) = mpsc::channel();
     thread::Builder::new()
         .name("emma-live-runtime".into())
         .spawn(move || {
-            let mut runtime = Runtime::new(thread_root, scheduled_root, research_root, jobs);
+            let mut runtime = Runtime::new(thread_root, scheduled_root, jobs);
             let tick = Duration::from_secs(30);
             let mut due = Instant::now() + tick;
             loop {
@@ -706,21 +525,14 @@ pub fn start_live_runtime(
 struct Runtime {
     threads: ThreadStore,
     scheduled: ScheduledJobStore,
-    research: ResearchJobStore,
     jobs: JobSink,
 }
 
 impl Runtime {
-    fn new(
-        thread_root: PathBuf,
-        scheduled_root: PathBuf,
-        research_root: PathBuf,
-        jobs: JobSink,
-    ) -> Self {
+    fn new(thread_root: PathBuf, scheduled_root: PathBuf, jobs: JobSink) -> Self {
         Self {
             threads: ThreadStore::new(thread_root),
             scheduled: ScheduledJobStore::new(scheduled_root),
-            research: ResearchJobStore::new(research_root),
             jobs,
         }
     }
@@ -874,82 +686,6 @@ impl Runtime {
             } => {
                 let _ = reply.send(self.fire_scheduled_event(event, variables));
             }
-            Command::SaveResearchJob {
-                job_id,
-                title,
-                project_dir,
-                metric_name,
-                metric_kind,
-                metric_prompt,
-                direction,
-                eval_command,
-                prompt,
-                proposer_model,
-                permission_mode,
-                max_seconds,
-                max_tokens,
-                max_micro_dollars,
-                reply,
-            } => {
-                let _ = reply.send(self.save_research_job(
-                    job_id,
-                    title,
-                    project_dir,
-                    metric_name,
-                    metric_kind,
-                    metric_prompt,
-                    direction,
-                    eval_command,
-                    prompt,
-                    proposer_model,
-                    permission_mode,
-                    max_seconds,
-                    max_tokens,
-                    max_micro_dollars,
-                ));
-            }
-            Command::DeleteResearchJob { job_id, reply } => {
-                let _ = reply.send(self.delete_research_job(job_id));
-            }
-            Command::SetResearchJobStatus {
-                job_id,
-                status,
-                note,
-                reply,
-            } => {
-                let _ = reply.send(self.set_research_job_status(job_id, status, note));
-            }
-            Command::SetResearchJobThread {
-                job_id,
-                thread_id,
-                reply,
-            } => {
-                let _ = reply.send(self.set_research_job_thread(job_id, thread_id));
-            }
-            Command::RecordResearchIteration {
-                job_id,
-                value,
-                outcome,
-                note,
-                commit,
-                duration_ms,
-                input_tokens,
-                output_tokens,
-                micro_dollars,
-                reply,
-            } => {
-                let _ = reply.send(self.record_research_iteration(
-                    job_id,
-                    value,
-                    outcome,
-                    note,
-                    commit,
-                    duration_ms,
-                    input_tokens,
-                    output_tokens,
-                    micro_dollars,
-                ));
-            }
         }
     }
 
@@ -1054,9 +790,6 @@ impl Runtime {
             .scheduled
             .list()
             .map_err(|error| LiveError::new(format!("could not load scheduled jobs: {error}")))?;
-        let research_listing = self.research.list().map_err(|error| {
-            LiveError::new(format!("could not load autoresearch jobs: {error}"))
-        })?;
         let mut warnings = thread_listing
             .malformed
             .into_iter()
@@ -1075,22 +808,9 @@ impl Runtime {
                 reason
             )
         }));
-        warnings.extend(
-            research_listing
-                .malformed
-                .into_iter()
-                .map(|(path, reason)| {
-                    format!(
-                        "Skipped malformed autoresearch job {}: {}",
-                        path.display(),
-                        reason
-                    )
-                }),
-        );
         Ok(LiveSnapshot {
             threads: thread_listing.threads,
             scheduled_jobs: job_listing.jobs,
-            research_jobs: research_listing.jobs,
             warnings,
         })
     }
@@ -1221,146 +941,6 @@ impl Runtime {
         self.scheduled
             .save(&job)
             .map_err(|error| LiveError::new(format!("could not save scheduled job: {error}")))?;
-        Ok(job)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn save_research_job(
-        &self,
-        job_id: Option<ResearchJobId>,
-        title: String,
-        project_dir: String,
-        metric_name: String,
-        metric_kind: String,
-        metric_prompt: String,
-        direction: String,
-        eval_command: String,
-        prompt: String,
-        proposer_model: String,
-        permission_mode: String,
-        max_seconds: u64,
-        max_tokens: u64,
-        max_micro_dollars: u64,
-    ) -> Result<ResearchJob, LiveError> {
-        let job = match job_id {
-            Some(id) => {
-                let mut job = self.research.load(&id).map_err(|error| {
-                    LiveError::new(format!("no such autoresearch job: {error}"))
-                })?;
-                job.apply_edit(
-                    title,
-                    project_dir,
-                    metric_name,
-                    metric_kind,
-                    direction,
-                    eval_command,
-                    prompt,
-                    proposer_model,
-                    permission_mode,
-                    max_seconds,
-                    max_tokens,
-                    max_micro_dollars,
-                )
-                .map_err(|error| LiveError::new(error.to_string()))?;
-                job
-            }
-            None => ResearchJob::new(
-                title,
-                project_dir,
-                metric_name,
-                metric_kind,
-                metric_prompt,
-                direction,
-                eval_command,
-                prompt,
-                proposer_model,
-                permission_mode,
-                max_seconds,
-                max_tokens,
-                max_micro_dollars,
-                Timestamp::now(),
-            )
-            .map_err(|error| LiveError::new(format!("autoresearch job is invalid: {error}")))?,
-        };
-        self.research
-            .save(&job)
-            .map_err(|error| LiveError::new(format!("could not save autoresearch job: {error}")))?;
-        Ok(job)
-    }
-
-    fn delete_research_job(&self, job_id: ResearchJobId) -> Result<(), LiveError> {
-        self.research
-            .delete(&job_id)
-            .map_err(|error| LiveError::new(format!("could not delete autoresearch job: {error}")))
-    }
-
-    fn set_research_job_status(
-        &self,
-        job_id: ResearchJobId,
-        status: String,
-        note: String,
-    ) -> Result<ResearchJob, LiveError> {
-        let mut job = self
-            .research
-            .load(&job_id)
-            .map_err(|error| LiveError::new(format!("could not load autoresearch job: {error}")))?;
-        job.set_status(status, note)
-            .map_err(|error| LiveError::new(error.to_string()))?;
-        self.research
-            .save(&job)
-            .map_err(|error| LiveError::new(format!("could not save autoresearch job: {error}")))?;
-        Ok(job)
-    }
-
-    fn set_research_job_thread(
-        &self,
-        job_id: ResearchJobId,
-        thread_id: ThreadId,
-    ) -> Result<ResearchJob, LiveError> {
-        let mut job = self
-            .research
-            .load(&job_id)
-            .map_err(|error| LiveError::new(format!("could not load autoresearch job: {error}")))?;
-        job.thread_id = Some(thread_id.to_string());
-        self.research
-            .save(&job)
-            .map_err(|error| LiveError::new(format!("could not save autoresearch job: {error}")))?;
-        Ok(job)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn record_research_iteration(
-        &self,
-        job_id: ResearchJobId,
-        value: Option<f64>,
-        outcome: String,
-        note: String,
-        commit: String,
-        duration_ms: u64,
-        input_tokens: u64,
-        output_tokens: u64,
-        micro_dollars: u64,
-    ) -> Result<ResearchJob, LiveError> {
-        let mut job = self
-            .research
-            .load(&job_id)
-            .map_err(|error| LiveError::new(format!("could not load autoresearch job: {error}")))?;
-        job.record_iteration(
-            value,
-            outcome,
-            note,
-            commit,
-            duration_ms,
-            input_tokens,
-            output_tokens,
-            micro_dollars,
-            Timestamp::now(),
-        )
-        .map_err(|error| LiveError::new(error.to_string()))?;
-        job.add_seconds(duration_ms / 1000);
-        self.research
-            .save(&job)
-            .map_err(|error| LiveError::new(format!("could not save autoresearch job: {error}")))?;
         Ok(job)
     }
 
@@ -1655,14 +1235,6 @@ mod tests {
         (Arc::new(move |job| sink.lock().unwrap().push(job)), seen)
     }
 
-    fn project_dir() -> String {
-        if cfg!(windows) {
-            r"C:\tmp\project".into()
-        } else {
-            "/tmp/project".into()
-        }
-    }
-
     fn temp_child() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
@@ -1676,12 +1248,7 @@ mod tests {
     fn live_flow_resaves_one_thread_and_recovers_a_stale_temp() {
         let root = temp_child();
         let thread_root = root.join("threads");
-        let mut runtime = Runtime::new(
-            thread_root.clone(),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let mut runtime = Runtime::new(thread_root.clone(), root.join("scheduled"), no_jobs());
 
         let created = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         assert!(
@@ -1728,12 +1295,7 @@ mod tests {
     #[test]
     fn targeted_thread_load_reads_only_the_requested_record() {
         let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let first = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let second = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let loaded = runtime.thread(first.id.clone()).unwrap();
@@ -1747,12 +1309,7 @@ mod tests {
     #[test]
     fn compact_snapshot_does_not_populate_the_thread_cache() {
         let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let first = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let second = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         runtime.threads.clear_cache_for_test();
@@ -1782,12 +1339,7 @@ mod tests {
     #[test]
     fn renaming_a_thread_collapses_whitespace_and_refuses_an_empty_name() {
         let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let thread = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let named = runtime
             .rename_thread(thread.id.clone(), "  Trip\n  plans  ".into())
@@ -1812,12 +1364,7 @@ mod tests {
     #[test]
     fn archived_threads_survive_until_the_retention_window_closes() {
         let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let kept = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         let expired = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         assert!(
@@ -1852,12 +1399,7 @@ mod tests {
     #[test]
     fn a_recorded_turn_lands_in_the_thread_without_reaching_the_agent() {
         let root = temp_child();
-        let mut runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let mut runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let thread = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
         runtime
             .record_turn(
@@ -1988,12 +1530,7 @@ mod tests {
     #[test]
     fn scheduled_job_edits_book_changed_cron_from_now_and_preserve_run_state() {
         let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let now = Timestamp::now().unix_seconds();
         let mut original = ScheduledJob::new(
             "Daily reading".into(),
@@ -2052,12 +1589,7 @@ mod tests {
     #[test]
     fn rare_cron_bookings_survive_reload_and_title_edits() {
         let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
+        let runtime = Runtime::new(root.join("threads"), root.join("scheduled"), no_jobs());
         let created_at = "2024-01-01T00:00:00Z".parse().unwrap();
         for (schedule, booked_at, next_run_at) in [
             (
@@ -2112,12 +1644,7 @@ mod tests {
     fn due_scheduled_job_claims_once_and_hands_its_turn_out_under_its_saved_mode() {
         let root = temp_child();
         let (sink, due) = collect_jobs();
-        let mut runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            sink,
-        );
+        let mut runtime = Runtime::new(root.join("threads"), root.join("scheduled"), sink);
         let mut job = runtime
             .save_scheduled_job(
                 None,
@@ -2161,12 +1688,7 @@ mod tests {
     fn a_finished_job_fires_what_waits_on_it_and_a_trigger_loop_runs_out() {
         let root = temp_child();
         let (sink, due) = collect_jobs();
-        let mut runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            sink,
-        );
+        let mut runtime = Runtime::new(root.join("threads"), root.join("scheduled"), sink);
         let first = runtime
             .save_scheduled_job(
                 None,
@@ -2238,93 +1760,6 @@ mod tests {
                 .is_none(),
             "a run whose job was deleted while it was in flight finishes quietly"
         );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn an_autoresearch_edit_keeps_the_run_it_already_has_and_refuses_a_new_metric() {
-        let root = temp_child();
-        let runtime = Runtime::new(
-            root.join("threads"),
-            root.join("scheduled"),
-            root.join("research"),
-            no_jobs(),
-        );
-        let save = |job_id, title: &str, metric: &str, budget| {
-            runtime.save_research_job(
-                job_id,
-                title.into(),
-                project_dir(),
-                metric.into(),
-                "grep".into(),
-                String::new(),
-                "lower".into(),
-                "uv run train.py 2>&1".into(),
-                "Only touch the optimiser".into(),
-                "openai/gpt-5".into(),
-                "ask".into(),
-                budget,
-                0,
-                0,
-            )
-        };
-        let job = save(None, "Lower the loss", "val_bpb", 0).unwrap();
-        assert_eq!(job.status, "paused");
-
-        runtime
-            .record_research_iteration(
-                job.id.clone(),
-                Some(1.5),
-                "keep".into(),
-                "widened the window".into(),
-                "abc1234".into(),
-                90_000,
-                300,
-                200,
-                7,
-            )
-            .unwrap();
-        let recorded = runtime
-            .record_research_iteration(
-                job.id.clone(),
-                Some(2.0),
-                "discard".into(),
-                String::new(),
-                String::new(),
-                30_000,
-                100,
-                100,
-                3,
-            )
-            .unwrap();
-        assert_eq!(recorded.iterations[1].index, 1);
-        assert_eq!(recorded.iterations[1].best, Some(1.5));
-        assert_eq!(recorded.spent_tokens, 700);
-        assert_eq!(recorded.spent_micro_dollars, 10);
-        assert_eq!(recorded.spent_seconds, 120);
-
-        let edited = save(Some(job.id.clone()), "Lower the loss more", "val_bpb", 600).unwrap();
-        assert_eq!(edited.max_seconds, 600);
-        assert_eq!(edited.iterations.len(), 2);
-        assert_eq!(edited.spent_seconds, 120);
-        assert!(save(Some(job.id.clone()), "Lower the loss more", "val_loss", 600).is_err());
-
-        let paused = runtime
-            .set_research_job_status(job.id.clone(), "paused".into(), "out of seconds".into())
-            .unwrap();
-        assert_eq!(paused.status_note, "out of seconds");
-        let thread = runtime.create_thread(None, None, ThreadKind::Main).unwrap();
-        let attached = runtime
-            .set_research_job_thread(job.id.clone(), thread.id.clone())
-            .unwrap();
-        assert_eq!(
-            attached.thread_id.as_deref(),
-            Some(thread.id.to_string().as_str())
-        );
-        assert_eq!(runtime.snapshot().unwrap().research_jobs.len(), 1);
-
-        runtime.delete_research_job(job.id.clone()).unwrap();
-        assert!(runtime.snapshot().unwrap().research_jobs.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

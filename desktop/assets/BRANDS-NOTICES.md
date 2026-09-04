@@ -28,3 +28,21 @@ redraw, distort, or combine these marks with Emma branding; retain the
 accessible product/provider label beside every image.
 
 The official xAI brand page links to the [SpaceXAI/Grok asset archive](https://data.x.ai/logos/SpaceXAI_Grok_Assets.zip), whose guidance requires the supplied artwork to be used exactly as provided. The archive returned HTTP 403 during this retrieval, so no xAI artwork is bundled; xAI uses Emma’s neutral fallback until the official kit can be retrieved.
+
+## Web search providers
+
+Retrieved September 4, 2026. These official marks identify the service that
+answered a web search. Names and trademarks remain with their respective owners;
+no endorsement is implied. The files in `search/` are lossless WebP, with metadata
+removed, unused outer space trimmed, and the original aspect ratio and colors
+preserved. Each mark fits within 56×56 pixels on a transparent 64×64 canvas and
+renders at 16×16 CSS pixels. 4get's pixel artwork uses nearest-neighbor scaling.
+
+| File | Official source | Preparation |
+| --- | --- | --- |
+| `search/tinyfish.webp` | [TinyFish site icon](https://www.tinyfish.ai/favicon-for-app/icon0.svg) | Fish mark; transparent margins trimmed. |
+| `search/fourget.webp` | [4get site icon](https://4get.ca/favicon.ico) | Original 32×32 pixel mascot; background retained. |
+| `search/searxng.webp` | [SearXNG documentation mark](https://docs.searxng.org/_static/searxng-wordmark.svg) | Blue search mark; transparent margins trimmed. |
+| `search/brave.webp` | [Brave symbol](https://brave.com/static-assets/images/brave-logo-sans-text.svg) | Official full-color lion symbol. |
+| `search/tavily.webp` | [Tavily site icon](https://www.tavily.com/icon.svg) | Official cream arrows on a dark tile. |
+| `search/exa.webp` | [Exa logo](https://exa.ai/images/logo/exa-logo-blue.svg) | Standalone symbol extracted from the first path of the official lockup. |
