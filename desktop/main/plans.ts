@@ -103,26 +103,6 @@ export function writePlan(userData: string, plan: Omit<Plan, "id" | "updatedAt">
   return next;
 }
 
-/**
- * Told to the model on every root turn that is offered the `plan` tool, the way
- * `MEMORY_PROTOCOL` is told to one offered `memory`.
- *
- * The tool's own description says what the actions do. This is the part a schema
- * cannot say, because a model only reads the `plan` schema once it is already
- * thinking about planning: that a job of this size is broken up before any of it
- * is done. Root turns only — a subagent is told what it is by `stepBrief`, and a
- * plan of its own would be a plan inside a plan.
- */
-export const PLANNING_PROTOCOL = [
-  "PLANNING:",
-  "Work bigger than one agent's worth — a feature across several files, an app built from nothing, a migration, an audit of a whole folder — starts with a plan, before any of it is done.",
-  "1. Break it up with plan write: one step per piece of work, each naming what it needs. Cut it by what can go at the same time rather than by what happens first — steps that need nothing start now, and everything ready runs at once, one subagent per step.",
-  "   What each step needs is the shape, and the shape is yours: a chain where every step feeds the next, a tree where one step fans out into branches that never meet again, or a web where those branches rejoin at a step that waits on several. Pick the one the job actually has.",
-  "2. Ask plan run for the briefs, spawn one subagent per brief with the subagent tool, wait on them with subagent inspect, and write each answer back with plan update as it lands — then ask plan run again straight away, because a step starts as soon as its own needs are done rather than when the whole wave is. A step's result line is all the steps waiting on it will ever know about it.",
-  "3. Rewrite it with plan write when what came back changes the shape of the job. Finished steps and ticked tasks survive a rewrite, so restructuring halfway is safe.",
-  "Not everything needs one: one subagent for a single self-contained job, and no plan at all for work you can finish in this turn. A subagent starts from its brief and one line per step it waited on, never from your context, so a plan that does not fan out anywhere costs more than it saves.",
-].join("\n");
-
 function unique(slug: string, taken: readonly string[]) {
   if (!taken.includes(slug)) return slug;
   const stem = slug.slice(0, 59).replace(/-+$/, "");
