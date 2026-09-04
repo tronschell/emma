@@ -142,8 +142,6 @@ const assets = {
   },
 } as const;
 
-export const brandAssets = assets;
-
 const definition = (id: string, label: string, fallback: string, asset?: BrandAsset, openRouterNamespaces?: readonly string[], localAliases?: readonly string[]): BrandDefinition => ({ id, label, fallback, asset, openRouterNamespaces, localAliases });
 
 export const importerBrands = {

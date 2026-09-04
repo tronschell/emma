@@ -49,8 +49,6 @@ export function isGoalStatus(value: unknown): value is GoalStatus {
 
 export const goalPursuing = (goal: Goal | undefined | null): goal is Goal => goal?.status === "active";
 
-export const goalSettled = (goal: Goal | undefined | null) => goal?.status === "complete" || goal?.status === "blocked";
-
 export const goalTokensLeft = (goal: Goal) => Math.max(0, goal.tokenBudget - goal.tokensUsed);
 
 export const goalSpent = (goal: Goal) => goal.tokenBudget > 0 ? Math.min(1, goal.tokensUsed / goal.tokenBudget) : 0;

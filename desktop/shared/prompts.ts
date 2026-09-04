@@ -26,8 +26,6 @@ export const MODEL_FAMILIES = [
   { id: "command", label: "Command", brand: "cohere", tokens: ["command"] },
 ] as const;
 
-export type ModelFamily = (typeof MODEL_FAMILIES)[number];
-
 export const PROMPT_VARIABLES = [
   { name: "available_tools", detail: "Every tool this turn may call, comma separated." },
   { name: "model", detail: "The model answering the turn." },
