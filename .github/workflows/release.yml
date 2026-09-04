@@ -104,7 +104,11 @@ jobs:
 
       - name: collect the changelog since the last published release
         if: steps.version.outputs.skip != 'true'
-        run: GITHUB_SHA="$RELEASE_SHA" node desktop/scripts/release-notes.mjs > "$RUNNER_TEMP/emma-release-notes.md"
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          printf '[Download Emma for macOS (DMG)](https://github.com/%s/releases/download/%s/Emma-%s-darwin-arm64.dmg)\n\nOpen the disk image and drag Emma onto Applications. The ZIP asset supports automatic updates.\n\n' "$GITHUB_REPOSITORY" "$TAG" "$TAG" > "$RUNNER_TEMP/emma-release-notes.md"
+          GITHUB_SHA="$RELEASE_SHA" node desktop/scripts/release-notes.mjs >> "$RUNNER_TEMP/emma-release-notes.md"
 
       - name: setup-zig v2.2.1
         if: steps.version.outputs.skip != 'true' && github.event_name == 'workflow_dispatch'

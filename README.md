@@ -30,8 +30,8 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 ## Quickstart
 
 Published macOS builds are distributed through [GitHub Releases](https://github.com/tronschell/emma/releases).
-For a published macOS version, unzip `Emma-vX.Y.Z-darwin-arm64.zip` and move
-`Emma.app` to Applications. Windows x64 is the supported distributable/public
+For a published macOS version, download `Emma-vX.Y.Z-darwin-arm64.dmg`, open
+it, and drag Emma onto Applications. The ZIP asset is retained for automatic updates. Windows x64 is the supported distributable/public
 target and is packaged in CI; ARM64 is a CI compile/package rehearsal, not a
 public auto-update target. Public signed Windows x64 publication is pending
 release-workflow authorization. The x64 target is Windows 10 version 1809 or
