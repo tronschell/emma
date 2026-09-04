@@ -1903,10 +1903,9 @@ test "streamed completions release every allocation on failure" {
 }
 
 const LoopbackResponseFixture = struct {
-    io_backend: std.Io.Threaded = .init_single_threaded,
     server: std.Io.net.Server,
     response: []const u8,
-    thread: ?std.Thread = null,
+    thread: ?std.Io.Future(void) = null,
     open: bool = true,
     stall: bool = false,
     released: std.atomic.Value(bool) = .init(false),
@@ -1918,8 +1917,8 @@ const LoopbackResponseFixture = struct {
         return fixture;
     }
 
-    fn io(self: *@This()) std.Io {
-        return self.io_backend.io();
+    fn io(_: *@This()) std.Io {
+        return io_mod.getIo();
     }
 
     fn port(self: *@This()) u16 {
@@ -1927,13 +1926,13 @@ const LoopbackResponseFixture = struct {
     }
 
     fn start(self: *@This()) !void {
-        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        self.thread = try self.io().concurrent(run, .{self});
     }
 
     fn deinit(self: *@This()) void {
         if (!self.open) return;
         self.released.store(true, .seq_cst);
-        if (self.thread) |thread| thread.join();
+        if (self.thread) |*thread| thread.cancel(self.io());
         self.thread = null;
         self.server.deinit(self.io());
         self.open = false;
@@ -1970,11 +1969,31 @@ const LoopbackResponseFixture = struct {
         var writer = socket.writer(zio, &write_buffer);
         try writer.interface.writeAll(self.response);
         try writer.interface.flush();
-        while (self.stall and !self.released.load(.seq_cst)) {
-            io_mod.sleep(5 * std.time.ns_per_ms);
+        const deadline = io_mod.milliTimestamp() + 5_000;
+        while (self.stall and !self.released.load(.seq_cst) and io_mod.milliTimestamp() < deadline) {
+            try zio.sleep(.fromMilliseconds(5), .awake);
         }
     }
 };
+
+test "loopback response fixture cleanup cancels an idle listener and incomplete request" {
+    for ([_]bool{ false, true }) |connect| {
+        var fixture = try LoopbackResponseFixture.init("");
+        defer fixture.deinit();
+        try fixture.start();
+
+        const zio = fixture.io();
+        const address = std.Io.net.IpAddress{ .ip4 = .loopback(fixture.port()) };
+        const socket = if (connect) try address.connect(zio, .{ .mode = .stream }) else null;
+        defer if (socket) |connection| connection.close(zio);
+
+        const started = io_mod.milliTimestamp();
+        fixture.deinit();
+        try std.testing.expect(io_mod.milliTimestamp() - started < 5_000);
+        try std.testing.expect(fixture.thread == null);
+        try std.testing.expect(!fixture.open);
+    }
+}
 
 fn streamAgainstFixture(alloc: Allocator, harness: *StreamHarness, response: []const u8) !stream_provider.Result {
     var fixture = try LoopbackResponseFixture.init(response);

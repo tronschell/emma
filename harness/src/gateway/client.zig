@@ -5364,11 +5364,10 @@ const LoopbackGatewayMode = enum {
 };
 
 const LoopbackGatewayFixture = struct {
-    io_backend: std.Io.Threaded = .init_single_threaded,
     server: std.Io.net.Server,
     mode: LoopbackGatewayMode,
     hold_ms: u64,
-    thread: ?std.Thread = null,
+    thread: ?std.Io.Future(void) = null,
     server_open: bool = true,
     accept_started: std.atomic.Value(bool) = .init(false),
     stopping: std.atomic.Value(bool) = .init(false),
@@ -5391,7 +5390,7 @@ const LoopbackGatewayFixture = struct {
 
     fn start(self: *@This()) !void {
         std.debug.assert(self.thread == null);
-        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        self.thread = try self.io().concurrent(run, .{self});
     }
 
     fn deinit(self: *@This()) void {
@@ -5399,11 +5398,8 @@ const LoopbackGatewayFixture = struct {
 
         const zio = self.io();
         self.stopping.store(true, .seq_cst);
-        if (self.thread) |thread| {
-            const listener = std.Io.net.Stream{ .socket = self.server.socket };
-            listener.shutdown(zio, .both) catch {};
-            self.wakeAccept();
-            thread.join();
+        if (self.thread) |*thread| {
+            thread.cancel(zio);
             self.thread = null;
         }
         self.server.deinit(zio);
@@ -5414,8 +5410,8 @@ const LoopbackGatewayFixture = struct {
         return self.server.socket.address.getPort();
     }
 
-    fn io(self: *@This()) std.Io {
-        return self.io_backend.io();
+    fn io(_: *@This()) std.Io {
+        return io_mod.getIo();
     }
 
     fn waitForAcceptStart(self: *@This(), timeout_ms: u64) bool {
@@ -5438,16 +5434,6 @@ const LoopbackGatewayFixture = struct {
             sleepBlocking(1);
         }
         return signal.load(.seq_cst);
-    }
-
-    fn wakeAccept(self: *@This()) void {
-        var wake_io_backend: std.Io.Threaded = .init_single_threaded;
-        const zio = wake_io_backend.io();
-        const address = std.Io.net.IpAddress{ .ip4 = .loopback(self.port()) };
-        var stream = address.connect(zio, .{
-            .mode = .stream,
-        }) catch return;
-        stream.close(zio);
     }
 
     fn sleepBlocking(milliseconds: u64) void {
@@ -5482,7 +5468,7 @@ const LoopbackGatewayFixture = struct {
 
     fn run(self: *@This()) void {
         self.runFallible() catch |err| {
-            if (self.stopping.load(.seq_cst) and err == error.SocketNotListening) return;
+            if (self.stopping.load(.seq_cst) and err == error.Canceled) return;
             self.failure = err;
         };
     }
@@ -6431,7 +6417,7 @@ fn readLoopbackGatewayRequest(zio: std.Io, stream: std.Io.net.Stream, fixture: *
     while (header_len < request.len) {
         request[header_len] = reader.interface.takeByte() catch |err| switch (err) {
             error.EndOfStream => return error.TestRequestClosedEarly,
-            else => return err,
+            error.ReadFailed => return reader.err orelse err,
         };
         header_len += 1;
         if (!std.mem.endsWith(u8, request[0..header_len], "\r\n\r\n")) continue;
@@ -6441,7 +6427,7 @@ fn readLoopbackGatewayRequest(zio: std.Io, stream: std.Io.net.Stream, fixture: *
         if (loopbackContentLength(headers)) |content_length| {
             reader.interface.discardAll(content_length) catch |err| switch (err) {
                 error.EndOfStream => return error.TestRequestClosedEarly,
-                else => return err,
+                error.ReadFailed => return reader.err orelse err,
             };
         }
         return;
@@ -6475,22 +6461,30 @@ fn loopbackContentLength(headers: []const u8) ?usize {
 fn writeLoopbackGatewayBytes(zio: std.Io, stream: std.Io.net.Stream, bytes: []const u8) !void {
     var buffer: [4096]u8 = undefined;
     var writer = stream.writer(zio, &buffer);
-    try writer.interface.writeAll(bytes);
-    try writer.interface.flush();
+    writer.interface.writeAll(bytes) catch |err| return writer.err orelse err;
+    writer.interface.flush() catch |err| return writer.err orelse err;
 }
 
-test "loopback gateway fixture cleanup joins without a client" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
-    var fixture = try LoopbackGatewayFixture.init(.success, 0);
-    defer fixture.deinit();
-    try fixture.start();
-    try std.testing.expect(fixture.waitForAcceptStart(1000));
+test "loopback gateway fixture cleanup cancels an idle listener and incomplete request" {
+    for ([_]bool{ false, true }) |connect| {
+        var fixture = try LoopbackGatewayFixture.init(.response_head_stall, 0);
+        defer fixture.deinit();
+        try fixture.start();
+        try std.testing.expect(fixture.waitForAcceptStart(1000));
 
-    fixture.deinit();
+        const zio = fixture.io();
+        const address = std.Io.net.IpAddress{ .ip4 = .loopback(fixture.port()) };
+        const socket = if (connect) try address.connect(zio, .{ .mode = .stream }) else null;
+        defer if (socket) |connection| connection.close(zio);
+        if (connect) try std.testing.expect(fixture.waitForSignal(&fixture.accepted, 1000));
 
-    try std.testing.expect(fixture.failure == null);
-    try std.testing.expect(fixture.thread == null);
-    try std.testing.expect(!fixture.server_open);
+        const started = io_mod.milliTimestamp();
+        fixture.deinit();
+        try std.testing.expect(io_mod.milliTimestamp() - started < 5_000);
+        try std.testing.expect(fixture.failure == null);
+        try std.testing.expect(fixture.thread == null);
+        try std.testing.expect(!fixture.server_open);
+    }
 }
 
 fn expectBoundedLoopbackTimeout(
