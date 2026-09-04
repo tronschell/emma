@@ -200,6 +200,11 @@ jobs:
       - run: node --test --test-timeout=60000 dist-main/test/background.test.js test/windows.test.mjs
         working-directory: desktop
 
+      - name: msvc-dev-cmd v1.13.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: amd64
+
       - run: npm run build:native
         working-directory: desktop
 
