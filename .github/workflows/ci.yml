@@ -69,8 +69,9 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.16.0
+          cache-size-limit: 4096
 
-      - run: zig build test
+      - run: zig build test --summary all
         working-directory: harness
 
   package_mac:
@@ -164,11 +165,11 @@ jobs:
     steps:
       - name: require all Windows checks
         run: |
-          test "${{ needs.windows.result }}" = skipped
-          test "${{ needs.zig_windows.result }}" = skipped
+          test "${{ needs.windows.result }}" = success
+          test "${{ needs.zig_windows.result }}" = success
 
   windows:
-    if: false
+    if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -213,7 +214,7 @@ jobs:
 
   zig_windows:
     name: zig-windows
-    if: false
+    if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -226,5 +227,5 @@ jobs:
         with:
           version: 0.16.0
 
-      - run: zig build test
+      - run: zig build test --test-timeout 2m --verbose --summary all
         working-directory: harness
