@@ -474,7 +474,10 @@ fn reopenForSecurity(
         file_share_all,
         file_flag_open_reparse_point | file_flag_backup_semantics,
     );
-    if (reopened == windows.INVALID_HANDLE_VALUE) return error.SecurityApiFailed;
+    if (reopened == windows.INVALID_HANDLE_VALUE) {
+        std.debug.print("ReOpenFile failed: {t}\n", .{windows.GetLastError()});
+        return error.SecurityApiFailed;
+    }
     errdefer windows.CloseHandle(reopened);
     const reopened_info = try fileInformation(reopened, policy);
     if (!sameFile(original, reopened_info)) return error.SecurityApiFailed;
