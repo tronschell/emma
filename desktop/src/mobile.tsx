@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { isPin, PIN_MAX_DIGITS, type PairingPayload } from "../shared/mobile-protocol";
 import { day } from "./dates";
 import { reasonText } from "./errors";
-import { InfoDot } from "./icons";
 
 type MobileDevice = { id: number; connected: boolean; lastSeen: number };
 type MobileStatus = { devices: MobileDevice[]; listening: boolean; pairing: boolean; full: boolean; reason: string; name: string; addr: string; threads?: string[]; activeAt?: number };
@@ -18,8 +17,6 @@ const bridge = window.emma as typeof window.emma & {
 const QR_PIXELS = 200;
 const ACTIVE_MS = 1500;
 
-/* The sidebar's view of the bridge: which phones are here, which threads they
-   started, and a short "busy" after each message or answer lands. */
 export function usePhone() {
   const [status, setStatus] = useState<MobileStatus>(EMPTY);
   const [busy, setBusy] = useState(false);
@@ -40,10 +37,6 @@ export function usePhone() {
 const PHONE_TITLES: Record<string, string> = { none: "No phone paired", on: "Phone connected", away: "Phone paired, not connected", busy: "Phone sending" };
 
 const phoneBody = <><rect x="4.6" y="1.8" width="6.8" height="12.4" rx="1.4" /><path d="M7.2 12h1.6" /></>;
-
-export function PhoneGlyph() {
-  return <svg className="thread-from" viewBox="0 0 16 16" role="img" aria-label="Started from a phone"><title>Started from a phone</title>{phoneBody}</svg>;
-}
 
 export function PhoneMark({ state, disabled, onClick }: { state: string; disabled?: boolean; onClick: () => void }) {
   const title = PHONE_TITLES[state] ?? state;
@@ -170,44 +163,46 @@ export function MobileSettings({ busy }: { busy: boolean }) {
 
   const locked = busy || working;
   const ready = isPin(pin);
-  return <div className="settings-lines">
-    {(error || status.reason) && <div className="local-model-error" role="alert">{error || status.reason}</div>}
-    <section>
-      <div>
-        <div className="settings-head"><h3>PIN</h3><InfoDot>The pairing code carries the key that opens this computer, and it is on screen for two minutes. The PIN never appears in it, so a code read over your shoulder is not enough on its own. The phone is asked for it once, while pairing.</InfoDot></div>
-        <p>4 to 12 digits. Choose one before pairing, and type it on the phone when it asks.</p>
-        <label><span className="sr-only">PIN</span><input
+  return <div className="mobile-settings">
+    <header className="settings-intro">
+      <div><h3>Emma, from your phone</h3><p>Continue threads, answer approval requests, and work with git from Emma Mobile.</p></div>
+      <a href="https://github.com/tronschell/emma-mobile" target="_blank" rel="noreferrer">Get Emma Mobile ↗</a>
+    </header>
+    {(error || status.reason) && <p className="local-model-error" role="alert">{error || status.reason}</p>}
+    {status.devices.length > 0 && <section className="mobile-devices" aria-labelledby="mobile-devices-title">
+      <header><h3 id="mobile-devices-title">Paired phones</h3><span className="settings-count">{status.devices.length} of 3</span></header>
+      {status.devices.map((device, index) => <div className="mobile-device" key={device.id}>
+        <div><h4>Phone {index + 1}</h4><p>Paired {day(device.id)}{!device.connected && ` · Last seen ${seen(device.lastSeen)}`}</p></div>
+        <span className="permission-state" data-granted={device.connected}>{device.connected ? "Connected" : "Offline"}</span>
+        <button type="button" className="reset-data" data-armed={confirming === device.id} aria-label={`${confirming === device.id ? "Confirm removal of" : "Remove"} phone ${index + 1}`} disabled={locked} onClick={() => void unpair(device.id)}>{confirming === device.id ? "Confirm removal" : "Remove"}</button>
+      </div>)}
+    </section>}
+    <section className="mobile-pairing" aria-labelledby="mobile-pairing-title">
+      <div className="mobile-pairing-heading"><h3 id="mobile-pairing-title">{pairing ? "Scan to connect" : status.devices.length ? "Pair another phone" : "Pair your first phone"}</h3><span className="settings-count">{pairing ? "Step 2 of 2" : status.full ? "Device limit reached" : "Step 1 of 2"}</span></div>
+      {status.full && !pairing ? <p>All three device slots are in use. Remove a phone above to pair another.</p> : pairing ? <div className="mobile-scan">
+        <canvas ref={canvas} role="img" aria-label="Pairing code for Emma Mobile" />
+        <div><p>Open Emma Mobile and scan this code. Enter the PIN you just chose when the phone asks.</p><span className="mobile-expiry">Expires in {left}s</span><p>Keep this code private. Pair only a phone you are holding.</p></div>
+      </div> : <form className="mobile-pair-form" onSubmit={(event) => { event.preventDefault(); if (ready && !locked && !status.full) void pair(); }}>
+        <p>Keep both devices on the same Wi-Fi or Tailscale network. Choose a PIN, then scan the code on your phone.</p>
+        <div className="mobile-pair-controls"><label htmlFor="mobile-pair-pin">Pairing PIN<input
+          id="mobile-pair-pin"
           value={pin}
           type="password"
           inputMode="numeric"
           autoComplete="off"
-          disabled={locked || status.full || pairing !== null}
+          disabled={locked}
           maxLength={PIN_MAX_DIGITS}
-          placeholder="••••"
-          aria-label="Pairing PIN"
+          placeholder="4–12 digits"
+          aria-describedby="mobile-pin-help"
           onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
-        /></label>
-      </div>
+        /></label><button className="save-settings" disabled={locked || !ready}>{working ? "Preparing code…" : "Show pairing code"}</button></div>
+        <p id="mobile-pin-help" className="mobile-hint">Enter this PIN once on your phone. It stays out of the QR code.</p>
+      </form>}
     </section>
-    <section>
-      <div>
-        <div className="settings-head"><h3>Emma Mobile</h3><InfoDot>Both devices must be on the same Tailscale network, or the same Wi-Fi. A paired phone sends messages to your threads, answers the tool permission prompts this computer would otherwise ask you, and runs git — staging, commits, push and pull.</InfoDot></div>
-        {status.devices.map((device) => <p key={device.id}>
-          <strong className={device.connected ? "status-live" : "status-idle"}><i /> {device.connected ? "Connected" : `Disconnected · seen ${seen(device.lastSeen)}`}</strong>
-          {" "}Paired {day(device.id)}.{" "}
-          <button type="button" className="reset-data" data-armed={confirming === device.id} disabled={locked} onClick={() => void unpair(device.id)}>{confirming === device.id ? "Remove for good" : "Remove"}</button>
-        </p>)}
-        {pairing && <strong className="status-live"><i /> Expires in {left}s</strong>}
-        {pairing && <p>Scan this with Emma Mobile.</p>}
-        {status.devices.length > 0 && status.addr && <p>Reachable at <code>{status.addr}</code>{status.listening || status.reason ? "" : " — not listening yet"}.</p>}
-        {status.full && <p>Three devices are paired, which is the most Emma keeps. Remove one to pair another.</p>}
-        {!ready && !status.full && <p>Choose a PIN above first.</p>}
-        <p>Pair only a phone you are holding.</p>
-        <a href="https://github.com/tronschell/emma-mobile" target="_blank" rel="noreferrer">Emma Mobile ↗</a>
-      </div>
-      {pairing
-        ? <canvas ref={canvas} role="img" aria-label="Pairing code for Emma Mobile" style={{ justifySelf: "start" }} />
-        : <button type="button" style={{ justifySelf: "start" }} disabled={locked || !ready || status.full} onClick={() => void pair()}>Pair a phone</button>}
-    </section>
+    <details className="mobile-details"><summary>Connection & security</summary><div>
+      <p>A paired phone can send messages, answer tool approvals, and stage, commit, push, or pull code on this computer.</p>
+      <p>Pair only a phone you are holding. The QR code expires after two minutes; the PIN is required separately.</p>
+      {status.devices.length > 0 && status.addr && <p>Reachable at <code>{status.addr}</code>{status.listening || status.reason ? "" : " — not listening yet"}.</p>}
+    </div></details>
   </div>;
 }

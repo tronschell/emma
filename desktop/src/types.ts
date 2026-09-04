@@ -84,56 +84,15 @@ export interface ScheduledJob {
   model: string;
 }
 
-export interface ResearchIteration {
-  index: number;
-  at: string;
-  value: number | null;
-  best: number | null;
-  outcome: "keep" | "discard" | "crash";
-  note: string;
-  commit: string;
-  durationMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  microDollars: number;
-}
-
-export interface ResearchJob {
-  id: string;
-  title: string;
-  projectDir: string;
-  metricName: string;
-  metricKind: "grep" | "judge";
-  metricPrompt: string;
-  direction: "lower" | "higher";
-  evalCommand: string;
-  prompt: string;
-  proposerModel: string;
-  permissionMode: PermissionMode;
-  maxSeconds: number;
-  maxTokens: number;
-  maxMicroDollars: number;
-  spentSeconds: number;
-  spentTokens: number;
-  spentMicroDollars: number;
-  status: "running" | "paused" | "finished" | "failed";
-  statusNote: string;
-  threadId?: string | null;
-  createdAt: string;
-  iterations: ResearchIteration[];
-}
-
 export interface Snapshot {
   threads: Thread[];
   scheduledJobs: ScheduledJob[];
-  researchJobs: ResearchJob[];
   warnings: string[];
 }
 
 export interface CompactSnapshot {
   threads: ThreadSummary[];
   scheduledJobs: ScheduledJob[];
-  researchJobs: ResearchJob[];
   warnings: string[];
 }
 
@@ -350,7 +309,6 @@ declare global {
       uninstallPlugin(id: string): Promise<PluginCatalog>;
       pluginDetail(value: { marketplace: string; plugin: string }): Promise<PluginDetail>;
       trustPluginHooks(value: { id: string; trusted: boolean }): Promise<PluginCatalog>;
-      onFolderAttached(listener: (value: { threadId: string; folderId: string }) => void): () => void;
       pickFolder(): Promise<FolderGrant[]>;
       forgetFolder(id: string): Promise<FolderGrant[]>;
       listFolderFiles(id: string): Promise<FolderListing>;
@@ -411,14 +369,15 @@ declare global {
       stopBackground(id: string): Promise<boolean>;
       onBackground(listener: () => void): () => void;
       listCliRuns(): Promise<CliRun[]>;
-      readCliRun(id: string): Promise<{ run: CliRun; output: string } | null>;
+      readCliRun(id: string): Promise<{ run: CliRun; output: string; result?: string; resultTruncated?: boolean } | null>;
       stopCliRun(id: string): Promise<boolean>;
       installedClis(): Promise<{ id: string; label: string; bin: string; path: string; signedIn?: boolean }[]>;
       semanticGrepStatus(): Promise<SemanticGrepStatus>;
       onSemanticGrep(listener: () => void): () => void;
       signInCli(value: { signIn: string; columns: number; rows: number }): Promise<TerminalTab>;
       cliModels(value: { cli: string; refresh?: boolean }): Promise<CliModels>;
-      setCliRunModel(value: { id: string; model: string }): Promise<CliRun>;
+      setCliRunModel(value: { id: string; model?: string; effort?: string }): Promise<CliRun>;
+      handoffCliRun(value: import("../shared/cli").CliHandoffRequest): Promise<CliRun>;
       sendCliRun(value: { id: string; prompt: string }): Promise<CliRun | null>;
       onCliRuns(listener: () => void): () => void;
       browserStatus(threadId: string): Promise<BrowserStatus>;

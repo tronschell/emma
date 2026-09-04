@@ -108,7 +108,7 @@ program and the harness launching it.
 ### Bundled skills
 
 Emma ships her own skills in [`desktop/skills/`](../desktop/skills): `artifact`,
-`autoresearch`, `building-emma`, `installing-capabilities`, `meta-harness`,
+`building-emma`, `installing-capabilities`, `meta-harness`,
 `scheduled-tasks`, `threads`. Each launch rewrites them into `<userData>/skills/`
 and the harness profile's `.fx/skills/`, so they are present before any import
 and always match the running build. A bundled slug is app-owned: a `write_skill`

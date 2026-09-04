@@ -547,3 +547,9 @@ test("csv cells keep commas, quotes and newlines inside one field", () => {
   assert.equal(toCsv([["plain", 12], ['say "hi", now', "line\nbreak"]]), 'plain,12\r\n"say ""hi"", now","line\nbreak"\r\n');
   assert.equal(toCsv([[Number.NaN, Number.POSITIVE_INFINITY]]), ",\r\n");
 });
+
+test("retired experiment methods are rejected at the IPC boundary", () => {
+  for (const method of ["saveResearchJob", "deleteResearchJob", "setResearchJobStatus", "setResearchJobThread", "recordResearchIteration"]) {
+    assert.throws(() => validateRequest({ method, params: {} }), /not allowed/);
+  }
+});

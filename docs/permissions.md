@@ -53,13 +53,12 @@ its implementation asks for the resolved app rather than each individual call.
 | `secret` | ask | ask | verifier | auto |
 | `install_mcp` | ask | ask | verifier | auto |
 | `workflow` | ask | ask | verifier | auto |
-| `autoresearch` | ask | ask | verifier | auto |
 | `artifact` | auto | auto | auto | auto |
 | `component` | auto | auto | auto | auto |
 | `visualize` | auto | auto | auto | auto |
 
 Seven tools use the ordinary gate: `browser`, `cli`, `run_tool`, `secret`,
-`install_mcp`, `workflow`, `autoresearch`. `computer` requires a human app grant;
+`install_mcp`, `workflow`. `computer` requires a human app grant;
 its `list_apps` action returns only running-app metadata without that grant.
 
 Creating a component uses its ordinary tool gate, but sending a widget request
@@ -71,7 +70,7 @@ See [components.md](components.md).
 Tools switch or an unknown name, checked first, and applies in every mode. A
 hidden tool is never advertised and is refused if the model guesses the name.
 
-`acceptEdits` is identical to `ask` for all 28 of Emma's own tools. The whole
+`acceptEdits` is identical to `ask` for all 27 of Emma's own tools. The whole
 difference between those two modes is on the harness's side: `onPermission` in
 [main.ts](../desktop/main/main.ts) allows a harness `kind === "edit"` call
 silently under `acceptEdits`, and asks for everything else.
@@ -179,8 +178,8 @@ looking at the payload, ids are `randomUUID()` and are deleted on first settle.
 
 ## Unattended runs carry their saved mode
 
-A scheduled task stores its own `permissionMode`. `workflow` and `autoresearch`
-offer three values, not four — `auto` needs a verifier the unattended path does
+A scheduled task stores its own `permissionMode`. `workflow`
+offers three values, not four — `auto` needs a verifier the unattended path does
 not run:
 
 ```
@@ -189,7 +188,7 @@ enum: ["ask", "acceptEdits", "full"]
 
 Normalised through `asPermissionMode` on save and again at execution, which falls
 back to `ask`. Nobody answers a question there, so `ask` declines every gated
-call. See [jobs.md](jobs.md) and [autoresearch.md](autoresearch.md).
+call. See [jobs.md](jobs.md).
 
 Saving Full access does not preapprove computer use. Unattended work cannot read
 or control an app unless a user explicitly answers that turn's app prompt.
@@ -250,5 +249,5 @@ saves tokens and gates nothing.
 - [computer-use.md](computer-use.md) — app grants, background controls and Escape
 - [privacy.md](privacy.md) — what leaves this computer
 - [harness.md](harness.md) — `emma-cli`, ACP, and the permission channel
-- [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md) — unattended runs
+- [jobs.md](jobs.md) — unattended runs
 - [models.md](models.md) — configuring the verifier and advisor routes

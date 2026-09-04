@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { CLI_PLANS, MAX_SECRET_CHARS, MODEL_PLANS, OPENROUTER_CREDITS_URL, OPENROUTER_KEYS_URL, PLAN_WEEK_MS, PLAN_WINDOW_MS, balanceLine, emptySpend, outOfCredit, planBalanceLine, planForProfile, planSpend, type CliPlan, type KeyBalance, type ModelPlan, type PlanGeneration, type PlanSpend, type UserSettings } from "../shared/settings";
+import { CLI_PLANS, MAX_SECRET_CHARS, MODEL_PLANS, OPENROUTER_KEYS_URL, PLAN_WEEK_MS, PLAN_WINDOW_MS, emptySpend, planBalanceLine, planForProfile, planSpend, type CliPlan, type KeyBalance, type ModelPlan, type PlanGeneration, type PlanSpend, type UserSettings } from "../shared/settings";
 import { charLabel } from "../shared/usage";
 import { reasonText } from "./errors";
 import { BrandIcon, InfoDot } from "./icons";
 import { TerminalSurface } from "./terminal";
 import type { TerminalTab } from "../shared/terminal";
-import { brandForProvider } from "./brands";
+import { brandForImporter, brandForProvider } from "./brands";
 import type { CredentialSummary, Snapshot } from "./types";
 
 type InstalledCli = { id: string; label: string; bin: string; path: string; signedIn?: boolean };
@@ -57,8 +57,8 @@ export function ModelPlans({ settings, busy }: { settings: UserSettings; busy: b
       <strong>{MODEL_PLANS.filter((plan) => keyed(plan)).length} connected</strong>
     </header>
     {(error || status) && <p className={error ? "local-model-error" : "local-model-status"} role="status">{error || status}</p>}
-    <div className="provider-key-list">{MODEL_PLANS.map((plan) => <PlanKeyRow key={plan.id} plan={plan} stored={stored} draft={keys[plan.id] ?? ""} setDraft={(value) => setKeys((current) => ({ ...current, [plan.id]: value }))} busy={busy} onSave={saveKey} models={routed(plan).join(", ")} live={active(plan)} spend={<SpendLine window5h={window5h.get(plan.id)} week={week.get(plan.id)} balance={plan.id === "deepseek" ? balance : null} />} />)}</div>
-    <div className="provider-key-list">{CLI_PLANS.map((plan) => <CliPlanRow key={plan.id} plan={plan} installed={clis.find((item) => item.id === plan.id)} busy={busy} onDone={readClis} />)}</div>
+    <div className="provider-key-list">{MODEL_PLANS.map((plan) => <details className="settings-section" key={plan.id}><summary><span>{plan.label}</span><small>{keyed(plan) ? "Connected" : "Not connected"}</small></summary><div className="settings-section-body"><PlanKeyRow plan={plan} stored={stored} draft={keys[plan.id] ?? ""} setDraft={(value) => setKeys((current) => ({ ...current, [plan.id]: value }))} busy={busy} onSave={saveKey} models={routed(plan).join(", ")} live={active(plan)} spend={<SpendLine window5h={window5h.get(plan.id)} week={week.get(plan.id)} balance={plan.id === "deepseek" ? balance : null} />} /></div></details>)}</div>
+    <div className="provider-key-list">{CLI_PLANS.map((plan) => <details className="settings-section" key={plan.id}><summary><span>{plan.plan}</span><small>{clis.find((cli) => cli.id === plan.id)?.signedIn ? "Signed in" : "Not signed in"}</small></summary><div className="settings-section-body"><CliPlanRow plan={plan} installed={clis.find((item) => item.id === plan.id)} busy={busy} onDone={readClis} /></div></details>)}</div>
   </section>;
 }
 
@@ -82,61 +82,83 @@ export function PlanKeyRow({ plan, stored, draft, setDraft, busy, onSave, models
 }
 
 type ProviderTile = { id: string; label: string; detail: string; brand: string; plan?: ModelPlan; cli?: CliPlan };
-const PROVIDER_TILES: readonly ProviderTile[] = [
-  { id: "openrouter", label: "OpenRouter", detail: "free tier · every maker", brand: "openrouter" },
-  ...CLI_PLANS.map((cli) => ({ id: `cli:${cli.id}`, label: cli.label, detail: cli.plan, brand: cli.brand, cli })),
-  ...MODEL_PLANS.map((plan) => ({ id: plan.id, label: plan.label, detail: plan.detail.split(", ").pop() ?? plan.detail, brand: plan.brand, plan })),
+const SUBSCRIPTION_TILES: readonly ProviderTile[] = [
+  ...CLI_PLANS.filter((cli) => cli.id !== "codex").map((cli) => ({ id: `cli:${cli.id}`, label: cli.id === "claude" ? "Claude" : "Gemini", detail: cli.plan, brand: cli.brand, cli })),
+  ...MODEL_PLANS.filter((plan) => plan.billing === "subscription" || plan.id === "mistral").map((plan) => ({ id: plan.id, label: plan.label, detail: plan.id === "mistral" ? "Plan credits · then per token" : "Subscription key", brand: plan.brand, plan })),
+  ...CLI_PLANS.filter((cli) => cli.id === "codex").map((cli) => ({ id: `cli:${cli.id}`, label: "ChatGPT", detail: cli.plan, brand: cli.brand, cli })),
 ];
 
-export function ProviderGrid({ busy, onConnected }: { busy: boolean; onConnected?: (count: number) => void }) {
+export function ProviderGrid({ busy, onReady }: { busy: boolean; onReady: (ready: boolean) => void }) {
   const [stored, setStored] = useState<CredentialSummary[]>([]);
   const [clis, setClis] = useState<InstalledCli[]>([]);
-  const [picked, setPicked] = useState("openrouter");
+  const [picked, setPicked] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [balance, setBalance] = useState<KeyBalance | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const readClis = useCallback(() => void window.emma.installedClis().then(setClis).catch(() => undefined), []);
+  const readClis = useCallback(() => void window.emma.installedClis().then(setClis).catch((reason: unknown) => setError(reasonText(reason))), []);
   useEffect(() => {
-    void window.emma.listCredentials().then(setStored).catch(() => undefined);
-    void window.emma.openRouterBalance().then(setBalance).catch(() => undefined);
+    let active = true;
+    void window.emma.listCredentials().then((next) => { if (active) setStored(next); }).catch((reason: unknown) => { if (active) setError(reasonText(reason)); });
+    void window.emma.openRouterBalance().then((next) => { if (active) setBalance(next); }).catch((reason: unknown) => { if (active) setError(reasonText(reason)); }).finally(() => { if (active) setChecking(false); });
     readClis();
+    window.addEventListener("focus", readClis);
+    return () => { active = false; window.removeEventListener("focus", readClis); };
   }, [readClis]);
-  const keyed = (env: string) => stored.some((item) => item.env === env && item.masked);
-  const connected = (tile: ProviderTile) => tile.cli ? clis.find((item) => item.id === tile.cli?.id)?.signedIn === true : keyed(tile.plan?.credentialEnv ?? OPENROUTER_ENV);
-  const live = PROVIDER_TILES.filter(connected).length;
-  useEffect(() => { onConnected?.(live); }, [live, onConnected]);
+  const ready = !!balance?.keyed && !balance.error && !checking && !saving;
+  useEffect(() => { onReady(ready); }, [ready, onReady]);
+  const connected = (tile: ProviderTile) => tile.cli ? clis.some((item) => item.id === tile.cli?.id && item.signedIn) : stored.some((item) => item.env === tile.plan?.credentialEnv && item.masked);
   const saveKey = async (env: string, secret?: string) => {
     setError("");
+    setSaving(true);
+    if (env === OPENROUTER_ENV) setBalance(null);
     try {
       setStored(await window.emma.saveCredential(secret === undefined ? { env } : { env, secret }));
       setDrafts((current) => ({ ...current, [env]: "" }));
       if (env === OPENROUTER_ENV) setBalance(await window.emma.openRouterBalance());
     } catch (reason) { setError(reasonText(reason)); }
+    finally { setSaving(false); }
   };
-  const tile = PROVIDER_TILES.find((item) => item.id === picked) ?? PROVIDER_TILES[0];
+  const verify = async () => {
+    const draft = (drafts[OPENROUTER_ENV] ?? "").trim();
+    if (draft) { await saveKey(OPENROUTER_ENV, draft); return; }
+    setChecking(true);
+    setError("");
+    try { setBalance(await window.emma.openRouterBalance()); }
+    catch (reason) { setBalance(null); setError(reasonText(reason)); }
+    finally { setChecking(false); }
+  };
+  const tile = SUBSCRIPTION_TILES.find((item) => item.id === picked);
   const openRouter = stored.find((item) => item.env === OPENROUTER_ENV && item.masked);
-  return <div className="provider-grid-wrap">
-    <div className="provider-grid" role="tablist" aria-label="Ways to reach a model">
-      {PROVIDER_TILES.map((item) => <button key={item.id} type="button" role="tab" aria-selected={item.id === picked} className={`provider-tile ${connected(item) ? "on" : ""} ${item.id === "openrouter" ? "free" : ""}`} disabled={busy} onClick={() => setPicked(item.id)}>
-        <span className="provider-tile-head"><BrandIcon brand={brandForProvider(item.brand)} className="provider-mark" /><em>{connected(item) ? "connected" : item.id === "openrouter" ? "free" : ""}</em></span>
-        <strong>{item.label}</strong><small>{item.detail}</small>
-      </button>)}
+  const locked = busy || saving || checking;
+  return <div className="setup-connections">
+    <section className="setup-router" aria-labelledby="setup-router-title">
+      <div className="setup-wash" aria-hidden="true" />
+      <header><BrandIcon brand={brandForProvider("openrouter")} className="setup-router-mark" /><div><h3 id="setup-router-title">OpenRouter</h3><p>A free API key is enough to get started.</p></div><span className="setup-badge">{ready ? "Connected" : "Required"}</span></header>
+      <p>Create a key in your OpenRouter account, then paste it here.</p>
+      <a className="setup-button" href={OPENROUTER_KEYS_URL} target="_blank" rel="noreferrer">Create a free API key ↗</a>
+      <form className="setup-key" onSubmit={(event) => { event.preventDefault(); void verify(); }}>
+        <label htmlFor="setup-router-key">OpenRouter API key</label>
+        <div><input id="setup-router-key" type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={locked} value={drafts[OPENROUTER_ENV] ?? ""} placeholder={openRouter?.masked ?? "sk-or-v1-…"} onChange={(event) => { setBalance(null); setDrafts((current) => ({ ...current, [OPENROUTER_ENV]: event.target.value })); }} /><button type="submit" className="setup-primary" disabled={locked || (!openRouter && !balance?.keyed && !(drafts[OPENROUTER_ENV] ?? "").trim())}>{checking || saving ? "Checking…" : ready ? "Check again" : "Verify key"}</button></div>
+      </form>
+      <small className={ready ? "setup-success" : ""} role="status">{ready ? "✓ Key verified. OpenRouter is ready." : checking ? "Checking your saved OpenRouter key…" : "Your key is encrypted using this computer’s credential store."}</small>
+      {balance?.error && <p className="dialog-error" role="alert">{balance.error} Check the key or try again.</p>}
+    </section>
+    <div className="setup-subscription-head"><h3>Already have a subscription?</h3><span>Optional</span></div>
+    <p>Connect one or more. OpenRouter stays connected alongside them.</p>
+    <div className="setup-subscriptions" aria-label="Subscriptions and plans">{SUBSCRIPTION_TILES.map((item) => <button key={item.id} type="button" className={`setup-subscription subscription-${item.brand}`} data-connected={connected(item)} aria-pressed={item.id === picked} aria-expanded={item.id === picked} aria-controls="setup-subscription-detail" disabled={locked} onClick={() => setPicked(item.id === picked ? "" : item.id)}>
+      <span className="setup-wash" aria-hidden="true" />
+      <span className="setup-subscription-mark"><BrandIcon brand={item.cli?.id === "claude" ? brandForImporter("claude") : brandForProvider(item.brand)} className="provider-mark" />{connected(item) && <span className="setup-success" aria-label="Connected">✓</span>}</span>
+      <strong>{item.label}</strong><small>{item.detail}</small>
+    </button>)}</div>
+    <div id="setup-subscription-detail" className="setup-subscription-detail" hidden={!tile}>
+      {tile && <><div className="setup-subscription-heading"><h3>{tile.label}</h3><button type="button" className="setup-link" disabled={locked} onClick={() => setPicked("")}>Close</button></div>
+      {tile.plan && <PlanKeyRow plan={tile.plan} stored={stored} draft={drafts[tile.plan.credentialEnv] ?? ""} setDraft={(value) => setDrafts((current) => ({ ...current, [tile.plan!.credentialEnv]: value }))} busy={locked} onSave={(plan, secret) => saveKey(plan.credentialEnv, secret)} />}
+      {tile.cli && <CliPlanRow plan={tile.cli} installed={clis.find((item) => item.id === tile.cli?.id)} busy={locked} onDone={readClis} />}</>}
     </div>
-    <div className="provider-grid-form">
-      {tile.id === "openrouter" && <>
-        <form className="provider-key-row plan-row" onSubmit={(event) => { event.preventDefault(); void saveKey(OPENROUTER_ENV, (drafts[OPENROUTER_ENV] ?? "").trim()); }}>
-          <BrandIcon brand={brandForProvider("openrouter")} className="provider-mark" />
-          <div><div className="settings-head"><strong>OpenRouter key</strong><InfoDot>One key covers every maker in the catalog. It is encrypted with this computer's credential store and handed to the agent through its environment; changing it restarts the local agent.</InfoDot></div><small>{openRouter ? openRouter.masked : "A free key is enough — models marked FREE cost nothing"}</small><em className="provider-key-balance"><a href={OPENROUTER_KEYS_URL} target="_blank" rel="noreferrer">Get a key ↗</a>{openRouter && <span className={outOfCredit(balance) || balance?.error ? "warn" : ""}>{balanceLine(balance)}</span>}{openRouter && (outOfCredit(balance) || balance?.freeTier) && <a href={OPENROUTER_CREDITS_URL} target="_blank" rel="noreferrer">Add credit ↗</a>}</em></div>
-          <label><span className="sr-only">OpenRouter API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={drafts[OPENROUTER_ENV] ?? ""} placeholder={openRouter ? "Paste a replacement" : "sk-or-v1-…"} onChange={(event) => setDrafts((current) => ({ ...current, [OPENROUTER_ENV]: event.target.value }))} /></label>
-          <span className={`plan-model ${openRouter ? "live" : ""}`}>{openRouter ? "Whole catalog" : live ? "Optional" : "Required"}</span>
-          <button type="submit" disabled={busy || !(drafts[OPENROUTER_ENV] ?? "").trim()}>Save key</button>
-          <button type="button" disabled={busy || !openRouter} onClick={() => void saveKey(OPENROUTER_ENV)}>Remove</button>
-        </form>
-      </>}
-      {tile.plan && <PlanKeyRow plan={tile.plan} stored={stored} draft={drafts[tile.plan.credentialEnv] ?? ""} setDraft={(value) => setDrafts((current) => ({ ...current, [tile.plan!.credentialEnv]: value }))} busy={busy} onSave={(plan, secret) => saveKey(plan.credentialEnv, secret)} />}
-      {tile.cli && <CliPlanRow plan={tile.cli} installed={clis.find((item) => item.id === tile.cli?.id)} busy={busy} onDone={readClis} />}
-      {error && <p className="settings-error" role="alert">{error}</p>}
-    </div>
+    <small className="setup-subscription-note">Mistral uses plan credits, then metered billing. Other API keys and local models are in Settings.</small>
+    {error && <p className="dialog-error" role="alert">{error}</p>}
   </div>;
 }
 

@@ -86,13 +86,19 @@ Emma takes a single-instance lock, so a second launch focuses the first window
 instead of opening one. A packaged app and a dev run share Electron's `userData`
 lock — see [troubleshooting.md](troubleshooting.md).
 
-A six-step walkthrough opens once (**Emma · Model · Quick Ask · Permissions ·
-Knowledge · Agents**), gated on `emma.setupSeen.v1` in `localStorage`. Skip any
-step; Emma asks again when it needs to.
+A three-step walkthrough opens once (**Connect · Permissions · Quick Ask**),
+gated on `emma.setupSeen.v1` in `localStorage`. Connect requires a verified
+OpenRouter API key; a free key is enough. Subscription connections are optional
+and do not replace OpenRouter.
 
-Step 5 picks your **vault** — an Obsidian vault or any plain folder. Emma writes
-one Markdown note per save into `<vault>/knowledge-base`; there is no second
-copy. See [data.md](data.md) for the layout.
+Permissions shows each grant’s purpose, current status, and system settings
+action. All permissions are optional. The last step demonstrates the Quick Ask
+shortcut and opens the real Quick Ask interface; Finish setup opens the workspace.
+The current step is saved so setup can resume after a relaunch.
+
+Choose your **vault** later in Settings — an Obsidian vault or any plain folder.
+Emma writes one Markdown note per save into `<vault>/knowledge-base`; there is
+no second copy. See [data.md](data.md) for the layout.
 
 ## Platform permissions
 
@@ -188,8 +194,7 @@ vendors [ripgrep](https://github.com/BurntSushi/ripgrep) and builds on
 [Vite](https://github.com/vitejs/vite),
 [Tailwind](https://github.com/tailwindlabs/tailwindcss),
 [xterm.js](https://github.com/xtermjs/xterm.js),
-[mermaid](https://github.com/mermaid-js/mermaid) and
-[Recharts](https://github.com/recharts/recharts). The interface font is
+[mermaid](https://github.com/mermaid-js/mermaid). The interface font is
 Departure Mono (SIL OFL). Vendor brand marks:
 [icon-sources.md](icon-sources.md) and
 [desktop/assets/BRANDS-NOTICES.md](../desktop/assets/BRANDS-NOTICES.md).

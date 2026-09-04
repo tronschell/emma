@@ -62,6 +62,11 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
 
+      - uses: actions/setup-python@v6
+        if: steps.version.outputs.skip != 'true'
+        with:
+          python-version: '3.12'
+
       - name: verify and extract the release candidate
         if: github.event_name == 'workflow_run' && steps.version.outputs.skip != 'true'
         env:

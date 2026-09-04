@@ -21,11 +21,6 @@ export const methods = [
   "deleteScheduledJob",
   "runScheduledJob",
   "setScheduledJobEnabled",
-  "saveResearchJob",
-  "deleteResearchJob",
-  "setResearchJobStatus",
-  "setResearchJobThread",
-  "recordResearchIteration",
   "listOpenRouterModels",
   "selectOpenRouterModel",
   "setThreadModel",
@@ -50,11 +45,6 @@ const fields: Record<Method, readonly string[]> = {
   deleteScheduledJob: ["jobId"],
   runScheduledJob: ["jobId"],
   setScheduledJobEnabled: ["jobId", "enabled"],
-  saveResearchJob: ["title", "projectDir", "metricName", "metricKind", "direction", "evalCommand", "proposerModel", "permissionMode", "maxSeconds", "maxTokens", "maxMicroDollars"],
-  deleteResearchJob: ["jobId"],
-  setResearchJobStatus: ["jobId", "status"],
-  setResearchJobThread: ["jobId", "threadId"],
-  recordResearchIteration: ["jobId", "outcome", "durationMilliseconds", "inputTokens", "outputTokens", "microDollars"],
   listOpenRouterModels: [],
   selectOpenRouterModel: ["modelId"],
   setThreadModel: ["threadId", "modelId"],
@@ -73,9 +63,6 @@ const optionalFields: Partial<Record<Method, readonly string[]>> = {
   setThreadModel: ["effort"],
   saveScheduledJob: ["jobId", "nodes", "model"],
   runScheduledJob: ["variables"],
-  saveResearchJob: ["jobId", "metricPrompt", "prompt"],
-  setResearchJobStatus: ["note"],
-  recordResearchIteration: ["value", "note", "commit"],
 };
 
 export function validateRequest(value: unknown): Request {

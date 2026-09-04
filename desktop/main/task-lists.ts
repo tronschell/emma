@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { MAX_TASK_LIST_BYTES, MAX_TASK_LISTS, MAX_TASK_LIST_TITLE_CHARS, parseTaskList, renderTaskList, taskListSlug, type TaskList } from "../shared/task-list";
+import { writeAtomic } from "./write-atomic";
 
 export const taskListsRoot = (userData: string) => path.join(userData, "task-lists");
 
@@ -89,15 +89,4 @@ function unique(slug: string, taken: readonly string[]): string {
     if (!taken.includes(`${stem}-${suffix}`)) return `${stem}-${suffix}`;
   }
   throw new Error(`Emma already holds too many task lists called "${slug}".`);
-}
-
-async function writeAtomic(file: string, content: string): Promise<void> {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
 }

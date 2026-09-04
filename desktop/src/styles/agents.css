@@ -42,8 +42,7 @@
 .chat-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; }
 .chat-pane[hidden] { display: none; }
 .thread-column:has(.agent-tabs) { grid-template-rows: auto minmax(0, 1fr); }
-/* The top band is a titlebar: 45px + its 1px rule sits the tabs on the same
-   centre line as the traffic lights (17 + 6) and the thread bar below it. */
+
 .agent-tabs { display: flex; align-items: stretch; overflow-x: auto; border-bottom: 1px solid var(--border); }
 .agent-tab { display: flex; align-items: center; border-right: 1px solid var(--border); }
 .agent-tab > button { display: flex; align-items: center; gap: var(--s-2); min-height: 45px; padding: 0 var(--s-3); color: var(--text-3); background: transparent; border: 0; font-family: var(--font-mono); font-size: var(--fs-xs); white-space: nowrap; transition: color var(--t), background-color var(--t); }
@@ -94,7 +93,7 @@
 .pip .model-menu-note { padding: var(--s-2); font-size: var(--fs-2xs); }
 
 .pip-clips { display: flex; flex-wrap: wrap; gap: 4px; padding: var(--s-1) var(--s-2) 0; }
-.pip-clips span { display: inline-flex; align-items: center; gap: 4px; padding: 1px var(--s-1); color: var(--text-2); background: var(--surface-3); border: 1px solid var(--border); border-radius: 2px; font-size: var(--fs-2xs); }
+.pip-clips span { display: inline-flex; align-items: center; gap: 4px; padding: 1px var(--s-1); color: var(--text-2); background: var(--surface-3); border: 1px solid var(--border); border-radius: 0; font-size: var(--fs-2xs); }
 .pip-clips button { display: grid; place-items: center; width: 14px; height: 14px; padding: 0; color: var(--text-3); background: transparent; border: 0; }
 .pip-clips button:hover { color: var(--text); }
 
@@ -124,7 +123,7 @@
 .cli-state { flex: none; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); }
 .cli-state.running { color: #57c785; }
 .cli-state.failed { color: #ff6b81; }
-.cli-unattended { flex: none; padding: 0 var(--s-1); color: #f2a13c; border: 1px solid currentcolor; border-radius: 2px; font-size: var(--fs-2xs); }
+.cli-unattended { flex: none; padding: 0 var(--s-1); color: #f2a13c; border: 1px solid currentcolor; border-radius: 0; font-size: var(--fs-2xs); }
 
 .pip-menu { position: relative; display: flex; }
 .pip-menu > button[aria-expanded="true"] { color: var(--text); background: var(--surface-1); }
@@ -321,14 +320,12 @@
 .open-in.boxed button { grid-auto-flow: column; gap: var(--s-2); width: auto; min-height: 24px; padding: 0 var(--s-2); border-color: var(--border); }
 .open-in.boxed small { color: var(--text-3); font: var(--fs-xs)/1 var(--font-mono); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 
-/* Several editors are one chip: the marks overlap, each nudged right of the one
-   before it, with the default (or the first) riding on top. */
+
 .open-in.stacked { position: relative; }
 .open-in.stacked .open-in-stack { grid-auto-flow: column; gap: var(--s-2); width: auto; }
 .open-in-mark { display: grid; place-items: center; position: relative; z-index: 1; }
 .open-in-mark + .open-in-mark { margin-left: -13px; }
-/* Each mark drops a shadow to its right, onto the one it is covering, so the stack
-   reads as layers rather than as one flat cut-out. */
+
 .open-in-mark { filter: drop-shadow(2px 1px 2px rgb(0 0 0 / 0.55)); }
 .open-in-more { color: var(--text-3); font-size: var(--fs-2xs); }
 .open-in-more[aria-expanded="true"] { border-color: var(--border-strong); }
@@ -353,3 +350,110 @@
 .turn-agents-done[open] > summary .caret { transform: rotate(90deg); }
 .turn-agents-done > summary:hover, .turn-agents-done[open] > summary { color: var(--text-2); }
 .turn-agents-done > .turn-agents { max-height: 168px; margin-top: var(--s-1); overflow-y: auto; }
+
+.cli-conversation { background: var(--surface-1); }
+.cli-conversation .thread-bar h2 { color: var(--text-2); font-size: var(--fs-xs); }
+.cli-conversation .thread-bar h2 > span { color: var(--text-3); font-weight: 400; }
+.cli-conversation .cli-state, .pip:has(.cli-footer) .cli-state { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 0; background: var(--surface-2); }
+.cli-conversation .cli-state::before, .pip:has(.cli-footer) .cli-state::before { content: ""; width: 5px; height: 5px; background: currentColor; border-radius: 0; }
+.cli-brief { padding: 28px clamp(20px, 5%, 48px) 0; }
+.cli-identity { display: flex; align-items: center; gap: 14px; }
+.cli-avatar { display: grid; place-items: center; flex: none; width: 48px; height: 48px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-2); }
+.cli-avatar .cli-mark { width: 25px; height: 25px; }
+.cli-eyebrow { display: block; margin-bottom: 5px; color: var(--text-2); font-size: var(--fs-xs); }
+.cli-brief h3 { margin: 0; color: var(--text); font-size: 20px; font-weight: 550; line-height: 1.35; overflow-wrap: anywhere; letter-spacing: -.02em; }
+.cli-metadata { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 18px 0 22px; color: var(--text-3); font-size: var(--fs-xs); }
+.cli-metadata > span { max-width: 100%; overflow-wrap: anywhere; }
+.cli-metadata > span + span::before { content: "·"; margin-right: 14px; }
+.cli-output-tabs { display: flex; gap: 4px; width: fit-content; padding: 3px; margin-bottom: 20px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-2); }
+.cli-output-tabs button { padding: 7px 14px; color: var(--text-3); background: transparent; border: 0; border-radius: 0; font-size: var(--fs-xs); transition: background var(--t), color var(--t); }
+.cli-output-tabs button[aria-pressed="true"] { color: var(--text); background: var(--surface-3); box-shadow: 0 1px 3px #0002; }
+.cli-conversation > .pip-prose, .cli-conversation > .cli-stream { min-height: 0; padding: 24px clamp(20px, 5%, 48px) 32px; margin: 0; overflow: auto; border-top: 1px solid var(--border); }
+.cli-conversation > .pip-prose { font-size: 14px; line-height: 1.75; }
+.cli-conversation > .pip-prose > * { max-width: 780px; }
+.cli-conversation > .pip-prose pre { font-size: var(--fs-sm); }
+.cli-panel-footer { min-width: 0; border-top: 1px solid var(--border); background: var(--surface-2); padding: 0 clamp(12px, 3%, 32px) 16px; }
+.cli-panel-footer .composer { max-width: none; margin: 0; background: var(--surface-1); border: 1px solid var(--border); border-radius: 0; }
+.cli-panel-footer .composer textarea { min-height: 66px; font-size: 14px; }
+.cli-panel-footer .composer-row { padding: 8px 12px; }
+.cli-panel-footer .pip-model .model-button { height: 28px; font-size: var(--fs-xs); }
+.cli-handoff { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 0; }
+.cli-lineage { display: flex; flex: 1 1 180px; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-2); font-size: var(--fs-xs); }
+.cli-source, .cli-current, .cli-source button { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.cli-source button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-1); color: var(--text-2); font: inherit; }
+.cli-source button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.cli-source button:disabled { cursor: default; }
+.cli-source b { color: var(--text-3); font-weight: 400; }
+.cli-current { padding: 5px 0; }
+.cli-lineage small { color: var(--text-3); font-size: var(--fs-2xs); white-space: nowrap; }
+.cli-handoff-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 14px; min-height: 34px; padding: 7px 12px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 0; background: var(--surface-3); font-size: var(--fs-xs); white-space: nowrap; }
+.cli-handoff-trigger:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-3)); }
+.cli-handoff-trigger:disabled { opacity: .45; }
+.cli-handoff-trigger > span { color: var(--accent); font-size: 16px; }
+.cli-handoff-sent { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-basis: 100%; color: var(--text-2); font-size: var(--fs-xs); }
+.cli-handoff-sent button { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; }
+.cli-handoff-dialog { width: min(580px, calc(100vw - 32px)); max-height: min(800px, calc(100dvh - 48px)); overflow: auto; border-radius: 0; box-shadow: 0 24px 90px #0007; }
+.cli-handoff-dialog > header { align-items: start; padding: 24px 24px 18px; border: 0; }
+.cli-handoff-dialog > header > div { display: grid; gap: 8px; }
+.cli-handoff-dialog > header h2 { margin: 0; font-family: inherit; font-size: 24px; font-weight: 550; line-height: 1.25; text-transform: none; letter-spacing: -.03em; }
+.cli-handoff-dialog > header span { color: var(--text-3); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.cli-handoff-dialog > header > button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 0; background: var(--surface-2); }
+.cli-handoff-dialog > header > button svg { width: 14px; height: 14px; }
+.cli-handoff-origin { display: flex; align-items: center; gap: 12px; margin: 0 24px 24px; padding: 14px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-2); }
+.cli-handoff-origin > .cli-mark { width: 24px; height: 24px; }
+.cli-handoff-origin > div { min-width: 0; flex: 1; }
+.cli-handoff-origin strong { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text); font-size: 13px; font-weight: 500; }
+.cli-handoff-origin strong span { color: var(--text-3); font-size: 11px; font-weight: 400; }
+.cli-handoff-origin p { overflow: hidden; margin: 5px 0 0; color: var(--text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.cli-handoff-origin > b { color: var(--accent); font-size: 20px; font-weight: 400; }
+.cli-handoff-fields { display: grid; gap: 22px; padding: 0 24px 24px; }
+.cli-destinations { min-width: 0; margin: 0; padding: 0; border: 0; }
+.cli-destinations legend { display: flex; flex-wrap: wrap; gap: 10px; width: 100%; margin-bottom: 10px; padding: 0; color: var(--text-2); font-size: 12px; }
+.cli-destinations legend > span { margin-left: auto; color: var(--text-3); font-size: 11px; }
+.cli-destinations > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cli-destination { display: flex; position: relative; align-items: center; gap: 10px; min-width: 0; min-height: 60px; padding: 12px; box-sizing: border-box; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 0; cursor: pointer; font-size: 12px; }
+.cli-destination input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.cli-destination .cli-mark { width: 20px; height: 20px; }
+.cli-destination:has(:checked) { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+.cli-destination:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cli-destination:has(:disabled) { opacity: .5; cursor: default; }
+.cli-destination:hover:not(:has(:disabled)) { border-color: var(--border-strong); }
+.cli-destination > span { min-width: 0; }
+.cli-destination small, .cli-destination em { display: block; margin-top: 4px; overflow: hidden; color: var(--text-3); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.cli-existing > div { grid-template-columns: minmax(0, 1fr); max-height: 180px; overflow: auto; padding: 3px; margin: -3px; }
+.cli-next-instruction { display: grid; gap: 10px; color: var(--text-2); font-size: 12px; }
+.cli-next-instruction textarea { width: 100%; box-sizing: border-box; padding: 12px; color: var(--text); background: var(--surface-1); border: 1px solid var(--border); border-radius: 0; font-family: inherit; font-size: 13px; line-height: 1.6; resize: vertical; min-height: 90px; }
+.cli-next-instruction textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.cli-handoff-dialog > footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--border); background: var(--surface-2); }
+.cli-handoff-dialog > footer > span { color: var(--text-3); font-size: 11px; }
+.cli-handoff-dialog .dialog-primary { margin: 0; padding: 10px 16px; min-height: 38px; border-radius: 0; font-family: inherit; font-size: 12px; text-transform: none; letter-spacing: 0; }
+.pip:has(.cli-footer) { border-radius: 0; }
+.pip:has(.cli-footer) > header { padding: 10px 12px; border-radius: 0; }
+.pip:has(.cli-footer) .pip-title strong { font-size: 12px; }
+.pip:has(.cli-footer) .pip-prose { padding: 14px; font-size: 12px; line-height: 1.65; }
+.pip .cli-handoff { padding: 8px 10px; gap: 6px; border-top: 1px solid var(--border); background: var(--surface-2); }
+.pip .cli-lineage { font-size: 10px; gap: 4px; }
+.pip .cli-lineage .cli-mark { width: 12px; height: 12px; }
+.pip .cli-lineage small { display: none; }
+.pip .cli-handoff-trigger { min-height: 28px; padding: 4px 8px; font-size: 10px; gap: 8px; }
+.pip .cli-source button { padding: 3px 5px; }
+.pip .cli-footer .composer { border-radius: 0; }
+.pip:not([data-depth="0"]) > .cli-footer { pointer-events: none; }
+@media (max-width: 600px) {
+  .cli-handoff-dialog > header, .cli-handoff-fields, .cli-handoff-dialog > footer { padding-left: 16px; padding-right: 16px; }
+  .cli-handoff-origin { margin-left: 16px; margin-right: 16px; }
+  .cli-destinations > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cli-existing > div { grid-template-columns: minmax(0, 1fr); }
+  .cli-brief h3 { font-size: 17px; }
+}
+
+.cli-option-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(120px, 1fr); gap: 12px; width: 100%; }
+.cli-option-fields > label { display: grid; gap: 8px; min-width: 0; font-size: 12px; color: var(--text-2); }
+.cli-option-fields input, .cli-option-fields select { width: 100%; min-width: 0; height: 36px; box-sizing: border-box; padding: 8px; border: 1px solid var(--border); border-radius: 0; color: var(--text); background: var(--surface-1); font: inherit; }
+.cli-option-fields input:focus, .cli-option-fields select:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+.cli-options-note { grid-column: 1 / -1; display: flex; gap: 12px; align-items: start; color: var(--text-3); font-size: 11px; line-height: 1.5; }
+.cli-options-note button { flex: none; padding: 0; border: 0; border-radius: 0; color: var(--accent); background: transparent; font: inherit; }
+.cli-options-menu { display: grid; gap: 12px; padding: 16px; box-sizing: border-box; border-radius: 0; }
+.cli-options-menu .dialog-primary { justify-self: end; min-height: 34px; margin: 0; padding: 8px 12px; border-radius: 0; font: inherit; }
+.cli-options-menu .dialog-error { margin: 0; font-size: 12px; line-height: 1.5; }
+@media (max-width: 600px) { .cli-option-fields { grid-template-columns: minmax(0, 1fr); } }

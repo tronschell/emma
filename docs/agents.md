@@ -116,7 +116,7 @@ later work.
 
 A replayed case can reach past its own thread. It can start threads with
 `threads spawn`; it can ask `workflow` to run one of your scheduled jobs, or
-`autoresearch` to resume one, or `plan run` to fan work out, or `cli send` to
+`plan run` to fan work out, or `cli send` to
 push a prompt into a conversation you have open — and each of those is a turn
 starting somewhere. **None of them can start one in a thread of yours.**
 

@@ -13,17 +13,8 @@ pub const FailureDiagnostics = struct {
         if (self.request_shape) |owned| alloc.free(owned);
         self.* = .{};
     }
-
-    pub fn schemaText(self: FailureDiagnostics) []const u8 {
-        return self.schema orelse "";
-    }
-
-    pub fn requestShapeText(self: FailureDiagnostics) []const u8 {
-        return self.request_shape orelse "";
-    }
 };
 
-/// Returned diagnostics are owned by the caller and freed by calling `deinit`.
 pub fn collect(alloc: Allocator, payload: []const u8, err_body: ?[]const u8) FailureDiagnostics {
     return .{
         .schema = if (err_body) |body| gateway_error_format.formatSchemaDiagnostic(alloc, body) catch null else null,

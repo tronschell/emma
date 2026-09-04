@@ -166,7 +166,7 @@ export function BuiltSettings({ busy, onAttach }: { busy: boolean; onAttach: (me
     if (!confirm(`Delete all ${built.length} of them?\n\nEverything Emma has built into her interface goes for good.`)) return;
     act(Promise.all(built.map((one) => window.emma.deleteComponent(one.id))));
   };
-  if (!built.length) return <div className="settings-lines"><section><div><p className="built-empty">Emma has built nothing into her interface yet. Ask her for one in a thread — it appears in {COMPONENT_ZONE_LABEL}, under the built-in widgets.</p></div></section></div>;
+  if (!built.length) return <div className="built-settings-empty"><h3>Your interface extensions</h3><p>Ask Emma to build a component in a thread. It appears in {COMPONENT_ZONE_LABEL}, below the built-in widgets.</p><div><span>Try asking</span><blockquote>Add a project checklist to my context bar.</blockquote></div><p>Once you have one, manage its visibility, settings and saved keys here.</p></div>;
   return <div className="built-list">
     {note && <p className="built-error" role="status">{note}</p>}
     {built.map((one) => <article key={one.id} className="built-card" data-off={one.disabled || undefined}>
@@ -177,11 +177,9 @@ export function BuiltSettings({ busy, onAttach }: { busy: boolean; onAttach: (me
       </div>
       <div className="built-card-acts">
         <button type="button" disabled={busy} onClick={() => onAttach(one)}>Send to a thread</button>
-        <button type="button" disabled={busy} onClick={() => act(window.emma.expandComponent({ id: one.id, expands: !one.expands }))}>{one.expands ? "No full screen" : "Allow full screen"}</button>
-        <button type="button" disabled={busy} onClick={() => act(window.emma.enableComponent(one.id, !!one.disabled))}>{one.disabled ? "Switch on" : "Switch off"}</button>
-        <button type="button" className="built-danger" disabled={busy} onClick={() => { if (confirm(`Delete “${one.title}”?\n\nIt goes for good — only Emma can build it again.`)) act(window.emma.deleteComponent(one.id)); }}>Delete…</button>
+        <label className="check"><input type="checkbox" checked={!one.disabled} disabled={busy} onChange={(event) => act(window.emma.enableComponent(one.id, event.target.checked))} />Enabled</label>
       </div>
-      {one.variables?.length ? <Variables meta={one} busy={busy} onError={setNote} /> : null}
+      <details className="built-card-options"><summary>Options{one.variables?.length ? ` & ${one.variables.length} saved-key slots` : ""}</summary><div><label className="check"><input type="checkbox" checked={one.expands} disabled={busy} onChange={(event) => act(window.emma.expandComponent({ id: one.id, expands: event.target.checked }))} />Allow full screen</label>{one.variables?.length ? <Variables meta={one} busy={busy} onError={setNote} /> : null}<button type="button" className="reset-data" disabled={busy} onClick={() => { if (confirm(`Delete “${one.title}”?\n\nIt goes for good — only Emma can build it again.`)) act(window.emma.deleteComponent(one.id)); }}>Delete component…</button></div></details>
     </article>)}
     <footer><button type="button" className="built-danger" disabled={busy} onClick={removeAll}>Delete all {built.length}</button></footer>
   </div>;
