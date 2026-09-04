@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { chatCompletion, type ChatMessage } from "./verifier";
 import { defaultTagger, type TaggerSettings } from "../shared/settings";
-import { fileState, parseHistory, parseStatus, parseWorktrees, validateGitArgs, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot, type WorktreeEntry } from "../shared/git";
+import { fileState, parsePullRequest, parseHistory, parseStatus, parseWorktrees, validateGitArgs, type GitPullRequest, type GitCommandResult, type GitFileEntry, type GitHistory, type GitReady, type GitSnapshot, type WorktreeEntry } from "../shared/git";
 import { findExecutable, isWindows } from "./platform";
 
 const MAX_DIFF_BYTES = 512 * 1024;
@@ -70,7 +70,28 @@ export async function initRepo(cwd: string): Promise<void> {
   await git(cwd, ["init"]);
 }
 
-export async function gitSnapshot(cwd: string): Promise<GitSnapshot | null> {
+const pullRequests = new Map<string, { at: number; value: Promise<GitPullRequest | undefined> }>();
+
+async function branchPullRequest(cwd: string, branch: string): Promise<GitPullRequest | undefined> {
+  const key = JSON.stringify([cwd, branch]);
+  const now = Date.now();
+  for (const [id, entry] of pullRequests) if (now - entry.at >= 60_000) pullRequests.delete(id);
+  const cached = pullRequests.get(key);
+  if (cached) return cached.value;
+  const value = (async () => {
+    const binary = await findExecutable(isWindows ? "gh.exe" : "gh", process.env.PATH || "");
+    if (!binary) return;
+    return new Promise<GitPullRequest | undefined>((resolve) => {
+      execFile(binary, ["pr", "view", branch, "--json", "number,state,isDraft,mergeStateStatus"],
+        { cwd, timeout: TIMEOUT_MS, maxBuffer: 64 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+        (error, stdout) => resolve(error ? undefined : parsePullRequest(stdout)));
+    });
+  })().catch(() => undefined);
+  pullRequests.set(key, { at: now, value });
+  return value;
+}
+
+export async function gitSnapshot(cwd: string, includePullRequest = false): Promise<GitSnapshot | null> {
   const status = await exec(cwd, ["-c", "core.quotepath=false", "status", "--porcelain", "-b"]);
   if (status.error) return null;
   const lines = status.stdout.split("\n");
@@ -91,8 +112,10 @@ export async function gitSnapshot(cwd: string): Promise<GitSnapshot | null> {
   const branches = (await git(cwd, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"]).catch(() => ""))
     .split("\n").filter(Boolean).slice(0, MAX_BRANCHES);
   const remotes = (await git(cwd, ["remote"]).catch(() => "")).split("\n").filter(Boolean);
+  const pullRequest = includePullRequest && remotes.length && branch !== "HEAD" ? await branchPullRequest(cwd, branch) : undefined;
   return {
     branch,
+    ...(pullRequest ? { pullRequest } : {}),
     head,
     upstream: upstream ?? "",
     ahead: Number(/ahead (\d+)/.exec(track)?.[1] ?? 0),

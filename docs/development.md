@@ -13,7 +13,7 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`Cargo.toml`](../Cargo.toml) | Rust workspace: `crates/core` + `crates/host`, edition 2024, Apache-2.0, `publish = false` |
 | [`rust-toolchain.toml`](../rust-toolchain.toml) | Rust 1.97.1, minimal, `clippy` + `rustfmt` |
 | [`package.json`](../package.json) · [`justfile`](../justfile) | Shims onto `desktop`'s scripts. `just` has `check`, `test`, `dev`, `run`, `package` |
-| [`crates/core/src/`](../crates/core/src) | `thread.rs`, `live.rs`, `scheduled.rs`, `research.rs`, `record.rs` (timestamps, validation, quoting), `lib.rs` (re-exports + integration tests) |
+| [`crates/core/src/`](../crates/core/src) | `thread.rs`, `live.rs`, `scheduled.rs`, `record.rs` (timestamps, validation, quoting), `lib.rs` (re-exports + integration tests) |
 | [`crates/host/src/`](../crates/host/src) | `main.rs` — the `emma-host` NDJSON server; `runtime.rs` — resolves the data root and starts the live runtime |
 | [`desktop/main/`](../desktop/main) | Electron lifecycle, windows, IPC, and every runtime touching disk, a process, the network, the screen or a model |
 | [`desktop/src/`](../desktop/src) | Sandboxed React 19 renderer. No Node, no Electron imports |
@@ -22,7 +22,7 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`desktop/test/`](../desktop/test) | `node --test` suites and the fake ACP agent |
 | [`desktop/native/`](../desktop/native) | macOS Objective-C/C helpers and Windows native equivalents: `quick_ask.m`/`quick_ask_win.cpp`, `computer.m`/`computer_win.cpp`, `transcribe.m`/`transcribe_win.cpp`, `pty.c`/`pty_win.c`, plus `Info.extra.plist` |
 | [`desktop/scripts/`](../desktop/scripts) | Development, packaging and release checks, vendoring, catalog generation, and the CDP drivers `drive.mjs`, `shot.mjs`, `dismiss.mjs` |
-| [`desktop/skills/`](../desktop/skills) | Seven bundled skills: `artifact`, `autoresearch`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
+| [`desktop/skills/`](../desktop/skills) | Six bundled skills: `artifact`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
 | `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here; `npm run vendor:zvec-grep` puts `zvec-grep/` beside it |
 | [`harness/`](../harness) | `emma-cli`. `src/acp/` (the ACP server), `src/builtins/` (registry; `builtins/emma/` holds Emma's tool *schemas*), `src/core/` (the engine), `src/gateway/` (model transport), `src/tools/`, `src/ui/` |
 

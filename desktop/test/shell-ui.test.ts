@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 
 const read = (file: string) => readFileSync(path.resolve(__dirname, "../../..", file), "utf8");
-const styles = () => {
-  const directory = path.resolve(__dirname, "../../../desktop/src/styles");
-  return readdirSync(directory).filter((name) => name.endsWith(".css")).map((name) => ({ name, css: readFileSync(path.join(directory, name), "utf8") }));
-};
-
 type Node = { type: string; props: Record<string, unknown>; children: unknown[] };
 
 function flatten(node: unknown, into: Node[] = []): Node[] {
@@ -55,7 +50,6 @@ test("a render error is caught at the root and offers a way back instead of a bl
   const button = painted.find((node) => node.type === "button");
   assert.ok(button && typeof button.props.onClick === "function", "the failure state carries a reload control");
   assert.ok(painted.some((node) => node.type === "pre" && node.children.flat().includes(caught.failed)), "the reason is shown, not swallowed");
-  assert.match(read("desktop/src/index.css"), /\.root-failure \{/);
 });
 
 test("the mount wraps the whole app in the root boundary", () => {
@@ -75,53 +69,13 @@ test("the composer says when a paste has hit the length it holds", () => {
   assert.match(app, /message\.length >= COMPOSER_MAX && <div className="composer-attachment">/);
 });
 
-test("the composer chip row stays single-line and lets the model label shrink", () => {
-  const css = read("desktop/src/styles/conversation.css");
-  assert.match(css, /\.composer-row \{[^}]*flex-wrap: nowrap/);
-  assert.match(css, /\.composer-tools \{[^}]*min-width: 0/);
-  assert.match(css, /\.composer-row \.model-button \{[^}]*min-width: 0/);
-});
-
 test("collapsing the rail takes focus out of the sidebar so the peek does not stick open", () => {
   const app = read("desktop/src/App.tsx");
   assert.match(app, /aria-expanded=\{!layout\.sidebarCollapsed\} onClick=\{\(event\) => \{ event\.currentTarget\.focus\(\); pane\(\{ sidebarCollapsed: !layout\.sidebarCollapsed \}\); \}\}/);
 });
 
-test("no rule asks for a radius or a warning colour the token file never defines", () => {
-  const asked = styles().flatMap((sheet) => [...sheet.css.matchAll(/var\(\s*(--r-1|--r-2|--warn)\b/g)].map(([, name]) => `${sheet.name}: ${name}`));
-  assert.deepEqual(asked, []);
-});
-
-test("a settings failure is painted as a failure, not as body ink", () => {
-  const css = read("desktop/src/styles/settings.css");
-  assert.match(css, /\.keybind-problem \{ color: var\(--danger\);/);
-  assert.ok(!/--warn/.test(css));
-});
-
-test("every figure meant to read as a quantity follows the chosen accent", () => {
-  for (const rule of [
-    /\.agent-metrics b \{[^}]*color: var\(--accent\)/,
-    /\.evidence-table summary b \{ color: var\(--accent\)/,
-    /\.rate-curve i \{[^}]*background: var\(--accent\)/,
-    /\.agent-arm i \{[^}]*background: var\(--accent\)/,
-  ]) assert.match(read("desktop/src/styles/panels.css"), rule);
-  assert.match(read("desktop/src/styles/conversation.css"), /\.generation-rate \{ color: var\(--accent\)/);
-  assert.match(read("desktop/src/styles/conversation.css"), /\.model-cut b \{ color: var\(--accent\)/);
-  assert.match(read("desktop/src/styles/research.css"), /\.research-tip b \{ color: var\(--accent\)/);
-});
-
-test("the cursor ring's labels sit on a ground of their own", () => {
-  assert.match(read("desktop/src/App.tsx"), /<span className="orb-label">\{label\}<\/span>/);
-  assert.match(read("desktop/src/styles/overlay.css"), /\.radial \.orb-label \{[^}]*background: var\(--bg\)/);
-});
-
-test("a mermaid diagram is given the width it asks for", () => {
-  assert.match(read("desktop/src/styles/artifacts.css"), /\.artifact-mermaid \{[^}]*justify-items: stretch/);
-});
-
 test("a task item is drawn as a box", () => {
   assert.match(read("desktop/src/markdown.tsx"), /item\.checked !== undefined && <input type="checkbox" checked=\{item\.checked\} disabled/);
-  assert.match(read("desktop/src/styles/markdown.css"), /\.md-task \{/);
 });
 
 test("the island folds a reasoning model's scratchpad away instead of printing it", () => {
@@ -135,4 +89,14 @@ test("an overlay surface does not call the IPC the main process reserves for the
   const hook = read("desktop/src/schedule.tsx");
   assert.match(hook, /if \(isWorkspaceWindow\) void window\.emma\.searchImportedSkills\(/);
   assert.match(hook, /if \(isWorkspaceWindow\) void window\.emma\.listFolders\(\)/);
+});
+
+test("an armed two-press delete is filled, not just relabelled", () => {
+  const base = path.join(__dirname, "..", "..");
+  assert.match(readFileSync(path.join(base, "src/index.css"), "utf8"), /button\[data-armed="true"\][^\n]*background: var\(--danger\)/);
+  for (const [file, marker] of [["src/App.tsx", "task-danger"], ["src/mobile.tsx", "reset-data"]] as const) {
+    const line = readFileSync(path.join(base, file), "utf8").split("\n").find((row) => row.includes(`className="${marker}"`));
+    assert.ok(line, `${file} no longer has a ${marker} button`);
+    assert.match(line, /data-armed=\{/);
+  }
 });

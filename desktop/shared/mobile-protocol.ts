@@ -238,6 +238,8 @@ export type CliRun = {
   endedAt?: number;
   unattended: boolean;
   model?: string;
+  effort?: string;
+  inputs?: { id: string; cli: string; turn: number }[];
 };
 
 
@@ -525,12 +527,12 @@ export type BridgeMethods = {
   addFolder: { params: { path: string }; result: Folder[] };
   forgetFolder: { params: { id: string }; result: Folder[] };
   listCliRuns: { params: Record<string, never>; result: CliRun[] };
-  readCliRun: { params: { id: string }; result: { run: CliRun; output: string; truncated: boolean } | null };
+  readCliRun: { params: { id: string }; result: { run: CliRun; output: string; result?: string; resultTruncated?: boolean; truncated: boolean } | null };
   stopCliRun: { params: { id: string }; result: { stopped: boolean } };
   sendCliRun: { params: { id: string; prompt: string }; result: CliRun | null };
 
   listCliModels: { params: { cli: string }; result: PhoneList<string> };
-  setCliRunModel: { params: { id: string; model: string }; result: CliRun };
+  setCliRunModel: { params: { id: string; model?: string; effort?: string }; result: CliRun };
   listScheduledJobs: { params: Record<string, never>; result: PhoneList<ScheduledJob> };
   saveScheduledJob: {
     params: { jobId?: string; title: string; schedule: string; prompt: string; nodes?: string; sourceDomains: string; permissionMode: string; model?: string };
@@ -594,7 +596,6 @@ export type BridgeEvent = { k: "evt" } & (
       skillsBytes: number;
       memoryBytes: number;
     }
-  | { t: "folder-attached"; threadId: string; folderId: string }
   | { t: "bye"; reason: "revoked" | "shutdown" }
 );
 

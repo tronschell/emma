@@ -264,18 +264,6 @@ bad edit. Core stores the graph as opaque JSON. `MAX_WORKFLOW_NODES` 24,
 `MAX_WORKFLOW_STEPS` 32, `MAX_VARIABLE_CHARS` 8192. Jobs run only while Emma is
 open. See [jobs.md](jobs.md).
 
-## Autoresearch
-
-**A long experiment loop against a git project on this computer.** The agent proposes
-one change, Emma runs the eval command (`MAX_EVAL_MS` 15 minutes), reads the
-metric out of its output, and keeps or reverts the commit — until a time, token
-or spend budget stops it. The metric's name, kind and direction are immutable for
-the life of the job, and every iteration is appended to `results.tsv` in the
-project itself, readable outside Emma. Core stores the job and its iterations and
-never runs one; the loop is in
-[`main/research.ts`](../desktop/main/research.ts). See
-[autoresearch.md](autoresearch.md).
-
 ## Computer use
 
 **Emma operating an approved app on this computer.** The agent loop asks;
@@ -297,7 +285,7 @@ ship in [`desktop/skills/`](../desktop/skills). An **MCP server** is an external
 process the harness starts and calls tools on — Emma speaks no
 [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) herself, she parses the configured
 servers and hands them to the harness at `session/new`. A **tool** is one
-callable the agent may reach for: Emma's own 28 are in `AGENT_TOOLS` and
+callable the agent may reach for: Emma's own 27 are in `AGENT_TOOLS` and
 `TOOL_CATALOG` ([`shared/permissions.ts`](../desktop/shared/permissions.ts)), the
 harness has its own builtins (file read/write/edit, ripgrep search, shell,
 subagent, skills, MCP), and Emma can write more with `write_tool`. See
@@ -311,6 +299,6 @@ subagent, skills, MCP), and Emma can write more with `write_tool`. See
 - [context-bar.md](context-bar.md) — the inspector's widgets in detail
 - [goals.md](goals.md) — the ledger, the continuation loop, evidence and the blocked audit
 - [knowledge.md](knowledge.md) — the vault, keeping, and tags
-- [jobs.md](jobs.md) · [autoresearch.md](autoresearch.md) · [computer-use.md](computer-use.md)
+- [jobs.md](jobs.md) · [computer-use.md](computer-use.md)
 - [development.md](development.md) — repo map, checks, builds, packaging
 - [data.md](data.md) — every file on disk and every environment variable

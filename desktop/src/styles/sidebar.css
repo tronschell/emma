@@ -1,46 +1,16 @@
 .app-shell { --window-controls-end: 117px; position: relative; height: 100%; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); background: transparent; }
 
-/* --row is the nav row height (floor is 24px); --pad is the pane's inline gutter,
-   applied per band so the rules stay full-bleed. */
-/* 35% of --chrome, so it is ~65% transparent and the macOS sidebar vibrancy under
-   the window does the blurring — a backdrop-filter here would only sample the page,
-   which is empty behind this column. Off macOS the window's opaque backgroundColor
-   sits behind instead, and the same tint reads as a plain step. */
 .sidebar { --row: 28px; --pad: var(--s-4); position: relative; display: flex; flex-direction: column; min-height: 0; padding: 46px 0 0; border-right: 1px solid var(--border-strong); background: color-mix(in srgb, var(--chrome) 35%, transparent); }
-/* Everything is pinned; .sidebar-projects re-claims the flex below and is the only scroller. */
 .sidebar > * { flex: 0 0 auto; }
-/* The pane is glass, so an opaque step painted on it reads as a hole punched
-   through — darker than the vibrancy either side. Inside the sidebar the fills
-   are ink tints instead: hover, the search field and the active row all lift off
-   the pane rather than sinking into it. The menus render outside this column,
-   over opaque content, and keep the solid steps. */
 .sidebar { --surface-2: #e8e6df0f; --surface-3: #e8e6df1a; --surface-4: #e8e6df29; }
 .app-shell > .drag-region { position: absolute; z-index: 10; top: 0; left: 0; width: max(var(--sidebar-width), 140px); height: 46px; -webkit-app-region: drag; }
 .app-shell > .rail-nav { position: absolute; z-index: 11; top: 0; left: 80px; height: 46px; display: flex; align-items: center; opacity: 0; transition: opacity var(--t); -webkit-app-region: no-drag; }
 .app-shell > .drag-region:hover ~ .rail-nav,
 .app-shell > .rail-nav:hover,
 .app-shell > .rail-nav:focus-within { opacity: 1; }
-/* The 28px chip is what gets painted; the target is the whole 46px band it sits
-   in — a fade-in control is aimed at from memory, so the miss has to be free.
-   The pseudo stays inside the row's own box, which is the rect the no-drag is
-   taken from, and the row renders last in the shell so the collapsed content
-   column's drag band (.agent-tabs/.thread-bar, starting at x:0 once the pane is
-   gone) cannot union back over it — regions resolve in document order, not by
-   z-index. */
 .rail-nav > .rail-toggle { position: relative; width: 28px; height: 28px; margin: 0; }
 .rail-nav > .rail-toggle::before { position: absolute; inset: -9px 0; content: ""; }
 .rail-nav > .rail-toggle:disabled { color: var(--text-4, var(--text-3)); opacity: 0.45; }
-/* Collapsed, the pane is not a narrower pane — it is gone, and its column with it.
-   The pane stays a grid item so the content column keeps its place, but the column
-   is 0 wide, so the pane's own width overflows it and lands over the content: a
-   floating pane, not a rail. What is left on screen is an 8px strip at the window
-   edge — clip-path takes hit testing with it, so the other 250-odd px cannot
-   swallow clicks meant for the content underneath, and the strip is the hover
-   target that brings the pane back. Hovering unclips and fades it in together, so
-   it reads as coming out of the edge rather than blinking on. Focus opens it too,
-   for the tab that lands inside a pane nobody is pointing at. Opaque here: the
-   pane's usual 35% tint is the window vibrancy showing through, and over content
-   there is nothing behind it to blur. */
 .app-shell:has(> .sidebar.collapsed) { grid-template-columns: 0 minmax(0, 1fr); }
 .sidebar.collapsed { z-index: 8; width: var(--sidebar-width); opacity: 0; clip-path: inset(0 calc(100% - 8px) 0 0); background: var(--chrome); box-shadow: var(--shadow-md); transition: opacity var(--t), clip-path var(--t); }
 .sidebar.collapsed:hover, .sidebar.collapsed:focus-within { opacity: 1; clip-path: inset(0); }
@@ -55,40 +25,19 @@
   background-position: right bottom;
   background-size: calc(100% - var(--window-controls-end)) 1px;
 }
-/* Settings answers the collapse with a nav column of its own where the pane used to
-   be. A column cannot step sideways past the lights the way a band can, so that one
-   starts below them instead. */
 .app-shell:has(> .sidebar.collapsed) .settings-layout > .settings-sidebar { padding-top: 46px; }
-/* ...and the content column reclaimed those 46px, so over there its own top
-   bands are the handle: the tab strip, the thread bar, and the context bar's
-   page row all drag the window and zoom on double-click, exactly as the strip
-   beside them does. Controls and popovers opt back out. The Settings preview of
-   a context bar is a picture of one, not one — it keeps its pointer. */
 :is(.agent-tabs, .thread-bar, .inspector:not(.bar-preview) > .inspector-body > header > span) { -webkit-app-region: drag; }
 :is(.agent-tabs, .thread-bar, .inspector:not(.bar-preview) > .inspector-body > header > span) :is(button, input, .tag-picker, .thread-actions) { -webkit-app-region: no-drag; }
 .sidebar .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Rows are full-bleed, so an outset ring would be clipped by the pane edge and by
-   the projects scroller. Drawn inside instead — same 2px, still unmistakable. */
 .sidebar :focus-visible { outline-offset: -2px; }
 
-/* Search band: the filter field and the one primary action, side by side. No
-   wordmark — the window title bar already says which app this is. */
 .sidebar > .brand { display: flex; align-items: center; gap: var(--s-2); min-height: var(--row); padding: var(--s-1) var(--pad) var(--s-3); font: inherit; letter-spacing: normal; }
 .rail-toggle, .nav-settings { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; margin-left: auto; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t); }
 .rail-toggle:hover, .nav-settings:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
-/* Archive and settings are chrome, not categories — they live in the foot as
-   glyphs, no hue. They keep the shared margin-left:auto so they pin to the gutter
-   exactly like the brand band's rail toggle: same 28px square, same edge, one
-   column. They carry the foot alone now that no label sits beside them, so the
-   glyph runs a step above the label scale — a 13px ▤ read as a smudge. */
 .nav-settings { font-size: var(--fs-2xl); }
 .nav-settings.active { color: var(--text); background: var(--surface-3); }
-/* Only the first foot button claims the slack; the rest sit beside it. */
 .nav-settings + .nav-settings { margin-left: 0; }
 
-/* One row shape — glyph, label, count — on three fixed columns, so every count in
-   the pane lands on the same tab stop and reads as a column. Departure Mono ships
-   one weight and font-synthesis is off, so hierarchy is colour and case, never bold. */
 .sidebar-nav button,
 .project-group > summary,
 .project-thread {
@@ -100,47 +49,25 @@
 }
 .sidebar-nav button > span:first-child { justify-self: start; color: var(--text-3); font-size: var(--fs-md); line-height: 1; }
 
-/* Tier 1 — the one primary action, now a glyph square beside the field. */
 .new-thread { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; padding: 0; color: var(--text-2); background: transparent; border: 0; font-family: var(--font-mono); font-size: var(--fs-lg); line-height: 1; border-radius: 6px; transition: color var(--t), background-color var(--t); }
 .new-thread:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
 
-/* Tier 2 — section nav. Fill is state only: a whisper on hover, a step up when active. */
 .sidebar-nav { display: grid; padding: var(--s-2) 0; border-bottom: 1px solid var(--border); }
 .sidebar-nav button { letter-spacing: var(--ls-caps); text-transform: uppercase; }
-/* The mark is a drawing, not a character, so its box is the grid cell rather than
-   a line of type — otherwise it sits on a baseline the label does not share. */
 .sidebar-nav button > span:first-child { display: grid; place-items: center; }
-/* The rest of the sections, folded behind one row. It is a control over the list,
-   not a section in it, so it is drawn a step quieter, and its caret turns to face
-   the way pressing it moves the list. */
 .sidebar-nav .nav-more { color: var(--text-3); line-height: 1; }
 .sidebar-nav .nav-more svg { width: 12px; height: 12px; }
 .nav-more[aria-expanded="true"] svg { rotate: 180deg; }
 .sidebar-nav button:not(:disabled):hover { color: var(--text); background: var(--surface-2); }
 .sidebar-nav button.active { color: var(--text); background: var(--surface-3); }
-/* The five sections are a set, so they take distinct hues in palette order rather
-   than five copies of the accent — the accent stays reserved for action and state.
-   Rose is skipped (it means danger) and Settings is chrome, not a category.
-   Each mark reads its own --nav-* var, which Settings / appearance writes per
-   section; unset, it falls back to the label grey. */
 .sidebar-nav button[data-view="threads"] > span:first-child { color: var(--nav-threads, var(--blue)); }
 .sidebar-nav button[data-view="knowledge"] > span:first-child { color: var(--nav-knowledge, var(--text-3)); }
 .sidebar-nav button[data-view="artifacts"] > span:first-child { color: var(--nav-artifacts, var(--text-3)); }
 .sidebar-nav button[data-view="agent"] > span:first-child { color: var(--nav-agent, var(--text-3)); }
 .sidebar-nav button[data-view="scheduled"] > span:first-child { color: var(--nav-scheduled, var(--text-3)); }
 .sidebar-nav button[data-view="plugins"] > span:first-child { color: var(--nav-plugins, var(--text-3)); }
-.sidebar-nav button[data-view="research"] > span:first-child { color: var(--nav-research, var(--text-3)); }
-/* Counts are metadata on a fixed tab stop: never allowed to widen or shift the row.
-   Pinned to the last column — a hidden actions span drops out of auto-placement, so
-   an auto-placed count would slide one column left whenever the row is at rest. */
 .sidebar-nav b, .project-group > summary b { grid-column: -2; justify-self: end; overflow: hidden; color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; font-variant-numeric: tabular-nums; text-align: right; }
 
-/* Icon mode: the same sections as one horizontal strip of glyph tiles, the way Arc
-   pins sit above its list. Labels go to the title tooltip. The tile is one column
-   of two centred rows, mark over count — the count used to be pinned to the corner
-   on top of the mark, which a three-digit one covered. Metadata never goes below
-   --fs-2xs, so the way to fit both is to stop stacking them in the same 34px. Off
-   in the 46px rail, which is already a glyph column. */
 .sidebar.nav-icons .sidebar-nav { grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s-1); padding: var(--s-2) var(--pad); }
 .sidebar.nav-icons .sidebar-nav button { grid-template-columns: minmax(0, 1fr); align-content: center; gap: 1px; min-height: 34px; padding: 2px 0; }
 .sidebar.nav-icons .sidebar-nav .nav-label { display: none; }
@@ -148,95 +75,44 @@
 .sidebar.nav-icons .sidebar-nav svg { width: 17px; height: 17px; }
 .sidebar.nav-icons .sidebar-nav b { grid-column: 1; justify-self: center; text-align: center; }
 
-/* Dragging: the row being carried goes translucent and rides over its neighbours,
-   which slide under it. Nothing else about it changes — it is the same row, moving. */
 .nav-sort[data-dragging], .project-sort[data-dragging] { position: relative; z-index: 2; opacity: 0.55; }
 .nav-sort[data-dragging] button, .project-sort[data-dragging] > details > summary { cursor: grabbing; }
-/* For the length of a folder drag every group shows its summary row alone: the
-   folders are what is being arranged, and a rail of open groups is a list too tall
-   to see the drop in. */
 .sidebar-projects[data-dragging] .project-group > :not(summary) { display: none; }
 
-/* Tier 3 — the project tree. Its label is a band header, rule included. */
 .sidebar-projects { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: var(--s-3); }
 .sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: var(--s-3) var(--pad) var(--s-2); border-bottom: 1px solid var(--border); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
-/* Three columns: folder, name, and one trailing tab stop the count and the ＋ take
-   turns in — the count is what the row says at rest, the ＋ what it offers on hover.
-   One cell for both is what keeps the swap from moving anything. Open/shut is the
-   group's own body appearing, not a glyph. */
 .project-group > summary { grid-template-columns: auto minmax(0, 1fr) 4ch; cursor: pointer; list-style: none; white-space: nowrap; }
-/* The folder mark: a group is a folder on this Mac, so it is drawn as one. */
 .project-folder { display: grid; place-items: center; margin-right: var(--s-2); color: var(--text-3); }
 .project-group > summary:not(:hover):not(:focus-within) .project-new { display: none; }
-/* :has() guards the pinned group, which has no ＋ to put in the cell — it keeps its
-   count on hover rather than blinking out and leaving a hole. */
 .project-group > summary:has(.project-new):hover b,
 .project-group > summary:has(.project-new):focus-within b { display: none; }
 .project-group > summary::-webkit-details-marker { display: none; }
 .project-group > summary:hover { color: var(--text); background: var(--surface-2); }
 
-/* Threads sit one indent level in: the pane gutter plus the glyph column, plus the
-   width the group's folder mark takes, so a thread title starts one glyph column
-   past its group's name. Drop the --s-2 and the children hang left of the parent. */
-/* Three columns, not the shared 4ch third: state, title, tag. The tag column is
-   `auto`, so it takes nothing at all on the rows that have none — an untagged row
-   is exactly the two columns it was before. */
-.project-thread { grid-template-columns: var(--s-6) minmax(0, 1fr) auto; min-height: 26px; }
-/* A sub thread is a thread in its own right — its own main agent, its own
-   transcript — that another thread started and owns. One more indent is the
-   whole difference between it and a sibling; nothing else about the row changes,
-   because nothing else about it is different. */
+.project-thread { grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--s-2); min-height: 30px; }
 .project-thread { padding-left: calc(var(--pad) + var(--s-2) + (var(--thread-depth, 0) + 1) * var(--s-4)); }
-/* A cut title fades into the gutter instead of ending on an ellipsis — the glyph
-   costs a character of the title and reads as a control. The label stretches its
-   grid column, so a title that ends before the ramp is untouched: only text that
-   actually reaches the edge dims. */
 .project-thread .nav-label { text-overflow: clip; mask-image: linear-gradient(90deg, #000 calc(100% - 3ch), transparent); }
-/* The tag: the second axis, in the row's own trailing column. Metadata, so it is
-   the smallest type in the pane and never takes width from the title. Emma's own
-   guess is drawn hollow — the same word, stated less firmly, because it is the
-   one the user is being invited to correct. */
 .thread-tag { justify-self: end; max-width: 10ch; overflow: hidden; margin-left: var(--s-2); padding: 0 var(--s-1); border: 1px solid transparent; color: var(--text-3); background: var(--surface-3); font-size: var(--fs-2xs); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; }
 .thread-tag.auto { color: var(--text-3); background: transparent; border-color: var(--border); border-style: dashed; }
-/* Renaming borrows the row's own shape so the list does not jump when it opens. */
 .project-thread.renaming { padding-right: var(--s-2); background: var(--surface-2); }
 .project-thread.renaming input { min-width: 0; padding: 0; color: var(--text); background: transparent; border: 0; font: inherit; outline: none; }
 .project-thread:not(:disabled):hover { color: var(--text); background: var(--surface-2); }
 .project-thread.active { color: var(--text); background: var(--surface-3); }
-/* Shift- or ⌘-click builds a set to archive in one pass. */
 .project-thread.selected { color: var(--text); background: var(--surface-3); box-shadow: inset 2px 0 0 var(--accent); }
-/* Thread state, in the same column the group caret uses, so a thread title still
-   lands exactly under its group's name. One 12px box for every state, so the
-   column never shifts as a thread moves between them. */
-/* Where a thread came from, beside the title: a phone started it. A mark only. */
 .thread-from { width: 10px; height: 10px; margin-right: var(--s-1); vertical-align: -1px; fill: none; stroke: var(--text-3); stroke-width: 1.4; stroke-linecap: round; }
-.thread-status { display: grid; place-items: center; width: 12px; height: 12px; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1; }
-.thread-status::before { content: "\B7"; }
-/* Thinking: a plain rotating arc. Border, not a glyph, so it turns on the
-   compositor with nothing to re-render. */
-.thread-status.running { box-sizing: border-box; width: 9px; height: 9px; border: 1.5px solid color-mix(in srgb, var(--teal) 28%, transparent); border-top-color: var(--teal); border-radius: 50%; animation: thread-spin 700ms linear infinite; }
-.thread-status.running::before { content: none; }
+.thread-status { display: grid; place-items: center; width: 14px; height: 14px; color: var(--text-3); line-height: 1; }
+.thread-status.running { color: var(--teal); animation: thread-spin 700ms linear infinite; }
 @keyframes thread-spin { to { rotate: 360deg; } }
-/* A call in flight swaps the arc for the tool mark, breathing rather than
-   spinning: the same beat says "still working" without a second thing turning. */
 .thread-status.tool { color: var(--teal); animation: thread-breathe 1.4s ease-in-out infinite; }
-.thread-status.tool::before { content: none; }
 @keyframes thread-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-/* The marks that outlive the run. Lime says it landed and you have not opened it
-   yet; orange says it stopped on something only you can answer. Both clear the
-   moment the thread is opened — that is what `unseen` decides. */
 .thread-status.done { color: var(--lime); }
-.thread-status.done::before { content: "\2713"; }
 .thread-status.waiting { color: var(--orange); }
-.thread-status.waiting::before { width: 6px; height: 6px; content: ""; background: currentColor; border-radius: var(--r-full); animation: thread-breathe 1.4s ease-in-out infinite; }
 .thread-status.failed { color: var(--danger); }
-.thread-status.failed::before { content: "!"; font-weight: 700; }
 
 .thread-selection { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-1) var(--pad); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; }
 .thread-selection .nav-label { flex: 1 1 auto; }
 .thread-selection button { padding: 0 var(--s-2); color: var(--text-2); background: var(--surface-2); }
 .thread-selection button:not(:disabled):hover { color: var(--text); background: var(--surface-3); }
-/* The row's one control, in the count's own cell and on the count's own tab stop. */
 .project-new { grid-column: -2; justify-self: end; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-3); background: transparent; font-family: var(--font-mono); font-size: var(--fs-sm); transition: color var(--t), background-color var(--t), opacity var(--t); }
 .sidebar-label-actions { display: flex; margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0; }
 .sidebar-label:not(:hover):not(:focus-within) .project-new:not(.on):not([aria-expanded="true"]) { opacity: 0; }
@@ -251,7 +127,25 @@
 .project-row .thread-pin.on { color: var(--text-2); }
 .project-row .thread-pin:not(:disabled):hover { color: var(--text); background: var(--surface-4); }
 .project-row:hover .project-thread, .project-row.menu-open .project-thread, .project-row:has(.thread-pin.on) .project-thread { padding-right: calc(var(--pad) + 40px); }
-.thread-home { margin-right: var(--s-2); color: var(--text-3); font-size: var(--fs-2xs); font-style: normal; letter-spacing: var(--ls-caps); text-transform: uppercase; }
+.thread-copy { display: grid; gap: 5px; min-width: 0; }
+.thread-home { display: flex; align-items: center; gap: var(--s-2); min-width: 0; color: var(--text-3); font-size: var(--fs-2xs); }
+.thread-home > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-home .project-folder { flex: 0 0 auto; margin: 0; }
+.thread-indicators { display: flex; align-items: center; justify-content: end; gap: var(--s-2); min-width: 0; }
+.thread-indicators:empty { display: none; }
+.thread-indicators .thread-from { margin: 0; }
+.thread-pr { display: grid; place-items: center; width: 14px; height: 14px; color: var(--text-3); }
+.thread-pr.open { color: var(--lime); }
+.thread-pr.merged { color: var(--violet); }
+.thread-pr.closed { color: var(--danger); }
+.thread-pr.conflict { color: var(--orange); }
+.project-group.flat > summary { grid-template-columns: minmax(0, 1fr) auto; color: var(--text-3); }
+.project-group.flat .project-thread { min-height: 54px; padding-top: 8px; padding-bottom: 8px; padding-left: calc(var(--pad) + var(--thread-depth, 0) * var(--s-4)); }
+.project-group.flat .thread-indicators, .project-group.flat .thread-tag { align-self: start; }
+.project-group.flat .thread-actions, .project-group.flat .thread-pin { top: 15px; }
+.project-row:focus-within .project-thread { padding-right: calc(var(--pad) + 40px); }
+.project-row:focus-within .thread-actions, .project-row:focus-within .thread-pin { opacity: 1; pointer-events: auto; }
+.project-group.flat .project-more, .project-group.flat .project-empty { padding-left: var(--pad); }
 
 .thread-menu-scrim { position: fixed; inset: 0; z-index: 40; }
 .thread-menu { position: fixed; margin: 0; padding: var(--s-1); min-width: 196px; border: 1px solid var(--border-strong); background: var(--bg); box-shadow: var(--shadow-lg); font: var(--fs-sm)/1 var(--font-mono); }
@@ -287,13 +181,8 @@
 .sidebar-search input::placeholder { color: var(--text-3); opacity: 1; }
 .sidebar-search input::-webkit-search-cancel-button { appearance: none; }
 
-/* A status line: the reachability fact packed left, the two marks pinned to the
-   gutter as a pair. Nothing here may wrap — once the foot gained a second mark an
-   overflowing line dropped the *gear* onto a row of its own, where it read as a
-   stray control rather than part of the foot. */
 .nav-foot { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-2) var(--pad); border-top: 1px solid var(--border); }
 .nav-foot span, .nav-status { display: flex; align-items: center; gap: var(--s-2); flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.4; letter-spacing: var(--ls-caps); text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
-/* Reachable, not actionable: lime says "up", the accent would say "do something". */
 .nav-foot i { background: var(--lime); }
 .nav-status { padding: 0; background: transparent; text-align: left; transition: color var(--t); }
 .nav-status > i { flex: 0 0 auto; }
@@ -303,10 +192,6 @@
 .nav-status[data-health="stalled"] i { background: var(--accent); }
 .nav-status[data-health="offline"] i { background: var(--danger); }
 .nav-status[data-health="offline"] { color: var(--danger); }
-/* The phone: the same glyph grid as its neighbours, with two radio arcs off its
-   edge that only exist while a phone is reachable — lime like the status line's
-   "up", teal and blinking outward while a message from it lands. Nothing paired
-   is drawn faint rather than hidden, so the control is where it will be. */
 .nav-phone[data-state="none"] { opacity: .45; }
 .nav-phone[data-state="on"], .nav-phone[data-state="busy"] { color: var(--text); }
 .nav-phone .arc { opacity: 0; transition: opacity var(--t); }
@@ -317,10 +202,8 @@
 @keyframes phone-blink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: .2; } }
 @media (prefers-reduced-motion: reduce) { .nav-phone .arc { animation: none; } }
 
-/* Tier 4 — scheduled runs, pinned between the project scroller and the foot. The
-   section header is a band header that folds; the job groups inside reuse the
-   project tree's rows minus the sweep column, which is a per-project control. */
 .sidebar-scheduled { flex: 0 0 auto; max-height: 40%; overflow-y: auto; border-top: 1px solid var(--border); }
+.sidebar-scheduled[open] { z-index: 1; box-shadow: 0 -8px 24px -8px #0007; }
 .sidebar-scheduled > summary { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--pad); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: var(--ls-caps); text-transform: uppercase; cursor: pointer; list-style: none; }
 .sidebar-scheduled > summary::-webkit-details-marker { display: none; }
 .sidebar-scheduled > summary:hover { color: var(--text); background: var(--surface-2); }
@@ -329,11 +212,9 @@
 
 .resize-handle { position: absolute; z-index: 8; top: 0; right: -4px; width: 8px; height: 100%; padding: 0; cursor: col-resize; background: transparent; }
 .resize-handle::after { content: ""; position: absolute; inset: 0 3px; background: transparent; transition: background-color var(--t); }
-/* Derived: --border-strong is too faint for a drag affordance, --text-3 alone too loud. */
 .resize-handle:hover::after, .resize-handle:focus-visible::after { background: color-mix(in srgb, var(--text-3) 70%, transparent); }
 
 @media (prefers-reduced-motion: reduce) {
 .new-thread, .sidebar-nav button, .project-group > summary, .project-thread, .thread-actions, .thread-pin, .rail-toggle, .sidebar.collapsed, .sidebar-search, .resize-handle::after, .sidebar-scheduled > summary.new-runs .project-folder { transition: none; }
-  /* Still says which state it is — the colour and mark carry it without motion. */
-  .thread-status, .thread-status::before { animation: none; }
+  .thread-status { animation: none; }
 }

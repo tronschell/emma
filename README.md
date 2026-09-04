@@ -21,7 +21,7 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 
 ---
 
-- **One loop, every surface.** Composer, Quick Ask, quick actions, scheduled jobs, autoresearch — all enter the same interception in Electron main.
+- **One loop, every surface.** Composer, Quick Ask, quick actions, scheduled jobs — all enter the same interception in Electron main.
 - **A coding agent with the usual verbs.** Files, grep, shell, browser, screen, MCP tools, skills installed mid-turn, work fanned out to subagents.
 - **It drives the CLI you already use.** Claude Code, Codex, Pi, OpenCode, and Cursor run as workers in your working tree.
 - **Every turn is instrumented.** A span tree per run — model requests, tool calls, wall clock, token deltas — appended to the thread's Markdown.
@@ -117,7 +117,7 @@ Point `keep` at an Obsidian vault or any plain folder: one Markdown note per sav
 
 <img src="desktop/screenshots/scheduled-jobs.png" alt="The Scheduled view: an overnight TestFlight report — its cron trigger, prompt, mode, six steps including an if-branch, and past runs" width="900">
 
-A job is one validated trigger (cron, `manual`, `after <job-id>`, or an app event) plus a graph of `agent` / `set` / `if` nodes. Autoresearch is the long form: propose, run the eval, keep or revert the commit, until a budget stops it. → **[docs/jobs.md](docs/jobs.md)** · **[docs/autoresearch.md](docs/autoresearch.md)**
+A job is one validated trigger (cron, `manual`, `after <job-id>`, or an app event) plus a graph of `agent` / `set` / `if` nodes. → **[docs/jobs.md](docs/jobs.md)**
 
 ## Models
 
@@ -149,7 +149,7 @@ The same agent, headless. Bare `emma-cli` is a REPL in the current directory; `s
 
 ```text
 desktop/        Electron main/preload and React 19 workspace
-crates/core/    Markdown thread, scheduled and research records
+crates/core/    Markdown thread and scheduled records
 crates/host/    NDJSON host bridge
 harness/        emma-cli, Emma's fork of vercel-labs/fx, Apache-2.0
 docs/           Product and architecture contracts
@@ -180,7 +180,7 @@ x64 publication is pending release-workflow authorization.
 
 ## Docs
 
-Everything lives in **[`docs/`](docs/README.md)** — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [architecture](docs/architecture.md), [permissions](docs/permissions.md), [tools](docs/tools.md), [models](docs/models.md), [privacy](docs/privacy.md), [context bar](docs/context-bar.md), [components](docs/components.md), [knowledge](docs/knowledge.md), [notch](docs/notch.md), [voice](docs/voice.md), [terminal](docs/terminal.md), [jobs](docs/jobs.md), [autoresearch](docs/autoresearch.md), [computer use](docs/computer-use.md), [goals](docs/goals.md), [agents](docs/agents.md), [browser](docs/browser.md), [mobile](docs/mobile.md), [CLI](docs/cli.md), [harness](docs/harness.md), [plugins](docs/plugins.md), [design system](docs/design-system.md), [development](docs/development.md), [data](docs/data.md), [credits](docs/credits.md), [troubleshooting](docs/troubleshooting.md).
+Everything lives in **[`docs/`](docs/README.md)** — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [architecture](docs/architecture.md), [permissions](docs/permissions.md), [tools](docs/tools.md), [models](docs/models.md), [privacy](docs/privacy.md), [context bar](docs/context-bar.md), [components](docs/components.md), [knowledge](docs/knowledge.md), [notch](docs/notch.md), [voice](docs/voice.md), [terminal](docs/terminal.md), [jobs](docs/jobs.md), [computer use](docs/computer-use.md), [goals](docs/goals.md), [agents](docs/agents.md), [browser](docs/browser.md), [mobile](docs/mobile.md), [CLI](docs/cli.md), [harness](docs/harness.md), [plugins](docs/plugins.md), [design system](docs/design-system.md), [development](docs/development.md), [data](docs/data.md), [credits](docs/credits.md), [troubleshooting](docs/troubleshooting.md).
 
 ## Credits
 

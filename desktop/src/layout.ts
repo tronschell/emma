@@ -28,7 +28,7 @@ export function edgePath(from: { x: number; y: number }, to: { x: number; y: num
   };
 }
 
-export const NAV_VIEWS = ["knowledge", "artifacts", "scheduled", "agent", "plugins", "research"] as const;
+export const NAV_VIEWS = ["knowledge", "artifacts", "scheduled", "agent", "plugins"] as const;
 
 export interface PaneLayout {
   sidebarWidth: number;

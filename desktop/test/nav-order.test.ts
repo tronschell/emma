@@ -11,8 +11,8 @@ test("a saved order arranges what it names and keeps what it does not", () => {
 });
 
 test("localStorage is not trusted to hold section ids", () => {
-  const layout = validatePaneLayout({ navOrder: ["research", "research", "nope", 7, "knowledge"], projectOrder: ["f1", "", "f2"] });
-  assert.deepEqual(layout.navOrder, ["research", "knowledge"]);
+  const layout = validatePaneLayout({ navOrder: ["research", "plugins", "plugins", "nope", 7, "knowledge"], projectOrder: ["f1", "", "f2"] });
+  assert.deepEqual(layout.navOrder, ["plugins", "knowledge"]);
   assert.deepEqual(layout.projectOrder, ["f1", "f2"]);
   assert.deepEqual(validatePaneLayout({ navOrder: "knowledge" }).navOrder, []);
   assert.deepEqual(validatePaneLayout(null).navOrder, []);

@@ -193,6 +193,7 @@ export function restoreBlocks(threadId: string, spans: TraceSpan[], partial?: { 
             toolCallId: span.id.slice("call:".length),
             title: span.name,
             kind: span.kind,
+            toolName: span.tool,
             status: span.status === "ok" ? "completed" : span.status === "failed" ? "failed" : span.status === "cancelled" ? "cancelled" : "in_progress",
             input: span.input,
             output: span.output,

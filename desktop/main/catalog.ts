@@ -8,11 +8,11 @@ export interface CatalogModel {
   name: string;
   contextLength: number;
   inputModalities: string[];
-  /** The thinking modes this model offers, weakest first; absent or empty means none. */
+
   reasoningEfforts?: string[];
   reasoningMandatory?: boolean;
   free: boolean;
-  /** What a million tokens costs, in micro-dollars ($1 = 1_000_000). 0 is free, or unpublished. */
+
   promptMicroUsdPerMtok?: number;
   completionMicroUsdPerMtok?: number;
 }
@@ -22,12 +22,11 @@ export interface Catalog {
   models: CatalogModel[];
 }
 
-/** What the models page renders: the catalog plus what changed since the last fetch. */
 export interface CatalogResult extends Catalog {
   added: string[];
   removed: string[];
   fetchedAt: string;
-  /** True when the fetch failed and these models came off disk instead. */
+
   stale: boolean;
   error?: string;
 }
@@ -38,14 +37,12 @@ const isModel = (value: unknown): value is CatalogModel => {
     && typeof model.contextLength === "number" && Array.isArray(model.inputModalities);
 };
 
-/** The listing is public, so this request carries no credential — browsing models works before a key exists. */
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?supported_parameters=tools&sort=most-popular";
 const MAX_CATALOG_MODELS = 2048;
 const EFFORT_NAMES = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const EFFORT_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const MODALITIES = ["image", "file", "audio"];
 
-/** A price string in dollars per token, as micro-dollars per million tokens. Unreadable is 0. */
 const microUsdPerMtok = (value: unknown): number => {
   if (typeof value !== "string") return 0;
   const usdPerToken = Number.parseFloat(value);
@@ -61,11 +58,6 @@ const isZeroPrice = (value: unknown): boolean => {
 
 const supportsParameter = (value: unknown, name: string) => Array.isArray(value) && value.includes(name);
 
-/**
- * A listing row is remote input, so every field is checked before it becomes a model: a
- * malformed id, an unprintable name or a nonsense window is one vendor's bad row, dropped
- * rather than allowed to poison the picker.
- */
 const readable = (id: string, name: string, contextLength: number, modalities: string[]) =>
   id.length <= 128 && MODEL_ID.test(id)
   && name.trim().length > 0 && name.length <= 256
@@ -74,13 +66,6 @@ const readable = (id: string, name: string, contextLength: number, modalities: s
   && Number.isInteger(contextLength) && contextLength >= 1 && contextLength <= 100_000_000
   && modalities.every((modality) => MODALITIES.includes(modality));
 
-/**
- * OpenRouter's live tool-capable catalog.
- *
- * Emma advertises tools on every turn, so a model without tool support fails the moment it
- * is used and never belongs in the list. Everything else is the vendor's own metadata,
- * validated on the way in.
- */
 export async function fetchOpenRouterCatalog(timeoutMs = 30_000): Promise<Catalog> {
   const response = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`OpenRouter answered ${response.status}.`);
@@ -127,11 +112,6 @@ export async function fetchOpenRouterCatalog(timeoutMs = 30_000): Promise<Catalo
   return { models };
 }
 
-/**
- * The OpenRouter catalog, cached on disk so the models page paints instantly, survives a
- * dead network, and can say what actually changed when the user reloads it. The bundled
- * seed covers the very first launch, before any fetch has ever landed.
- */
 export class CatalogCache {
   private readonly file: string;
   private models: CatalogModel[];
@@ -144,49 +124,25 @@ export class CatalogCache {
     try {
       const stored = JSON.parse(readFileSync(this.file, "utf8")) as { models?: unknown; fetchedAt?: unknown };
       const models = Array.isArray(stored.models) ? stored.models.filter(isModel) : [];
-      // A cache older than the seed is still worth keeping: it is what this user last saw.
       if (models.length) this.models = models;
       if (typeof stored.fetchedAt === "string") this.fetchedAt = stored.fetchedAt;
-    } catch { /* No cache yet, or an unreadable one: the seed stands in. */ }
+    } catch { return; }
   }
 
-  /**
-   * A model's context window, from whatever the cache last saw.
-   *
-   * The harness only recognises a few model-id prefixes and treats every other
-   * window as unknown, which silently caps its history at a fixed default and
-   * disables its token-pressure compaction. This is the number it is missing.
-   */
   contextLength(id: string | undefined): number | undefined {
     if (!id) return undefined;
     return this.models.find((model) => model.id === id)?.contextLength;
   }
 
-  /**
-   * The thinking efforts a model publishes, weakest first.
-   *
-   * The same reason as the window above: the harness's own capability table knows a
-   * handful of prefixes and nothing about this model, so an effort it was not told
-   * about is dropped rather than sent. This is the list it is missing, and the one a
-   * stop off the slider is checked against before it ever reaches a request.
-   */
   reasoningEfforts(id: string | undefined): string[] {
     if (!id) return [];
     return this.models.find((model) => model.id === id)?.reasoningEfforts ?? [];
   }
 
-  /** Every model this cache has seen, for callers checking that an ID is still listed. */
   ids(): string[] {
     return this.models.map((model) => model.id);
   }
 
-  /**
-   * Runs `fetch`, diffs it against the cache, and falls back to the cache when it fails.
-   *
-   * A cache younger than `maxAgeMs` is served as-is: every page that lists models asks for
-   * one, so without this a single window paints and fires a fetch per caller. One fetch is
-   * shared while it is in flight, for the same reason.
-   */
   async refresh(fetch: () => Promise<Catalog>, maxAgeMs = 0): Promise<CatalogResult> {
     if (maxAgeMs && Date.now() - Date.parse(this.fetchedAt) < maxAgeMs) {
       return { models: this.models, added: [], removed: [], fetchedAt: this.fetchedAt, stale: false };
@@ -218,7 +174,7 @@ export class CatalogCache {
     this.models = models;
     this.fetchedAt = new Date().toISOString();
     try { writeFileSync(this.file, JSON.stringify({ fetchedAt: this.fetchedAt, models }), { mode: 0o600 }); }
-    catch { /* A cache that cannot be written is a slower next launch, not a failed reload. */ }
+    catch (error) { console.warn("Emma could not cache the model catalog", error); }
     return {
       selectedModel: catalog.selectedModel,
       models,
@@ -340,4 +296,18 @@ export async function probeProvider(baseUrl: string, key: string, model: string)
   try { probe.tools = await probeProviderTools(baseUrl, key, model); }
   catch (reason) { if (!probe.error) probe.error = reason instanceof Error ? reason.message : String(reason); }
   return probe;
+}
+
+export function modelRates(catalogFile: string, modelId: string): { input: number; output: number } {
+  try {
+    const stored = JSON.parse(readFileSync(catalogFile, "utf8")) as { models?: Record<string, unknown>[] };
+    const model = stored.models?.find((candidate) => candidate.id === modelId);
+    const rate = (name: string) => {
+      const value = model?.[name];
+      return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+    };
+    return { input: rate("promptMicroUsdPerMtok"), output: rate("completionMicroUsdPerMtok") };
+  } catch {
+    return { input: 0, output: 0 };
+  }
 }

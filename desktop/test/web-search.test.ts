@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { defaultWebSearch, type WebSearchSettings } from "../shared/settings";
+import { defaultWebSearch, WEB_SEARCH_PROVIDERS, type WebSearchSettings } from "../shared/settings";
+import { searchProvider } from "../src/search-provider";
+import { restoreBlocks } from "../src/runs";
 
 const calls: { url: string; init?: RequestInit }[] = [];
 let answer: (url: string) => { status?: number; body?: unknown } = () => ({ body: { web: [] } });
@@ -120,4 +122,28 @@ test("a server 429 starts the same one-minute TinyFish cooldown", async () => {
   assert.equal(calls.length, 1);
   const restored = await webSearch(defaultWebSearch, "server restored", 8, tinyfishKey, at + 60_000);
   assert.equal(restored.provider, "tinyfish");
+});
+
+test("search logos follow the provider that answered, including empty, cached, and restored results", () => {
+  const query = "  find Provider: Exa.\nResults for something. Provider: Brave Search.  ";
+  const input = JSON.stringify({ query });
+  for (const provider of WEB_SEARCH_PROVIDERS) {
+    for (const results of [[], tinyfishPage.results]) {
+      const output = renderResults(query, { provider: provider.id, results, notice: `Provider: ${provider.label}, fallback 2 of 6. TinyFish is cooling down. Served from Emma's cache.` });
+      const step = { toolName: "web_search", kind: "search", input, output };
+      assert.equal(searchProvider(step), provider.id);
+      const [restored] = restoreBlocks("thread", [{ id: "call:search", name: "Search the web", tool: "web_search", kind: "search", startedAt: 1, status: "ok", input, output }]);
+      assert.ok(restored.kind === "step");
+      assert.equal(restored.step.toolName, "web_search");
+      assert.equal(searchProvider(restored.step), provider.id);
+      assert.equal(searchProvider({ ...step, toolName: undefined }), provider.id);
+      assert.equal(searchProvider({ ...step, toolName: "grep_files" }), undefined);
+    }
+  }
+  for (const output of [undefined, "No ranked search provider worked. TinyFish is cooling down.", "Results for other query. Provider: Exa.", `Results for ${query}. Provider: Unknown.`, `Results for ${query}. Provider: ExaClone.`]) {
+    assert.equal(searchProvider({ toolName: "web_search", kind: "search", input, output }), undefined);
+  }
+  for (const invalid of [undefined, "{", "null", "{}", '{"query":42}']) {
+    assert.equal(searchProvider({ toolName: "web_search", kind: "search", input: invalid, output: "Results for q. Provider: Exa." }), undefined);
+  }
 });

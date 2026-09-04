@@ -171,7 +171,7 @@ is special about it except the `scheduledJobId` tag.
 **The saved mode is the only gate.** Nobody is there to answer at 09:00, so:
 
 - On `ask` and `acceptEdits` a gated tool (`run_tool`, `cli`, `computer`,
-  `browser`, `install_mcp`, `workflow`, `autoresearch`, plus the harness's own
+  `browser`, `install_mcp`, `workflow`, plus the harness's own
   file mutations, which `acceptEdits` lets through) still raises the dialog in
   the main window. Answer it if you are at the computer. Unanswered it times out after
   `MAX_ASK_MS` (10 minutes) and counts as a refusal, and the job sits on that
@@ -249,6 +249,5 @@ On disk each job is one Markdown file with front matter
 - [permissions.md](permissions.md) — the four modes; a job may be saved as three of them
 - [tools.md](tools.md) — the `workflow` tool and everything else a job can call
 - [computer-use.md](computer-use.md) — what an unattended run can do to the computer
-- [autoresearch.md](autoresearch.md) — the other automation loop, no clock involved
 - [data.md](data.md) — where jobs, threads and outputs live
 - [troubleshooting.md](troubleshooting.md) — when a job did not fire

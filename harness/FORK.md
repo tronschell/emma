@@ -145,7 +145,7 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   the catalogue the user themselves attached, so Emma admits it without a
   prompt. A call naming `paths` is the model choosing a file, and keeps its
   per-path gate.
-- **Native Emma tools.** The twenty-eight tools Emma owns are appended to fx's
+- **Native Emma tools.** The twenty-seven tools Emma owns are appended to fx's
   registry as `++ emma_tools.all` — specs in `src/builtins/emma_tools.zig` and
   `src/builtins/emma/`, one shared implementation in
   `src/tools/emma/bridge.zig`, and a new `ExecutorKind.emma`. The harness
@@ -177,7 +177,7 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   overrides, and overflow warnings are unchanged.
 - **Tool description cap.** `gateway_schema.description_max_bytes` was
   upstream's 1024 and is 4 KiB. `cappedDescriptionAlloc` truncates silently, so
-  at 1024 `workflow` and `autoresearch` lost their last commands with nothing to
+  at 1024 `workflow` lost its last commands with nothing to
   show for it. A test in `src/builtins/emma_tools.zig` fails the build if a
   description outgrows the cap.
 - **System prompt per process.** `builtins/context.zig` replaces the built-in
@@ -358,6 +358,11 @@ at `vercel-labs/fx`, because Emma neither builds nor ships it — `build.zig.zon
 `.paths` does not list it and the WASM and N-API artifacts are opt-in build
 options; and inert fixture strings naming `vercel-labs/agent-skills`,
 `github.com/vercel-labs/fx` git remotes, and `vercel/v0` PR URLs.
+
+Unused web-search aliases, tool-label forwarding helpers, legacy catalog-fetch
+entry points, and unused failure-formatting helpers are removed. Catalog HTTP
+coverage calls the active provider directly. The permanently skipped GLM request
+header test is removed; the JavaScript-host request builder remains intact.
 
 ## Merging upstream
 

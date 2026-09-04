@@ -502,10 +502,8 @@ function PaletteCard({ type, disabled, onAdd }: { type: ContextWidgetType; disab
       <strong>{definition.label}</strong>
       <small>{definition.blurb}</small>
     </div>
-    {disabled
-      ? <span className="bar-palette-on" title="Already on this page">On page</span>
-      : <><button type="button" className="bar-grip" aria-label={`Drag ${definition.label} into the bar`} {...attributes} {...listeners}><GripIcon /></button>
-        <button type="button" className="bar-add" aria-label={`Add ${definition.label} to this page`} onClick={onAdd}>+</button></>}
+    <button type="button" className="bar-grip" disabled={disabled} aria-label={`Drag ${definition.label} into the bar`} {...attributes} {...listeners}><GripIcon /></button>
+    <button type="button" className="bar-add" disabled={disabled} aria-label={`Add ${definition.label} to this page`} onClick={onAdd}>+</button>
   </div>;
 }
 
@@ -546,6 +544,17 @@ function PlacedWidget({ widget, context, onRemove, onEdit }: { widget: ContextWi
   </div>;
 }
 
+const COMPONENT_GROUPS: { label: string; types: ContextWidgetType[] }[] = [
+  { label: "Thread activity", types: ["stats", "context", "timeline"] },
+  { label: "Work & agents", types: ["tasklist", "plan", "subagents", "subthreads", "git"] },
+  { label: "This computer", types: ["machine", "machinegraph", "machinemeters"] },
+];
+
+function BarCanvas({ children }: { children: ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id: "bar-canvas" });
+  return <div className="inspector-body" ref={setNodeRef} data-over={isOver || undefined}>{children}</div>;
+}
+
 export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPage[]; onChange: (pages: ContextPage[]) => void; busy: boolean }) {
   const [active, setActive] = useState(pages[0]?.id ?? "p1");
   const [dragging, setDragging] = useState<ContextWidgetType | null>(null);
@@ -553,7 +562,6 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
   const nameField = useId();
   const page = pages.find((item) => item.id === active) ?? pages[0];
   const sensors = useBarSensors();
-  const { setNodeRef: setCanvasRef, isOver } = useDroppable({ id: "bar-canvas" });
 
   const writePage = useCallback((widgets: ContextWidget[]) => {
     onChange(pages.map((item) => item.id === page.id ? { ...item, widgets } : item));
@@ -561,6 +569,7 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
 
   const spare = CONTEXT_WIDGETS.filter((definition) => !page.widgets.some((widget) => widget.type === definition.type));
   const add = (type: ContextWidgetType, at = page.widgets.length) => {
+    if (busy || page.widgets.some((widget) => widget.type === type)) return;
     const widgets = [...page.widgets];
     widgets.splice(at, 0, { type, orientation: "vertical" });
     writePage(widgets);
@@ -568,7 +577,7 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
 
   const dropped = ({ active: from, over }: DragEndEvent) => {
     setDragging(null);
-    if (!over) return;
+    if (busy || !over) return;
     const type = placedType(String(from.id));
     const target = over.id === "bar-canvas" ? page.widgets.length : page.widgets.findIndex((widget) => widget.type === over.id);
     if (String(from.id).startsWith("add:")) { add(type, target < 0 ? page.widgets.length : target); return; }
@@ -592,32 +601,31 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
   const rename = (name: string) => onChange(pages.map((item) => item.id === page.id ? { ...item, name } : item));
 
   return <div className="bar-editor" aria-busy={busy || undefined}>
+    <p className="bar-intro">Choose a page, then arrange what appears beside your threads. Changes save automatically.</p>
     <section className="bar-pages">
       <header>
         <span>Pages · {pages.length} of {MAX_CONTEXT_PAGES}</span>
         <button type="button" disabled={busy || pages.length >= MAX_CONTEXT_PAGES} onClick={addPage}>New page</button>
       </header>
-      <div className="bar-page-tabs" role="tablist" aria-label="Context bar pages">
-        {pages.map((item) => <button key={item.id} type="button" role="tab" aria-selected={item.id === page.id} disabled={busy} onClick={() => setActive(item.id)}>{item.name}</button>)}
+      <div className="bar-page-tabs" role="group" aria-label="Context bar pages">
+        {pages.map((item) => <button key={item.id} type="button" aria-pressed={item.id === page.id} disabled={busy} onClick={() => setActive(item.id)}>{item.name}<small>{item.widgets.length}</small></button>)}
       </div>
-      <div className="bar-page-fields">
-        <label htmlFor={nameField}>Name</label>
-        <input id={nameField} value={page.name} maxLength={MAX_PAGE_NAME} disabled={busy} onChange={(event) => rename(event.target.value)} />
-        <button type="button" className="bar-page-remove" disabled={busy || pages.length < 2} onClick={removePage}>Delete page</button>
-      </div>
+      <details className="bar-page-options">
+        <summary>Page options<small>Rename or delete {page.name}</small><CaretIcon /></summary>
+        <div className="bar-page-fields">
+          <label htmlFor={nameField}>Page name</label>
+          <input id={nameField} value={page.name} maxLength={MAX_PAGE_NAME} disabled={busy} onChange={(event) => rename(event.target.value)} />
+          <button type="button" className="bar-page-remove" disabled={busy || pages.length < 2} onClick={removePage}>Delete page</button>
+        </div>
+      </details>
     </section>
 
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={({ active: from }: DragStartEvent) => setDragging(placedType(String(from.id)))} onDragCancel={() => setDragging(null)} onDragEnd={dropped}>
       <div className="bar-workbench">
-        <section className="bar-palette">
-          <header><span>Components</span><small>{spare.length} left</small></header>
-          {CONTEXT_WIDGETS.map((definition) => <PaletteCard key={definition.type} type={definition.type} disabled={busy || page.widgets.some((widget) => widget.type === definition.type)} onAdd={() => add(definition.type)} />)}
-        </section>
-
         <section className="bar-stage">
-          <header><span>{page.name}</span><small>288px · live data is your own</small></header>
+          <header><span>{page.name}</span><small>{page.widgets.length} {plural(page.widgets.length, "component")}</small></header>
           <div className="inspector bar-preview">
-            <div className="inspector-body" ref={setCanvasRef} data-over={isOver || undefined}>
+            <BarCanvas>
               <header><span>{page.name}</span><button type="button" inert>Save &amp; analyze</button></header>
               <SortableContext items={page.widgets.map((widget) => widget.type)} strategy={verticalListSortingStrategy}>
                 {page.widgets.map((widget) => <PlacedWidget
@@ -629,8 +637,22 @@ export function ContextBarSettings({ pages, onChange, busy }: { pages: ContextPa
                 />)}
               </SortableContext>
               {!page.widgets.length && <p className="bar-empty">Drag a component in, or press its ＋. An empty page shows the thread's name and nothing else.</p>}
-            </div>
+            </BarCanvas>
           </div>
+          <p className="bar-help">Drag handles to reorder. Use ⇅ to change layout or × to remove a component. Preview uses sample thread data.</p>
+        </section>
+
+        <section className="bar-palette">
+          <header><span>Add components</span><small>{spare.length} available</small></header>
+          <p className="bar-help">Expand a group, then press + or drag into the preview.</p>
+          {COMPONENT_GROUPS.map((group) => {
+            const available = spare.filter((definition) => group.types.includes(definition.type));
+            return available.length > 0 && <details key={group.label} className="bar-component-group">
+              <summary>{group.label}<small>{available.length}</small><CaretIcon /></summary>
+              {available.map((definition) => <PaletteCard key={definition.type} type={definition.type} disabled={busy} onAdd={() => add(definition.type)} />)}
+            </details>;
+          })}
+          {!spare.length && <p className="bar-empty">Every component is on this page. Remove one from the preview to make it available here again.</p>}
         </section>
       </div>
       <DragOverlay dropAnimation={null}>

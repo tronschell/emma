@@ -99,8 +99,7 @@ Emma's own directory so it never reads the user's `~/.fx`.
 
 `emma-core` owns parsing, validation and atomic persistence. `$EMMA_DATA_DIR`, or
 the platform default when unset (normally Electron's `userData`: `%APPDATA%/Emma`
-on Windows and `~/Library/Application Support/Emma` on macOS), holds `threads/`, `scheduled/`
-and `research/` — one Markdown file per record, written to `.{id}.tmp` and
+on Windows and `~/Library/Application Support/Emma` on macOS), holds `threads/` and `scheduled/` — one Markdown file per record, written to `.{id}.tmp` and
 renamed over the destination. Artifacts, components, plans, skills, tools and
 credentials are also Electron's, under `userData`, and reach the renderer over
 named IPC channels rather than through the host. Kept notes go into the user's
@@ -152,8 +151,7 @@ Also third-party: [Electron](https://github.com/electron/electron),
 [Tailwind](https://github.com/tailwindlabs/tailwindcss),
 [ripgrep](https://github.com/BurntSushi/ripgrep),
 [xterm.js](https://github.com/xtermjs/xterm.js),
-[mermaid](https://github.com/mermaid-js/mermaid),
-[recharts](https://github.com/recharts/recharts), and the
+[mermaid](https://github.com/mermaid-js/mermaid), and the
 Departure Mono font (SIL OFL 1.1, © 2022–2024 Helena Zhang,
 [`DepartureMono-LICENSE.txt`](../desktop/assets/DepartureMono-LICENSE.txt)).
 Vendor brand marks are credited in

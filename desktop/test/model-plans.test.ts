@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import { CLI_PLANS, CODEX_PREFIX, MODEL_PLANS, availableCodexModelKey, routerIdFor, type ProviderProfile, defaultSettings, isEnvName, modelPlanRoute, planBalanceLine, planFor, planForGeneration, planForModel, planForProfile, planModelId, planProfileFor, planProfileId, planSpend, providerEndpoint, validateSettings, withPlanProfile } from "../shared/settings";
+import { CLI_PLANS, CODEX_PREFIX, MODEL_PLANS, availableCodexModelKey, codexModelKey, routerIdFor, type ProviderProfile, defaultSettings, isEnvName, modelPlanRoute, planBalanceLine, planFor, planForGeneration, planForModel, planForProfile, planModelId, planProfileFor, planProfileId, planSpend, providerEndpoint, validateSettings, withPlanProfile } from "../shared/settings";
 import { readDeepSeekBalance } from "../main/catalog";
 import { CLI_IDS } from "../shared/cli";
 
@@ -133,15 +133,34 @@ function appSource(name: string): string {
 
 const routing = ["isFreeModel", "modelEntryPlan", "modelEntryPlanProfile", "modelEntryCodexKey", "modelEntryCurrent", "modelEntryRoute", "modelEntryFavorite"];
 const picker = Function("planForModel", "planProfileFor", "planModelId", "availableCodexModelKey", "CODEX_PREFIX", "routerIdFor",
-  ts.transpile(`${routing.map(appSource).join("\n")}\nreturn { modelEntryRoute, modelEntryFavorite };`, { target: ts.ScriptTarget.ES2022 }))(
+  ts.transpile(`${routing.map(appSource).join("\n")}\nreturn { modelEntryRoute, modelEntryFavorite, modelEntryPlan };`, { target: ts.ScriptTarget.ES2022 }))(
   planForModel, planProfileFor, planModelId, availableCodexModelKey, CODEX_PREFIX, routerIdFor) as {
   modelEntryRoute: (entry: { key: string }, active: string, providers: readonly ProviderProfile[], slugs: readonly string[]) => { key: string; plan?: { id: string } };
   modelEntryFavorite: (entry: { key: string }, favorites: readonly string[], providers: readonly ProviderProfile[]) => string;
+  modelEntryPlan: (entry: { key: string }) => { id: string } | undefined;
 };
 
 const glmEntry = { key: "openrouter:z-ai/glm-5.3-flash" };
 const lunaEntry = { key: "openrouter:openai/gpt-5.6-luna" };
 const planned = withPlanProfile(defaultSettings, planFor("zai")!, "glm-5.3-flash");
+
+const catalogPicker = Function("planFor", "planForModel", "planForProfile", "planProfileFor", "planModelId", "CODEX_PREFIX", "codexModelKey", "brandForModel", "brandForProvider", "providerBrands", "localBrand",
+  ts.transpile(`${["isFreeModel", "modelEntryPlan", "codexEntries", "modelEntries"].map(appSource).join("\n")}\nreturn modelEntries;`, { target: ts.ScriptTarget.ES2022 }))(
+  planFor, planForModel, planForProfile, planProfileFor, planModelId, CODEX_PREFIX, codexModelKey,
+  () => undefined, (id: string) => ({ id, label: id }), [{ id: "openai" }, { id: "glm" }], { id: "local" }) as
+  (providers: ProviderProfile[], models: { id: string; name: string; contextLength: number; free: boolean }[], slugs: string[]) => { key: string; maker: string; name: string }[];
+
+test("a free-only catalog keeps standalone subscription and direct API models visible under their maker", () => {
+  const settings = withPlanProfile(planned, planFor("openai")!, "gpt-5.6-luna");
+  const entries = catalogPicker(settings.providers, [
+    { id: "z-ai/glm-5.3-flash:free", name: "GLM Free", contextLength: 128000, free: true },
+    { id: "openai/gpt-5.6-luna:free", name: "Luna Free", contextLength: 128000, free: true },
+  ], ["gpt-5.6-luna"]);
+  assert.equal(entries.find((entry) => entry.key === "provider:plan-zai")?.maker, "glm");
+  assert.equal(entries.find((entry) => entry.key === "provider:plan-openai")?.maker, "openai");
+  assert.ok(entries.find((entry) => entry.key === "provider:plan-zai")?.name.includes("glm-5.3-flash"));
+  assert.ok(entries.some((entry) => entry.key === "codex:gpt-5.6-luna"));
+});
 
 test("a plain pick takes the subscription a profile already covers, not the metered route", () => {
   const route = picker.modelEntryRoute(glmEntry, "openrouter:nvidia/nemotron:free", planned.providers, []);
@@ -166,6 +185,16 @@ test("picking the row you are already on keeps the route you chose", () => {
   assert.deepEqual(picker.modelEntryRoute(lunaEntry, "codex:gpt-5.6-luna", defaultSettings.providers, ["gpt-5.6-luna"]), { key: "codex:gpt-5.6-luna" });
   assert.deepEqual(picker.modelEntryRoute(glmEntry, glmEntry.key, planned.providers, []), { key: glmEntry.key });
   assert.equal(picker.modelEntryRoute(glmEntry, "provider:plan-zai", planned.providers, []).plan?.id, "zai");
+  assert.deepEqual(picker.modelEntryRoute(lunaEntry, "codex:gpt-5.6-luna", defaultSettings.providers, []), { key: "codex:gpt-5.6-luna" });
+});
+
+test("OpenRouter variants never offer a direct route or borrow its selection", () => {
+  for (const suffix of ["free", "batch", "nitro", "online"]) {
+    const entry = { key: `${glmEntry.key}:${suffix}` };
+    assert.equal(picker.modelEntryPlan(entry), undefined);
+    assert.deepEqual(picker.modelEntryRoute(entry, "provider:plan-zai", planned.providers, []), { key: entry.key });
+    assert.equal(picker.modelEntryFavorite(entry, ["provider:plan-zai"], planned.providers), "");
+  }
 });
 
 test("a star on a plan or ChatGPT route belongs to the row that model sits on", () => {

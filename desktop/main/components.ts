@@ -7,6 +7,7 @@ import type { LookupFunction } from "node:net";
 import path from "node:path";
 import { COMPONENT_FETCH_TIMEOUT_MS, COMPONENT_SHOT_PATH, componentSlug, MAX_COMPONENT_CHARS, MAX_COMPONENT_FETCH_BYTES, MAX_COMPONENT_REQUEST_BYTES, MAX_COMPONENT_SHOT_BYTES, MAX_COMPONENT_TITLE_CHARS, MAX_COMPONENTS, parseVariables, validComponentId, type BuiltComponent, type ComponentMeta } from "../shared/components";
 import { publicAddress, publicUrl } from "./ipc";
+import { writeAtomic } from "./write-atomic";
 
 export const componentRoot = (userData: string) => path.join(userData, "components");
 
@@ -307,15 +308,4 @@ function unique(slug: string, taken: readonly string[]) {
     if (!taken.includes(`${stem}-${suffix}`)) return `${stem}-${suffix}`;
   }
   throw new Error(`Emma already holds too many components called "${slug}". Rewrite one of them instead.`);
-}
-
-async function writeAtomic(file: string, content: string) {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
 }

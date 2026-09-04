@@ -5,7 +5,6 @@ const types = @import("../shared/types.zig");
 
 pub const Source = types.CredentialSource;
 
-/// The environment variable Emma fills before spawning this binary.
 pub const api_key_env = "EMMA_PROVIDER_API_KEY";
 
 pub const CatalogPublicOnly = union(enum) {
@@ -24,9 +23,6 @@ pub const CatalogPublicOnly = union(enum) {
 
 pub const CatalogPublicOnlyReason = std.meta.Tag(CatalogPublicOnly);
 
-/// A borrowed authorization decision for one model-catalog request. Public-only
-/// states cannot carry credential bytes; the authenticated state carries the
-/// only value the request is allowed to send.
 pub const CatalogAccess = union(enum) {
     public_only: CatalogPublicOnly,
     authenticated: struct {
@@ -108,8 +104,6 @@ pub const Resolution = struct {
     credential: ?Credential = null,
 };
 
-/// The single credential resolution method. There is exactly one source, so
-/// this is a typed read of `EMMA_PROVIDER_API_KEY`.
 pub fn resolve(alloc: std.mem.Allocator) !Resolution {
     return .{ .credential = try loadSource(alloc, .emma_provider_api_key) };
 }
@@ -136,11 +130,6 @@ pub fn sourceLabel(source: Source) []const u8 {
     };
 }
 
-pub fn sourceRefreshable(source: Source) bool {
-    _ = source;
-    return false;
-}
-
 var stable_credential_test_environ: ?*std.process.Environ.Map = null;
 
 fn stableCredentialTestEnviron() !*const std.process.Environ.Map {
@@ -157,8 +146,6 @@ const CredentialTestEnv = struct {
     alloc: std.mem.Allocator,
     map: std.process.Environ.Map,
 
-    /// Installs exactly `entries`, so anything the resolver reads from the real
-    /// environment, `HOME` included, is absent for the duration of the test.
     fn install(alloc: std.mem.Allocator, entries: []const [2][]const u8) !*CredentialTestEnv {
         _ = try stableCredentialTestEnviron();
 

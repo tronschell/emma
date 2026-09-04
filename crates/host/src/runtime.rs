@@ -10,7 +10,6 @@ pub fn start(job_sink: JobSink) -> Result<LiveClient, LiveError> {
     start_live_runtime(
         data_root.join("threads"),
         data_root.join("scheduled"),
-        data_root.join("research"),
         job_sink,
     )
 }

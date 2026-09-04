@@ -130,42 +130,9 @@ pub const Sandbox = struct {
             .command_result_json = try deniedCommandResult(command, cwd, result.command_result).toJson(arena),
         };
     }
-
-    pub fn preflightUnavailableFailure(
-        arena: Allocator,
-        command: []const u8,
-        cwd: []const u8,
-    ) !ToolExecutionResult {
-        const output = try arena.dupe(
-            u8,
-            "sandbox_permission_required=true\n" ++
-                "mode=headless\n" ++
-                "sandbox_retry_available=false\n" ++
-                "reason=no_permission_ui\n" ++
-                "permission=sandbox\n" ++
-                "message=This command needs broader file access before running. Noninteractive mode cannot ask for that sandbox approval; rerun in the interactive shell to approve it or adjust sandbox configuration.\n",
-        );
-        return .{
-            .status = .failure,
-            .model_output = output,
-            .command_result_json = try deniedCommandResult(command, cwd, null).toJson(arena),
-        };
-    }
 };
 
 pub const Background = struct {
-    pub fn persistenceUnavailableFailure(arena: Allocator) !ToolExecutionResult {
-        const output = try arena.dupe(
-            u8,
-            "background_persistence_required=true\n" ++
-                "background_persistence_available=false\n" ++
-                "mode=headless\n" ++
-                "reason=session_store_unavailable\n" ++
-                "message=headless background commands require session persistence so they can be inspected after emma-cli ask exits. Remove --no-save or restore access to the session store, then retry.\n",
-        );
-        return .{ .status = .failure, .model_output = output, .finish_turn = true, .system_notice = output };
-    }
-
     pub fn launchPreparationFailure(arena: Allocator, err: anyerror) !ToolExecutionResult {
         const output = try std.fmt.allocPrint(
             arena,

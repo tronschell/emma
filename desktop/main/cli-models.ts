@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CLI_MODELS_STALE_MS, MAX_CLI_MODELS, type CliModels } from "../shared/cli";
+import { CLI_MODELS_STALE_MS, MAX_CLI_MODELS, terminalText, type CliModels, type CliOptions } from "../shared/cli";
 import { spawnCommand, terminateProcessTree } from "./platform";
 
 const CACHE_FILE = "cli-models.json";
@@ -13,7 +13,7 @@ const CLAUDE_MODEL = /^claude-[a-z0-9-]*[a-z]-[0-9]+(?:-[0-9]{8})?$|^claude-[0-9
 const CLAUDE_NOT_A_MODEL = /^claude-(code|desktop|instant|api|cli|ai)\b/;
 const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku"];
 
-type Catalog = Record<string, { at: number; models: string[] }>;
+type Catalog = Record<string, Omit<CliModels, "cli">>;
 
 const unique = (values: string[]) => [...new Set(values.filter(Boolean))].slice(0, MAX_CLI_MODELS);
 
@@ -65,11 +65,23 @@ async function newestClaudeBundle(): Promise<string | undefined> {
 
 export function codexCachedSlugs(cache: unknown): string[] {
   const models = (cache as { models?: { slug?: string; visibility?: string }[] } | undefined)?.models ?? [];
-  return models.filter((model) => model.visibility !== "hide").map((model) => model.slug ?? "").filter(Boolean);
+  return (Array.isArray(models) ? models : []).flatMap((model) => model?.visibility !== "hide" && typeof model?.slug === "string" ? [model.slug] : []);
 }
 
-async function codexModels(): Promise<string[]> {
-  return codexCachedSlugs(await json(join(homedir(), ".codex", "models_cache.json")).catch(() => undefined));
+async function codexCache(): Promise<unknown> {
+  return json(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "models_cache.json")).catch(() => undefined);
+}
+
+export function codexEfforts(cache: unknown): Record<string, string[]> {
+  const rows = (cache as { models?: { slug?: string; supported_reasoning_levels?: { effort?: string }[] }[] } | undefined)?.models;
+  return Object.fromEntries((Array.isArray(rows) ? rows : []).flatMap((row) => typeof row?.slug === "string" && row.slug && Array.isArray(row.supported_reasoning_levels)
+    ? [[row.slug, row.supported_reasoning_levels.flatMap((level) => typeof level?.effort === "string" && /^[a-z]+$/.test(level.effort) ? [level.effort] : [])]] : []));
+}
+
+export async function validateCatalogEffort(cli: string, options: CliOptions): Promise<void> {
+  if (cli !== "codex" || !options.model || !options.effort) return;
+  const supported = codexEfforts(await codexCache())[options.model];
+  if (supported && !supported.includes(options.effort)) throw new Error(`${options.model} does not advertise ${options.effort} thinking. Supported: ${supported.join(", ") || "none"}. Choose explicitly; Emma will not downgrade it.`);
 }
 
 async function piModels(): Promise<string[]> {
@@ -77,6 +89,13 @@ async function piModels(): Promise<string[]> {
   const providers = (store as Record<string, { models?: { id?: string }[] }> | undefined) ?? {};
   return Object.entries(providers).flatMap(([provider, entry]) =>
     (entry?.models ?? []).map((model) => (model.id ? `${provider}/${model.id}` : "")));
+}
+
+export function modelTableIds(output: string): string[] {
+  return terminalText(output).split("\n").flatMap((line) => {
+    const id = line.trim().split(/\s+/)[0] ?? "";
+    return /^[a-z0-9][a-z0-9._/:+-]*$/.test(id) && !["model", "models", "id", "name", "provider", "available", "default"].includes(id) ? [id] : [];
+  });
 }
 
 async function listed(binary: string, args: string[], path: string): Promise<string[]> {
@@ -87,10 +106,11 @@ async function listed(binary: string, args: string[], path: string): Promise<str
 export async function discoverCliModels(cli: string, binary: string, path: string): Promise<string[]> {
   switch (cli) {
     case "claude": return unique(await claudeModels(binary));
-    case "codex": return unique(await codexModels());
+    case "codex": return unique(codexCachedSlugs(await codexCache()));
     case "pi": return unique(await piModels());
     case "opencode": return unique(await listed(binary, ["models"], path));
-    case "cursor": return unique(await listed(binary, ["--list-models"], path));
+    case "cursor": return unique(modelTableIds(await run(binary, ["--list-models"], path)));
+    case "antigravity": return unique(modelTableIds(await run(binary, ["models"], path)));
     default: return [];
   }
 }
@@ -104,7 +124,7 @@ export class CliModelCatalog {
   async read(cli: string, resolve: (bin: string) => Promise<{ binary: string; path: string } | null>, refresh = false): Promise<CliModels> {
     const catalog = await this.load();
     const known = catalog[cli];
-    if (!refresh && known && Date.now() - known.at < CLI_MODELS_STALE_MS) return { cli, ...known };
+    if (!refresh && known && Date.now() - known.at < CLI_MODELS_STALE_MS && (cli !== "codex" || known.effortByModel)) return { cli, ...known };
     const held = this.inflight.get(cli);
     if (held && !refresh) return held;
     const work = this.fetch(cli, resolve, known);
@@ -112,13 +132,13 @@ export class CliModelCatalog {
     return work.finally(() => this.inflight.delete(cli));
   }
 
-  private async fetch(cli: string, resolve: (bin: string) => Promise<{ binary: string; path: string } | null>, known: { at: number; models: string[] } | undefined): Promise<CliModels> {
+  private async fetch(cli: string, resolve: (bin: string) => Promise<{ binary: string; path: string } | null>, known: Omit<CliModels, "cli"> | undefined): Promise<CliModels> {
     const found = await resolve(cli);
-    if (!found) return { cli, models: known?.models ?? [], at: known?.at ?? 0 };
+    if (!found) return { cli, models: known?.models ?? [], at: known?.at ?? 0, effortByModel: known?.effortByModel };
     const models = await discoverCliModels(cli, found.binary, found.path).catch(() => [] as string[]);
-    if (!models.length) return { cli, models: known?.models ?? [], at: known?.at ?? 0 };
+    if (!models.length) return { cli, models: known?.models ?? [], at: known?.at ?? 0, effortByModel: known?.effortByModel };
     const catalog = await this.load();
-    catalog[cli] = { at: Date.now(), models };
+    catalog[cli] = { at: Date.now(), models, ...(cli === "codex" ? { effortByModel: codexEfforts(await codexCache()) } : {}) };
     this.catalog = Promise.resolve(catalog);
     await writeFile(join(this.userData, CACHE_FILE), JSON.stringify(catalog), "utf8").catch(() => undefined);
     return { cli, ...catalog[cli]! };

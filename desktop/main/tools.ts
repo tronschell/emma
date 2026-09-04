@@ -3,7 +3,7 @@ import { MEMORY_COMMANDS, type MemoryCommand } from "./memory";
 import { MAX_COMPONENT_CHARS, MAX_COMPONENT_TITLE_CHARS, parseVariables } from "../shared/components";
 import { ARTIFACT_KINDS, ARTIFACT_SURFACES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TITLE_CHARS } from "../shared/artifacts";
 import { parseVisual, type Visual } from "../shared/visualize";
-import { CLI_IDS } from "../shared/cli";
+import { CLI_IDS, cliInputIds, cliOptions, validateCliOptions } from "../shared/cli";
 import type { WrittenPlugin } from "../shared/plugins";
 import { MAX_PLAN_BYTES, MAX_PLAN_TITLE_CHARS, PLAN_STATUSES, type PlanStatus } from "../shared/plan";
 import { MAX_TASK_LIST_BYTES, MAX_TASK_LIST_TITLE_CHARS, TASK_LIST_STATUSES, type TaskListStatus } from "../shared/task-list";
@@ -88,7 +88,7 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     name: "cli",
     needs: "folders",
     description:
-      `Run another coding CLI on this ${LOCAL_DEVICE} — Claude Code, Codex, Pi, OpenCode, Cursor — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n` +
+      `Run another coding CLI on this ${LOCAL_DEVICE} — Claude Code, Codex, Pi, OpenCode, Gemini CLI, Cursor, Antigravity CLI — inside a connected folder, and take turns with it. Its terminal appears pinned at the top of this thread and in its own tab, so the user watches it work.\n` +
       "action \"run\" starts a conversation with a CLI and returns its run id once the first turn finishes; \"send\" gives an existing run the next prompt, continuing the same session with everything it already knows.\n" +
       "Check first with cli_runs {} which CLIs are installed — running one that is not there is the common failure.\n" +
       "Say everything the CLI needs in prompt: it does not see this conversation, only the folder. Prefer it over doing the work yourself when the user names a CLI, when they want a second agent's answer on the same code, or when that CLI is set up for this project and Emma is not.\n" +
@@ -97,9 +97,12 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
       type: "object",
       properties: {
         action: { type: "string", enum: ["run", "send"], description: "Start a conversation, or send the next turn of one. Defaults to run." },
-        cli: { type: "string", description: "Which CLI to run: claude, codex, pi, opencode or cursor. Required for run." },
+        cli: { type: "string", description: `Which CLI to run: ${CLI_IDS.join(", ")}. Required for run.` },
         id: { type: "string", description: "The run to send to, as cli returned it. Required for send." },
         prompt: { type: "string", description: "What to ask it. The whole instruction — it cannot see this conversation." },
+        model: { type: "string", description: "Exact model id or native alias. Read cli_runs with cli first to discover ids; resolve the user's named model without substituting a different one. Empty resets to the harness default; omitted preserves an existing run." },
+        effort: { type: "string", description: "Native reasoning effort, Pi thinking level, or OpenCode variant. Read cli_runs with cli for supported values. Pass explicitly, never just in the prompt; do not downgrade unsupported choices. Empty resets to the harness default; omitted preserves an existing run." },
+        fromRuns: { type: "array", items: { type: "string" }, maxItems: 8, description: "Completed run ids from this thread whose latest successful outputs feed this step. Supports chains and combining multiple results. Wait for sources to finish; oversized outputs must be saved to files." },
         unattended: { type: "boolean", description: "Pass that CLI's skip-approvals flag so it never stops to ask. Off by default." },
         ...FOLDER_FIELD,
       },
@@ -116,6 +119,8 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
       properties: {
         id: { type: "string", description: "Run id, as cli returned it. Omit to list the installed CLIs and every run." },
         stop: { type: "boolean", description: "Kill the turn that run is working on instead of reading it." },
+        cli: { type: "string", description: "Read this harness's model ids and effort options before selecting a model. Cannot be combined with id or stop." },
+        refresh: { type: "boolean", description: "Reread the harness model catalog." },
       },
       required: [],
     },
@@ -563,39 +568,6 @@ const DEFINITIONS: (ToolDefinition & { needs: keyof ToolAvailability | "always" 
     },
   },
   {
-    name: "autoresearch",
-    needs: "always",
-    description:
-      "Build and look after the user's autoresearch jobs — the long experiment loops in the Autoresearch section. Call it with no arguments to list them, or set action to get, save, delete, start or pause.\n" +
-      "A job is a git project folder plus a metric, an eval command, a brief for the proposer, a proposer model and three budgets. One iteration is: the agent makes one change, Emma commits it, runs evalCommand in the folder, reads the metric, and keeps the change only if the metric improved — otherwise git reset --hard.\n" +
-      "THE METRIC CANNOT BE CHANGED after the job is created. metricName, metricKind, direction and projectDir are refused on a later save, because changing what is being optimised makes every earlier iteration meaningless — create a new job instead.\n" +
-      "metricKind is \"grep\" or \"judge\". grep: Emma greps ^<metricName>: out of the eval command's output, so the run must print a line like \"val_bpb: 0.997900\". judge: a model scores that output against metricPrompt, the rubric, and answers with one number.\n" +
-      "direction is \"lower\" or \"higher\" and says which way is better.\n" +
-      "Budgets are maxSeconds (wall clock across the whole job), maxTokens and maxMicroDollars ($1 = 1000000). 0 means no limit. Hitting one pauses the job with a note saying which; raising it and starting again carries on where it stopped.\n" +
-      "Ask the user which metric kind they want before saving anything — the choice is permanent.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["list", "get", "save", "delete", "start", "pause"], description: "What to do. Defaults to list." },
-        jobId: { type: "string", description: "The job to act on. Omit on save to create a new one." },
-        title: { type: "string", description: "Short name for the experiment." },
-        projectDir: { type: "string", description: "Absolute path to the project folder. Must be a git repository with at least one commit." },
-        metricName: { type: "string", description: "The grep key, or the judge's label for the score. Permanent." },
-        metricKind: { type: "string", enum: ["grep", "judge"], description: "How the number is read. Permanent." },
-        metricPrompt: { type: "string", description: "The judge's rubric. Omit for a grep metric." },
-        direction: { type: "string", enum: ["lower", "higher"], description: "Which way is better. Permanent." },
-        evalCommand: { type: "string", description: "The command Emma runs in projectDir to measure one iteration." },
-        prompt: { type: "string", description: "The user's brief for the proposer: what to try, what to leave alone, what to read first. May name an imported skill as \"/name\" and a file in a granted folder as \"@path\", both resolved on every iteration. Editable at any time." },
-        proposerModel: { type: "string", description: "OpenRouter model id the iterations run on." },
-        permissionMode: { type: "string", enum: ["ask", "acceptEdits", "full"], description: "What an iteration may do. Nobody is watching, so \"ask\" declines every gated call — a job that edits files needs \"acceptEdits\" at least." },
-        maxSeconds: { type: "number", description: "Wall-clock budget for the whole job. 0 for no limit." },
-        maxTokens: { type: "number", description: "Token budget across every iteration. 0 for no limit." },
-        maxMicroDollars: { type: "number", description: "Spend budget in micro-dollars; $5 is 5000000. 0 for no limit." },
-      },
-      required: [],
-    },
-  },
-  {
     name: "write_tool",
     needs: "always",
     description:
@@ -640,8 +612,8 @@ export function toolDefinitions(mode: PermissionMode, available: ToolAvailabilit
 }
 
 export type ToolArgs =
-  | { name: "cli"; action: CliAction; cli?: string; id?: string; prompt?: string; unattended: boolean; folder?: string }
-  | { name: "cli_runs"; id?: string; stop: boolean }
+  | { name: "cli"; action: CliAction; cli?: string; id?: string; prompt?: string; unattended: boolean; folder?: string; fromRuns?: string[]; model?: string; effort?: string }
+  | { name: "cli_runs"; id?: string; stop: boolean; cli?: string; refresh?: boolean }
   | { name: "computer"; args: Record<string, unknown> }
   | ({ name: "shortcut" } & ShortcutRequest)
   | { name: "browser"; action: BrowserAction; url?: string; selector?: string; text?: string; key?: string; field?: BrowserField; direction?: BrowserDirection; amount?: number; attribute?: string; js?: string; interactive: boolean }
@@ -662,8 +634,7 @@ export type ToolArgs =
   | { name: "artifact"; action: ArtifactAction; id?: string; file?: string; title?: string; kind?: string; language?: string; surface?: string; content?: string; oldStr?: string; newStr?: string }
   | { name: "component"; action: ComponentAction; id?: string; title?: string; code?: string; expand?: boolean; variables?: string[] }
   | ({ name: "visualize" } & Visual)
-  | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; model?: string; variables?: string }
-  | { name: "autoresearch"; action: ResearchAction; jobId?: string; title?: string; projectDir?: string; metricName?: string; metricKind?: string; metricPrompt?: string; direction?: string; evalCommand?: string; prompt?: string; proposerModel?: string; permissionMode?: string; maxSeconds?: number; maxTokens?: number; maxMicroDollars?: number };
+  | { name: "workflow"; action: WorkflowAction; jobId?: string; title?: string; trigger?: string; prompt?: string; nodes?: string; permissionMode?: string; model?: string; variables?: string };
 
 export const CLI_ACTIONS = ["run", "send"] as const;
 export type CliAction = (typeof CLI_ACTIONS)[number];
@@ -678,9 +649,6 @@ export const WORKFLOW_ACTIONS = ["list", "get", "save", "delete", "run", "test"]
 export type WorkflowAction = (typeof WORKFLOW_ACTIONS)[number];
 const WORKFLOW_VERBS: Record<WorkflowAction, string> = { list: "listing", get: "reading", save: "saving", delete: "deleting", run: "running", test: "testing" };
 
-export const RESEARCH_ACTIONS = ["list", "get", "save", "delete", "start", "pause"] as const;
-export type ResearchAction = (typeof RESEARCH_ACTIONS)[number];
-const RESEARCH_VERBS: Record<ResearchAction, string> = { list: "listing", get: "reading", save: "saving", delete: "deleting", start: "starting", pause: "pausing" };
 
 export type LoopArgs =
   | { name: "read_trace"; thread?: string; limit: number; offset?: number }
@@ -710,6 +678,8 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         cli: optionalText(args.cli, "cli", 32),
         id: optionalText(args.id, "id", 64),
         prompt: optionalText(args.prompt, "prompt", MAX_CLI_PROMPT_CHARS),
+        ...cliOptions(args),
+        ...(args.fromRuns === undefined ? {} : { fromRuns: cliInputIds(args.fromRuns) }),
         unattended: flag(args.unattended, "unattended"),
         folder: optionalText(args.folder, "folder", 256),
       } as const;
@@ -717,10 +687,15 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
       if (action === "run" && !parsed.cli) throw new Error(`The "cli" argument is required for run: one of ${CLI_IDS.join(", ")}.`);
       if (action === "run" && !CLI_IDS.includes(parsed.cli!)) throw new Error(`Emma does not know a CLI called "${parsed.cli}". It knows ${CLI_IDS.join(", ")}.`);
       if (action === "send" && !parsed.id) throw new Error('The "id" argument is required for send: the run id cli gave you.');
+      if (action === "run") validateCliOptions(parsed.cli!, parsed);
       return parsed;
     }
-    case "cli_runs":
-      return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop") };
+    case "cli_runs": {
+      const cli = optionalText(args.cli, "cli", 32);
+      if (cli && !CLI_IDS.includes(cli)) throw new Error("Unknown harness.");
+      if (cli && (args.id !== undefined || args.stop === true)) throw new Error("Choose a harness catalog or a run id, not both.");
+      return { name, id: optionalText(args.id, "id", 64), stop: flag(args.stop, "stop"), ...(cli ? { cli } : {}), ...(args.refresh === undefined ? {} : { refresh: flag(args.refresh, "refresh") }) };
+    }
     case "computer":
       return { name, args: computerAction(args) };
     case "shortcut":
@@ -959,28 +934,6 @@ export function parseToolArgs(name: string, raw: string): AnyToolArgs {
         variables: optionalText(args.variables, "variables", MAX_WORKFLOW_NODE_CHARS),
       };
     }
-    case "autoresearch": {
-      const action = RESEARCH_ACTIONS.find((candidate) => candidate === (args.action ?? "list"));
-      if (!action) throw new Error(`action must be one of ${RESEARCH_ACTIONS.join(", ")}.`);
-      return {
-        name,
-        action,
-        jobId: optionalText(args.jobId, "jobId", 96),
-        title: optionalText(args.title, "title", 128),
-        projectDir: optionalText(args.projectDir, "projectDir", 1024),
-        metricName: optionalText(args.metricName, "metricName", 64),
-        metricKind: optionalText(args.metricKind, "metricKind", 16),
-        metricPrompt: optionalText(args.metricPrompt, "metricPrompt", 4096),
-        direction: optionalText(args.direction, "direction", 16),
-        evalCommand: optionalText(args.evalCommand, "evalCommand", MAX_COMMAND_CHARS),
-        prompt: optionalText(args.prompt, "prompt", 8192),
-        proposerModel: optionalText(args.proposerModel, "proposerModel", 256),
-        permissionMode: optionalText(args.permissionMode, "permissionMode", 32),
-        maxSeconds: budget(args.maxSeconds, "maxSeconds"),
-        maxTokens: budget(args.maxTokens, "maxTokens"),
-        maxMicroDollars: budget(args.maxMicroDollars, "maxMicroDollars"),
-      };
-    }
     default:
       throw new Error(`Emma has no tool named ${name.slice(0, 64)}.`);
   }
@@ -1107,7 +1060,7 @@ function memoryCommand(args: Record<string, unknown>): MemoryCommand {
 
 export function describeToolCall(args: AnyToolArgs): string {
   switch (args.name) {
-    case "cli": return args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`;
+    case "cli": return (args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`) + (args.model ? ` · ${args.model}` : "") + (args.effort ? ` · ${args.effort} effort` : "");
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
     case "computer": return `${String(args.args.action).replace(/_/g, " ")}${args.args.app ? ` in ${args.args.app}` : ""}`;
     case "shortcut": return `binding ${args.accelerator} to ${args.label}`;
@@ -1159,6 +1112,5 @@ export function describeToolCall(args: AnyToolArgs): string {
       return args.action === "create" ? `building "${args.title ?? ""}" into the interface` : `reworking the component ${args.id ?? ""}`.trim();
     case "visualize": return `drawing ${args.title}`;
     case "workflow": return args.action === "list" ? "listing the scheduled tasks" : `${WORKFLOW_VERBS[args.action]} the task ${args.title ?? args.jobId ?? ""}`.trim();
-    case "autoresearch": return args.action === "list" ? "listing the autoresearch jobs" : `${RESEARCH_VERBS[args.action]} the experiment ${args.title ?? args.jobId ?? ""}`.trim();
   }
 }
