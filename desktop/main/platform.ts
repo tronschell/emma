@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access, constants, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -8,6 +8,8 @@ export const isWindows = process.platform === "win32";
 export const WINDOWS_APP_USER_MODEL_ID = "com.squirrel.Emma.Emma";
 const WINDOWS_META = /([()\][%!^"`<>&|;, *?])/g;
 const WINDOWS_SHIM = /\.(?:cmd|bat)$/i;
+const WINDOWS_SHIM_TARGET = /"%~?dp0%?[\\/]?([^"\r\n]+)"/g;
+export const WINDOWS_INSTALLER_COMPANY = "Tronschell";
 
 function pathModule(platform: NodeJS.Platform) {
   return platform === "win32" ? path.win32 : path.posix;
@@ -182,6 +184,26 @@ export function shellBinary(): string {
 export function shellArguments(command: string, login = true): string[] {
   if (!isWindows) return [login ? "-ilc" : "-lc", command];
   return ["-NoLogo", "-NonInteractive", "-Command", `${WINDOWS_SHELL_PRELUDE}${command}${WINDOWS_SHELL_EPILOGUE}`];
+}
+
+export function windowsShortcutFiles(environment: NodeJS.ProcessEnv = process.env): string[] {
+  const roaming = environment.APPDATA?.trim() || path.win32.join(environment.USERPROFILE?.trim() || "", "AppData", "Roaming");
+  const programs = path.win32.join(roaming, "Microsoft", "Windows", "Start Menu", "Programs");
+  return [path.win32.join(programs, "Emma.lnk"), path.win32.join(programs, WINDOWS_INSTALLER_COMPANY, "Emma.lnk")];
+}
+
+export async function windowsShimTarget(shim: string): Promise<{ command: string; args: string[] } | undefined> {
+  if (!isWindows || !WINDOWS_SHIM.test(shim)) return undefined;
+  let body: string;
+  try { body = readFileSync(shim, "utf8"); } catch { return undefined; }
+  const directory = path.dirname(shim);
+  const invocation = body.split(/\r?\n/).filter((line) => line.includes("%*")).at(-1) ?? "";
+  const target = [...invocation.matchAll(WINDOWS_SHIM_TARGET)].map((match) => path.resolve(directory, match[1])).at(-1);
+  if (!target || !existsSync(target)) return undefined;
+  if (/\.exe$/i.test(target)) return { command: target, args: [] };
+  const bundled = path.join(directory, "node.exe");
+  const node = existsSync(bundled) ? bundled : await findExecutable("node");
+  return node ? { command: node, args: [target] } : undefined;
 }
 
 export function commandShimArguments(command: string, args: readonly string[]): string[] {

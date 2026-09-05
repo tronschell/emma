@@ -8,13 +8,14 @@ import { inflateRawSync } from "node:zlib";
 import { extractFile, listPackage } from "@electron/asar";
 import { packager } from "@electron/packager";
 import { createWindowsInstaller } from "electron-winstaller";
-import { commandShimArguments } from "./windows-command.mjs";
+import { commandShimArguments, publishStagedBuild, squirrelStagingDirectory } from "./windows-command.mjs";
 
 assert.equal(process.platform, "win32", "package:win requires Windows.");
 
 const desktop = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const out = path.resolve(process.argv[2] ?? path.join(desktop, "release"));
+const staging = squirrelStagingDirectory();
 const arch = process.arch;
 assert.ok(["x64", "arm64"].includes(arch), "package:win supports x64 and arm64 Squirrel artifacts.");
 const expectedMachine = arch === "x64" ? 0x8664 : 0xaa64;
@@ -116,7 +117,7 @@ run("npm.cmd", ["run", "vendor:ripgrep"]);
 run("npm.cmd", ["run", "vendor:zvec-grep"]);
 run("npm.cmd", ["run", "build"]);
 
-const notices = path.join(out, "notices");
+const notices = path.join(staging, "notices");
 mkdirSync(notices, { recursive: true });
 for (const [source, name] of [
   ["LICENSE", "Emma-LICENSE.txt"],
@@ -150,8 +151,7 @@ const required = [
 ];
 for (const resource of required) assert.ok(existsSync(resource), `Missing Windows resource: ${resource}`);
 
-const ico = path.join(out, "emma.ico");
-mkdirSync(out, { recursive: true });
+const ico = path.join(staging, "emma.ico");
 const png = readFileSync(path.join(desktop, "assets/emma-dock.png"));
 const icoHeader = Buffer.alloc(22);
 icoHeader.writeUInt16LE(0, 0);
@@ -183,7 +183,7 @@ await packager({
   icon: ico,
   platform: "win32",
   arch,
-  out,
+  out: staging,
   overwrite: true,
   asar: true,
   appVersion: version,
@@ -198,7 +198,7 @@ await packager({
   }],
 });
 
-const app = path.join(out, `Emma-win32-${arch}`);
+const app = path.join(staging, `Emma-win32-${arch}`);
 const executable = path.join(app, "Emma.exe");
 assert.ok(existsSync(executable), `Missing packaged executable: ${executable}`);
 verifyPeArchitecture(executable);
@@ -213,7 +213,7 @@ for (const resource of required) {
   assert.ok(existsSync(file), `Missing packaged resource: ${file}`);
   if (statSync(file).isFile()) verifyPeArchitecture(file);
 }
-const squirrel = path.join(out, "squirrel");
+const squirrel = path.join(staging, "squirrel");
 mkdirSync(squirrel, { recursive: true });
 const certificateFile = process.env.WINDOWS_CERT_PFX?.trim() ?? "";
 const certificatePassword = process.env.WINDOWS_CERT_PASSWORD ?? "";
@@ -262,4 +262,5 @@ const checksums = nupkgs.concat(path.basename(setup), "RELEASES").map((name) => 
   return `${digest.toLowerCase()} *${name}`;
 });
 writeFileSync(path.join(squirrel, "SHA256SUMS"), `${checksums.join("\n")}\n`);
-console.log(`Verified Emma ${version}: ${setup}, ${nupkgs.length} Squirrel package(s), RELEASES`);
+publishStagedBuild(staging, out, [`Emma-win32-${arch}`, "squirrel", "notices", "emma.ico"]);
+console.log(`Verified Emma ${version}: ${path.join(out, "squirrel", path.basename(setup))}, ${nupkgs.length} Squirrel package(s), RELEASES`);

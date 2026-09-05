@@ -89,7 +89,7 @@ import { clampTrace, compactionNotice } from "../shared/trace";
 import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type PhoneList, type PluginEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type ThreadTrace, type TraceSpan as PhoneTraceSpan } from "../shared/mobile-protocol";
 import type { TraceSpan } from "../shared/trace";
 import { localDevice } from "../shared/platform-copy";
-import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
+import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, windowsShortcutFiles, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
@@ -624,8 +624,8 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
     const selected = params.selectionText.trim();
     const menu = Menu.buildFromTemplate([
       ...(params.misspelledWord ? params.dictionarySuggestions.map((suggestion) => ({ label: suggestion, click: () => window.webContents.replaceMisspelling(suggestion) })) : []),
+      ...(selected && isMac ? [{ label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") }] : []),
       ...(selected ? [
-        { label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") },
         { label: "Search with Google", click: () => void shell.openExternal(`https://www.google.com/search?q=${encodeURIComponent(selected)}`) },
       ] : []),
       ...((params.misspelledWord && params.dictionarySuggestions.length) || selected ? [{ type: "separator" as const }] : []),
@@ -1985,7 +1985,7 @@ async function componentTool(args: Extract<ToolArgs, { name: "component" }>, thr
 
 function runCommand(cwd: string, command: string, timeoutMs = MAX_COMMAND_MS): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: true, windowsHide: true });
+    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: !isWindows, windowsHide: true });
     let output = "";
     const collect = (data: Buffer) => { if (output.length < MAX_COMMAND_OUTPUT) output += String(data); };
     child.stdout.on("data", collect);
@@ -3262,10 +3262,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const definition = mcpServerRequest(params);
       const approved = await confirmOnMac(
         `Install the MCP server “${definition.name}” from your phone?`,
-        `Emma will run this on your Mac, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
+        `Emma will run this on your ${DEVICE}, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
         "Install it",
       );
-      if (!approved) throw new Error("Nobody at your Mac approved that server.");
+      if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that server.`);
       const { id } = await capabilities!.installMcpServer(definition);
       await toolsChanged();
       return { id };
@@ -3285,10 +3285,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         if (!running.length) throw new Error(`"${plugin.displayName || plugin.name}" has no hook Emma would ever run.`);
         const approved = await confirmOnMac(
           `Trust the hooks in “${plugin.displayName || plugin.name}” from your phone?`,
-          `Emma will run these on your Mac, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
+          `Emma will run these on your ${DEVICE}, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
           "Trust them",
         );
-        if (!approved) throw new Error("Nobody at your Mac approved those hooks.");
+        if (!approved) throw new Error(`Nobody at your ${DEVICE} approved those hooks.`);
         hashes = plugin.hooks.map((hook) => hook.hash);
       }
       await setHookTrust(userData, id, hashes);
@@ -3311,7 +3311,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
           `Emma will read ${labels} on this ${DEVICE} and start the servers their config files name.`,
           "Import",
         );
-        if (!approved) throw new Error("Nobody at your Mac approved that import.");
+        if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that import.`);
       }
       const saved = await saveImportManifest(userData, homedir(), ids as string[]);
       await toolsChanged();
@@ -3376,10 +3376,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const directory = folderId ? folders!.directory(folderId) : homedir();
       const approved = await confirmOnMac(
         "Run a command from your phone?",
-        `Emma will run this on your Mac now, in ${directory}:\n\n${command}`,
+        `Emma will run this on your ${DEVICE} now, in ${directory}:\n\n${command}`,
         "Run it",
       );
-      if (!approved) throw new Error("Nobody at your Mac approved that command.");
+      if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that command.`);
       return background.start(directory, command, folderId ? folderNames([folderId])[0] ?? "" : "");
     }
     case "listBackground":
@@ -3427,7 +3427,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
 
       const asked = params.path;
       if (typeof asked !== "string" || !path.isAbsolute(asked) || asked.length > 1024) throw new Error("Name the folder by its full path.");
-      const directory = realpathSync(asked);
+      const directory = realpathSync.native(asked);
       if (!statSync(directory).isDirectory()) throw new Error("That is not a folder.");
       const held = folders!.list().some((grant) => samePath(grant.path, directory));
       if (!held && !pathInside(homedir(), directory)) throw new Error("From a phone, Emma only connects folders inside your home folder.");
@@ -3436,7 +3436,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         `Emma will be able to read and write everything in ${directory}, and its agents will run against it. Only connect a folder you asked for from your phone just now.`,
         "Connect this folder",
       );
-      if (!granted) throw new Error("Nobody at your Mac approved that folder.");
+      if (!granted) throw new Error(`Nobody at your ${DEVICE} approved that folder.`);
       folders!.add(directory);
       return visibleFolders();
     }
@@ -3716,7 +3716,7 @@ function phoneTraces(traces: readonly StoredThreadTrace[]): ThreadTrace[] {
 function phonePage(messages: Message[], total: number, from: number): { messages: Message[]; total: number; from: number } {
   const page = messages.map((message) => message.content.length <= MAX_PHONE_BODY_CHARS ? message : {
     ...message,
-    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your Mac.`,
+    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your ${DEVICE}.`,
   });
   const sizes = page.map((message) => Buffer.byteLength(JSON.stringify(message), "utf8") + 1);
   let used = sizes.reduce((sum, bytes) => sum + bytes, 0);
@@ -4091,7 +4091,10 @@ function handleSquirrelEvent(): boolean {
   if (!event) return false;
   const update = path.resolve(path.dirname(process.execPath), "..", "Update.exe");
   if (event === "install" || event === "updated") spawn(update, ["--createShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-  if (event === "uninstall") spawn(update, ["--removeShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  if (event === "uninstall") {
+    spawn(update, ["--removeShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    for (const link of windowsShortcutFiles()) rmSync(link, { force: true });
+  }
   app.quit();
   return true;
 }

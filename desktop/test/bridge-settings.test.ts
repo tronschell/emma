@@ -86,7 +86,7 @@ test("a folder is only connected from a phone once someone at the Mac has said s
   const body = caseBody("addFolder");
   const grant = body.indexOf("folders!.add(");
   assert.ok(grant > 0, "addFolder no longer grants anything");
-  for (const guard of ["path.isAbsolute(asked)", "realpathSync(asked)", "isDirectory()", "pathInside(homedir(), directory)", "await confirmOnMac(", "if (!granted) throw new Error("]) {
+  for (const guard of ["path.isAbsolute(asked)", "realpathSync.native(asked)", "isDirectory()", "pathInside(homedir(), directory)", "await confirmOnMac(", "if (!granted) throw new Error("]) {
     const at = body.indexOf(guard);
     assert.ok(at > 0 && at < grant, `addFolder grants the folder without ${guard} deciding first`);
   }
@@ -182,7 +182,7 @@ test("a phone can audit installed plugins, and trusting their hooks asks the Mac
   // asks the same way. Only the widening direction asks: a phone must always be able to withdraw.
   assert.match(body, /if \(trusted\) \{/, "the confirmation is not limited to the widening direction");
   assert.ok(body.indexOf("confirmOnMac(") < body.indexOf("await setHookTrust("), "trust is written before anyone at the Mac approves it");
-  assert.match(body, /throw new Error\("Nobody at your Mac approved those hooks\."\)/);
+  assert.match(body, /throw new Error\(`Nobody at your \$\{DEVICE\} approved those hooks\.`\)/);
   // The dialog has to quote this Mac's own copy: what the phone drew is a claim about the Mac.
   assert.match(body, /installedHooks\(userData\)/, "the dialog quotes the phone's hooks rather than the Mac's");
   // And it has to quote every declared hook, because the write hashes every declared hook. One
