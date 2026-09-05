@@ -3224,19 +3224,21 @@ test "format output covers stdout stderr empty signal and unknown statuses" {
     try std.testing.expectEqualStrings("signal=15\n(no output)\n", signaled.output);
 }
 
+const test_command_root = if (builtin.os.tag == .windows) "C:\\Windows" else "/tmp";
+
 test "raw process execution returns foreground output" {
     const result = try executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 4096,
-    }, std.testing.allocator, "printf 'hello'", "/tmp");
+    }, std.testing.allocator, "printf 'hello'", test_command_root);
     defer std.testing.allocator.free(result.output);
 
     try std.testing.expect(std.mem.find(u8, result.output, "exit_code=0\n") != null);
     try std.testing.expect(std.mem.find(u8, result.output, "<stdout>\nhello\n</stdout>\n") != null);
     const command_result = result.command_result.?.foreground;
     try std.testing.expectEqualStrings("printf 'hello'", command_result.command);
-    try std.testing.expectEqualStrings("/tmp", command_result.cwd);
+    try std.testing.expectEqualStrings(test_command_root, command_result.cwd);
     try std.testing.expectEqual(@as(?i64, 0), command_result.exit_code);
     try std.testing.expectEqual(@as(?u32, null), command_result.signal);
     try std.testing.expect(!command_result.timed_out);
@@ -3936,11 +3938,11 @@ test "line buffered streaming emits lines and tail" {
 
     const result = try executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 4096,
         .output_chunk_ctx = @ptrCast(&capture),
         .on_output_chunk = StreamCapture.onChunk,
-    }, std.testing.allocator, line_stream_command, "/tmp");
+    }, std.testing.allocator, line_stream_command, test_command_root);
     defer std.testing.allocator.free(result.output);
 
     try std.testing.expectEqual(@as(usize, 2), capture.chunks.items.len);
@@ -3955,11 +3957,11 @@ test "line buffered streaming preserves stderr stream and tail" {
 
     const result = try executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 4096,
         .output_chunk_ctx = @ptrCast(&capture),
         .on_output_chunk = StreamCapture.onChunk,
-    }, std.testing.allocator, split_stream_command, "/tmp");
+    }, std.testing.allocator, split_stream_command, test_command_root);
     defer std.testing.allocator.free(result.output);
 
     try std.testing.expectEqual(@as(usize, 3), capture.chunks.items.len);
@@ -4336,11 +4338,11 @@ test "zero-output cancellation remains a bare error" {
 
     try std.testing.expectError(error.Cancelled, executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 1024,
         .cancel_flag = &cancel,
         .timeout_ms = 1000,
-    }, std.testing.allocator, "exec sleep 5", "/tmp"));
+    }, std.testing.allocator, "exec sleep 5", test_command_root));
 }
 
 test "artifact write failure after cancellation remains a bare error" {
@@ -4424,10 +4426,10 @@ test "artifact write failure after cancellation remains a bare error" {
 test "timeout source is distinct from cancellation" {
     try std.testing.expectError(error.TimeoutExpired, executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 1024,
         .timeout_ms = 120,
-    }, std.testing.allocator, "sleep 5", "/tmp"));
+    }, std.testing.allocator, "sleep 5", test_command_root));
 }
 
 test "timeout remains dominant when its output callback fails" {
