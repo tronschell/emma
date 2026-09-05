@@ -180,6 +180,7 @@ export interface ImportedMcpServer {
 export interface CredentialSummary {
   env: string;
   masked: string;
+  readable: boolean;
 }
 
 export interface BrowserTab {
