@@ -9,6 +9,11 @@ const cursor = { windowId: 73, bounds: { x: -1700.25, y: -950.5, width: 1800, he
 const display = { x: -1600, y: -900, width: 1600, height: 900 };
 const progress: ComputerRunProgress = { step: 1, actions: 1, action: "click", app: "Target", cursor };
 const main = readFileSync(path.join(__dirname, "../main/main.js"), "utf8");
+const macOnlyWindowCalls = [
+  "setHiddenInMissionControl", "setWindowButtonVisibility", "setTrafficLightPosition", "setSheetOffset",
+  "setVibrancy", "setAutoHideCursor", "setRepresentedFilename", "setDocumentEdited", "setSimpleFullScreen",
+  "mergeAllWindows", "addTabbedWindow", "previewFile", "selectPreviousTab", "selectNextTab", "toggleTabBar",
+];
 
 function extract(pattern: RegExp) {
   const result = main.match(pattern)?.[0];
@@ -77,12 +82,17 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   const windows: ReturnType<typeof makeWindow>[] = [];
   const loads: string[] = [];
   const nearestPoints: unknown[] = [];
+  const simulated = { isMac: false };
   function makeWindow(options: Record<string, unknown>) {
     let destroyed = false;
     const calls: string[] = [];
     const bounds: unknown[] = [];
     const messages: ComputerRunProgress[] = [];
     return {
+      ...Object.fromEntries(macOnlyWindowCalls.map((name) => [name, () => {
+        if (!simulated.isMac) throw new TypeError(`${name} is not a function`);
+        calls.push(name);
+      }])),
       options, calls, bounds, messages,
       isDestroyed: () => destroyed,
       destroy: () => { destroyed = true; calls.push("destroy"); },
@@ -92,25 +102,26 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
       showInactive: () => calls.push("showInactive"),
       moveAbove: (target: string) => calls.push(`moveAbove:${target}`),
       setAlwaysOnTop: () => calls.push("alwaysOnTop"),
-      setVisibleOnAllWorkspaces: () => {},
+      setVisibleOnAllWorkspaces: (_value: boolean, workspace?: object) => {
+        if (workspace && !simulated.isMac) throw new TypeError("setVisibleOnAllWorkspaces options are macOS-only");
+      },
       setIgnoreMouseEvents: (value: boolean) => calls.push(`ignoreMouse:${value}`),
       getMediaSourceId: () => "window:900:0",
       isVisible: () => true,
       isMinimized: () => false,
-      setHiddenInMissionControl: (value: boolean) => calls.push(`hiddenInMissionControl:${value}`),
       webContents: { mainFrame: {}, send: (_channel: string, value: ComputerRunProgress) => messages.push(value) },
     };
   }
   type ReadyEvent = { sender: ReturnType<typeof makeWindow>["webContents"]; senderFrame: object };
   let ready: (event: ReadyEvent) => void = () => assert.fail("Missing readiness listener");
   const context = {
-    isMac: false,
+    isMac: simulated.isMac,
     mainWindow: makeWindow({}),
     computerCursorOwner: "computer",
     computerCursorHeld: false,
     computerCursorIdle: undefined,
     CURSOR_IDLE_MS: 60_000,
-    platform_1: { isMac: false },
+    platform_1: simulated,
     computerCursorWindow: null,
     computerCursorReady: false,
     computerCursorTimer: undefined,
@@ -152,7 +163,7 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   assert.deepEqual(loads, ["run", "computerCursor"]);
   assert.equal(overlay.options.focusable, false);
   assert.notEqual(overlay.options.alwaysOnTop, true);
-  assert.deepEqual(overlay.calls, ["ignoreMouse:true", "hiddenInMissionControl:true"]);
+  assert.deepEqual(overlay.calls, ["ignoreMouse:true"]);
   api.reportRunProgress(progress);
   assert.deepEqual(banner.messages, [progress]);
   assert.equal(overlay.calls.at(-1), "hide");

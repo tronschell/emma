@@ -184,6 +184,8 @@ export type PermissionAsk = {
   detail: string;
 };
 
+export type PermissionAnswer = "allowed" | "denied" | "lapsed";
+
 /** One file the agent rewrote, kept so the changes tab can show a diff and revert it. */
 export type FileChange = {
   folderId: string;

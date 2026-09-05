@@ -164,9 +164,14 @@ The dialog is `PermissionPrompt` ([agents.tsx](../desktop/src/agents.tsx)): a re
 show the resolved app identity and **Allow for this turn**, with **Don't** focused
 by default. Escape answers `false`. If neither the main window nor a paired
 permission channel can receive the question, it is denied immediately.
-`MAX_ASK_MS` is 10 minutes; timeout, cancellation and ended or replaced turns
-settle `false`. A late answer cannot revive a request. An app denial is remembered
-for the rest of the turn, so the model cannot repeatedly ask for the same app.
+`MAX_ASK_MS` is 10 minutes. `AgentRuntime.approval` answers `allowed`, `denied` or
+`lapsed`: only the 10-minute expiry lapses, while cancellation, ended or replaced
+turns and **Don't** all deny. `question` is the same call flattened to a boolean
+for the tools that only need to know whether they may run. A late answer cannot
+revive a request. An app denial is remembered for the rest of the turn, so the
+model cannot repeatedly ask for the same app; a lapse is not remembered that way,
+because nobody said no. The model is told there is no answer yet and may ask for
+that one app a second time, and a second lapse is then treated as a denial.
 
 The renderer cannot bypass any of this: its whole permission vocabulary in
 [preload.ts](../desktop/main/preload.ts) is `onPermissionAsk`,

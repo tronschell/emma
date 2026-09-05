@@ -75,7 +75,7 @@ const runtime = (progress?: (value: ComputerRunProgress) => void) => {
   computer.start(thread);
   return computer;
 };
-const allow = async () => true;
+const allow = async () => "allowed" as const;
 const state = (app = target) => ({ action: "get_app_state", app: app.id });
 const token = (text: string) => /Snapshot: ([A-Za-z0-9-]+)/.exec(text)![1];
 const click = (snapshot: string, app = target) => ({ action: "click", app: app.id, snapshot, element_index: 0 });
@@ -115,7 +115,7 @@ test("cursor events describe approved mutations without becoming tool results", 
   const beforeRead = progress.length;
   await computer.execute(thread, state(), allow);
   assert.ok(progress.slice(beforeRead).every((value) => !("cursor" in value)));
-  await assert.rejects(computer.execute(thread, state(other), async () => false), /did not allow/);
+  await assert.rejects(computer.execute(thread, state(other), async () => "denied" as const), /did not allow/);
   assert.equal(progress.filter((value) => value.cursor).length, 1);
 });
 
@@ -200,7 +200,7 @@ test("launch_app takes an app name, never a path or an app-scoped argument", () 
 test("launch_app opens an approved app and grants control of it for the turn", async () => {
   const computer = runtime();
   const asked: string[] = [];
-  const approve = async (candidate: { name: string }) => { asked.push(candidate.name); return true; };
+  const approve = async (candidate: { name: string }) => { asked.push(candidate.name); return "allowed" as const; };
   const said = await computer.execute(thread, { action: "launch_app", name: "Notes" }, approve);
   assert.deepEqual(asked, ["Notes"]);
   assert.deepEqual(opened, ["Notes"]);
@@ -217,7 +217,7 @@ test("launch_app opens an approved app and grants control of it for the turn", a
 
 test("launch_app refuses a denial, an unknown name and a target the user did not approve", async () => {
   const denied = runtime();
-  await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" }, async () => false), /did not allow/);
+  await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" }, async () => "denied" as const), /did not allow/);
   await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" },
     async () => { throw new Error("A denied launch must not ask again"); }), /did not allow/);
   assert.deepEqual(opened, []);
@@ -266,7 +266,7 @@ test("the user approves each exact app once, with no global input", async () => 
     const app = candidate as ComputerApp;
     assert.equal(sent.filter((item) => item.app.id === app.id).length, 0);
     asks.push(app);
-    return true;
+    return "allowed" as const;
   };
   const first = token(await computer.execute(thread, state(), approve));
   await computer.execute(thread, click(first), approve);
@@ -279,10 +279,28 @@ test("the user approves each exact app once, with no global input", async () => 
   assert.equal(captures, 0);
 });
 
+test("an approval that lapses is not a denial and can be asked once more", async () => {
+  const computer = runtime();
+  const answers: string[] = [];
+  const lapse = async () => { answers.push("lapsed"); return "lapsed" as const; };
+  await assert.rejects(computer.execute(thread, state(), lapse), /No answer yet/);
+  const snapshot = token(await computer.execute(thread, state(), allow));
+  assert.ok(snapshot);
+  assert.deepEqual(answers, ["lapsed"]);
+  assert.equal(spawned.length, 1);
+
+  const twice = runtime();
+  await assert.rejects(twice.execute(thread, { action: "launch_app", name: "Notes" }, lapse), /No answer yet/);
+  await assert.rejects(twice.execute(thread, { action: "launch_app", name: "Notes" }, lapse), /did not allow/);
+  await assert.rejects(twice.execute(thread, { action: "launch_app", name: "Notes" },
+    async () => { throw new Error("A second lapse must not ask again"); }), /did not allow/);
+  assert.deepEqual(opened, []);
+});
+
 test("denial stays denied for this turn, including concurrent retries", async () => {
   const computer = runtime();
   let asks = 0;
-  const deny = async () => { asks++; return false; };
+  const deny = async () => { asks++; return "denied" as const; };
   const attempts = await Promise.allSettled([computer.execute(thread, state(), deny), computer.execute(thread, state(), deny)]);
   assert.ok(attempts.every((attempt) => attempt.status === "rejected"));
   await assert.rejects(computer.execute(thread, state(), allow), /did not allow/);
@@ -315,13 +333,13 @@ test("an unrelated thread cannot borrow or end a granted run", async () => {
 
 test("stopping during approval cannot create a helper or restart the run", async () => {
   const computer = runtime();
-  let answer!: (allowed: boolean) => void;
+  let answer!: (given: "allowed") => void;
   let signal!: AbortSignal;
   const result = computer.execute(thread, state(), (_app, abort) => { signal = abort; return new Promise((resolve) => { answer = resolve; }); });
   await tick();
   computer.abort();
   assert.equal(signal.aborted, true);
-  answer(true);
+  answer("allowed");
   await assert.rejects(result, /stopped/);
   assert.equal(spawned.length, 0);
   assert.throws(() => computer.start(thread), /cannot restart/);
@@ -364,7 +382,7 @@ test("relaunches and app changes during approval do not inherit a grant", async 
   apps = [target, other];
   await assert.rejects(computer.execute(thread, state(), async () => {
     apps = [{ ...target, pid: target.pid + 10 }, other];
-    return true;
+    return "allowed" as const;
   }), /instance changed/);
 });
 
@@ -386,6 +404,6 @@ test("the step ceiling revokes access and the next turn asks again", async () =>
   computer.end(thread);
   computer.start(thread);
   let asked = false;
-  await computer.execute(thread, state(), async () => { asked = true; return true; });
+  await computer.execute(thread, state(), async () => { asked = true; return "allowed" as const; });
   assert.equal(asked, true);
 });
