@@ -1044,7 +1044,7 @@ test "ordinary applicable target freshness detects retarget and resolution failu
         &file_info_directory.candidate,
     ));
 
-    try tmp.dir.deleteFile(std.testing.io, "workspace/link");
+    try io_mod.deleteSymLink(tmp.dir, "workspace/link");
     try tmp.dir.symLink(std.testing.io, "new", "workspace/link", .{ .is_directory = true });
     try std.testing.expect(!try ordinaryApplicableTargetsFresh(
         alloc,

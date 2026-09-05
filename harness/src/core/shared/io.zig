@@ -22,7 +22,7 @@ pub fn setIo(zio: std.Io) void {
 fn process_io_for(comptime os_tag: std.Target.Os.Tag, zio: std.Io) std.Io {
     return switch (os_tag) {
         .macos => darwin_process_spawn.wrap(zio),
-        .windows => windowsOpenFileWrap(zio),
+        .windows => windowsIoWrap(zio),
         else => zio,
     };
 }
@@ -33,7 +33,7 @@ var windows_wrap_state: std.atomic.Value(WindowsWrapState) = .init(.uninitialize
 var windows_wrapped_vtable: std.Io.VTable = undefined;
 var windows_original_vtable: *const std.Io.VTable = undefined;
 
-fn windowsOpenFileWrap(original: std.Io) std.Io {
+fn windowsIoWrap(original: std.Io) std.Io {
     if (windows_wrap_state.load(.acquire) != .ready) initializeWindowsWrappedVtable(original);
     std.debug.assert(windows_original_vtable == original.vtable);
     return .{ .userdata = original.userdata, .vtable = &windows_wrapped_vtable };
@@ -43,6 +43,7 @@ fn initializeWindowsWrappedVtable(original: std.Io) void {
     if (windows_wrap_state.cmpxchgStrong(.uninitialized, .initializing, .acquire, .acquire) == null) {
         windows_wrapped_vtable = original.vtable.*;
         windows_wrapped_vtable.dirOpenFile = windowsDirOpenFile;
+        windows_wrapped_vtable.dirOpenDir = windowsDirOpenDir;
         windows_original_vtable = original.vtable;
         windows_wrap_state.store(.ready, .release);
         return;
@@ -57,6 +58,10 @@ fn windowsDirOpenFile(
     flags: std.Io.Dir.OpenFileOptions,
 ) std.Io.File.OpenError!std.Io.File {
     var file = try windows_original_vtable.dirOpenFile(userdata, dir, sub_path, flags);
+    if (!flags.follow_symlinks and windowsHandleIsSurrogateReparsePoint(file.handle)) {
+        windows.CloseHandle(file.handle);
+        return error.SymLinkLoop;
+    }
     if (!windowsHandleIsAsynchronous(file.handle)) return file;
     if (windowsReopenSynchronous(file.handle)) |synchronous| {
         windows.CloseHandle(file.handle);
@@ -64,6 +69,31 @@ fn windowsDirOpenFile(
     }
     file.flags.nonblocking = true;
     return file;
+}
+
+fn windowsDirOpenDir(
+    userdata: ?*anyopaque,
+    dir: std.Io.Dir,
+    sub_path: []const u8,
+    options: std.Io.Dir.OpenOptions,
+) std.Io.Dir.OpenError!std.Io.Dir {
+    const opened = try windows_original_vtable.dirOpenDir(userdata, dir, sub_path, options);
+    if (options.follow_symlinks or !windowsHandleIsSurrogateReparsePoint(opened.handle)) return opened;
+    windows.CloseHandle(opened.handle);
+    return error.SymLinkLoop;
+}
+
+fn windowsHandleIsSurrogateReparsePoint(handle: windows.HANDLE) bool {
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+    var tag_info: windows.FILE.ATTRIBUTE_TAG_INFO = undefined;
+    if (windows.ntdll.NtQueryInformationFile(
+        handle,
+        &iosb,
+        &tag_info,
+        @sizeOf(windows.FILE.ATTRIBUTE_TAG_INFO),
+        .AttributeTag,
+    ) != .SUCCESS) return false;
+    return tag_info.ReparseTag.IsSurrogate;
 }
 
 fn windowsHandleIsAsynchronous(handle: windows.HANDLE) bool {
@@ -248,6 +278,52 @@ test "non-Darwin process I/O keeps the original vtable" {
 
     try std.testing.expect(selected.userdata == original.userdata);
     try std.testing.expect(selected.vtable == original.vtable);
+}
+
+test "Windows no-follow opens reject a junction like a symlink" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(getIo(), "target/child");
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(getIo(), &root_buffer)];
+    const target = try std.fs.path.join(alloc, &.{ root, "target" });
+    defer alloc.free(target);
+    const link = try std.fs.path.join(alloc, &.{ root, "link" });
+    defer alloc.free(link);
+    const linked_child = try std.fs.path.join(alloc, &.{ root, "link", "child" });
+    defer alloc.free(linked_child);
+
+    const created = try std.process.run(alloc, getIo(), .{
+        .argv = &.{ "cmd", "/c", "mklink", "/J", link, target },
+    });
+    alloc.free(created.stdout);
+    alloc.free(created.stderr);
+    switch (created.term) {
+        .exited => |code| if (code != 0) return error.SkipZigTest,
+        else => return error.SkipZigTest,
+    }
+
+    try std.testing.expectError(
+        error.SymLinkLoop,
+        tmp.dir.openDir(getIo(), "link", .{ .follow_symlinks = false }),
+    );
+    try std.testing.expectError(error.SymLinkLoop, openDirAbsoluteNoFollow(link, .{}));
+    try std.testing.expectError(error.SymLinkLoop, openDirAbsoluteNoFollow(linked_child, .{}));
+    try std.testing.expectError(
+        error.DurablePathUnsafe,
+        openOrCreateVerifiedPrivateDirFromDir(tmp.dir, "link"),
+    );
+
+    var followed = try tmp.dir.openDir(getIo(), "link", .{});
+    followed.close(getIo());
+    try deleteSymLink(tmp.dir, "link");
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.statFile(getIo(), "link", .{ .follow_symlinks = false }),
+    );
 }
 
 test "openDirAbsoluteNoFollow rejects unsafe path components" {
@@ -654,6 +730,15 @@ const permission_ops = switch (builtin.os.tag) {
         }
     },
 };
+
+pub fn deleteSymLink(dir: std.Io.Dir, sub_path: []const u8) !void {
+    const zio = getIo();
+    if (comptime builtin.os.tag != .windows) return dir.deleteFile(zio, sub_path);
+    return dir.deleteDir(zio, sub_path) catch |err| switch (err) {
+        error.NotDir => dir.deleteFile(zio, sub_path),
+        else => err,
+    };
+}
 
 pub fn permissionsFromMode(mode: u32) std.Io.File.Permissions {
     return permission_ops.fromMode(mode);

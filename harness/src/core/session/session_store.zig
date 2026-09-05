@@ -13481,6 +13481,7 @@ test "history page maps missing unsafe unavailable unsupported and corrupt sessi
     };
     try std.testing.expectError(error.SessionPathUnsafe, ctx.store.loadHistoryPage(alloc, "history-unsafe", null, 1));
 
+    if (comptime builtin.os.tag == .windows) return;
     try chmodPath(alloc, ctx.store.sessions_dir, 0o000);
     var restore_sessions_permissions = true;
     defer if (restore_sessions_permissions) {

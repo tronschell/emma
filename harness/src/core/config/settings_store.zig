@@ -3538,7 +3538,7 @@ test "workspace directory removal uses observed sources and preserves unseen con
         .identity = first,
     }};
 
-    try tmp.dir.deleteFile(std.testing.io, "observed-link");
+    try io_mod.deleteSymLink(tmp.dir, "observed-link");
     try tmp.dir.symLink(std.testing.io, "second", "observed-link", .{ .is_directory = true });
     try tmp.dir.symLink(std.testing.io, "first", "unseen-link", .{ .is_directory = true });
 
@@ -3611,7 +3611,7 @@ test "workspace directory removal stabilizes observed survivor identity" {
     defer alloc.free(fixture);
     try writeStoreFixture(tmp.dir, "home/.fx/settings.json", fixture);
 
-    try tmp.dir.deleteFile(std.testing.io, "survivor-link");
+    try io_mod.deleteSymLink(tmp.dir, "survivor-link");
     try tmp.dir.symLink(std.testing.io, "retarget", "survivor-link", .{ .is_directory = true });
 
     var store = try Store.initFromHome(alloc, home, .writable);
@@ -3823,7 +3823,7 @@ test "workspace directory existing add stabilizes a retargeted observed source" 
     defer alloc.free(fixture);
     try writeStoreFixture(tmp.dir, "home/.fx/settings.json", fixture);
 
-    try tmp.dir.deleteFile(std.testing.io, "saved-link");
+    try io_mod.deleteSymLink(tmp.dir, "saved-link");
     try tmp.dir.symLink(std.testing.io, "second", "saved-link", .{ .is_directory = true });
 
     var store = try Store.initFromHome(alloc, home, .writable);
@@ -3895,7 +3895,7 @@ test "workspace directory capacity compaction uses observed source identities" {
     try fixture.writer.writeAll("]}}}\n");
     try writeStoreFixture(tmp.dir, "home/.fx/settings.json", fixture.written());
 
-    try tmp.dir.deleteFile(std.testing.io, "stable-link-15");
+    try io_mod.deleteSymLink(tmp.dir, "stable-link-15");
     try tmp.dir.symLink(std.testing.io, "retarget", "stable-link-15", .{ .is_directory = true });
 
     var store = try Store.initFromHome(alloc, home, .writable);
