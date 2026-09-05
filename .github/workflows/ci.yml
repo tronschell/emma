@@ -342,7 +342,7 @@ jobs:
           $shortcut = Get-ChildItem -Path $programs -Recurse -Filter 'Emma.lnk' | Select-Object -First 1
           if (-not $shortcut) { throw "Missing Start Menu shortcut under $programs" }
           Write-Output "Installed $exe with shortcut $($shortcut.FullName)"
-          try { Get-Process Emma -ErrorAction Stop | Stop-Process -Force } catch {}
+          Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           node desktop/scripts/install-smoke.mjs "$exe" (Join-Path $env:RUNNER_TEMP 'emma-install-smoke-shot/windows.png')
 
       - name: uninstall the Windows package
@@ -350,11 +350,15 @@ jobs:
           $version = node -p "require('./package.json').version"
           $root = Join-Path $env:LOCALAPPDATA 'Emma'
           $installed = Join-Path $root "app-$version"
-          try { Get-Process Emma -ErrorAction Stop | Stop-Process -Force } catch {}
+          Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           Start-Process -FilePath (Join-Path $root 'Update.exe') -ArgumentList '--uninstall', '-s'
           $deadline = (Get-Date).AddMinutes(5)
           while ((Test-Path $installed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-          if (Test-Path $installed) { throw "Uninstall left $installed behind" }
+          if (Test-Path $installed) {
+            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | Format-Table ProcessId, ExecutablePath
+            Get-ChildItem -Path $root -Filter '*.log' | ForEach-Object { Write-Output $_.FullName; Get-Content $_.FullName -Tail 40 }
+            throw "Uninstall left $installed behind"
+          }
           Write-Output "Uninstalled $installed"
 
       - name: upload the Windows install smoke screenshot
