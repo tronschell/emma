@@ -29,7 +29,7 @@ export class FolderStore {
   }
 
   add(directory: string): FolderGrant[] {
-    const resolved = realpathSync(directory);
+    const resolved = realpathSync.native(directory);
     if (!statSync(resolved).isDirectory()) throw new Error("That is not a folder.");
     if (!this.grants.some((grant) => samePath(grant.path, resolved))) {
       if (this.grants.length >= MAX_FOLDERS) throw new Error(`Emma keeps at most ${MAX_FOLDERS} folders; remove one first.`);
@@ -75,7 +75,7 @@ export class FolderStore {
     const target = path.resolve(root, relative);
     if (!pathInside(root, target)) throw new Error("That file is outside the granted folder.");
     if (!this.exists(target)) return { path: path.relative(root, target), text: "", missing: true };
-    const full = realpathSync(target);
+    const full = realpathSync.native(target);
     if (!pathInside(root, full)) throw new Error("That file is outside the granted folder.");
     if (!statSync(full).isFile() || statSync(full).size > MAX_FILE_BYTES) throw new Error("That file cannot be attached.");
     return { path: path.relative(root, full), text: readFileSync(full, "utf8") };
@@ -111,6 +111,7 @@ export class FolderStore {
   fileWithin(id: string, given: string): string {
     const root = this.root(id);
     const relative = path.isAbsolute(given) ? path.relative(root, realPath(given) ?? given) : given;
+    if (path.isAbsolute(relative)) throw new Error("That file is outside the granted folder.");
     return path.join(root, this.within(id, relative));
   }
 
@@ -129,7 +130,7 @@ export class FolderStore {
     const grant = this.grants.find((item) => item.id === id);
     if (!grant) throw new Error("That folder is no longer connected.");
     try {
-      return realpathSync(grant.path);
+      return realpathSync.native(grant.path);
     } catch {
       throw new Error(missingFolderMessage(grant.name, grant.path));
     }

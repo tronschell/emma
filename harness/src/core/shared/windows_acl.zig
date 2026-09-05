@@ -42,6 +42,7 @@ const file_disposition_info: windows.DWORD = 4;
 const process_query_limited_information: windows.DWORD = 0x1000;
 const token_query: windows.DWORD = 0x0008;
 const token_user_information_class: windows.DWORD = 1;
+const token_owner_information_class: windows.DWORD = 4;
 const private_directory_sddl = std.unicode.utf8ToUtf16LeStringLiteral("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)");
 const private_file_sddl = std.unicode.utf8ToUtf16LeStringLiteral("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)");
 const system_sid_text = std.unicode.utf8ToUtf16LeStringLiteral("S-1-5-18");
@@ -268,28 +269,27 @@ fn noMatch(protected: bool) DescriptorMatch {
     return .{ .matched = false, .inherited = false, .protected = protected };
 }
 
-fn tokenUserSid(alloc: std.mem.Allocator, token: windows.HANDLE) ![]u8 {
+fn tokenSid(alloc: std.mem.Allocator, token: windows.HANDLE, information_class: windows.DWORD) ![]u8 {
     var size: windows.DWORD = 0;
     if (GetTokenInformation(
         token,
-        token_user_information_class,
+        information_class,
         null,
         0,
         &size,
-    ).toBool() or windows.GetLastError() != .INSUFFICIENT_BUFFER or size < @sizeOf(TokenUser)) {
+    ).toBool() or windows.GetLastError() != .INSUFFICIENT_BUFFER or size < @sizeOf(?*anyopaque)) {
         return error.SecurityApiFailed;
     }
     const info = try alloc.alignedAlloc(u8, std.mem.Alignment.of(TokenUser), size);
     defer alloc.free(info);
     if (!GetTokenInformation(
         token,
-        token_user_information_class,
+        information_class,
         info.ptr,
         size,
         &size,
     ).toBool()) return error.SecurityApiFailed;
-    const user: *const TokenUser = @ptrCast(@alignCast(info.ptr));
-    const sid = user.user.sid orelse return error.SecurityApiFailed;
+    const sid = @as(*const ?*anyopaque, @ptrCast(@alignCast(info.ptr))).* orelse return error.SecurityApiFailed;
     if (!IsValidSid(sid).toBool()) return error.SecurityApiFailed;
     const sid_length = GetLengthSid(sid);
     if (sid_length == 0 or sid_length > size) return error.SecurityApiFailed;
@@ -298,13 +298,26 @@ fn tokenUserSid(alloc: std.mem.Allocator, token: windows.HANDLE) ![]u8 {
     return copy;
 }
 
+fn tokenUserSid(alloc: std.mem.Allocator, token: windows.HANDLE) ![]u8 {
+    return tokenSid(alloc, token, token_user_information_class);
+}
+
 fn currentProcessSid(alloc: std.mem.Allocator) ![]u8 {
     var token: windows.HANDLE = undefined;
     if (!OpenProcessToken(windows.current_process, token_query, &token).toBool()) {
         return error.SecurityApiFailed;
     }
     defer windows.CloseHandle(token);
-    return tokenUserSid(alloc, token);
+    return tokenSid(alloc, token, token_user_information_class);
+}
+
+fn currentProcessOwnerSid(alloc: std.mem.Allocator) ![]u8 {
+    var token: windows.HANDLE = undefined;
+    if (!OpenProcessToken(windows.current_process, token_query, &token).toBool()) {
+        return error.SecurityApiFailed;
+    }
+    defer windows.CloseHandle(token);
+    return tokenSid(alloc, token, token_owner_information_class);
 }
 
 fn tokenUsersMatch(
@@ -353,9 +366,12 @@ fn descriptorOwnerMatches(descriptor: *anyopaque) !bool {
     }
     const owner_sid = owner orelse return false;
     if (!IsValidSid(owner_sid).toBool()) return false;
-    const current_sid = try currentProcessSid(std.heap.page_allocator);
-    defer std.heap.page_allocator.free(current_sid);
-    return EqualSid(owner_sid, @ptrCast(current_sid.ptr)).toBool();
+    const user_sid = try currentProcessSid(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(user_sid);
+    if (EqualSid(owner_sid, @ptrCast(user_sid.ptr)).toBool()) return true;
+    const default_owner_sid = try currentProcessOwnerSid(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(default_owner_sid);
+    return EqualSid(owner_sid, @ptrCast(default_owner_sid.ptr)).toBool();
 }
 
 fn descriptorMatches(descriptor: *anyopaque, directory: bool) !DescriptorMatch {
@@ -484,6 +500,9 @@ fn descriptorWritableByForeignPrincipal(descriptor: *anyopaque) !bool {
     const current_sid = try currentProcessSid(std.heap.page_allocator);
     defer std.heap.page_allocator.free(current_sid);
     const current: *anyopaque = @ptrCast(current_sid.ptr);
+    const default_owner_sid = try currentProcessOwnerSid(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(default_owner_sid);
+    const default_owner: *anyopaque = @ptrCast(default_owner_sid.ptr);
 
     var acl_info: AclSizeInformation = undefined;
     if (!GetAclInformation(
@@ -510,6 +529,7 @@ fn descriptorWritableByForeignPrincipal(descriptor: *anyopaque) !bool {
         if (EqualSid(sid, administrators).toBool()) continue;
         if (EqualSid(sid, owner_rights).toBool()) continue;
         if (EqualSid(sid, current).toBool()) continue;
+        if (EqualSid(sid, default_owner).toBool()) continue;
         return true;
     }
     return false;
