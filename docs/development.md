@@ -23,7 +23,7 @@ Read `AGENTS.md` before your first change; this page is the mechanics.
 | [`desktop/native/`](../desktop/native) | macOS Objective-C/C helpers and Windows native equivalents: `quick_ask.m`/`quick_ask_win.cpp`, `computer.m`/`computer_win.cpp`, `transcribe.m`/`transcribe_win.cpp`, `pty.c`/`pty_win.c`, plus `Info.extra.plist` |
 | [`desktop/scripts/`](../desktop/scripts) | Development, packaging and release checks, vendoring, catalog generation, and the CDP drivers `drive.mjs`, `shot.mjs`, `dismiss.mjs` |
 | [`desktop/skills/`](../desktop/skills) | Six bundled skills: `artifact`, `building-emma`, `installing-capabilities`, `meta-harness`, `scheduled-tasks`, `threads` |
-| `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here; `npm run vendor:zvec-grep` puts `zvec-grep/` beside it |
+| `desktop/vendor/` | Gitignored. `npm run vendor:ripgrep` puts `rg` here; `npm run vendor:zvec-grep` puts `zvec-grep/` beside it for packing, not for shipping |
 | [`harness/`](../harness) | `emma-cli`. `src/acp/` (the ACP server), `src/builtins/` (registry; `builtins/emma/` holds Emma's tool *schemas*), `src/core/` (the engine), `src/gateway/` (model transport), `src/tools/`, `src/ui/` |
 
 `harness/` is Emma's fork of [vercel-labs/fx](https://github.com/vercel-labs/fx),
@@ -86,10 +86,11 @@ All in [`desktop/package.json`](../desktop/package.json).
 | `build:harness` | `(cd ../harness && zig build)` → `harness/zig-out/bin/emma-cli` (`.exe` on Windows). **Nothing else builds the harness** |
 | `build:native` | Builds the four platform-specific helpers and runs their self-tests where supported: macOS uses `clang` and the `.m`/`.c` sources; Windows uses the SDK toolchain and the `_win` sources |
 | `vendor:ripgrep` | Downloads [ripgrep](https://github.com/BurntSushi/ripgrep) 15.2.0 and its license files into `desktop/vendor/`, checked against a pinned SHA-256, stamped in `vendor/rg.version`. A no-op once all files are present and stamped; warns when no pinned platform/architecture archive exists |
-| `vendor:zvec-grep` | `npm install`s `@zvec/zvec-grep` 0.2.1 into `desktop/vendor/zvec-grep/`, prunes every foreign `onnxruntime-node` binary, and stamps `vendor/zvec-grep/zvec-grep.version`. Only zvec-grep mode uses it — see [harness.md](harness.md#zvec-grep-mode) |
+| `vendor:zvec-grep` | `npm install`s `@zvec/zvec-grep` into `desktop/vendor/zvec-grep/` at the version named by `shared/zvec-grep.ts`, prunes every foreign `onnxruntime-node` binary, and stamps `vendor/zvec-grep/zvec-grep.version`. Nothing ships it — it is the input to `pack:zvec-grep` |
+| `pack:zvec-grep` | Runs `vendor:zvec-grep`, then packs `zvec-grep-<version>-<platform>-<arch>.tar.gz` and its `.sha256` into the directory named by the first argument (default `desktop/release/tools`). The `tools` workflow runs it on both runners and publishes the assets to the `zvec-grep-v<version>` release the app downloads from — see [harness.md](harness.md#zvec-grep-mode) |
 | `seed:catalog` | Refetches OpenRouter's tool-capable model list into `main/catalog-seed.ts`. Needs no key |
 | `dev` | `node scripts/dev.mjs` |
-| `start` | `build:host` + `build:native` + `vendor:ripgrep` + `vendor:zvec-grep` + `build`, then `electron .`. No Vite server; the built bundle |
+| `start` | `build:host` + `build:native` + `vendor:ripgrep` + `build`, then `electron .`. No Vite server; the built bundle |
 | `package:mac` | See [Packaging](#packaging) |
 | `dmg:mac` | See [Packaging](#packaging) |
 | `package:win` | See [Packaging](#packaging) |
@@ -145,7 +146,10 @@ Only `package.json`, `dist-main/main`, `dist-main/shared`, and `dist-renderer`
 are allowed into `app.asar`. The copied package version is stamped from the
 root `package.json` without changing the source manifest. Extra resources are
 `emma-host`, `emma-cli`, `rg`, `emma-option-tap`, `emma-computer`,
-`emma-transcribe`, `emma-pty`, `skills/`, and `notices/`. The notices include
+`emma-transcribe`, `emma-pty`, `skills/`, and `notices/`. zvec-grep is **not**
+among them: it is downloaded on demand into `<userData>/vendor/zvec-grep/<version>/`
+the first time semantic search asks for it, and its licences travel inside that
+tarball. The notices include
 the root MIT license, the fork's Apache-2.0 license and provenance, fonts,
 brands, ripgrep, and generated renderer and Rust dependency license texts.
 

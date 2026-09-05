@@ -158,7 +158,7 @@ Settings → Harness → zvec-grep mode is an experiment. Off, `semantic_search`
 is the harness's lexical ranker, hidden behind `search_tools`. On, every turn
 sends `session/set_config_option {configId: "semantic_grep"}` whose value is
 one stdio MCP-server-shaped entry (`{name, command, args, env}`): the command
-is Emma's own binary run as Node (`ELECTRON_RUN_AS_NODE=1`) on the vendored
+is Emma's own binary run as Node (`ELECTRON_RUN_AS_NODE=1`) on the downloaded
 `@zvec/zvec-grep` CLI, and `env` carries `ZVEC_GREP_EMBEDDING` plus
 `ZVEC_GREP_HOME` = `~/.zvec-grep`. That home is passed to every `zg` Emma runs
 because the harness child's `HOME` is Emma's own `<userData>/harness`, and
@@ -236,9 +236,27 @@ is world-readable. If the proxy cannot bind its port the option stays empty and
 the folder fails with the bind error, so the harness never queries whatever
 else answers there. A hosted model whose key is missing leaves
 the option empty (the agent keeps keyword search) and marks the folder
-"Needs <KEY>"; Emma never substitutes another model. The vendored tree comes from `scripts/vendor-zvec-grep.mjs` into
-`desktop/vendor/zvec-grep`, pruned to the host platform's onnxruntime binaries,
-and ships as a `zvec-grep` resource beside `rg`.
+"Needs <KEY>"; Emma never substitutes another model.
+
+zvec-grep is not shipped inside Emma. Settings → Harness downloads
+`zvec-grep-<version>-<platform>-<arch>.tar.gz` from the `zvec-grep-v<version>`
+GitHub release, checks it against the `.sha256` asset beside it, unpacks it with
+`zlib` and a tar reader that refuses absolute paths, `..` segments and links,
+into a temporary sibling that is renamed into
+`<userData>/vendor/zvec-grep/<version>/` only once the entry point is there, and
+then deletes every other version. That directory is outside the app bundle, so a
+Squirrel or macOS update finds it already installed and downloads nothing; the
+index homes were already per-user and do not move
+(`~/.zvec-grep` for the daemon, `<folder>/.zvec-grep/` per folder), so upgrading
+Emma never rebuilds a vector index. Downloading is required in both modes,
+because a hosted model still indexes through the same local tool. The card in
+Settings shows the phase, the bytes and a Cancel button, and `EMMA_TOOLS_URL`
+repoints the origin for a local rehearsal.
+`scripts/pack-zvec-grep.mjs` vendors the tree with `scripts/vendor-zvec-grep.mjs`,
+pruned to the host platform's onnxruntime binaries, and packs those two assets;
+the `tools` workflow runs it on `macos-15` and `windows-2025` and publishes them.
+`desktop/shared/zvec-grep.ts` holds the one version constant the script and the
+app both read, and the third-party licences travel inside the tarball.
 
 ## The ACP wire
 

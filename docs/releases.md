@@ -21,6 +21,18 @@ git switch -c feat/my-change origin/dev
 gh pr create --base dev
 ```
 
+## The zvec-grep tools release
+
+`tools.yml` is a separate lane with its own tag namespace. It runs on
+`workflow_dispatch` and on pushes to `dev` that touch
+`desktop/shared/zvec-grep.ts` or either zvec-grep script, packs the tree on
+`macos-15` and `windows-2025`, and publishes
+`zvec-grep-<version>-<platform>-<arch>.tar.gz` plus a `.sha256` to a release
+tagged `zvec-grep-v<version>`, created with `gh release create --latest=false` so
+it never displaces an app release. Assets are re-uploaded with `--clobber`, and
+bumping `ZVEC_GREP_VERSION` is what creates the next tag. The app downloads from
+that release; `EMMA_TOOLS_URL` repoints the origin for a local rehearsal.
+
 ## Release a version
 
 1. On `dev`, bump the root `package.json` version in a normal PR, or run
