@@ -1,0 +1,82 @@
+name: tools
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - desktop/shared/zvec-grep.ts
+      - desktop/scripts/vendor-zvec-grep.mjs
+      - desktop/scripts/pack-zvec-grep.mjs
+      - .github/workflows/tools.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tools-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: windows-2025
+            target: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: vendor and pack zvec-grep
+        run: node desktop/scripts/pack-zvec-grep.mjs "${{ runner.temp }}/tools"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zvec-grep-${{ matrix.target }}
+          path: ${{ runner.temp }}/tools
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/tools
+          pattern: zvec-grep-*
+          merge-multiple: true
+
+      - name: publish the zvec-grep assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(sed -n 's/.*ZVEC_GREP_VERSION = "\([^"]*\)".*/\1/p' desktop/shared/zvec-grep.ts | head -1)"
+          test -n "$version"
+          tag="zvec-grep-v$version"
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" \
+            --title "zvec-grep $version" \
+            --notes "Prebuilt @zvec/zvec-grep $version trees Emma downloads on demand when semantic search is turned on." \
+            --latest=false
+          gh release upload "$tag" "$RUNNER_TEMP"/tools/* --clobber
+          gh release view "$tag" --json assets --jq '.assets[].name'

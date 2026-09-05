@@ -47,7 +47,7 @@ import { checkForUpdates, installUpdate, readyUpdate, startUpdates } from "./upd
 import { newerVersion } from "../shared/update";
 import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "./git";
 import { installedEditors, openInEditor } from "./editors";
-import { machineSample } from "./machine";
+import { machineFacts, machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
@@ -63,7 +63,8 @@ import { adoptCouncil, closeCouncil, configureCouncil, councilAnswer, councilSta
 import { validateCouncilStart } from "../shared/council";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
-import { proxyPort, SemanticGrep, ZG_ENTRY } from "./semantic-grep";
+import { embeddingModelRequest, proxyPort, SemanticGrep, verifyEmbeddingKey } from "./semantic-grep";
+import { toolsOrigin, ZvecGrepTool } from "./zvec-grep";
 import { chatgptAuth, chatgptRoute } from "./chatgpt";
 import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns, cliOptions } from "../shared/cli";
@@ -239,8 +240,13 @@ let agents: AgentRuntime | undefined;
 let bridge: Bridge | undefined;
 const background = new BackgroundCommands(() => broadcast("emma:background"));
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
-const zgEntry = app.isPackaged ? path.join(process.resourcesPath, "zvec-grep", ZG_ENTRY) : path.join(app.getAppPath(), "vendor/zvec-grep", ZG_ENTRY);
-const semanticGrep = new SemanticGrep(process.execPath, zgEntry, existsSync(zgEntry), proxyPort(app.getPath("userData")), () => broadcast("emma:semantic-grep"));
+const zvecGrep = new ZvecGrepTool(path.join(app.getPath("userData"), "vendor", "zvec-grep"), toolsOrigin(), () => {
+  broadcast("emma:zvec-grep");
+  if (zvecGrep.status().phase !== "ready") return;
+  semanticGrep.apply(harnessExperiments);
+  broadcast("emma:semantic-grep");
+});
+const semanticGrep = new SemanticGrep(process.execPath, () => zvecGrep.entry(), proxyPort(app.getPath("userData")), () => broadcast("emma:semantic-grep"));
 let cliModels: CliModelCatalog;
 const browsers = new Browsers(() => broadcast("emma:browser"), reportBrowserCursor);
 const terminals = new Terminals(
@@ -463,6 +469,7 @@ let overlayGrow = 0;
 
 const preload = path.join(__dirname, "preload.js");
 const renderer = path.join(app.getAppPath(), "dist-renderer/index.html");
+const windowsIcon = isWindows && !app.isPackaged ? path.join(app.getAppPath(), "assets", "emma.ico") : undefined;
 
 const DEV_BINARIES: Record<string, string> = {
   "emma-host": "target/debug/emma-host",
@@ -604,6 +611,7 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
   const window = new BrowserWindow({
     backgroundColor: "#0a0a0c",
     show: false,
+    ...(windowsIcon ? { icon: windowsIcon } : {}),
     ...options,
     webPreferences: {
       preload,
@@ -2867,7 +2875,8 @@ function credentialSlotsHeld(): CredentialSlot[] {
   const slots = new Map<string, CredentialSlot>();
   const put = (env: string, label: string, detail: string, hint: string) => {
     if (!env || slots.has(env)) return;
-    slots.set(env, { env, masked: stored.find((item) => item.env === env)?.masked ?? "", label, detail, hint });
+    const held = stored.find((item) => item.env === env);
+    slots.set(env, { env, masked: held?.masked ?? "", readable: held?.readable ?? true, label, detail, hint });
   };
   for (const item of providerCredentials) put(item.env, item.label, item.detail, item.hint);
   for (const plan of MODEL_PLANS) put(plan.credentialEnv, plan.label, plan.detail, plan.hint);
@@ -4669,6 +4678,27 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:semantic-grep-status", (event) => {
     mainWindowSender(event);
     return semanticGrep.status();
+  });
+  ipcMain.handle("emma:zvec-grep-status", (event) => {
+    mainWindowSender(event);
+    return zvecGrep.status();
+  });
+  ipcMain.handle("emma:zvec-grep-install", (event) => {
+    mainWindowSender(event);
+    return zvecGrep.install();
+  });
+  ipcMain.handle("emma:zvec-grep-cancel", (event) => {
+    mainWindowSender(event);
+    return zvecGrep.cancel();
+  });
+  ipcMain.handle("emma:machine-facts", (event) => {
+    mainWindowSender(event);
+    return machineFacts(app.getPath("userData"));
+  });
+  ipcMain.handle("emma:verify-embedding-key", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const model = embeddingModelRequest(value);
+    return verifyEmbeddingKey(model, process.env[model.credentialEnv]?.trim() ?? "");
   });
   ipcMain.handle("emma:set-review", (event, value: unknown) => {
     mainWindowSender(event);

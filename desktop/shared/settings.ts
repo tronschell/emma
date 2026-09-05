@@ -1010,6 +1010,8 @@ export function maskSecret(value: string): string {
   return secret.length < 12 ? "•".repeat(8) : `${secret.slice(0, 6)}${"•".repeat(10)}${secret.slice(-4)}`;
 }
 
+export const SECURE_STORE_BROKEN = "This computer's secure credential store is unavailable, so Emma will not save a key it could never read back.";
+
 export type OverlayPreferences = Pick<UserSettings, "notchGap" | "cursorOrbsEnabled" | "notchConcurrency"> & Partial<Pick<UserSettings, "systemPrompt" | "prompts">>;
 const action = (label: string, prompt: string): QuickAction => ({ label, prompt, category: "" });
 

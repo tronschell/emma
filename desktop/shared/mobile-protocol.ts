@@ -340,7 +340,7 @@ export type KeyStatus = {
 };
 
 
-export type CredentialSlot = { env: string; masked: string; label: string; detail: string; hint: string };
+export type CredentialSlot = { env: string; masked: string; readable: boolean; label: string; detail: string; hint: string };
 
 export type MacSettings = {
   defaultPermissionMode: PermissionMode;

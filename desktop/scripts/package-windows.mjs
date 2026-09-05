@@ -114,7 +114,6 @@ run("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root);
 run("zig", ["build", "-Doptimize=ReleaseSafe"], path.join(root, "harness"));
 run("npm.cmd", ["run", "build:native"]);
 run("npm.cmd", ["run", "vendor:ripgrep"]);
-run("npm.cmd", ["run", "vendor:zvec-grep"]);
 run("npm.cmd", ["run", "build"]);
 
 const notices = path.join(staging, "notices");
@@ -136,15 +135,15 @@ writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter(
   return `${pkg.name} ${pkg.version}\n\n${files.map((name) => readFileSync(path.join(cwd, name), "utf8")).join("\n\n")}`;
 }).join("\n\n"));
 writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MIT", "UNLICENSE"].map((name) => readFileSync(path.join(desktop, "vendor", name), "utf8")).join("\n\n"));
-const zvecModules = path.join(desktop, "vendor/zvec-grep/node_modules");
-writeFileSync(path.join(notices, "Zvec-grep-LICENSES.txt"), globSync("**/{LICENSE,LICENCE,COPYING,NOTICE}*", { cwd: zvecModules }).filter((name) => statSync(path.join(zvecModules, name)).isFile()).sort().map((name) => `${name}\n\n${readFileSync(path.join(zvecModules, name), "utf8")}`).join("\n\n"));
+
+const loadingGif = path.join(desktop, "assets/installer/emma-setup.gif");
+assert.ok(existsSync(loadingGif), `Missing installer splash: ${loadingGif}`);
 
 const nativeHelpers = ["emma-option-tap.exe", "emma-computer.exe", "emma-transcribe.exe", "emma-pty.exe"];
 const required = [
   path.join(root, "target/release/emma-host.exe"),
   path.join(root, "harness/zig-out/bin/emma-cli.exe"),
   path.join(desktop, "vendor/rg.exe"),
-  path.join(desktop, "vendor/zvec-grep"),
   ...nativeHelpers.map((name) => path.join(desktop, "dist-native", name)),
   path.join(desktop, "skills"),
   notices,
@@ -152,29 +151,19 @@ const required = [
 for (const resource of required) assert.ok(existsSync(resource), `Missing Windows resource: ${resource}`);
 
 const ico = path.join(staging, "emma.ico");
-const png = readFileSync(path.join(desktop, "assets/emma-dock.png"));
-const icoHeader = Buffer.alloc(22);
-icoHeader.writeUInt16LE(0, 0);
-icoHeader.writeUInt16LE(1, 2);
-icoHeader.writeUInt16LE(1, 4);
-icoHeader.writeUInt8(0, 6);
-icoHeader.writeUInt8(0, 7);
-icoHeader.writeUInt8(0, 8);
-icoHeader.writeUInt8(0, 9);
-icoHeader.writeUInt16LE(1, 10);
-icoHeader.writeUInt16LE(32, 12);
-icoHeader.writeUInt32LE(png.length, 14);
-icoHeader.writeUInt32LE(22, 18);
-writeFileSync(ico, Buffer.concat([icoHeader, png]));
+cpSync(path.join(desktop, "assets/emma.ico"), ico);
 const icon = readFileSync(ico);
 assert.equal(icon.readUInt16LE(0), 0, "Invalid ICO reserved field.");
 assert.equal(icon.readUInt16LE(2), 1, "Invalid ICO type.");
-assert.equal(icon.readUInt16LE(4), 1, "Invalid ICO image count.");
-assert.equal(icon.readUInt16LE(10), 1, "Invalid ICO color planes.");
-assert.equal(icon.readUInt16LE(12), 32, "Invalid ICO bit depth.");
-assert.equal(icon.readUInt32LE(14), png.length, "Invalid ICO image size.");
-assert.equal(icon.readUInt32LE(18), 22, "Invalid ICO image offset.");
-assert.deepEqual(icon.subarray(22, 30), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "ICO image is not PNG.");
+const iconSizes = [];
+for (let entry = 0; entry < icon.readUInt16LE(4); entry += 1) {
+  const at = 6 + 16 * entry;
+  assert.equal(icon.readUInt16LE(at + 4), 1, "Invalid ICO color planes.");
+  assert.equal(icon.readUInt16LE(at + 6), 32, "Invalid ICO bit depth.");
+  assert.ok(icon.readUInt32LE(at + 12) + icon.readUInt32LE(at + 8) <= icon.length, "Invalid ICO image bounds.");
+  iconSizes.push(icon[at] || 256);
+}
+for (const size of [16, 32, 48, 256]) assert.ok(iconSizes.includes(size), `The Windows icon is missing its ${size}px image.`);
 
 const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$)|node_modules(?:$|\/ws(?:\/|$)))/;
 await packager({
@@ -235,6 +224,8 @@ await createWindowsInstaller({
   exe: "Emma.exe",
   setupExe: `Emma-${version}-win32-${arch}-Setup.exe`,
   setupIcon: ico,
+  loadingGif,
+  iconUrl: "https://raw.githubusercontent.com/tronschell/emma/main/desktop/assets/emma.ico",
   noMsi: true,
   title: "Emma",
   version,

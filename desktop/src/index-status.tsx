@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { progressLabel, timeLeft, type SemanticGrepStatus } from "../shared/semantic-grep";
 import { EMBEDDING_MODELS, hostedEmbeddingModel } from "../shared/settings";
+import { ZVEC_GREP_VERSION, type ZvecGrepStatus } from "../shared/zvec-grep";
 import { TextIcon } from "./icons";
 
 const EMPTY: SemanticGrepStatus = { available: false, enabled: false, model: "", folders: [] };
@@ -14,6 +15,18 @@ export function useSemanticGrepStatus(): SemanticGrepStatus {
     const load = () => void window.emma.semanticGrepStatus().then((next) => { if (live) setStatus(next); }).catch(() => undefined);
     load();
     const off = window.emma.onSemanticGrep(load);
+    return () => { live = false; off(); };
+  }, []);
+  return status;
+}
+
+export function useZvecGrepStatus(): ZvecGrepStatus {
+  const [status, setStatus] = useState<ZvecGrepStatus>({ phase: "missing", version: ZVEC_GREP_VERSION, bytes: 0, total: 0, detail: "" });
+  useEffect(() => {
+    let live = true;
+    const load = () => void window.emma.zvecGrepStatus().then((next) => { if (live) setStatus(next); }).catch(() => undefined);
+    load();
+    const off = window.emma.onZvecGrep(load);
     return () => { live = false; off(); };
   }, []);
   return status;
