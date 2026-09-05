@@ -75,7 +75,7 @@ import { ModelPlans, OPENROUTER_ENV, ProviderGrid } from "./model-plans";
 import { isWorkspaceWindow, takeBootSnapshot, whenProvidersReady } from "./boot";
 import { GoalCard, GoalThreads, GoalView } from "./goal";
 import { GOAL_LABELS, markedGoal, usageLimitedFailure } from "../shared/goal";
-import { localDevice, overlayLabel } from "../shared/platform-copy";
+import { localDevice, overlayLabel, unreadableKeyNotice } from "../shared/platform-copy";
 
 const empty: Snapshot = { threads: [], scheduledJobs: [], warnings: [] };
 const SNAPSHOT_REFRESH_MS = 60_000;
@@ -4231,6 +4231,7 @@ function ProviderKeys({ settings, act, busy }: { settings: UserSettings; act: (m
   const readBalance = () => void window.emma.openRouterBalance().then(setBalance).catch(() => undefined);
   useEffect(() => { void window.emma.listCredentials().then(setStored).catch(fail); readBalance(); }, []);
   const slots = credentialSlots(settings, stored);
+  const lost = stored.filter((item) => !item.readable);
   const draft = (env: string) => (drafts[env] ?? "").trim();
   const save = async (env: string, secret?: string) => {
     setError("");
@@ -4248,23 +4249,27 @@ function ProviderKeys({ settings, act, busy }: { settings: UserSettings; act: (m
     const env = custom.trim().toUpperCase();
     if (!isEnvName(env)) { setError("An environment variable name must start with a letter or underscore and hold only letters, digits, and underscores."); return; }
     setDrafts((current) => ({ ...current, [env]: current[env] ?? "" }));
-    setStored((current) => current.some((item) => item.env === env) ? current : [...current, { env, masked: "" }]);
+    setStored((current) => current.some((item) => item.env === env) ? current : [...current, { env, masked: "", readable: true }]);
     setCustom("");
   };
   return <section className="provider-keys">
     <header><div><span>API keys</span><h3>Keys stay in the secure store</h3><p>A key reaches the agent only through its process environment. Changing one restarts the local agent, so save it between turns.</p></div><strong>{stored.filter((item) => item.masked).length} stored</strong></header>
+    {lost.length > 0 && <p className="local-model-error" role="alert">{lost.length === 1 ? `${unreadableKeyNotice(slots.find((slot) => slot.env === lost[0].env)?.label ?? lost[0].env, RUNTIME_PLATFORM)} Emma kept it on disk and replaces it the moment you save a new one.` : `${lost.length} saved keys could not be read on this ${LOCAL_DEVICE}. Paste each one again. Emma kept them on disk and replaces each one the moment you save it.`}</p>}
     {(error || status) && <p className={error ? "local-model-error" : "local-model-status"} role="status">{error || status}</p>}
     <div className="provider-key-list">{slots.map((slot) => {
       const saved = stored.find((item) => item.env === slot.env && item.masked);
-      return <SettingsSection key={slot.env} title={slot.label} summary={saved ? saved.masked : "Not set"}><div className={`provider-key-row ${saved ? "set" : ""}`}>
+      const unreadable = stored.some((item) => item.env === slot.env && !item.readable);
+      const value = unreadable ? "Could not be read" : saved ? saved.masked : "Not set";
+      return <SettingsSection key={slot.env} title={slot.label} summary={value}><div className={`provider-key-row ${saved ? "set" : ""} ${unreadable ? "unreadable" : ""}`}>
         <BrandIcon brand={slot.brand} className="provider-mark" />
         <div><strong>{slot.label}</strong><small>{slot.detail}</small><code>{slot.env}</code>
+          {unreadable && <em className="provider-key-lost" role="alert">{unreadableKeyNotice(slot.label, RUNTIME_PLATFORM)}</em>}
           {slot.env === OPENROUTER_ENV && saved && <em className={`provider-key-balance ${outOfCredit(balance) || balance?.error ? "warn" : ""}`}>{balanceLine(balance)}{outOfCredit(balance) || balance?.freeTier ? <a href={OPENROUTER_CREDITS_URL} target="_blank" rel="noreferrer">Add credit ↗</a> : null}</em>}
         </div>
-        <span className="provider-key-value">{saved ? saved.masked : "Not set"}</span>
-        <label><span className="sr-only">{slot.label} API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={drafts[slot.env] ?? ""} placeholder={saved ? "Paste a replacement" : slot.hint} onChange={(event) => setDrafts((current) => ({ ...current, [slot.env]: event.target.value }))} /></label>
+        <span className="provider-key-value">{value}</span>
+        <label><span className="sr-only">{slot.label} API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={drafts[slot.env] ?? ""} placeholder={unreadable ? "Paste it again" : saved ? "Paste a replacement" : slot.hint} onChange={(event) => setDrafts((current) => ({ ...current, [slot.env]: event.target.value }))} /></label>
         <button type="button" disabled={busy || !draft(slot.env)} onClick={() => void save(slot.env, draft(slot.env))}>Save</button>
-        <button type="button" disabled={busy || !saved} onClick={() => void save(slot.env)}>Remove</button>
+        <button type="button" disabled={busy || (!saved && !unreadable)} onClick={() => void save(slot.env)}>Remove</button>
       </div></SettingsSection>;
     })}</div>
     <form className="provider-key-add" onSubmit={addCustom}><label>Another environment variable<input value={custom} maxLength={64} disabled={busy} placeholder="TOGETHER_API_KEY" onChange={(event) => setCustom(event.target.value)} /></label><button disabled={busy || !custom.trim()}>Add slot</button></form>

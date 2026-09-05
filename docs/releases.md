@@ -147,8 +147,14 @@ unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
 
 On Windows, the Setup executable is a Squirrel installer. It installs per user
 under `%LOCALAPPDATA%\Emma`, needs no administrator prompt, and the same
-`update.electronjs.org` feed serves it. Squirrel appends `/RELEASES` to the feed
-URL, and the feed answers with the `RELEASES` asset of the newest published
+`update.electronjs.org` feed serves it. There is no wizard: it shows one 420x260
+splash for about twenty seconds and then launches Emma, and
+[`installer-splash.mjs`](../desktop/scripts/installer-splash.mjs) writes that
+committed `desktop/assets/installer/emma-setup.gif` from the disk image's own
+palette, Bayer dither, bow mark and pixel type. Squirrel sizes the splash window
+to the GIF and shows it at 1:1, so rerun the script and commit the result after
+changing the artwork. Squirrel appends `/RELEASES` to the feed URL, and the feed
+answers with the `RELEASES` asset of the newest published
 `vX.Y.Z` release, rewriting the package name inside it into the full GitHub
 download URL of the matching `.nupkg`. Three asset rules follow from that and
 the release job enforces them:

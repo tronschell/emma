@@ -469,6 +469,7 @@ let overlayGrow = 0;
 
 const preload = path.join(__dirname, "preload.js");
 const renderer = path.join(app.getAppPath(), "dist-renderer/index.html");
+const windowsIcon = isWindows && !app.isPackaged ? path.join(app.getAppPath(), "assets", "emma.ico") : undefined;
 
 const DEV_BINARIES: Record<string, string> = {
   "emma-host": "target/debug/emma-host",
@@ -610,6 +611,7 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
   const window = new BrowserWindow({
     backgroundColor: "#0a0a0c",
     show: false,
+    ...(windowsIcon ? { icon: windowsIcon } : {}),
     ...options,
     webPreferences: {
       preload,
@@ -2873,7 +2875,8 @@ function credentialSlotsHeld(): CredentialSlot[] {
   const slots = new Map<string, CredentialSlot>();
   const put = (env: string, label: string, detail: string, hint: string) => {
     if (!env || slots.has(env)) return;
-    slots.set(env, { env, masked: stored.find((item) => item.env === env)?.masked ?? "", label, detail, hint });
+    const held = stored.find((item) => item.env === env);
+    slots.set(env, { env, masked: held?.masked ?? "", readable: held?.readable ?? true, label, detail, hint });
   };
   for (const item of providerCredentials) put(item.env, item.label, item.detail, item.hint);
   for (const plan of MODEL_PLANS) put(plan.credentialEnv, plan.label, plan.detail, plan.hint);

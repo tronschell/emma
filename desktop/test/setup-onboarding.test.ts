@@ -23,7 +23,7 @@ test("onboarding requires a verified OpenRouter key even when subscriptions are 
     balance: null as KeyBalance | null, checking: false, saving: false, error: "", stored: [], drafts: { OPENROUTER_API_KEY: "invalid" }, OPENROUTER_ENV: "OPENROUTER_API_KEY",
     reasonText: (reason: Error) => reason.message,
     window: { emma: {
-      saveCredential: async () => [{ env: "OPENROUTER_API_KEY", masked: "key" }],
+      saveCredential: async () => [{ env: "OPENROUTER_API_KEY", masked: "key", readable: true }],
       openRouterBalance: async () => ({ ...key, error: "OpenRouter rejected that key." }),
     } },
   });

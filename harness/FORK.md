@@ -39,7 +39,19 @@ and MCP client. It replaces the parts that tie fx to Vercel's hosted services:
   `text/event-stream` chat-completion chunks, and an endpoint that answers with
   anything else falls back to the buffered body path. Malformed tool-call
   replies and allocation failures release partially parsed calls and completion
-  fields exactly once.
+  fields exactly once. A router chain arrives as a comma-separated model, and
+  OpenRouter refuses a request that names more than three, so the chain's first
+  three become the `models` array and the rest are dropped.
+- **Windows gateway sockets.** Zig's Windows backend runs a socket read as an
+  AFD request that `shutdown` does not abort, so cancelling a stalled turn
+  waited for the peer, and it collapses connection refusal, reset, and local
+  disconnect into `error.Unexpected`, which the retry classifier could only
+  treat as retryable wholesale. On Windows every gateway request runs its
+  sockets through `gateway/cancellable_socket_io.zig`, which polls with
+  `WSAPoll` and rechecks the turn's cancel flag before each `recv` and `send`,
+  and reads `WSAGetLastError` itself, so cancellation lands within a poll
+  interval and refusal and reset arrive under their own names. POSIX keeps the
+  standard backend unchanged.
 - **Authentication.** Upstream's Vercel device OAuth, ChatGPT Codex OAuth, team
   selection, and credit balance are removed. Emma supplies a base URL, a model,
   and the *name* of an environment variable holding the credential; there is no
