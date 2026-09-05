@@ -8,9 +8,7 @@ import { execFileSync } from "node:child_process";
 import { hookRuns, matchesPluginQuery, parseHooksFile, parseHostedApps, parseMarketplace, parseMarketplaceSource, parsePluginInterface, parsePluginManifest, pluginCategories, type HookEvent } from "../shared/plugins";
 import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, setHookTrust, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
 import { loadImportedSkill, mirrorSkillsToHarness, parseMcpConfig, searchImportedSkills } from "../main/capabilities";
-import { isWindows } from "../main/platform";
-
-const POSIX_HOOKS = isWindows && "plugin hook fixtures are POSIX shell scripts";
+import { isWindows, shellBinary, windowsSystemExecutable } from "../main/platform";
 
 test("the plugins route stays lazy without making activity eager", () => {
   const app = readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8");
@@ -360,7 +358,7 @@ test("an npm package that unpacks larger than its ceiling is stopped before it f
     await mkdir(path.join(home, "package"), { recursive: true });
     await writeFile(path.join(home, "package", "index.js"), "x".repeat(64 * 1024));
     const tarball = path.join(home, "bundle.tgz");
-    execFileSync("tar", ["-czf", "bundle.tgz", "package"], { cwd: home });
+    execFileSync(isWindows ? windowsSystemExecutable("tar.exe") : "tar", ["-czf", "bundle.tgz", "package"], { cwd: home });
 
     const roomy = path.join(home, "roomy");
     await mkdir(roomy, { recursive: true });
@@ -378,7 +376,23 @@ test("an npm package that unpacks larger than its ceiling is stopped before it f
 const sessionStart = (command: string, matcher = "startup|resume", extra: Record<string, unknown> = {}) =>
   ({ SessionStart: [{ matcher, hooks: [{ type: "command", command, statusMessage: "Waking up", ...extra }] }] });
 
-test("a plugin's hooks stay off until they are reviewed, run once trusted, and lose that trust the moment the definition changes", { skip: POSIX_HOOKS }, async () => {
+const hookScript = isWindows ? {
+  append: (file: string, text: string) => `Add-Content -LiteralPath '${file}' -NoNewline -Value '${text}'`,
+  writePluginRoot: 'Set-Content -LiteralPath "$env:PLUGIN_DATA\\root.txt" -NoNewline -Value $env:CLAUDE_PLUGIN_ROOT',
+  fail: "[Console]::Error.WriteLine('no such thing'); exit 3",
+  leak: (file: string) => `Start-Process -WindowStyle Hidden -FilePath '${shellBinary()}' -ArgumentList '-NoLogo','-NonInteractive','-Command','Start-Sleep -Seconds 2; Set-Content -LiteralPath ''${file}'' -Value leak'; Start-Sleep -Seconds 5`,
+  escapes: 'Set-Content -LiteralPath "$env:PLUGIN_DATA\\quoted.txt" -NoNewline -Value "$env:PLUGIN_ROOT"; Set-Content -LiteralPath "$env:PLUGIN_DATA\\bare.txt" -NoNewline -Value $env:PLUGIN_ROOT; Set-Content -LiteralPath "$env:PLUGIN_DATA\\percent.txt" -NoNewline -Value \'%PLUGIN_ROOT%\'',
+  injected: (name: string) => `store & New-Item -Name ${name} -ItemType File; #`,
+} : {
+  append: (file: string, text: string) => `printf '${text}' >> "${file}"`,
+  writePluginRoot: 'printf \'%s\' "$CLAUDE_PLUGIN_ROOT" > "$PLUGIN_DATA/root.txt"',
+  fail: "printf 'no such thing' >&2; exit 3",
+  leak: (file: string) => `(sleep 2; printf 'leak' > "${file}") & wait`,
+  escapes: 'printf "%s" "${PLUGIN_ROOT}" > "$PLUGIN_DATA/quoted.txt"; printf "%s" ${PLUGIN_ROOT} > "$PLUGIN_DATA/bare.txt"; printf \'%s\' \'%PLUGIN_ROOT%\' > "$PLUGIN_DATA/percent.txt"',
+  injected: (name: string) => `store; touch ${name} #`,
+};
+
+test("a plugin's hooks stay off until they are reviewed, run once trusted, and lose that trust the moment the definition changes", async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-hooks-")));
   try {
     const userData = path.join(home, "user-data");
@@ -386,8 +400,8 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
     const fired = path.join(home, "fired.log");
     await mkdir(userData, { recursive: true });
     const root = await seedHookPlugin(shared, {
-      ...sessionStart(`printf 'x' >> "${fired}"; printf '%s' "$CLAUDE_PLUGIN_ROOT" > "$PLUGIN_DATA/root.txt"`),
-      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "printf 'never' >> \"" + fired + "\"" }] }],
+      ...sessionStart(`${hookScript.append(fired, "x")}; ${hookScript.writePluginRoot}`),
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: hookScript.append(fired, "never") }] }],
     });
     const input = { source: "startup", cwd: home };
 
@@ -413,18 +427,18 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
     assert.deepEqual(await runPluginHooks(userData, "SessionStart", { source: "compact", cwd: home }), []);
     assert.equal(await readFile(fired, "utf8"), "x");
 
-    await writeFile(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: sessionStart(`printf 'y' >> "${fired}"`) }));
+    await writeFile(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: sessionStart(hookScript.append(fired, "y")) }));
     assert.deepEqual((await readCatalog(userData)).installed[0].hooks.map((hook) => hook.trusted), [false]);
     assert.deepEqual(await runPluginHooks(userData, "SessionStart", input), []);
     assert.equal(await readFile(fired, "utf8"), "x");
 
     await trustPluginHooks(userData, "hooked/watcher", false);
-    await writeFile(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: sessionStart("printf 'no such thing' >&2; exit 3") }));
+    await writeFile(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: sessionStart(hookScript.fail) }));
     await trustPluginHooks(userData, "hooked/watcher", true);
     assert.deepEqual(await runPluginHooks(userData, "SessionStart", input), ["watcher · SessionStart hook exited 3 — no such thing"]);
 
     const leaked = path.join(home, "leaked");
-    await writeFile(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: sessionStart(`(sleep 2; printf 'leak' > "${leaked}") & wait`, "startup|resume", { timeout: 1 }) }));
+    await writeFile(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: sessionStart(hookScript.leak(leaked), "startup|resume", { timeout: 1 }) }));
     await trustPluginHooks(userData, "hooked/watcher", true);
     assert.deepEqual(await runPluginHooks(userData, "SessionStart", input), ["watcher · SessionStart hook ran past 1s and was stopped"]);
     await new Promise((done) => setTimeout(done, 2500));
@@ -437,16 +451,14 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
   }
 });
 
-test("a plugin root that reads like a shell command is expanded as a value, never as a second command", { skip: POSIX_HOOKS }, async () => {
+test("a plugin root that reads like a shell command is expanded as a value, never as a second command", async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-hook-escape-")));
   try {
     const userData = path.join(home, "user-data");
     const pwned = path.join(home, "pwned");
-    const shared = path.join(home, `store; touch ${pwned} #`);
+    const shared = path.join(home, hookScript.injected("pwned"));
     await mkdir(userData, { recursive: true });
-    const root = await seedHookPlugin(shared, sessionStart(
-      'printf "%s" "${PLUGIN_ROOT}" > "$PLUGIN_DATA/quoted.txt"; printf "%s" ${PLUGIN_ROOT} > "$PLUGIN_DATA/bare.txt"',
-    ));
+    const root = await seedHookPlugin(shared, sessionStart(hookScript.escapes));
 
     await addMarketplace(userData, { source: shared });
     await installPlugin(userData, "hooked", "watcher");
@@ -456,6 +468,7 @@ test("a plugin root that reads like a shell command is expanded as a value, neve
     const data = path.join(userData, "plugin-data", "hooked", "watcher");
     assert.equal(await readFile(path.join(data, "quoted.txt"), "utf8"), root);
     assert.equal(existsSync(path.join(data, "bare.txt")), true);
+    assert.equal(await readFile(path.join(data, "percent.txt"), "utf8"), "%PLUGIN_ROOT%");
     assert.equal(existsSync(pwned), false);
   } finally {
     await rm(home, { recursive: true, force: true });

@@ -415,7 +415,7 @@ test("a folder a phone names is granted only once someone at the Mac approves it
   const dispatch = dispatchOn({
     path,
     homedir: () => home,
-    realpathSync: (value: string) => real[value] ?? value,
+    realpathSync: Object.assign((value: string) => real[value] ?? value, { native: (value: string) => real[value] ?? value }),
     statSync: () => ({ isDirectory: () => true }),
     samePath: (left: string, right: string) => left === right,
     pathInside: (root: string, target: string) => target === root || target.startsWith(`${root}/`),
