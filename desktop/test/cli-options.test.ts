@@ -7,7 +7,7 @@ import { CLI_HARNESSES, cliHarness, cliOptions, validateCliOptions } from "../sh
 import { CliRuns } from "../main/cli";
 import { codexEfforts, modelTableIds } from "../main/cli-models";
 import { parseToolArgs } from "../main/tools";
-import { NO_MULTILINE_PROMPT, writeFakeCli } from "./fake-cli";
+import { writeFakeCli } from "./fake-cli";
 
 test("harnesses pass native model and effort flags on first and follow-up turns", () => {
   for (const [id, flag, effort] of [["claude", "--effort", "max"], ["codex", "--config", "max"], ["pi", "--thinking", "xhigh"], ["opencode", "--variant", "custom-deep"], ["antigravity", "--effort", "high"]]) {
@@ -43,7 +43,7 @@ test("tool options preserve exact selections, explicit resets, and reject malfor
   assert.deepEqual(modelTableIds("Model  Name\nclaude-sonnet-4-6  Claude Sonnet\ngemini-3.8-flash-high   Gemini\n"), ["claude-sonnet-4-6", "gemini-3.8-flash-high"]);
 });
 
-test("a harness chain keeps independent model and effort selections across resume and resets", { skip: NO_MULTILINE_PROMPT }, async () => {
+test("a harness chain keeps independent model and effort selections across resume and resets", async () => {
   const directory = await mkdtemp(join(tmpdir(), "emma-cli-options-"));
   const binary = await writeFakeCli(directory, `process.stdout.write(JSON.stringify({args:process.argv.slice(2),effort:process.env.CLAUDE_CODE_EFFORT_LEVEL}));\n`);
   const runs = new CliRuns(() => undefined);

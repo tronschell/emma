@@ -694,7 +694,7 @@ function runHook(hook: PluginHook, root: string, data: string, cwd: string, inpu
   return new Promise((resolve) => {
     const child = spawn(isWindows ? shellBinary() : "/bin/sh", isWindows ? shellArguments(hook.command, false) : ["-c", hook.command], {
       cwd,
-      detached: true,
+      detached: !isWindows,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       env: {

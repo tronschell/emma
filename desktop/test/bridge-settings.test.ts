@@ -86,7 +86,7 @@ test("a folder is only connected from a phone once someone at the Mac has said s
   const body = caseBody("addFolder");
   const grant = body.indexOf("folders!.add(");
   assert.ok(grant > 0, "addFolder no longer grants anything");
-  for (const guard of ["path.isAbsolute(asked)", "realpathSync(asked)", "isDirectory()", "pathInside(homedir(), directory)", "await confirmOnMac(", "if (!granted) throw new Error("]) {
+  for (const guard of ["path.isAbsolute(asked)", "realpathSync.native(asked)", "isDirectory()", "pathInside(homedir(), directory)", "await confirmOnMac(", "if (!granted) throw new Error("]) {
     const at = body.indexOf(guard);
     assert.ok(at > 0 && at < grant, `addFolder grants the folder without ${guard} deciding first`);
   }

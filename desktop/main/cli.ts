@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CLI_HARNESSES, cliHarness, terminalText, type CliRun, cliInputIds, type CliInput, type CliOptions, validateCliOptions } from "../shared/cli";
 import { validateCatalogEffort } from "./cli-models";
 import { cliPlan } from "../shared/settings";
-import { findExecutable, isWindows, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
+import { findExecutable, isWindows, shellArguments, shellBinary, spawnCommand, terminateProcessTree, windowsShimTarget } from "./platform";
 
 const MAX_OUTPUT = 256 * 1024;
 const MAX_RUNS = 12;
@@ -190,7 +190,7 @@ export class CliRuns {
     return Promise.all([...this.runs.values()].map((entry) => this.stopEntry(entry))).then(() => undefined);
   }
 
-  private turn(entry: Entry, binary: string, args: string[], unattended: string[]): Promise<void> {
+  private async turn(entry: Entry, binary: string, args: string[], unattended: string[]): Promise<void> {
     const argv = entry.unattended ? [...unattended, ...args] : args;
     entry.result = "";
     entry.resultTruncated = false;
@@ -200,8 +200,9 @@ export class CliRuns {
     entry.turnStartedAt = Date.now();
     entry.endedAt = undefined;
     this.append(entry, `\n$ ${[binary.split(/[\\/]/).pop(), ...argv].join(" ")}\n`);
+    const shim = await windowsShimTarget(binary);
     return new Promise((resolve) => {
-      const child = spawnCommand(binary, argv, {
+      const child = spawnCommand(shim?.command ?? binary, shim ? [...shim.args, ...argv] : argv, {
         cwd: entry.cwd,
         env: { ...process.env, PATH: this.cachedPath ?? process.env.PATH ?? "", ...(entry.cli === "claude" && entry.effort ? { CLAUDE_CODE_EFFORT_LEVEL: entry.effort } : {}) },
         stdio: ["ignore", "pipe", "pipe"],

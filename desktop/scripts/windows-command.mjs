@@ -1,3 +1,5 @@
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const windowsMeta = /([()\][%!^"`<>&|;, *?])/g;
@@ -24,4 +26,20 @@ export function commandShimArguments(command, args) {
 export function windowsSystemExecutable(name, environment = process.env) {
   const root = [environment.SystemRoot, environment.WINDIR].find((value) => value && path.win32.isAbsolute(value)) || "C:\\Windows";
   return path.win32.join(root, "System32", name);
+}
+
+export function squirrelStagingDirectory() {
+  return mkdtempSync(path.join(tmpdir(), "emma-squirrel-"));
+}
+
+export function publishStagedBuild(staging, out, names) {
+  mkdirSync(out, { recursive: true });
+  for (const name of names) {
+    const source = path.join(staging, name);
+    if (!existsSync(source)) throw new Error(`Missing staged Windows output: ${source}`);
+    const target = path.join(out, name);
+    rmSync(target, { recursive: true, force: true });
+    cpSync(source, target, { recursive: true });
+  }
+  rmSync(staging, { recursive: true, force: true });
 }
