@@ -351,14 +351,15 @@ jobs:
           $root = Join-Path $env:LOCALAPPDATA 'Emma'
           $installed = Join-Path $root "app-$version"
           Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-          Start-Process -FilePath (Join-Path $root 'Update.exe') -ArgumentList '--uninstall', '-s'
-          $deadline = (Get-Date).AddMinutes(5)
+          $updater = Start-Process -FilePath (Join-Path $root 'Update.exe') -ArgumentList '--uninstall', '-s' -PassThru
+          $updater | Wait-Process -Timeout 300 -ErrorAction SilentlyContinue
+          Write-Output "Update.exe exited $($updater.HasExited) with code $($updater.ExitCode)"
+          $deadline = (Get-Date).AddMinutes(3)
           while ((Test-Path $installed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-          if (Test-Path $installed) {
-            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | Format-Table ProcessId, ExecutablePath
-            Get-ChildItem -Path $root -Filter '*.log' | ForEach-Object { Write-Output $_.FullName; Get-Content $_.FullName -Tail 40 }
-            throw "Uninstall left $installed behind"
-          }
+          Get-ChildItem -Path $root -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | Format-Table ProcessId, ExecutablePath
+          Get-ChildItem -Path $root, (Join-Path $env:LOCALAPPDATA 'SquirrelTemp') -Recurse -Filter '*.log' -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_.FullName; Get-Content $_.FullName -Tail 60 }
+          if (Test-Path $installed) { throw "Uninstall left $installed behind" }
           Write-Output "Uninstalled $installed"
 
       - name: upload the Windows install smoke screenshot
