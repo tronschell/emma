@@ -113,7 +113,7 @@ cargo fmt --all -- --check
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings
-cd harness; zig build test
+(cd harness && zig build test)
 ```
 
 `npm run check` is test + typecheck + lint + renderer build. Never run two of
