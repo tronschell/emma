@@ -351,10 +351,11 @@ jobs:
           $root = Join-Path $env:LOCALAPPDATA 'Emma'
           $installed = Join-Path $root "app-$version"
           try { Get-Process Emma -ErrorAction Stop | Stop-Process -Force } catch {}
-          Start-Process -FilePath (Join-Path $root 'Update.exe') -ArgumentList '--uninstall', '-s' -Wait
+          Start-Process -FilePath (Join-Path $root 'Update.exe') -ArgumentList '--uninstall', '-s'
           $deadline = (Get-Date).AddMinutes(5)
           while ((Test-Path $installed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
           if (Test-Path $installed) { throw "Uninstall left $installed behind" }
+          Write-Output "Uninstalled $installed"
 
       - name: upload the Windows install smoke screenshot
         if: always()
