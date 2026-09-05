@@ -23,7 +23,7 @@ const snapshot_digest_hex_len = Sha256.digest_length * 2;
 const transfer_buffer_bytes = 64 * 1024;
 const image_normalization_timeout = std.Io.Clock.Duration{
     .clock = .awake,
-    .raw = .fromSeconds(5),
+    .raw = .fromSeconds(if (builtin.os.tag == .windows) 20 else 5),
 };
 
 pub fn findById(

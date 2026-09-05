@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const background_runtime = @import("../background/background_runtime.zig");
 const change_tracker = @import("change_tracker.zig");
@@ -12,7 +13,10 @@ const Allocator = std.mem.Allocator;
 pub const Limits = struct {
     pub const scoped_rules: usize = 32;
     pub const project_omission_records: usize = 32;
-    pub const git_read_budget_ns: i128 = 50 * std.time.ns_per_ms;
+    pub const git_read_budget_ns: i128 = if (builtin.os.tag == .windows)
+        500 * std.time.ns_per_ms
+    else
+        50 * std.time.ns_per_ms;
     pub const git_metadata_file_bytes: usize = 4096;
     pub const git_config_file_bytes: usize = 16 * 1024;
     pub const git_index_file_bytes: u64 = 16 * 1024;
@@ -598,7 +602,11 @@ fn snapshotEntrypointLayout(alloc: Allocator) ![]u8 {
 
 test "context limits preserve the established provider policy" {
     try std.testing.expectEqual(@as(usize, 32), Limits.scoped_rules);
-    try std.testing.expectEqual(@as(i128, 50 * std.time.ns_per_ms), Limits.git_read_budget_ns);
+    const expected_git_read_budget_ns: i128 = if (builtin.os.tag == .windows)
+        500 * std.time.ns_per_ms
+    else
+        50 * std.time.ns_per_ms;
+    try std.testing.expectEqual(expected_git_read_budget_ns, Limits.git_read_budget_ns);
     try std.testing.expectEqual(@as(usize, 4096), Limits.git_metadata_file_bytes);
     try std.testing.expectEqual(@as(usize, 16 * 1024), Limits.git_config_file_bytes);
     try std.testing.expectEqual(@as(u64, 16 * 1024), Limits.git_index_file_bytes);
