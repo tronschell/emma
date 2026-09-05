@@ -8,7 +8,6 @@ import path from "node:path";
 import { indexProgress, type SemanticGrepFolder, type SemanticGrepStatus } from "../shared/semantic-grep";
 import { hostedEmbeddingModel, type HarnessExperiments, type HostedEmbeddingModel } from "../shared/settings";
 
-export const ZG_ENTRY = "node_modules/@zvec/zvec-grep/dist/cli/index.js";
 const INDEX_DIR = ".zvec-grep";
 const REMOTE_MODEL = "qwen/text-embedding-v4";
 const DIMENSIONS = 1024;
@@ -75,6 +74,33 @@ export function embeddingProxy(model: HostedEmbeddingModel, token: string, key: 
   });
 }
 
+export function embeddingModelRequest(value: unknown): HostedEmbeddingModel {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The embedding model is invalid");
+  const id = (value as { id?: unknown }).id;
+  const model = typeof id === "string" ? hostedEmbeddingModel(id) : undefined;
+  if (!model) throw new Error("The embedding model is invalid");
+  return model;
+}
+
+export async function verifyEmbeddingKey(model: HostedEmbeddingModel, key: string): Promise<{ ok: boolean; detail: string }> {
+  if (!key) return { ok: false, detail: `Add ${model.credentialEnv} first.` };
+  try {
+    const response = await fetch(model.endpoint, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: model.model, input: ["emma"], encoding_format: "float", ...(model.acceptsDimensions ? { dimensions: DIMENSIONS } : {}) }),
+    });
+    const json = (await response.json()) as { data?: { embedding?: unknown }[]; error?: { message?: unknown } };
+    if (!response.ok) return { ok: false, detail: String(json.error?.message ?? `${model.label} answered ${response.status}`).slice(0, 200) };
+    const embedding = json.data?.[0]?.embedding;
+    const length = Array.isArray(embedding) ? embedding.length : 0;
+    if (length < DIMENSIONS) return { ok: false, detail: `${model.label} returns ${length} dimensions; zvec-grep needs ${DIMENSIONS}` };
+    return { ok: true, detail: `${model.label} answered with ${length} dimensions` };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function normalize(vector: number[]): number[] {
   const norm = Math.sqrt(vector.reduce((sum, n) => sum + n * n, 0)) || 1;
   return vector.map((n) => n / norm);
@@ -105,9 +131,14 @@ export class SemanticGrep {
   private failedAt = new Map<string, number>();
   private rebuild = new Set<string>();
   private experiments?: HarnessExperiments;
+  private started = false;
   private proxy?: { server: http.Server; model: HostedEmbeddingModel; token: string; error: string };
 
-  constructor(private readonly node: string, private readonly entry: string, readonly available: boolean, private readonly port: number, private readonly onChange: () => void) {}
+  constructor(private readonly node: string, private readonly entry: () => string, private readonly port: number, private readonly onChange: () => void) {}
+
+  get available(): boolean {
+    return this.entry() !== "";
+  }
 
   status(): SemanticGrepStatus {
     return { available: this.available, enabled: this.experiments?.semanticGrep === true, model: this.experiments?.embeddingModel ?? "", folders: [...this.folders.values()] };
@@ -126,12 +157,12 @@ export class SemanticGrep {
       return "";
     }
     const embedding = this.embedding(experiments.embeddingModel);
-    if (!key) return semanticGrepOption(this.node, this.entry, embedding);
+    if (!key) return semanticGrepOption(this.node, this.entry(), embedding);
     const known = this.folders.get(key);
     if (known?.state === "ready" && !existsSync(path.join(key, INDEX_DIR))) this.folders.delete(key);
     const folder = this.folders.get(key);
     if (!folder || (folder.state === "failed" && Date.now() - (this.failedAt.get(key) ?? 0) >= RETRY_MS)) this.index(key, experiments.embeddingModel);
-    return this.folders.get(key)?.state === "ready" ? semanticGrepOption(this.node, this.entry, embedding) : "";
+    return this.folders.get(key)?.state === "ready" ? semanticGrepOption(this.node, this.entry(), embedding) : "";
   }
 
   apply(experiments: HarnessExperiments) {
@@ -152,12 +183,18 @@ export class SemanticGrep {
       this.onChange();
     }
     this.serve(experiments);
-    if (experiments.semanticGrep && (!previous?.semanticGrep || changed)) this.restartDaemon(experiments);
-    if (!experiments.semanticGrep && previous?.semanticGrep) this.stopDaemon();
+    if (experiments.semanticGrep && (!this.started || changed)) {
+      this.started = true;
+      this.restartDaemon(experiments);
+    }
+    if (!experiments.semanticGrep && this.started) {
+      this.started = false;
+      this.stopDaemon();
+    }
   }
 
   stop() {
-    if (this.available && this.experiments?.semanticGrep) spawnSync(this.node, [this.entry, "server", "off"], { env: this.env(), timeout: 5000, windowsHide: true });
+    if (this.started && this.available) spawnSync(this.node, [this.entry(), "server", "off"], { env: this.env(), timeout: 5000, windowsHide: true });
     this.closeProxy();
   }
 
@@ -202,7 +239,7 @@ export class SemanticGrep {
   }
 
   private run(args: string[], extra: Record<string, string> = {}) {
-    return spawn(this.node, [this.entry, ...args], { env: { ...this.env(), ...extra }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    return spawn(this.node, [this.entry(), ...args], { env: { ...this.env(), ...extra }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   }
 
   private restartDaemon(experiments: HarnessExperiments) {

@@ -21,6 +21,18 @@ git switch -c feat/my-change origin/dev
 gh pr create --base dev
 ```
 
+## The zvec-grep tools release
+
+`tools.yml` is a separate lane with its own tag namespace. It runs on
+`workflow_dispatch` and on pushes to `dev` that touch
+`desktop/shared/zvec-grep.ts` or either zvec-grep script, packs the tree on
+`macos-15` and `windows-2025`, and publishes
+`zvec-grep-<version>-<platform>-<arch>.tar.gz` plus a `.sha256` to a release
+tagged `zvec-grep-v<version>`, created with `gh release create --latest=false` so
+it never displaces an app release. Assets are re-uploaded with `--clobber`, and
+bumping `ZVEC_GREP_VERSION` is what creates the next tag. The app downloads from
+that release; `EMMA_TOOLS_URL` repoints the origin for a local rehearsal.
+
 ## Release a version
 
 1. On `dev`, bump the root `package.json` version in a normal PR, or run
@@ -39,6 +51,42 @@ gh pr create --base dev
 There is no changelog file, release PR, manifest, or tag to manage. The
 GitHub Releases page is the changelog. Merging `main` again with an unchanged
 version publishes nothing.
+
+## Install smoke test
+
+Both packaging jobs install what they just built and launch it before anything
+is uploaded. `package-win` runs the Squirrel installer with `-s`, waits for
+`%LOCALAPPDATA%\Emma\app-X.Y.Z\Emma.exe` and `Update.exe`, confirms the Start
+Menu shortcut, and finishes with `Update.exe --uninstall -s`. Squirrel cannot
+delete the `Update.exe` it is running from, so it marks the install root with a
+`.dead` file and hands the removal to the next reboot; the step therefore
+requires the updater to exit zero and the versioned directory to be either gone
+or marked dead. `package-mac` mounts the disk image with
+`hdiutil attach -nobrowse -readonly`, copies `Emma.app` into `RUNNER_TEMP`,
+detaches, and deletes the copy afterwards. The unsigned copy is launched through
+`Emma.app/Contents/MacOS/Emma` rather than `open`, so Gatekeeper never gets a
+say.
+
+Both then run [`install-smoke.mjs`](../desktop/scripts/install-smoke.mjs), which
+starts the installed binary with a scratch `EMMA_DATA_DIR` and `--user-data-dir`
+under `RUNNER_TEMP`, reads the real port out of `DevToolsActivePort` because the
+app forces `remote-debugging-port=0`, checks `/json/version` and `/json/list`,
+requires a page target ending in `dist-renderer/index.html`, evaluates
+`document.querySelector(".app-shell")?.className` over the DevTools WebSocket,
+saves a `Page.captureScreenshot`, and quits the app. Every wait is bounded, and
+the runners have no GPU so the app is started with `--disable-gpu`. The
+screenshots upload as the `install-smoke-macos` and `install-smoke-windows`
+artifacts.
+
+Packaging does not run on pull requests against `dev`, so dispatch it by hand to
+exercise a packaging or installer change before promoting:
+
+```sh
+gh workflow run ci.yml --ref my-branch -f package=true
+```
+
+That runs `package-mac` and `package-win`, with the smoke test, against the
+dispatched ref. The pull request gates are untouched by a dispatch.
 
 ## Automatic changelog
 

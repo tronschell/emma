@@ -29,6 +29,7 @@ The vault is outside both and is never deleted.
 | `EMMA_PROVIDER_CHAT_URL` | `emma-cli` | Chat-completions URL override ([emma_openai.zig:41](../harness/src/gateway/emma_openai.zig#L41)). Empty is treated as unset. | OpenRouter |
 | `EMMA_OPENROUTER_ZDR` | `emma-cli` | Demands zero-data-retention routing for OpenRouter harness requests. A selected model with no qualifying endpoint fails. Settings → Models toggles it and closes idle harnesses so the next spawn sees it. | unset → off |
 | `EMMA_UPDATE_URL` | Electron main | Origin of the Squirrel.Mac update server, replacing `https://update.electronjs.org`. Origin only — scheme and host, no path or query — and `http://` only on loopback, or it is discarded ([shared/update.ts](../desktop/shared/update.ts)). The feed is that origin plus `/tronschell/emma/darwin-arm64/<version>` | unset → `https://update.electronjs.org` |
+| `EMMA_TOOLS_URL` | Electron main | Origin the on-demand zvec-grep download is fetched from, replacing `https://github.com`. Validated exactly like `EMMA_UPDATE_URL` — origin only, and `http://` only on loopback — and ignored otherwise. The asset is that origin plus `/tronschell/emma/releases/download/zvec-grep-v<version>/zvec-grep-<version>-<platform>-<arch>.tar.gz`, with `.sha256` beside it | unset → `https://github.com` |
 | `EMMA_UPGRADE_BASE_URL` | `emma-cli` | Self-update CDN base. Discarded unless it is loopback HTTP with an explicit port and no path, query or fragment — so self-update is off in practice, and Emma ships `emma-cli` in the bundle anyway. | unset → disabled |
 
 `EMMA_UPDATE_FAKE` is a development-only notice preview: an unpackaged build
@@ -38,8 +39,9 @@ Use two signed disposable bundles and a local `EMMA_UPDATE_URL` feed for a real
 installation rehearsal; see [releases.md](releases.md).
 
 `EMMA_KNOWLEDGE_DIR` no longer exists. Neither does the `~/Documents/Emma Knowledge`
-mirror it pointed at — the vault replaced both. There is no `EMMA_TOOLS`: a
-`grep EMMA_[A-Z_]*` matches it inside `MAX_EMMA_TOOLS`, a plain constant in
+mirror it pointed at — the vault replaced both. `EMMA_TOOLS_URL` is the only
+`EMMA_TOOLS`-shaped name: a bare `EMMA_TOOLS` matches only inside
+`MAX_EMMA_TOOLS`, a plain constant in
 [capabilities.ts:19](../desktop/main/capabilities.ts#L19).
 
 `EMMA_CDP_PORT` is a development helper variable, read only by
@@ -207,6 +209,7 @@ Scheduled jobs are `emma-scheduled-job-format: 4`.
 | `marketplaces/.remote/<marketplace>/<plugin>/` | | A plugin whose entry points elsewhere: cloned there, or unpacked under `package/` from `npm pack`. Replaced wholesale on reinstall |
 | `marketplaces/emma/` | | The marketplace Emma writes into: `.agents/plugins/marketplace.json` plus `plugins/<name>/` per `write_plugin` |
 | `update-ready.json` | | `{version}` of an update Squirrel downloaded, so the notice survives a quit. Deleted once the running version is no longer older ([update.ts](../desktop/main/update.ts)) |
+| `vendor/zvec-grep/<version>/` | | The zvec-grep tree Settings → Harness downloaded, one directory per version, pruned to the newest after a successful install. Outside the app bundle so updates reuse it; the vector indexes live in `~/.zvec-grep` and each folder's `.zvec-grep/` and never move ([zvec-grep.ts](../desktop/main/zvec-grep.ts)) |
 | `harness/` | | `emma-cli`'s entire `HOME` — see below |
 
 Chromium adds `Cache`, `Code Cache`, `Cookies`, `Local Storage`,

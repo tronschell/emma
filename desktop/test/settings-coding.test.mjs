@@ -34,12 +34,58 @@ test("review and semantic search hide inactive configuration without clearing sa
   assert.ok(!off.some((node) => node.type === "model-picker"));
   const on = nodes(draw("ReviewPanel", reviewBindings, { ...reviewProps, settings: { review: { enabled: true, model: "saved-model" } } }));
   assert.equal(on.find((node) => node.type === "model-picker").props.model, "saved-model");
-  const bindings = { useSemanticGrepStatus: () => ({ available: true, folders: [] }), hostedEmbeddingModel: () => ({ credentialEnv: "HOSTED_KEY" }), LOCAL_EMBEDDING_MODELS: [], HOSTED_EMBEDDING_MODELS: [] };
+  const bindings = {
+    useSemanticGrepStatus: () => ({ available: true, folders: [] }),
+    useZvecGrepStatus: () => ({ phase: "ready", version: "0.2.1", bytes: 0, total: 0, detail: "" }),
+    ZvecGrepCard: "zvec-card",
+    EmbeddingAdvice: "embedding-advice",
+    EmbeddingKeyRow: "embedding-key",
+    hostedEmbeddingModel: () => ({ credentialEnv: "HOSTED_KEY", id: "hosted", label: "Hosted" }),
+    LOCAL_EMBEDDING_MODELS: [],
+    HOSTED_EMBEDDING_MODELS: [],
+  };
   const props = { settings: { harnessExperiments: { semanticGrep: false, embeddingModel: "hosted" } }, onChange: async () => {}, busy: false };
   const inactive = nodes(draw("SemanticGrepPanel", bindings, props));
   assert.ok(!inactive.some((node) => node.type === "select"));
+  assert.ok(!inactive.some((node) => node.type === "zvec-card"));
   assert.doesNotMatch(JSON.stringify(inactive), /HOSTED_KEY/);
   const active = nodes(draw("SemanticGrepPanel", bindings, { ...props, settings: { harnessExperiments: { semanticGrep: true, embeddingModel: "hosted" } } }));
   assert.equal(active.find((node) => node.type === "select").props.value, "hosted");
-  assert.match(JSON.stringify(active), /Indexed file contents and search queries are sent/);
+  assert.ok(active.some((node) => node.type === "zvec-card"));
+  assert.equal(active.find((node) => node.type === "embedding-key").props.model.credentialEnv, "HOSTED_KEY");
+});
+
+test("the zvec-grep card offers a download and the recommendation applies a model in one click", () => {
+  const card = {
+    LOCAL_DEVICE: "PC",
+    RUNTIME_PLATFORM: "win32",
+    sizeLabel: () => "440 MB",
+    zvecGrepDownloadBytes: () => 1,
+    zvecGrepPercent: () => 42,
+    zvecGrepPhaseLabel: { missing: "Not downloaded", downloading: "Downloading", verifying: "Checking", extracting: "Unpacking", ready: "Installed", failed: "Failed" },
+    zvecGrepProgressLabel: () => "42 MB of 440 MB",
+  };
+  const missing = nodes(draw("ZvecGrepCard", card, { tool: { phase: "missing", version: "0.2.1", bytes: 0, total: 0, detail: "" }, busy: false }));
+  assert.equal(missing.filter((node) => node.type === "button").length, 1);
+  assert.match(JSON.stringify(missing), /Download/);
+  const busy = nodes(draw("ZvecGrepCard", card, { tool: { phase: "downloading", version: "0.2.1", bytes: 1, total: 2, detail: "" }, busy: false }));
+  assert.match(JSON.stringify(busy), /Cancel/);
+  assert.match(JSON.stringify(busy), /42 MB of 440 MB/);
+  const failed = nodes(draw("ZvecGrepCard", card, { tool: { phase: "failed", version: "0.2.1", bytes: 0, total: 0, detail: "checksum did not match" }, busy: false }));
+  assert.match(JSON.stringify(failed), /Retry/);
+  assert.match(JSON.stringify(failed), /checksum did not match/);
+  const ready = nodes(draw("ZvecGrepCard", card, { tool: { phase: "ready", version: "0.2.1", bytes: 0, total: 0, detail: "" }, busy: false }));
+  assert.equal(ready.filter((node) => node.type === "button").length, 0);
+  assert.match(JSON.stringify(ready), /Installed · v/);
+  let used = "";
+  const advice = nodes(draw("EmbeddingAdvice", {
+    LOCAL_DEVICE: "PC",
+    gigabytes: (bytes) => bytes,
+    embeddingModelLabel: (id) => id,
+    recommendEmbeddingModel: () => ({ id: "local/embeddinggemma-300m", reason: "plenty of video memory" }),
+  }, { facts: { gpu: "NVIDIA GeForce RTX 5080", vramBytes: 16, memoryBytes: 64, cores: 24 }, chosen: "local/potion-code-16m-v2", busy: false, onUse: (id) => used = id }));
+  assert.match(JSON.stringify(advice), /Recommended for this /);
+  assert.match(JSON.stringify(advice), /NVIDIA GeForce RTX 5080/);
+  advice.find((node) => node.type === "button").props.onClick();
+  assert.equal(used, "local/embeddinggemma-300m");
 });
