@@ -1589,11 +1589,14 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     case "computer": {
       ensureComputerRun(turn.threadId);
       const said = await computerRuntime!.execute(turn.threadId, args.args, async (target, signal) => {
+        const starting = !("pid" in target);
         const allowed = await agents!.question({
           threadId: turn.threadId,
           tool: "computer",
-          summary: `Allow Emma to use ${target.name}?`,
-          detail: `${target.id}\n${target.path}\nProcess ${target.pid}\n\nAllow Emma to read and control this app in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`,
+          summary: starting ? `Allow Emma to open ${target.name}?` : `Allow Emma to use ${target.name}?`,
+          detail: starting
+            ? `${target.target}\n\nAllow Emma to start this installed app and then read and control it in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`
+            : `${target.id}\n${target.path}\nProcess ${target.pid}\n\nAllow Emma to read and control this app in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`,
         }, { humanOnly: true, signal });
         if (allowed && !signal.aborted) openRunBanner(turn.threadId, `${target.name} · background app control`);
         return allowed;
