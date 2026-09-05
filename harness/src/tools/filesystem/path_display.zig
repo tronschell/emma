@@ -12,9 +12,9 @@ pub fn workspaceRelative(
 }
 
 pub fn slashSeparated(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
-    if (comptime std.fs.path.sep == '/') return path;
-    if (std.fs.path.isAbsolute(path)) return path;
     const out = try arena.dupe(u8, path);
+    if (comptime std.fs.path.sep == '/') return out;
+    if (std.fs.path.isAbsolute(path)) return out;
     std.mem.replaceScalar(u8, out, std.fs.path.sep, '/');
     return out;
 }

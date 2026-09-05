@@ -828,6 +828,7 @@ test "Windows agent shell is an absolute PowerShell" {
 }
 
 test "Windows captured profiles run PowerShell without a profile or a prompt" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     const clean = try capturedInvocation(
         .{ .clean = windows_powershell_path },
         "Get-ChildItem",
