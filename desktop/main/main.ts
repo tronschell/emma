@@ -624,8 +624,8 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
     const selected = params.selectionText.trim();
     const menu = Menu.buildFromTemplate([
       ...(params.misspelledWord ? params.dictionarySuggestions.map((suggestion) => ({ label: suggestion, click: () => window.webContents.replaceMisspelling(suggestion) })) : []),
+      ...(selected && isMac ? [{ label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") }] : []),
       ...(selected ? [
-        { label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") },
         { label: "Search with Google", click: () => void shell.openExternal(`https://www.google.com/search?q=${encodeURIComponent(selected)}`) },
       ] : []),
       ...((params.misspelledWord && params.dictionarySuggestions.length) || selected ? [{ type: "separator" as const }] : []),
@@ -3262,10 +3262,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const definition = mcpServerRequest(params);
       const approved = await confirmOnMac(
         `Install the MCP server “${definition.name}” from your phone?`,
-        `Emma will run this on your Mac, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
+        `Emma will run this on your ${DEVICE}, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
         "Install it",
       );
-      if (!approved) throw new Error("Nobody at your Mac approved that server.");
+      if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that server.`);
       const { id } = await capabilities!.installMcpServer(definition);
       await toolsChanged();
       return { id };
@@ -3285,10 +3285,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         if (!running.length) throw new Error(`"${plugin.displayName || plugin.name}" has no hook Emma would ever run.`);
         const approved = await confirmOnMac(
           `Trust the hooks in “${plugin.displayName || plugin.name}” from your phone?`,
-          `Emma will run these on your Mac, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
+          `Emma will run these on your ${DEVICE}, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
           "Trust them",
         );
-        if (!approved) throw new Error("Nobody at your Mac approved those hooks.");
+        if (!approved) throw new Error(`Nobody at your ${DEVICE} approved those hooks.`);
         hashes = plugin.hooks.map((hook) => hook.hash);
       }
       await setHookTrust(userData, id, hashes);
@@ -3311,7 +3311,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
           `Emma will read ${labels} on this ${DEVICE} and start the servers their config files name.`,
           "Import",
         );
-        if (!approved) throw new Error("Nobody at your Mac approved that import.");
+        if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that import.`);
       }
       const saved = await saveImportManifest(userData, homedir(), ids as string[]);
       await toolsChanged();
@@ -3376,10 +3376,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const directory = folderId ? folders!.directory(folderId) : homedir();
       const approved = await confirmOnMac(
         "Run a command from your phone?",
-        `Emma will run this on your Mac now, in ${directory}:\n\n${command}`,
+        `Emma will run this on your ${DEVICE} now, in ${directory}:\n\n${command}`,
         "Run it",
       );
-      if (!approved) throw new Error("Nobody at your Mac approved that command.");
+      if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that command.`);
       return background.start(directory, command, folderId ? folderNames([folderId])[0] ?? "" : "");
     }
     case "listBackground":
@@ -3436,7 +3436,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         `Emma will be able to read and write everything in ${directory}, and its agents will run against it. Only connect a folder you asked for from your phone just now.`,
         "Connect this folder",
       );
-      if (!granted) throw new Error("Nobody at your Mac approved that folder.");
+      if (!granted) throw new Error(`Nobody at your ${DEVICE} approved that folder.`);
       folders!.add(directory);
       return visibleFolders();
     }
@@ -3716,7 +3716,7 @@ function phoneTraces(traces: readonly StoredThreadTrace[]): ThreadTrace[] {
 function phonePage(messages: Message[], total: number, from: number): { messages: Message[]; total: number; from: number } {
   const page = messages.map((message) => message.content.length <= MAX_PHONE_BODY_CHARS ? message : {
     ...message,
-    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your Mac.`,
+    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your ${DEVICE}.`,
   });
   const sizes = page.map((message) => Buffer.byteLength(JSON.stringify(message), "utf8") + 1);
   let used = sizes.reduce((sum, bytes) => sum + bytes, 0);
