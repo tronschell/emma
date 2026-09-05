@@ -8,7 +8,7 @@ import { ColorPicker } from "./color-picker";
 import { zoned } from "./dates";
 import { latestRate, latestReply, nested, newest, spawnedAgents, spawnedByTurn, subagentRows, threadAt, threadDepth, threadLabel, threadTitle, type Spawned } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keyboardAccelerator, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, saveShortcut, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
-import { ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, thinkingLabel, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, MAX_COMMAND_TIMEOUT_MINUTES, MIN_COMMAND_TIMEOUT_MINUTES, MAX_REVIEW_ROUNDS, type HarnessExperiments, LOCAL_EMBEDDING_MODELS, HOSTED_EMBEDDING_MODELS, hostedEmbeddingModel, type EmbeddingModel, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultHarnessExperiments, defaultSettings, forgetProvider, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, SECOND_MODELS, SECOND_MODEL_IDS, type SecondModelId, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, MODEL_PLANS, CODEX_PREFIX, availableCodexModelKey, codexModelKey, codexSlug, planFor, modelPlanRoute, planForModel, planForProfile, planModelId, planProfileFor, providerChatUrl, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ModelPlan, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
+import { ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, thinkingLabel, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, MAX_COMMAND_TIMEOUT_MINUTES, MIN_COMMAND_TIMEOUT_MINUTES, MAX_REVIEW_ROUNDS, type HarnessExperiments, LOCAL_EMBEDDING_MODELS, HOSTED_EMBEDDING_MODELS, hostedEmbeddingModel, type EmbeddingModel, type HostedEmbeddingModel, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultHarnessExperiments, defaultSettings, forgetProvider, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, SECOND_MODELS, SECOND_MODEL_IDS, type SecondModelId, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, MODEL_PLANS, CODEX_PREFIX, availableCodexModelKey, codexModelKey, codexSlug, planFor, modelPlanRoute, planForModel, planForProfile, planModelId, planProfileFor, providerChatUrl, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ModelPlan, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
 import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { defaultPaneLayout, fitPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, WIDE_BROWSER_WIDTH, type PaneLayout } from "./layout";
@@ -50,7 +50,9 @@ import { CouncilPanel } from "./council";
 import { BrandIcon, BranchIcon, CaretIcon, ChevronIcon, ClipIcon, CloseIcon, DockIcon, EmmaMark, GearIcon, GlobeIcon, InfoDot, Mark, PencilIcon, ReviewIcon, SearchProviderMark, SidebarIcon, SparkIcon, StopIcon, TabIcon, TextIcon, ToolIcon, ToolMark, TrashIcon } from "./icons";
 import { BrowserPane, browserPip } from "./browser";
 import { PaneSwitch } from "./pane-switch";
-import { embeddingModelLabel, embeddingModelMode, IndexStatus, indexStateLabel, useSemanticGrepStatus } from "./index-status";
+import { embeddingModelLabel, embeddingModelMode, IndexStatus, indexStateLabel, useSemanticGrepStatus, useZvecGrepStatus } from "./index-status";
+import { gigabytes, type MachineFacts, recommendEmbeddingModel } from "../shared/embedding-recommendation";
+import { sizeLabel, type ZvecGrepStatus, zvecGrepDownloadBytes, zvecGrepPercent, zvecGrepPhaseLabel, zvecGrepProgressLabel } from "../shared/zvec-grep";
 import { progressLabel } from "../shared/semantic-grep";
 import { TaskListBar } from "./task-list";
 import { closeTerminals, TerminalIcon, TerminalPanel, TerminalSurface, useTerminals } from "./terminal";
@@ -4439,18 +4441,83 @@ function HarnessExperimentsPanel({ settings, onChange, busy }: { settings: UserS
   </div>;
 }
 
+function EmbeddingKeyRow({ model, stored, busy, onStored }: { model: HostedEmbeddingModel; stored: CredentialSummary[]; busy: boolean; onStored: (next: CredentialSummary[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const [note, setNote] = useState("");
+  const [checking, setChecking] = useState(false);
+  const saved = stored.find((item) => item.env === model.credentialEnv && item.masked);
+  const save = async (secret?: string) => {
+    setNote("");
+    try {
+      onStored(await window.emma.saveCredential(secret === undefined ? { env: model.credentialEnv } : { env: model.credentialEnv, secret }));
+      setDraft("");
+    } catch (reason) { setNote(reasonText(reason)); }
+  };
+  const verify = async () => {
+    setChecking(true);
+    setNote("");
+    const answer = await window.emma.verifyEmbeddingKey(model.id).catch((reason: unknown) => ({ ok: false, detail: reasonText(reason) }));
+    setChecking(false);
+    setNote(answer.detail);
+  };
+  return <div className="embedding-key">
+    <div><strong>{model.label}</strong><small>Indexed file contents and search queries are sent to this provider.</small><code>{model.credentialEnv}</code></div>
+    <span className="embedding-key-value">{saved ? saved.masked : "Not set"}</span>
+    <label><span className="sr-only">{model.label} API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={draft} placeholder={saved ? "Paste a replacement" : "Paste the API key"} onChange={(event) => setDraft(event.target.value)} /></label>
+    <div className="embedding-key-actions">
+      <button type="button" disabled={busy || !draft.trim()} onClick={() => void save(draft.trim())}>Save</button>
+      <button type="button" disabled={busy || !saved || checking} onClick={() => void verify()}>{checking ? "Checking…" : "Verify"}</button>
+      <button type="button" disabled={busy || !saved} onClick={() => void save()}>Remove</button>
+    </div>
+    {note && <small className="embedding-key-note">{note}</small>}
+  </div>;
+}
+
+function ZvecGrepCard({ tool, busy }: { tool: ZvecGrepStatus; busy: boolean }) {
+  const working = tool.phase === "downloading" || tool.phase === "verifying" || tool.phase === "extracting";
+  return <div className="tool-download">
+    <div className="tool-download-head">
+      <div><strong>zvec-grep {tool.version}</strong><small>The index is built on this {LOCAL_DEVICE} for local and hosted models alike, so the tool is needed either way. About {sizeLabel(zvecGrepDownloadBytes(RUNTIME_PLATFORM))}, kept in Emma's data folder and reused by later versions of Emma.</small></div>
+      {tool.phase === "ready"
+        ? <strong className="tool-download-state">Installed · v{tool.version}</strong>
+        : working
+          ? <button type="button" onClick={() => void window.emma.zvecGrepCancel()}>Cancel</button>
+          : <button type="button" disabled={busy} onClick={() => void window.emma.zvecGrepInstall()}>{tool.phase === "failed" ? "Retry" : "Download"}</button>}
+    </div>
+    {working && <div className="tool-progress"><span className="index-bar" style={{ "--p": `${zvecGrepPercent(tool)}%` } as CSSProperties}><b /></span><small>{zvecGrepPhaseLabel[tool.phase]} · {zvecGrepProgressLabel(tool)}</small></div>}
+    {tool.phase === "failed" && <p className="local-model-error" role="status">{tool.detail}</p>}
+  </div>;
+}
+
+function EmbeddingAdvice({ facts, chosen, busy, onUse }: { facts: MachineFacts; chosen: EmbeddingModel; busy: boolean; onUse: (id: EmbeddingModel) => void }) {
+  const advice = recommendEmbeddingModel(facts);
+  const parts = [facts.gpu || "No GPU reported", facts.vramBytes ? `${gigabytes(facts.vramBytes)} GB video memory` : "", `${gigabytes(facts.memoryBytes)} GB memory`, `${facts.cores} cores`].filter(Boolean);
+  return <div className="embedding-advice">
+    <div>
+      <strong>Recommended for this {LOCAL_DEVICE} · {embeddingModelLabel(advice.id)}</strong>
+      <small>{advice.reason}</small>
+      <em>{parts.join(" · ")}</em>
+    </div>
+    <button type="button" disabled={busy || chosen === advice.id} onClick={() => onUse(advice.id)}>{chosen === advice.id ? "In use" : "Use"}</button>
+  </div>;
+}
+
 function SemanticGrepPanel({ settings, onChange, busy }: { settings: UserSettings; onChange: (experiments: HarnessExperiments) => Promise<void>; busy: boolean }) {
   const experiments = settings.harnessExperiments;
   const [error, setError] = useState("");
   const status = useSemanticGrepStatus();
+  const tool = useZvecGrepStatus();
+  const [facts, setFacts] = useState<MachineFacts | null>(null);
   const [stored, setStored] = useState<CredentialSummary[]>([]);
   useEffect(() => {
     let live = true;
     void window.emma.listCredentials().then((next) => { if (live) setStored(next); }).catch(() => undefined);
+    void window.emma.machineFacts().then((next) => { if (live) setFacts(next); }).catch(() => undefined);
     return () => { live = false; };
   }, []);
   const save = (next: HarnessExperiments) => { setError(""); void onChange(next).catch((reason: unknown) => setError(reasonText(reason))); };
-  const on = experiments.semanticGrep && status.available;
+  const enabled = experiments.semanticGrep;
+  const on = enabled && status.available;
   const hosted = hostedEmbeddingModel(experiments.embeddingModel);
   return <div className="tool-settings coding-semantic">
     <section className="local-model-settings">
@@ -4458,7 +4525,7 @@ function SemanticGrepPanel({ settings, onChange, busy }: { settings: UserSetting
         <div>
           <div className="settings-head">
             <h3>Semantic search</h3>
-            <InfoDot>Makes <code>semantic_search</code> the agent's default search and answers it with zvec-grep: vector embeddings, BM25 and ripgrep in one tool. Each connected folder is indexed the first time a thread runs there and kept fresh as files change; until then the agent searches by keywords. The index lives in <code>.zvec-grep/</code> inside the folder and is excluded from git. A hosted model sends the contents of every indexed file, and each query, to that provider under the key named below; a local one keeps them on this computer.</InfoDot>
+            <InfoDot>Makes <code>semantic_search</code> the agent's default search and answers it with zvec-grep: vector embeddings, BM25 and ripgrep in one tool. The tool is downloaded the first time you ask for it, not shipped inside Emma, and it stays in Emma's data folder so later versions reuse it. Each connected folder is indexed the first time a thread runs there and kept fresh as files change; until then the agent searches by keywords. The index lives in <code>.zvec-grep/</code> inside the folder and is excluded from git. A hosted model sends the contents of every indexed file, and each query, to that provider under the key named below; a local one keeps them on this computer.</InfoDot>
           </div>
           <p>Find code by meaning as well as exact keywords.</p>
         </div>
@@ -4466,16 +4533,17 @@ function SemanticGrepPanel({ settings, onChange, busy }: { settings: UserSetting
       </header>
       <div className="tool-group">
         <label className="check tool-row">
-          <input type="checkbox" checked={experiments.semanticGrep} disabled={busy || !status.available} onChange={(event) => save({ ...experiments, semanticGrep: event.target.checked })} />
+          <input type="checkbox" checked={experiments.semanticGrep} disabled={busy} onChange={(event) => save({ ...experiments, semanticGrep: event.target.checked })} />
           <strong>Index connected folders</strong>
         </label>
-        {!status.available && <small>zvec-grep is not bundled in this build.</small>}
-        {on && <div className="font-values coding-dependent">
-          <label>Model<select value={experiments.embeddingModel} disabled={busy || !on} onChange={(event) => save({ ...experiments, embeddingModel: event.target.value as EmbeddingModel })}>
+        {enabled && <div className="font-values coding-dependent">
+          <ZvecGrepCard tool={tool} busy={busy} />
+          {facts && !hosted && <EmbeddingAdvice facts={facts} chosen={experiments.embeddingModel} busy={busy} onUse={(id) => save({ ...experiments, embeddingModel: id })} />}
+          <label>Model<select value={experiments.embeddingModel} disabled={busy} onChange={(event) => save({ ...experiments, embeddingModel: event.target.value as EmbeddingModel })}>
             <optgroup label="On this computer">{LOCAL_EMBEDDING_MODELS.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.detail}</option>)}</optgroup>
             <optgroup label="Hosted">{HOSTED_EMBEDDING_MODELS.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.detail}</option>)}</optgroup>
           </select></label>
-          {hosted && <small>Indexed file contents and search queries are sent to this provider. Uses {hosted.credentialEnv} · {stored.some((item) => item.env === hosted.credentialEnv) ? "saved" : "missing, add it in Settings → Models"}</small>}
+          {hosted && <EmbeddingKeyRow model={hosted} stored={stored} busy={busy} onStored={setStored} />}
           {on && status.folders.length === 0 && <small>Each connected folder is indexed the first time a thread runs in it.</small>}
         </div>}
         {on && status.folders.length > 0 && <SettingsSection title="Folder indexes" summary={`${status.folders.length} folders`}><div className="coding-index-scroll"><table className="index-ledger">

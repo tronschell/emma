@@ -4,8 +4,10 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.2.1";
-const vendor = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vendor", "zvec-grep");
+const desktop = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const VERSION = /ZVEC_GREP_VERSION = "([^"]+)"/.exec(readFileSync(path.join(desktop, "shared", "zvec-grep.ts"), "utf8"))?.[1];
+if (!VERSION) throw new Error("shared/zvec-grep.ts does not name a version.");
+const vendor = path.join(desktop, "vendor", "zvec-grep");
 const stamp = path.join(vendor, "zvec-grep.version");
 const want = `@zvec/zvec-grep ${VERSION} ${process.platform} ${process.arch}\n`;
 const entry = path.join(vendor, "node_modules/@zvec/zvec-grep/dist/cli/index.js");

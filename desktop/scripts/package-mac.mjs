@@ -33,7 +33,7 @@ const zigOptimize = process.env.EMMA_FAST_BUILD === "1" ? "Debug" : "ReleaseSafe
 await Promise.all([
   runAsync("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root),
   runAsync("zig", ["build", `-Doptimize=${zigOptimize}`, "-Dtarget=aarch64-macos.12.0"], path.join(root, "harness")),
-  ...["build:native", "vendor:ripgrep", "vendor:zvec-grep", "build:main", "build:renderer"].map((script) => runAsync("npm", ["run", script])),
+  ...["build:native", "vendor:ripgrep", "build:main", "build:renderer"].map((script) => runAsync("npm", ["run", script])),
 ]);
 
 const notices = path.join(out, "notices");
@@ -48,7 +48,6 @@ for (const [source, name] of [
   ["desktop/dist-renderer/.vite/license.md", "Renderer-LICENSES.md"],
 ]) cpSync(path.join(root, source), path.join(notices, name));
 writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MIT", "UNLICENSE"].map((name) => readFileSync(path.join(desktop, "vendor", name), "utf8")).join("\n\n"));
-writeFileSync(path.join(notices, "Zvec-grep-LICENSES.txt"), globSync("**/{LICENSE,LICENCE,COPYING,NOTICE}*", { cwd: path.join(desktop, "vendor/zvec-grep/node_modules") }).filter((name) => statSync(path.join(desktop, "vendor/zvec-grep/node_modules", name)).isFile()).sort().map((name) => `${name}\n\n${readFileSync(path.join(desktop, "vendor/zvec-grep/node_modules", name), "utf8")}`).join("\n\n"));
 const metadata = JSON.parse(output("cargo", ["metadata", "--locked", "--offline", "--filter-platform", "aarch64-apple-darwin", "--format-version", "1"], root));
 writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter((pkg) => pkg.source).map((pkg) => {
   const cwd = path.dirname(pkg.manifest_path);
@@ -62,7 +61,6 @@ const resources = [
   path.join(root, "target/release/emma-host"),
   path.join(root, "harness/zig-out/bin/emma-cli"),
   path.join(desktop, "vendor/rg"),
-  path.join(desktop, "vendor/zvec-grep"),
   ...["emma-option-tap", "emma-computer", "emma-transcribe", "emma-pty"].map((name) => path.join(desktop, "dist-native", name)),
   path.join(desktop, "skills"),
   notices,
