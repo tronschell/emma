@@ -57,8 +57,11 @@ version publishes nothing.
 Both packaging jobs install what they just built and launch it before anything
 is uploaded. `package-win` runs the Squirrel installer with `-s`, waits for
 `%LOCALAPPDATA%\Emma\app-X.Y.Z\Emma.exe` and `Update.exe`, confirms the Start
-Menu shortcut, and finishes with `Update.exe --uninstall -s`, failing if the
-versioned directory survives. `package-mac` mounts the disk image with
+Menu shortcut, and finishes with `Update.exe --uninstall -s`. Squirrel cannot
+delete the `Update.exe` it is running from, so it marks the install root with a
+`.dead` file and hands the removal to the next reboot; the step therefore
+requires the updater to exit zero and the versioned directory to be either gone
+or marked dead. `package-mac` mounts the disk image with
 `hdiutil attach -nobrowse -readonly`, copies `Emma.app` into `RUNNER_TEMP`,
 detaches, and deletes the copy afterwards. The unsigned copy is launched through
 `Emma.app/Contents/MacOS/Emma` rather than `open`, so Gatekeeper never gets a

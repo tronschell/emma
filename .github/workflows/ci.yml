@@ -353,14 +353,16 @@ jobs:
           Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           $updater = Start-Process -FilePath (Join-Path $root 'Update.exe') -ArgumentList '--uninstall', '-s' -PassThru
           $updater | Wait-Process -Timeout 300 -ErrorAction SilentlyContinue
-          Write-Output "Update.exe exited $($updater.HasExited) with code $($updater.ExitCode)"
-          $deadline = (Get-Date).AddMinutes(3)
-          while ((Test-Path $installed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-          Get-ChildItem -Path $root -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root*" } | Format-Table ProcessId, ExecutablePath
-          Get-ChildItem -Path $root, (Join-Path $env:LOCALAPPDATA 'SquirrelTemp') -Recurse -Filter '*.log' -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_.FullName; Get-Content $_.FullName -Tail 60 }
-          if (Test-Path $installed) { throw "Uninstall left $installed behind" }
-          Write-Output "Uninstalled $installed"
+          if (-not $updater.HasExited) { throw "Update.exe --uninstall never finished" }
+          if ($updater.ExitCode -ne 0) { throw "Update.exe --uninstall exited $($updater.ExitCode)" }
+          $dead = Join-Path $root '.dead'
+          $deadline = (Get-Date).AddMinutes(2)
+          while ((Test-Path $installed) -and -not (Test-Path $dead) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if ((Test-Path $installed) -and -not (Test-Path $dead)) {
+            Get-ChildItem -Path $root -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+            throw "Uninstall left $installed behind"
+          }
+          Write-Output "Uninstalled Emma $version"
 
       - name: upload the Windows install smoke screenshot
         if: always()
