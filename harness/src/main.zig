@@ -3739,6 +3739,7 @@ test {
     _ = @import("core/slash_commands/command_router.zig");
     _ = @import("core/slash_commands/command_specs.zig");
     _ = @import("core/config/config_runtime.zig");
+    _ = @import("core/config/settings_catalog.zig");
     _ = @import("core/config/settings_store.zig");
     _ = @import("ui/footer/appearance_menu_presentation.zig");
     _ = @import("ui/footer/compact_command_menu_presentation.zig");
@@ -3776,6 +3777,8 @@ test {
     _ = @import("core/mcp/features/resources.zig");
     _ = @import("core/mcp/features/prompts.zig");
     _ = @import("core/mcp/features/completion.zig");
+    _ = @import("core/mcp/elicitation_interaction.zig");
+    _ = @import("core/mcp/command_provider.zig");
     _ = @import("core/config/model_capabilities.zig");
     _ = @import("core/output/output_contracts.zig");
     _ = @import("core/workspace/pathing.zig");
@@ -3880,6 +3883,7 @@ test {
     _ = @import("ui/transcript/runtime.zig");
     _ = @import("ui/transcript/runtime_tests.zig");
     _ = @import("core/agent/worker_runtime.zig");
+    _ = @import("gateway/cancellable_socket_io.zig");
     _ = @import("gateway/client.zig");
     _ = @import("gateway/host_stream_provider.zig");
     if (comptime builtin.os.tag == .windows) {
