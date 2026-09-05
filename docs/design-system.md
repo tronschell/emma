@@ -154,6 +154,18 @@ editing the grid:
 node desktop/scripts/make-icons.mjs
 ```
 
+Windows takes the bare pink bow rather than the macOS tile, because the taskbar,
+Alt-Tab and Explorer draw it at 16 to 48 pixels where a rounded dark square is a
+smudge. `desktop/scripts/windows-icon.mjs` draws the same grid into
+`desktop/assets/emma.ico` at 16, 24, 32, 48, 64 and 128 as 32-bit bitmaps with
+an AND mask, plus a 256 PNG. `package-windows.mjs` gives that file to rcedit
+and to Squirrel, and `secureWindow` hands it to every unpackaged window so a
+development run matches the installed app:
+
+```
+node desktop/scripts/windows-icon.mjs
+```
+
 `Mark` in `desktop/src/icons.tsx` is the other one: a bow on a 16x16 pixel grid,
 `#` for ribbon and `o` for the knot, which is the same colour at half opacity. It
 is the empty-state glyph and the quick-ask pill, not the logo — Emma is the logo.
