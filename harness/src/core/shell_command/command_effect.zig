@@ -23,6 +23,16 @@ pub fn knownReversibleAutoCommand(
     command: []const u8,
     background: bool,
 ) std.mem.Allocator.Error!bool {
+    return knownReversibleAutoCommandForOs(alloc, command, background, builtin.os.tag);
+}
+
+pub fn knownReversibleAutoCommandForOs(
+    alloc: std.mem.Allocator,
+    command: []const u8,
+    background: bool,
+    target_os: std.Target.Os.Tag,
+) std.mem.Allocator.Error!bool {
+    if (target_os == .windows) return false;
     if (background) return false;
     const trimmed = std.mem.trim(u8, command, " \t");
     if (trimmed.len == 0 or trimmed.len > max_command_bytes or
@@ -211,10 +221,11 @@ test "known reversible auto commands exclude destructive and hidden effects" {
         "zig build test",
         "bun test",
     }) |command| {
-        try std.testing.expect(try knownReversibleAutoCommand(
+        try std.testing.expect(try knownReversibleAutoCommandForOs(
             std.testing.allocator,
             command,
             false,
+            .macos,
         ));
     }
     for ([_][]const u8{
@@ -228,16 +239,42 @@ test "known reversible auto commands exclude destructive and hidden effects" {
         "npm install --location global",
         "git fetch --prune origin",
     }) |command| {
-        try std.testing.expect(!try knownReversibleAutoCommand(
+        try std.testing.expect(!try knownReversibleAutoCommandForOs(
             std.testing.allocator,
             command,
             false,
+            .macos,
         ));
     }
-    try std.testing.expect(!try knownReversibleAutoCommand(
+    try std.testing.expect(!try knownReversibleAutoCommandForOs(
         std.testing.allocator,
         "npm run dev",
         true,
+        .macos,
+    ));
+}
+
+test "the reversible auto fast path fails closed on the Windows shell" {
+    for ([_][]const u8{
+        "node -v",
+        "git status --short --branch",
+        "npm run dev",
+        "zig build test",
+        "Get-ChildItem",
+        "git status; Start-Process calc",
+    }) |command| {
+        try std.testing.expect(!try knownReversibleAutoCommandForOs(
+            std.testing.allocator,
+            command,
+            false,
+            .windows,
+        ));
+    }
+    try std.testing.expect(try knownReversibleAutoCommandForOs(
+        std.testing.allocator,
+        "git status --short --branch",
+        false,
+        .linux,
     ));
 }
 
@@ -1789,7 +1826,25 @@ test "planner target policies use reviewed absolute executables and argv" {
     }
 }
 
+var vacated_test_environ: std.process.Environ.Map = .init(std.testing.allocator);
+
+fn installHostEnvironForTest(map: *std.process.Environ.Map) void {
+    if (comptime builtin.os.tag != .windows) return;
+    @import("../shared/io.zig").setEnvironMap(map);
+}
+
+fn vacateHostEnvironForTest() void {
+    if (comptime builtin.os.tag != .windows) return;
+    @import("../shared/io.zig").setEnvironMap(&vacated_test_environ);
+}
+
 test "planner admits the reviewed Windows direct command matrix" {
+    var host_environ = try std.process.Environ.createMap(std.testing.environ, std.testing.allocator);
+    defer host_environ.deinit();
+    installHostEnvironForTest(&host_environ);
+    defer vacateHostEnvironForTest();
+    if (!windowsGitInstalled()) return error.SkipZigTest;
+
     const commands = [_][]const u8{
         "printf 'hello\\n'",
         "printf x",

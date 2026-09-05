@@ -66,7 +66,7 @@ pub const AlternateScreenOwner = enum {
 
 pub const TerminalState = struct {
     stdin_fd: std.posix.fd_t = switch (builtin.os.tag) {
-        .windows => undefined,
+        .windows => std.os.windows.INVALID_HANDLE_VALUE,
         else => std.posix.STDIN_FILENO,
     },
     original_termios: std.posix.termios = undefined,
@@ -78,6 +78,10 @@ pub const TerminalState = struct {
     old_winch_action: ?std.posix.Sigaction = null,
     windows_console_mode: u32 = 0,
     windows_console_mode_captured: bool = false,
+
+    pub fn forConsole() TerminalState {
+        return .{ .stdin_fd = if (comptime builtin.os.tag == .windows) std.Io.File.stdin().handle else std.posix.STDIN_FILENO };
+    }
 
     pub fn fileApprovalScreenActive(self: TerminalState) bool {
         return self.alternate_screen_owner == .file_approval;
@@ -192,6 +196,8 @@ pub const TerminalState = struct {
     pub fn queryLayout(self: TerminalState, footer_rows: u16) !Layout {
         return if (comptime builtin.os.tag == .wasi)
             wasm_terminal.queryLayout(footer_rows)
+        else if (comptime builtin.os.tag == .windows)
+            ui_terminal.queryLayout(std.Io.File.stdout().handle, footer_rows)
         else
             ui_terminal.queryLayout(self.stdin_fd, footer_rows);
     }

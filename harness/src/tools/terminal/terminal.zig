@@ -2352,9 +2352,13 @@ test "terminal public list rejects lifecycle and projects supported filters" {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(workspace);
     const ctx: tool_dispatch.DispatchContext = .{
         .allocator = alloc,
-        .workspace_root = "/tmp",
+        .workspace_root = workspace,
     };
 
     const lifecycle_decoded = try decode(
@@ -2429,12 +2433,15 @@ test "terminal public list rejects lifecycle and projects supported filters" {
         },
     }
 
-    const expected_workspace = try io_mod.realpathAlloc(alloc, "/tmp");
-    defer alloc.free(expected_workspace);
-    const filtered_decoded = try decode(
-        .{ .allocator = alloc },
-        "{\"action\":\"list\",\"task_id\":\"task-a\",\"workspace_root\":\"/tmp/.\"}",
+    const dotted_workspace = try std.fs.path.join(alloc, &.{ workspace, "." });
+    defer alloc.free(dotted_workspace);
+    const filtered_args = try std.fmt.allocPrint(
+        alloc,
+        "{{\"action\":\"list\",\"task_id\":\"task-a\",\"workspace_root\":{f}}}",
+        .{std.json.fmt(dotted_workspace, .{})},
     );
+    defer alloc.free(filtered_args);
+    const filtered_decoded = try decode(.{ .allocator = alloc }, filtered_args);
     switch (filtered_decoded) {
         .failure => |message| {
             defer alloc.free(message);
@@ -2452,7 +2459,7 @@ test "terminal public list rejects lifecycle and projects supported filters" {
                 .list => |filters| {
                     try std.testing.expectEqualStrings("task-a", filters.task_id.?);
                     try std.testing.expectEqualStrings(
-                        expected_workspace,
+                        workspace,
                         filters.workspace_root.?,
                     );
                 },

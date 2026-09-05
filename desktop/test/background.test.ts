@@ -16,7 +16,7 @@ test("a background command returns straight away, keeps printing, and stops on r
   const changes: number[] = [];
   const commands = new BackgroundCommands(() => changes.push(Date.now()));
   t.after(() => commands.stopAll());
-  const started = commands.start(process.cwd(), process.platform === "win32" ? "echo up & ping 127.0.0.1 -n 30 > nul" : "echo up; sleep 30", "test");
+  const started = commands.start(process.cwd(), process.platform === "win32" ? "Write-Output up; Start-Sleep 30" : "echo up; sleep 30", "test");
   assert.equal(started.status, "running");
   await waitFor(() => commands.output(started.id, 1024)!.output.includes("up"));
   assert.match(commands.output(started.id, 1024)!.output, /up/);
@@ -32,7 +32,7 @@ test("a background command returns straight away, keeps printing, and stops on r
 test("background shutdown waits through the graceful phase", async (t) => {
   const commands = new BackgroundCommands(() => undefined);
   t.after(() => commands.stopAll());
-  const started = commands.start(process.cwd(), process.platform === "win32" ? "ping 127.0.0.1 -n 30 > nul" : "sleep 30", "test");
+  const started = commands.start(process.cwd(), process.platform === "win32" ? "Start-Sleep 30" : "sleep 30", "test");
   await settle(100);
   await commands.stopAll();
   assert.equal(commands.list().find((task) => task.id === started.id)?.status, "exited");

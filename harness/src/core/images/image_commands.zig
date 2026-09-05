@@ -911,10 +911,17 @@ test "attachPath at distinct cursor positions assigns ids in order of attachment
 test "attachPath reports missing and unsupported image errors" {
     const alloc = std.testing.allocator;
     {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try realTmpPath(alloc, &tmp, ".");
+        defer alloc.free(root);
+        const missing = try std.fs.path.join(alloc, &.{ root, "missing-image.png" });
+        defer alloc.free(missing);
+
         var app = FakeApp{ .alloc = alloc };
         defer app.deinit();
 
-        try Commands(FakeApp).attachPath(&app, "/definitely/missing/image.png");
+        try Commands(FakeApp).attachPath(&app, missing);
 
         try expectTranscriptContains(&app, "image file not found");
         try std.testing.expectEqual(types.NoticeTone.@"error", app.last_tone.?);
@@ -974,7 +981,8 @@ test "managePending reports empty lists populated lists and clear" {
 }
 
 test "attachClipboard is silent on unsupported platforms" {
-    if (@import("builtin").os.tag == .macos) return;
+    const os_tag = @import("builtin").os.tag;
+    if (os_tag == .macos or os_tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var app = FakeApp{ .alloc = alloc };

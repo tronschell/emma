@@ -1,21 +1,30 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const WrapState = enum(u8) { uninitialized, initializing, ready };
+
 var wrapped_vtable: std.Io.VTable = undefined;
 var wrapped_original_vtable: ?*const std.Io.VTable = null;
+var wrap_state = std.atomic.Value(WrapState).init(.uninitialized);
 
 pub fn wrap(original: std.Io) std.Io {
-    if (wrapped_original_vtable) |original_vtable| {
-        std.debug.assert(original_vtable == original.vtable);
-    } else {
-        wrapped_vtable = original.vtable.*;
-        wrapped_vtable.processSpawn = process_spawn;
-        wrapped_original_vtable = original.vtable;
-    }
+    if (wrap_state.load(.acquire) != .ready) initializeWrappedVtable(original);
+    std.debug.assert(wrapped_original_vtable == original.vtable);
     return .{
         .userdata = original.userdata,
         .vtable = &wrapped_vtable,
     };
+}
+
+fn initializeWrappedVtable(original: std.Io) void {
+    if (wrap_state.cmpxchgStrong(.uninitialized, .initializing, .acquire, .acquire) == null) {
+        wrapped_vtable = original.vtable.*;
+        wrapped_vtable.processSpawn = process_spawn;
+        wrapped_original_vtable = original.vtable;
+        wrap_state.store(.ready, .release);
+        return;
+    }
+    while (wrap_state.load(.acquire) != .ready) std.atomic.spinLoopHint();
 }
 
 fn process_spawn(

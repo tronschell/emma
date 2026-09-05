@@ -1000,7 +1000,14 @@ pub const Root = struct {
                     error.PathAlreadyExists => {},
                     else => return create_err,
                 };
-                break :blk try std.Io.Dir.openDirAbsolute(zio, home_path, .{ .iterate = true });
+                const created_home = try std.Io.Dir.openDirAbsolute(zio, home_path, .{ .iterate = true });
+                if (comptime builtin.os.tag == .windows) {
+                    io_mod.enforcePrivateDirectoryAcl(created_home) catch {
+                        created_home.close(zio);
+                        return error.PrivateStatePermissionsUnsupported;
+                    };
+                }
+                break :blk created_home;
             },
             else => return err,
         };
@@ -4658,7 +4665,7 @@ test "root init rejects symlinked durable and sessions roots" {
             "home/.fx",
             .{ .is_directory = true },
         ) catch |err| switch (err) {
-            error.AccessDenied => return error.SkipZigTest,
+            error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
             else => return err,
         };
         const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
@@ -4681,7 +4688,7 @@ test "root init rejects symlinked durable and sessions roots" {
             "home/.fx/sessions",
             .{ .is_directory = true },
         ) catch |err| switch (err) {
-            error.AccessDenied => return error.SkipZigTest,
+            error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
             else => return err,
         };
         const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");

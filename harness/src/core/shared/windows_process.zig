@@ -18,11 +18,17 @@ extern "kernel32" fn GetProcessTimes(
     user_time: *windows.FILETIME,
 ) callconv(.winapi) windows.BOOL;
 
+extern "kernel32" fn TerminateProcess(
+    process: windows.HANDLE,
+    exit_code: windows.UINT,
+) callconv(.winapi) windows.BOOL;
+
 extern "kernel32" fn WaitForSingleObject(
     handle: windows.HANDLE,
     milliseconds: windows.DWORD,
 ) callconv(.winapi) windows.DWORD;
 
+const process_terminate: windows.DWORD = 0x0001;
 const process_query_limited_information: windows.DWORD = 0x1000;
 const process_synchronize: windows.DWORD = 0x00100000;
 const wait_object: windows.DWORD = 0;
@@ -55,6 +61,18 @@ pub fn creationTime(handle: windows.HANDLE) !u64 {
         return error.ProcessIdentityUnavailable;
     }
     return (@as(u64, creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+}
+
+pub fn terminateByIdentity(process_id: u32, creation_time: u64) bool {
+    const handle = OpenProcess(
+        process_terminate | process_query_limited_information,
+        @enumFromInt(0),
+        process_id,
+    ) orelse return false;
+    defer windows.CloseHandle(handle);
+    const actual = creationTime(handle) catch return false;
+    if (actual != creation_time) return false;
+    return TerminateProcess(handle, 1).toBool();
 }
 
 pub fn waitForExit(handle: windows.HANDLE, timeout_ms: i64) !bool {

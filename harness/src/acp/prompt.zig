@@ -1361,6 +1361,13 @@ fn parsePromptInput(alloc: Allocator, params_json: []const u8) !ParsedPromptInpu
     return result;
 }
 
+fn localFileUriPath(path: []const u8) []const u8 {
+    if (comptime std.fs.path.sep == '/') return path;
+    if (path.len >= 4 and path[0] == '/' and std.ascii.isAlphabetic(path[1]) and path[2] == ':' and
+        (path[3] == '/' or path[3] == '\\')) return path[1..];
+    return path;
+}
+
 fn localFileTargetPath(alloc: Allocator, uri_text: []const u8) Allocator.Error!?[]u8 {
     const uri = std.Uri.parse(uri_text) catch return null;
     if (!std.ascii.eqlIgnoreCase(uri.scheme, "file") or
@@ -1401,7 +1408,7 @@ fn localFileTargetPath(alloc: Allocator, uri_text: []const u8) Allocator.Error!?
         decoded_storage[write_index] = byte;
         write_index += 1;
     }
-    const decoded_path = decoded_storage[0..write_index];
+    const decoded_path = localFileUriPath(decoded_storage[0..write_index]);
     if (!std.fs.path.isAbsolute(decoded_path)) return null;
 
     var components = std.mem.splitScalar(u8, decoded_path, '/');
@@ -3496,6 +3503,14 @@ test "parsePromptInput accepts explicit recovery continuation metadata" {
     try std.testing.expect(result.continue_recovery);
 }
 
+fn testFileUri(alloc: Allocator, path: []const u8) ![]u8 {
+    if (comptime std.fs.path.sep == '/') return std.fmt.allocPrint(alloc, "file://{s}", .{path});
+    const slashed = try alloc.dupe(u8, path);
+    defer alloc.free(slashed);
+    std.mem.replaceScalar(u8, slashed, std.fs.path.sep, '/');
+    return std.fmt.allocPrint(alloc, "file:///{s}", .{slashed});
+}
+
 test "parsePromptInput rejects image blocks without a local file uri" {
     const alloc = std.testing.allocator;
     const params = "{\"sessionId\":\"s1\",\"prompt\":[{\"type\":\"text\",\"text\":\"Only text\"},{\"type\":\"image\",\"data\":\"aGVsbG8=\",\"mimeType\":\"image/png\"}]}";
@@ -3511,12 +3526,14 @@ test "parsePromptInput carries local image blocks as attachments" {
     file.close(std.testing.io);
     const expected_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "shot.png");
     defer alloc.free(expected_path);
+    const image_uri = try testFileUri(alloc, expected_path);
+    defer alloc.free(image_uri);
     const params = try std.fmt.allocPrint(
         alloc,
         "{{\"sessionId\":\"s1\",\"prompt\":[" ++
             "{{\"type\":\"text\",\"text\":\"look\"}}," ++
-            "{{\"type\":\"image\",\"mimeType\":\"image/png\",\"uri\":\"file://{s}\"}}]}}",
-        .{expected_path},
+            "{{\"type\":\"image\",\"mimeType\":\"image/png\",\"uri\":{f}}}]}}",
+        .{std.json.fmt(image_uri, .{})},
     );
     defer alloc.free(params);
 
@@ -3540,15 +3557,17 @@ test "parsePromptInput preserves resource text and accepts only local absolute f
     defer alloc.free(root);
     const expected_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "Fx Project/src/main.zig");
     defer alloc.free(expected_path);
-    const local_uri = try std.fmt.allocPrint(alloc, "file://{s}/Fx%20Project/src/main.zig", .{root});
+    const root_uri = try testFileUri(alloc, root);
+    defer alloc.free(root_uri);
+    const local_uri = try std.fmt.allocPrint(alloc, "{s}/Fx%20Project/src/main.zig", .{root_uri});
     defer alloc.free(local_uri);
     const remote_uri = "https://example.test/reference.txt";
     const params = try std.fmt.allocPrint(
         alloc,
         "{{\"sessionId\":\"s1\",\"prompt\":[" ++
-            "{{\"type\":\"resource\",\"resource\":{{\"uri\":\"{s}\",\"text\":\"local body\"}}}}," ++
-            "{{\"type\":\"resource\",\"resource\":{{\"uri\":\"{s}\",\"text\":\"remote body\"}}}}]}}",
-        .{ local_uri, remote_uri },
+            "{{\"type\":\"resource\",\"resource\":{{\"uri\":{f},\"text\":\"local body\"}}}}," ++
+            "{{\"type\":\"resource\",\"resource\":{{\"uri\":{f},\"text\":\"remote body\"}}}}]}}",
+        .{ std.json.fmt(local_uri, .{}), std.json.fmt(remote_uri, .{}) },
     );
     defer alloc.free(params);
 
@@ -4797,8 +4816,8 @@ test "ACP auto mode automatic review allows or asks prepared external file mutat
     const target_path = try std.fs.path.join(arena, &.{ external, "desktop-test.txt" });
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-        .{target_path},
+        "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+        .{std.json.fmt(target_path, .{})},
     );
     const accepted_call: ToolCall = .{
         .id = "external-write",
@@ -4896,14 +4915,14 @@ test "ACP auto mode requires review when only one copy target is configured" {
 
     var state = try initTestAcpState(alloc, workspace, .auto);
     defer state.deinit();
-    const pattern = try std.fmt.allocPrint(arena, "{s}/**", .{external});
+    const pattern = try std.fs.path.join(arena, &.{ external, "**" });
     state.active_session.?.permission_rules = try testPermissionRuleSet(alloc, "copy_file", pattern, .allow);
     defer state.active_session.?.permission_rules.deinit(alloc);
     var ctx = AcpContext{ .alloc = alloc, .state = &state, .session_id = "session_1" };
 
     const source = try std.fs.path.join(arena, &.{ workspace, "source.txt" });
     const destination = try std.fs.path.join(arena, &.{ external, "copied.txt" });
-    const args = try std.fmt.allocPrint(arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{ source, destination });
+    const args = try std.fmt.allocPrint(arena, "{{\"source\":{f},\"destination\":{f}}}", .{ std.json.fmt(source, .{}), std.json.fmt(destination, .{}) });
     const decision = (try requestToolPermissionOutcome(&ctx, arena, .{
         .id = "call_1",
         .name = "copy_file",

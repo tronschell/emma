@@ -268,7 +268,7 @@ test "shared workspace mutation owns staging persistence metadata" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    try createPrivateFixtureHome(tmp);
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "shared", .default_dir);
 
@@ -310,7 +310,7 @@ test "shared workspace mutations apply stale actions to the latest durable roots
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    try createPrivateFixtureHome(tmp);
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "added", .default_dir);
     try tmp.dir.createDir(std.testing.io, "launch", .default_dir);
@@ -397,7 +397,7 @@ test "workspace add rejects effective capacity before changing settings" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    try createPrivateFixtureHome(tmp);
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "added", .default_dir);
     try tmp.dir.createDir(std.testing.io, "launch", .default_dir);
@@ -463,7 +463,7 @@ test "shared workspace mutation removes command line only access without a durab
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    try createPrivateFixtureHome(tmp);
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "launch", .default_dir);
 
@@ -559,7 +559,7 @@ test "workspace access reconciliation accepts only intended or previous saved st
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    try createPrivateFixtureHome(tmp);
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "previous", .default_dir);
     try tmp.dir.createDir(std.testing.io, "launch", .default_dir);
@@ -597,13 +597,7 @@ test "workspace access reconciliation accepts only intended or previous saved st
         else => return error.TestExpectedEqual,
     }
 
-    const previous_fixture = try std.fmt.allocPrint(
-        alloc,
-        "{{\"workspaces\":{{\"{s}\":{{\"additional_directories\":[\"{s}\"]}}}}}}\n",
-        .{ primary, previous },
-    );
-    defer alloc.free(previous_fixture);
-    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", previous_fixture);
+    try writeWorkspaceDirectoriesFixture(alloc, tmp.dir, "home/.fx/settings.json", primary, &.{previous});
     var previous_result = try reconcileWorkspaceAccess(alloc, primary, &current, &intended);
     defer previous_result.deinit(alloc);
     switch (previous_result) {
@@ -614,24 +608,12 @@ test "workspace access reconciliation accepts only intended or previous saved st
         else => return error.TestExpectedEqual,
     }
 
-    const third_fixture = try std.fmt.allocPrint(
-        alloc,
-        "{{\"workspaces\":{{\"{s}\":{{\"additional_directories\":[\"{s}\"]}}}}}}\n",
-        .{ primary, third },
-    );
-    defer alloc.free(third_fixture);
-    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", third_fixture);
+    try writeWorkspaceDirectoriesFixture(alloc, tmp.dir, "home/.fx/settings.json", primary, &.{third});
     var third_result = try reconcileWorkspaceAccess(alloc, primary, &current, &intended);
     defer third_result.deinit(alloc);
     try std.testing.expect(third_result == .unconfirmed);
 
-    const invalid_fixture = try std.fmt.allocPrint(
-        alloc,
-        "{{\"workspaces\":{{\"{s}\":{{\"additional_directories\":[\"{s}\",\"{s}\"]}}}}}}\n",
-        .{ primary, previous, previous },
-    );
-    defer alloc.free(invalid_fixture);
-    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", invalid_fixture);
+    try writeWorkspaceDirectoriesFixture(alloc, tmp.dir, "home/.fx/settings.json", primary, &.{ previous, previous });
     var invalid_result = try reconcileWorkspaceAccess(alloc, primary, &current, &intended);
     defer invalid_result.deinit(alloc);
     try std.testing.expect(invalid_result == .unconfirmed);
@@ -641,14 +623,11 @@ test "workspace access reconciliation rejects a retargeted durable source" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    try createPrivateFixtureHome(tmp);
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "first", .default_dir);
     try tmp.dir.createDir(std.testing.io, "second", .default_dir);
-    tmp.dir.symLink(std.testing.io, "first", "saved-link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    try symLinkOrSkip(tmp, "first", "saved-link");
 
     const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
     defer alloc.free(home);
@@ -669,15 +648,9 @@ test "workspace access reconciliation rejects a retargeted durable source" {
     var env = try TestEnv.install(alloc, &.{.{ .key = "HOME", .value = home }});
     defer env.deinit();
 
-    const fixture = try std.fmt.allocPrint(
-        alloc,
-        "{{\"workspaces\":{{\"{s}\":{{\"additional_directories\":[\"{s}\"]}}}}}}\n",
-        .{ primary, source },
-    );
-    defer alloc.free(fixture);
-    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", fixture);
+    try writeWorkspaceDirectoriesFixture(alloc, tmp.dir, "home/.fx/settings.json", primary, &.{source});
     try tmp.dir.deleteFile(std.testing.io, "saved-link");
-    try tmp.dir.symLink(std.testing.io, "second", "saved-link", .{ .is_directory = true });
+    try symLinkOrSkip(tmp, "second", "saved-link");
 
     var result = try reconcileWorkspaceAccess(alloc, primary, &current, &intended);
     defer result.deinit(alloc);
@@ -736,6 +709,20 @@ const EnvEntry = struct {
     key: []const u8,
     value: []const u8,
 };
+
+fn symLinkOrSkip(tmp: std.testing.TmpDir, target_path: []const u8, link_path: []const u8) !void {
+    tmp.dir.symLink(std.testing.io, target_path, link_path, .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
+fn createPrivateFixtureHome(tmp: std.testing.TmpDir) !void {
+    try tmp.dir.createDirPath(std.testing.io, "home/.fx");
+    var durable = try tmp.dir.openDir(io_mod.getIo(), "home/.fx", .{ .iterate = true, .follow_symlinks = false });
+    defer durable.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(durable);
+}
 
 fn writeFixtureFile(dir: std.Io.Dir, sub_path: []const u8, text: []const u8) !void {
     var file = try dir.createFile(io_mod.getIo(), sub_path, .{ .truncate = true });

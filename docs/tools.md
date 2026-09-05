@@ -154,6 +154,48 @@ security boundary. `task_list` is in that set because the system prompt's task
 tracking section tells the model when to write one, and a rule the model has to
 go searching to obey is a rule it skips.
 
+### The shell `terminal` runs, per platform
+
+`terminal` is the only tool that hands text to a shell, and which shell that is
+differs by platform. [`shell_resolver.zig`](../harness/src/core/terminal/shell_resolver.zig)
+picks it; [`sandbox.zig`](../harness/src/core/permissions/sandbox.zig) runs it.
+
+| | macOS | Windows |
+| --- | --- | --- |
+| Shell | the login shell from `getpwuid` (`/bin/zsh` or `/bin/bash`; anything else falls back to `/bin/zsh`) | `pwsh.exe` if PowerShell 7 is installed under `%ProgramFiles%\PowerShell\7` or `%LOCALAPPDATA%\Microsoft\WindowsApps`, otherwise `System32\WindowsPowerShell\v1.0\powershell.exe` |
+| `profile: user` argv | `<shell> --login` (bash also `-O expand_aliases`) `-c <command>` | `<shell> -NoLogo -NonInteractive -Command <script>` |
+| `profile: clean` argv | `<shell> --noprofile --norc` / `-f`, then `-c <command>` | `<shell> -NoLogo -NoProfile -NonInteractive -Command <script>` |
+| How the command reaches it | written to the shell's stdin, so nothing is quoted twice | one `-Command` argument, quoted by the CreateProcess rules PowerShell itself parses |
+| Exit code | the shell's | see the epilogue below |
+
+`cmd.exe` is not a target. It cannot receive a command containing a double
+quote through an ordinary spawn: the C runtime escapes an inner `"` as `\"`,
+which `cmd` does not understand, so `dir "C:\Program Files"` fails with *the
+filename, directory name, or volume label syntax is incorrect* whether or not
+`/s` is passed. PowerShell parses its own command line by those same rules, so
+the quoting round-trips.
+
+On Windows the command the model wrote is wrapped before it is handed over:
+
+- a one-line prelude sets `[Console]::InputEncoding`, `[Console]::OutputEncoding`
+  and `$OutputEncoding` to UTF-8, so non-ASCII output survives instead of
+  arriving as `?`. It is one line, so a PowerShell parse error still names a line
+  number one off the command the model wrote, not five.
+- an epilogue exits with `$LASTEXITCODE` when a native program ran, `0`/`1` from
+  `$?` when only cmdlets did. Without it PowerShell collapses every failure to
+  `1` and would report a failing cmdlet as success.
+
+The model is told which shell it has: the `shell_path` line of the turn context
+([`context.zig`](../harness/src/builtins/context.zig)) is the shell that was
+actually resolved, not `$SHELL` or `%COMSPEC%`.
+
+`terminal.exec` is stateless on every platform: `cd` in one call does not carry
+into the next, because each call starts a new shell in the workspace root. The
+durable half of the tool (`start`, `read`, `write`, `wait`, `close`) runs the
+same on Windows: the terminal host listens on an AF_UNIX socket through Winsock
+and each session is a PowerShell inside a pseudo console; see
+[terminal.md](terminal.md).
+
 ### The four colliding names
 
 [overrides.zig](../harness/src/builtins/emma/overrides.zig) resolves them, and

@@ -4,6 +4,7 @@ const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
 const permission_gate = @import("../../core/permissions/permission_gate.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const path_display = @import("path_display.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -64,7 +65,7 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "Unable to resolve delete target: {s} ({s})", .{ input.path, @errorName(err) }) };
     };
-    const rel = try displayPath(arena, ctx.workspace_root, target);
+    const rel = try path_display.workspaceRelative(arena, ctx.workspace_root, target);
 
     const stat = std.Io.Dir.cwd().statFile(io_mod.getIo(), target, .{}) catch {
         return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "delete_file failed: path not found: {s}", .{rel}) };
@@ -89,11 +90,6 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
 
 fn statPathEntry(path: []const u8) !std.Io.File.Stat {
     return std.Io.Dir.cwd().statFile(io_mod.getIo(), path, .{ .follow_symlinks = false });
-}
-
-fn displayPath(arena: Allocator, workspace_root: []const u8, absolute_path: []const u8) ![]const u8 {
-    const rel = try pathing.workspaceRelativePath(arena, workspace_root, absolute_path);
-    return if (rel.len == 0) "." else rel;
 }
 
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {

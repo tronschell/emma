@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const model_context_encoding = @import("../shared/model_context_encoding.zig");
 const skill_contract = @import("skill_contract.zig");
@@ -1281,6 +1282,7 @@ const CandidatePathReplacementHook = struct {
 };
 
 test "skill invocation reads validated candidate resources after path replacement" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     inline for (.{
         .{ "SKILL.md", "ORIGINAL SKILL BODY", "REPLACEMENT SKILL BODY" },
@@ -1734,6 +1736,7 @@ test "skill resources continue on line-safe UTF-8 boundaries and reject unsafe i
 }
 
 test "skill invocation encodes loaded paths and preserves the skill body" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

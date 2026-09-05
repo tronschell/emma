@@ -375,7 +375,9 @@ fn appendWorkspaceRoots(
 }
 
 fn appendSpecRoot(alloc: Allocator, roots: *std.ArrayList(SkillRoot), base: []const u8, spec: skill_contract.RootSpec) !void {
-    try appendOwnedRoot(alloc, roots, try std.fs.path.join(alloc, &.{ base, spec.path }), spec.source, base);
+    const path = try std.fs.path.join(alloc, &.{ base, spec.path });
+    if (comptime std.fs.path.sep != '/') std.mem.replaceScalar(u8, path, '/', std.fs.path.sep);
+    try appendOwnedRoot(alloc, roots, path, spec.source, base);
 }
 
 fn appendDupeRoot(alloc: Allocator, roots: *std.ArrayList(SkillRoot), source: SkillSource, path: []const u8) !void {
@@ -2290,6 +2292,7 @@ test "skill diagnostic summary identifies candidate and root consequences" {
 }
 
 test "skill diagnostic summary escapes the active trace path" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3585,6 +3588,7 @@ test "loadVisibleSkills orders valid candidates diagnoses invalid metadata and r
 }
 
 test "loadVisibleSkills diagnoses a hostile no-frontmatter directory name" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

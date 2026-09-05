@@ -20,7 +20,95 @@ pub fn setIo(zio: std.Io) void {
 }
 
 fn process_io_for(comptime os_tag: std.Target.Os.Tag, zio: std.Io) std.Io {
-    return if (os_tag == .macos) darwin_process_spawn.wrap(zio) else zio;
+    return switch (os_tag) {
+        .macos => darwin_process_spawn.wrap(zio),
+        .windows => windowsOpenFileWrap(zio),
+        else => zio,
+    };
+}
+
+const WindowsWrapState = enum(u8) { uninitialized, initializing, ready };
+
+var windows_wrap_state: std.atomic.Value(WindowsWrapState) = .init(.uninitialized);
+var windows_wrapped_vtable: std.Io.VTable = undefined;
+var windows_original_vtable: *const std.Io.VTable = undefined;
+
+fn windowsOpenFileWrap(original: std.Io) std.Io {
+    if (windows_wrap_state.load(.acquire) != .ready) initializeWindowsWrappedVtable(original);
+    std.debug.assert(windows_original_vtable == original.vtable);
+    return .{ .userdata = original.userdata, .vtable = &windows_wrapped_vtable };
+}
+
+fn initializeWindowsWrappedVtable(original: std.Io) void {
+    if (windows_wrap_state.cmpxchgStrong(.uninitialized, .initializing, .acquire, .acquire) == null) {
+        windows_wrapped_vtable = original.vtable.*;
+        windows_wrapped_vtable.dirOpenFile = windowsDirOpenFile;
+        windows_original_vtable = original.vtable;
+        windows_wrap_state.store(.ready, .release);
+        return;
+    }
+    while (windows_wrap_state.load(.acquire) != .ready) std.atomic.spinLoopHint();
+}
+
+fn windowsDirOpenFile(
+    userdata: ?*anyopaque,
+    dir: std.Io.Dir,
+    sub_path: []const u8,
+    flags: std.Io.Dir.OpenFileOptions,
+) std.Io.File.OpenError!std.Io.File {
+    var file = try windows_original_vtable.dirOpenFile(userdata, dir, sub_path, flags);
+    if (!windowsHandleIsAsynchronous(file.handle)) return file;
+    if (windowsReopenSynchronous(file.handle)) |synchronous| {
+        windows.CloseHandle(file.handle);
+        return .{ .handle = synchronous, .flags = file.flags };
+    }
+    file.flags.nonblocking = true;
+    return file;
+}
+
+fn windowsHandleIsAsynchronous(handle: windows.HANDLE) bool {
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+    var mode: windows.FILE.MODE = undefined;
+    return switch (windows.ntdll.NtQueryInformationFile(
+        handle,
+        &iosb,
+        &mode,
+        @sizeOf(windows.FILE.MODE),
+        .Mode,
+    )) {
+        .SUCCESS => mode.IO == .ASYNCHRONOUS,
+        else => false,
+    };
+}
+
+fn windowsReopenSynchronous(handle: windows.HANDLE) ?windows.HANDLE {
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+    var access: windows.ACCESS_MASK = undefined;
+    if (windows.ntdll.NtQueryInformationFile(
+        handle,
+        &iosb,
+        &access,
+        @sizeOf(windows.ACCESS_MASK),
+        .Access,
+    ) != .SUCCESS) return null;
+    access.STANDARD.SYNCHRONIZE = true;
+
+    const empty_name = windows.UNICODE_STRING.init(&.{});
+    var reopened: windows.HANDLE = undefined;
+    if (windows.ntdll.NtCreateFile(
+        &reopened,
+        access,
+        &.{ .RootDirectory = handle, .ObjectName = @constCast(&empty_name) },
+        &iosb,
+        null,
+        .{ .NORMAL = true },
+        .VALID_FLAGS,
+        .OPEN,
+        .{ .IO = .SYNCHRONOUS_NONALERT, .OPEN_REPARSE_POINT = true },
+        null,
+        0,
+    ) != .SUCCESS) return null;
+    return reopened;
 }
 
 pub fn getIo() std.Io {
@@ -169,9 +257,9 @@ test "openDirAbsoluteNoFollow rejects unsafe path components" {
 
     try tmp.dir.createDirPath(getIo(), "real/child");
     try writeTempFile(tmp.dir, "plain-file", "not a directory");
-    tmp.dir.symLink(std.testing.io, "real", "linked", .{ .is_directory = true }) catch |err| {
-        if (err == error.AccessDenied or err == error.FileSystem) return error.SkipZigTest;
-        return err;
+    tmp.dir.symLink(std.testing.io, "real", "linked", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.FileSystem, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
     };
 
     const root = try dirRealpathAlloc(alloc, tmp.dir, ".");
@@ -418,7 +506,10 @@ pub fn setRawEnviron(raw: RawEnviron) void {
 
 pub fn getenv(key: []const u8) ?[]const u8 {
     const value = getenvExact(key);
-    if (value != null) return value;
+    if (value) |present| {
+        if (comptime builtin.os.tag != .windows) return present;
+        if (present.len > 0) return present;
+    }
     if (comptime builtin.os.tag == .windows) {
         if (std.mem.eql(u8, key, "HOME")) return getenvExact("USERPROFILE");
         if (std.mem.eql(u8, key, "TMPDIR")) {
@@ -664,6 +755,13 @@ pub fn enforcePrivateDirectoryAcl(dir: std.Io.Dir) !void {
 pub fn privateDirectoryAclMatches(dir: std.Io.Dir) !bool {
     if (comptime builtin.os.tag != .windows) return permissionsMatch((try dir.stat(getIo())).permissions, 0o700);
     return windows_acl.matchesHandle(dir.handle);
+}
+
+pub fn directoryWritableByForeignPrincipal(dir: std.Io.Dir) !bool {
+    if (comptime builtin.os.tag != .windows) {
+        return permissionsMode((try dir.stat(getIo())).permissions) & 0o022 != 0;
+    }
+    return windows_acl.writableByForeignPrincipalHandle(dir.handle);
 }
 
 pub fn enforcePrivateFileAcl(file: std.Io.File) !void {
@@ -1088,10 +1186,12 @@ pub fn makeDirRecursive(path: []const u8) !void {
 
 pub fn realpathAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     if (comptime builtin.os.tag == .windows) {
-        if (std.fs.path.isAbsolute(path)) {
-            return std.Io.Dir.realPathFileAbsoluteAlloc(getIo(), path, alloc);
-        }
-        return std.Io.Dir.cwd().realPathFileAlloc(getIo(), path, alloc);
+        const resolved = if (std.fs.path.isAbsolute(path))
+            try std.Io.Dir.realPathFileAbsoluteAlloc(getIo(), path, alloc)
+        else
+            try std.Io.Dir.cwd().realPathFileAlloc(getIo(), path, alloc);
+        defer alloc.free(resolved);
+        return alloc.dupe(u8, resolved);
     }
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path_z = try std.fmt.bufPrintZ(&buf, "{s}", .{path});
@@ -1620,9 +1720,9 @@ test "caller-owned directory rejects unsafe private children" {
     );
 
     try tmp.dir.createDir(getIo(), "target", .default_dir);
-    tmp.dir.symLink(getIo(), "target", "link", .{ .is_directory = true }) catch |err| {
-        if (err == error.AccessDenied) return error.SkipZigTest;
-        return err;
+    tmp.dir.symLink(getIo(), "target", "link", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
     };
     try std.testing.expectError(
         error.DurablePathUnsafe,

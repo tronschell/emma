@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { chatChunks, chunkState, readChatgptAuth, relayHeaders, responsesRequest, retainsPromptCache, sessionIdFor, upstreamFailure } from "../main/chatgpt";
@@ -143,7 +144,7 @@ test("the proxy forwards upstream liveness even when no event translates into a 
   writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "a.b.c", account_id: "acct-1" } }));
   const script = path.join(home, "relay.mjs");
   writeFileSync(script, [
-    `const { chatgptRoute } = await import(${JSON.stringify(path.join(__dirname, "../main/chatgpt.js"))});`,
+    `const { chatgptRoute } = await import(${JSON.stringify(pathToFileURL(path.join(__dirname, "../main/chatgpt.js")).href)});`,
     'const upstream = \'data: {"type":"response.in_progress"}\\n\\ndata: {"type":"response.completed","response":{}}\\n\\ndata: [DONE]\\n\\n\';',
     "const real = globalThis.fetch;",
     "globalThis.fetch = async () => new Response(upstream, { status: 200 });",
@@ -151,7 +152,7 @@ test("the proxy forwards upstream liveness even when no event translates into a 
     'const answer = await real(route.chatUrl, { method: "POST", headers: { authorization: `Bearer ${route.apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] }) });',
     "process.stdout.write(await answer.text());",
   ].join("\n"));
-  const proxied = spawnSync(process.execPath, [script], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  const proxied = spawnSync(process.execPath, [script], { env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8" });
   assert.equal(proxied.status, 0, proxied.stderr);
   assert.match(proxied.stdout, /^:$/m);
   assert.match(proxied.stdout, /"finish_reason":"stop"/);
@@ -163,7 +164,7 @@ test("a buffered request is answered with one chat completion", () => {
   writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "a.b.c", account_id: "acct-1" } }));
   const script = path.join(home, "buffered.mjs");
   writeFileSync(script, [
-    `const { chatgptRoute } = await import(${JSON.stringify(path.join(__dirname, "../main/chatgpt.js"))});`,
+    `const { chatgptRoute } = await import(${JSON.stringify(pathToFileURL(path.join(__dirname, "../main/chatgpt.js")).href)});`,
     'const upstream = \'data: {"type":"response.output_text.delta","delta":"he"}\\n\\ndata: {"type":"response.output_text.delta","delta":"llo"}\\n\\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2}}}\\n\\ndata: [DONE]\\n\\n\';',
     "const real = globalThis.fetch;",
     "globalThis.fetch = async () => new Response(upstream, { status: 200 });",
@@ -171,7 +172,7 @@ test("a buffered request is answered with one chat completion", () => {
     'const answer = await real(route.chatUrl, { method: "POST", headers: { authorization: `Bearer ${route.apiKey}`, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", max_tokens: 4000, stream: false, messages: [{ role: "user", content: "hi" }] }) });',
     'process.stdout.write(JSON.stringify({ type: answer.headers.get("content-type"), body: await answer.json() }));',
   ].join("\n"));
-  const proxied = spawnSync(process.execPath, [script], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  const proxied = spawnSync(process.execPath, [script], { env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8" });
   assert.equal(proxied.status, 0, proxied.stderr);
   const answered = JSON.parse(proxied.stdout) as { type: string; body: Record<string, unknown> };
   assert.equal(answered.type, "application/json");

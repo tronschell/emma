@@ -98,7 +98,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
 
     if (params.prompt.some((part) => part.text?.includes("longtool"))) {
       notify(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_1", title: "bash", kind: "execute", status: "in_progress" });
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       notify(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_1", status: "completed", content: [{ type: "content", content: { type: "text", text: "slept" } }] });
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: {} } });
       return;

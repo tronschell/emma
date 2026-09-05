@@ -41,6 +41,17 @@ test("rounding preserves full window bounds and global point coordinates", () =>
   assert.equal(roundComputerCursor({ ...cursor, bounds: { ...cursor.bounds, width: 16_384 } }), null);
 });
 
+test("Windows window handles and physical-pixel geometry pass the cursor contract", () => {
+  const notepad = { windowId: 222_626_004, bounds: { x: 236, y: 367, width: 1918, height: 1030 }, x: 1264.5, y: 942 };
+  const secondDisplay = { windowId: 1_902_246, bounds: { x: -1928, y: -86, width: 1936, height: 1048 }, x: -1040.5, y: -15 };
+  for (const value of [notepad, secondDisplay]) {
+    assert.ok(validComputerCursor(value), JSON.stringify(value));
+    assert.deepEqual(roundComputerCursor(value), value);
+  }
+  assert.equal(validComputerCursor({ ...notepad, windowId: 0xffff_ffff + 1 }), false);
+  assert.equal(validComputerCursor({ ...secondDisplay, x: secondDisplay.bounds.x - 1 }), false);
+});
+
 test("crossing a display boundary does not shift the animation origin", () => {
   const bounds = { x: 1000, y: 50, width: 1000, height: 700 };
   const first = roundComputerCursor({ windowId: 42, bounds, x: 1200, y: 150 });
@@ -159,7 +170,7 @@ test("overlay waits for readiness, stays target-relative and cannot reshow after
   now += 50;
   ready({ sender, senderFrame: sender.mainFrame });
   assert.deepEqual(overlay.calls.slice(-2), ["showInactive", "moveAbove:window:73:0"]);
-  assert.deepEqual(overlay.bounds, [roundComputerCursor(cursor)!.bounds]);
+  assert.deepEqual(overlay.bounds.map((value) => ({ ...(value as object) })), [roundComputerCursor(cursor)!.bounds]);
   assert.equal(nearestPoints.length, 1);
   assert.equal(overlay.messages.at(-1)?.cursor?.x, cursor.x);
   assert.equal(overlay.messages.at(-1)?.cursor?.y, cursor.y);

@@ -413,7 +413,7 @@ test "cue file write replaces a symlink without modifying its target" {
         "cue.wav",
         .{ .is_directory = false },
     ) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 

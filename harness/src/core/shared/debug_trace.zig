@@ -372,10 +372,16 @@ fn writeLine(line: []const u8) void {
 
 fn appendLineToFile(zio: std.Io, path: []const u8, line: []const u8) void {
     var file = std.Io.Dir.createFileAbsolute(zio, path, .{
+        .read = true,
         .truncate = false,
         .lock = .exclusive,
     }) catch return;
     defer file.close(zio);
+    if (comptime builtin.os.tag == .windows) {
+        const end = file.length(zio) catch return;
+        file.writePositionalAll(zio, line, end) catch {};
+        return;
+    }
     _ = std.c.lseek(file.handle, 0, std.posix.SEEK.END);
     file.writeStreamingAll(zio, line) catch {};
 }
@@ -508,7 +514,9 @@ test "home default log path uses fx logs directory" {
     const alloc = std.testing.allocator;
     const path = try defaultLogPathForHome(alloc, "/tmp/fake-home");
     defer alloc.free(path);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/logs/trace.log", path);
+    const expected = try std.fs.path.join(alloc, &.{ "/tmp/fake-home", ".fx", "logs", "trace.log" });
+    defer alloc.free(expected);
+    try std.testing.expectEqualStrings(expected, path);
 }
 
 test "fallback default log path uses tmp trace path" {

@@ -12,6 +12,8 @@ const windows_paths = if (builtin.os.tag == .windows)
 else
     struct {};
 
+const backslash_escapes_paths = builtin.os.tag != .windows;
+
 pub const max_image_bytes: usize = 20 * 1024 * 1024;
 const max_encoded_image_bytes: usize = 5 * 1024 * 1024;
 pub const image_too_large_notice = "image exceeds the 20 MiB limit";
@@ -1899,7 +1901,7 @@ fn normalizePathInput(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
 
     var i: usize = 0;
     while (i < slice.len) : (i += 1) {
-        if (slice[i] == '\\' and i + 1 < slice.len) {
+        if (backslash_escapes_paths and slice[i] == '\\' and i + 1 < slice.len) {
             i += 1;
             try out.writer.writeByte(slice[i]);
             continue;
@@ -1956,7 +1958,7 @@ fn trailingSentencePunctuationStart(bytes: []const u8) usize {
             escaped = false;
             continue;
         }
-        if (byte == '\\') {
+        if (backslash_escapes_paths and byte == '\\') {
             suffix_start = index + 1;
             escaped = true;
             continue;
@@ -2007,7 +2009,7 @@ fn extensionIgnoringEscapes(raw: []const u8) []const u8 {
     var dot_index: ?usize = null;
     var i: usize = 0;
     while (i < raw.len) : (i += 1) {
-        if (raw[i] == '\\' and i + 1 < raw.len) {
+        if (backslash_escapes_paths and raw[i] == '\\' and i + 1 < raw.len) {
             i += 1;
             continue;
         }
@@ -2503,6 +2505,7 @@ test "extractInlineImageAttachments promotes workspace relative mentions" {
 }
 
 test "normalizePathInput unescapes finder style spaces" {
+    if (comptime !backslash_escapes_paths) return error.SkipZigTest;
     const normalized = try normalizePathInput(std.testing.allocator, "/Users/me/CleanShot\\ 2026-04-08\\ at\\ 12.16.27.png");
     defer std.testing.allocator.free(normalized);
     try std.testing.expectEqualStrings("/Users/me/CleanShot 2026-04-08 at 12.16.27.png", normalized);
@@ -2525,11 +2528,12 @@ test "extractInlineImageAttachments replaces supported paths with matching place
     const path = try io_mod.dirRealpathAlloc(arena, tmp.dir, file_name);
     const escaped = try std.mem.replaceOwned(u8, arena, path, " ", "\\ ");
 
-    const inputs = [_][]const u8{
-        try std.fmt.allocPrint(arena, "look this {s} now", .{escaped}),
+    const all_inputs = [_][]const u8{
         try std.fmt.allocPrint(arena, "look this \"{s}\" now", .{path}),
         try std.fmt.allocPrint(arena, "look this '{s}' now", .{path}),
+        try std.fmt.allocPrint(arena, "look this {s} now", .{escaped}),
     };
+    const inputs = if (backslash_escapes_paths) all_inputs[0..] else all_inputs[0..2];
     for (inputs) |input| {
         const result = try extractInlineImageAttachments(arena, "/", input, 1);
         defer result.deinit(arena);
@@ -3014,7 +3018,7 @@ test "capture preserves a source at the exact encoded byte limit" {
     );
 }
 
-test "capture normalizes an oversized encoded image on macOS or rejects locally" {
+test "capture normalizes an oversized encoded image where supported or rejects locally" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3044,7 +3048,7 @@ test "capture normalizes an oversized encoded image on macOS or rejects locally"
     };
     defer types.freeImageAttachment(alloc, attachment);
 
-    if (comptime builtin.os.tag != .macos) {
+    if (comptime builtin.os.tag != .macos and builtin.os.tag != .windows) {
         try std.testing.expectError(
             error.ImagePreparationFailed,
             captureImageSnapshot(alloc, &attachment, snapshot_dir),
@@ -3248,7 +3252,7 @@ test "snapshot capture rejects a symlinked destination directory" {
     session_dir.symLink(std.testing.io, outside_path, "images", .{
         .is_directory = true,
     }) catch |err| switch (err) {
-        error.AccessDenied => return,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
@@ -3307,7 +3311,7 @@ test "snapshot discard does not follow a replaced destination directory" {
     session_dir.symLink(std.testing.io, outside_path, "images", .{
         .is_directory = true,
     }) catch |err| switch (err) {
-        error.AccessDenied => return,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
@@ -3340,7 +3344,7 @@ test "verified snapshot loading rejects a symlink before and after retargeting" 
     const path_b = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "b.bin");
     defer alloc.free(path_b);
     tmp.dir.symLink(std.testing.io, path_a, "snapshot-link.bin", .{ .is_directory = false }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
     const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
@@ -3417,7 +3421,7 @@ test "verified snapshot loading rejects a symlinked directory" {
     const owned_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "owned");
     defer alloc.free(owned_path);
     tmp.dir.symLink(std.testing.io, owned_path, "images-link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
     const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");

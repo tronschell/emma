@@ -1907,19 +1907,28 @@ test "core permissions snapshot text and json stay stable" {
         .rules = .{ .rules = @constCast(&rules) },
     };
 
+    const display_target = try std.fs.path.join(std.testing.allocator, &.{ "src", "app.zig" });
+    defer std.testing.allocator.free(display_target);
+
     const text = try snapshot.renderText(std.testing.allocator);
     defer std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings(
-        "[permissions] mode=auto\n[permissions] configured rules:\n - allow edit -> src/*\n - ask open_url -> *\n[permissions] session grants:\n - write_file -> src/app.zig\n - run_command -> /tmp/workspace::npm test\n",
-        text,
+    const expected_text = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "[permissions] mode=auto\n[permissions] configured rules:\n - allow edit -> src/*\n - ask open_url -> *\n[permissions] session grants:\n - write_file -> {s}\n - run_command -> /tmp/workspace::npm test\n",
+        .{display_target},
     );
+    defer std.testing.allocator.free(expected_text);
+    try std.testing.expectEqualStrings(expected_text, text);
 
     const json = try snapshot.renderJson(std.testing.allocator);
     defer std.testing.allocator.free(json);
-    try std.testing.expectEqualStrings(
-        "{\"kind\":\"permissions\",\"mode\":\"auto\",\"grant_count\":2,\"grant_scope\":\"session\",\"runtime_grants_available\":true,\"rules_scope\":\"persistent_config\",\"rules\":[{\"permission\":\"edit\",\"pattern\":\"src/*\",\"action\":\"allow\"},{\"permission\":\"open_url\",\"pattern\":\"*\",\"action\":\"ask\"}],\"grants\":[{\"tool_name\":\"write_file\",\"target_path\":\"/tmp/workspace/src/app.zig\",\"display_target\":\"src/app.zig\"},{\"tool_name\":\"run_command\",\"target_path\":\"/tmp/workspace::npm test\",\"display_target\":\"/tmp/workspace::npm test\"}]}",
-        json,
+    const expected_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"kind\":\"permissions\",\"mode\":\"auto\",\"grant_count\":2,\"grant_scope\":\"session\",\"runtime_grants_available\":true,\"rules_scope\":\"persistent_config\",\"rules\":[{{\"permission\":\"edit\",\"pattern\":\"src/*\",\"action\":\"allow\"}},{{\"permission\":\"open_url\",\"pattern\":\"*\",\"action\":\"ask\"}}],\"grants\":[{{\"tool_name\":\"write_file\",\"target_path\":\"/tmp/workspace/src/app.zig\",\"display_target\":{f}}},{{\"tool_name\":\"run_command\",\"target_path\":\"/tmp/workspace::npm test\",\"display_target\":\"/tmp/workspace::npm test\"}}]}}",
+        .{std.json.fmt(display_target, .{})},
     );
+    defer std.testing.allocator.free(expected_json);
+    try std.testing.expectEqualStrings(expected_json, json);
 }
 
 test "model list explains public-only and rejected-credential catalogs" {

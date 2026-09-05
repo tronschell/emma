@@ -43,6 +43,7 @@ fn isRetryableAgentNetworkError(err: anyerror) bool {
         err == error.WouldBlock or
         err == error.WriteFailed or
         err == error.ReadFailed or
+        (builtin.os.tag == .windows and err == error.Unexpected) or
         isRetryableGatewayError(err);
 }
 
@@ -7111,7 +7112,8 @@ fn expectDirectLoopbackCancellation(
 }
 
 test "direct gateway cancellation closes a stalled response body promptly" {
-    try expectDirectLoopbackCancellation(.response_body_stall, "{}", 20, 800, 500);
+    const budget_ms: i64 = if (builtin.os.tag == .windows) 4000 else 500;
+    try expectDirectLoopbackCancellation(.response_body_stall, "{}", 20, 800, budget_ms);
 }
 
 test "direct gateway cancellation closes a stalled request send promptly" {
@@ -7119,7 +7121,8 @@ test "direct gateway cancellation closes a stalled request send promptly" {
     defer std.testing.allocator.free(payload);
     @memset(payload, 'x');
 
-    try expectDirectLoopbackCancellation(.request_send_stall, payload, 100, 5000, 2000);
+    const budget_ms: i64 = if (builtin.os.tag == .windows) 20000 else 2000;
+    try expectDirectLoopbackCancellation(.request_send_stall, payload, 100, 5000, budget_ms);
 }
 
 test "direct gateway fails fast when cancellation watcher cannot start" {

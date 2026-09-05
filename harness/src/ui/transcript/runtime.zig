@@ -2531,6 +2531,7 @@ test "historical command detail keeps artifact handles after command block attac
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(

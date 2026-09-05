@@ -8,6 +8,7 @@ import { FolderStore } from "../main/folders";
 import { isImageAttachment } from "../main/attachments";
 import { pathInside, realPath, realPathInside } from "../main/platform";
 import { contextBlock, MAX_FILE_BYTES, MAX_FOLDER_COUNT, MAX_FOLDER_FILES, mergeSkillContext, slashName } from "../shared/folders";
+import { NO_SYMLINKS, symlinksAllowed } from "./symlinks";
 
 function workspace() {
   const root = mkdtempSync(path.join(tmpdir(), "emma-folders-"));
@@ -25,7 +26,7 @@ function workspace() {
 test("a grant lists its text files and skips vendored and non-text ones", () => {
   const { project, store } = workspace();
   const [grant] = store.add(project);
-  assert.deepEqual(store.files(grant.id).files.map((file) => file.path), ["notes/plan.txt", "readme.md"]);
+  assert.deepEqual(store.files(grant.id).files.map((file) => file.path), [path.join("notes", "plan.txt"), "readme.md"]);
   assert.equal(store.files(grant.id).total, 2);
   assert.equal(store.files(grant.id).capped, false);
   assert.equal(store.read(grant.id, "readme.md").text, "# hello");
@@ -146,8 +147,10 @@ function pathHandlers() {
   const project = path.join(root, "project");
   mkdirSync(project, { recursive: true });
   writeFileSync(path.join(project, "chart.png"), "inside");
-  symlinkSync(path.join(root, "private.png"), path.join(project, "escape.png"));
-  symlinkSync(path.join(root, "secret.md"), path.join(project, "escape.md"));
+  if (symlinksAllowed()) {
+    symlinkSync(path.join(root, "private.png"), path.join(project, "escape.png"));
+    symlinkSync(path.join(root, "secret.md"), path.join(project, "escape.md"));
+  }
   writeFileSync(path.join(project, "readme.md"), "# inside");
   writeFileSync(path.join(root, "private.png"), "outside");
   writeFileSync(path.join(root, "secret.md"), "outside");
@@ -204,7 +207,8 @@ test("revealing a path in the file manager asks the same grant question", () => 
   assert.deepEqual(revealed, [path.join(project, "readme.md"), attached]);
 });
 
-test("a symlink inside a grant is not a way out of it", () => {
+test("a symlink inside a grant is not a way out of it", (context) => {
+  if (!symlinksAllowed()) return context.skip(NO_SYMLINKS);
   const { root, project, previewed, preview, reveal } = pathHandlers();
   const escapePng = path.join(project, "escape.png");
   const escapeMd = path.join(project, "escape.md");
@@ -219,7 +223,8 @@ test("a symlink inside a grant is not a way out of it", () => {
   assert.equal(reveal(null, escapeMd), false);
 });
 
-test("a grant refuses a symlinked leaf for reads, writes and editor opens", () => {
+test("a grant refuses a symlinked leaf for reads, writes and editor opens", (context) => {
+  if (!symlinksAllowed()) return context.skip(NO_SYMLINKS);
   const { root, project, store } = workspace();
   const outside = path.join(root, "secret.md");
   symlinkSync(outside, path.join(project, "escape.md"));
@@ -261,7 +266,8 @@ function visionImage() {
   return { root, project, attached, asked, look };
 }
 
-test("the vision tool is bound by the same grants as every other door", () => {
+test("the vision tool is bound by the same grants as every other door", (context) => {
+  if (!symlinksAllowed()) return context.skip(NO_SYMLINKS);
   const { root, project, attached, asked, look } = visionImage();
   for (const escape of [path.join(root, "private.png"), path.join(project, "escape.png"), "../private.png", "/etc/hosts"]) {
     assert.throws(() => look("thread", undefined, escape), /outside the granted folder/, escape);

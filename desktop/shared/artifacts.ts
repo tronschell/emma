@@ -160,7 +160,6 @@ export interface ArtifactMeta {
 
 export interface Artifact extends ArtifactMeta {
   content: string;
-  /** Absolute path of the content file, for Reveal in Finder. */
   path: string;
 }
 

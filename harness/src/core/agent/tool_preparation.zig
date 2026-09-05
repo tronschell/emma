@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const context_contract = @import("../workspace/context_contract.zig");
 const io_mod = @import("../shared/io.zig");
 const permissions = @import("../permissions/permissions.zig");
@@ -735,6 +736,8 @@ test "classifier validation failures remain terminal before execution" {
 }
 
 test "registered candidates expose only authoritative canonical targets" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const builtin_tools = @import("../../builtins/tools.zig");
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -949,7 +952,10 @@ test "ordinary applicable target freshness detects retarget and resolution failu
         defer kind_target.close(std.testing.io);
         try kind_target.writeStreamingAll(std.testing.io, "file");
     }
-    try tmp.dir.symLink(std.testing.io, "old", "workspace/link", .{ .is_directory = true });
+    tmp.dir.symLink(std.testing.io, "old", "workspace/link", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(workspace);
     const tools = [_]tool_dispatch.Tool{

@@ -1575,11 +1575,9 @@ test "terminal tool schema derives one closed branch per terminal action" {
             try std.testing.expectEqualStrings(field_name, property.name);
             if (std.mem.eql(u8, field_name, "action")) {
                 try std.testing.expect(!property.nullable);
-                try std.testing.expectEqualSlices(
-                    []const u8,
-                    &.{@tagName(action)},
-                    schemaEnumValues(property),
-                );
+                const values = schemaEnumValues(property);
+                try std.testing.expectEqual(@as(usize, 1), values.len);
+                try std.testing.expectEqualStrings(@tagName(action), values[0]);
                 continue;
             }
             try std.testing.expectEqual(
@@ -1790,6 +1788,7 @@ test "terminal dispatch is permission gated and fails closed when unavailable" {
     defer session_dir.close(test_io_mod.getIo());
     const session_path = try test_io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
+    try test_io_mod.enforcePrivateDirectoryAcl(session_dir);
     var capability = try test_session_child_store.SessionChildCapability.initForTesting(
         alloc,
         session_dir,

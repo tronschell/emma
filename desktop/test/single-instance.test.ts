@@ -20,7 +20,7 @@ test("a packaged duplicate explains its own version and path without touching th
       quit: () => calls.push("quit"),
     },
     isMac: true,
-    path,
+    path: path.posix,
     process: { execPath: "/Volumes/Emma/Emma.app/Contents/MacOS/Emma" },
     dialog: { showErrorBox: (title: string, detail: string) => {
       assert.equal(title, "Another copy of Emma is running");

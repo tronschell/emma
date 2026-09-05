@@ -779,6 +779,16 @@ fn writeTempFile(alloc: Allocator, tmp: *std.testing.TmpDir, sub_path: []const u
     return io_mod.dirRealpathAlloc(alloc, tmp.dir, sub_path);
 }
 
+fn expectPathEndsWith(actual: []const u8, expected_suffix: []const u8) !void {
+    try std.testing.expect(actual.len >= expected_suffix.len);
+    const tail = actual[actual.len - expected_suffix.len ..];
+    for (tail, expected_suffix) |actual_byte, expected_byte| {
+        if (actual_byte == expected_byte) continue;
+        if (expected_byte == '/' and actual_byte == std.fs.path.sep) continue;
+        return error.TestExpectedEqual;
+    }
+}
+
 fn workspaceRoot(alloc: Allocator, tmp: std.testing.TmpDir) ![]u8 {
     return io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
 }
@@ -872,7 +882,7 @@ test "grep search preserves explicitly requested ignored directory roots" {
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
     try std.testing.expect(result.truncated_reason == null);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "node_modules/pkg/ignored.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "node_modules/pkg/ignored.txt");
     try std.testing.expectEqualStrings("needle ignored", result.matches[0].line);
 }
 
@@ -891,7 +901,7 @@ test "grep search preserves explicitly requested ignored file roots" {
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
     try std.testing.expect(result.truncated_reason == null);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "node_modules/pkg/ignored.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "node_modules/pkg/ignored.txt");
     try std.testing.expectEqualStrings("needle ignored", result.matches[0].line);
 }
 
@@ -910,7 +920,7 @@ test "grep search does not ignore workspace because ignored name is outside work
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
     try std.testing.expect(result.truncated_reason == null);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "src/file.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "src/file.txt");
 }
 
 test "grep search falls back to Zig scanner outside git repositories" {
@@ -927,7 +937,7 @@ test "grep search falls back to Zig scanner outside git repositories" {
     const result = try collectDirectoryMatches(arena_state.allocator(), workspace, workspace, "needle", false, null);
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "src/main.zig"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "src/main.zig");
     try std.testing.expectEqualStrings("needle fallback", result.matches[0].line);
 }
 
@@ -1060,7 +1070,7 @@ test "grep search directory traversal skips external symlink targets with trace"
     const result = try collectDirectoryMatches(arena_state.allocator(), workspace, links_root, "needle", false, null);
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "links/internal.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "links/internal.txt");
     try std.testing.expectEqualStrings("needle internal", result.matches[0].line);
 
     const trace = try readTrace(alloc, trace_path);
@@ -1152,7 +1162,7 @@ test "grep search retained allocations scale with matches not scanned bytes" {
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
     try std.testing.expect(result.truncated_reason == null);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "large/match.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "large/match.txt");
     try std.testing.expectEqualStrings("needle kept", result.matches[0].line);
 }
 
@@ -1239,7 +1249,7 @@ test "grep search finds match beyond former traversal cap" {
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
     try std.testing.expect(result.truncated_reason == null);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "zzzz/match.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "zzzz/match.txt");
 }
 
 test "grep_files path narrowing applies before candidate cap" {
@@ -1275,7 +1285,7 @@ test "grep_files path narrowing applies before candidate cap" {
     try std.testing.expectEqual(@as(usize, 1), result.candidate_count);
     try std.testing.expect(!result.candidate_incomplete);
     try std.testing.expectEqual(@as(usize, 1), result.matches.len);
-    try std.testing.expect(std.mem.endsWith(u8, result.matches[0].absolute_path, "src/core/target.txt"));
+    try expectPathEndsWith(result.matches[0].absolute_path, "src/core/target.txt");
     try std.testing.expectEqualStrings("needle target", result.matches[0].line);
 }
 

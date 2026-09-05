@@ -823,6 +823,7 @@ const ProbeOrderingTerminal = struct {
 };
 
 test "changed live resize requests cursor position before applying geometry" {
+    if (comptime !supports_resize_signal) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const next_layout: Layout = .{
         .rows = 40,
@@ -871,6 +872,7 @@ test "changed live resize requests cursor position before applying geometry" {
 }
 
 test "signal fact pass applies changed geometry before the settle deadline" {
+    if (comptime !supports_resize_signal) return error.SkipZigTest;
     const next_layout: Layout = .{
         .rows = 40,
         .cols = 120,
@@ -937,6 +939,7 @@ test "committed light phase blocks intervening frames until reset is queued" {
 }
 
 test "pre-paint cursor delta survives live apply until reset commit" {
+    if (comptime !supports_resize_signal) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const next_layout: Layout = .{
         .rows = 40,
@@ -1019,6 +1022,7 @@ test "pre-paint cursor delta survives live apply until reset commit" {
 }
 
 test "new signal rebases a queued reset without committing an intermediate light frame" {
+    if (comptime !supports_resize_signal) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const old_layout = launchTestLayout();
     const next_layout: Layout = .{

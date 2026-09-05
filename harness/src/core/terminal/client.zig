@@ -4,6 +4,7 @@ const host_target = @import("../hosts/target.zig");
 const contracts = @import("contracts.zig");
 const protocol = @import("protocol.zig");
 const host = @import("host.zig");
+const endpoint = @import("endpoint.zig");
 const policy = @import("host_policy.zig");
 const io_mod = @import("../shared/io.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
@@ -596,11 +597,11 @@ fn exchange(
     alloc: Allocator,
     intent: *const Intent,
 ) !Completion {
-    var connected = try connectAndHandshake(
+    const connected = try connectAndHandshake(
         alloc,
         worker.runtime.process_provider,
     );
-    defer connected.stream.close(io_mod.getIo());
+    defer endpoint.closeStream(connected.stream);
     if (connected.incompatibility) |incompatibility| {
         return .{
             .kind = .unavailable,
@@ -729,19 +730,16 @@ fn receiveCancellable(
         if (worker.cancelled.load(.acquire)) {
             return error.Cancelled;
         }
-        const incoming = socket.receiveTimeout(
-            io_mod.getIo(),
+        const received = endpoint.receiveTimeout(
+            socket,
             destination[offset..],
-            .{ .duration = .{
-                .clock = .awake,
-                .raw = .fromMilliseconds(50),
-            } },
-        ) catch |err| switch (err) {
-            error.Timeout => continue,
-            else => return err,
+            50,
+        ) catch |err| {
+            if (err == error.Timeout) continue;
+            return err;
         };
-        if (incoming.data.len == 0) return error.EndOfStream;
-        offset += incoming.data.len;
+        if (received == 0) return error.EndOfStream;
+        offset += received;
     }
 }
 
@@ -775,7 +773,7 @@ fn connectAndHandshakeOnce(
         );
         return err;
     };
-    errdefer stream.close(io_mod.getIo());
+    errdefer endpoint.closeStream(stream);
 
     var write_buffer: [4096]u8 = undefined;
     var writer = stream.writer(io_mod.getIo(), &write_buffer);
@@ -874,8 +872,7 @@ fn connectOrStart(
 
 fn tryConnect(endpoint_path: []const u8) ?std.Io.net.Stream {
     if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) {
-        const address = std.Io.net.UnixAddress.init(endpoint_path) catch return null;
-        return address.connect(io_mod.getIo()) catch null;
+        return endpoint.connect(endpoint_path) catch null;
     }
     if (endpoint_path.len >= @sizeOf(@FieldType(std.c.sockaddr.un, "path"))) {
         return null;
@@ -1011,30 +1008,27 @@ fn receiveBeforeDeadline(
         const remaining_ms = deadline_ms - io_mod.milliTimestamp();
         if (remaining_ms <= 0) return error.HostHandshakeTimeout;
         const poll_ms = @min(remaining_ms, 50);
-        const incoming = socket.receiveTimeout(
-            io_mod.getIo(),
+        const received = endpoint.receiveTimeout(
+            socket,
             destination[offset..],
-            .{ .duration = .{
-                .clock = .awake,
-                .raw = .fromMilliseconds(poll_ms),
-            } },
-        ) catch |err| switch (err) {
-            error.Timeout => continue,
-            error.ConnectionResetByPeer => {
+            poll_ms,
+        ) catch |err| {
+            if (err == error.Timeout) continue;
+            if (err == error.ConnectionResetByPeer) {
                 if (part == .header and offset == 0) {
                     return error.HostClosedBeforeHandshake;
                 }
                 return error.TruncatedFrame;
-            },
-            else => return err,
+            }
+            return err;
         };
-        if (incoming.data.len == 0) {
+        if (received == 0) {
             if (part == .header and offset == 0) {
                 return error.HostClosedBeforeHandshake;
             }
             return error.TruncatedFrame;
         }
-        offset += incoming.data.len;
+        offset += received;
     }
 }
 

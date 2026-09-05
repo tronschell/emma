@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { branchPrefixName, parsePullRequest, pullRequestBadge, gitArgv, layoutHistory, matchesFilter, parseDiff, parseStatus, parseWorktrees, validateGitArgs, worktreeName, type GitCommit } from "../shared/git";
@@ -39,6 +39,7 @@ function makeRepo(): Repo {
   const run = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString();
   run("config", "user.email", "test@example.com");
   run("config", "user.name", "Test");
+  run("config", "core.autocrlf", "false");
   return { root, repo, run };
 }
 
@@ -441,7 +442,7 @@ test("a plain folder reports no repository, and git init turns it into one", asy
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "emma-git-")));
   const repo = path.join(root, "project");
   try {
-    execFileSync("mkdir", ["-p", repo]);
+    mkdirSync(repo, { recursive: true });
     assert.equal(await gitReady(repo), "no-repo");
     assert.equal(await gitSnapshot(repo), null);
     await initRepo(repo);

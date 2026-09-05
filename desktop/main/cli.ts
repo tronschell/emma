@@ -205,7 +205,7 @@ export class CliRuns {
         cwd: entry.cwd,
         env: { ...process.env, PATH: this.cachedPath ?? process.env.PATH ?? "", ...(entry.cli === "claude" && entry.effort ? { CLAUDE_CODE_EFFORT_LEVEL: entry.effort } : {}) },
         stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
+        detached: !isWindows,
         windowsHide: true,
       });
       entry.child = child;

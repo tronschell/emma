@@ -1916,6 +1916,13 @@ fn decodeTestMutationInput(
     };
 }
 
+fn createSymlinkOrSkip(dir: std.Io.Dir, target_path: []const u8, link_path: []const u8, is_directory: bool) !void {
+    dir.symLink(io_mod.getIo(), target_path, link_path, .{ .is_directory = is_directory }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
 fn expectTerminalSafe(text: []const u8) !void {
     try std.testing.expect(std.unicode.utf8ValidateSlice(text));
     try std.testing.expect(std.mem.findScalar(u8, text, 0x1b) == null);
@@ -1977,8 +1984,6 @@ test "prepare derives a missing write without creating the target" {
 }
 
 test "prepare shows the canonical external target when a symlink redirects outside the workspace" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1987,10 +1992,7 @@ test "prepare shows the canonical external target when a symlink redirects outsi
 
     try tmp.dir.createDir(std.testing.io, "workspace", .default_dir);
     try tmp.dir.createDir(std.testing.io, "outside", .default_dir);
-    tmp.dir.symLink(io_mod.getIo(), "../outside", "workspace/link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    try createSymlinkOrSkip(tmp.dir, "../outside", "workspace/link", true);
 
     const workspace = try io_mod.dirRealpathAlloc(arena, tmp.dir, "workspace");
     const misleading_path = try std.fs.path.join(arena, &.{ workspace, "link/new.txt" });
@@ -2302,6 +2304,13 @@ test "prepare emits explicit empty and no-change notices" {
     try std.testing.expectEqualStrings("no content changes", same.preview.lines[0].text);
 }
 
+const control_characters_are_legal_in_filenames = builtin.os.tag != .windows;
+
+const hostile_target_path = if (control_characters_are_legal_in_filenames)
+    "name\x1b[31m\nfile.txt"
+else
+    "name[31mfile.txt";
+
 test "prepare terminal-encodes hostile path and preview content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2309,9 +2318,8 @@ test "prepare terminal-encodes hostile path and preview content" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const root = try workspaceRoot(arena, tmp);
-    const hostile_path = "name\x1b[31m\nfile.txt";
     const hostile_content = "line\x1b[31mred\x1b[0m\n";
-    const arguments = try writeArgumentsJson(arena, hostile_path, hostile_content);
+    const arguments = try writeArgumentsJson(arena, hostile_target_path, hostile_content);
     const call: types.ToolCall = .{
         .id = "write-hostile",
         .name = "write_file",
@@ -2322,11 +2330,43 @@ test "prepare terminal-encodes hostile path and preview content" {
     const prepared = try expectPrepared(arena, call, policy);
 
     try expectTerminalSafe(prepared.display_path);
-    try std.testing.expect(!std.mem.eql(u8, hostile_path, prepared.display_path));
+    if (comptime control_characters_are_legal_in_filenames) {
+        try std.testing.expect(!std.mem.eql(u8, hostile_target_path, prepared.display_path));
+    }
     for (prepared.preview.lines) |line| try expectTerminalSafe(line.text);
     try std.testing.expectError(
         error.FileNotFound,
-        tmp.dir.statFile(std.testing.io, hostile_path, .{}),
+        tmp.dir.statFile(std.testing.io, hostile_target_path, .{}),
+    );
+}
+
+test "prepare reports a resolution failure for filenames the platform cannot represent" {
+    if (comptime control_characters_are_legal_in_filenames) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const root = try workspaceRoot(arena, tmp);
+    const call: types.ToolCall = .{
+        .id = "write-unrepresentable",
+        .name = "write_file",
+        .arguments_json = try writeArgumentsJson(arena, "name\x1b[31m\nfile.txt", "hello"),
+    };
+    const input = try decodeTestMutationInput(arena, call);
+    const result = try testing_permissions.evaluateFileMutationTargets(
+        arena,
+        root,
+        input,
+        .ask,
+        .{},
+        &.{},
+        &.{},
+    );
+    try std.testing.expectEqual(
+        file_mutation_contract.FileTargetResolutionFailure.bad_path_name,
+        result.target_resolution_failure,
     );
 }
 
@@ -2441,8 +2481,6 @@ test "prepare rejects call target and authority identity mismatches" {
 }
 
 test "prepare rejects an intermediate-directory retarget" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "approved", .default_dir);
@@ -2474,7 +2512,7 @@ test "prepare rejects an intermediate-directory retarget" {
     const policy = try evaluatePolicy(arena, root, call);
 
     try tmp.dir.rename("approved", tmp.dir, "approved-old", std.testing.io);
-    try tmp.dir.symLink(std.testing.io, "other", "approved", .{ .is_directory = true });
+    try createSymlinkOrSkip(tmp.dir, "other", "approved", true);
 
     try std.testing.expectEqualStrings(
         "file mutation preparation failed: approved target no longer matches the call",
@@ -3053,6 +3091,14 @@ fn replaceTargetAfterFinalPreimageRead(
         return error.TestControlFailed;
 }
 
+fn skipWhenOpenChildHandlesBlockDirectoryRename() error{SkipZigTest}!void {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+}
+
+fn skipWhenReopenedFileWritesAreUnsupported() error{SkipZigTest}!void {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+}
+
 const MoveParentTestState = struct {
     tmp: *std.testing.TmpDir,
     reached: bool = false,
@@ -3136,6 +3182,8 @@ test "apply rejects replaced staged sources without deleting foreign replacement
 }
 
 test "apply rejects in-place staged content changes before rename" {
+    try skipWhenReopenedFileWritesAreUnsupported();
+
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     var call_arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3221,6 +3269,8 @@ test "apply rejects a target pathname replaced during final preimage validation"
 }
 
 test "apply rejects a parent moved during final preimage validation" {
+    try skipWhenOpenChildHandlesBlockDirectoryRename();
+
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "parent", .default_dir);
@@ -3277,6 +3327,8 @@ test "apply rejects a parent moved during final preimage validation" {
 }
 
 test "apply commits through a parent moved after final validation" {
+    try skipWhenOpenChildHandlesBlockDirectoryRename();
+
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "parent", .default_dir);
@@ -3387,6 +3439,8 @@ test "apply observes cancellation between bounded stage writes" {
 }
 
 test "apply rejects replacement of transaction-created parent directories" {
+    try skipWhenOpenChildHandlesBlockDirectoryRename();
+
     inline for ([_]CreatedParentReplacement{ .shallow, .deep }) |replacement| {
         var tmp = std.testing.tmpDir(.{ .iterate = true });
         defer tmp.cleanup();

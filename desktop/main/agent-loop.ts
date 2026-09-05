@@ -255,7 +255,7 @@ export class AgentRuntime {
       .join("\n");
   }
 
-  noteNotice(threadId: string, kind: "steer" | "compact", text: string): void {
+  noteNotice(threadId: string, kind: "steer" | "compact", text: string, detail?: string): void {
     const run = this.runs.get(threadId);
     if (!run || !run.spans.length) return;
     const at = Date.now();
@@ -268,6 +268,7 @@ export class AgentRuntime {
       endedAt: at,
       status: "ok",
       input: text,
+      ...(detail ? { output: detail } : {}),
       said: run.said,
     });
     this.deps.changed();

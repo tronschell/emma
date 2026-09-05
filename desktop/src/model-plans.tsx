@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CLI_PLANS, MAX_SECRET_CHARS, MODEL_PLANS, OPENROUTER_KEYS_URL, PLAN_WEEK_MS, PLAN_WINDOW_MS, emptySpend, planBalanceLine, planForProfile, planSpend, type CliPlan, type KeyBalance, type ModelPlan, type PlanGeneration, type PlanSpend, type UserSettings } from "../shared/settings";
 import { charLabel } from "../shared/usage";
+import { localDevice } from "../shared/platform-copy";
 import { reasonText } from "./errors";
 import { BrandIcon, InfoDot } from "./icons";
 import { TerminalSurface } from "./terminal";
 import type { TerminalTab } from "../shared/terminal";
 import { brandForImporter, brandForProvider } from "./brands";
 import type { CredentialSummary, Snapshot } from "./types";
+
+const LOCAL_DEVICE = localDevice(typeof window === "undefined" ? "" : window.emma?.platform ?? "");
 
 type InstalledCli = { id: string; label: string; bin: string; path: string; signedIn?: boolean };
 
@@ -204,7 +207,7 @@ export function CliPlanRow({ plan, installed, busy, onDone }: { plan: CliPlan; i
     <div>
       <div className="settings-head"><strong>{plan.plan}</strong><InfoDot>{plan.note}</InfoDot></div>
       <small>{plan.detail}</small>
-      <code>{installed ? installed.path : `${plan.label} is not on this Mac`}</code>
+      <code>{installed ? installed.path : `${plan.label} is not on this ${LOCAL_DEVICE}`}</code>
     </div>
     <span className="provider-key-value">{installed ? "Sign in with " : "Install, then "}<code>{plan.signIn}</code></span>
     {installed

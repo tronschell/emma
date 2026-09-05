@@ -16,6 +16,9 @@ const container_inherit_ace: u8 = 0x02;
 const inherit_only_ace: u8 = 0x08;
 const inherited_ace: u8 = 0x10;
 const generic_all: u32 = 0x10000000;
+const generic_write: u32 = 0x40000000;
+const foreign_write_mask: u32 = 0x00000002 | 0x00000004 | 0x00000010 | 0x00000040 |
+    0x00000100 | delete_access | write_dac | 0x00080000 | generic_all | generic_write;
 const file_all_access: u32 = 0x001f01ff;
 const file_attribute_directory: windows.DWORD = 0x00000010;
 const file_attribute_reparse_point: windows.DWORD = 0x00000400;
@@ -24,9 +27,14 @@ const file_flag_backup_semantics: windows.DWORD = 0x02000000;
 const file_attribute_tag_info: windows.DWORD = 9;
 const reparse_tag_af_unix: windows.DWORD = 0x80000023;
 const open_existing: windows.DWORD = 3;
+const file_open_disposition: windows.DWORD = 1;
+const file_open_reparse_point_option: windows.DWORD = 0x00200000;
+const file_open_for_backup_intent_option: windows.DWORD = 0x00004000;
+const file_synchronous_io_nonalert_option: windows.DWORD = 0x00000020;
 const file_share_all: windows.DWORD = 0x00000007;
 const file_read_attributes: windows.DWORD = 0x00000080;
 const read_control: windows.DWORD = 0x00020000;
+const synchronize: windows.DWORD = 0x00100000;
 const write_dac: windows.DWORD = 0x00040000;
 const delete_access: windows.DWORD = 0x00010000;
 const file_object: windows.DWORD = 1;
@@ -81,6 +89,26 @@ const FileAttributeTagInfo = extern struct {
 
 const FileDispositionInfo = extern struct {
     delete_file: windows.BOOL,
+};
+
+const UnicodeString = extern struct {
+    length: u16,
+    maximum_length: u16,
+    buffer: ?[*]u16,
+};
+
+const ObjectAttributes = extern struct {
+    length: windows.ULONG,
+    root_directory: ?windows.HANDLE,
+    object_name: ?*const UnicodeString,
+    attributes: windows.ULONG,
+    security_descriptor: ?*anyopaque,
+    security_quality_of_service: ?*anyopaque,
+};
+
+const IoStatusBlock = extern struct {
+    status: usize,
+    information: usize,
 };
 
 const HandlePolicy = enum {
@@ -204,12 +232,19 @@ extern "kernel32" fn SetFileInformationByHandle(
     buffer_size: windows.DWORD,
 ) callconv(.winapi) windows.BOOL;
 
-extern "kernel32" fn ReOpenFile(
-    original_file: windows.HANDLE,
+extern "ntdll" fn NtCreateFile(
+    file_handle: *windows.HANDLE,
     desired_access: windows.DWORD,
-    share_mode: windows.DWORD,
-    flags_and_attributes: windows.DWORD,
-) callconv(.winapi) windows.HANDLE;
+    object_attributes: *const ObjectAttributes,
+    io_status_block: *IoStatusBlock,
+    allocation_size: ?*const i64,
+    file_attributes: windows.ULONG,
+    share_access: windows.ULONG,
+    create_disposition: windows.ULONG,
+    create_options: windows.ULONG,
+    ea_buffer: ?*const anyopaque,
+    ea_length: windows.ULONG,
+) callconv(.winapi) i32;
 
 extern "kernel32" fn OpenProcess(
     desired_access: windows.DWORD,
@@ -411,6 +446,83 @@ fn descriptorMatches(descriptor: *anyopaque, directory: bool) !DescriptorMatch {
     };
 }
 
+fn descriptorWritableByForeignPrincipal(descriptor: *anyopaque) !bool {
+    var dacl_present: windows.BOOL = .FALSE;
+    var dacl: ?*anyopaque = null;
+    var dacl_defaulted: windows.BOOL = .FALSE;
+    if (!GetSecurityDescriptorDacl(descriptor, &dacl_present, &dacl, &dacl_defaulted).toBool()) {
+        return error.SecurityApiFailed;
+    }
+    if (!dacl_present.toBool()) return true;
+    const acl = dacl orelse return true;
+
+    var system_sid: ?*anyopaque = null;
+    defer {
+        if (system_sid) |sid| _ = LocalFree(sid);
+    }
+    if (!ConvertStringSidToSidW(system_sid_text, &system_sid).toBool()) return error.SecurityApiFailed;
+    const system = system_sid orelse return error.SecurityApiFailed;
+
+    var administrators_sid: ?*anyopaque = null;
+    defer {
+        if (administrators_sid) |sid| _ = LocalFree(sid);
+    }
+    if (!ConvertStringSidToSidW(administrators_sid_text, &administrators_sid).toBool()) {
+        return error.SecurityApiFailed;
+    }
+    const administrators = administrators_sid orelse return error.SecurityApiFailed;
+
+    var owner_rights_sid: ?*anyopaque = null;
+    defer {
+        if (owner_rights_sid) |sid| _ = LocalFree(sid);
+    }
+    if (!ConvertStringSidToSidW(owner_rights_sid_text, &owner_rights_sid).toBool()) {
+        return error.SecurityApiFailed;
+    }
+    const owner_rights = owner_rights_sid orelse return error.SecurityApiFailed;
+
+    const current_sid = try currentProcessSid(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(current_sid);
+    const current: *anyopaque = @ptrCast(current_sid.ptr);
+
+    var acl_info: AclSizeInformation = undefined;
+    if (!GetAclInformation(
+        acl,
+        @ptrCast(&acl_info),
+        @sizeOf(AclSizeInformation),
+        acl_size_information_class,
+    ).toBool()) return error.SecurityApiFailed;
+
+    for (0..acl_info.ace_count) |index| {
+        var ace: ?*anyopaque = null;
+        if (!GetAce(acl, @intCast(index), &ace).toBool()) return error.SecurityApiFailed;
+        const ace_pointer = ace orelse return error.SecurityApiFailed;
+        const header = @as(*const AceHeader, @ptrCast(@alignCast(ace_pointer))).*;
+        if (header.ace_type != access_allowed_ace_type) continue;
+        if (header.ace_size < 12) return true;
+        if (header.ace_flags & inherit_only_ace != 0) continue;
+
+        const base = @intFromPtr(ace_pointer);
+        const mask = @as(*const u32, @ptrFromInt(base + 4)).*;
+        if (mask & foreign_write_mask == 0) continue;
+        const sid = @as(*anyopaque, @ptrFromInt(base + 8));
+        if (EqualSid(sid, system).toBool()) continue;
+        if (EqualSid(sid, administrators).toBool()) continue;
+        if (EqualSid(sid, owner_rights).toBool()) continue;
+        if (EqualSid(sid, current).toBool()) continue;
+        return true;
+    }
+    return false;
+}
+
+pub fn writableByForeignPrincipalHandle(handle: windows.HANDLE) !bool {
+    const security_handle = try reopenForSecurity(handle, read_control, .regular);
+    defer windows.CloseHandle(security_handle);
+    const fetched = try descriptorForHandle(security_handle, .regular);
+    defer _ = LocalFree(fetched.descriptor);
+    return descriptorWritableByForeignPrincipal(fetched.descriptor);
+}
+
 fn isAllowedReparsePoint(
     attributes: windows.DWORD,
     reparse_tag: windows.DWORD,
@@ -456,28 +568,39 @@ fn fileInformation(handle: windows.HANDLE, policy: HandlePolicy) !ByHandleFileIn
     return information;
 }
 
-fn sameFile(first: ByHandleFileInformation, second: ByHandleFileInformation) bool {
-    return first.volume_serial_number == second.volume_serial_number and
-        first.file_index_high == second.file_index_high and
-        first.file_index_low == second.file_index_low;
-}
-
 fn reopenForSecurity(
     handle: windows.HANDLE,
     desired_access: windows.DWORD,
     policy: HandlePolicy,
 ) !windows.HANDLE {
-    const original = try fileInformation(handle, policy);
-    const reopened = ReOpenFile(
-        handle,
-        desired_access,
+    var reopened: windows.HANDLE = undefined;
+    var status_block: IoStatusBlock = undefined;
+    const empty_name = UnicodeString{ .length = 0, .maximum_length = 0, .buffer = null };
+    const attributes = ObjectAttributes{
+        .length = @sizeOf(ObjectAttributes),
+        .root_directory = handle,
+        .object_name = &empty_name,
+        .attributes = 0,
+        .security_descriptor = null,
+        .security_quality_of_service = null,
+    };
+    if (NtCreateFile(
+        &reopened,
+        desired_access | file_read_attributes | synchronize,
+        &attributes,
+        &status_block,
+        null,
+        0,
         file_share_all,
-        file_flag_open_reparse_point | file_flag_backup_semantics,
-    );
-    if (reopened == windows.INVALID_HANDLE_VALUE) return error.SecurityApiFailed;
+        file_open_disposition,
+        file_synchronous_io_nonalert_option |
+            file_open_reparse_point_option |
+            file_open_for_backup_intent_option,
+        null,
+        0,
+    ) != 0) return error.SecurityApiFailed;
     errdefer windows.CloseHandle(reopened);
-    const reopened_info = try fileInformation(reopened, policy);
-    if (!sameFile(original, reopened_info)) return error.SecurityApiFailed;
+    _ = try fileInformation(reopened, policy);
     return reopened;
 }
 
@@ -506,7 +629,7 @@ fn descriptorForHandle(handle: windows.HANDLE, policy: HandlePolicy) !struct {
 pub fn applyHandle(handle: windows.HANDLE) !void {
     const security_handle = try reopenForSecurity(
         handle,
-        read_control | write_dac | file_read_attributes,
+        read_control | write_dac,
         .regular,
     );
     defer windows.CloseHandle(security_handle);
@@ -517,7 +640,7 @@ pub fn applyHandle(handle: windows.HANDLE) !void {
 pub fn applyEndpointHandle(handle: windows.HANDLE) !void {
     const security_handle = try reopenForSecurity(
         handle,
-        read_control | write_dac | file_read_attributes,
+        read_control | write_dac,
         .af_unix_endpoint,
     );
     defer windows.CloseHandle(security_handle);
@@ -559,7 +682,7 @@ fn applySecurityHandle(handle: windows.HANDLE, information: ByHandleFileInformat
 pub fn matchesHandle(handle: windows.HANDLE) !bool {
     const security_handle = try reopenForSecurity(
         handle,
-        read_control | file_read_attributes,
+        read_control,
         .regular,
     );
     defer windows.CloseHandle(security_handle);
@@ -571,7 +694,7 @@ pub fn matchesHandle(handle: windows.HANDLE) !bool {
 pub fn matchesEndpointHandle(handle: windows.HANDLE) !bool {
     const security_handle = try reopenForSecurity(
         handle,
-        read_control | file_read_attributes,
+        read_control,
         .af_unix_endpoint,
     );
     defer windows.CloseHandle(security_handle);
@@ -583,7 +706,7 @@ pub fn matchesEndpointHandle(handle: windows.HANDLE) !bool {
 pub fn deleteEndpointHandle(handle: windows.HANDLE) !void {
     const deletion_handle = try reopenForSecurity(
         handle,
-        delete_access | file_read_attributes,
+        delete_access,
         .af_unix_endpoint,
     );
     defer windows.CloseHandle(deletion_handle);
@@ -664,6 +787,11 @@ test "Windows ACL protects a directory and inherited child" {
     defer std.testing.allocator.free(child_dir);
     const child_file = try std.fs.path.join(std.testing.allocator, &.{ private_path, "child.txt" });
     defer std.testing.allocator.free(child_file);
+    try std.testing.expect(try matches(child_dir));
+    try std.testing.expect(try matches(child_file));
+    try std.testing.expect(try hasInheritedAce(child_dir));
+    try std.testing.expect(try hasInheritedAce(child_file));
+
     var child_file_handle = try private_dir.openFile(std.testing.io, "child.txt", .{
         .mode = .read_write,
         .allow_directory = false,
@@ -672,10 +800,12 @@ test "Windows ACL protects a directory and inherited child" {
     defer child_file_handle.close(std.testing.io);
     try applyHandle(child_file_handle.handle);
     try std.testing.expect(try matchesHandle(child_file_handle.handle));
-    try std.testing.expect(try matches(child_dir));
     try std.testing.expect(try matches(child_file));
-    try std.testing.expect(try hasInheritedAce(child_dir));
-    try std.testing.expect(try hasInheritedAce(child_file));
+
+    var write_only = try private_dir.createFile(std.testing.io, "write-only.txt", .{ .exclusive = true });
+    defer write_only.close(std.testing.io);
+    try applyHandle(write_only.handle);
+    try std.testing.expect(try matchesHandle(write_only.handle));
 }
 
 test "AF_UNIX reparse points are endpoint-only" {

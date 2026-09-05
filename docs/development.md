@@ -187,9 +187,9 @@ npm --prefix desktop run package:win
 It builds the release Rust host, Zig harness, Windows native helpers, ripgrep,
 and Electron code, then writes the current native-architecture app and Squirrel
 assets under `desktop/release/squirrel`. Local packaging omits signing
-credentials and produces an unsigned structure rehearsal. The current release
-workflow does not sign or upload Windows artifacts; public signed Windows x64
-publication is pending release-workflow authorization.
+credentials and produces the same installer the release publishes. The release
+workflow attaches the Windows x64 installer and Squirrel feed to every GitHub
+release; it is unsigned until the Windows signing secrets exist.
 
 ### Continuous integration
 

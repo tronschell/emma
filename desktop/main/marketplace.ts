@@ -28,7 +28,7 @@ import {
   type RunnableHookEvent,
   type WrittenPlugin,
 } from "../shared/plugins";
-import { findExecutable, isWindows, pathInside, shellArguments, shellBinary, spawnCommand, terminateProcessTree } from "./platform";
+import { findExecutable, isWindows, pathInside, shellArguments, shellBinary, spawnCommand, terminateProcessTree, windowsSystemExecutable } from "./platform";
 
 const DEFAULT_MARKETPLACE = "openai/plugins";
 const MAX_JSON_BYTES = 512 * 1024;
@@ -233,7 +233,7 @@ async function fetchNpmPackage(source: Extract<PluginSource, { kind: "npm" }>, d
 
 export async function unpack(tarball: string, destination: string, cap = MAX_NPM_UNPACKED_BYTES): Promise<void> {
   const pathValue = process.env.PATH || "";
-  if (!tarExecutable || tarExecutable.pathValue !== pathValue) tarExecutable = { pathValue, value: findExecutable(isWindows ? "tar.exe" : "tar", pathValue) };
+  if (!tarExecutable || tarExecutable.pathValue !== pathValue) tarExecutable = { pathValue, value: findExecutable(isWindows ? windowsSystemExecutable("tar.exe") : "tar", pathValue) };
   const binary = await tarExecutable.value;
   if (!binary) throw new Error(MISSING_TOOL.tar);
   return new Promise((resolve, reject) => {

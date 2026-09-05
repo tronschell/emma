@@ -68,6 +68,13 @@ const fixture_tools_json =
 const terminal_nested_tools_json =
     "[{\"type\":\"function\",\"name\":\"terminal\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"request\":{\"oneOf\":[{\"type\":\"object\"}]}},\"required\":[\"request\"],\"additionalProperties\":false}}]";
 
+fn symLinkOrSkip(dir: std.Io.Dir, target_path: []const u8, link_path: []const u8, is_directory: bool) !void {
+    dir.symLink(io_mod.getIo(), target_path, link_path, .{ .is_directory = is_directory }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
 fn makeOwnedVisionCatalog(
     alloc: std.mem.Allocator,
     dir: std.Io.Dir,
@@ -1882,6 +1889,7 @@ test "reactive sandbox widening failure preserves the restricted result" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -2056,6 +2064,7 @@ test "reactive sandbox broader retry cancellation cleans replay captures" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -2960,12 +2969,7 @@ test "same-batch retarget defers stale scoped call before permission and reloads
         defer stable_file.close(std.testing.io);
         try stable_file.writeStreamingAll(std.testing.io, "stable");
     }
-    try tmp.dir.symLink(
-        std.testing.io,
-        "old",
-        "workspace/link",
-        .{ .is_directory = true },
-    );
+    try symLinkOrSkip(tmp.dir, "old", "workspace/link", true);
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(workspace);
     const old_target = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace/old/secret.txt");
@@ -3073,12 +3077,7 @@ test "same-batch file mutation retarget stops before permission and execution" {
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, "workspace/old");
     try tmp.dir.createDirPath(std.testing.io, "workspace/new");
-    try tmp.dir.symLink(
-        std.testing.io,
-        "old",
-        "workspace/link",
-        .{ .is_directory = true },
-    );
+    try symLinkOrSkip(tmp.dir, "old", "workspace/link", true);
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(workspace);
     const new_directory = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace/new");
@@ -3157,6 +3156,7 @@ test "same-batch missing target defers newly resolvable scope until reissue" {
     defer alloc.free(new_directory);
     const link_path = try std.fs.path.join(alloc, &.{ workspace, "link" });
     defer alloc.free(link_path);
+    try symLinkOrSkip(tmp.dir, "workspace", "symlink-support-probe", true);
 
     const first_calls = [_]ToolCall{
         toolCall("resolve_scope", "create_folder", "{\"path\":\"noop\"}"),
@@ -4650,6 +4650,7 @@ test "terminal publication failure deletes retained command replay" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -5335,10 +5336,7 @@ test "processQueuedPrompt once permission binds external mutation grants before 
     const denied = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "denied");
     defer alloc.free(denied);
 
-    tmp.dir.symLink(io_mod.getIo(), allowed, "workspace/link", .{ .is_directory = true }) catch |err| {
-        if (err == error.AccessDenied or std.mem.eql(u8, @errorName(err), "Permission" ++ "Denied")) return error.SkipZigTest;
-        return err;
-    };
+    try symLinkOrSkip(tmp.dir, allowed, "workspace/link", true);
 
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
@@ -5346,7 +5344,7 @@ test "processQueuedPrompt once permission binds external mutation grants before 
 
     const link_path = try std.fs.path.join(arena, &.{ workspace, "link" });
     const requested = try std.fs.path.join(arena, &.{ link_path, "created.txt" });
-    const args = try std.fmt.allocPrint(arena, "{{\"path\":\"{s}\",\"content\":\"x\"}}", .{requested});
+    const args = try std.fmt.allocPrint(arena, "{{\"path\":{f},\"content\":\"x\"}}", .{std.json.fmt(requested, .{})});
     const calls = [_]ToolCall{toolCall("call_1", "write_file", args)};
     const completions = [_]FakeCompletion{
         .{ .tool_calls = &calls },
@@ -5401,10 +5399,7 @@ test "processQueuedPrompt always permission retains external mutation session gr
     const denied = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "denied");
     defer alloc.free(denied);
 
-    tmp.dir.symLink(io_mod.getIo(), allowed, "workspace/link", .{ .is_directory = true }) catch |err| {
-        if (err == error.AccessDenied or std.mem.eql(u8, @errorName(err), "Permission" ++ "Denied")) return error.SkipZigTest;
-        return err;
-    };
+    try symLinkOrSkip(tmp.dir, allowed, "workspace/link", true);
 
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
@@ -5412,7 +5407,7 @@ test "processQueuedPrompt always permission retains external mutation session gr
 
     const link_path = try std.fs.path.join(arena, &.{ workspace, "link" });
     const requested = try std.fs.path.join(arena, &.{ link_path, "created.txt" });
-    const args = try std.fmt.allocPrint(arena, "{{\"path\":\"{s}\",\"content\":\"x\"}}", .{requested});
+    const args = try std.fmt.allocPrint(arena, "{{\"path\":{f},\"content\":\"x\"}}", .{std.json.fmt(requested, .{})});
     const calls = [_]ToolCall{toolCall("call_1", "write_file", args)};
     const completions = [_]FakeCompletion{
         .{ .tool_calls = &calls },

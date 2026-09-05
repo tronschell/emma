@@ -1,5 +1,7 @@
 import { Buffer } from "node:buffer";
 import { BlockList, isIP } from "node:net";
+import path from "node:path";
+import { samePath } from "./platform";
 import { MAX_ATTACHED_CONTEXT_CHARS } from "../shared/folders";
 import { clampBytes, isKeepKind, validVaultFolder, MAX_ATTACHMENT_BYTES, MAX_NOTE_BYTES, MAX_TITLE_BYTES, type KeepRequest, type VaultKind } from "../shared/vault";
 import { MAX_JUDGE_ANSWER_CHARS, MAX_JUDGE_PROMPT_CHARS, MAX_JUDGE_RUBRIC_CHARS } from "./bench-judge";
@@ -329,7 +331,8 @@ export function trustedSender(value: string, appRoot: string, devServer?: string
   try {
     const url = new URL(value);
     if (devServer && url.origin === new URL(devServer).origin) return true;
-    return url.protocol === "file:" && decodeURIComponent(url.pathname) === `${appRoot}/dist-renderer/index.html`;
+    const sent = decodeURIComponent(url.pathname).replace(/^\/(?=[a-zA-Z]:)/, "");
+    return url.protocol === "file:" && samePath(sent, path.join(appRoot, "dist-renderer", "index.html"));
   } catch {
     return false;
   }

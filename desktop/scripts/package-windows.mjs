@@ -135,6 +135,8 @@ writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter(
   return `${pkg.name} ${pkg.version}\n\n${files.map((name) => readFileSync(path.join(cwd, name), "utf8")).join("\n\n")}`;
 }).join("\n\n"));
 writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MIT", "UNLICENSE"].map((name) => readFileSync(path.join(desktop, "vendor", name), "utf8")).join("\n\n"));
+const zvecModules = path.join(desktop, "vendor/zvec-grep/node_modules");
+writeFileSync(path.join(notices, "Zvec-grep-LICENSES.txt"), globSync("**/{LICENSE,LICENCE,COPYING,NOTICE}*", { cwd: zvecModules }).filter((name) => statSync(path.join(zvecModules, name)).isFile()).sort().map((name) => `${name}\n\n${readFileSync(path.join(zvecModules, name), "utf8")}`).join("\n\n"));
 
 const nativeHelpers = ["emma-option-tap.exe", "emma-computer.exe", "emma-transcribe.exe", "emma-pty.exe"];
 const required = [
@@ -174,7 +176,7 @@ assert.equal(icon.readUInt32LE(14), png.length, "Invalid ICO image size.");
 assert.equal(icon.readUInt32LE(18), 22, "Invalid ICO image offset.");
 assert.deepEqual(icon.subarray(22, 30), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "ICO image is not PNG.");
 
-const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$))/;
+const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$)|node_modules(?:$|\/ws(?:\/|$)))/;
 await packager({
   dir: desktop,
   name: "Emma",
@@ -186,6 +188,7 @@ await packager({
   asar: true,
   appVersion: version,
   buildVersion: version,
+  win32metadata: { CompanyName: "Tronschell", ProductName: "Emma", FileDescription: "Emma" },
   extraResource: required,
   ignore: (file) => file !== "" && !bundled.test(file),
   afterCopy: [({ buildPath }) => {
@@ -202,8 +205,8 @@ verifyPeArchitecture(executable);
 const archive = path.join(app, "resources", "app.asar");
 assert.ok(existsSync(archive), `Missing packaged archive: ${archive}`);
 assert.equal(JSON.parse(extractFile(archive, "package.json")).version, version);
-const files = listPackage(archive);
-for (const file of ["/dist-main/main/main.js", "/dist-main/main/preload.js", "/dist-renderer/index.html", "/dist-renderer/.vite/license.md"]) assert.ok(files.includes(file), `Missing packaged file: ${file}`);
+const files = listPackage(archive).map((file) => file.replaceAll("\\", "/"));
+for (const file of ["/dist-main/main/main.js", "/dist-main/main/preload.js", "/dist-renderer/index.html", "/dist-renderer/.vite/license.md", "/node_modules/ws/index.js"]) assert.ok(files.includes(file), `Missing packaged file: ${file}`);
 assert.ok(files.every((file) => bundled.test(file)), "Source files must not ship in app.asar.");
 for (const resource of required) {
   const file = path.join(app, "resources", path.basename(resource));
@@ -227,6 +230,7 @@ await createWindowsInstaller({
   appDirectory: app,
   outputDirectory: squirrel,
   authors: "Tronschell",
+  description: "A self-learning, self-building metaharness.",
   name: "Emma",
   exe: "Emma.exe",
   setupExe: `Emma-${version}-win32-${arch}-Setup.exe`,

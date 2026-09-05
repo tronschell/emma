@@ -872,12 +872,15 @@ test "managed result create read stat delete remains contained after route swap"
         "retained-results",
         io_mod.getIo(),
     );
-    try tmp.dir.symLink(
+    tmp.dir.symLink(
         io_mod.getIo(),
         "outside",
         "results",
         .{ .is_directory = true },
-    );
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
 
     const handle = try storeLargeResultManaged(
         alloc,
@@ -929,6 +932,7 @@ test "managed result read only absence does not create route" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(
         alloc,
         tmp.dir,

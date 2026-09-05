@@ -7,7 +7,7 @@ and `windows-2025` (x64) runners.
 ## Branches
 
 ```text
-feature branch → dev → main → signed macOS download
+feature branch → dev → main → published macOS and Windows downloads
 ```
 
 `dev` is the default branch. Anyone opens feature PRs against it, and every PR
@@ -27,11 +27,14 @@ gh pr create --base dev
    `npm version patch --no-git-tag-version` and commit it.
 2. Open a `dev` → `main` PR and merge it with **Create a merge commit**.
 3. The promotion PR carries the required checks. After it is merged, the push
-   to `main` runs `ci` against the exact promoted commit and packages an unsigned
-   candidate. The successful candidate workflow then triggers `release`, which
-   verifies that candidate, signs, notarizes, staples, checks Gatekeeper, and
-   publishes `vX.Y.Z` with the automatically collected changelog. A manual
-   release dispatch retains a direct package fallback.
+   to `main` runs `ci` against the exact promoted commit and packages two
+   candidates: `package-mac` on `macos-15` and `package-win` on `windows-2025`.
+   The successful candidate workflow then triggers `release`, which verifies
+   both candidates, signs, notarizes, staples and Gatekeeper-checks the macOS
+   app and disk image, and publishes `vX.Y.Z` with the automatically collected
+   changelog and both platforms' assets. A manual release dispatch rebuilds and
+   publishes macOS only; Windows PE files cannot be produced or signed on the
+   macOS release runner.
 
 There is no changelog file, release PR, manifest, or tag to manage. The
 GitHub Releases page is the changelog. Merging `main` again with an unchanged
@@ -71,12 +74,22 @@ or changing anything. References resolve on GitHub, independent of local tags.
 
 ## Downloads and updates
 
-Published macOS assets appear in [GitHub Releases](https://github.com/tronschell/emma/releases):
+Every release publishes macOS Apple silicon and Windows x64 assets to
+[GitHub Releases](https://github.com/tronschell/emma/releases).
+
+macOS:
 
 - `Emma-vX.Y.Z-darwin-arm64.dmg`
 - `Emma-vX.Y.Z-darwin-arm64.dmg.sha256`
 - `Emma-vX.Y.Z-darwin-arm64.zip`
 - `Emma-vX.Y.Z-darwin-arm64.zip.sha256`
+
+Windows:
+
+- `Emma-vX.Y.Z-win32-x64-Setup.exe`
+- `Emma-X.Y.Z-full.nupkg`
+- `RELEASES`
+- `Emma-vX.Y.Z-windows-x64.sha256`
 
 The disk image is the human download: open it and drag Emma onto the
 Applications alias on the right. The centered Finder window uses Emma's rose
@@ -101,9 +114,8 @@ bundled skills, and dependency notices. End users do not need Node, Rust, Zig,
 or Xcode installed.
 
 The release title is exactly `vX.Y.Z` and the stable `darwin-arm64.zip` asset
-is the one the `update.electronjs.org` feed selects. Keep both, and keep
-publishing the zip whatever else ships beside it. Drafts and prereleases are
-not stable updates.
+is the one the `update.electronjs.org` feed selects on macOS. Keep both, and
+keep publishing the zip whatever else ships beside it.
 
 On macOS, a packaged app checks the feed at launch, on a five-minute tick, when
 the machine wakes, and when a window takes focus, with any check inside thirty
@@ -121,12 +133,55 @@ installing from a restored notice re-downloads first and then relaunches. The
 record is deleted once the running version is no longer older than it. The
 unpackaged `EMMA_UPDATE_FAKE` mode only exercises the notice.
 
-Windows CI runs tests only. Windows packaging, signing, and publication are not
-wired into any workflow yet.
+On Windows, the Setup executable is a Squirrel installer. It installs per user
+under `%LOCALAPPDATA%\Emma`, needs no administrator prompt, and the same
+`update.electronjs.org` feed serves it. Squirrel appends `/RELEASES` to the feed
+URL, and the feed answers with the `RELEASES` asset of the newest published
+`vX.Y.Z` release, rewriting the package name inside it into the full GitHub
+download URL of the matching `.nupkg`. Three asset rules follow from that and
+the release job enforces them:
+
+- The installer is the only asset whose name contains `-win32-x64`. The feed
+  picks the first asset matching that pattern as the Windows x64 release, so the
+  Windows checksum file is named `-windows-x64.sha256`, not `-win32-x64.sha256`.
+- The `.nupkg` keeps the exact name Squirrel wrote, including its unprefixed
+  `X.Y.Z` version. The feed rewrites the name it reads out of `RELEASES` into a
+  download URL, so a renamed package resolves to a 404.
+- `RELEASES` is published byte for byte, and CI produces exactly one full
+  package per release. The feed rewrites only the first package it finds, so a
+  delta package listed beside it would not resolve. The release job fails if
+  more than one `.nupkg` is present or if `RELEASES` names a different file.
+
+Drafts, prereleases, non-semver tags, and a private repository are all invisible
+to the feed on both platforms.
+
+**Windows builds are not code signed today.** The repository holds no Windows
+certificate, so SmartScreen shows "Windows protected your PC" on the installer;
+users click **More info** and then **Run anyway**. The published
+`Emma-vX.Y.Z-windows-x64.sha256` file is how a download is checked in the
+meantime. `update.electronjs.org` does not require Windows Squirrel builds to
+be signed, so auto-update works unsigned.
+
+Signing turns on with no workflow change once two repository secrets exist:
+
+| Secret | Value |
+| --- | --- |
+| `WINDOWS_CERT_PFX_BASE64` | Base64-encoded code signing certificate and private key exported as `.pfx` |
+| `WINDOWS_CERT_PASSWORD` | Password used when exporting that `.pfx` |
+
+The `package-win` job decodes the certificate into `RUNNER_TEMP`, passes its
+path to `package:win` as `WINDOWS_CERT_PFX`, and deletes it in a step that runs
+even when the job fails. Signing happens on the Windows runner because the
+macOS release runner cannot sign Windows PE files. Only the push to `main`
+stages the certificate; pull request runs never receive either secret and always
+package unsigned. `WINDOWS_TIMESTAMP_SERVER` and `WINDOWS_SIGNTOOL_PATH`
+override the DigiCert timestamp server and `signtool.exe` discovery when needed.
 
 ## Signing credentials
 
-Keep these in repository Actions secrets, never in source or artifacts:
+Keep these in repository Actions secrets, never in source or artifacts. The
+macOS credentials below are required; the optional Windows pair is described
+under [Downloads and updates](#downloads-and-updates):
 
 | Secret | Value |
 | --- | --- |

@@ -20,7 +20,7 @@ theming abstraction. Do not hard-code a hex value that a token already names.
 | `--surface-2` | `#17171a` | Card, composer |
 | `--surface-3` | `#1c1c20` | Hover |
 | `--surface-4` | `#232327` | Active |
-| `--chrome` | `var(--surface)` | Titlebar as-is; the sidebar mixes it to 35% over `vibrancy: "sidebar"` |
+| `--chrome` | `var(--surface)` | Titlebar as-is; the sidebar mixes it to 35% over `vibrancy: "sidebar"`. On Windows it also paints the 32px title strip and the native window-controls overlay, which carry the rail nav on the left and the close buttons on the right |
 | `--text` | `#e8e6df` | Primary |
 | `--text-2` | `#e8e6dfad` | Secondary, labels. 6.56:1 on `--surface-4` |
 | `--text-3` | `#e8e6df8c` | Timestamps, captions. 4.80:1 on `--surface-4` — the floor |

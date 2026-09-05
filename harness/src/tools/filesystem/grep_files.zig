@@ -7,6 +7,7 @@ const regex = @import("../../core/shared/regex.zig");
 const text_utils = @import("../../core/shared/text_utils.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_result_errors = @import("../../core/tooling/tool_result_errors.zig");
+const path_display = @import("path_display.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -554,7 +555,7 @@ fn formatCount(
 
 fn displayPath(arena: Allocator, workspace_root: []const u8, absolute_path: []const u8) ![]const u8 {
     if (workspace_root.len == 0) return absolute_path;
-    return pathing.workspaceRelativePath(arena, workspace_root, absolute_path);
+    return path_display.workspaceRelative(arena, workspace_root, absolute_path);
 }
 
 /// Reports that grep_files only observes filesystem content.
@@ -946,11 +947,9 @@ test "grep_files reports stat failures after root resolution" {
 
 test "grep_files access denial returns structured recovery" {
     const alloc = std.testing.allocator;
-    const root = try std.fmt.allocPrint(alloc, "/tmp/fx-grep-files-access-{d}", .{io_mod.nanoTimestamp()});
-    defer alloc.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), root) catch {};
-    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), root);
-    const workspace = try io_mod.realpathAlloc(alloc, root);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
     defer alloc.free(workspace);
     const path = try std.fs.path.join(alloc, &.{ workspace, "file.txt" });
     defer alloc.free(path);
@@ -965,7 +964,9 @@ test "grep_files access denial returns structured recovery" {
 
     try std.testing.expect(tool_result_errors.isToolExecutionFailedOutput(body));
     try std.testing.expect(std.mem.find(u8, body, "\"tool_name\":\"grep_files\"") != null);
-    try std.testing.expect(std.mem.find(u8, body, path) != null);
+    const encoded_path = try std.fmt.allocPrint(alloc, "{f}", .{std.json.fmt(path, .{})});
+    defer alloc.free(encoded_path);
+    try std.testing.expect(std.mem.find(u8, body, encoded_path) != null);
     try std.testing.expect(std.mem.find(u8, body, "AccessDenied") != null);
     try std.testing.expect(std.mem.find(u8, body, "symlink") != null);
 }

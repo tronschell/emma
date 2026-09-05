@@ -1924,6 +1924,13 @@ fn expectRule(rule: types.PermissionRule, permission: []const u8, pattern: []con
     try std.testing.expectEqual(action, rule.action);
 }
 
+fn createPrivateFixtureDir(dir: std.Io.Dir, sub_path: []const u8) !void {
+    try dir.createDirPath(io_mod.getIo(), sub_path);
+    var created = try dir.openDir(io_mod.getIo(), sub_path, .{ .follow_symlinks = false });
+    defer created.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(created);
+}
+
 fn writeFixtureFile(dir: std.Io.Dir, sub_path: []const u8, text: []const u8) !void {
     var file = try dir.createFile(io_mod.getIo(), sub_path, .{ .truncate = true });
     defer file.close(io_mod.getIo());
@@ -2003,7 +2010,7 @@ test "session_commands handleSettings shows startup scrollback status" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
     try writeFixtureFile(tmp.dir, "home/.fx/settings.json", "{\"startup_scrollback\":false}");
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
@@ -2482,7 +2489,7 @@ test "session_commands allowlist view reports unsafe settings without returning 
     tmp.dir.symLink(io_mod.getIo(), "../outside", "home/.fx", .{
         .is_directory = true,
     }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
@@ -2871,7 +2878,7 @@ test "session_commands user save notice uses one post-commit load after legacy c
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
     defer std.testing.allocator.free(home_root);
@@ -2879,8 +2886,8 @@ test "session_commands user save notice uses one post-commit load after legacy c
     defer std.testing.allocator.free(workspace_root);
     const fixture = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{{\"model\":\"user/old\",\"workspaces\":{{\"{s}\":{{\"model\":\"legacy/local\"}}}}}}\n",
-        .{workspace_root},
+        "{{\"model\":\"user/old\",\"workspaces\":{{{f}:{{\"model\":\"legacy/local\"}}}}}}\n",
+        .{std.json.fmt(workspace_root, .{})},
     );
     defer std.testing.allocator.free(fixture);
     try writeFixtureFile(tmp.dir, "home/.fx/settings.json", fixture);
@@ -2905,7 +2912,7 @@ test "session_commands durable user save survives post-commit resolver failure" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
     defer std.testing.allocator.free(home_root);
@@ -2913,8 +2920,8 @@ test "session_commands durable user save survives post-commit resolver failure" 
     defer std.testing.allocator.free(workspace_root);
     const fixture = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{{\"workspaces\":{{\"{s}\":{{\"model\":\"legacy/local\"}}}}}}\n",
-        .{workspace_root},
+        "{{\"workspaces\":{{{f}:{{\"model\":\"legacy/local\"}}}}}}\n",
+        .{std.json.fmt(workspace_root, .{})},
     );
     defer std.testing.allocator.free(fixture);
     try writeFixtureFile(tmp.dir, "home/.fx/settings.json", fixture);
@@ -2946,7 +2953,7 @@ test "session_commands durable user save survives post-commit resolver diagnosti
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
     defer std.testing.allocator.free(home_root);
@@ -2989,7 +2996,7 @@ test "session_commands allowlist durable save survives post-commit resolver diag
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
     defer std.testing.allocator.free(home_root);

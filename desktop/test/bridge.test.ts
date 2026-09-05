@@ -377,6 +377,7 @@ function dispatchOn(sandbox: Record<string, unknown>): Dispatch {
     bridgeReplies: new Map<string, Map<string, unknown>>(),
     MAX_REPLIES_PER_THREAD: 32,
     MAX_REPLY_THREADS: 32,
+    DEVICE: "Mac",
     ...sandbox,
   }) as Dispatch;
 }

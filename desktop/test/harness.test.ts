@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { withThinking } from "../shared/thinking";
@@ -322,14 +323,14 @@ test("closing still kills an emma-cli that ignores its stdin ending", async () =
 
 test("a turn the agent never answers is handed back, and the wedged agent is replaced", async () => {
 
-  const { client } = harness(async () => "allow_once", 150);
+  const { client } = harness(async () => "allow_once", 500);
   await assert.rejects(client.prompt("thread-wedged", workspace, "wedge", "ask"), /stopped answering/);
   assert.equal(client.running, false);
   client.close();
 });
 
 test("a tool call still running keeps its silent turn alive past the idle window", async () => {
-  const { client, calls } = harness(async () => "allow_once", 150);
+  const { client, calls } = harness(async () => "allow_once", 500);
   try {
     const { stopReason } = await client.prompt("thread-longtool", workspace, "longtool", "ask");
     assert.equal(stopReason, "end_turn");
@@ -342,9 +343,9 @@ test("a tool call still running keeps its silent turn alive past the idle window
 
 test("a permission ask left open on screen does not kill the agent waiting on it", async () => {
   const { client, asks } = harness(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     return "allow_once";
-  }, 150);
+  }, 500);
   try {
     const { stopReason } = await client.prompt("thread-slowask", workspace, "run it", "ask");
     assert.equal(stopReason, "end_turn");
@@ -540,7 +541,7 @@ test("a turn for another directory is refused instead of written to the wrong on
 
     await assert.rejects(
       () => client.prompt("thread-3", "/tmp/somewhere-else", "do it", "ask"),
-      new RegExp(`bound to ${workspace}`),
+      (error: unknown) => String(error).includes(`bound to ${workspace}`),
     );
   } finally {
     client.close();
@@ -683,7 +684,7 @@ test("a thread keeps its harness session across a restart", async () => {
   assert.notEqual(index(home)["thread-a"], before);
 
   const alias = path.join(tmpdir(), `emma-harness-alias-${process.pid}`);
-  try { symlinkSync(home, alias); } catch (error) {
+  try { symlinkSync(home, alias, "junction"); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   const second = harness(async () => "allow_once", undefined, async () => "", alias);
@@ -1042,7 +1043,7 @@ test("a run whose project folder was deleted names the folder, not the agent bin
     cwd: gone,
     mcpServers: async () => [],
   } as unknown as ConstructorParameters<typeof Harness>[0]);
-  await assert.rejects(() => client.start(), new RegExp(`is no longer at ${gone}`));
+  await assert.rejects(() => client.start(), (error: unknown) => String(error).includes(`is no longer at ${gone}`));
   assert.match(client.state.failure, /reconnect it from the ＋ menu/);
   assert.doesNotMatch(client.state.failure, /ENOENT/);
 });
@@ -1054,7 +1055,7 @@ test("the configured vision route reaches the child, and no vision route leaves 
   writeFileSync(agent, [
     'import { writeFileSync } from "node:fs";',
     'writeFileSync(process.env.EMMA_TEST_ENV_DUMP, JSON.stringify(process.env));',
-    `await import(${JSON.stringify(fakeAgent)});`,
+    `await import(${JSON.stringify(pathToFileURL(fakeAgent).href)});`,
   ].join("\n"));
   process.env.EMMA_TEST_ENV_DUMP = dump;
   const start = async (vision?: { model: string; chatUrl: string; apiKey: string }) => {

@@ -11,6 +11,19 @@ else
 const Allocator = std.mem.Allocator;
 const windows_cmd_path = "C:\\Windows\\System32\\cmd.exe";
 const windows_powershell_path = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const windows_pwsh_suffix = "\\PowerShell\\7\\pwsh.exe";
+const windows_pwsh_app_suffix = "\\Microsoft\\WindowsApps\\pwsh.exe";
+
+pub const windows_agent_shell_flags = [_][]const u8{ "-NoLogo", "-NoProfile", "-NonInteractive", "-Command" };
+
+const windows_script_prelude =
+    "$fx_utf8 = [Text.UTF8Encoding]::new($false); " ++
+    "[Console]::InputEncoding = $fx_utf8; " ++
+    "[Console]::OutputEncoding = $fx_utf8; " ++
+    "$OutputEncoding = $fx_utf8\r\n";
+
+const windows_script_epilogue =
+    "\r\nexit $(if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 })";
 
 pub const ResolveError = error{
     MissingLoginShell,
@@ -48,9 +61,72 @@ fn shellKind(path: []const u8) ?ShellKind {
 fn fallbackLoginShell() []const u8 {
     return switch (builtin.os.tag) {
         .macos => "/bin/zsh",
-        .windows => windows_cmd_path,
+        .windows => windows_powershell_path,
         else => "/bin/bash",
     };
+}
+
+fn absoluteFileExists(path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io_mod.getIo(), path, .{}) catch return false;
+    return true;
+}
+
+fn copyInto(buffer: []u8, value: []const u8) ?[]const u8 {
+    if (value.len > buffer.len) return null;
+    @memcpy(buffer[0..value.len], value);
+    return buffer[0..value.len];
+}
+
+fn windowsPwshInto(buffer: []u8) ?[]const u8 {
+    const roots = [_]struct { key: []const u8, suffix: []const u8 }{
+        .{ .key = "ProgramW6432", .suffix = windows_pwsh_suffix },
+        .{ .key = "ProgramFiles", .suffix = windows_pwsh_suffix },
+        .{ .key = "ProgramFiles(x86)", .suffix = windows_pwsh_suffix },
+        .{ .key = "LOCALAPPDATA", .suffix = windows_pwsh_app_suffix },
+    };
+    var candidate: [32768]u8 = undefined;
+    for (roots) |root| {
+        const value = io_mod.getenv(root.key) orelse continue;
+        const trimmed = std.mem.trimEnd(u8, value, "\\/");
+        if (trimmed.len == 0) continue;
+        const path = std.fmt.bufPrint(&candidate, "{s}{s}", .{ trimmed, root.suffix }) catch continue;
+        if (!std.fs.path.isAbsolute(path) or !absoluteFileExists(path)) continue;
+        return copyInto(buffer, path);
+    }
+    return null;
+}
+
+pub fn windowsAgentShellInto(buffer: []u8) []const u8 {
+    if (comptime builtin.os.tag != .windows) return fallbackLoginShell();
+    if (windowsPwshInto(buffer)) |path| return path;
+    var trusted: [32768]u8 = undefined;
+    const system = windows_paths.system32ExecutableInto(
+        &trusted,
+        "WindowsPowerShell\\v1.0\\powershell.exe",
+    ) catch null;
+    if (system) |path| {
+        if (absoluteFileExists(path)) {
+            if (copyInto(buffer, path)) |copied| return copied;
+        }
+    }
+    return copyInto(buffer, windows_powershell_path) orelse windows_powershell_path;
+}
+
+pub fn windowsAgentScript(alloc: Allocator, command: []const u8) Allocator.Error![]u8 {
+    return std.mem.concat(alloc, u8, &.{
+        windows_script_prelude,
+        command,
+        windows_script_epilogue,
+    });
+}
+
+pub fn preparedCommand(
+    alloc: Allocator,
+    shell_path: []const u8,
+    command: []const u8,
+) Allocator.Error![]const u8 {
+    if (shellKind(shell_path) != .powershell) return command;
+    return windowsAgentScript(alloc, command);
 }
 
 fn supportedLoginShell(configured_login_shell: ?[]const u8) ResolveError![]const u8 {
@@ -139,25 +215,7 @@ pub fn resolve(
 
 pub fn configuredLoginShellInto(buffer: []u8) ?[]const u8 {
     if (comptime builtin.os.tag == .windows) {
-        var trusted_path: [32768]u8 = undefined;
-        const trusted = windows_paths.system32ExecutableInto(
-            &trusted_path,
-            "cmd.exe",
-        ) catch null;
-        if (trusted) |path| {
-            if (path.len <= buffer.len) {
-                @memcpy(buffer[0..path.len], path);
-                return buffer[0..path.len];
-            }
-        }
-        const configured = io_mod.getenv("COMSPEC") orelse return fallbackLoginShell();
-        if (std.ascii.eqlIgnoreCase(shellBasename(configured), "cmd.exe") and
-            std.fs.path.isAbsolute(configured) and configured.len <= buffer.len)
-        {
-            @memcpy(buffer[0..configured.len], configured);
-            return buffer[0..configured.len];
-        }
-        return fallbackLoginShell();
+        return windowsAgentShellInto(buffer);
     }
     if (comptime !builtin.link_libc or builtin.os.tag == .wasi) {
         return null;
@@ -223,6 +281,21 @@ pub fn profileShell(
     };
 }
 
+pub fn preparedCapturedInvocation(
+    alloc: Allocator,
+    environment_value: Environment,
+    command: []const u8,
+) (ResolveError || Allocator.Error)!Invocation {
+    const shell_path = switch (environment_value) {
+        .legacy, .workspace_clean => return error.UnsupportedShell,
+        .clean, .user => |path| path,
+    };
+    return capturedInvocation(
+        environment_value,
+        try preparedCommand(alloc, shell_path, command),
+    );
+}
+
 pub fn capturedInvocation(environment_value: Environment, command: []const u8) ResolveError!Invocation {
     switch (environment_value) {
         .legacy, .workspace_clean => return error.UnsupportedShell,
@@ -231,19 +304,19 @@ pub fn capturedInvocation(environment_value: Environment, command: []const u8) R
                 .path = path,
                 .clean_start = true,
             } });
-            if (comptime builtin.os.tag != .windows) removeInteractiveFlag(&invocation);
+            removeInteractiveFlag(&invocation);
+            appendNonInteractiveFlag(&invocation);
             invocation.setCommand(command);
             return invocation;
         },
         .user => |path| {
             var invocation = try resolve(path, .user_login);
-            if (comptime builtin.os.tag != .windows) {
-                if (shellNameIs(path, "bash")) {
-                    removeInteractiveFlag(&invocation);
-                    invocation.append("-O");
-                    invocation.append("expand_aliases");
-                }
+            if (shellNameIs(path, "bash")) {
+                removeInteractiveFlag(&invocation);
+                invocation.append("-O");
+                invocation.append("expand_aliases");
             }
+            appendNonInteractiveFlag(&invocation);
             invocation.setCommand(command);
             return invocation;
         },
@@ -263,9 +336,13 @@ pub fn formatInvocationCommand(
     return output.toOwnedSlice(alloc);
 }
 
+fn appendNonInteractiveFlag(invocation: *Invocation) void {
+    if (shellKind(invocation.path) == .powershell) invocation.append("-NonInteractive");
+}
+
 fn removeInteractiveFlag(invocation: *Invocation) void {
     std.debug.assert(invocation.len > 0);
-    std.debug.assert(std.mem.eql(u8, invocation.values[invocation.len - 1], "-i"));
+    if (!std.mem.eql(u8, invocation.values[invocation.len - 1], "-i")) return;
     invocation.len -= 1;
 }
 
@@ -335,6 +412,14 @@ pub fn buildBootstrapForShell(
     return output.toOwnedSlice(alloc);
 }
 
+pub fn bootstrapExtensionForShell(shell_path: []const u8) []const u8 {
+    if (comptime builtin.os.tag != .windows) return "bootstrap";
+    return switch (shellKind(shell_path) orelse .cmd) {
+        .powershell => "ps1",
+        else => "cmd",
+    };
+}
+
 pub fn buildSourceCommand(
     alloc: Allocator,
     bootstrap_path: []const u8,
@@ -358,11 +443,12 @@ pub fn buildSourceCommandForShell(
         if (kind == .powershell) {
             try output.appendSlice(alloc, "& ");
             try appendPowerShellWord(&output, alloc, bootstrap_path);
+            try output.append(alloc, '\r');
         } else {
             try output.appendSlice(alloc, "call ");
             try appendCmdWord(&output, alloc, bootstrap_path);
+            try output.appendSlice(alloc, "\r\n");
         }
-        try output.appendSlice(alloc, "\r\n");
         return output.toOwnedSlice(alloc);
     }
     var output: std.ArrayList(u8) = .empty;
@@ -438,6 +524,7 @@ fn appendWindowsMarker(
     event: []const u8,
 ) Allocator.Error!void {
     if (kind == .powershell) {
+        try output.appendSlice(alloc, "& ");
         try appendPowerShellWord(output, alloc, executable);
         inline for (.{
             "--fx-internal-terminal-control",
@@ -587,6 +674,12 @@ test "login shell resolution falls back without accepting explicit unsupported s
             &.{ "/bin/zsh", "-l", "-i" },
             fallback.argv(),
         );
+    } else if (builtin.os.tag == .windows) {
+        try std.testing.expectEqualSlices(
+            []const u8,
+            &.{ windows_powershell_path, "-NoLogo" },
+            fallback.argv(),
+        );
     } else {
         try std.testing.expectEqualSlices(
             []const u8,
@@ -680,6 +773,7 @@ test "unsupported login shell profiles fall back for captured and persistent exe
 }
 
 test "bootstrap quotes private paths and separates command completion" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const commandless = try buildBootstrap(
         std.testing.allocator,
         "/tmp/fx'bin",
@@ -720,6 +814,89 @@ test "bootstrap quotes private paths and separates command completion" {
     try std.testing.expectEqualStrings(
         ". '/tmp/bootstrap'\"'\"'file'\n",
         source,
+    );
+}
+
+test "Windows agent shell is an absolute PowerShell" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var buffer: [32768]u8 = undefined;
+    const path = windowsAgentShellInto(&buffer);
+    try std.testing.expect(std.fs.path.isAbsolute(path));
+    try std.testing.expectEqual(ShellKind.powershell, shellKind(path).?);
+    var configured: [32768]u8 = undefined;
+    try std.testing.expectEqualStrings(path, configuredLoginShellInto(&configured).?);
+}
+
+test "Windows captured profiles run PowerShell without a profile or a prompt" {
+    const clean = try capturedInvocation(
+        .{ .clean = windows_powershell_path },
+        "Get-ChildItem",
+    );
+    try std.testing.expectEqualSlices(
+        []const u8,
+        &.{ windows_powershell_path, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ChildItem" },
+        clean.argv(),
+    );
+    const user = try capturedInvocation(
+        .{ .user = "C:\\Program Files\\PowerShell\\7\\pwsh.exe" },
+        "Get-ChildItem",
+    );
+    try std.testing.expectEqualSlices(
+        []const u8,
+        &.{ "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "-NoLogo", "-NonInteractive", "-Command", "Get-ChildItem" },
+        user.argv(),
+    );
+}
+
+test "PowerShell commands carry a UTF-8 prelude and a three-way exit epilogue" {
+    const alloc = std.testing.allocator;
+    const script = try preparedCommand(alloc, windows_powershell_path, "Get-ChildItem");
+    defer alloc.free(script);
+    try std.testing.expect(std.mem.startsWith(u8, script, "$fx_utf8 = [Text.UTF8Encoding]::new($false)"));
+    try std.testing.expect(std.mem.find(u8, script, "[Console]::OutputEncoding = $fx_utf8") != null);
+    try std.testing.expect(std.mem.find(u8, script, "\r\nGet-ChildItem\r\nexit $(") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, windows_script_prelude, "\n"));
+    try std.testing.expect(std.mem.endsWith(
+        u8,
+        script,
+        "exit $(if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 })",
+    ));
+
+    const untouched = try preparedCommand(alloc, "/bin/zsh", "printf ok");
+    try std.testing.expectEqualStrings("printf ok", untouched);
+    const cmd_untouched = try preparedCommand(alloc, windows_cmd_path, "dir");
+    try std.testing.expectEqualStrings("dir", cmd_untouched);
+}
+
+test "Windows bootstrap follows the resolved PowerShell shell" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const bootstrap = try buildBootstrap(
+        std.testing.allocator,
+        "C:\\fx\\emma-cli.exe",
+        "C:\\fx\\control",
+        "nonce",
+        "C:\\fx\\command",
+    );
+    defer std.testing.allocator.free(bootstrap);
+    try std.testing.expect(std.mem.startsWith(u8, bootstrap, "$ErrorActionPreference = 'Stop'"));
+    try std.testing.expect(std.mem.find(u8, bootstrap, "'shell-ready'") != null);
+    try std.testing.expect(std.mem.find(u8, bootstrap, "'command-started'") != null);
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        bootstrap["$ErrorActionPreference = 'Stop'\r\n".len..],
+        "& 'C:\\fx\\emma-cli.exe'",
+    ));
+
+    const source = try buildSourceCommand(std.testing.allocator, "C:\\fx\\boot'strap");
+    defer std.testing.allocator.free(source);
+    try std.testing.expectEqualStrings("& 'C:\\fx\\boot''strap'\r", source);
+    try std.testing.expectEqualStrings(
+        "ps1",
+        bootstrapExtensionForShell("C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+    );
+    try std.testing.expectEqualStrings(
+        "cmd",
+        bootstrapExtensionForShell(windows_cmd_path),
     );
 }
 

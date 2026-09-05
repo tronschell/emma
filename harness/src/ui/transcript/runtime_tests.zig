@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../../core/shared/io.zig");
 const types = @import("../../core/shared/types.zig");
 const command_output_content = @import("../../core/tooling/command_output_content.zig");
@@ -15,6 +16,7 @@ const user_message_card = @import("../assistant/user_message_card.zig");
 const vt_emulator = @import("../../core/terminal/engine.zig");
 
 const Allocator = std.mem.Allocator;
+const null_device_path = if (builtin.os.tag == .windows) "\\\\.\\NUL" else "/dev/null";
 const Layout = types.Layout;
 const Metrics = types.Metrics;
 const transcript_blocks = render_engine.transcript_blocks;
@@ -8617,7 +8619,7 @@ test "collapsed state still shows the fold summary" {
 }
 
 test "source-less surface paint keeps transcript lines one to one under full transcript" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -8827,7 +8829,7 @@ fn removeRawEntriesForTest(
 }
 
 test "command output stores terminal-safe text for live consolidated and full transcript views" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -8885,7 +8887,7 @@ test "command output stores terminal-safe text for live consolidated and full tr
 }
 
 test "command output keeps capped and folded transcript behavior" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -8914,7 +8916,7 @@ test "command output keeps capped and folded transcript behavior" {
 }
 
 test "prepared command output paint clears stale hint before projecting newest hint" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -8976,7 +8978,7 @@ test "prepared command output paint clears stale hint before projecting newest h
 }
 
 test "command output consolidation replaces live row before following transcript rows" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9007,7 +9009,7 @@ test "command output consolidation replaces live row before following transcript
 }
 
 test "command output consolidation preserves rows between noncontiguous live rows" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9046,7 +9048,7 @@ test "command output consolidation preserves rows between noncontiguous live row
 }
 
 test "command output folding preserves rows between noncontiguous live rows" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9089,7 +9091,7 @@ test "command output folding preserves rows between noncontiguous live rows" {
 }
 
 test "partial first command record keeps its hint after an intervening notice" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9131,7 +9133,7 @@ test "partial first command record keeps its hint after an intervening notice" {
 }
 
 test "production command pruning preserves deferred replay around a notice" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9223,7 +9225,7 @@ test "production command pruning preserves deferred replay around a notice" {
 }
 
 test "production all-pruned command keeps process and hint at final anchor" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9308,7 +9310,7 @@ test "production all-pruned command keeps process and hint at final anchor" {
 }
 
 test "pruned command ranges bridge after their separator is retained then removed" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9364,7 +9366,7 @@ test "pruned command ranges bridge after their separator is retained then remove
 }
 
 test "command output detail retargets when first split source row is pruned" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9411,7 +9413,7 @@ test "command output detail retargets when first split source row is pruned" {
 }
 
 test "command output shows retained records within the compact limit" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9435,7 +9437,7 @@ test "command output shows retained records within the compact limit" {
 }
 
 test "command output entries are classified" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9456,7 +9458,7 @@ test "command output entries are classified" {
 }
 
 test "pre-flush live command output chunks match consolidated row geometry" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9484,7 +9486,7 @@ test "pre-flush live command output chunks match consolidated row geometry" {
 }
 
 test "command output lifecycle mismatch cannot append to or complete the active block" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9522,7 +9524,7 @@ test "command output lifecycle mismatch cannot append to or complete the active 
 }
 
 test "command output display caps at five physical rows" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -9567,7 +9569,7 @@ test "command output display caps at five physical rows" {
 }
 
 test "structured retention prunes old raw transcript entries past cap" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9592,7 +9594,7 @@ test "structured retention prunes old raw transcript entries past cap" {
 }
 
 test "structured retention compacts a large pruning pass in entry order" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9626,7 +9628,7 @@ test "structured retention compacts a large pruning pass in entry order" {
 }
 
 test "assistant streaming retention trims active segment text" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9654,7 +9656,7 @@ test "assistant streaming retention trims active segment text" {
 }
 
 test "hidden command output becomes count-only at the hard cap" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9719,7 +9721,7 @@ test "hidden command output becomes count-only at the hard cap" {
 }
 
 test "command output becomes count-only at the hard cap" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9756,7 +9758,7 @@ test "command output becomes count-only at the hard cap" {
 }
 
 test "blank hidden command output becomes count-only at the hard cap" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9794,7 +9796,7 @@ test "blank hidden command output becomes count-only at the hard cap" {
 }
 
 test "command output lines count toward structured retention" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9832,7 +9834,7 @@ test "command output lines count toward structured retention" {
 }
 
 test "structured retention prunes old command output block state" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9862,7 +9864,7 @@ test "structured retention prunes old command output block state" {
 }
 
 test "resize preparation uses retained entries after pruning without rewriting cache" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9895,7 +9897,7 @@ test "resize preparation uses retained entries after pruning without rewriting c
 }
 
 test "clearTranscript after retention pruning frees retained entries and command output blocks" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     const alloc = std.testing.allocator;
@@ -9983,7 +9985,7 @@ test "recomputeCursorFromTranscript skips ANSI in styled rows" {
 }
 
 test "replaceTrailingTranscriptLine updates latest replaceable line" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -10008,7 +10010,7 @@ test "replaceTrailingTranscriptLine updates latest replaceable line" {
 }
 
 test "replaceable line with ansi wrapper does not accumulate historical entries" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -10033,7 +10035,7 @@ test "replaceable line with ansi wrapper does not accumulate historical entries"
 }
 
 test "updateExtraInputRows shrink preserves pre-fx scrollback" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -10107,7 +10109,7 @@ test "updateExtraInputRows after committed frame only records invalidation" {
 }
 
 test "resize reservation never moves viewport above launch-owned row" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -10144,7 +10146,7 @@ test "resize reservation never moves viewport above launch-owned row" {
 }
 
 test "clearTranscript preserves launch-owned row" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -10173,7 +10175,7 @@ test "clearTranscript preserves launch-owned row" {
 }
 
 test "writeTranscript overflow defers terminal scroll to frame selection delta" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -10289,7 +10291,7 @@ test "setRawEntryClass updates only matching raw entry" {
 }
 
 test "streamAssistantChunk opens a new assistant_turn when there is no trailing one" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
     const alloc = std.testing.allocator;
 
@@ -10309,7 +10311,7 @@ test "streamAssistantChunk opens a new assistant_turn when there is no trailing 
 }
 
 test "streamAssistantChunk extends the trailing assistant_turn on subsequent chunks" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
     const alloc = std.testing.allocator;
 
@@ -10746,7 +10748,7 @@ test "paced assistant continuations do not clone retained history per chunk" {
 }
 
 test "streamAssistantChunk opens a new assistant_turn after a user_turn" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
     const alloc = std.testing.allocator;
 
@@ -11832,7 +11834,7 @@ test "clearTranscript drops entries but preserves next_entry_id" {
 }
 
 test "writeTranscript auto-mirrors a raw_bytes entry" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
     const alloc = std.testing.allocator;
 
@@ -13102,7 +13104,7 @@ test "recorded command output consolidation preserves its anchor when retention 
 }
 
 test "writeTranscriptBytes does NOT append an entry" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
     const alloc = std.testing.allocator;
 
@@ -13257,7 +13259,7 @@ test "tool status raw entry updates after command output appends" {
 }
 
 test "advanceCursor row advance matches visualRowsForLine - 1 for wrap-exact content" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -13284,7 +13286,7 @@ test "advanceCursor row advance matches visualRowsForLine - 1 for wrap-exact con
 }
 
 test "advanceCursor row advance matches visualRowsForLine - 1 across hard newlines" {
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -13312,7 +13314,7 @@ test "advanceCursor row advance matches visualRowsForLine - 1 across hard newlin
 
 test "writeTranscriptBytes mid-row continuation defers scroll after first paint" {
     const alloc = std.testing.allocator;
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -13347,7 +13349,7 @@ test "writeTranscriptBytes mid-row continuation defers scroll after first paint"
 
 test "appendReplaceableTranscriptLine does not emit scroll (buffer-only)" {
     const alloc = std.testing.allocator;
-    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var runtime = TranscriptRuntime{
@@ -13386,9 +13388,9 @@ test "appendReplaceableTranscriptLine does not emit scroll (buffer-only)" {
 test "streamed chunk-split produces same viewport as single emission" {
     const alloc = std.testing.allocator;
 
-    var sink1 = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink1 = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink1.close(io_mod.getIo());
-    var sink2 = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), "/dev/null", .{ .mode = .write_only });
+    var sink2 = try std.Io.Dir.openFileAbsolute(io_mod.getIo(), null_device_path, .{ .mode = .write_only });
     defer sink2.close(io_mod.getIo());
 
     const layout: Layout = .{

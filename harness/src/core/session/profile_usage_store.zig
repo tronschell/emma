@@ -1696,7 +1696,7 @@ test "profile usage store refuses a symlinked ledger leaf" {
         ".fx/usage.jsonl",
         .{ .is_directory = false },
     ) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 

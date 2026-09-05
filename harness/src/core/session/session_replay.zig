@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const session_codec = @import("session_codec.zig");
 const session_event = @import("session_event.zig");
@@ -100,7 +101,7 @@ pub fn validateCommitPositionForRecovery(
 ) !RecoveryValidation {
     var state = replayBoundaryRaw(alloc, file, position) catch |err| switch (err) {
         error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
-        error.OutOfMemory, error.ReadFailed => return err,
+        error.OutOfMemory, error.ReadFailed, error.AccessDenied => return err,
         else => return .invalid,
     };
     state.deinit(alloc);
@@ -113,7 +114,7 @@ pub fn replayBoundary(
     position: CommitPosition,
 ) !session_codec.DurableSessionState {
     return replayBoundaryRaw(alloc, file, position) catch |err| switch (err) {
-        error.OutOfMemory, error.ReadFailed => return err,
+        error.OutOfMemory, error.ReadFailed, error.AccessDenied => return err,
         error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
         else => return error.InvalidSessionFormat,
     };
@@ -179,7 +180,7 @@ pub fn replayExactPosition(
         &limited.interface,
         null,
     ) catch |err| switch (err) {
-        error.OutOfMemory, error.ReadFailed => return err,
+        error.OutOfMemory, error.ReadFailed, error.AccessDenied => return err,
         error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
         else => return error.InvalidSessionFormat,
     };
@@ -220,7 +221,7 @@ pub fn replayFromCheckpoint(
         state,
         position,
     ) catch |err| switch (err) {
-        error.OutOfMemory, error.ReadFailed => return err,
+        error.OutOfMemory, error.ReadFailed, error.AccessDenied => return err,
         error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
         else => return error.InvalidSessionFormat,
     };
@@ -505,12 +506,12 @@ test "session replay parser honors exact copied boundary" {
     );
     defer unreadable.close(io_mod.getIo());
     try std.testing.expectError(
-        error.ReadFailed,
+        if (builtin.os.tag == .windows) error.AccessDenied else error.ReadFailed,
         replayBoundary(alloc, unreadable, complete),
     );
     const read_failure_state = try replayBoundary(alloc, file, copied);
     try std.testing.expectError(
-        error.ReadFailed,
+        if (builtin.os.tag == .windows) error.AccessDenied else error.ReadFailed,
         replayFromCheckpoint(
             alloc,
             unreadable,

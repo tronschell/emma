@@ -17,7 +17,6 @@ export interface Span {
   strike?: true;
   code?: true;
   href?: string;
-  /** A file on disk, cleaned of any `:line` suffix — clicking it reveals it in Finder. */
   path?: string;
   image?: true;
 }
@@ -95,8 +94,6 @@ export function inlineSpans(text: string): Span[] {
     else if (match[4]) spans.push({ text: match[4], strike: true });
     else if (emphasis) spans.push({ text: emphasis, italic: true });
     else {
-      // A link that is not a web link is usually a file reference, which the
-      // renderer opens in Finder instead of dropping on the floor.
       const href = safeHref(match[9]);
       const file = href ? undefined : filePath(match[9]);
       if (match[7] && file) spans.push({ text: match[8], path: file, image: true });
