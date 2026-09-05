@@ -463,6 +463,7 @@ let overlayGrow = 0;
 
 const preload = path.join(__dirname, "preload.js");
 const renderer = path.join(app.getAppPath(), "dist-renderer/index.html");
+const windowsIcon = isWindows && !app.isPackaged ? path.join(app.getAppPath(), "assets", "emma.ico") : undefined;
 
 const DEV_BINARIES: Record<string, string> = {
   "emma-host": "target/debug/emma-host",
@@ -604,6 +605,7 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
   const window = new BrowserWindow({
     backgroundColor: "#0a0a0c",
     show: false,
+    ...(windowsIcon ? { icon: windowsIcon } : {}),
     ...options,
     webPreferences: {
       preload,
