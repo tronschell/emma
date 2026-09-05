@@ -139,6 +139,9 @@ writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MI
 const zvecModules = path.join(desktop, "vendor/zvec-grep/node_modules");
 writeFileSync(path.join(notices, "Zvec-grep-LICENSES.txt"), globSync("**/{LICENSE,LICENCE,COPYING,NOTICE}*", { cwd: zvecModules }).filter((name) => statSync(path.join(zvecModules, name)).isFile()).sort().map((name) => `${name}\n\n${readFileSync(path.join(zvecModules, name), "utf8")}`).join("\n\n"));
 
+const loadingGif = path.join(desktop, "assets/installer/emma-setup.gif");
+assert.ok(existsSync(loadingGif), `Missing installer splash: ${loadingGif}`);
+
 const nativeHelpers = ["emma-option-tap.exe", "emma-computer.exe", "emma-transcribe.exe", "emma-pty.exe"];
 const required = [
   path.join(root, "target/release/emma-host.exe"),
@@ -225,6 +228,7 @@ await createWindowsInstaller({
   exe: "Emma.exe",
   setupExe: `Emma-${version}-win32-${arch}-Setup.exe`,
   setupIcon: ico,
+  loadingGif,
   iconUrl: "https://raw.githubusercontent.com/tronschell/emma/main/desktop/assets/emma.ico",
   noMsi: true,
   title: "Emma",
