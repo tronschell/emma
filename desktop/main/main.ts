@@ -2867,7 +2867,8 @@ function credentialSlotsHeld(): CredentialSlot[] {
   const slots = new Map<string, CredentialSlot>();
   const put = (env: string, label: string, detail: string, hint: string) => {
     if (!env || slots.has(env)) return;
-    slots.set(env, { env, masked: stored.find((item) => item.env === env)?.masked ?? "", label, detail, hint });
+    const held = stored.find((item) => item.env === env);
+    slots.set(env, { env, masked: held?.masked ?? "", readable: held?.readable ?? true, label, detail, hint });
   };
   for (const item of providerCredentials) put(item.env, item.label, item.detail, item.hint);
   for (const plan of MODEL_PLANS) put(plan.credentialEnv, plan.label, plan.detail, plan.hint);

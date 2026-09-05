@@ -196,7 +196,7 @@ function Variables({ meta, busy, onError }: { meta: ComponentMeta; busy: boolean
   };
   return <div className="built-vars">
     {(meta.variables ?? []).map((env) => {
-      const held = stored.find((one) => one.env === env);
+      const held = stored.find((one) => one.env === env && one.readable);
       const draft = drafts[env] ?? "";
       return <label key={env}>
         <span>{env}</span>
