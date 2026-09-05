@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import { parseProbe } from "../main/machine";
+import { parseGpu, parseProbe } from "../main/machine";
 import { MACHINE_TICK_MS } from "../shared/machine";
 
 const SAMPLE = { cpu: 0.1, memory: 0.2, memoryUsedBytes: 1, memoryTotalBytes: 2, gpu: null, rxBytes: 3, txBytes: 4 };
@@ -116,4 +116,11 @@ test("machine sampling pauses once while hidden and resumes once when shown", as
   changeVisibility(false);
   await settle();
   assert.equal(calls, 4);
+});
+
+test("the GPU probe reads a Windows adapter line and an Apple displays report", () => {
+  assert.deepEqual(parseGpu("gpu 17094934528 NVIDIA GeForce RTX 5080"), { gpu: "NVIDIA GeForce RTX 5080", vramBytes: 17094934528 });
+  assert.deepEqual(parseGpu(JSON.stringify({ SPDisplaysDataType: [{ sppci_model: "Apple M3 Max" }] })), { gpu: "Apple M3 Max", vramBytes: 0 });
+  assert.deepEqual(parseGpu(JSON.stringify({ SPDisplaysDataType: [{ sppci_model: "AMD Radeon Pro 5500M", spdisplays_vram: "8 GB" }] })), { gpu: "AMD Radeon Pro 5500M", vramBytes: 8 * 1024 * 1024 * 1024 });
+  assert.deepEqual(parseGpu(""), { gpu: "", vramBytes: 0 });
 });

@@ -1322,6 +1322,35 @@ fn openTestSession(
     return .{ .dir = dir, .display_path = display_path };
 }
 
+const open_handles_block_directory_rename = builtin.os.tag == .windows;
+
+fn symLinkOrSkip(
+    dir: std.Io.Dir,
+    target_path: []const u8,
+    sym_link_path: []const u8,
+    flags: std.Io.Dir.SymLinkFlags,
+) !void {
+    dir.symLink(io_mod.getIo(), target_path, sym_link_path, flags) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
+fn expectPrivateChildDir(parent: std.Io.Dir, sub_path: []const u8) !void {
+    var dir = try parent.openDir(io_mod.getIo(), sub_path, .{
+        .iterate = true,
+        .follow_symlinks = false,
+    });
+    defer dir.close(io_mod.getIo());
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(dir));
+}
+
+fn expectPrivateChildFile(parent: std.Io.Dir, sub_path: []const u8) !void {
+    var file = try parent.openFile(io_mod.getIo(), sub_path, .{ .follow_symlinks = false });
+    defer file.close(io_mod.getIo());
+    try std.testing.expect(try io_mod.privateFileAclMatches(file));
+}
+
 fn countEntries(dir: std.Io.Dir) !usize {
     var count: usize = 0;
     var iter = dir.iterate();
@@ -1434,8 +1463,8 @@ test "managed child capability rejects invalid names and unsafe routes" {
             "wrong-kind",
         ),
     );
-    try session.dir.symLink(
-        io_mod.getIo(),
+    try symLinkOrSkip(
+        session.dir,
         "../outside-file",
         "tool-results/linked-path",
         .{},
@@ -1466,6 +1495,7 @@ test "managed child capability rejects invalid names and unsafe routes" {
 }
 
 test "retained route handle contains pathname swaps" {
+    if (open_handles_block_directory_rename) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1498,8 +1528,8 @@ test "retained route handle contains pathname swaps" {
         "retained-tool-results",
         io_mod.getIo(),
     );
-    try session.dir.symLink(
-        io_mod.getIo(),
+    try symLinkOrSkip(
+        session.dir,
         "../outside",
         "tool-results",
         .{ .is_directory = true },
@@ -1596,8 +1626,8 @@ test "subagent control capability is route restricted and rejects symlinks" {
     );
     lock.release();
 
-    try session.dir.symLink(
-        io_mod.getIo(),
+    try symLinkOrSkip(
+        session.dir,
         "../outside-control",
         "subagent/linked.json",
         .{},
@@ -1621,8 +1651,8 @@ test "subagent control capability rejects a symlinked route" {
         "outside",
         io_mod.permissionsFromMode(0o700),
     );
-    try session.dir.symLink(
-        io_mod.getIo(),
+    try symLinkOrSkip(
+        session.dir,
         "../outside",
         "subagent",
         .{ .is_directory = true },
@@ -1649,43 +1679,30 @@ test "terminal capabilities are private route restricted and reject symlinks" {
     var session = try openTestSession(alloc, &tmp);
     defer session.dir.close(io_mod.getIo());
     defer alloc.free(session.display_path);
-    var state = try SessionChildCapability.initTerminalState(
-        alloc,
-        session.dir,
-        session.display_path,
-        .writable,
-        .{},
-    );
-    defer state.deinit();
-    var entry = try state.atomicReplace(
-        alloc,
-        .terminal_state,
-        "record.json",
-        "{}",
-    );
-    entry.deinit(alloc);
-    try std.testing.expectError(
-        error.SessionChildStoreFailed,
-        state.atomicReplace(alloc, .terminal_proofs, "proof.bin", "proof"),
-    );
-    const terminal_stat = try session.dir.statFile(
-        io_mod.getIo(),
-        "terminal",
-        .{ .follow_symlinks = false },
-    );
-    const state_stat = try session.dir.statFile(
-        io_mod.getIo(),
-        "terminal/state",
-        .{ .follow_symlinks = false },
-    );
-    const record_stat = try session.dir.statFile(
-        io_mod.getIo(),
-        "terminal/state/record.json",
-        .{ .follow_symlinks = false },
-    );
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), io_mod.permissionsMode(terminal_stat.permissions) & 0o777);
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), io_mod.permissionsMode(state_stat.permissions) & 0o777);
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), io_mod.permissionsMode(record_stat.permissions) & 0o777);
+    {
+        var state = try SessionChildCapability.initTerminalState(
+            alloc,
+            session.dir,
+            session.display_path,
+            .writable,
+            .{},
+        );
+        defer state.deinit();
+        var entry = try state.atomicReplace(
+            alloc,
+            .terminal_state,
+            "record.json",
+            "{}",
+        );
+        entry.deinit(alloc);
+        try std.testing.expectError(
+            error.SessionChildStoreFailed,
+            state.atomicReplace(alloc, .terminal_proofs, "proof.bin", "proof"),
+        );
+    }
+    try expectPrivateChildDir(session.dir, "terminal");
+    try expectPrivateChildDir(session.dir, "terminal/state");
+    try expectPrivateChildFile(session.dir, "terminal/state/record.json");
 
     try session.dir.rename(
         "terminal",
@@ -1698,8 +1715,8 @@ test "terminal capabilities are private route restricted and reject symlinks" {
         "outside-terminal",
         io_mod.permissionsFromMode(0o700),
     );
-    try session.dir.symLink(
-        io_mod.getIo(),
+    try symLinkOrSkip(
+        session.dir,
         "../outside-terminal",
         "terminal",
         .{ .is_directory = true },

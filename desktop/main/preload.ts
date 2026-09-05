@@ -301,6 +301,16 @@ contextBridge.exposeInMainWorld("emma", {
     ipcRenderer.on("emma:semantic-grep", wrapped);
     return () => ipcRenderer.removeListener("emma:semantic-grep", wrapped);
   },
+  zvecGrepStatus: () => ipcRenderer.invoke("emma:zvec-grep-status"),
+  zvecGrepInstall: () => ipcRenderer.invoke("emma:zvec-grep-install"),
+  zvecGrepCancel: () => ipcRenderer.invoke("emma:zvec-grep-cancel"),
+  onZvecGrep: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("emma:zvec-grep", wrapped);
+    return () => ipcRenderer.removeListener("emma:zvec-grep", wrapped);
+  },
+  machineFacts: () => ipcRenderer.invoke("emma:machine-facts"),
+  verifyEmbeddingKey: (id: string) => ipcRenderer.invoke("emma:verify-embedding-key", { id }),
   signInCli: (value: { signIn: string; columns: number; rows: number }) => ipcRenderer.invoke("emma:cli-sign-in", value),
   cliModels: (value: { cli: string; refresh?: boolean }) => ipcRenderer.invoke("emma:cli-models", value),
   setCliRunModel: (value: { id: string; model?: string; effort?: string }) => ipcRenderer.invoke("emma:cli-run-model", value),

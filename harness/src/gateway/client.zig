@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const secret = @import("../core/auth/secret.zig");
 const agent_stream_provider = @import("../core/agent/stream_provider.zig");
+const cancellable_socket_io = @import("cancellable_socket_io.zig");
 const debug_trace = @import("../core/shared/debug_trace.zig");
 const io_mod = @import("../core/shared/io.zig");
 const types = @import("../core/shared/types.zig");
@@ -130,6 +131,7 @@ test "native network failure evidence covers setup send read and resume failures
 
 test "native network failure evidence excludes opaque and configuration failures" {
     const excluded = [_]anyerror{
+        error.Unexpected,
         error.JsHostStreamFailed,
         error.OutOfMemory,
         error.AccessDenied,
@@ -433,7 +435,10 @@ fn fetchGatewayJsonAtUrlCore(
 ) !GatewayJsonResult {
     if (cancel_flag.load(.seq_cst)) return error.Cancelled;
 
-    var client: std.http.Client = .{ .allocator = alloc, .io = io_mod.getIo() };
+    var socket_io: cancellable_socket_io.Scope = .begin(cancel_flag);
+    defer socket_io.end();
+
+    var client: std.http.Client = .{ .allocator = alloc, .io = socket_io.io() };
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
@@ -1107,7 +1112,9 @@ fn streamGatewayCompletionCoreWithOptions(
     var setup_epoch: ?ConnectionSetupEpoch = null;
     while (attempt < retry_count) : (attempt += 1) {
         if (cancel_flag.load(.seq_cst)) return error.Cancelled;
-        var client: std.http.Client = .{ .allocator = alloc, .io = io_mod.getIo() };
+        var socket_io: cancellable_socket_io.Scope = .begin(cancel_flag);
+        defer socket_io.end();
+        var client: std.http.Client = .{ .allocator = alloc, .io = socket_io.io() };
         defer client.deinit();
 
         if (setup_epoch == null) {

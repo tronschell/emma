@@ -375,6 +375,9 @@
 .provider-key-row code { overflow: hidden; color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .provider-key-value { overflow: hidden; color: var(--text-3); font: var(--fs-xs)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .provider-key-row.set .provider-key-value { color: var(--lime); }
+.provider-key-row.unreadable { box-shadow: inset 2px 0 0 var(--danger); }
+.provider-key-row.unreadable .provider-key-value { color: var(--danger); }
+.provider-key-lost { overflow-wrap: anywhere; color: var(--danger); font: var(--fs-2xs)/1.45 var(--font-mono); font-style: normal; }
 .provider-key-row label { display: block; min-width: 0; }
 .settings-view .provider-key-row button { min-height: 26px; white-space: nowrap; }
 

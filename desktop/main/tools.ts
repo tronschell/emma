@@ -1062,7 +1062,7 @@ export function describeToolCall(args: AnyToolArgs): string {
   switch (args.name) {
     case "cli": return (args.action === "run" ? `running ${args.cli}` : `sending ${args.id} its next turn`) + (args.model ? ` · ${args.model}` : "") + (args.effort ? ` · ${args.effort} effort` : "");
     case "cli_runs": return args.stop ? `stopping ${args.id ?? "a CLI run"}` : args.id ? `reading ${args.id}` : "listing the CLI runs";
-    case "computer": return `${String(args.args.action).replace(/_/g, " ")}${args.args.app ? ` in ${args.args.app}` : ""}`;
+    case "computer": return `${String(args.args.action).replace(/_/g, " ")}${args.args.app ? ` in ${args.args.app}` : args.args.name ? ` ${args.args.name}` : ""}`;
     case "shortcut": return `binding ${args.accelerator} to ${args.label}`;
     case "browser": {
       if (args.action === "get") return `reading the page's ${args.field ?? "text"}`;

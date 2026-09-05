@@ -360,26 +360,27 @@ test "workspace statusline identity handles non-git and hostile paths" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(io_mod.getIo(), "unsafe-\x1b[31m-workspace");
-    try writeTestFile(
-        tmp.dir,
-        "unsafe-\x1b[31m-workspace/.git",
-        "not a Git directory\n",
-    );
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    try writeTestFile(tmp.dir, "workspace/.git", "not a Git directory\n");
 
-    const root = try io_mod.dirRealpathAlloc(
-        alloc,
-        tmp.dir,
-        "unsafe-\x1b[31m-workspace",
-    );
+    const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(root);
     var runtime: Runtime = .{ .enabled = true };
     defer runtime.deinit(alloc);
 
     const snapshot = try runtime.refresh(alloc, root);
     try std.testing.expect(snapshot.git_branch == null);
-    try std.testing.expect(std.mem.findScalar(u8, snapshot.workspace_label, 0x1b) == null);
-    try std.testing.expect(std.mem.find(u8, snapshot.workspace_label, "\\x1b") != null);
+    try std.testing.expectEqualStrings(root, snapshot.workspace_label);
+
+    const hostile_root = try std.fmt.allocPrint(
+        alloc,
+        "{s}{c}unsafe-\x1b[31m-child",
+        .{ root, std.fs.path.sep },
+    );
+    defer alloc.free(hostile_root);
+    const hostile = try runtime.refresh(alloc, hostile_root);
+    try std.testing.expect(std.mem.findScalar(u8, hostile.workspace_label, 0x1b) == null);
+    try std.testing.expect(std.mem.find(u8, hostile.workspace_label, "\\x1b") != null);
 }
 
 test "workspace statusline identity rejects malformed detached HEAD" {

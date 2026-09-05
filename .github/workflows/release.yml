@@ -62,6 +62,16 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
 
+      - name: download the Windows release candidate
+        if: github.event_name == 'workflow_run' && steps.version.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: emma-release-candidate-windows
+          path: ${{ runner.temp }}/emma-release-candidate-windows
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
       - uses: actions/setup-python@v6
         if: steps.version.outputs.skip != 'true'
         with:
@@ -99,6 +109,36 @@ jobs:
           test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
           test "$(plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
           test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = 'com.tronschell.emma'
+
+      - name: verify and stage the Windows release candidate
+        if: github.event_name == 'workflow_run' && steps.version.outputs.skip != 'true'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          CANDIDATE="$RUNNER_TEMP/emma-release-candidate-windows"
+          MANIFEST="$CANDIDATE/manifest.json"
+          test -f "$MANIFEST"
+          EXPECTED_VERSION="$(node -p 'require("./package.json").version')"
+          test "$(jq -er '.source_sha | strings' "$MANIFEST")" = "$EXPECTED_SOURCE_SHA"
+          test "$(jq -er '.version | strings' "$MANIFEST")" = "$EXPECTED_VERSION"
+          test "$(jq -er '.workflow_run_id | tostring' "$MANIFEST")" = "$EXPECTED_RUN_ID"
+          SETUP="Emma-$EXPECTED_VERSION-win32-x64-Setup.exe"
+          test -f "$CANDIDATE/$SETUP"
+          test -f "$CANDIDATE/RELEASES"
+          test -f "$CANDIDATE/SHA256SUMS"
+          test "$(ls -1 "$CANDIDATE"/*.nupkg | wc -l | tr -d ' ')" = 1
+          NUPKG="$(basename "$(ls -1 "$CANDIDATE"/*.nupkg)")"
+          test "$(awk 'NF == 3 { print $2; next } { exit 1 }' "$CANDIDATE/RELEASES")" = "$NUPKG"
+          (cd "$CANDIDATE" && shasum -a 256 -c SHA256SUMS)
+          ASSETS="$RUNNER_TEMP/emma-windows-assets"
+          mkdir -p "$ASSETS"
+          cp "$CANDIDATE/$SETUP" "$ASSETS/Emma-$TAG-win32-x64-Setup.exe"
+          cp "$CANDIDATE/$NUPKG" "$ASSETS/$NUPKG"
+          cp "$CANDIDATE/RELEASES" "$ASSETS/RELEASES"
+          (cd "$ASSETS" && shasum -a 256 "Emma-$TAG-win32-x64-Setup.exe" "$NUPKG" RELEASES > "Emma-$TAG-windows-x64.sha256")
 
       - uses: actions/setup-node@v5
         if: steps.version.outputs.skip != 'true'
@@ -212,11 +252,16 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          set -euo pipefail
           ditto -c -k --keepParent desktop/release/Emma-darwin-arm64/Emma.app "Emma-$TAG-darwin-arm64.zip"
           cp "desktop/release/Emma-$TAG-darwin-arm64.dmg" "Emma-$TAG-darwin-arm64.dmg"
           shasum -a 256 "Emma-$TAG-darwin-arm64.zip" > "Emma-$TAG-darwin-arm64.zip.sha256"
           shasum -a 256 "Emma-$TAG-darwin-arm64.dmg" > "Emma-$TAG-darwin-arm64.dmg.sha256"
-          gh release create "$TAG" "Emma-$TAG-darwin-arm64.dmg" "Emma-$TAG-darwin-arm64.dmg.sha256" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/emma-release-notes.md" --latest
+          ASSETS=("Emma-$TAG-darwin-arm64.dmg" "Emma-$TAG-darwin-arm64.dmg.sha256" "Emma-$TAG-darwin-arm64.zip" "Emma-$TAG-darwin-arm64.zip.sha256")
+          if [ -d "$RUNNER_TEMP/emma-windows-assets" ]; then
+            for asset in "$RUNNER_TEMP/emma-windows-assets"/*; do ASSETS+=("$asset"); done
+          fi
+          gh release create "$TAG" "${ASSETS[@]}" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/emma-release-notes.md" --latest
 
       - name: remove the temporary signing credentials
         if: always()

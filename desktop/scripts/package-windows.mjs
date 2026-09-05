@@ -8,13 +8,14 @@ import { inflateRawSync } from "node:zlib";
 import { extractFile, listPackage } from "@electron/asar";
 import { packager } from "@electron/packager";
 import { createWindowsInstaller } from "electron-winstaller";
-import { commandShimArguments } from "./windows-command.mjs";
+import { commandShimArguments, publishStagedBuild, squirrelStagingDirectory } from "./windows-command.mjs";
 
 assert.equal(process.platform, "win32", "package:win requires Windows.");
 
 const desktop = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const out = path.resolve(process.argv[2] ?? path.join(desktop, "release"));
+const staging = squirrelStagingDirectory();
 const arch = process.arch;
 assert.ok(["x64", "arm64"].includes(arch), "package:win supports x64 and arm64 Squirrel artifacts.");
 const expectedMachine = arch === "x64" ? 0x8664 : 0xaa64;
@@ -113,10 +114,9 @@ run("cargo", ["build", "--locked", "--release", "-p", "emma-host"], root);
 run("zig", ["build", "-Doptimize=ReleaseSafe"], path.join(root, "harness"));
 run("npm.cmd", ["run", "build:native"]);
 run("npm.cmd", ["run", "vendor:ripgrep"]);
-run("npm.cmd", ["run", "vendor:zvec-grep"]);
 run("npm.cmd", ["run", "build"]);
 
-const notices = path.join(out, "notices");
+const notices = path.join(staging, "notices");
 mkdirSync(notices, { recursive: true });
 for (const [source, name] of [
   ["LICENSE", "Emma-LICENSE.txt"],
@@ -136,56 +136,48 @@ writeFileSync(path.join(notices, "Rust-LICENSES.txt"), metadata.packages.filter(
 }).join("\n\n"));
 writeFileSync(path.join(notices, "Ripgrep-LICENSE.txt"), ["COPYING", "LICENSE-MIT", "UNLICENSE"].map((name) => readFileSync(path.join(desktop, "vendor", name), "utf8")).join("\n\n"));
 
+const loadingGif = path.join(desktop, "assets/installer/emma-setup.gif");
+assert.ok(existsSync(loadingGif), `Missing installer splash: ${loadingGif}`);
+
 const nativeHelpers = ["emma-option-tap.exe", "emma-computer.exe", "emma-transcribe.exe", "emma-pty.exe"];
 const required = [
   path.join(root, "target/release/emma-host.exe"),
   path.join(root, "harness/zig-out/bin/emma-cli.exe"),
   path.join(desktop, "vendor/rg.exe"),
-  path.join(desktop, "vendor/zvec-grep"),
   ...nativeHelpers.map((name) => path.join(desktop, "dist-native", name)),
   path.join(desktop, "skills"),
   notices,
 ];
 for (const resource of required) assert.ok(existsSync(resource), `Missing Windows resource: ${resource}`);
 
-const ico = path.join(out, "emma.ico");
-mkdirSync(out, { recursive: true });
-const png = readFileSync(path.join(desktop, "assets/emma-dock.png"));
-const icoHeader = Buffer.alloc(22);
-icoHeader.writeUInt16LE(0, 0);
-icoHeader.writeUInt16LE(1, 2);
-icoHeader.writeUInt16LE(1, 4);
-icoHeader.writeUInt8(0, 6);
-icoHeader.writeUInt8(0, 7);
-icoHeader.writeUInt8(0, 8);
-icoHeader.writeUInt8(0, 9);
-icoHeader.writeUInt16LE(1, 10);
-icoHeader.writeUInt16LE(32, 12);
-icoHeader.writeUInt32LE(png.length, 14);
-icoHeader.writeUInt32LE(22, 18);
-writeFileSync(ico, Buffer.concat([icoHeader, png]));
+const ico = path.join(staging, "emma.ico");
+cpSync(path.join(desktop, "assets/emma.ico"), ico);
 const icon = readFileSync(ico);
 assert.equal(icon.readUInt16LE(0), 0, "Invalid ICO reserved field.");
 assert.equal(icon.readUInt16LE(2), 1, "Invalid ICO type.");
-assert.equal(icon.readUInt16LE(4), 1, "Invalid ICO image count.");
-assert.equal(icon.readUInt16LE(10), 1, "Invalid ICO color planes.");
-assert.equal(icon.readUInt16LE(12), 32, "Invalid ICO bit depth.");
-assert.equal(icon.readUInt32LE(14), png.length, "Invalid ICO image size.");
-assert.equal(icon.readUInt32LE(18), 22, "Invalid ICO image offset.");
-assert.deepEqual(icon.subarray(22, 30), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "ICO image is not PNG.");
+const iconSizes = [];
+for (let entry = 0; entry < icon.readUInt16LE(4); entry += 1) {
+  const at = 6 + 16 * entry;
+  assert.equal(icon.readUInt16LE(at + 4), 1, "Invalid ICO color planes.");
+  assert.equal(icon.readUInt16LE(at + 6), 32, "Invalid ICO bit depth.");
+  assert.ok(icon.readUInt32LE(at + 12) + icon.readUInt32LE(at + 8) <= icon.length, "Invalid ICO image bounds.");
+  iconSizes.push(icon[at] || 256);
+}
+for (const size of [16, 32, 48, 256]) assert.ok(iconSizes.includes(size), `The Windows icon is missing its ${size}px image.`);
 
-const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$))/;
+const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$)|node_modules(?:$|\/ws(?:\/|$)))/;
 await packager({
   dir: desktop,
   name: "Emma",
   icon: ico,
   platform: "win32",
   arch,
-  out,
+  out: staging,
   overwrite: true,
   asar: true,
   appVersion: version,
   buildVersion: version,
+  win32metadata: { CompanyName: "Tronschell", ProductName: "Emma", FileDescription: "Emma" },
   extraResource: required,
   ignore: (file) => file !== "" && !bundled.test(file),
   afterCopy: [({ buildPath }) => {
@@ -195,22 +187,22 @@ await packager({
   }],
 });
 
-const app = path.join(out, `Emma-win32-${arch}`);
+const app = path.join(staging, `Emma-win32-${arch}`);
 const executable = path.join(app, "Emma.exe");
 assert.ok(existsSync(executable), `Missing packaged executable: ${executable}`);
 verifyPeArchitecture(executable);
 const archive = path.join(app, "resources", "app.asar");
 assert.ok(existsSync(archive), `Missing packaged archive: ${archive}`);
 assert.equal(JSON.parse(extractFile(archive, "package.json")).version, version);
-const files = listPackage(archive);
-for (const file of ["/dist-main/main/main.js", "/dist-main/main/preload.js", "/dist-renderer/index.html", "/dist-renderer/.vite/license.md"]) assert.ok(files.includes(file), `Missing packaged file: ${file}`);
+const files = listPackage(archive).map((file) => file.replaceAll("\\", "/"));
+for (const file of ["/dist-main/main/main.js", "/dist-main/main/preload.js", "/dist-renderer/index.html", "/dist-renderer/.vite/license.md", "/node_modules/ws/index.js"]) assert.ok(files.includes(file), `Missing packaged file: ${file}`);
 assert.ok(files.every((file) => bundled.test(file)), "Source files must not ship in app.asar.");
 for (const resource of required) {
   const file = path.join(app, "resources", path.basename(resource));
   assert.ok(existsSync(file), `Missing packaged resource: ${file}`);
   if (statSync(file).isFile()) verifyPeArchitecture(file);
 }
-const squirrel = path.join(out, "squirrel");
+const squirrel = path.join(staging, "squirrel");
 mkdirSync(squirrel, { recursive: true });
 const certificateFile = process.env.WINDOWS_CERT_PFX?.trim() ?? "";
 const certificatePassword = process.env.WINDOWS_CERT_PASSWORD ?? "";
@@ -227,10 +219,13 @@ await createWindowsInstaller({
   appDirectory: app,
   outputDirectory: squirrel,
   authors: "Tronschell",
+  description: "A self-learning, self-building metaharness.",
   name: "Emma",
   exe: "Emma.exe",
   setupExe: `Emma-${version}-win32-${arch}-Setup.exe`,
   setupIcon: ico,
+  loadingGif,
+  iconUrl: "https://raw.githubusercontent.com/tronschell/emma/main/desktop/assets/emma.ico",
   noMsi: true,
   title: "Emma",
   version,
@@ -258,4 +253,5 @@ const checksums = nupkgs.concat(path.basename(setup), "RELEASES").map((name) => 
   return `${digest.toLowerCase()} *${name}`;
 });
 writeFileSync(path.join(squirrel, "SHA256SUMS"), `${checksums.join("\n")}\n`);
-console.log(`Verified Emma ${version}: ${setup}, ${nupkgs.length} Squirrel package(s), RELEASES`);
+publishStagedBuild(staging, out, [`Emma-win32-${arch}`, "squirrel", "notices", "emma.ico"]);
+console.log(`Verified Emma ${version}: ${path.join(out, "squirrel", path.basename(setup))}, ${nupkgs.length} Squirrel package(s), RELEASES`);

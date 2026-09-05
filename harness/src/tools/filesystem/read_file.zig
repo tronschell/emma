@@ -7,6 +7,7 @@ const text_utils = @import("../../core/shared/text_utils.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_result_errors = @import("../../core/tooling/tool_result_errors.zig");
 const write_file_impl = @import("write_file.zig");
+const path_display = @import("path_display.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -142,7 +143,7 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
         return readFileFailure(ctx.allocator, err, target);
     };
     const text = content[0..actual_len];
-    const rel = pathing.workspaceRelativePath(arena, ctx.workspace_root, target) catch target;
+    const rel = path_display.workspaceRelative(arena, ctx.workspace_root, target) catch target;
 
     if (!text_utils.isModelSafeText(text)) {
         tool_dispatch.reportToolResultMemory(ctx, .{
@@ -572,7 +573,7 @@ test "read_file reads workspace-relative path" {
     }
     const workspace = try workspaceRoot(alloc, tmp);
     defer alloc.free(workspace);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{"notes/today.txt"});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt("notes/today.txt", .{})});
     defer alloc.free(args);
 
     const result = try dispatchReadFileInWorkspace(alloc, workspace, args);
@@ -597,7 +598,7 @@ test "read_file external absolute path preserves absolute display" {
     defer alloc.free(workspace);
     const external = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "external.txt");
     defer alloc.free(external);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{external});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(external, .{})});
     defer alloc.free(args);
 
     const result = try dispatchReadFileInWorkspace(alloc, workspace, args);
@@ -666,7 +667,9 @@ test "read_file trims leading and trailing whitespace" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "file.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"  {s}  \"}}", .{path});
+    const padded = try std.fmt.allocPrint(std.testing.allocator, "  {s}  ", .{path});
+    defer std.testing.allocator.free(padded);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f}}}", .{std.json.fmt(padded, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -688,7 +691,7 @@ test "read_file honors line range fields and uses active output shape" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "file.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"start_line\":2,\"line_count\":2}}", .{path});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f},\"start_line\":2,\"line_count\":2}}", .{std.json.fmt(path, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -710,7 +713,7 @@ test "read_file omits binary content using active success output" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "binary.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -731,7 +734,7 @@ test "read_file reports start_line beyond file length" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "file.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"start_line\":5}}", .{path});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f},\"start_line\":5}}", .{std.json.fmt(path, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -753,7 +756,7 @@ test "read_file reports empty file as success" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "empty.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -778,7 +781,7 @@ test "read_file reports capped snapshots for oversized text files" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "large.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -798,7 +801,7 @@ test "read_file sparse oversized files use active byte cap" {
     }
     const path = try tmpPath(std.testing.allocator, tmp, "too-large.txt");
     defer std.testing.allocator.free(path);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer std.testing.allocator.free(args);
 
     const result = try dispatchReadFile(std.testing.allocator, args);
@@ -809,7 +812,16 @@ test "read_file sparse oversized files use active byte cap" {
 }
 
 test "read_file materializes ENOENT like active tool error output" {
-    const result = try dispatchReadFile(std.testing.allocator, "{\"path\":\"/tmp/fx-core-read-file-missing\"}");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try workspaceRoot(std.testing.allocator, tmp);
+    defer std.testing.allocator.free(root);
+    const missing = try std.fs.path.join(std.testing.allocator, &.{ root, "fx-core-read-file-missing" });
+    defer std.testing.allocator.free(missing);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{f}}}", .{std.json.fmt(missing, .{})});
+    defer std.testing.allocator.free(args);
+
+    const result = try dispatchReadFile(std.testing.allocator, args);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(.failure, result.status);
@@ -842,7 +854,7 @@ test "read_file records display-truncated reads with complete snapshot when poss
     }
     const path = try tmpPath(alloc, tmp, "between-caps.txt");
     defer alloc.free(path);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -870,9 +882,9 @@ test "a narrowed re-read says the whole file was already read" {
     }
     const path = try tmpPath(alloc, tmp, "reread.txt");
     defer alloc.free(path);
-    const whole_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const whole_args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(whole_args);
-    const range_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"start_line\":2,\"line_count\":2}}", .{path});
+    const range_args = try std.fmt.allocPrint(alloc, "{{\"path\":{f},\"start_line\":2,\"line_count\":2}}", .{std.json.fmt(path, .{})});
     defer alloc.free(range_args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -908,7 +920,7 @@ test "read_file records full coverage for files within both caps" {
     }
     const path = try tmpPath(alloc, tmp, "small.txt");
     defer alloc.free(path);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -957,7 +969,7 @@ test "read_file records full-file hash for successful full read" {
     }
     const path = try tmpPath(alloc, tmp, "file.txt");
     defer alloc.free(path);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -983,7 +995,7 @@ test "read_file line range fields narrow model view but preserve full snapshot" 
     }
     const path = try tmpPath(alloc, tmp, "file.txt");
     defer alloc.free(path);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"start_line\":2,\"line_count\":1}}", .{path});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f},\"start_line\":2,\"line_count\":1}}", .{std.json.fmt(path, .{})});
     defer alloc.free(args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -1011,7 +1023,7 @@ test "read_file records capped default reads as truncated model view" {
     }
     const path = try tmpPath(alloc, tmp, "long.txt");
     defer alloc.free(path);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -1043,7 +1055,7 @@ test "read_file records exact default cap as full" {
     }
     const path = try tmpPath(alloc, tmp, "exact.txt");
     defer alloc.free(path);
-    const args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -1069,7 +1081,7 @@ test "read_file preserves complete snapshot for truncated model view" {
     }
     const path = try tmpPath(alloc, tmp, "long.txt");
     defer alloc.free(path);
-    const read_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{path});
+    const read_args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})});
     defer alloc.free(read_args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();
@@ -1100,9 +1112,9 @@ test "read_file records empty and beyond-end successes" {
     defer alloc.free(empty_path);
     const file_path = try tmpPath(alloc, tmp, "file.txt");
     defer alloc.free(file_path);
-    const empty_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{empty_path});
+    const empty_args = try std.fmt.allocPrint(alloc, "{{\"path\":{f}}}", .{std.json.fmt(empty_path, .{})});
     defer alloc.free(empty_args);
-    const beyond_args = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"start_line\":5}}", .{file_path});
+    const beyond_args = try std.fmt.allocPrint(alloc, "{{\"path\":{f},\"start_line\":5}}", .{std.json.fmt(file_path, .{})});
     defer alloc.free(beyond_args);
     var tracker = read_tracker.ReadTracker.init(alloc);
     defer tracker.deinit();

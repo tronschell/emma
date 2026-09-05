@@ -4,6 +4,7 @@ const debug_trace = @import("../../core/shared/debug_trace.zig");
 const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const path_display = @import("path_display.zig");
 const windows_paths = if (builtin.os.tag == .windows)
     @import("../../core/shared/windows_paths.zig")
 else
@@ -87,7 +88,7 @@ fn callWithLauncher(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.To
     const arena = arena_state.allocator();
 
     const target = pathing.resolveWorkspaceOrExternalPath(arena, ctx.workspace_root, input.path) catch |err| return mapPathError(err);
-    const display_path = try displayPath(arena, ctx.workspace_root, target);
+    const display_path = try path_display.workspaceRelative(arena, ctx.workspace_root, target);
     return launch_file(ctx.allocator, display_path, target, os_tag, launcher);
 }
 
@@ -105,11 +106,6 @@ fn mapPathError(err: anyerror) tool_dispatch.DispatchError {
 
 test "open_file preserves missing home path errors" {
     try std.testing.expectEqual(error.HomeNotSet, mapPathError(error.HomeNotSet));
-}
-
-fn displayPath(arena: Allocator, workspace_root: []const u8, absolute_path: []const u8) ![]const u8 {
-    const rel = try pathing.workspaceRelativePath(arena, workspace_root, absolute_path);
-    return if (rel.len == 0) "." else rel;
 }
 
 fn launch_file(alloc: Allocator, display_path: []const u8, target: []const u8, os_tag: std.Target.Os.Tag, launcher: Launcher) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
@@ -368,7 +364,11 @@ test "open_file launches Windows Explorer with an argv path" {
     try expectSuccessBody(result, "opened notes.txt");
     try std.testing.expectEqual(@as(usize, 1), launcher.calls);
     try std.testing.expectEqual(@as(usize, 2), launcher.argv.items.len);
-    try std.testing.expectEqualStrings("C:\\Windows\\System32\\explorer.exe", launcher.argv.items[0]);
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expect(std.ascii.endsWithIgnoreCase(launcher.argv.items[0], "\\System32\\explorer.exe"));
+    } else {
+        try std.testing.expectEqualStrings("C:\\Windows\\System32\\explorer.exe", launcher.argv.items[0]);
+    }
     try std.testing.expectEqualStrings(target, launcher.argv.items[1]);
 }
 

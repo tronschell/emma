@@ -245,7 +245,7 @@ export const LOCAL_EMBEDDING_MODELS = [
   { id: "local/bge-small-en-v1.5", label: "BGE small", detail: "English · small" },
   { id: "local/multilingual-e5-small", label: "E5 small", detail: "many languages · small" },
   { id: "local/gte-modernbert-base", label: "GTE ModernBERT", detail: "long files · slower" },
-  { id: "local/embeddinggemma-300m", label: "EmbeddingGemma 300M", detail: "best local · minutes per repo on Apple GPU" },
+  { id: "local/embeddinggemma-300m", label: "EmbeddingGemma 300M", detail: "best local · minutes per repo on a local GPU" },
   { id: "local/qwen3-embedding-0.6b", label: "Qwen3 embedding 0.6B", detail: "hours per repo" },
 ] as const;
 
@@ -733,7 +733,7 @@ export const PROHIBITED = [
   "Sending the user's data off this computer: uploading files, curl or scp of local content, pasting content into a remote service, webhooks.",
   "Downloading and running code: curl piped into a shell, installing from a URL, running a binary that was just fetched, npx of an unpinned package.",
   "Touching credentials: reading, printing, copying or transmitting keys, tokens, .env files, ~/.ssh, keychains, browser profiles, or cloud credentials.",
-  "Changing the machine: sudo, system settings, firewall, SIP or Gatekeeper, launch agents, cron or launchd entries, system package managers, shell profiles.",
+  "Changing the machine: sudo or an elevated prompt, system settings, firewall, SIP, Gatekeeper or SmartScreen, launch agents, cron, launchd, scheduled tasks or registry run keys, system package managers, shell profiles.",
   "Killing or disabling processes, services or containers the agent did not start.",
   "Anything you cannot read plainly: obfuscated, encoded, eval'd, or a command whose effect you cannot work out from what is in front of you.",
 ];
@@ -753,7 +753,7 @@ export const defaultVerifierSystem = [
   "",
   "Judge it against the user's request, not against how dangerous it sounds:",
   "- Destruction the user asked for is fine. If the request names the file, folder, branch, build output, container or table, and the action targets exactly that, allow it — deleting what someone asked you to delete is the job.",
-  "- Looking is never unrelated. An action that only reads or inspects — listing, searching, printing a file, git status, checking a version — is a step toward any goal, because the agent has to see the machine before it can act on it. Allow it, even when you cannot tell how it serves the request. The prohibited list still holds, so credentials and anything that leaves this Mac stay blocked however read-only they look.",
+  "- Looking is never unrelated. An action that only reads or inspects — listing, searching, printing a file, git status, checking a version — is a step toward any goal, because the agent has to see the machine before it can act on it. Allow it, even when you cannot tell how it serves the request. The prohibited list still holds, so credentials and anything that leaves this computer stay blocked however read-only they look.",
   "- Unrelated is blocked. If an action that changes something is not needed for the stated goal, block it even when it looks harmless, and say what it has to do with the request.",
   "- Wider than asked is blocked. Same idea, bigger blast radius: the user named one thing and the command covers more.",
   "",
@@ -1009,6 +1009,8 @@ export function maskSecret(value: string): string {
   const secret = value.trim();
   return secret.length < 12 ? "•".repeat(8) : `${secret.slice(0, 6)}${"•".repeat(10)}${secret.slice(-4)}`;
 }
+
+export const SECURE_STORE_BROKEN = "This computer's secure credential store is unavailable, so Emma will not save a key it could never read back.";
 
 export type OverlayPreferences = Pick<UserSettings, "notchGap" | "cursorOrbsEnabled" | "notchConcurrency"> & Partial<Pick<UserSettings, "systemPrompt" | "prompts">>;
 const action = (label: string, prompt: string): QuickAction => ({ label, prompt, category: "" });

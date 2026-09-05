@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { byUse, recentDays, rowSeries, rowTotal, type UsageRow } from "../shared/invocations";
 import { emptyWorkState, type NextStep, type WorkState } from "../shared/next-steps";
 import { fileState, parseDiff, type GitSnapshot } from "../shared/git";
+import { localDevice } from "../shared/platform-copy";
 import type { FolderGrant } from "../shared/folders";
 import { countDays, projectActivity, streak } from "./activity";
 import { threadFolderMap } from "./context";
@@ -14,6 +15,7 @@ import { plural } from "./plural";
 import { Bars } from "./bars";
 import { day } from "./dates";
 
+const LOCAL_DEVICE = localDevice(typeof window === "undefined" ? "" : window.emma?.platform ?? "");
 const RIDGE_DAYS = 30;
 const SPARK_DAYS = 14;
 const RANKED_ROWS = 5;
@@ -220,7 +222,7 @@ export function Dashboard({ threads, folders, folderId, seed }: {
         hint="Imported skills, counted the turn they fire.">
         {skillRows.length
           ? <Ranked rows={skillRows} hue="teal" unit="run" />
-          : <p className="dash-empty">Nothing imported has fired yet. Use <code>/import</code> to scan this Mac.</p>}
+          : <p className="dash-empty">Nothing imported has fired yet. Use <code>/import</code> to scan this {LOCAL_DEVICE}.</p>}
       </Panel>
 
       {project

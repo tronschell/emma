@@ -1010,6 +1010,7 @@ test "direct executor runs fixed argv with sanitized environment and no artifact
 }
 
 test "git direct profile removes ambient authority and disables optional mutation" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     var environment = try environmentForProfile(std.testing.allocator, .git_read_only);
     defer environment.deinit();
 
@@ -1023,6 +1024,7 @@ test "git direct profile removes ambient authority and disables optional mutatio
 }
 
 test "direct executor runs a supported pipeline and reports final output" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     var admission = try command_effect.plan(
         std.testing.allocator,
         "printf x | wc -c",
@@ -1194,6 +1196,7 @@ fn injectedPlan(
 }
 
 test "direct executor admits exact output limit and rejects limit plus one without artifacts" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     const exact_argv = [_][]const u8{ "/usr/bin/printf", "12345678" };
     const exact_stages = [_]command_effect.DirectStage{.{
         .executable = "/usr/bin/printf",
@@ -1326,6 +1329,7 @@ test "direct executor canonical limit covers stderr and counted pipeline relays"
 }
 
 test "direct executor charges non-final pipeline bytes before relay" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     const producer_argv = [_][]const u8{ "/usr/bin/printf", "123456789" };
     const consumer_argv = [_][]const u8{ "/usr/bin/wc", "-c" };
     const stages = [_]command_effect.DirectStage{
@@ -1535,6 +1539,7 @@ test "direct executor cleans up cancellation after the first pipeline spawn" {
 }
 
 test "direct executor projects hostile final stdout and stderr" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     const hostile_stdout = "\x1b]52;c;secret\x07\xff";
     const stdout_argv = [_][]const u8{ "/usr/bin/printf", "%s", hostile_stdout };
     const stdout_stages = [_]command_effect.DirectStage{.{
@@ -1746,6 +1751,7 @@ test "direct executor keeps stderr projector state independent per child" {
 }
 
 test "direct executor reports final stage status without pipefail" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     const argv = [_][]const u8{"/usr/bin/false"};
     const stages = [_]command_effect.DirectStage{.{
         .executable = "/usr/bin/false",
@@ -1840,6 +1846,7 @@ test "direct executor fails closed for missing executable" {
 }
 
 test "direct executor cancellation and timeout terminate and reap the process group" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     const argv = [_][]const u8{ "/bin/sleep", "10" };
     const stages = [_]command_effect.DirectStage{.{
         .executable = "/bin/sleep",

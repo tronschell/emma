@@ -140,6 +140,33 @@ test("unanswered permissions time out and discard later replies", async (context
   assert.equal(runtime.list()[0].status, "running");
 });
 
+test("a lapsed prompt reads as lapsed, while every refusal reads as denied", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { runtime, asked } = fixture();
+  const lapsing = runtime.approval(application, { humanOnly: true });
+  context.mock.timers.tick(10 * 60 * 1000);
+  assert.equal(await lapsing, "lapsed");
+
+  const refused = runtime.approval(application, { humanOnly: true });
+  runtime.answer(asked[1].id, false);
+  assert.equal(await refused, "denied");
+
+  const controller = new AbortController();
+  const aborted = runtime.approval(application, { humanOnly: true, signal: controller.signal });
+  controller.abort();
+  assert.equal(await aborted, "denied");
+
+  const stopped = runtime.approval(application, { humanOnly: true });
+  runtime.stop(application.threadId);
+  assert.equal(await stopped, "denied");
+  assert.equal(await runtime.approval(application, { humanOnly: true }), "denied");
+
+  runtime.adopt({ threadId: application.threadId, mode: "ask", title: "Next", content: "Next turn" });
+  const allowed = runtime.approval(application, { humanOnly: true });
+  runtime.answer(asked.at(-1)!.id, true);
+  assert.equal(await allowed, "allowed");
+});
+
 test("missing and finished turns cannot request application access", async () => {
   const { runtime, asked } = fixture();
   assert.equal(await runtime.question({ ...application, threadId: "missing" }, { humanOnly: true }), false);

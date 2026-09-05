@@ -2560,6 +2560,7 @@ test "tmux peer deadline bounds accept receive partial frames and cancellation" 
 }
 
 test "checked tmux cleanup requires saved process absence without a socket" {
+    if (comptime !supported()) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const MatchStub = struct {
         result: process_supervisor.TokenMatch,
@@ -2751,6 +2752,7 @@ test "tmux backend identity and shell quoting remain deterministic" {
 }
 
 test "tmux paths keep artifacts durable and place only the server socket in transport" {
+    if (comptime !supported()) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const durable_root = "/profiles/example/.fx/terminal-host";
     const transport_root = "/tmp/fx-terminal-501-profile";
@@ -2784,6 +2786,7 @@ test "tmux paths keep artifacts durable and place only the server socket in tran
 }
 
 test "lifecycle parser rejects partial and reordered control history" {
+    if (comptime !supported()) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

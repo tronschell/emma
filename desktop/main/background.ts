@@ -16,7 +16,7 @@ export class BackgroundCommands {
   constructor(private readonly onChange: () => void) {}
 
   start(cwd: string, command: string, folder: string): BackgroundTask {
-    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: true, windowsHide: true });
+    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: !isWindows, windowsHide: true });
     const id = `bg${++this.counter}`;
     const entry: Entry = { id, command, folder, startedAt: Date.now(), status: "running", exitCode: null, output: "", child };
     const collect = (data: Buffer) => { entry.output = (entry.output + String(data)).slice(-MAX_OUTPUT); };
@@ -74,7 +74,9 @@ export class BackgroundCommands {
         const timer = setTimeout(resolve, SIGKILL_AFTER_MS);
         if (!isWindows) timer.unref();
       });
-      if (entry.status === "running") await terminateProcessTree(pid, "SIGKILL");
+      if (entry.status !== "running") return;
+      await terminateProcessTree(pid, "SIGKILL");
+      if (entry.status === "running") await new Promise<void>((resolve) => entry.child.once("exit", () => resolve()));
     });
     this.stopping.set(entry.id, stopping);
     void stopping.then(() => this.stopping.delete(entry.id), () => this.stopping.delete(entry.id));

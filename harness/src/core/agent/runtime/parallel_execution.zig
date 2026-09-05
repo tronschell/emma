@@ -426,6 +426,7 @@ const ParallelTestPlan = struct {
     err: ?anyerror = null,
     delay_ms: u64 = 0,
     cancel: bool = false,
+    await_cancel: bool = false,
 };
 
 const ParallelTestFixture = struct {
@@ -459,6 +460,9 @@ fn parallelTestExecute(ctx: *anyopaque, alloc: Allocator, call: ToolCall, index:
     const plan = fixture.plans[index];
     if (plan.delay_ms > 0) io_mod.sleep(plan.delay_ms * std.time.ns_per_ms);
     if (plan.cancel) fixture.cancel_flag.store(true, .seq_cst);
+    if (plan.await_cancel) {
+        while (!fixture.cancel_flag.load(.seq_cst)) std.Thread.yield() catch {};
+    }
     if (plan.err) |err| return err;
     return .{ .status = .success, .model_output = try alloc.dupe(u8, plan.output) };
 }
@@ -738,7 +742,11 @@ test "parallel read-only execution cancelled mid batch leaves no worker in fligh
     var plans: [call_count]ParallelTestPlan = undefined;
     for (&calls, &plans, 0..) |*call, *plan, index| {
         call.* = toolCall("read", "read_file", "{\"path\":\"a\"}");
-        plan.* = .{ .output = "read output", .delay_ms = 1, .cancel = index == 0 };
+        plan.* = .{
+            .output = "read output",
+            .cancel = index == 0,
+            .await_cancel = index != 0,
+        };
     }
     var fixture = ParallelTestFixture{ .plans = &plans };
 

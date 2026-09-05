@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
-import type { ComputerApp } from "../main/computer";
+import type { ComputerApp, ComputerLaunch } from "../main/computer";
 import type { ComputerCursor, ComputerRunProgress } from "../shared/computer";
 
 const target: ComputerApp = { id: "com.test.Editor", name: "Test Editor", pid: 12345, path: "/Applications/Test Editor.app", launchedAt: 1_700_000_000_000 };
@@ -18,8 +18,17 @@ let cursorEvents: () => unknown[] = () => [];
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const childProcess: typeof import("node:child_process") = require("node:child_process");
+const opened: string[] = [];
+const launchTarget = (name: string) => ({ name, target: `/Applications/${name}.app` });
+const launchedApp = (name: string): ComputerApp => ({ id: `com.test.${name}`, name, pid: 24000, path: `/Applications/${name}.app`, launchedAt: 1_700_000_100_000 });
+let resolveReply = (name: string) => ({ ok: true, app: launchTarget(name) });
+let launchReply = (name: string) => ({ ok: true, app: launchedApp(name), target: launchTarget(name) });
 const fakeExec = Object.assign(() => {}, {
-  [promisify.custom]: async () => ({ stdout: JSON.stringify({ ok: true, apps: await enumerate() }), stderr: "" }),
+  [promisify.custom]: async (_helper: string, args: string[]) => {
+    if (args[0] === "--resolve") return { stdout: JSON.stringify(resolveReply(args[1])), stderr: "" };
+    if (args[0] === "--launch") { opened.push(args[1]); return { stdout: JSON.stringify(launchReply(args[1])), stderr: "" }; }
+    return { stdout: JSON.stringify({ ok: true, apps: await enumerate() }), stderr: "" };
+  },
 });
 childProcess.execFile = fakeExec as unknown as typeof childProcess.execFile;
 mock.method(childProcess, "spawn", (_helper: string, args: string[]) => {
@@ -66,7 +75,7 @@ const runtime = (progress?: (value: ComputerRunProgress) => void) => {
   computer.start(thread);
   return computer;
 };
-const allow = async () => true;
+const allow = async () => "allowed" as const;
 const state = (app = target) => ({ action: "get_app_state", app: app.id });
 const token = (text: string) => /Snapshot: ([A-Za-z0-9-]+)/.exec(text)![1];
 const click = (snapshot: string, app = target) => ({ action: "click", app: app.id, snapshot, element_index: 0 });
@@ -78,8 +87,11 @@ afterEach(() => {
   enumerate = async () => apps;
   sent.length = 0;
   spawned.length = 0;
+  opened.length = 0;
   captures = 0;
   cursorEvents = () => [];
+  resolveReply = (name) => ({ ok: true, app: launchTarget(name) });
+  launchReply = (name) => ({ ok: true, app: launchedApp(name), target: launchTarget(name) });
 });
 
 const cursor: ComputerCursor = { windowId: 42, bounds: { x: -100, y: 20, width: 500, height: 400 }, x: 120, y: 80 };
@@ -103,7 +115,7 @@ test("cursor events describe approved mutations without becoming tool results", 
   const beforeRead = progress.length;
   await computer.execute(thread, state(), allow);
   assert.ok(progress.slice(beforeRead).every((value) => !("cursor" in value)));
-  await assert.rejects(computer.execute(thread, state(other), async () => false), /did not allow/);
+  await assert.rejects(computer.execute(thread, state(other), async () => "denied" as const), /did not allow/);
   assert.equal(progress.filter((value) => value.cursor).length, 1);
 });
 
@@ -170,7 +182,70 @@ test("computer accepts only bounded app-scoped commands", () => {
     { ...click("s"), action: "key", key: "cmd+tab" }, { ...click("s"), action: "type_text", text: "x".repeat(4097) },
     { ...click("s"), action: "scroll", direction: "down", amount: 11 }, { ...click("s"), action: "scroll", direction: "sideways" },
   ]) assert.throws(() => computerAction(args));
-  assert.deepEqual(computerTools[0].inputSchema.properties.action.enum, ["list_apps", "get_app_state", "click", "set_value", "type_text", "key", "scroll"]);
+});
+
+test("launch_app takes an app name, never a path or an app-scoped argument", () => {
+  assert.deepEqual(computerAction({ action: "launch_app", name: "Google Chrome" }), { action: "launch_app", name: "Google Chrome" });
+  for (const args of [
+    { action: "launch_app" }, { action: "launch_app", name: "" }, { action: "launch_app", name: " Notepad" },
+    { action: "launch_app", name: "C:\\Windows\\notepad.exe" }, { action: "launch_app", name: "/Applications/Notes.app" },
+    { action: "launch_app", name: "Notepad\n" }, { action: "launch_app", name: "a".repeat(129) },
+    { action: "launch_app", name: "Notepad", app: target.id }, { action: "launch_app", name: "Notepad", pid: 1 },
+    { action: "list_apps", name: "Notepad" }, { ...state(), name: "Notepad" },
+  ]) assert.throws(() => computerAction(args));
+  assert.deepEqual(computerTools[0].inputSchema.properties.action.enum,
+    ["list_apps", "launch_app", "get_app_state", "click", "set_value", "type_text", "key", "scroll"]);
+});
+
+test("launch_app opens an approved app and grants control of it for the turn", async () => {
+  const computer = runtime();
+  const asked: string[] = [];
+  const approve = async (candidate: { name: string }) => { asked.push(candidate.name); return "allowed" as const; };
+  const said = await computer.execute(thread, { action: "launch_app", name: "Notes" }, approve);
+  assert.deepEqual(asked, ["Notes"]);
+  assert.deepEqual(opened, ["Notes"]);
+  assert.match(said, /Opened Notes — com\.test\.Notes — pid 24000/);
+  assert.equal(spawned.length, 0);
+  apps = [...apps, launchedApp("Notes")];
+  const listed = await computer.execute(thread, { action: "list_apps" }, allow);
+  assert.match(listed, /com\.test\.Notes/);
+  const read = await computer.execute(thread, { action: "get_app_state", app: "com.test.Notes" },
+    async () => { throw new Error("Launching already approved this app"); });
+  assert.match(read, /Snapshot: /);
+  assert.deepEqual(spawned[0].args, ["--app", JSON.stringify(launchedApp("Notes")), "--blocked-pid", String(process.pid)]);
+});
+
+test("launch_app refuses a denial, an unknown name and a target the user did not approve", async () => {
+  const denied = runtime();
+  await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" }, async () => "denied" as const), /did not allow/);
+  await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" },
+    async () => { throw new Error("A denied launch must not ask again"); }), /did not allow/);
+  assert.deepEqual(opened, []);
+  denied.end(thread);
+
+  resolveReply = () => ({ ok: false, error: "No installed app matches that name." } as never);
+  const missing = runtime();
+  await assert.rejects(missing.execute(thread, { action: "launch_app", name: "Nope" }, allow), /No installed app matches/);
+  missing.end(thread);
+
+  resolveReply = (name) => ({ ok: true, app: launchTarget(name) });
+  launchReply = () => ({ ok: true, app: launchedApp("Other"), target: launchTarget("Other") });
+  const swapped = runtime();
+  await assert.rejects(swapped.execute(thread, { action: "launch_app", name: "Notes" }, allow), /different app than the one the user approved/);
+});
+
+test("Windows helper identities and snapshot tokens pass the trust boundary", { skip: process.platform !== "win32" && "Windows executable paths" }, async () => {
+  const notepad: ComputerApp = { id: "app-178cce32aabda457", name: "Notepad", pid: 26200, path: "C:\\Program Files\\WindowsApps\\Microsoft.WindowsNotepad\\Notepad.exe", launchedAt: 1_788_578_020_543.14 };
+  const windowsSnapshot = "1052238-6658-0";
+  assert.deepEqual(computerAction({ action: "click", app: notepad.id, snapshot: windowsSnapshot, element_index: 27 }),
+    { action: "click", app: notepad.id, snapshot: windowsSnapshot, element_index: 27 });
+  apps = [notepad];
+  const computer = runtime();
+  assert.match(await computer.execute(thread, { action: "list_apps" }, allow), /^Notepad — app-178cce32aabda457 — pid 26200 — C:\\/);
+  await computer.execute(thread, state(notepad), allow);
+  assert.deepEqual(spawned[0].args, ["--app", JSON.stringify(notepad), "--blocked-pid", String(process.pid)]);
+  apps = [{ ...notepad, path: "Notepad.exe" }];
+  await assert.rejects(computer.execute(thread, { action: "list_apps" }, allow), /Invalid computer app identity/);
 });
 
 test("discovery exposes app metadata without reading UI or asking", async () => {
@@ -187,7 +262,12 @@ test("discovery exposes app metadata without reading UI or asking", async () => 
 test("the user approves each exact app once, with no global input", async () => {
   const computer = runtime();
   const asks: ComputerApp[] = [];
-  const approve = async (app: ComputerApp) => { assert.equal(sent.filter((item) => item.app.id === app.id).length, 0); asks.push(app); return true; };
+  const approve = async (candidate: ComputerApp | ComputerLaunch) => {
+    const app = candidate as ComputerApp;
+    assert.equal(sent.filter((item) => item.app.id === app.id).length, 0);
+    asks.push(app);
+    return "allowed" as const;
+  };
   const first = token(await computer.execute(thread, state(), approve));
   await computer.execute(thread, click(first), approve);
   await computer.execute(thread, state(), approve);
@@ -199,10 +279,28 @@ test("the user approves each exact app once, with no global input", async () => 
   assert.equal(captures, 0);
 });
 
+test("an approval that lapses is not a denial and can be asked once more", async () => {
+  const computer = runtime();
+  const answers: string[] = [];
+  const lapse = async () => { answers.push("lapsed"); return "lapsed" as const; };
+  await assert.rejects(computer.execute(thread, state(), lapse), /No answer yet/);
+  const snapshot = token(await computer.execute(thread, state(), allow));
+  assert.ok(snapshot);
+  assert.deepEqual(answers, ["lapsed"]);
+  assert.equal(spawned.length, 1);
+
+  const twice = runtime();
+  await assert.rejects(twice.execute(thread, { action: "launch_app", name: "Notes" }, lapse), /No answer yet/);
+  await assert.rejects(twice.execute(thread, { action: "launch_app", name: "Notes" }, lapse), /did not allow/);
+  await assert.rejects(twice.execute(thread, { action: "launch_app", name: "Notes" },
+    async () => { throw new Error("A second lapse must not ask again"); }), /did not allow/);
+  assert.deepEqual(opened, []);
+});
+
 test("denial stays denied for this turn, including concurrent retries", async () => {
   const computer = runtime();
   let asks = 0;
-  const deny = async () => { asks++; return false; };
+  const deny = async () => { asks++; return "denied" as const; };
   const attempts = await Promise.allSettled([computer.execute(thread, state(), deny), computer.execute(thread, state(), deny)]);
   assert.ok(attempts.every((attempt) => attempt.status === "rejected"));
   await assert.rejects(computer.execute(thread, state(), allow), /did not allow/);
@@ -235,13 +333,13 @@ test("an unrelated thread cannot borrow or end a granted run", async () => {
 
 test("stopping during approval cannot create a helper or restart the run", async () => {
   const computer = runtime();
-  let answer!: (allowed: boolean) => void;
+  let answer!: (given: "allowed") => void;
   let signal!: AbortSignal;
   const result = computer.execute(thread, state(), (_app, abort) => { signal = abort; return new Promise((resolve) => { answer = resolve; }); });
   await tick();
   computer.abort();
   assert.equal(signal.aborted, true);
-  answer(true);
+  answer("allowed");
   await assert.rejects(result, /stopped/);
   assert.equal(spawned.length, 0);
   assert.throws(() => computer.start(thread), /cannot restart/);
@@ -284,7 +382,7 @@ test("relaunches and app changes during approval do not inherit a grant", async 
   apps = [target, other];
   await assert.rejects(computer.execute(thread, state(), async () => {
     apps = [{ ...target, pid: target.pid + 10 }, other];
-    return true;
+    return "allowed" as const;
   }), /instance changed/);
 });
 
@@ -306,6 +404,6 @@ test("the step ceiling revokes access and the next turn asks again", async () =>
   computer.end(thread);
   computer.start(thread);
   let asked = false;
-  await computer.execute(thread, state(), async () => { asked = true; return true; });
+  await computer.execute(thread, state(), async () => { asked = true; return "allowed" as const; });
   assert.equal(asked, true);
 });

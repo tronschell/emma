@@ -31,12 +31,12 @@ test("the semantic_grep option names the app binary as node and carries the embe
   assert.deepEqual(option.env, [{ name: "ELECTRON_RUN_AS_NODE", value: "1" }, { name: "ZVEC_GREP_EMBEDDING", value: "local/potion-code-16m-v2" }]);
 });
 
-test("the option is empty when the toggle is off or zvec-grep is not bundled", () => {
+test("the option is empty when the toggle is off or zvec-grep is not installed", () => {
   const changes: number[] = [];
-  const bundled = new SemanticGrep("/node", "/entry.js", true, 0, () => changes.push(1));
+  const bundled = new SemanticGrep("/node", () => "/entry.js", 0, () => changes.push(1));
   assert.equal(bundled.option(defaultHarnessExperiments), "");
   assert.equal(bundled.option({ ...defaultHarnessExperiments, semanticGrep: true }).length > 0, true);
-  const missing = new SemanticGrep("/node", "/entry.js", false, 0, () => changes.push(1));
+  const missing = new SemanticGrep("/node", () => "", 0, () => changes.push(1));
   assert.equal(missing.option({ ...defaultHarnessExperiments, semanticGrep: true }), "");
   assert.deepEqual(missing.status(), { available: false, enabled: false, model: "", folders: [] });
   assert.equal(changes.length, 0);
@@ -45,7 +45,7 @@ test("the option is empty when the toggle is off or zvec-grep is not bundled", (
 test("a hosted model without its key leaves the option empty and names the key on the folder", () => {
   delete process.env.OPENROUTER_API_KEY;
   const changes: number[] = [];
-  const grep = new SemanticGrep("/node", "/entry.js", true, 0, () => changes.push(1));
+  const grep = new SemanticGrep("/node", () => "/entry.js", 0, () => changes.push(1));
   grep.apply(hosted);
   assert.equal(grep.option(hosted), "");
   assert.equal(grep.option(hosted, "/work/app"), "");
@@ -57,7 +57,7 @@ test("a hosted model without its key leaves the option empty and names the key o
 test("a hosted model with its key points zg at the loopback proxy under a per-launch token", async () => {
   process.env.OPENROUTER_API_KEY = "sk-or-test";
   const port = await freePort();
-  const grep = new SemanticGrep("/node", "/entry.js", true, port, () => undefined);
+  const grep = new SemanticGrep("/node", () => "/entry.js", port, () => undefined);
   grep.apply(hosted);
   const env = Object.fromEntries((JSON.parse(grep.option(hosted)).env as { name: string; value: string }[]).map((item) => [item.name, item.value]));
   assert.equal(env.ZVEC_GREP_EMBEDDING, "qwen/text-embedding-v4");
@@ -144,7 +144,7 @@ test("index progress is read off the last zg stderr line and labelled with the t
 });
 
 test("a local model carries the shared zvec-grep home and no proxy credentials", () => {
-  const grep = new SemanticGrep("/node", "/entry.js", true, 0, () => undefined);
+  const grep = new SemanticGrep("/node", () => "/entry.js", 0, () => undefined);
   const local = { ...defaultHarnessExperiments, semanticGrep: true };
   grep.apply(local);
   const env = Object.fromEntries((JSON.parse(grep.option(local)).env as { name: string; value: string }[]).map((item) => [item.name, item.value]));
@@ -160,7 +160,7 @@ test("a proxy that cannot bind leaves the option empty and fails the folder", as
   const port = await freePort();
   const squatter = http.createServer();
   await listen(squatter, port);
-  const grep = new SemanticGrep("/node", "/entry.js", true, port, () => undefined);
+  const grep = new SemanticGrep("/node", () => "/entry.js", port, () => undefined);
   grep.apply(hosted);
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(grep.option(hosted), "");

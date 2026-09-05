@@ -49,7 +49,8 @@ export class Terminals {
     if (request.signIn && !plan) throw new Error("Emma does not know that plan.");
     const shell = isWindows ? shellBinary() : process.env.SHELL || "/bin/zsh";
     const command = plan?.signIn ?? harness?.bin;
-    const login = command ? [shell, ...shellArguments(command)] : (isWindows ? [shell, "/d"] : [shell, "-il"]);
+    const windowsInteractive = /(?:pwsh|powershell)\.exe$/i.test(shell) ? ["-NoLogo"] : ["/d"];
+    const login = command ? [shell, ...shellArguments(command)] : (isWindows ? [shell, ...windowsInteractive] : [shell, "-il"]);
     const child = spawn(this.binary(), [String(columns), String(rows), ...login], {
       cwd: request.cwd,
       env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },

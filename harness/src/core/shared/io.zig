@@ -20,7 +20,125 @@ pub fn setIo(zio: std.Io) void {
 }
 
 fn process_io_for(comptime os_tag: std.Target.Os.Tag, zio: std.Io) std.Io {
-    return if (os_tag == .macos) darwin_process_spawn.wrap(zio) else zio;
+    return switch (os_tag) {
+        .macos => darwin_process_spawn.wrap(zio),
+        .windows => windowsIoWrap(zio),
+        else => zio,
+    };
+}
+
+const WindowsWrapState = enum(u8) { uninitialized, initializing, ready };
+
+var windows_wrap_state: std.atomic.Value(WindowsWrapState) = .init(.uninitialized);
+var windows_wrapped_vtable: std.Io.VTable = undefined;
+var windows_original_vtable: *const std.Io.VTable = undefined;
+
+fn windowsIoWrap(original: std.Io) std.Io {
+    if (windows_wrap_state.load(.acquire) != .ready) initializeWindowsWrappedVtable(original);
+    std.debug.assert(windows_original_vtable == original.vtable);
+    return .{ .userdata = original.userdata, .vtable = &windows_wrapped_vtable };
+}
+
+fn initializeWindowsWrappedVtable(original: std.Io) void {
+    if (windows_wrap_state.cmpxchgStrong(.uninitialized, .initializing, .acquire, .acquire) == null) {
+        windows_wrapped_vtable = original.vtable.*;
+        windows_wrapped_vtable.dirOpenFile = windowsDirOpenFile;
+        windows_wrapped_vtable.dirOpenDir = windowsDirOpenDir;
+        windows_original_vtable = original.vtable;
+        windows_wrap_state.store(.ready, .release);
+        return;
+    }
+    while (windows_wrap_state.load(.acquire) != .ready) std.atomic.spinLoopHint();
+}
+
+fn windowsDirOpenFile(
+    userdata: ?*anyopaque,
+    dir: std.Io.Dir,
+    sub_path: []const u8,
+    flags: std.Io.Dir.OpenFileOptions,
+) std.Io.File.OpenError!std.Io.File {
+    var file = try windows_original_vtable.dirOpenFile(userdata, dir, sub_path, flags);
+    if (!flags.follow_symlinks and windowsHandleIsSurrogateReparsePoint(file.handle)) {
+        windows.CloseHandle(file.handle);
+        return error.SymLinkLoop;
+    }
+    if (!windowsHandleIsAsynchronous(file.handle)) return file;
+    if (windowsReopenSynchronous(file.handle)) |synchronous| {
+        windows.CloseHandle(file.handle);
+        return .{ .handle = synchronous, .flags = file.flags };
+    }
+    file.flags.nonblocking = true;
+    return file;
+}
+
+fn windowsDirOpenDir(
+    userdata: ?*anyopaque,
+    dir: std.Io.Dir,
+    sub_path: []const u8,
+    options: std.Io.Dir.OpenOptions,
+) std.Io.Dir.OpenError!std.Io.Dir {
+    const opened = try windows_original_vtable.dirOpenDir(userdata, dir, sub_path, options);
+    if (options.follow_symlinks or !windowsHandleIsSurrogateReparsePoint(opened.handle)) return opened;
+    windows.CloseHandle(opened.handle);
+    return error.SymLinkLoop;
+}
+
+fn windowsHandleIsSurrogateReparsePoint(handle: windows.HANDLE) bool {
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+    var tag_info: windows.FILE.ATTRIBUTE_TAG_INFO = undefined;
+    if (windows.ntdll.NtQueryInformationFile(
+        handle,
+        &iosb,
+        &tag_info,
+        @sizeOf(windows.FILE.ATTRIBUTE_TAG_INFO),
+        .AttributeTag,
+    ) != .SUCCESS) return false;
+    return tag_info.ReparseTag.IsSurrogate;
+}
+
+fn windowsHandleIsAsynchronous(handle: windows.HANDLE) bool {
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+    var mode: windows.FILE.MODE = undefined;
+    return switch (windows.ntdll.NtQueryInformationFile(
+        handle,
+        &iosb,
+        &mode,
+        @sizeOf(windows.FILE.MODE),
+        .Mode,
+    )) {
+        .SUCCESS => mode.IO == .ASYNCHRONOUS,
+        else => false,
+    };
+}
+
+fn windowsReopenSynchronous(handle: windows.HANDLE) ?windows.HANDLE {
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+    var access: windows.ACCESS_MASK = undefined;
+    if (windows.ntdll.NtQueryInformationFile(
+        handle,
+        &iosb,
+        &access,
+        @sizeOf(windows.ACCESS_MASK),
+        .Access,
+    ) != .SUCCESS) return null;
+    access.STANDARD.SYNCHRONIZE = true;
+
+    const empty_name = windows.UNICODE_STRING.init(&.{});
+    var reopened: windows.HANDLE = undefined;
+    if (windows.ntdll.NtCreateFile(
+        &reopened,
+        access,
+        &.{ .RootDirectory = handle, .ObjectName = @constCast(&empty_name) },
+        &iosb,
+        null,
+        .{ .NORMAL = true },
+        .VALID_FLAGS,
+        .OPEN,
+        .{ .IO = .SYNCHRONOUS_NONALERT, .OPEN_REPARSE_POINT = true },
+        null,
+        0,
+    ) != .SUCCESS) return null;
+    return reopened;
 }
 
 pub fn getIo() std.Io {
@@ -162,6 +280,52 @@ test "non-Darwin process I/O keeps the original vtable" {
     try std.testing.expect(selected.vtable == original.vtable);
 }
 
+test "Windows no-follow opens reject a junction like a symlink" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(getIo(), "target/child");
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(getIo(), &root_buffer)];
+    const target = try std.fs.path.join(alloc, &.{ root, "target" });
+    defer alloc.free(target);
+    const link = try std.fs.path.join(alloc, &.{ root, "link" });
+    defer alloc.free(link);
+    const linked_child = try std.fs.path.join(alloc, &.{ root, "link", "child" });
+    defer alloc.free(linked_child);
+
+    const created = try std.process.run(alloc, getIo(), .{
+        .argv = &.{ "cmd", "/c", "mklink", "/J", link, target },
+    });
+    alloc.free(created.stdout);
+    alloc.free(created.stderr);
+    switch (created.term) {
+        .exited => |code| if (code != 0) return error.SkipZigTest,
+        else => return error.SkipZigTest,
+    }
+
+    try std.testing.expectError(
+        error.SymLinkLoop,
+        tmp.dir.openDir(getIo(), "link", .{ .follow_symlinks = false }),
+    );
+    try std.testing.expectError(error.SymLinkLoop, openDirAbsoluteNoFollow(link, .{}));
+    try std.testing.expectError(error.SymLinkLoop, openDirAbsoluteNoFollow(linked_child, .{}));
+    try std.testing.expectError(
+        error.DurablePathUnsafe,
+        openOrCreateVerifiedPrivateDirFromDir(tmp.dir, "link"),
+    );
+
+    var followed = try tmp.dir.openDir(getIo(), "link", .{});
+    followed.close(getIo());
+    try deleteSymLink(tmp.dir, "link");
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.statFile(getIo(), "link", .{ .follow_symlinks = false }),
+    );
+}
+
 test "openDirAbsoluteNoFollow rejects unsafe path components" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -169,9 +333,9 @@ test "openDirAbsoluteNoFollow rejects unsafe path components" {
 
     try tmp.dir.createDirPath(getIo(), "real/child");
     try writeTempFile(tmp.dir, "plain-file", "not a directory");
-    tmp.dir.symLink(std.testing.io, "real", "linked", .{ .is_directory = true }) catch |err| {
-        if (err == error.AccessDenied or err == error.FileSystem) return error.SkipZigTest;
-        return err;
+    tmp.dir.symLink(std.testing.io, "real", "linked", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.FileSystem, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
     };
 
     const root = try dirRealpathAlloc(alloc, tmp.dir, ".");
@@ -417,15 +581,18 @@ pub fn setRawEnviron(raw: RawEnviron) void {
 }
 
 pub fn getenv(key: []const u8) ?[]const u8 {
-    const value = getenvExact(key);
-    if (value != null) return value;
-    if (comptime builtin.os.tag == .windows) {
-        if (std.mem.eql(u8, key, "HOME")) return getenvExact("USERPROFILE");
-        if (std.mem.eql(u8, key, "TMPDIR")) {
-            return getenvExact("TMP") orelse getenvExact("TEMP");
-        }
+    if (comptime builtin.os.tag != .windows) return getenvExact(key);
+    if (getenvPresent(key)) |present| return present;
+    if (std.mem.eql(u8, key, "HOME")) return getenvPresent("USERPROFILE");
+    if (std.mem.eql(u8, key, "TMPDIR")) {
+        return getenvPresent("TMP") orelse getenvPresent("TEMP");
     }
     return null;
+}
+
+fn getenvPresent(key: []const u8) ?[]const u8 {
+    const value = getenvExact(key) orelse return null;
+    return if (value.len > 0) value else null;
 }
 
 fn getenvExact(key: []const u8) ?[]const u8 {
@@ -564,6 +731,15 @@ const permission_ops = switch (builtin.os.tag) {
     },
 };
 
+pub fn deleteSymLink(dir: std.Io.Dir, sub_path: []const u8) !void {
+    const zio = getIo();
+    if (comptime builtin.os.tag != .windows) return dir.deleteFile(zio, sub_path);
+    return dir.deleteDir(zio, sub_path) catch |err| switch (err) {
+        error.NotDir => dir.deleteFile(zio, sub_path),
+        else => err,
+    };
+}
+
 pub fn permissionsFromMode(mode: u32) std.Io.File.Permissions {
     return permission_ops.fromMode(mode);
 }
@@ -664,6 +840,13 @@ pub fn enforcePrivateDirectoryAcl(dir: std.Io.Dir) !void {
 pub fn privateDirectoryAclMatches(dir: std.Io.Dir) !bool {
     if (comptime builtin.os.tag != .windows) return permissionsMatch((try dir.stat(getIo())).permissions, 0o700);
     return windows_acl.matchesHandle(dir.handle);
+}
+
+pub fn directoryWritableByForeignPrincipal(dir: std.Io.Dir) !bool {
+    if (comptime builtin.os.tag != .windows) {
+        return permissionsMode((try dir.stat(getIo())).permissions) & 0o022 != 0;
+    }
+    return windows_acl.writableByForeignPrincipalHandle(dir.handle);
 }
 
 pub fn enforcePrivateFileAcl(file: std.Io.File) !void {
@@ -1088,10 +1271,12 @@ pub fn makeDirRecursive(path: []const u8) !void {
 
 pub fn realpathAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     if (comptime builtin.os.tag == .windows) {
-        if (std.fs.path.isAbsolute(path)) {
-            return std.Io.Dir.realPathFileAbsoluteAlloc(getIo(), path, alloc);
-        }
-        return std.Io.Dir.cwd().realPathFileAlloc(getIo(), path, alloc);
+        const resolved = if (std.fs.path.isAbsolute(path))
+            try std.Io.Dir.realPathFileAbsoluteAlloc(getIo(), path, alloc)
+        else
+            try std.Io.Dir.cwd().realPathFileAlloc(getIo(), path, alloc);
+        defer alloc.free(resolved);
+        return alloc.dupe(u8, resolved);
     }
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path_z = try std.fmt.bufPrintZ(&buf, "{s}", .{path});
@@ -1198,6 +1383,32 @@ test "getenv returns set value after setEnvironMap" {
 
     setEnvironMap(&environ);
     try std.testing.expectEqualStrings("present", getenv("FX_IO_TEST").?);
+    global_environ = null;
+}
+
+test "Windows treats an empty environment value as absent at every path-building fallback" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const previous = global_environ;
+    global_environ = null;
+    defer global_environ = previous;
+
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("HOME", "");
+    try environ.put("USERPROFILE", "C:/Users/fake");
+    try environ.put("TMP", "");
+    try environ.put("TEMP", "C:/Temp");
+    try environ.put("LOCALAPPDATA", "");
+    setEnvironMap(&environ);
+
+    try std.testing.expectEqualStrings("C:/Users/fake", getenv("HOME").?);
+    try std.testing.expectEqualStrings("C:/Temp", getenv("TMPDIR").?);
+    try std.testing.expect(getenv("LOCALAPPDATA") == null);
+
+    try environ.put("USERPROFILE", "");
+    try environ.put("TEMP", "");
+    try std.testing.expect(getenv("HOME") == null);
+    try std.testing.expect(getenv("TMPDIR") == null);
     global_environ = null;
 }
 
@@ -1620,9 +1831,9 @@ test "caller-owned directory rejects unsafe private children" {
     );
 
     try tmp.dir.createDir(getIo(), "target", .default_dir);
-    tmp.dir.symLink(getIo(), "target", "link", .{ .is_directory = true }) catch |err| {
-        if (err == error.AccessDenied) return error.SkipZigTest;
-        return err;
+    tmp.dir.symLink(getIo(), "target", "link", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
     };
     try std.testing.expectError(
         error.DurablePathUnsafe,

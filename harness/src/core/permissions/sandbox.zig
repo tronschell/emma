@@ -546,7 +546,7 @@ pub fn executeCommandInEnvironment(
     if (effective_cfg.timeout_started_ms == null) effective_cfg.timeout_started_ms = io_mod.milliTimestamp();
     try BackendControl.init(effective_cfg).check();
     const backend = resolveBackend(effective_cfg.backend);
-    const invocation = try shell_resolver.capturedInvocation(environment, command);
+    const invocation = try shell_resolver.preparedCapturedInvocation(scratch, environment, command);
     debug_trace.logf(
         "core",
         "sandbox explicit command environment={s} shell={s}",
@@ -698,8 +698,9 @@ fn executeWindows(
     command: []const u8,
     cwd: []const u8,
 ) !command_contract.RunCommandResult {
-    const shell_path = io_mod.getenv("COMSPEC") orelse "C:\\Windows\\System32\\cmd.exe";
-    const invocation = try shell_resolver.capturedInvocation(.{ .user = shell_path }, command);
+    var shell_buffer: [32768]u8 = undefined;
+    const shell_path = shell_resolver.windowsAgentShellInto(&shell_buffer);
+    const invocation = try shell_resolver.preparedCapturedInvocation(scratch, .{ .user = shell_path }, command);
     return executeWindowsInvocation(alloc, scratch, cfg, command, cwd, &invocation);
 }
 
@@ -1935,7 +1936,13 @@ fn executeRawBashWithResultCommand(
     cwd: []const u8,
 ) !command_contract.RunCommandResult {
     if (builtin.os.tag == .windows) {
-        const argv = [_][]const u8{ "cmd", "/C", execution_command };
+        var shell_buffer: [32768]u8 = undefined;
+        const shell = shell_resolver.windowsAgentShellInto(&shell_buffer);
+        const script = try shell_resolver.windowsAgentScript(scratch, execution_command);
+        var argv: [shell_resolver.windows_agent_shell_flags.len + 2][]const u8 = undefined;
+        argv[0] = shell;
+        for (shell_resolver.windows_agent_shell_flags, 0..) |flag, index| argv[index + 1] = flag;
+        argv[argv.len - 1] = script;
         const result = try executeProcess(scratch, cfg, &argv, cwd);
         return formatCollectedOutput(alloc, result_command, cwd, result);
     }
@@ -1980,6 +1987,48 @@ test "Windows captured command invocation retains the resolved shell argv" {
     try std.testing.expect(std.fs.path.isAbsolute(invocation.path));
     try std.testing.expectEqualStrings("/c", invocation.argv()[3]);
     try std.testing.expectEqualStrings("echo captured", invocation.argv()[4]);
+}
+
+test "Windows captured profiles run PowerShell and report its exit code" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var shell_buffer: [32768]u8 = undefined;
+    const shell = shell_resolver.windowsAgentShellInto(&shell_buffer);
+    const cfg = Config{
+        .backend = .none,
+        .workspace_root = ".",
+        .max_command_output_bytes = 16 * 1024,
+    };
+
+    const ok = try executeCommandInEnvironment(
+        cfg,
+        arena,
+        "Write-Output 'profile-stdout'",
+        ".",
+        .{ .user = shell },
+    );
+    try std.testing.expect(std.mem.find(u8, ok.output, "exit_code=0") != null);
+    try std.testing.expect(std.mem.find(u8, ok.output, "profile-stdout") != null);
+
+    const failed = try executeCommandInEnvironment(
+        cfg,
+        arena,
+        "cmd /c exit 3",
+        ".",
+        .{ .clean = shell },
+    );
+    try std.testing.expect(std.mem.find(u8, failed.output, "exit_code=3") != null);
+
+    const cmdlet_failure = try executeCommandInEnvironment(
+        cfg,
+        arena,
+        "Get-Item C:\no-such-file-emma-test",
+        ".",
+        .{ .clean = shell },
+    );
+    try std.testing.expect(std.mem.find(u8, cmdlet_failure.output, "exit_code=1") != null);
 }
 
 test "explicit captured profiles execute exact shells without synthetic stderr" {
@@ -3175,19 +3224,21 @@ test "format output covers stdout stderr empty signal and unknown statuses" {
     try std.testing.expectEqualStrings("signal=15\n(no output)\n", signaled.output);
 }
 
+const test_command_root = if (builtin.os.tag == .windows) "C:\\Windows" else "/tmp";
+
 test "raw process execution returns foreground output" {
     const result = try executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 4096,
-    }, std.testing.allocator, "printf 'hello'", "/tmp");
+    }, std.testing.allocator, "printf 'hello'", test_command_root);
     defer std.testing.allocator.free(result.output);
 
     try std.testing.expect(std.mem.find(u8, result.output, "exit_code=0\n") != null);
     try std.testing.expect(std.mem.find(u8, result.output, "<stdout>\nhello\n</stdout>\n") != null);
     const command_result = result.command_result.?.foreground;
     try std.testing.expectEqualStrings("printf 'hello'", command_result.command);
-    try std.testing.expectEqualStrings("/tmp", command_result.cwd);
+    try std.testing.expectEqualStrings(test_command_root, command_result.cwd);
     try std.testing.expectEqual(@as(?i64, 0), command_result.exit_code);
     try std.testing.expectEqual(@as(?u32, null), command_result.signal);
     try std.testing.expect(!command_result.timed_out);
@@ -3597,12 +3648,16 @@ test "large stderr writes command artifact and returns bounded preview" {
     defer alloc.free(artifact_dir);
 
     const output_text = "ERR-1234567890-END";
+    const stderr_command = if (builtin.os.tag == .windows)
+        "[Console]::Error.Write('ERR-1234567890-END')"
+    else
+        "printf 'ERR-1234567890-END' >&2";
     const result = try executeCommand(.{
         .backend = .none,
         .workspace_root = workspace,
         .max_command_output_bytes = 16,
         .command_artifact_dir = artifact_dir,
-    }, alloc, "printf 'ERR-1234567890-END' >&2", workspace);
+    }, alloc, stderr_command, workspace);
     defer alloc.free(result.output);
 
     try std.testing.expect(std.mem.find(u8, result.output, "exit_code=0\n") != null);
@@ -3676,6 +3731,7 @@ test "managed command artifact confirms an indeterminate rename target" {
         },
     );
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     var sync_state = FailFirstCommandArtifactSync{};
     var capability = try session_child_store.SessionChildCapability.initForTesting(
         alloc,
@@ -3753,6 +3809,7 @@ test "managed command artifact rejects an unconfirmed rename target" {
         },
     );
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     var sync_state = FailCommandArtifactSync{};
     var capability = try session_child_store.SessionChildCapability.initForTesting(
         alloc,
@@ -3865,17 +3922,27 @@ const FailOutput = struct {
     }
 };
 
+const line_stream_command = if (builtin.os.tag == .windows)
+    "[Console]::Out.Write('one' + [char]10 + 'two')"
+else
+    "printf 'one\\ntwo'";
+
+const split_stream_command = if (builtin.os.tag == .windows)
+    "[Console]::Out.Write('out' + [char]10); [Console]::Error.Write('err' + [char]10 + 'tail')"
+else
+    "printf 'out\\n'; printf 'err\\ntail' >&2";
+
 test "line buffered streaming emits lines and tail" {
     var capture = StreamCapture{ .alloc = std.testing.allocator };
     defer capture.deinit();
 
     const result = try executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 4096,
         .output_chunk_ctx = @ptrCast(&capture),
         .on_output_chunk = StreamCapture.onChunk,
-    }, std.testing.allocator, "printf 'one\\ntwo'", "/tmp");
+    }, std.testing.allocator, line_stream_command, test_command_root);
     defer std.testing.allocator.free(result.output);
 
     try std.testing.expectEqual(@as(usize, 2), capture.chunks.items.len);
@@ -3890,11 +3957,11 @@ test "line buffered streaming preserves stderr stream and tail" {
 
     const result = try executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 4096,
         .output_chunk_ctx = @ptrCast(&capture),
         .on_output_chunk = StreamCapture.onChunk,
-    }, std.testing.allocator, "printf 'out\\n'; printf 'err\\ntail' >&2", "/tmp");
+    }, std.testing.allocator, split_stream_command, test_command_root);
     defer std.testing.allocator.free(result.output);
 
     try std.testing.expectEqual(@as(usize, 3), capture.chunks.items.len);
@@ -4140,6 +4207,7 @@ test "cancelled managed command confirms an indeterminate artifact target" {
         },
     );
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     var sync_state = FailFirstCommandArtifactSync{};
     var capability = try session_child_store.SessionChildCapability.initForTesting(
         alloc,
@@ -4270,11 +4338,11 @@ test "zero-output cancellation remains a bare error" {
 
     try std.testing.expectError(error.Cancelled, executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 1024,
         .cancel_flag = &cancel,
         .timeout_ms = 1000,
-    }, std.testing.allocator, "exec sleep 5", "/tmp"));
+    }, std.testing.allocator, "exec sleep 5", test_command_root));
 }
 
 test "artifact write failure after cancellation remains a bare error" {
@@ -4358,10 +4426,10 @@ test "artifact write failure after cancellation remains a bare error" {
 test "timeout source is distinct from cancellation" {
     try std.testing.expectError(error.TimeoutExpired, executeCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 1024,
         .timeout_ms = 120,
-    }, std.testing.allocator, "sleep 5", "/tmp"));
+    }, std.testing.allocator, "sleep 5", test_command_root));
 }
 
 test "timeout remains dominant when its output callback fails" {

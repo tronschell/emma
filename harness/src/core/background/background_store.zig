@@ -121,6 +121,13 @@ pub fn classifyLegacyLogStorage(
     } };
 }
 
+fn createPrivateTestDir(dir: std.Io.Dir, sub_path: []const u8) !void {
+    try dir.createDir(io_mod.getIo(), sub_path, io_mod.permissionsFromMode(0o700));
+    var created = try dir.openDir(io_mod.getIo(), sub_path, .{ .iterate = true, .follow_symlinks = false });
+    defer created.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(created);
+}
+
 test "managed and external background log storage remain distinct" {
     const alloc = std.testing.allocator;
     var managed = LogStorage{
@@ -191,16 +198,8 @@ test "legacy log path maps to managed only for exact display parent" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDir(
-        io_mod.getIo(),
-        "session-logs",
-        io_mod.permissionsFromMode(0o700),
-    );
-    try tmp.dir.createDir(
-        io_mod.getIo(),
-        "external-logs",
-        io_mod.permissionsFromMode(0o700),
-    );
+    try createPrivateTestDir(tmp.dir, "session-logs");
+    try createPrivateTestDir(tmp.dir, "external-logs");
     const managed_dir = try io_mod.dirRealpathAlloc(
         alloc,
         tmp.dir,
@@ -278,11 +277,7 @@ test "managed background read only absence does not create route" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDir(
-        io_mod.getIo(),
-        "session",
-        io_mod.permissionsFromMode(0o700),
-    );
+    try createPrivateTestDir(tmp.dir, "session");
     var session_dir = try tmp.dir.openDir(io_mod.getIo(), "session", .{
         .iterate = true,
         .follow_symlinks = false,

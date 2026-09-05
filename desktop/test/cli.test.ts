@@ -65,7 +65,7 @@ test("a plan sign-in runs the vendor's own command and nothing the renderer name
   assert.equal(cliPlan("codex")?.signIn, "codex login");
   for (const plan of CLI_PLANS) {
     assert.doesNotMatch(plan.signIn, /[;&|<>$`(){}[\]*?~#\n]/);
-    assert.deepEqual(shellArguments(plan.signIn).slice(-1), [plan.signIn]);
+    assert.ok(shellArguments(plan.signIn).at(-1)?.split("\n").includes(plan.signIn));
     assert.doesNotMatch(plan.authFile, /^[/~]|\.\./);
   }
 });

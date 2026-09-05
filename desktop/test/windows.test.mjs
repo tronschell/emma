@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalResetPath, commandShimArguments, pathInside, processTreeCommand, resetDataRoots, samePath, spawnCommand, squirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "../dist-main/main/platform.js";
-import { commandShimArguments as packageCommandShimArguments, windowsSystemExecutable } from "../scripts/windows-command.mjs";
+import { canonicalResetPath, commandShimArguments, pathInside, processTreeCommand, resetDataRoots, samePath, spawnCommand, squirrelEvent, terminateProcessTree, windowsShimTarget, windowsShortcutFiles, WINDOWS_APP_USER_MODEL_ID, WINDOWS_INSTALLER_COMPANY } from "../dist-main/main/platform.js";
+import { commandShimArguments as packageCommandShimArguments, publishStagedBuild, squirrelStagingDirectory, windowsSystemExecutable } from "../scripts/windows-command.mjs";
 import { gitReady } from "../dist-main/main/git.js";
 import { parseWindowsFrontContext } from "../dist-main/main/windows-front.js";
 import { keybindLabel, validateKeybinds } from "../dist-main/shared/settings.js";
@@ -219,4 +219,77 @@ test("Windows git execution does not use a repo-local shim", async () => {
   }
   await assert.rejects(readFile(marker));
   await rm(root, { recursive: true, force: true });
+});
+
+test("Windows npm shims resolve to the executable or script they run", async () => {
+  if (process.platform !== "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "emma-shim-target-"));
+  try {
+    const script = path.join(root, "cli.js");
+    const executable = path.join(root, "cli.exe");
+    await writeFile(script, "");
+    await writeFile(executable, "");
+    const direct = path.join(root, "direct.cmd");
+    await writeFile(direct, ["@ECHO off", "SET dp0=%~dp0", '"%dp0%\\cli.exe"   %*'].join("\r\n"));
+    const scripted = path.join(root, "scripted.cmd");
+    await writeFile(scripted, [
+      "@ECHO off",
+      "SET dp0=%~dp0",
+      'IF EXIST "%dp0%\\node.exe" (SET "_prog=%dp0%\\node.exe") ELSE (SET "_prog=node")',
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\cli.js" %*',
+    ].join("\r\n"));
+
+    assert.deepEqual(await windowsShimTarget(direct), { command: executable, args: [] });
+    const resolved = await windowsShimTarget(scripted);
+    assert.deepEqual(resolved.args, [script]);
+    assert.match(path.basename(resolved.command).toLowerCase(), /^node(\.exe)?$/);
+    assert.equal(await windowsShimTarget(executable), undefined);
+    await writeFile(path.join(root, "empty.cmd"), "@ECHO off\r\necho nothing\r\n");
+    assert.equal(await windowsShimTarget(path.join(root, "empty.cmd")), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows uninstall clears every Start Menu shortcut the installer leaves behind", () => {
+  const expected = [
+    "C:\\Users\\Emma\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Emma.lnk",
+    `C:\\Users\\Emma\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\${WINDOWS_INSTALLER_COMPANY}\\Emma.lnk`,
+  ];
+  assert.deepEqual(windowsShortcutFiles({ APPDATA: "C:\\Users\\Emma\\AppData\\Roaming" }), expected);
+  assert.deepEqual(windowsShortcutFiles({ USERPROFILE: "C:\\Users\\Emma" }), expected);
+
+  const main = readFileSync(new URL("../main/main.ts", import.meta.url), "utf8");
+  const uninstall = main.slice(main.indexOf('if (event === "uninstall")')).slice(0, 400);
+  assert.match(uninstall, /"--removeShortcut", "Emma\.exe"/);
+  assert.match(uninstall, /windowsShortcutFiles\(\)\) rmSync\(link, \{ force: true \}\)/);
+
+  const packaging = readFileSync(new URL("../scripts/package-windows.mjs", import.meta.url), "utf8");
+  assert.ok(packaging.includes(`CompanyName: "${WINDOWS_INSTALLER_COMPANY}"`), "the packager no longer stamps the company the uninstall sweeps");
+});
+
+test("Windows packaging stages Squirrel work in a short temp directory and publishes it", async () => {
+  const staging = squirrelStagingDirectory();
+  assert.ok(staging.startsWith(path.join(tmpdir(), "emma-squirrel-")), staging);
+  const out = await mkdtemp(path.join(tmpdir(), "emma-release-"));
+  try {
+    await mkdir(path.join(staging, "squirrel"), { recursive: true });
+    await writeFile(path.join(staging, "squirrel", "RELEASES"), "feed");
+    await mkdir(path.join(out, "squirrel"), { recursive: true });
+    await writeFile(path.join(out, "squirrel", "stale.nupkg"), "old");
+
+    publishStagedBuild(staging, out, ["squirrel"]);
+    assert.equal(await readFile(path.join(out, "squirrel", "RELEASES"), "utf8"), "feed");
+    assert.equal(existsSync(path.join(out, "squirrel", "stale.nupkg")), false);
+    assert.equal(existsSync(staging), false);
+    assert.throws(() => publishStagedBuild(staging, out, ["squirrel"]), /Missing staged Windows output/);
+
+    const packaging = readFileSync(new URL("../scripts/package-windows.mjs", import.meta.url), "utf8");
+    assert.match(packaging, /const staging = squirrelStagingDirectory\(\);/);
+    assert.match(packaging, /out: staging,/);
+    assert.match(packaging, /publishStagedBuild\(staging, out, \[/);
+    assert.doesNotMatch(packaging, /path\.join\(out, "squirrel"\);/);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
 });

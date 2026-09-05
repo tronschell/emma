@@ -5845,8 +5845,15 @@ test "session runtime owns temporary interactive image snapshot capture" {
     ));
 }
 
+fn createPrivateFixtureDir(dir: std.Io.Dir, sub_path: []const u8) !void {
+    try dir.createDirPath(io_mod.getIo(), sub_path);
+    var created = try dir.openDir(io_mod.getIo(), sub_path, .{ .follow_symlinks = false });
+    defer created.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(created);
+}
+
 fn testPaths(alloc: Allocator, tmp: *std.testing.TmpDir) !struct { home: []u8, workspace: []u8 } {
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
     return .{
         .home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home"),
@@ -8903,8 +8910,8 @@ test "combined preference patch writes user defaults cleans legacy fields and ap
     }
     const fixture = try std.fmt.allocPrint(
         alloc,
-        "{{\"workspaces\":{{\"{s}\":{{\"model\":\"legacy/model\",\"effort\":\"low\"}}}}}}\n",
-        .{paths.workspace},
+        "{{\"workspaces\":{{{f}:{{\"model\":\"legacy/model\",\"effort\":\"low\"}}}}}}\n",
+        .{std.json.fmt(paths.workspace, .{})},
     );
     defer alloc.free(fixture);
     var settings_file = try tmp.dir.createFile(io_mod.getIo(), "home/.fx/settings.json", .{ .truncate = true });
@@ -9203,7 +9210,7 @@ test "session picker current mode filters workspace and all mode includes every 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace-a");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace-b");
     const home_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");

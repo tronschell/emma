@@ -697,8 +697,9 @@ test "concurrent child mutations never enter root undo history" {
     }
 
     for (root_tracker.stack.items) |operation| {
-        try std.testing.expect(std.mem.find(u8, operation.path, "/root/") != null);
-        try std.testing.expect(std.mem.find(u8, operation.path, "/child-") == null);
+        const sep = std.fs.path.sep_str;
+        try std.testing.expect(std.mem.find(u8, operation.path, sep ++ "root" ++ sep) != null);
+        try std.testing.expect(std.mem.find(u8, operation.path, sep ++ "child-") == null);
     }
     const undo = root_tracker.undoLast(std.heap.c_allocator);
     switch (undo) {
@@ -740,7 +741,7 @@ fn createSymlinkOrSkip(tmp: *std.testing.TmpDir, target_path: []const u8, link_p
         try tmp.dir.createDirPath(io_mod.getIo(), parent);
     }
     tmp.dir.symLink(std.testing.io, target_path, link_path, .{ .is_directory = is_directory }) catch |err| {
-        if (err == error.SymLinkLoop or err == error.AccessDenied or err == error.OperationNotSupported) {
+        if (err == error.SymLinkLoop or err == error.AccessDenied or err == error.PermissionDenied or err == error.OperationNotSupported) {
             return error.SkipZigTest;
         }
         return err;

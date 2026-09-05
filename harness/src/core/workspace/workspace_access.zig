@@ -549,7 +549,7 @@ fn resolveSavedDirectory(
             const arena = arena_state.allocator();
             const identity = pathing.resolveCreateTargetFromNearestExisting(
                 arena,
-                "/",
+                try pathing.absoluteRootPrefix(normalized),
                 normalized,
             ) catch |resolve_err| switch (resolve_err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -772,6 +772,13 @@ fn freeSavedSources(alloc: Allocator, sources: []const SavedSource) void {
     }
 }
 
+fn symLinkOrSkip(tmp: std.testing.TmpDir, target_path: []const u8, link_path: []const u8) !void {
+    tmp.dir.symLink(std.testing.io, target_path, link_path, .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
 test "workspace access merges source state without moving roots" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -877,10 +884,7 @@ test "workspace access canonicalizes a saved directory restored through a symlin
     defer access.deinit(alloc);
     try std.testing.expect(!access.entries[0].available);
 
-    tmp.dir.symLink(std.testing.io, "real-parent", "parent-link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    try symLinkOrSkip(tmp, "real-parent", "parent-link");
 
     var replacement = (try access.stageAvailabilityRefresh(alloc, primary)).?;
     defer replacement.deinit(alloc);
@@ -899,11 +903,8 @@ test "workspace access rejects an availability refresh that splits past capacity
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "real-a", .default_dir);
     try tmp.dir.createDir(std.testing.io, "real-b", .default_dir);
-    tmp.dir.symLink(std.testing.io, "real-a", "link-a", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
-    try tmp.dir.symLink(std.testing.io, "real-a", "link-b", .{ .is_directory = true });
+    try symLinkOrSkip(tmp, "real-a", "link-a");
+    try symLinkOrSkip(tmp, "real-a", "link-b");
 
     const primary = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "primary");
     defer alloc.free(primary);
@@ -934,8 +935,8 @@ test "workspace access rejects an availability refresh that splits past capacity
 
     try tmp.dir.createDir(std.testing.io, "real-a/shared", .default_dir);
     try tmp.dir.createDir(std.testing.io, "real-b/shared", .default_dir);
-    try tmp.dir.deleteFile(std.testing.io, "link-b");
-    try tmp.dir.symLink(std.testing.io, "real-b", "link-b", .{ .is_directory = true });
+    try io_mod.deleteSymLink(tmp.dir, "link-b");
+    try symLinkOrSkip(tmp, "real-b", "link-b");
 
     try std.testing.expectError(
         error.TooManyDirectories,
@@ -988,10 +989,7 @@ test "workspace access preserves observed source identity across retarget and la
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "first", .default_dir);
     try tmp.dir.createDir(std.testing.io, "second", .default_dir);
-    tmp.dir.symLink(std.testing.io, "first", "saved-link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    try symLinkOrSkip(tmp, "first", "saved-link");
 
     const primary = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "primary");
     defer alloc.free(primary);
@@ -1006,8 +1004,8 @@ test "workspace access preserves observed source identity across retarget and la
     try std.testing.expectEqualStrings(source, access.saved_sources[0].source);
     try std.testing.expectEqualStrings(first, access.saved_sources[0].identity);
 
-    try tmp.dir.deleteFile(std.testing.io, "saved-link");
-    try tmp.dir.symLink(std.testing.io, "second", "saved-link", .{ .is_directory = true });
+    try io_mod.deleteSymLink(tmp.dir, "saved-link");
+    try symLinkOrSkip(tmp, "second", "saved-link");
 
     var cloned = try access.clone(alloc);
     defer cloned.deinit(alloc);
@@ -1027,10 +1025,7 @@ test "workspace access removes a disappeared saved source by its spelling" {
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "shared", .default_dir);
-    tmp.dir.symLink(std.testing.io, "shared", "saved-link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    try symLinkOrSkip(tmp, "shared", "saved-link");
 
     const primary = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "primary");
     defer alloc.free(primary);
@@ -1039,7 +1034,7 @@ test "workspace access removes a disappeared saved source by its spelling" {
 
     var access = try WorkspaceAccess.init(alloc, primary, &.{source}, &.{}, false);
     defer access.deinit(alloc);
-    try tmp.dir.deleteFile(std.testing.io, "saved-link");
+    try io_mod.deleteSymLink(tmp.dir, "saved-link");
 
     var removed = try access.stageRemove(alloc, primary, source);
     defer removed.deinit(alloc);
@@ -1052,10 +1047,7 @@ test "workspace access resolves unavailable identities through existing ancestor
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "primary", .default_dir);
     try tmp.dir.createDir(std.testing.io, "real-parent", .default_dir);
-    tmp.dir.symLink(std.testing.io, "real-parent", "parent-link", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    try symLinkOrSkip(tmp, "real-parent", "parent-link");
 
     const primary = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "primary");
     defer alloc.free(primary);

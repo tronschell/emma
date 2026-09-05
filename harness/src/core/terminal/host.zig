@@ -5,6 +5,7 @@ const protocol = @import("protocol.zig");
 const terminal_operation = @import("operation.zig");
 const policy = @import("host_policy.zig");
 const native_session = @import("native_session.zig");
+const endpoint = @import("endpoint.zig");
 const terminal_store = @import("store.zig");
 const host_capabilities = @import("../hosts/host.zig");
 const io_mod = @import("../shared/io.zig");
@@ -441,9 +442,8 @@ fn runSupported(alloc: Allocator, config: Config) !void {
     cleanupEndpoint(paths.endpointDir());
     cleanupIdentity(&paths.host_dir);
 
-    const address = try std.Io.net.UnixAddress.init(paths.endpoint_path);
-    var server = try address.listen(io_mod.getIo(), .{});
-    defer server.deinit(io_mod.getIo());
+    var server = try endpoint.listen(paths.endpoint_path);
+    defer endpoint.closeServer(&server);
     var endpoint_created = true;
     defer if (endpoint_created) cleanupEndpoint(paths.endpointDir());
     try enforceEndpointPermissions(paths.endpointDir());
@@ -493,12 +493,12 @@ fn runSupported(alloc: Allocator, config: Config) !void {
     while (!state.stopping.load(.acquire)) {
         if (!try listenerReady(server.socket.handle)) continue;
         if (state.stopping.load(.acquire)) break;
-        var stream = server.accept(io_mod.getIo()) catch |err| switch (err) {
-            error.SocketNotListening => break,
-            else => return err,
+        const stream = endpoint.accept(&server) catch |err| {
+            if (err == error.SocketNotListening) break;
+            return err;
         };
         if (state.stopping.load(.acquire)) {
-            stream.close(io_mod.getIo());
+            endpoint.closeStream(stream);
             break;
         }
         _ = state.connected_clients.fetchAdd(1, .acq_rel);
@@ -511,7 +511,7 @@ fn runSupported(alloc: Allocator, config: Config) !void {
             &state,
             &registry,
         }) catch |err| {
-            stream.close(io_mod.getIo());
+            endpoint.closeStream(stream);
             _ = state.connected_clients.fetchSub(1, .acq_rel);
             state.noteChanged();
             return err;
@@ -704,7 +704,7 @@ fn handleClient(
     state: *HostState,
     registry: *native_session.Registry,
 ) !void {
-    defer stream.close(io_mod.getIo());
+    defer endpoint.closeStream(stream);
     if (!peerMatchesCurrentUser(stream.socket.handle)) {
         return error.ForeignTerminalHostPeer;
     }
@@ -1430,9 +1430,9 @@ pub fn removeStaleArtifacts(
 
 fn cleanupEndpoint(host_dir: *io_mod.VerifiedDir) void {
     if (comptime builtin.os.tag == .windows) {
-        var endpoint = openEndpointForPermissions(host_dir) catch return;
-        defer endpoint.close(io_mod.getIo());
-        windows_acl.deleteEndpointHandle(endpoint.handle) catch {};
+        var endpoint_file = openEndpointForPermissions(host_dir) catch return;
+        defer endpoint_file.close(io_mod.getIo());
+        windows_acl.deleteEndpointHandle(endpoint_file.handle) catch {};
         return;
     }
     const stat = host_dir.dir.statFile(
@@ -1456,9 +1456,9 @@ fn cleanupIdentity(host_dir: *io_mod.VerifiedDir) void {
 
 fn verifyEndpointPermissions(host_dir: *io_mod.VerifiedDir) !void {
     if (comptime builtin.os.tag == .windows) {
-        var endpoint = try openEndpointForPermissions(host_dir);
-        defer endpoint.close(io_mod.getIo());
-        if (!(try windows_acl.matchesEndpointHandle(endpoint.handle))) {
+        var endpoint_file = try openEndpointForPermissions(host_dir);
+        defer endpoint_file.close(io_mod.getIo());
+        if (!(try windows_acl.matchesEndpointHandle(endpoint_file.handle))) {
             return error.PrivateEndpointPermissionsUnsupported;
         }
         return;
@@ -1477,10 +1477,10 @@ fn verifyEndpointPermissions(host_dir: *io_mod.VerifiedDir) !void {
 
 fn enforceEndpointPermissions(host_dir: *io_mod.VerifiedDir) !void {
     if (comptime builtin.os.tag == .windows) {
-        var endpoint = try openEndpointForPermissions(host_dir);
-        defer endpoint.close(io_mod.getIo());
-        try windows_acl.applyEndpointHandle(endpoint.handle);
-        if (!(try windows_acl.matchesEndpointHandle(endpoint.handle))) {
+        var endpoint_file = try openEndpointForPermissions(host_dir);
+        defer endpoint_file.close(io_mod.getIo());
+        try windows_acl.applyEndpointHandle(endpoint_file.handle);
+        if (!(try windows_acl.matchesEndpointHandle(endpoint_file.handle))) {
             return error.PrivateEndpointPermissionsUnsupported;
         }
         return;
@@ -1530,7 +1530,7 @@ fn windowsPeerProcessId(handle: std.Io.net.Socket.Handle) ?u32 {
         &bytes_returned,
         null,
         null,
-    ) != 0 or bytes_returned != @sizeOf(u32) or pid == 0) return null;
+    ) != 0 or pid == 0) return null;
     return pid;
 }
 
@@ -1678,6 +1678,43 @@ test "endpoint paths honor the native sockaddr capacity" {
     try std.testing.expectError(error.NameTooLong, validateEndpointPath(&oversized));
 }
 
+test "accepted endpoint peers resolve to this user and this process" {
+    if (!isSupported()) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(root);
+    const path = try std.fs.path.join(alloc, &.{ root, "peer.sock" });
+    defer alloc.free(path);
+    validateEndpointPath(path) catch return error.SkipZigTest;
+
+    var server = try endpoint.listen(path);
+    defer endpoint.closeServer(&server);
+
+    const Peer = struct {
+        fn run(endpoint_path: []const u8) void {
+            const stream = endpoint.connect(endpoint_path) catch return;
+            defer endpoint.closeStream(stream);
+            var byte: [1]u8 = undefined;
+            _ = endpoint.receiveTimeout(stream.socket, &byte, 2_000) catch {};
+        }
+    };
+    var peer = try std.Thread.spawn(.{}, Peer.run, .{path});
+    defer peer.join();
+
+    const accepted = try endpoint.accept(&server);
+    defer endpoint.closeStream(accepted);
+    applySocketTimeout(accepted);
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expectEqual(
+            io_mod.currentProcessId(),
+            windowsPeerProcessId(accepted.socket.handle).?,
+        );
+    }
+    try std.testing.expect(peerMatchesCurrentUser(accepted.socket.handle));
+}
+
 test "endpoint kind policy matches the native socket representation" {
     try std.testing.expect(!endpointKindAllowedForTarget(.windows, .file));
     try std.testing.expect(!endpointKindAllowedForTarget(.windows, .unknown));
@@ -1736,10 +1773,14 @@ test "endpoint selection preserves short homes and deterministically separates l
     try std.testing.expect(!std.mem.eql(u8, first.transport_root, second.transport_root));
     try std.testing.expect(std.mem.find(u8, first.transport_root, first_home) == null);
     try validateEndpointPath(first.endpoint_path);
+    const authority_suffix = std.fs.path.sep_str ++
+        profile_paths.root_dir_name ++
+        std.fs.path.sep_str ++
+        host_dir_name;
     try std.testing.expect(std.mem.endsWith(
         u8,
         first.authority_root,
-        "/.fx/terminal-host",
+        authority_suffix,
     ));
     try std.testing.expect(!std.mem.eql(
         u8,
@@ -1751,14 +1792,25 @@ test "endpoint selection preserves short homes and deterministically separates l
 test "endpoint selection allocation and supported targets fail closed" {
     const alloc = std.testing.allocator;
     if (comptime builtin.os.tag == .windows) {
-        var windows_selection = try resolveEndpointSelection(
+        var short_selection = try resolveEndpointSelection(
             alloc,
             .windows,
             "C:\\profile",
             501,
         );
-        defer windows_selection.deinit(alloc);
-        try std.testing.expect(windows_selection.uses_fallback);
+        defer short_selection.deinit(alloc);
+        try std.testing.expect(!short_selection.uses_fallback);
+        try validateEndpointPath(short_selection.endpoint_path);
+
+        var long_selection = try resolveEndpointSelection(
+            alloc,
+            .windows,
+            "C:\\profiles\\" ++ "y" ** 120,
+            501,
+        );
+        defer long_selection.deinit(alloc);
+        try std.testing.expect(long_selection.uses_fallback);
+        try validateEndpointPath(long_selection.endpoint_path);
     }
 
     const long_home = "/profiles/" ++ "x" ** 160;

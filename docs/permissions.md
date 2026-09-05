@@ -164,9 +164,14 @@ The dialog is `PermissionPrompt` ([agents.tsx](../desktop/src/agents.tsx)): a re
 show the resolved app identity and **Allow for this turn**, with **Don't** focused
 by default. Escape answers `false`. If neither the main window nor a paired
 permission channel can receive the question, it is denied immediately.
-`MAX_ASK_MS` is 10 minutes; timeout, cancellation and ended or replaced turns
-settle `false`. A late answer cannot revive a request. An app denial is remembered
-for the rest of the turn, so the model cannot repeatedly ask for the same app.
+`MAX_ASK_MS` is 10 minutes. `AgentRuntime.approval` answers `allowed`, `denied` or
+`lapsed`: only the 10-minute expiry lapses, while cancellation, ended or replaced
+turns and **Don't** all deny. `question` is the same call flattened to a boolean
+for the tools that only need to know whether they may run. A late answer cannot
+revive a request. An app denial is remembered for the rest of the turn, so the
+model cannot repeatedly ask for the same app; a lapse is not remembered that way,
+because nobody said no. The model is told there is no answer yet and may ask for
+that one app a second time, and a second lapse is then treated as a denial.
 
 The renderer cannot bypass any of this: its whole permission vocabulary in
 [preload.ts](../desktop/main/preload.ts) is `onPermissionAsk`,
@@ -234,6 +239,70 @@ Two renderer actions deliberately skip the mode check because the click *is* the
 consent: `emma:run-command` (the play button beside a command in the transcript,
 bounded to 4096 characters) and `emma:send-cli-run` (sending a prompt into a CLI
 run the user named).
+
+## Rule patterns and Windows volumes
+
+A configured rule or session grant whose pattern ends in `/**` covers a directory
+and everything under it. `/**` on its own is the idiom for "every absolute path",
+and it is what the app writes when a user grants a whole external tree.
+
+POSIX matches those patterns byte for byte. Windows has no single filesystem root,
+so `/**` and any other pattern that starts with a separator are matched
+*volume-agnostically*: the candidate's volume root — `C:\`, `D:/`,
+`\\server\share\` — is stripped, and what remains is compared against the pattern
+with its leading separator removed. A pattern that names a volume (`C:\Users\me\**`)
+or a UNC share (`\\server\share\me\**`) keeps that volume and only matches there.
+
+Every Windows comparison is case-insensitive and treats `\` and `/` as the same
+byte, matching `pathInside` in
+[`pathing.zig`](../harness/src/core/workspace/pathing.zig). So `/**` covers
+`C:\Users\me\app.zig`, `/Users/me/**` covers `C:\Users\Me\app.zig` and
+`\\server\share\Users\me\app.zig`, and `C:\Users\me\**` does not cover
+`D:\Users\me\app.zig`. Rules written on macOS keep working when the same
+configuration is opened on Windows, and rules the Windows app writes keep working
+after a drive letter changes.
+
+The matcher is `directoryTreePatternMatches` in
+[`permissions.zig`](../harness/src/core/permissions/permissions.zig); the POSIX
+path through it is unchanged. Patterns without a `**` suffix (`src/*`, `*`) are
+wildcard matches over the display target; on Windows both sides are compared
+with `/` and `\` treated alike and without regard to case, so a rule written as
+`src/*.zig` in `settings.json` matches the same files on every platform.
+Command patterns for `bash` and `sandbox` rules stay exact.
+
+## Commands, and what the classifier can read
+
+A `terminal` command meets two classifiers inside the harness before it meets
+Emma's dialog.
+
+1. **The planner**,
+   [`command_effect.plan`](../harness/src/core/shell_command/command_effect.zig).
+   It takes the target OS, tokenises the command, and either builds an exact
+   argv it can run *without any shell* — `ls`, `pwd`, `printf`, `wc`, `cat`,
+   `head`, `tail`, `grep`, `git status`/`diff`/`log`, and pipelines of them — or
+   answers `approval_required` with a reason. It has Windows spellings for those
+   (PowerShell scripts for the coreutils shapes, Git for Windows for `git`), and
+   because the plan is executed directly, the parse it reasoned about *is* the
+   execution. Anything it cannot parse fails closed.
+2. **The reversible-auto fast path**,
+   `knownReversibleAutoCommand`. In `auto` mode only, a short allowlist —
+   `node -v`, `which`, `git`, `npm`/`bun`/`pnpm`/`yarn`, `zig build` — skips the
+   model reviewer and runs *through the shell*.
+
+That second one is POSIX-shaped: it tokenises with a POSIX lexer and rejects
+POSIX metacharacters. On Windows the string it approves would be executed by
+PowerShell, whose quoting, escape character and operators are not the ones it
+checked, so the parse it reasoned about would not be the execution. It therefore
+**returns false on Windows**: every automatic command goes to the reviewer or to
+the dialog instead. macOS is unchanged. Two tests pin this —
+`the reversible auto fast path fails closed on the Windows shell` in
+`command_effect.zig`, and `the Windows shell sends every automatic command to
+the reviewer` in `tool_admission.zig`.
+
+The shell bound into a retained grant is the resolved shell path
+([`command_environment.zig`](../harness/src/core/execution/command_environment.zig)),
+so a Windows grant reads `pwsh.exe` or `powershell.exe`, and a grant made
+against one shell does not carry to another.
 
 ## Lazy tool discovery is not a gate
 

@@ -8,6 +8,7 @@ import { browserArgv, describeToolCall, parseToolArgs, shellQuoted, toolDefiniti
 import { AgentRuntime, bounded, lastAssistantMessage, type LoopDeps } from "../main/agent-loop";
 import type { VerifierReview } from "../main/verifier";
 import { compactionNotice, decodeSpans } from "../shared/trace";
+import { isWindows } from "../main/platform";
 
 const everything = { folders: true, computer: true };
 const noReview: VerifierReview = { model: "", prompt: "", reply: "", attempts: 0, error: "no verifier" };
@@ -84,7 +85,7 @@ test("a browser call becomes agent-browser's own command line, in its own argume
   assert.equal(describeToolCall(parse({ action: "snapshot" })), "looking at the page");
 });
 
-test("a tool Emma wrote herself is listed before it is run, and runs as one shell word", async () => {
+test("a tool Emma wrote herself is listed before it is run", () => {
   const parse = (name: string, args: unknown) => parseToolArgs(name, JSON.stringify(args));
   assert.deepEqual(parse("run_tool", {}), { name: "run_tool", tool: undefined, input: undefined });
   assert.equal(describeToolCall(parse("run_tool", {})), "listing its own tools");
@@ -92,7 +93,9 @@ test("a tool Emma wrote herself is listed before it is run, and runs as one shel
   assert.throws(() => parse("write_tool", { name: "x", code: "#!/bin/sh\necho hi" }), /description/);
   assert.equal(toolGate("acceptEdits", "write_tool"), "auto");
   assert.equal(toolGate("acceptEdits", "run_tool"), "ask");
+});
 
+test("a shell-quoted argument reaches bash as one word", { skip: isWindows && "shellQuoted is the POSIX launch path only" }, async () => {
   const hostile = `'; rm -rf ~; echo '`;
   const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `echo ${shellQuoted(hostile)}`]);
   assert.equal(stdout, `${hostile}\n`);

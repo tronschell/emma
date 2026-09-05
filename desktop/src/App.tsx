@@ -8,7 +8,7 @@ import { ColorPicker } from "./color-picker";
 import { zoned } from "./dates";
 import { latestRate, latestReply, nested, newest, spawnedAgents, spawnedByTurn, subagentRows, threadAt, threadDepth, threadLabel, threadTitle, type Spawned } from "./threads";
 import { comboKeybind, DEFAULT_HOLD_MS, holdKeybind, HOLD_DURATIONS, HOLD_KEYS, keyboardAccelerator, keybindLabel, keybindProblem, KEYBIND_ACTIONS, normalizeAccelerator, saveShortcut, type Keybind, type KeybindAction, type Keybinds } from "../shared/settings";
-import { ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, thinkingLabel, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, MAX_COMMAND_TIMEOUT_MINUTES, MIN_COMMAND_TIMEOUT_MINUTES, MAX_REVIEW_ROUNDS, type HarnessExperiments, LOCAL_EMBEDDING_MODELS, HOSTED_EMBEDDING_MODELS, hostedEmbeddingModel, type EmbeddingModel, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultHarnessExperiments, defaultSettings, forgetProvider, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, SECOND_MODELS, SECOND_MODEL_IDS, type SecondModelId, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, MODEL_PLANS, CODEX_PREFIX, availableCodexModelKey, codexModelKey, codexSlug, planFor, modelPlanRoute, planForModel, planForProfile, planModelId, planProfileFor, providerChatUrl, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ModelPlan, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
+import { ACCENT_CHOICES, CONVERSATION_WIDTHS, type ConversationWidth, MIN_UI_SCALE, MAX_UI_SCALE, canRemoveProvider, thinkingLabel, thinkingStops, type ThinkingLevel, type NotchConcurrency, CURSOR_COMMANDS, balanceLine, outOfCredit, type KeyBalance, OPENROUTER_CREDITS_URL, FREE_ROUTER_ID, FREE_ROUTER_MODELS, forgetRouter, MAX_ROUTERS, MAX_ROUTER_NAME, routerChain, routerIdFor, routerKey, type ModelRouter, MAX_EXPERIMENT_STEPS, MAX_COMMAND_TIMEOUT_MINUTES, MIN_COMMAND_TIMEOUT_MINUTES, MAX_REVIEW_ROUNDS, type HarnessExperiments, LOCAL_EMBEDDING_MODELS, HOSTED_EMBEDDING_MODELS, hostedEmbeddingModel, type EmbeddingModel, type HostedEmbeddingModel, FONT_CHOICES, fontStack, cursorCommandGlyphs, cursorCommandNames, defaultHarnessExperiments, defaultSettings, forgetProvider, isEnvName, MAX_CURSOR_ORBS, MAX_FAVORITE_MODELS, MAX_SECRET_CHARS, MAX_SYSTEM_PROMPT_CHARS, MAX_VERIFIER_SYSTEM_CHARS, defaultAdvisorSystem, defaultVisionSystem, defaultSecretSystem, defaultVerifierSystem, SECOND_MODELS, SECOND_MODEL_IDS, type SecondModelId, verifierFromKey, verifierKey, SETTINGS_KEY, OPENROUTER_CHAT_ENDPOINT, PROVIDER_PRESETS, MODEL_PLANS, CODEX_PREFIX, availableCodexModelKey, codexModelKey, codexSlug, planFor, modelPlanRoute, planForModel, planForProfile, planModelId, planProfileFor, providerChatUrl, providerCredentials, providerReach, toggleFavoriteModel, validateSettings as validateSettingsForPlatform, WEB_SEARCH_PROVIDERS, webSearchCredentials, webSearchProvider, type AccentChoice, type CursorCommand, type FontChoice, type ModelPlan, type ProviderProfile, type ToolSettings, type UserSettings, type VerifierSettings, type WebSearchProvider, type WebSearchSettings } from "../shared/settings";
 import { TOOL_CATALOG } from "../shared/permissions";
 import { validComputerProgress, type ComputerRunProgress } from "../shared/computer";
 import { defaultPaneLayout, fitPaneLayout, MIN_BROWSER_WIDTH, NAV_VIEWS, ordered, validatePaneLayout, WIDE_BROWSER_WIDTH, type PaneLayout } from "./layout";
@@ -50,7 +50,9 @@ import { CouncilPanel } from "./council";
 import { BrandIcon, BranchIcon, CaretIcon, ChevronIcon, ClipIcon, CloseIcon, DockIcon, EmmaMark, GearIcon, GlobeIcon, InfoDot, Mark, PencilIcon, ReviewIcon, SearchProviderMark, SidebarIcon, SparkIcon, StopIcon, TabIcon, TextIcon, ToolIcon, ToolMark, TrashIcon } from "./icons";
 import { BrowserPane, browserPip } from "./browser";
 import { PaneSwitch } from "./pane-switch";
-import { embeddingModelLabel, embeddingModelMode, IndexStatus, indexStateLabel, useSemanticGrepStatus } from "./index-status";
+import { embeddingModelLabel, embeddingModelMode, IndexStatus, indexStateLabel, useSemanticGrepStatus, useZvecGrepStatus } from "./index-status";
+import { gigabytes, type MachineFacts, recommendEmbeddingModel } from "../shared/embedding-recommendation";
+import { sizeLabel, type ZvecGrepStatus, zvecGrepDownloadBytes, zvecGrepPercent, zvecGrepPhaseLabel, zvecGrepProgressLabel } from "../shared/zvec-grep";
 import { progressLabel } from "../shared/semantic-grep";
 import { TaskListBar } from "./task-list";
 import { closeTerminals, TerminalIcon, TerminalPanel, TerminalSurface, useTerminals } from "./terminal";
@@ -73,17 +75,18 @@ import { ModelPlans, OPENROUTER_ENV, ProviderGrid } from "./model-plans";
 import { isWorkspaceWindow, takeBootSnapshot, whenProvidersReady } from "./boot";
 import { GoalCard, GoalThreads, GoalView } from "./goal";
 import { GOAL_LABELS, markedGoal, usageLimitedFailure } from "../shared/goal";
+import { localDevice, overlayLabel, unreadableKeyNotice } from "../shared/platform-copy";
 
 const empty: Snapshot = { threads: [], scheduledJobs: [], warnings: [] };
 const SNAPSHOT_REFRESH_MS = 60_000;
 const RUNTIME_PLATFORM = typeof window !== "undefined" && window.emma?.platform === "win32" ? "win32" : "darwin";
 const IS_WINDOWS = RUNTIME_PLATFORM === "win32";
 const HARNESS_CLI = IS_WINDOWS ? "./harness/zig-out/bin/emma-cli.exe acp" : "./harness/zig-out/bin/emma-cli acp";
-const LOCAL_DEVICE = IS_WINDOWS ? "PC" : "Mac";
+const LOCAL_DEVICE = localDevice(RUNTIME_PLATFORM);
 const PLATFORM_NAME = IS_WINDOWS ? "Windows" : "macOS";
 const MODIFIER_LABEL = IS_WINDOWS ? "Ctrl" : "⌘";
 const ALT_LABEL = IS_WINDOWS ? "Alt" : "⌥";
-const OVERLAY_LABEL = IS_WINDOWS ? "Quick Ask" : "island";
+const OVERLAY_LABEL = overlayLabel(RUNTIME_PLATFORM);
 const validateSettings = (value: unknown) => validateSettingsForPlatform(value, RUNTIME_PLATFORM);
 const AgentView = lazy(() => import("./AgentView"));
 const PluginsView = lazy(() => import("./plugins").then(({ PluginsView }) => ({ default: PluginsView })));
@@ -1101,7 +1104,8 @@ function Workspace() {
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      const primary = IS_WINDOWS ? event.ctrlKey && !event.metaKey : event.metaKey && !event.ctrlKey;
+      if (!primary || event.altKey || event.shiftKey) return;
       if (event.key === "n") { event.preventDefault(); setError(""); void createThread(); return; }
       if (!/^[1-9]$/.test(event.key)) return;
       const pick = threadAt(projects, thread?.id ?? "", Number(event.key) - 1);
@@ -1159,7 +1163,7 @@ function Workspace() {
   };
 
   return (
-    <div className="app-shell" style={shellStyle}>
+    <div className={`app-shell ${IS_WINDOWS ? "win32" : ""}`} style={shellStyle}>
       <a className="skip-link" href="#content">Skip to content</a>
       <div className="drag-region" />
       <Region name="navbar" props={{
@@ -2650,11 +2654,11 @@ function ThreadView({ thread, loadedSubthread, loadThread, threadLoadError, clea
       {ask && <PermissionPrompt ask={ask} agents={agents} />}
       <TaskListBar threadId={thread.id} />
       <form className={`composer ${ask ? "asking" : ""}`} onSubmit={(event) => void send(event)}><label className="sr-only" htmlFor="message">Message Emma</label>{run.draft && <div className="composer-attachment queued-turn"><span>Not sent{run.failure && ` · ${run.failure}`} · {run.draft}</span><button type="button" onClick={() => setMessage((current) => current || takeDraft(thread.id))} aria-label="Put this message back in the composer">↺</button></div>}
-        <PickTray picks={picks} folders={folders} locked={locked} drop={dropPick} /><div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={COMPOSER_MAX} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? "Emma is working — Enter queues, ⌘Enter steers (empty: oldest queued first), Esc Esc stops…" : thread.messages.length ? "Ask Emma to continue…" : "Ask Emma anything…"} rows={2} /></div>{message.length >= COMPOSER_MAX && <div className="composer-attachment"><span>Full — the composer holds {COMPOSER_MAX.toLocaleString()} characters, and anything past that was not taken. Attach the rest as a file.</span></div>}{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, saved notes and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} />{reviewOffered && <button type="button" className="review-toggle" disabled={locked} aria-pressed={review} aria-label={review ? "Second-model review is on for this thread" : "Second-model review is off for this thread"} title={review ? "A second model reviews every turn that changes something here" : "Nothing is reviewed in this thread"} onClick={() => setReview(!review)}><ReviewIcon /></button>}</div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span><span aria-hidden="true">▾</span></button><ThinkingControl level={thinkingLevel} act={act} busy={locked} onSettingsChanged={onModelChanged} onPicked={(effort) => { if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: "", brand: "", effort }); }} />{sending
+        <PickTray picks={picks} folders={folders} locked={locked} drop={dropPick} /><div className="composer-input"><div className="composer-highlight" ref={mirror} aria-hidden="true">{highlightSegments(message, allCommands.map((item) => item.name), atItems.map((item) => item.name)).map((segment, index) => <span key={index} className={segment.hue === undefined ? undefined : "slash-token"} data-hue={segment.hue}>{segment.text}</span>)}{"\n"}</div><textarea ref={input} autoFocus={!thread.messages.length} id="message" value={message} disabled={locked} maxLength={COMPOSER_MAX} role="combobox" aria-expanded={slashOpen} aria-controls="slash-menu" aria-autocomplete="list" onChange={(event) => typing(event.currentTarget)} onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)} onScroll={(event) => { if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop; }} onKeyDown={composerKeys} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); attachDropped(event.clipboardData.files); } }} placeholder={sending ? `Emma is working — Enter queues, ${MODIFIER_LABEL}Enter steers (empty: oldest queued first), Esc Esc stops…` : thread.messages.length ? "Ask Emma to continue…" : "Ask Emma anything…"} rows={2} /></div>{message.length >= COMPOSER_MAX && <div className="composer-attachment"><span>Full — the composer holds {COMPOSER_MAX.toLocaleString()} characters, and anything past that was not taken. Attach the rest as a file.</span></div>}{slashOpen && <section className="source-popover slash-menu" id="slash-menu" role="listbox" aria-label={slash?.sigil === "@" ? "Artifacts, saved notes and files" : "Built-in tools, skills and MCP servers"}>{slashMatches.map((item, index) => <button type="button" role="option" aria-selected={index === slashActive} className={`slash-row ${index === slashActive ? "active" : ""}`} key={`${item.kind}-${item.id}`} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSlashPick(index)} title={item.detail} onClick={() => pickCommand(item)}><strong>{slash?.sigil ?? "/"}{item.name}</strong><em className="slash-kind" data-kind={item.kind}>{KIND_LABELS[item.kind]}</em><small>{item.detail}</small></button>)}{!slashMatches.length && <p className="slash-empty">Nothing matches “{slash?.query}”. {slash?.sigil === "@" ? "Artifacts, saved notes and the files of this thread's folders appear here." : "Built-in tools, imported skills and MCP servers appear here."}</p>}</section>}<div className="composer-row"><div className="composer-tools"><button ref={sourceTrigger} type="button" className="source-trigger" disabled={locked} aria-label="Add context or plugin" aria-haspopup="dialog" aria-expanded={sourcesOpen} onClick={() => sourcesOpen ? closeSources() : setSourcesOpen(true)}>＋</button><ModePicker mode={mode} setMode={setMode} disabled={locked} />{reviewOffered && <button type="button" className="review-toggle" disabled={locked} aria-pressed={review} aria-label={review ? "Second-model review is on for this thread" : "Second-model review is off for this thread"} title={review ? "A second model reviews every turn that changes something here" : "Nothing is reviewed in this thread"} onClick={() => setReview(!review)}><ReviewIcon /></button>}</div><button ref={modelTrigger} type="button" className="model-button" disabled={locked} aria-haspopup="dialog" aria-expanded={modelsOpen} aria-label={`Select model, currently ${modelLabel}`} onClick={() => { if (modelsOpen) { closeModels(); return; } setSourcesOpen(false); setModelsOpen(true); }}><BrandIcon brand={modelBrand} className="model-brand" /><span className="model-label">{modelLabel}</span><span aria-hidden="true">▾</span></button><ThinkingControl level={thinkingLevel} act={act} busy={locked} onSettingsChanged={onModelChanged} onPicked={(effort) => { if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: "", brand: "", effort }); }} />{sending
           ? (message.trim()
             ? <button className="composer-send" disabled={locked} aria-label="Queue message" title="Queue — sent when this turn ends. Steer it from the queue to interrupt and send it now">↑</button>
             : <button type="button" className="composer-send stopping" onClick={interrupt} aria-label="Stop this turn" title="Stop this turn — Esc Esc">■</button>)
-          : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={(next) => { onModelChanged(next); if (next.selectedModel === modelKey) return; if (stallSwap) { void swapStalledModel(next); return; } if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: modelKeyLabel(next, next.selectedModel), brand: modelKeyBrand(next, next.selectedModel)?.id ?? "" }); }} onManage={onManageModels} />}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping anywhere in the window or pasting works too</small></div></button><span className="add-section">Files</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search the files of this thread's folders</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length ? <p className="project-empty">Pick a folder in the project chip to list its files here.</p> : cappedFolder && <p className="project-empty">Showing {cappedFolder.listed} of {cappedFolder.total}{cappedFolder.capped ? "+" : ""} files in {cappedFolder.folder?.name ?? "this folder"} — the rest are not listed here.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this Mac.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>⌘</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or see the MCP servers every turn is handed</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent runtime</strong><small>Inspect Emma's Zig harness and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>⌥</b><div><strong>Draw on screen</strong><small>Double-tap left Option, then choose the yellow pen</small></div></div></>}</section>}</form>
+          : <button className="composer-send" disabled={locked || !message.trim()} aria-label="Send message">↑</button>}</div>{modelsOpen && <ModelMenu ref={modelMenu} close={closeModels} act={act} busy={locked} onSettingsChanged={(next) => { onModelChanged(next); if (next.selectedModel === modelKey) return; if (stallSwap) { void swapStalledModel(next); return; } if (thread.messages.length) recordModelSwitch(thread.id, { at: thread.messages.length, label: modelKeyLabel(next, next.selectedModel), brand: modelKeyBrand(next, next.selectedModel)?.id ?? "" }); }} onManage={onManageModels} />}{skill &&<div className="composer-attachment"><span>Skill · {skill.name} · next turn only</span><button type="button" disabled={locked} onClick={() => void window.emma.clearImportedSkill(skill.id).then(() => setSkill(null))} aria-label="Clear attached skill">×</button></div>}{sourcesOpen && <section className="source-popover add-menu" role="dialog" aria-modal="false" aria-labelledby="source-popover-title" tabIndex={-1} ref={(node) => { sourceMenu.current = node; if (node && !node.contains(document.activeElement)) node.focus(); }} onKeyDown={(event) => { if (event.key === "Escape" && !locked) closeSources(); }}><header><h3 id="source-popover-title">Add</h3><button type="button" disabled={locked} aria-label="Close add menu" onClick={closeSources}>×</button></header>{capabilitiesOpen ? <CapabilityPopover threadId={thread.id} locked={locked} close={() => setCapabilitiesOpen(false)} skill={skill} setSkill={setSkill} setBusy={setCapabilityRunning} /> : <><button type="button" className="add-row kind-knowledge" disabled={locked} onClick={() => { closeSources(); void window.emma.attachFiles().then(holdAttachments).catch((reason: unknown) => setRunError(reasonText(reason))); }}><b><ClipIcon /></b><div><strong>Attach files</strong><small>Images, code, CSVs, Markdown — dropping anywhere in the window or pasting works too</small></div></button><span className="add-section">Files</span><div className="add-context"><label className="sr-only" htmlFor="context-search">Search the files of this thread's folders</label><input id="context-search" value={contextQuery} disabled={locked} onChange={(event) => setContextQuery(event.target.value)} placeholder="Search files, skills & MCP — same as typing /" />{matchCommands(localContext, contextQuery).slice(0, 12).map((item) => <button type="button" className="slash-row" key={item.id} title={item.detail} disabled={locked} onClick={() => { if (item.pick) addPick(item.pick); }}>{item.pick?.kind === "file" ? <FileMark path={item.pick.path} /> : <span className="git-type" aria-hidden>·</span>}<strong>/{item.name}</strong><small>{item.detail}</small></button>)}{!localContext.length ? <p className="project-empty">Pick a folder in the project chip to list its files here.</p> : cappedFolder && <p className="project-empty">Showing {cappedFolder.listed} of {cappedFolder.total}{cappedFolder.capped ? "+" : ""} files in {cappedFolder.folder?.name ?? "this folder"} — the rest are not listed here.</p>}</div><span className="add-section">Skills &amp; MCP servers</span><div className="add-context">{matchCommands(imported, contextQuery).map((item) => <button type="button" className="slash-row" key={`${item.kind}-${item.id}`} title={item.detail} disabled={locked} onClick={() => { if (item.kind === "skill") { void window.emma.selectImportedSkill({ id: item.id, threadId: thread.id }).then(setSkill).catch(() => undefined); closeSources(); } else openCapabilities(); }}><strong>{item.kind === "skill" ? "Skill" : "MCP"} · {item.name}</strong><small>{item.detail}</small></button>)}{!imported.length && <p className="project-empty">Nothing imported yet — use /import to scan this {LOCAL_DEVICE}.</p>}</div><button type="button" className="add-row kind-capability" onClick={() => openCapabilities()}><b>{MODIFIER_LABEL}</b><div><strong>Imported skills &amp; MCP</strong><small>Attach a skill, or see the MCP servers every turn is handed</small></div></button><span className="add-section">Built-in plugins</span><button type="button" className="add-row kind-agent" onClick={() => { closeSources(); setAgentOpen(true); }}><b>⌁</b><div><strong>Agent runtime</strong><small>Inspect Emma's Zig harness and headless entry point</small></div></button><div className="add-row muted kind-hint"><b>{ALT_LABEL}</b><div><strong>Draw on screen</strong><small>Double-tap left {IS_WINDOWS ? "Alt" : "Option"}, then choose the yellow pen</small></div></div></>}</section>}</form>
     </section></Region></div>
       </div>
     </div>
@@ -3077,10 +3081,22 @@ function SettingsNavigation({ page, onSelect, busy }: { page: SettingsPage; onSe
 
 const KEYBIND_GLYPHS: Record<KeybindAction, string> = { toggle: "▭", voice: "●", draw: "✎", keep: "⧉", action0: `${MODIFIER_LABEL}1`, action1: `${MODIFIER_LABEL}2`, action2: `${MODIFIER_LABEL}3` };
 
+const WINDOWS_KEYBIND_DETAILS: Partial<Record<KeybindAction, string>> = {
+  toggle: "Shows Quick Ask, or hides it when it is already up.",
+  voice: "Opens Quick Ask and starts dictation.",
+  draw: "Opens Quick Ask and captures the screen to mark up.",
+};
+
+const WINDOWS_KEYBIND_BUILTINS: Partial<Record<KeybindAction, string>> = { draw: "✎ on Quick Ask", keep: "◈ on Quick Ask" };
+
+function keybindDetail(action: (typeof KEYBIND_ACTIONS)[number]) {
+  return (IS_WINDOWS ? WINDOWS_KEYBIND_DETAILS[action.id] : undefined) ?? action.detail;
+}
+
 function keybindBuiltin(action: (typeof KEYBIND_ACTIONS)[number]) {
   if (action.id === "toggle") return `${ALT_LABEL}${ALT_LABEL} double-tap left ${IS_WINDOWS ? "Alt" : "Option"}`;
-  if (action.id === "action0" || action.id === "action1" || action.id === "action2") return `${MODIFIER_LABEL}${Number(action.id.slice(-1)) + 1} while the ${OVERLAY_LABEL} is open`;
-  return action.builtin;
+  if (action.id === "action0" || action.id === "action1" || action.id === "action2") return `${MODIFIER_LABEL}${Number(action.id.slice(-1)) + 1} while ${OVERLAY_LABEL} is open`;
+  return (IS_WINDOWS ? WINDOWS_KEYBIND_BUILTINS[action.id] : undefined) ?? action.builtin;
 }
 
 function KeybindSettings({ settings, save }: { settings: UserSettings; save: (keybinds: Keybinds) => Promise<string[]> }) {
@@ -3137,7 +3153,7 @@ function KeybindSettings({ settings, save }: { settings: UserSettings; save: (ke
     const listening = recording === action.id;
     const index = /^action([0-2])$/.exec(action.id);
     const label = index ? settings.quickActions[Number(index[1])].label : action.label;
-    const detail = index ? "" : action.detail;
+    const detail = index ? "" : keybindDetail(action);
     return <section className="keybind-row" key={action.id}>
       <span className="orb" aria-hidden="true"><kbd>{KEYBIND_GLYPHS[action.id]}</kbd></span>
       <div><h3>{label}</h3>{detail && <p>{detail}</p>}
@@ -3380,7 +3396,7 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
   return <section className="settings-view"><header><h2>Quick Ask</h2></header><NotchSettings settings={settings} onChange={saveNotch} busy={busy} /><form className="settings-form" onSubmit={save} onChange={() => setSaved(false)}>
     <div className="quick-action-editor settings-lines">
       <header>
-        <div className="settings-head"><h3>Quick actions</h3><InfoDot>Each one is a prompt the {OVERLAY_LABEL} runs against whatever you hand it — a capture, the page your browser has in front, or nothing at all. Destination and category decide where the answer is filed when <b>Save analyzed result</b> is on.</InfoDot></div>
+        <div className="settings-head"><h3>Quick actions</h3><InfoDot>Each one is a prompt {OVERLAY_LABEL} runs against whatever you hand it — a capture, the page your browser has in front, or nothing at all. Destination and category decide where the answer is filed when <b>Save analyzed result</b> is on.</InfoDot></div>
         <strong>{MODIFIER_LABEL}1 – {MODIFIER_LABEL}3</strong>
       </header>
       {settings.quickActions.map((action, index) => <SettingsSection title={action.label || `Action ${index + 1}`} summary={`${MODIFIER_LABEL}${index + 1}`} key={index}>
@@ -3388,16 +3404,16 @@ function SettingsBody({ page, act, busy, onModelChanged, onAttach }: { page: Set
       </SettingsSection>)}
     </div>
     <SettingsSection title="Cursor orbs & swipe commands" summary={settings.cursorOrbsEnabled || settings.notchCommandsEnabled ? "On" : "Off"}>
-    <section className="orb-settings"><div><div className="settings-head"><h3>Orbs you can rearrange</h3><InfoDot>The ring opens where the pointer is when Quick Ask does, and the same commands hang under the {OVERLAY_LABEL} when the pointer swipes below it. <b>Save screen</b> takes a picture of what you are looking at, reads it with your vision model, and asks the app in front what it is showing. Each save lands as one Markdown note in your vault, picture and all.</InfoDot></div><p>Pick an orb to change what it runs or where it sits.</p>
+    <section className="orb-settings"><div><div className="settings-head"><h3>Orbs you can rearrange</h3><InfoDot>The ring opens where the pointer is when Quick Ask does, and the same commands hang under {OVERLAY_LABEL} when the pointer swipes below it. <b>Save screen</b> takes a picture of what you are looking at, reads it with your vision model, and asks the app in front what it is showing. Each save lands as one Markdown note in your vault, picture and all.</InfoDot></div><p>Pick an orb to change what it runs or where it sits.</p>
       <label className="check"><input type="checkbox" checked={settings.cursorOrbsEnabled} onChange={(event) => setSettings((current) => ({ ...current, cursorOrbsEnabled: event.target.checked }))} /> Ring the cursor when Quick Ask opens</label>
-      <label className="check"><input type="checkbox" checked={settings.notchCommandsEnabled} onChange={(event) => setSettings((current) => ({ ...current, notchCommandsEnabled: event.target.checked }))} /> Reveal commands under the {OVERLAY_LABEL} on a swipe</label>
+      <label className="check"><input type="checkbox" checked={settings.notchCommandsEnabled} onChange={(event) => setSettings((current) => ({ ...current, notchCommandsEnabled: event.target.checked }))} /> Reveal commands under {OVERLAY_LABEL} on a swipe</label>
       {(settings.cursorOrbsEnabled || settings.notchCommandsEnabled) && <div className="orb-fields"><label>Orbs · 1–{MAX_CURSOR_ORBS}<input type="number" min={1} max={MAX_CURSOR_ORBS} value={settings.cursorOrbs.length} onChange={(event) => resizeOrbs(event.currentTarget.valueAsNumber)} /></label>
       <label>Orb {orb + 1} runs<select value={settings.cursorOrbs[orb]} onChange={(event) => setOrbs(settings.cursorOrbs.map((command, index) => index === orb ? event.target.value as CursorCommand : command))}>{CURSOR_COMMANDS.map((command) => <option key={command} value={command}>{orbLabel(command, settings)}</option>)}</select></label>
       <div className="orb-order"><span>Position</span><button type="button" onClick={() => moveOrb(-1)} aria-label="Move orb counter-clockwise">↺</button><button type="button" onClick={() => moveOrb(1)} aria-label="Move orb clockwise">↻</button></div></div>}</div>
       {(settings.cursorOrbsEnabled || settings.notchCommandsEnabled) && <div className="orb-preview"><OrbRing commands={settings.cursorOrbs} settings={settings} selected={orb} onPick={setOrb} radius={108} /></div>}</section>
     </SettingsSection>
-    <SettingsSection title="Placement" summary={`${settings.notchGap} pt fallback gap`}>
-    <section className="notch-settings"><div><div className="settings-head"><h3>{IS_WINDOWS ? "Where Quick Ask appears" : "Where the island hangs"}</h3><InfoDot>{IS_WINDOWS ? "Quick Ask appears as a small pill near the top of the display. Move it if the default position does not suit your taskbar or windows." : "Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing."}</InfoDot></div><p>{IS_WINDOWS ? "Quick Ask appears near the top of the display." : "Quick Ask hangs off the camera housing."}</p></div><div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div></section>
+    <SettingsSection title="Placement" summary={IS_WINDOWS ? "Drag the pill where you want it" : `${settings.notchGap} pt fallback gap`}>
+    <section className="notch-settings"><div><div className="settings-head"><h3>{IS_WINDOWS ? "Where Quick Ask appears" : "Where the island hangs"}</h3><InfoDot>{IS_WINDOWS ? "Quick Ask appears as a small pill near the top of the display. Move it if the default position does not suit your taskbar or windows." : "Emma measures the real camera housing on each display and wraps the menu bar around it. The gap below is the fallback for Macs and external displays without a housing."}</InfoDot></div><p>{IS_WINDOWS ? "Quick Ask appears near the top of the display." : "Quick Ask hangs off the camera housing."}</p></div>{!IS_WINDOWS && <div className="notch-values"><label>Fallback gap · 120–260 pt<input type="number" min={120} max={260} step={2} value={settings.notchGap} onChange={(event) => setSettings((current) => ({ ...current, notchGap: event.currentTarget.valueAsNumber }))} /></label></div>}</section>
     </SettingsSection>
     <button className="save-settings">{saved ? "Saved ✓" : "Save settings"}</button>{saveError && <p className="local-model-error" role="alert">{saveError}</p>}</form></section>;
 }
@@ -4215,6 +4231,7 @@ function ProviderKeys({ settings, act, busy }: { settings: UserSettings; act: (m
   const readBalance = () => void window.emma.openRouterBalance().then(setBalance).catch(() => undefined);
   useEffect(() => { void window.emma.listCredentials().then(setStored).catch(fail); readBalance(); }, []);
   const slots = credentialSlots(settings, stored);
+  const lost = stored.filter((item) => !item.readable);
   const draft = (env: string) => (drafts[env] ?? "").trim();
   const save = async (env: string, secret?: string) => {
     setError("");
@@ -4232,23 +4249,27 @@ function ProviderKeys({ settings, act, busy }: { settings: UserSettings; act: (m
     const env = custom.trim().toUpperCase();
     if (!isEnvName(env)) { setError("An environment variable name must start with a letter or underscore and hold only letters, digits, and underscores."); return; }
     setDrafts((current) => ({ ...current, [env]: current[env] ?? "" }));
-    setStored((current) => current.some((item) => item.env === env) ? current : [...current, { env, masked: "" }]);
+    setStored((current) => current.some((item) => item.env === env) ? current : [...current, { env, masked: "", readable: true }]);
     setCustom("");
   };
   return <section className="provider-keys">
     <header><div><span>API keys</span><h3>Keys stay in the secure store</h3><p>A key reaches the agent only through its process environment. Changing one restarts the local agent, so save it between turns.</p></div><strong>{stored.filter((item) => item.masked).length} stored</strong></header>
+    {lost.length > 0 && <p className="local-model-error" role="alert">{lost.length === 1 ? `${unreadableKeyNotice(slots.find((slot) => slot.env === lost[0].env)?.label ?? lost[0].env, RUNTIME_PLATFORM)} Emma kept it on disk and replaces it the moment you save a new one.` : `${lost.length} saved keys could not be read on this ${LOCAL_DEVICE}. Paste each one again. Emma kept them on disk and replaces each one the moment you save it.`}</p>}
     {(error || status) && <p className={error ? "local-model-error" : "local-model-status"} role="status">{error || status}</p>}
     <div className="provider-key-list">{slots.map((slot) => {
       const saved = stored.find((item) => item.env === slot.env && item.masked);
-      return <SettingsSection key={slot.env} title={slot.label} summary={saved ? saved.masked : "Not set"}><div className={`provider-key-row ${saved ? "set" : ""}`}>
+      const unreadable = stored.some((item) => item.env === slot.env && !item.readable);
+      const value = unreadable ? "Could not be read" : saved ? saved.masked : "Not set";
+      return <SettingsSection key={slot.env} title={slot.label} summary={value}><div className={`provider-key-row ${saved ? "set" : ""} ${unreadable ? "unreadable" : ""}`}>
         <BrandIcon brand={slot.brand} className="provider-mark" />
         <div><strong>{slot.label}</strong><small>{slot.detail}</small><code>{slot.env}</code>
+          {unreadable && <em className="provider-key-lost" role="alert">{unreadableKeyNotice(slot.label, RUNTIME_PLATFORM)}</em>}
           {slot.env === OPENROUTER_ENV && saved && <em className={`provider-key-balance ${outOfCredit(balance) || balance?.error ? "warn" : ""}`}>{balanceLine(balance)}{outOfCredit(balance) || balance?.freeTier ? <a href={OPENROUTER_CREDITS_URL} target="_blank" rel="noreferrer">Add credit ↗</a> : null}</em>}
         </div>
-        <span className="provider-key-value">{saved ? saved.masked : "Not set"}</span>
-        <label><span className="sr-only">{slot.label} API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={drafts[slot.env] ?? ""} placeholder={saved ? "Paste a replacement" : slot.hint} onChange={(event) => setDrafts((current) => ({ ...current, [slot.env]: event.target.value }))} /></label>
+        <span className="provider-key-value">{value}</span>
+        <label><span className="sr-only">{slot.label} API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={drafts[slot.env] ?? ""} placeholder={unreadable ? "Paste it again" : saved ? "Paste a replacement" : slot.hint} onChange={(event) => setDrafts((current) => ({ ...current, [slot.env]: event.target.value }))} /></label>
         <button type="button" disabled={busy || !draft(slot.env)} onClick={() => void save(slot.env, draft(slot.env))}>Save</button>
-        <button type="button" disabled={busy || !saved} onClick={() => void save(slot.env)}>Remove</button>
+        <button type="button" disabled={busy || (!saved && !unreadable)} onClick={() => void save(slot.env)}>Remove</button>
       </div></SettingsSection>;
     })}</div>
     <form className="provider-key-add" onSubmit={addCustom}><label>Another environment variable<input value={custom} maxLength={64} disabled={busy} placeholder="TOGETHER_API_KEY" onChange={(event) => setCustom(event.target.value)} /></label><button disabled={busy || !custom.trim()}>Add slot</button></form>
@@ -4275,7 +4296,7 @@ function ToolSettingsPanel({ settings, onChange, onDefaultMode, busy }: { settin
       : <p className="tool-empty">{empty}</p>;
   return <div className="tool-settings coding-tools">
     <section className="local-model-settings default-mode">
-      <header><div><div className="settings-head"><h3>New threads</h3><InfoDot>The rung a thread's picker opens on. Change it in the composer and that thread keeps its own from then on; this only decides where a fresh one starts. Quick Ask starts here too, until you change it in the island.</InfoDot></div><p>Choose the permission mode new threads and Quick Ask start with.</p></div><ModePicker mode={settings.defaultPermissionMode} setMode={onDefaultMode} disabled={busy} /></header>
+      <header><div><div className="settings-head"><h3>New threads</h3><InfoDot>The rung a thread's picker opens on. Change it in the composer and that thread keeps its own from then on; this only decides where a fresh one starts. Quick Ask starts here too, until you change it {IS_WINDOWS ? "there" : "in the island"}.</InfoDot></div><p>Choose the permission mode new threads and Quick Ask start with.</p></div><ModePicker mode={settings.defaultPermissionMode} setMode={onDefaultMode} disabled={busy} /></header>
     </section>
     <section className="local-model-settings coding-tool-catalog">
       <header><div><div className="settings-head"><h3>Built-in tools</h3><InfoDot>Permission modes still apply on top of this: <b>Plan</b> already hides everything that changes anything. The two tools that call a model of their own — <b>Advisor</b> and <b>Vision</b> — pick it in <b>Settings → Models</b>.</InfoDot></div><p>Only enabled tools are offered to the model. Permission modes still apply.</p></div><strong>{off ? `${off} off` : "All on"}</strong></header>
@@ -4420,18 +4441,83 @@ function HarnessExperimentsPanel({ settings, onChange, busy }: { settings: UserS
   </div>;
 }
 
+function EmbeddingKeyRow({ model, stored, busy, onStored }: { model: HostedEmbeddingModel; stored: CredentialSummary[]; busy: boolean; onStored: (next: CredentialSummary[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const [note, setNote] = useState("");
+  const [checking, setChecking] = useState(false);
+  const saved = stored.find((item) => item.env === model.credentialEnv && item.masked);
+  const save = async (secret?: string) => {
+    setNote("");
+    try {
+      onStored(await window.emma.saveCredential(secret === undefined ? { env: model.credentialEnv } : { env: model.credentialEnv, secret }));
+      setDraft("");
+    } catch (reason) { setNote(reasonText(reason)); }
+  };
+  const verify = async () => {
+    setChecking(true);
+    setNote("");
+    const answer = await window.emma.verifyEmbeddingKey(model.id).catch((reason: unknown) => ({ ok: false, detail: reasonText(reason) }));
+    setChecking(false);
+    setNote(answer.detail);
+  };
+  return <div className="embedding-key">
+    <div><strong>{model.label}</strong><small>Indexed file contents and search queries are sent to this provider.</small><code>{model.credentialEnv}</code></div>
+    <span className="embedding-key-value">{saved ? saved.masked : "Not set"}</span>
+    <label><span className="sr-only">{model.label} API key</span><input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={draft} placeholder={saved ? "Paste a replacement" : "Paste the API key"} onChange={(event) => setDraft(event.target.value)} /></label>
+    <div className="embedding-key-actions">
+      <button type="button" disabled={busy || !draft.trim()} onClick={() => void save(draft.trim())}>Save</button>
+      <button type="button" disabled={busy || !saved || checking} onClick={() => void verify()}>{checking ? "Checking…" : "Verify"}</button>
+      <button type="button" disabled={busy || !saved} onClick={() => void save()}>Remove</button>
+    </div>
+    {note && <small className="embedding-key-note">{note}</small>}
+  </div>;
+}
+
+function ZvecGrepCard({ tool, busy }: { tool: ZvecGrepStatus; busy: boolean }) {
+  const working = tool.phase === "downloading" || tool.phase === "verifying" || tool.phase === "extracting";
+  return <div className="tool-download">
+    <div className="tool-download-head">
+      <div><strong>zvec-grep {tool.version}</strong><small>The index is built on this {LOCAL_DEVICE} for local and hosted models alike, so the tool is needed either way. About {sizeLabel(zvecGrepDownloadBytes(RUNTIME_PLATFORM))}, kept in Emma's data folder and reused by later versions of Emma.</small></div>
+      {tool.phase === "ready"
+        ? <strong className="tool-download-state">Installed · v{tool.version}</strong>
+        : working
+          ? <button type="button" onClick={() => void window.emma.zvecGrepCancel()}>Cancel</button>
+          : <button type="button" disabled={busy} onClick={() => void window.emma.zvecGrepInstall()}>{tool.phase === "failed" ? "Retry" : "Download"}</button>}
+    </div>
+    {working && <div className="tool-progress"><span className="index-bar" style={{ "--p": `${zvecGrepPercent(tool)}%` } as CSSProperties}><b /></span><small>{zvecGrepPhaseLabel[tool.phase]} · {zvecGrepProgressLabel(tool)}</small></div>}
+    {tool.phase === "failed" && <p className="local-model-error" role="status">{tool.detail}</p>}
+  </div>;
+}
+
+function EmbeddingAdvice({ facts, chosen, busy, onUse }: { facts: MachineFacts; chosen: EmbeddingModel; busy: boolean; onUse: (id: EmbeddingModel) => void }) {
+  const advice = recommendEmbeddingModel(facts);
+  const parts = [facts.gpu || "No GPU reported", facts.vramBytes ? `${gigabytes(facts.vramBytes)} GB video memory` : "", `${gigabytes(facts.memoryBytes)} GB memory`, `${facts.cores} cores`].filter(Boolean);
+  return <div className="embedding-advice">
+    <div>
+      <strong>Recommended for this {LOCAL_DEVICE} · {embeddingModelLabel(advice.id)}</strong>
+      <small>{advice.reason}</small>
+      <em>{parts.join(" · ")}</em>
+    </div>
+    <button type="button" disabled={busy || chosen === advice.id} onClick={() => onUse(advice.id)}>{chosen === advice.id ? "In use" : "Use"}</button>
+  </div>;
+}
+
 function SemanticGrepPanel({ settings, onChange, busy }: { settings: UserSettings; onChange: (experiments: HarnessExperiments) => Promise<void>; busy: boolean }) {
   const experiments = settings.harnessExperiments;
   const [error, setError] = useState("");
   const status = useSemanticGrepStatus();
+  const tool = useZvecGrepStatus();
+  const [facts, setFacts] = useState<MachineFacts | null>(null);
   const [stored, setStored] = useState<CredentialSummary[]>([]);
   useEffect(() => {
     let live = true;
     void window.emma.listCredentials().then((next) => { if (live) setStored(next); }).catch(() => undefined);
+    void window.emma.machineFacts().then((next) => { if (live) setFacts(next); }).catch(() => undefined);
     return () => { live = false; };
   }, []);
   const save = (next: HarnessExperiments) => { setError(""); void onChange(next).catch((reason: unknown) => setError(reasonText(reason))); };
-  const on = experiments.semanticGrep && status.available;
+  const enabled = experiments.semanticGrep;
+  const on = enabled && status.available;
   const hosted = hostedEmbeddingModel(experiments.embeddingModel);
   return <div className="tool-settings coding-semantic">
     <section className="local-model-settings">
@@ -4439,7 +4525,7 @@ function SemanticGrepPanel({ settings, onChange, busy }: { settings: UserSetting
         <div>
           <div className="settings-head">
             <h3>Semantic search</h3>
-            <InfoDot>Makes <code>semantic_search</code> the agent's default search and answers it with zvec-grep: vector embeddings, BM25 and ripgrep in one tool. Each connected folder is indexed the first time a thread runs there and kept fresh as files change; until then the agent searches by keywords. The index lives in <code>.zvec-grep/</code> inside the folder and is excluded from git. A hosted model sends the contents of every indexed file, and each query, to that provider under the key named below; a local one keeps them on this computer.</InfoDot>
+            <InfoDot>Makes <code>semantic_search</code> the agent's default search and answers it with zvec-grep: vector embeddings, BM25 and ripgrep in one tool. The tool is downloaded the first time you ask for it, not shipped inside Emma, and it stays in Emma's data folder so later versions reuse it. Each connected folder is indexed the first time a thread runs there and kept fresh as files change; until then the agent searches by keywords. The index lives in <code>.zvec-grep/</code> inside the folder and is excluded from git. A hosted model sends the contents of every indexed file, and each query, to that provider under the key named below; a local one keeps them on this computer.</InfoDot>
           </div>
           <p>Find code by meaning as well as exact keywords.</p>
         </div>
@@ -4447,16 +4533,17 @@ function SemanticGrepPanel({ settings, onChange, busy }: { settings: UserSetting
       </header>
       <div className="tool-group">
         <label className="check tool-row">
-          <input type="checkbox" checked={experiments.semanticGrep} disabled={busy || !status.available} onChange={(event) => save({ ...experiments, semanticGrep: event.target.checked })} />
+          <input type="checkbox" checked={experiments.semanticGrep} disabled={busy} onChange={(event) => save({ ...experiments, semanticGrep: event.target.checked })} />
           <strong>Index connected folders</strong>
         </label>
-        {!status.available && <small>zvec-grep is not bundled in this build.</small>}
-        {on && <div className="font-values coding-dependent">
-          <label>Model<select value={experiments.embeddingModel} disabled={busy || !on} onChange={(event) => save({ ...experiments, embeddingModel: event.target.value as EmbeddingModel })}>
+        {enabled && <div className="font-values coding-dependent">
+          <ZvecGrepCard tool={tool} busy={busy} />
+          {facts && !hosted && <EmbeddingAdvice facts={facts} chosen={experiments.embeddingModel} busy={busy} onUse={(id) => save({ ...experiments, embeddingModel: id })} />}
+          <label>Model<select value={experiments.embeddingModel} disabled={busy} onChange={(event) => save({ ...experiments, embeddingModel: event.target.value as EmbeddingModel })}>
             <optgroup label="On this computer">{LOCAL_EMBEDDING_MODELS.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.detail}</option>)}</optgroup>
             <optgroup label="Hosted">{HOSTED_EMBEDDING_MODELS.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.detail}</option>)}</optgroup>
           </select></label>
-          {hosted && <small>Indexed file contents and search queries are sent to this provider. Uses {hosted.credentialEnv} · {stored.some((item) => item.env === hosted.credentialEnv) ? "saved" : "missing, add it in Settings → Models"}</small>}
+          {hosted && <EmbeddingKeyRow model={hosted} stored={stored} busy={busy} onStored={setStored} />}
           {on && status.folders.length === 0 && <small>Each connected folder is indexed the first time a thread runs in it.</small>}
         </div>}
         {on && status.folders.length > 0 && <SettingsSection title="Folder indexes" summary={`${status.folders.length} folders`}><div className="coding-index-scroll"><table className="index-ledger">
@@ -5083,7 +5170,10 @@ function Overlay() {
   const [modeBand, setModeBand] = useState(0);
   const [thread, setThread] = useState<Thread>();
   const [turns, setTurns] = useState<QuickTurn[]>([]);
-  const [surface, setSurface] = useState<OverlaySurface>(() => new URLSearchParams(location.search).get("surface") === "pill" ? "pill" : "notch");
+  const [surface, setSurface] = useState<OverlaySurface>(() => {
+    const opened = new URLSearchParams(location.search).get("surface");
+    return opened === "pill" || opened === "popout" ? opened : "notch";
+  });
   const notch = useMemo(() => readNotchQuery(settings.notchGap), [settings.notchGap]);
   const [grow, setGrow] = useState(0);
   const transcript = useRef<HTMLDivElement>(null);

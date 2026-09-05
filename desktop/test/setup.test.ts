@@ -22,7 +22,11 @@ test("the vault picker opens where a person keeps documents", () => {
   assert.equal(defaultVaultRoot(), path.join(homedir(), "Documents"));
 });
 
-test("readiness is answered by writing, so a vault Emma cannot write reads as denied", { skip: process.getuid?.() === 0 && "root writes anywhere" }, () => {
+const writesAnyway = process.getuid?.() === 0 ? "root writes anywhere"
+  : process.platform === "win32" ? "a read-only Windows folder still accepts new files"
+  : false;
+
+test("readiness is answered by writing, so a vault Emma cannot write reads as denied", { skip: writesAnyway }, () => {
   const root = path.join(workspace(), "Second Brain");
   const notes = path.join(root, DEFAULT_VAULT_FOLDER);
   mkdirSync(notes, { recursive: true });

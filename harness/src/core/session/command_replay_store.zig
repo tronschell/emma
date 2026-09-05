@@ -737,6 +737,7 @@ test "command replay capture spills without losing callback order" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const display_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(display_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -765,15 +766,25 @@ test "command replay capture spills without losing callback order" {
         &.{ "logs", "commands", descriptor.handle },
     );
     defer alloc.free(replay_path);
-    const replay_stat = try session_dir.statFile(
-        io_mod.getIo(),
-        replay_path,
-        .{ .follow_symlinks = false },
-    );
-    try std.testing.expectEqual(
-        @as(u32, 0o600),
-        io_mod.permissionsMode(replay_stat.permissions) & 0o777,
-    );
+    if (comptime builtin.os.tag == .windows) {
+        var replay_file = try session_dir.openFile(
+            io_mod.getIo(),
+            replay_path,
+            .{ .follow_symlinks = false },
+        );
+        defer replay_file.close(io_mod.getIo());
+        try std.testing.expect(try io_mod.privateFileAclMatches(replay_file));
+    } else {
+        const replay_stat = try session_dir.statFile(
+            io_mod.getIo(),
+            replay_path,
+            .{ .follow_symlinks = false },
+        );
+        try std.testing.expectEqual(
+            @as(u32, 0o600),
+            io_mod.permissionsMode(replay_stat.permissions) & 0o777,
+        );
+    }
     var reader = try Reader.open(alloc, &capability, descriptor);
     defer reader.deinit();
 
@@ -822,6 +833,7 @@ test "command replay reader rejects descriptor and frame corruption" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const display_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(display_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -908,6 +920,7 @@ test "command replay cleanup removes tentative and retained spools exactly once"
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const display_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(display_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(

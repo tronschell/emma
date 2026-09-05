@@ -47,7 +47,7 @@ import { checkForUpdates, installUpdate, readyUpdate, startUpdates } from "./upd
 import { newerVersion } from "../shared/update";
 import { addWorktree, commit, commitPaths, discard, gitHistory, gitReady, gitSnapshot, initRepo, listWorktrees, mainCheckout, MAX_COMMIT_MESSAGE_BYTES, MAX_HISTORY, removeWorktrees, runGit, switchBranch, writeCommitMessage } from "./git";
 import { installedEditors, openInEditor } from "./editors";
-import { machineSample } from "./machine";
+import { machineFacts, machineSample } from "./machine";
 import { transcribe, validateUtterance, validateVoiceSettings, voiceStatus } from "./voice";
 import { contextBlock, MAX_FILE_BYTES, MAX_TURN_IMAGES, mergeSkillContext } from "../shared/folders";
 import { BUILTIN_COMMANDS, mentions, pathName } from "../shared/slash";
@@ -63,7 +63,8 @@ import { adoptCouncil, closeCouncil, configureCouncil, councilAnswer, councilSta
 import { validateCouncilStart } from "../shared/council";
 import { BackgroundCommands } from "./background";
 import { CliRuns } from "./cli";
-import { proxyPort, SemanticGrep, ZG_ENTRY } from "./semantic-grep";
+import { embeddingModelRequest, proxyPort, SemanticGrep, verifyEmbeddingKey } from "./semantic-grep";
+import { toolsOrigin, ZvecGrepTool } from "./zvec-grep";
 import { chatgptAuth, chatgptRoute } from "./chatgpt";
 import { CliModelCatalog } from "./cli-models";
 import { CLI_IDS, cliHarness, describeRuns, cliOptions } from "../shared/cli";
@@ -88,13 +89,15 @@ import { createBridge, type Bridge } from "./bridge";
 import { clampTrace, compactionNotice } from "../shared/trace";
 import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type PhoneList, type PluginEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type ThreadTrace, type TraceSpan as PhoneTraceSpan } from "../shared/mobile-protocol";
 import type { TraceSpan } from "../shared/trace";
-import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
+import { localDevice } from "../shared/platform-copy";
+import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, windowsShortcutFiles, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_CACHE_MS = 5000;
 const MAX_HOST_CALL_MS = 60 * 1000;
 const WINDOWS_SHUTDOWN_TIMEOUT_MS = 8000;
 
+const DEVICE = localDevice(process.platform);
 if (isWindows) app.setName("Emma");
 
 class Host {
@@ -237,8 +240,13 @@ let agents: AgentRuntime | undefined;
 let bridge: Bridge | undefined;
 const background = new BackgroundCommands(() => broadcast("emma:background"));
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
-const zgEntry = app.isPackaged ? path.join(process.resourcesPath, "zvec-grep", ZG_ENTRY) : path.join(app.getAppPath(), "vendor/zvec-grep", ZG_ENTRY);
-const semanticGrep = new SemanticGrep(process.execPath, zgEntry, existsSync(zgEntry), proxyPort(app.getPath("userData")), () => broadcast("emma:semantic-grep"));
+const zvecGrep = new ZvecGrepTool(path.join(app.getPath("userData"), "vendor", "zvec-grep"), toolsOrigin(), () => {
+  broadcast("emma:zvec-grep");
+  if (zvecGrep.status().phase !== "ready") return;
+  semanticGrep.apply(harnessExperiments);
+  broadcast("emma:semantic-grep");
+});
+const semanticGrep = new SemanticGrep(process.execPath, () => zvecGrep.entry(), proxyPort(app.getPath("userData")), () => broadcast("emma:semantic-grep"));
 let cliModels: CliModelCatalog;
 const browsers = new Browsers(() => broadcast("emma:browser"), reportBrowserCursor);
 const terminals = new Terminals(
@@ -461,6 +469,7 @@ let overlayGrow = 0;
 
 const preload = path.join(__dirname, "preload.js");
 const renderer = path.join(app.getAppPath(), "dist-renderer/index.html");
+const windowsIcon = isWindows && !app.isPackaged ? path.join(app.getAppPath(), "assets", "emma.ico") : undefined;
 
 const DEV_BINARIES: Record<string, string> = {
   "emma-host": "target/debug/emma-host",
@@ -602,6 +611,7 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
   const window = new BrowserWindow({
     backgroundColor: "#0a0a0c",
     show: false,
+    ...(windowsIcon ? { icon: windowsIcon } : {}),
     ...options,
     webPreferences: {
       preload,
@@ -622,8 +632,8 @@ function secureWindow(options: Electron.BrowserWindowConstructorOptions) {
     const selected = params.selectionText.trim();
     const menu = Menu.buildFromTemplate([
       ...(params.misspelledWord ? params.dictionarySuggestions.map((suggestion) => ({ label: suggestion, click: () => window.webContents.replaceMisspelling(suggestion) })) : []),
+      ...(selected && isMac ? [{ label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") }] : []),
       ...(selected ? [
-        { label: `Look Up “${selected}”`, click: () => Menu.sendActionToFirstResponder("lookUp:") },
         { label: "Search with Google", click: () => void shell.openExternal(`https://www.google.com/search?q=${encodeURIComponent(selected)}`) },
       ] : []),
       ...((params.misspelledWord && params.dictionarySuggestions.length) || selected ? [{ type: "separator" as const }] : []),
@@ -678,6 +688,7 @@ function openMain() {
     minWidth: 1040,
     minHeight: 680,
     ...(isMac ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 18, y: 17 } } : {}),
+    ...(isWindows ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: "#131316", symbolColor: "#e8e6df", height: 32 } } : {}),
     ...(process.platform === "darwin" ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const, backgroundColor: "#00000000" } : {}),
   });
   mainWindow.on("closed", () => (mainWindow = null));
@@ -780,13 +791,13 @@ function toggleOverlay(command?: string) {
   }
   overlayBusy = false;
   closeOverlayWhenIdle = false;
-  overlaySurface = isWindows ? "pill" : "notch";
+  overlaySurface = isWindows ? "popout" : "notch";
   overlayGrow = 0;
   overlayFront = frontContextNote().catch(() => "");
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const pill = isWindows ? pillLayout(display, pillSpot) : undefined;
   if (pill) pillSpot = { x: pill.x, y: pill.y };
-  const layout = pill ? { bounds: pill, notch: { left: 0, width: 0, height: 0 } } : overlayLayout(display, overlayPreferences, notches.find((item) => item.id === display.id));
+  const layout = pill ? { bounds: popoutLayout(display, pill).bounds, notch: { left: 0, width: 0, height: 0 } } : overlayLayout(display, overlayPreferences, notches.find((item) => item.id === display.id));
   const window = secureWindow({
     ...layout.bounds,
     ...floating,
@@ -1135,7 +1146,7 @@ async function confirmOnMac(message: string, detail: string, accept: string): Pr
   try {
     const choice = await dialog.showMessageBox(mainWindow, {
       type: "warning",
-      title: "Approve on this Mac",
+      title: `Approve on this ${DEVICE}`,
       message: clip(message),
       detail: clip(detail),
       buttons: ["Cancel", accept],
@@ -1266,7 +1277,8 @@ function showComputerCursor() {
     return;
   }
   try {
-    window.setBounds(cursor.bounds);
+    const bounds = isWindows ? screen.screenToDipRect(null, cursor.bounds) : cursor.bounds;
+    window.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) });
     window.webContents.send("emma:computer-run-progress", { ...progress, cursor });
     window.showInactive();
     window.moveAbove(above);
@@ -1577,14 +1589,17 @@ async function executeTool(args: ToolArgs, turn: TurnRequest): Promise<string> {
     case "computer": {
       ensureComputerRun(turn.threadId);
       const said = await computerRuntime!.execute(turn.threadId, args.args, async (target, signal) => {
-        const allowed = await agents!.question({
+        const starting = !("pid" in target);
+        const answer = await agents!.approval({
           threadId: turn.threadId,
           tool: "computer",
-          summary: `Allow Emma to use ${target.name}?`,
-          detail: `${target.id}\n${target.path}\nProcess ${target.pid}\n\nAllow Emma to read and control this app in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`,
+          summary: starting ? `Allow Emma to open ${target.name}?` : `Allow Emma to use ${target.name}?`,
+          detail: starting
+            ? `${target.target}\n\nAllow Emma to start this installed app and then read and control it in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`
+            : `${target.id}\n${target.path}\nProcess ${target.pid}\n\nAllow Emma to read and control this app in the background for this turn. Delegated agents cannot use this grant. Other apps require their own approval. Access ends when this turn ends or you press Stop. Application text is sent to this turn's model; screenshots and the clipboard are not used.`,
         }, { humanOnly: true, signal });
-        if (allowed && !signal.aborted) openRunBanner(turn.threadId, `${target.name} · background app control`);
-        return allowed;
+        if (answer === "allowed" && !signal.aborted) openRunBanner(turn.threadId, `${target.name} · background app control`);
+        return answer;
       });
       return said;
     }
@@ -1981,7 +1996,7 @@ async function componentTool(args: Extract<ToolArgs, { name: "component" }>, thr
 
 function runCommand(cwd: string, command: string, timeoutMs = MAX_COMMAND_MS): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: true, windowsHide: true });
+    const child = spawn(shellBinary(), shellArguments(command, false), { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: !isWindows, windowsHide: true });
     let output = "";
     const collect = (data: Buffer) => { if (output.length < MAX_COMMAND_OUTPUT) output += String(data); };
     child.stdout.on("data", collect);
@@ -2428,7 +2443,7 @@ function routedModelKey(key: string): string {
   if (providerFor(key)) return key;
   const routerId = routerIdFor(key);
   if (routerId === FREE_ROUTER_ID || routers.some((router) => router.id === routerId)) return key;
-  throw new Error("That model is not set up on this Mac any more. Pick another one.");
+  throw new Error(`That model is not set up on this ${DEVICE} any more. Pick another one.`);
 }
 
 const thinkingLevel = (value: unknown): ThinkingLevel => isThinkingLevel(value) ? value : "";
@@ -2863,7 +2878,8 @@ function credentialSlotsHeld(): CredentialSlot[] {
   const slots = new Map<string, CredentialSlot>();
   const put = (env: string, label: string, detail: string, hint: string) => {
     if (!env || slots.has(env)) return;
-    slots.set(env, { env, masked: stored.find((item) => item.env === env)?.masked ?? "", label, detail, hint });
+    const held = stored.find((item) => item.env === env);
+    slots.set(env, { env, masked: held?.masked ?? "", readable: held?.readable ?? true, label, detail, hint });
   };
   for (const item of providerCredentials) put(item.env, item.label, item.detail, item.hint);
   for (const plan of MODEL_PLANS) put(plan.credentialEnv, plan.label, plan.detail, plan.hint);
@@ -3184,7 +3200,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "saveCredential": {
       const slot = credentialSlot(params);
 
-      if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error("That is not a key this Mac holds a slot for.");
+      if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error(`That is not a key this ${DEVICE} holds a slot for.`);
 
       if (slot.secret === undefined) credentials!.remove(slot.env);
       else credentials!.set(slot.env, slot.secret);
@@ -3258,10 +3274,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const definition = mcpServerRequest(params);
       const approved = await confirmOnMac(
         `Install the MCP server “${definition.name}” from your phone?`,
-        `Emma will run this on your Mac, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
+        `Emma will run this on your ${DEVICE}, and again on every turn that uses it:\n\n${[definition.command, ...definition.args ?? []].join(" ")}`,
         "Install it",
       );
-      if (!approved) throw new Error("Nobody at your Mac approved that server.");
+      if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that server.`);
       const { id } = await capabilities!.installMcpServer(definition);
       await toolsChanged();
       return { id };
@@ -3281,10 +3297,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         if (!running.length) throw new Error(`"${plugin.displayName || plugin.name}" has no hook Emma would ever run.`);
         const approved = await confirmOnMac(
           `Trust the hooks in “${plugin.displayName || plugin.name}” from your phone?`,
-          `Emma will run these on your Mac, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
+          `Emma will run these on your ${DEVICE}, on every turn that reaches their moment:\n\n${plugin.hooks.map((hook) => `${hook.event}${hookRuns(hook.event) ? "" : " (Emma has no such moment)"}: ${hook.command}`).join("\n\n")}`,
           "Trust them",
         );
-        if (!approved) throw new Error("Nobody at your Mac approved those hooks.");
+        if (!approved) throw new Error(`Nobody at your ${DEVICE} approved those hooks.`);
         hashes = plugin.hooks.map((hook) => hook.hash);
       }
       await setHookTrust(userData, id, hashes);
@@ -3304,10 +3320,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         const labels = importSources(homedir()).filter((source) => adding.includes(source.id)).map((source) => source.label).join(", ");
         const approved = await confirmOnMac(
           "Read another agent's skills and MCP servers?",
-          `Emma will read ${labels} on this Mac and start the servers their config files name.`,
+          `Emma will read ${labels} on this ${DEVICE} and start the servers their config files name.`,
           "Import",
         );
-        if (!approved) throw new Error("Nobody at your Mac approved that import.");
+        if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that import.`);
       }
       const saved = await saveImportManifest(userData, homedir(), ids as string[]);
       await toolsChanged();
@@ -3372,10 +3388,10 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const directory = folderId ? folders!.directory(folderId) : homedir();
       const approved = await confirmOnMac(
         "Run a command from your phone?",
-        `Emma will run this on your Mac now, in ${directory}:\n\n${command}`,
+        `Emma will run this on your ${DEVICE} now, in ${directory}:\n\n${command}`,
         "Run it",
       );
-      if (!approved) throw new Error("Nobody at your Mac approved that command.");
+      if (!approved) throw new Error(`Nobody at your ${DEVICE} approved that command.`);
       return background.start(directory, command, folderId ? folderNames([folderId])[0] ?? "" : "");
     }
     case "listBackground":
@@ -3423,7 +3439,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
 
       const asked = params.path;
       if (typeof asked !== "string" || !path.isAbsolute(asked) || asked.length > 1024) throw new Error("Name the folder by its full path.");
-      const directory = realpathSync(asked);
+      const directory = realpathSync.native(asked);
       if (!statSync(directory).isDirectory()) throw new Error("That is not a folder.");
       const held = folders!.list().some((grant) => samePath(grant.path, directory));
       if (!held && !pathInside(homedir(), directory)) throw new Error("From a phone, Emma only connects folders inside your home folder.");
@@ -3432,7 +3448,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         `Emma will be able to read and write everything in ${directory}, and its agents will run against it. Only connect a folder you asked for from your phone just now.`,
         "Connect this folder",
       );
-      if (!granted) throw new Error("Nobody at your Mac approved that folder.");
+      if (!granted) throw new Error(`Nobody at your ${DEVICE} approved that folder.`);
       folders!.add(directory);
       return visibleFolders();
     }
@@ -3468,7 +3484,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const model = selected.model ?? run.model ?? "";
 
       const { models } = await cliModels.read(run.cli, (cli) => clis.where(cli));
-      if (model && !models.includes(model)) throw new Error("That is not a model this Mac found for that CLI.");
+      if (model && !models.includes(model)) throw new Error(`That is not a model this ${DEVICE} found for that CLI.`);
       return clis.setOptions(id, selected);
     }
     case "listScheduledJobs":
@@ -3712,7 +3728,7 @@ function phoneTraces(traces: readonly StoredThreadTrace[]): ThreadTrace[] {
 function phonePage(messages: Message[], total: number, from: number): { messages: Message[]; total: number; from: number } {
   const page = messages.map((message) => message.content.length <= MAX_PHONE_BODY_CHARS ? message : {
     ...message,
-    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your Mac.`,
+    content: `${message.content.slice(0, MAX_PHONE_BODY_CHARS)}\n\n… clipped to reach your phone. The whole message is on your ${DEVICE}.`,
   });
   const sizes = page.map((message) => Buffer.byteLength(JSON.stringify(message), "utf8") + 1);
   let used = sizes.reduce((sum, bytes) => sum + bytes, 0);
@@ -3989,7 +4005,7 @@ function openComputerCursor() {
   });
   computerCursorWindow = cursor;
   cursor.setIgnoreMouseEvents(true);
-  cursor.setHiddenInMissionControl(true);
+  if (isMac) cursor.setHiddenInMissionControl(true);
   cursor.on("closed", () => { if (computerCursorWindow === cursor) computerCursorWindow = null; });
   void load(cursor, "computerCursor");
 }
@@ -4064,7 +4080,10 @@ protocol.registerSchemesAsPrivileged([
 
 app.commandLine.appendSwitch("remote-debugging-port", "0");
 
-if (isWindows) app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+if (isWindows) {
+  app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+  Menu.setApplicationMenu(null);
+}
 
 function addUpdateMenuItem() {
   if (!isMac) return;
@@ -4084,7 +4103,10 @@ function handleSquirrelEvent(): boolean {
   if (!event) return false;
   const update = path.resolve(path.dirname(process.execPath), "..", "Update.exe");
   if (event === "install" || event === "updated") spawn(update, ["--createShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-  if (event === "uninstall") spawn(update, ["--removeShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  if (event === "uninstall") {
+    spawn(update, ["--removeShortcut", "Emma.exe"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    for (const link of windowsShortcutFiles()) rmSync(link, { force: true });
+  }
   app.quit();
   return true;
 }
@@ -4659,6 +4681,27 @@ if (primaryInstance) app.whenReady().then(() => {
   ipcMain.handle("emma:semantic-grep-status", (event) => {
     mainWindowSender(event);
     return semanticGrep.status();
+  });
+  ipcMain.handle("emma:zvec-grep-status", (event) => {
+    mainWindowSender(event);
+    return zvecGrep.status();
+  });
+  ipcMain.handle("emma:zvec-grep-install", (event) => {
+    mainWindowSender(event);
+    return zvecGrep.install();
+  });
+  ipcMain.handle("emma:zvec-grep-cancel", (event) => {
+    mainWindowSender(event);
+    return zvecGrep.cancel();
+  });
+  ipcMain.handle("emma:machine-facts", (event) => {
+    mainWindowSender(event);
+    return machineFacts(app.getPath("userData"));
+  });
+  ipcMain.handle("emma:verify-embedding-key", async (event, value: unknown) => {
+    mainWindowSender(event);
+    const model = embeddingModelRequest(value);
+    return verifyEmbeddingKey(model, process.env[model.credentialEnv]?.trim() ?? "");
   });
   ipcMain.handle("emma:set-review", (event, value: unknown) => {
     mainWindowSender(event);

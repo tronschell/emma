@@ -4983,8 +4983,8 @@ test "local file mutations bypass review while external mutations use exact revi
     for (targets, 0..) |target, index| {
         const args = try std.fmt.allocPrint(
             arena,
-            "{{\"path\":\"{s}\",\"content\":\"alpha\\nbeta\\n\"}}",
-            .{target},
+            "{{\"path\":{f},\"content\":\"alpha\\nbeta\\n\"}}",
+            .{std.json.fmt(target, .{})},
         );
         const call: ToolCall = .{
             .id = if (index == 0) "approved-local-write" else "approved-external-write",
@@ -5014,6 +5014,8 @@ test "local file mutations bypass review while external mutations use exact revi
 }
 
 test "main file mutation producer rejects wildcard-bearing grant roots before prompt publication" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -5382,8 +5384,8 @@ test "file mutation lifecycle decodes each call at most once" {
     );
     const prompted_args = try std.fmt.allocPrint(
         call_arena,
-        "{{\"path\":\"{s}\",\"content\":\"prompted\"}}",
-        .{prompted_target},
+        "{{\"path\":{f},\"content\":\"prompted\"}}",
+        .{std.json.fmt(prompted_target, .{})},
     );
     const PreflightTag = std.meta.Tag(tool_admission.FileMutationPreflight);
     const cases = [_]struct {
@@ -5569,13 +5571,13 @@ test "file mutation preflight separates edit approval from equality disclosure" 
     };
     const private_noop_args = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"private\\n\"}}",
-        .{private_target},
+        "{{\"path\":{f},\"content\":\"private\\n\"}}",
+        .{std.json.fmt(private_target, .{})},
     );
     const private_changed_args = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"changed\\n\"}}",
-        .{private_target},
+        "{{\"path\":{f},\"content\":\"changed\\n\"}}",
+        .{std.json.fmt(private_target, .{})},
     );
     const PreflightTag = std.meta.Tag(tool_admission.FileMutationPreflight);
     const cases = [_]struct {
@@ -5724,7 +5726,7 @@ test "disabled automatic reviewer returns a recoverable denial without a human p
         defer existing.close(io_mod.getIo());
         try existing.writeStreamingAll(io_mod.getIo(), "before");
     }
-    const args = try std.fmt.allocPrint(arena, "{{\"path\":\"{s}\",\"content\":\"hello\"}}", .{target});
+    const args = try std.fmt.allocPrint(arena, "{{\"path\":{f},\"content\":\"hello\"}}", .{std.json.fmt(target, .{})});
 
     const outcome = try tool_admission.requestPermissionOutcome(rt.context().admissionInput(), arena, .{
         .id = "external-write",
@@ -5815,9 +5817,10 @@ test "request tool permission honors configured deny and allow rules" {
         .arguments_json = "{\"pattern\":\"TODO\",\"path\":\"src\"}",
     }, .ask, &.{})).decision);
 
+    const app_rule_pattern = try std.fs.path.join(arena, &.{ "src", "app.zig" });
     var allow_rules = [_]types.PermissionRule{
         .{ .permission = @constCast("*"), .pattern = @constCast("*"), .action = .ask },
-        .{ .permission = @constCast("read"), .pattern = @constCast("src/app.zig"), .action = .allow },
+        .{ .permission = @constCast("read"), .pattern = app_rule_pattern, .action = .allow },
     };
     rt.permission_rules = .{ .rules = &allow_rules };
     try std.testing.expectEqual(ToolPermissionDecision.once, (try tool_admission.requestPermissionOutcome(rt.context().admissionInput(), arena, .{
@@ -5853,7 +5856,7 @@ test "request tool permission denies semantic_search outside workspace target" {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const args = try std.fmt.allocPrint(arena, "{{\"query\":\"needle\",\"path\":\"{s}\"}}", .{external});
+    const args = try std.fmt.allocPrint(arena, "{{\"query\":\"needle\",\"path\":{f}}}", .{std.json.fmt(external, .{})});
 
     try std.testing.expectEqual(ToolPermissionDecision.policy_denied, (try tool_admission.requestPermissionOutcome(rt.context().admissionInput(), arena, .{
         .id = "semantic",
@@ -5988,7 +5991,9 @@ test "executeToolCall traces non-text grep skips in normal runtime" {
     const trace = try readTraceFileForTest(alloc, trace_path);
     defer alloc.free(trace);
     try expectContains(trace, "grep_files skipped non-text file path=");
-    try expectContains(trace, "binaryish/blob.bin");
+    const skipped_path = try std.fs.path.join(alloc, &.{ "binaryish", "blob.bin" });
+    defer alloc.free(skipped_path);
+    try expectContains(trace, skipped_path);
 }
 
 test "executeToolCall traces oversized grep skips in normal runtime" {
@@ -6022,7 +6027,9 @@ test "executeToolCall traces oversized grep skips in normal runtime" {
     const trace = try readTraceFileForTest(alloc, trace_path);
     defer alloc.free(trace);
     try expectContains(trace, "grep_files skipped oversized file path=");
-    try expectContains(trace, "oversized/huge.txt");
+    const skipped_path = try std.fs.path.join(alloc, &.{ "oversized", "huge.txt" });
+    defer alloc.free(skipped_path);
+    try expectContains(trace, skipped_path);
 }
 
 test "executeToolCall returns failure status for missing grep path" {
@@ -6117,15 +6124,17 @@ test "request tool permission checks copy and rename destinations" {
 
     var rt = TestRuntime{ .workspace_root = root };
     defer rt.deinit(std.testing.allocator);
-    var rules = [_]types.PermissionRule{
-        .{ .permission = @constCast("copy_file"), .pattern = @constCast("blocked/*"), .action = .deny },
-        .{ .permission = @constCast("rename_file"), .pattern = @constCast("blocked/*"), .action = .deny },
-    };
-    rt.permission_rules = .{ .rules = &rules };
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+
+    const blocked_pattern = try std.fs.path.join(arena, &.{ "blocked", "*" });
+    var rules = [_]types.PermissionRule{
+        .{ .permission = @constCast("copy_file"), .pattern = blocked_pattern, .action = .deny },
+        .{ .permission = @constCast("rename_file"), .pattern = blocked_pattern, .action = .deny },
+    };
+    rt.permission_rules = .{ .rules = &rules };
 
     try std.testing.expectEqual(ToolPermissionDecision.policy_denied, (try tool_admission.requestPermissionOutcome(rt.context().admissionInput(), arena, .{
         .id = "copy",
@@ -7827,7 +7836,7 @@ test "external absolute non-write tracked mutations capture resolved paths" {
 
     try writeTestFile(tmp.dir, "external/delete.txt", "delete\n");
     const delete_path = try std.fs.path.join(arena, &.{ external, "delete.txt" });
-    const delete_args = try std.fmt.allocPrint(arena, "{{\"path\":\"{s}\"}}", .{delete_path});
+    const delete_args = try std.fmt.allocPrint(arena, "{{\"path\":{f}}}", .{std.json.fmt(delete_path, .{})});
     _ = try executeToolCall(rt.context(), arena, .{
         .id = "external-delete",
         .name = "delete_file",
@@ -7841,7 +7850,7 @@ test "external absolute non-write tracked mutations capture resolved paths" {
     try writeTestFile(tmp.dir, "external/rename.txt", "rename\n");
     const rename_source = try std.fs.path.join(arena, &.{ external, "rename.txt" });
     const rename_dest = try std.fs.path.join(arena, &.{ external, "renamed.txt" });
-    const rename_args = try std.fmt.allocPrint(arena, "{{\"old_path\":\"{s}\",\"new_path\":\"{s}\"}}", .{ rename_source, rename_dest });
+    const rename_args = try std.fmt.allocPrint(arena, "{{\"old_path\":{f},\"new_path\":{f}}}", .{ std.json.fmt(rename_source, .{}), std.json.fmt(rename_dest, .{}) });
     _ = try executeToolCall(rt.context(), arena, .{
         .id = "external-rename",
         .name = "rename_file",
@@ -7855,7 +7864,7 @@ test "external absolute non-write tracked mutations capture resolved paths" {
     try writeTestFile(tmp.dir, "external/copy-source.txt", "copy\n");
     const copy_source = try std.fs.path.join(arena, &.{ external, "copy-source.txt" });
     const copy_dest = try std.fs.path.join(arena, &.{ external, "copy-dest.txt" });
-    const copy_args = try std.fmt.allocPrint(arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{ copy_source, copy_dest });
+    const copy_args = try std.fmt.allocPrint(arena, "{{\"source\":{f},\"destination\":{f}}}", .{ std.json.fmt(copy_source, .{}), std.json.fmt(copy_dest, .{}) });
     _ = try executeToolCall(rt.context(), arena, .{
         .id = "external-copy",
         .name = "copy_file",
@@ -8053,7 +8062,7 @@ test "install_skill explicit tool installs local skill source" {
 
     var rt = TestRuntime{ .workspace_root = repo_root, .skills_dir = skills_dir };
     defer rt.deinit(alloc);
-    const args_json = try std.fmt.allocPrint(alloc, "{{\"source\":\"{s}\",\"skill\":\"workflow\"}}", .{repo_root});
+    const args_json = try std.fmt.allocPrint(alloc, "{{\"source\":{f},\"skill\":\"workflow\"}}", .{std.json.fmt(repo_root, .{})});
     defer alloc.free(args_json);
 
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -8184,7 +8193,7 @@ test "skill tool loads the exact advertised duplicate and rejects ambiguous or u
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const exact_managed_args = try std.fmt.allocPrint(arena, "{{\"name\":\"workflow\",\"location\":\"{s}\"}}", .{managed_skill});
+    const exact_managed_args = try std.fmt.allocPrint(arena, "{{\"name\":\"workflow\",\"location\":{f}}}", .{std.json.fmt(managed_skill, .{})});
     const exact = try executeToolCall(rt.context(), arena, .{ .id = "exact", .name = "skill", .arguments_json = exact_managed_args });
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.success, exact.status);
     try expectContains(exact.model_output, "MANAGED BODY B");
@@ -8203,13 +8212,13 @@ test "skill tool loads the exact advertised duplicate and rejects ambiguous or u
     try expectContains(ambiguous.model_output, workspace_skill);
     try expectContains(ambiguous.model_output, managed_skill);
 
-    const outside_args = try std.fmt.allocPrint(arena, "{{\"name\":\"workflow\",\"location\":\"{s}\"}}", .{outside_skill});
+    const outside_args = try std.fmt.allocPrint(arena, "{{\"name\":\"workflow\",\"location\":{f}}}", .{std.json.fmt(outside_skill, .{})});
     const outside = try executeToolCall(rt.context(), arena, .{ .id = "outside", .name = "skill", .arguments_json = outside_args });
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, outside.status);
     try expectNotContains(outside.model_output, "OUTSIDE BODY SENTINEL");
     try expectNotContains(outside.model_output, "outside-only.txt");
 
-    const mismatch_args = try std.fmt.allocPrint(arena, "{{\"name\":\"other\",\"location\":\"{s}\"}}", .{managed_skill});
+    const mismatch_args = try std.fmt.allocPrint(arena, "{{\"name\":\"other\",\"location\":{f}}}", .{std.json.fmt(managed_skill, .{})});
     const mismatch = try executeToolCall(rt.context(), arena, .{ .id = "mismatch", .name = "skill", .arguments_json = mismatch_args });
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, mismatch.status);
     try expectContains(mismatch.model_output, "does not match");

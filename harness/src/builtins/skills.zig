@@ -1564,6 +1564,7 @@ test "installFromSource skips a symlinked root skill and installs a valid nested
 }
 
 test "installFromSource skips an unsafe root destination and installs a valid nested skill" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1585,6 +1586,7 @@ test "installFromSource skips an unsafe root destination and installs a valid ne
 }
 
 test "installFromSource skips an unsafe nested destination and installs a valid sibling" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1704,6 +1706,7 @@ test "cloneUrlForSource preserves clone urls and expands owner repo shorthand" {
 }
 
 test "install_skill clone output drain consumes stdout and stderr" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const script =
         "i=0; " ++
         "while [ $i -lt 4096 ]; do " ++

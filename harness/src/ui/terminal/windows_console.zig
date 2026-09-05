@@ -114,7 +114,7 @@ pub fn pollWithInterest(
 fn pollFileType(file_type: u32, want_read: bool, want_write: bool) ?PollResult {
     return switch (file_type) {
         file_type_disk => .{ .readable = want_read, .writable = want_write },
-        file_type_unknown => .{ .has_error = true },
+        file_type_unknown => .{},
         else => null,
     };
 }
@@ -189,6 +189,9 @@ test "Windows poll dispatch keeps disk handles out of socket polling" {
     try std.testing.expect(disk.readable);
     try std.testing.expect(!disk.writable);
     const unknown = pollFileType(file_type_unknown, true, true).?;
-    try std.testing.expect(unknown.has_error);
+    try std.testing.expect(!unknown.has_error);
+    try std.testing.expect(!unknown.readable);
+    try std.testing.expect(!unknown.writable);
+    try std.testing.expect(!unknown.hung_up);
     try std.testing.expect(pollFileType(file_type_pipe, true, true) == null);
 }

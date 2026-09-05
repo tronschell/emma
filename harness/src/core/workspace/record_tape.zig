@@ -195,6 +195,7 @@ fn openTape(path: []const u8, exclusive: bool, private: bool) !std.Io.File {
     if (std.fs.path.isAbsolute(path)) {
         if (private) {
             return std.Io.Dir.createFileAbsolute(zio, path, .{
+                .read = true,
                 .truncate = !exclusive,
                 .exclusive = exclusive,
                 .permissions = io_mod.permissionsFromMode(0o600),
@@ -204,6 +205,7 @@ fn openTape(path: []const u8, exclusive: bool, private: bool) !std.Io.File {
     }
     if (private) {
         return std.Io.Dir.cwd().createFile(zio, path, .{
+            .read = true,
             .truncate = !exclusive,
             .exclusive = exclusive,
             .permissions = io_mod.permissionsFromMode(0o600),

@@ -264,9 +264,18 @@ async function gitDirs(cwd: string): Promise<[string, string]> {
   return [lines[0] ?? "", lines[1] ?? lines[0] ?? ""];
 }
 
+function nativePath(value: string): string {
+  return isWindows ? path.win32.normalize(value) : value;
+}
+
 export async function mainCheckout(cwd: string): Promise<string> {
   const [, common] = await gitDirs(cwd);
-  return path.dirname(common);
+  return nativePath(path.dirname(common));
+}
+
+async function worktreeRows(cwd: string): Promise<WorktreeEntry[]> {
+  const [dirs, text] = await Promise.all([gitDirs(cwd), git(cwd, ["worktree", "list", "--porcelain", "-z"])]);
+  return parseWorktrees(text, path.dirname(dirs[1])).map((row) => ({ ...row, path: nativePath(row.path) }));
 }
 
 export async function addWorktree(cwd: string, name: string): Promise<string> {
@@ -279,11 +288,7 @@ export async function addWorktree(cwd: string, name: string): Promise<string> {
 }
 
 export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
-  const [primary, text] = await Promise.all([
-    mainCheckout(cwd),
-    git(cwd, ["worktree", "list", "--porcelain", "-z"]),
-  ]);
-  const rows = parseWorktrees(text, primary);
+  const rows = await worktreeRows(cwd);
   const checked = await Promise.all(rows.map(async (row) => {
     if (row.bare) return row;
     const { stdout } = await exec(row.path, ["status", "--porcelain", "--untracked-files=normal"]);
@@ -294,9 +299,7 @@ export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
 
 export async function removeWorktrees(cwd: string, targets: string[]): Promise<void> {
   if (!Array.isArray(targets) || !targets.length || targets.length > 32) throw new Error("Pick the worktrees to delete.");
-  const primary = await mainCheckout(cwd);
-  const text = await git(cwd, ["worktree", "list", "--porcelain", "-z"]);
-  const known = new Map(parseWorktrees(text, primary).map((row) => [row.path, row]));
+  const known = new Map((await worktreeRows(cwd)).map((row) => [row.path, row]));
   for (const target of targets) {
     const row = known.get(target);
     if (!row) throw new Error("That worktree is no longer on this repository's list. Refresh and try again.");

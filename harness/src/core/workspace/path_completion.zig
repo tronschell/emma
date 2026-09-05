@@ -192,6 +192,8 @@ fn insertCandidate(
     return next_count;
 }
 
+const quotable_names_supported = builtin.os.tag != .windows;
+
 fn pathSlot(storage: []u8, index: usize) []u8 {
     const slot_len: usize = file_index.max_path_len;
     const start = index * slot_len;
@@ -229,7 +231,7 @@ test "path completion enumerates immediate entries with deterministic bounded or
     try writeTestFile(tmp.dir, "workspace/src/Alpha.txt");
     try writeTestFile(tmp.dir, "workspace/src/beta.txt");
     try writeTestFile(tmp.dir, "workspace/src/.hidden.txt");
-    try writeTestFile(tmp.dir, "workspace/src/space \" file.txt");
+    if (comptime quotable_names_supported) try writeTestFile(tmp.dir, "workspace/src/space \" file.txt");
 
     const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(root);
@@ -250,7 +252,9 @@ test "path completion enumerates immediate entries with deterministic bounded or
     try std.testing.expectEqual(@as(usize, 1), results[0].matched_spans.len);
     try std.testing.expectEqual(@as(u16, "src/".len), results[0].matched_spans[0].byte_start);
     try std.testing.expectEqual(@as(u16, "src/al".len), results[0].matched_spans[0].byte_end);
-    try std.testing.expectEqual(@as(usize, 0), try complete(root, "src/space", &results, &spans, &paths));
+    if (comptime quotable_names_supported) {
+        try std.testing.expectEqual(@as(usize, 0), try complete(root, "src/space", &results, &spans, &paths));
+    }
 }
 
 test "path completion resolves parent and absolute forms without recursive traversal" {

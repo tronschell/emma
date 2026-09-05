@@ -9,6 +9,7 @@ import { catalogSeed } from "../main/catalog-seed";
 import { type ChatMessage, type chatCompletion } from "../main/verifier";
 import { noteFolder, noteSlug, tagName, validTag, type KeptNote, type VaultChoice } from "../shared/vault";
 import { defaultTagger, defaultTaggerSystem } from "../shared/settings";
+import { NO_SYMLINKS, symlinksAllowed } from "./symlinks";
 
 function workspace(folder = "knowledge-base"): VaultChoice {
   const root = mkdtempSync(path.join(tmpdir(), "emma-vault-"));
@@ -140,7 +141,8 @@ test("a note is named relative to the guarded folder, and nothing outside it is 
   }
 });
 
-test("a symlink planted in the vault leads nowhere, however innocent its name reads", async () => {
+test("a symlink planted in the vault leads nowhere, however innocent its name reads", async (context) => {
+  if (!symlinksAllowed()) return context.skip(NO_SYMLINKS);
   const vault = workspace();
   const note = await keepNote(vault, { kind: "note", title: "Kept", text: "body" });
   const elsewhere = mkdtempSync(path.join(tmpdir(), "emma-elsewhere-"));

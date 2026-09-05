@@ -248,6 +248,14 @@ test "unknown read_tool_result handle returns failure for legacy and managed sto
     );
     const dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "legacy");
     defer alloc.free(dir);
+    {
+        var legacy_dir = try tmp.dir.openDir(io_mod.getIo(), "legacy", .{
+            .iterate = true,
+            .follow_symlinks = false,
+        });
+        defer legacy_dir.close(io_mod.getIo());
+        try io_mod.enforcePrivateDirectoryAcl(legacy_dir);
+    }
 
     const legacy_decoded = try decode(.{ .allocator = alloc }, "{\"handle\":\"unknown-dogfood-handle\",\"start_byte\":1,\"byte_count\":64}");
     const legacy_input = switch (legacy_decoded) {
@@ -272,6 +280,7 @@ test "unknown read_tool_result handle returns failure for legacy and managed sto
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(

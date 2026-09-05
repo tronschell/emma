@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access, constants, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -8,6 +8,8 @@ export const isWindows = process.platform === "win32";
 export const WINDOWS_APP_USER_MODEL_ID = "com.squirrel.Emma.Emma";
 const WINDOWS_META = /([()\][%!^"`<>&|;, *?])/g;
 const WINDOWS_SHIM = /\.(?:cmd|bat)$/i;
+const WINDOWS_SHIM_TARGET = /"%~?dp0%?[\\/]?([^"\r\n]+)"/g;
+export const WINDOWS_INSTALLER_COMPANY = "Tronschell";
 
 function pathModule(platform: NodeJS.Platform) {
   return platform === "win32" ? path.win32 : path.posix;
@@ -156,12 +158,52 @@ export function squirrelEvent(args: readonly string[] = process.argv): "install"
   return null;
 }
 
+export function windowsPwshExecutable(): string | undefined {
+  if (!isWindows) return undefined;
+  for (const root of [process.env.ProgramW6432, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
+    if (!root) continue;
+    const candidate = path.win32.join(root, "PowerShell", "7", "pwsh.exe");
+    if (existsSync(candidate)) return candidate;
+  }
+  const app = process.env.LOCALAPPDATA && path.win32.join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps", "pwsh.exe");
+  return app && existsSync(app) ? app : undefined;
+}
+
+export function windowsCommandShell(): string {
+  return windowsSystemExecutable("cmd.exe");
+}
+
+const WINDOWS_SHELL_PRELUDE = "$e = [Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $e; [Console]::OutputEncoding = $e; $OutputEncoding = $e\n";
+const WINDOWS_SHELL_EPILOGUE = "\nexit $(if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 })";
+
 export function shellBinary(): string {
-  return isWindows ? windowsSystemExecutable("cmd.exe") : "/bin/bash";
+  if (!isWindows) return "/bin/bash";
+  return windowsPwshExecutable() ?? windowsPowerShellExecutable();
 }
 
 export function shellArguments(command: string, login = true): string[] {
-  return isWindows ? ["/d", "/s", "/c", command] : [login ? "-ilc" : "-lc", command];
+  if (!isWindows) return [login ? "-ilc" : "-lc", command];
+  return ["-NoLogo", "-NonInteractive", "-Command", `${WINDOWS_SHELL_PRELUDE}${command}${WINDOWS_SHELL_EPILOGUE}`];
+}
+
+export function windowsShortcutFiles(environment: NodeJS.ProcessEnv = process.env): string[] {
+  const roaming = environment.APPDATA?.trim() || path.win32.join(environment.USERPROFILE?.trim() || "", "AppData", "Roaming");
+  const programs = path.win32.join(roaming, "Microsoft", "Windows", "Start Menu", "Programs");
+  return [path.win32.join(programs, "Emma.lnk"), path.win32.join(programs, WINDOWS_INSTALLER_COMPANY, "Emma.lnk")];
+}
+
+export async function windowsShimTarget(shim: string): Promise<{ command: string; args: string[] } | undefined> {
+  if (!isWindows || !WINDOWS_SHIM.test(shim)) return undefined;
+  let body: string;
+  try { body = readFileSync(shim, "utf8"); } catch { return undefined; }
+  const directory = path.dirname(shim);
+  const invocation = body.split(/\r?\n/).filter((line) => line.includes("%*")).at(-1) ?? "";
+  const target = [...invocation.matchAll(WINDOWS_SHIM_TARGET)].map((match) => path.resolve(directory, match[1])).at(-1);
+  if (!target || !existsSync(target)) return undefined;
+  if (/\.exe$/i.test(target)) return { command: target, args: [] };
+  const bundled = path.join(directory, "node.exe");
+  const node = existsSync(bundled) ? bundled : await findExecutable("node");
+  return node ? { command: node, args: [target] } : undefined;
 }
 
 export function commandShimArguments(command: string, args: readonly string[]): string[] {
@@ -171,7 +213,7 @@ export function commandShimArguments(command: string, args: readonly string[]): 
 
 export function spawnCommand(command: string, args: readonly string[], options: SpawnOptions = {}): ChildProcess {
   if (isWindows && WINDOWS_SHIM.test(command)) {
-    return spawn(shellBinary(), commandShimArguments(command, args), { ...options, shell: false, windowsVerbatimArguments: true });
+    return spawn(windowsCommandShell(), commandShimArguments(command, args), { ...options, shell: false, windowsVerbatimArguments: true });
   }
   return spawn(command, [...args], { ...options, shell: false });
 }

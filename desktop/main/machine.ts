@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { statfs } from "node:fs/promises";
 import { cpus, freemem, totalmem } from "node:os";
+import type { MachineFacts } from "../shared/embedding-recommendation";
 import type { MachineSample } from "../shared/machine";
 import { findExecutable, isWindows, windowsPowerShellExecutable } from "./platform";
 
@@ -7,6 +9,7 @@ const PROBE = `netstat -ib | awk '/Link#/ && $1 !~ /^lo/ {i += $(NF - 4); o += $
 ioreg -r -d 1 -w 0 -c IOAccelerator | grep -om1 '"Device Utilization %"=[0-9]*'
 vm_stat`;
 const WINDOWS_PROBE = "$ErrorActionPreference='SilentlyContinue'; $stats=Get-NetAdapterStatistics; $rx=($stats | Measure-Object -Property ReceivedBytes -Sum).Sum; $tx=($stats | Measure-Object -Property SentBytes -Sum).Sum; $os=Get-CimInstance Win32_OperatingSystem; $total=[int64]$os.TotalVisibleMemorySize*1024; $used=$total-[int64]$os.FreePhysicalMemory*1024; $samples=(Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples; $gpu=if($samples){[math]::Round(($samples | Measure-Object -Property CookedValue -Sum).Sum)}else{-1}; 'win {0} {1} {2} {3} {4}' -f [int64]$rx,[int64]$tx,[int64]$used,$total,[int]$gpu";
+const GPU_PROBE_WINDOWS = "$ErrorActionPreference='SilentlyContinue'; $card=Get-CimInstance Win32_VideoController | Sort-Object AdapterRAM -Descending | Select-Object -First 1; $key=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\*' -Name 'HardwareInformation.qwMemorySize' | Measure-Object -Property 'HardwareInformation.qwMemorySize' -Maximum).Maximum; 'gpu {0} {1}' -f [int64][math]::Max([int64]$key, [int64]$card.AdapterRAM), $card.Name";
 const TIMEOUT_MS = 4_000;
 const MAX_BUFFER_BYTES = 256 * 1024;
 
@@ -48,12 +51,12 @@ function cpuTicks(): { idle: number; total: number } {
   return { idle, total };
 }
 
-const powershellProbe = (binary: string) => new Promise<string>((resolve) => {
-  execFile(binary, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_PROBE], { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES, windowsHide: true }, (error, stdout) => resolve(error && !stdout ? "" : stdout));
+const powershellProbe = (script: string, binary = windowsPowerShellExecutable()) => new Promise<string>((resolve) => {
+  execFile(binary, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES, windowsHide: true }, (error, stdout) => resolve(error && !stdout ? "" : stdout));
 });
 
 const probe = () => isWindows
-  ? powershellProbe(windowsPowerShellExecutable()).then((value) => value || findExecutable("pwsh.exe").then((binary) => binary ? powershellProbe(binary) : ""))
+  ? powershellProbe(WINDOWS_PROBE).then((value) => value || findExecutable("pwsh.exe").then((binary) => binary ? powershellProbe(WINDOWS_PROBE, binary) : ""))
   : new Promise<string>((resolve) => {
     execFile("/bin/sh", ["-c", PROBE], { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES }, (error, stdout) => resolve(error && !stdout ? "" : stdout));
   });
@@ -79,4 +82,42 @@ export async function machineSample(): Promise<MachineSample> {
     rxBytes: before ? Math.max(0, (reading.rx - before.rx) / seconds) : 0,
     txBytes: before ? Math.max(0, (reading.tx - before.tx) / seconds) : 0,
   };
+}
+
+export function parseGpu(text: string): { gpu: string; vramBytes: number } {
+  const windows = /^gpu (\d+) (.*)$/m.exec(text);
+  if (windows) return { gpu: windows[2].trim(), vramBytes: Number(windows[1]) };
+  try {
+    const displays = (JSON.parse(text) as { SPDisplaysDataType?: Record<string, unknown>[] }).SPDisplaysDataType ?? [];
+    const card = displays[0] ?? {};
+    const size = String(card.spdisplays_vram ?? card._spdisplays_vramSize ?? "");
+    const amount = /^(\d+)\s*(MB|GB)$/i.exec(size.trim());
+    return { gpu: String(card.sppci_model ?? ""), vramBytes: amount ? Number(amount[1]) * (amount[2].toUpperCase() === "GB" ? 1024 : 1) * 1024 * 1024 : 0 };
+  } catch {
+    return { gpu: "", vramBytes: 0 };
+  }
+}
+
+const gpuProbe = () => isWindows
+  ? powershellProbe(GPU_PROBE_WINDOWS).then((value) => value || findExecutable("pwsh.exe").then((binary) => binary ? powershellProbe(GPU_PROBE_WINDOWS, binary) : ""))
+  : new Promise<string>((resolve) => {
+    execFile("/usr/sbin/system_profiler", ["SPDisplaysDataType", "-json"], { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES }, (error, stdout) => resolve(error && !stdout ? "" : stdout));
+  });
+
+const freeDisk = async (root: string) => {
+  try {
+    const stats = await statfs(root);
+    return Number(stats.bsize) * Number(stats.bavail);
+  } catch {
+    return 0;
+  }
+};
+
+let facts: MachineFacts | undefined;
+
+export async function machineFacts(root: string): Promise<MachineFacts> {
+  if (facts) return facts;
+  const card = parseGpu(await gpuProbe());
+  facts = { platform: process.platform, arch: process.arch, gpu: card.gpu, vramBytes: card.vramBytes, memoryBytes: totalmem(), cores: cpus().length, freeDiskBytes: await freeDisk(root) };
+  return facts;
 }

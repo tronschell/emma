@@ -69,16 +69,22 @@ static uint64_t process_birth(pid_t pid) {
     return info.pbi_start_tvsec * 1000000 + info.pbi_start_tvusec;
 }
 
-static BOOL process_descends_from(pid_t pid, pid_t ancestor) {
-    for (NSUInteger depth = 0; depth < 64; depth += 1) {
-        if (pid == ancestor) return YES;
-        if (pid <= 1) return NO;
-        struct proc_bsdinfo info = {0};
-        if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)
-            || info.pbi_pid != (uint32_t)pid || info.pbi_ppid == (uint32_t)pid) return YES;
-        pid = (pid_t)info.pbi_ppid;
-    }
-    return YES;
+static NSString *emma_binary_path(pid_t blocked_pid) {
+    char buffer[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    int length = proc_pidpath(blocked_pid, buffer, sizeof(buffer));
+    return length > 0 ? [[NSString alloc] initWithBytes:buffer length:(NSUInteger)length encoding:NSUTF8StringEncoding] : nil;
+}
+
+static BOOL emma_binary_name(NSString *path) {
+    NSString *stem = path.lastPathComponent.stringByDeletingPathExtension.lowercaseString;
+    return [@[@"emma", @"emma-host", @"emma-cli", @"emma-pty", @"emma-computer", @"emma-option-tap", @"emma-transcribe"] containsObject:stem];
+}
+
+static BOOL emma_owned(NSString *bundle_path, pid_t pid, pid_t blocked_pid) {
+    if (pid == getpid() || pid == blocked_pid || !bundle_path.length) return YES;
+    if (emma_binary_name(bundle_path)) return YES;
+    NSString *emma = emma_binary_path(blocked_pid);
+    return emma.length && ([emma isEqualToString:bundle_path] || [emma hasPrefix:[bundle_path stringByAppendingString:@"/"]]);
 }
 
 static NSDictionary *application_identity(NSRunningApplication *application) {
@@ -103,21 +109,81 @@ static BOOL valid_identity(id value, pid_t blocked_pid) {
         && bounded_string(identity[@"name"], 256, NO)
         && bounded_string(identity[@"path"], 4096, NO) && [identity[@"path"] hasPrefix:@"/"]
         && finite_number(identity[@"launchedAt"], &launched) && launched > 0
-        && integer_in_range(identity[@"pid"], 1, INT_MAX) && [identity[@"pid"] intValue] != blocked_pid
-        && [identity[@"pid"] intValue] != getpid() && [identity[@"pid"] intValue] != getppid();
+        && integer_in_range(identity[@"pid"], 1, INT_MAX)
+        && !emma_owned(identity[@"path"], (pid_t)[identity[@"pid"] intValue], blocked_pid);
 }
 
 static NSDictionary *list_applications(pid_t blocked_pid) {
     NSMutableArray *applications = [NSMutableArray array];
     for (NSRunningApplication *application in NSWorkspace.sharedWorkspace.runningApplications) {
         NSDictionary *identity = application_identity(application);
-        if (identity && valid_identity(identity, blocked_pid) && !process_descends_from(application.processIdentifier, blocked_pid)) [applications addObject:identity];
+        if (identity && valid_identity(identity, blocked_pid)) [applications addObject:identity];
         if (applications.count == 128) break;
     }
     [applications sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
         return [left[@"name"] localizedCaseInsensitiveCompare:right[@"name"]];
     }];
     return @{@"ok": @YES, @"apps": applications};
+}
+
+static BOOL resolvable_app_name(NSString *name) {
+    if (name.length == 0 || name.length > 128 || [name rangeOfString:@"/"].location != NSNotFound) return NO;
+    NSCharacterSet *control = NSCharacterSet.controlCharacterSet;
+    return [name rangeOfCharacterFromSet:control].location == NSNotFound
+        && ![name hasPrefix:@" "] && ![name hasSuffix:@" "];
+}
+
+static NSURL *installed_application_url(NSString *name) {
+    if (!resolvable_app_name(name)) return nil;
+    NSURL *identified = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:name];
+    if (identified) return identified;
+    NSArray<NSString *> *directories = @[@"/Applications", @"/Applications/Utilities", @"/System/Applications",
+        @"/System/Applications/Utilities", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications"]];
+    NSURL *near_match = nil;
+    NSUInteger near_matches = 0;
+    for (NSString *directory in directories) {
+        for (NSString *entry in [NSFileManager.defaultManager contentsOfDirectoryAtPath:directory error:NULL]) {
+            if (![entry.pathExtension isEqualToString:@"app"]) continue;
+            NSURL *url = [NSURL fileURLWithPath:[directory stringByAppendingPathComponent:entry]];
+            NSString *stem = entry.stringByDeletingPathExtension;
+            if ([stem caseInsensitiveCompare:name] == NSOrderedSame) return url;
+            if ([stem.lowercaseString hasPrefix:name.lowercaseString]) {
+                near_match = url;
+                near_matches += 1;
+            }
+        }
+    }
+    return near_matches == 1 ? near_match : nil;
+}
+
+static NSString *application_display_name(NSURL *url) {
+    NSBundle *bundle = [NSBundle bundleWithURL:url];
+    NSString *name = bundle.infoDictionary[@"CFBundleDisplayName"] ?: bundle.infoDictionary[@"CFBundleName"];
+    return name.length ? name : url.lastPathComponent.stringByDeletingPathExtension;
+}
+
+static NSDictionary *launch_target(NSURL *url) {
+    return @{@"name": application_display_name(url), @"target": url.URLByResolvingSymlinksInPath.path};
+}
+
+static NSRunningApplication *open_application(NSURL *url) {
+    NSWorkspaceOpenConfiguration *configuration = NSWorkspaceOpenConfiguration.configuration;
+    configuration.activates = YES;
+    configuration.addsToRecentItems = NO;
+    __block NSRunningApplication *opened = nil;
+    __block BOOL finished = NO;
+    [NSWorkspace.sharedWorkspace openApplicationAtURL:url configuration:configuration completionHandler:^(NSRunningApplication *application, NSError *error) {
+        (void)error;
+        opened = application;
+        finished = YES;
+    }];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:12];
+    while (!cancelled && [NSDate.date compare:deadline] == NSOrderedAscending) {
+        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        if (finished && opened && application_identity(opened)) return opened;
+        if (finished && !opened) return nil;
+    }
+    return finished ? opened : nil;
 }
 
 static id attribute(AXUIElementRef element, CFStringRef name) {
@@ -327,7 +393,7 @@ static NSDictionary *mutation_result(AXError error) {
     pid_t pid = [identity[@"pid"] intValue];
     _application = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
     _birth = process_birth(pid);
-    if (!_birth || process_descends_from(pid, blocked_pid) || ![application_identity(_application) isEqualToDictionary:identity]) return nil;
+    if (!_birth || ![application_identity(_application) isEqualToDictionary:identity]) return nil;
     _root = AXUIElementCreateApplication(pid);
     _elements = [NSMutableArray array];
     _identities = [NSMutableArray array];
@@ -698,7 +764,13 @@ static void self_test(void) {
     invalid[@"path"] = @"Test.app";
     assert(!valid_identity(invalid, 0));
     assert(![mutation_result(kAXErrorCannotComplete)[@"ok"] boolValue]);
-    assert(process_descends_from(getpid(), getpid()));
+    assert(emma_owned(@"/Applications/Emma.app", 7, getpid()));
+    assert(emma_owned(@"/Applications/Emma.app/Contents/MacOS/emma-cli", 7, 1));
+    assert(emma_owned(@"/Applications/Notes.app", getpid(), 1));
+    assert(!emma_owned(@"/Applications/Notes.app", 7, 1));
+    assert(resolvable_app_name(@"Google Chrome"));
+    assert(!resolvable_app_name(@"/Applications/Notes.app"));
+    assert(!resolvable_app_name(@""));
     write_result(@{@"ok": @YES, @"text": @"App control self-test passed."});
 }
 
@@ -726,8 +798,33 @@ int main(int argc, const char *argv[]) {
             write_result(list_applications(blocked_pid));
             return 0;
         }
+        BOOL resolving = argc == 3 && strcmp(argv[1], "--resolve") == 0;
+        BOOL launching = argc == 3 && strcmp(argv[1], "--launch") == 0;
+        if ((resolving || launching) && strlen(argv[2]) <= 512) {
+            NSURL *url = installed_application_url(@(argv[2]));
+            if (!url) {
+                write_result(failure(@"No installed app matches that name. Ask the user which app to open."));
+                return 1;
+            }
+            NSDictionary *target = launch_target(url);
+            if (emma_binary_name(target[@"target"]) || [target[@"name"] caseInsensitiveCompare:@"Emma"] == NSOrderedSame) {
+                write_result(failure(@"Emma cannot start itself."));
+                return 1;
+            }
+            if (resolving) {
+                write_result(@{@"ok": @YES, @"app": target});
+                return 0;
+            }
+            NSDictionary *identity = application_identity(open_application(url));
+            if (!identity) {
+                write_result(failure(@"That app was started but no window appeared. Ask the user to check it."));
+                return 1;
+            }
+            write_result(@{@"ok": @YES, @"app": identity, @"target": target});
+            return 0;
+        }
         if (argc != 5 || strcmp(argv[1], "--app") != 0 || strcmp(argv[3], "--blocked-pid") != 0 || strlen(argv[2]) > 16384) {
-            write_result(failure(@"Expected --list, or --app with an approved identity and --blocked-pid."));
+            write_result(failure(@"Expected --list, --resolve, --launch, or --app with an approved identity and --blocked-pid."));
             return 1;
         }
         NSData *identity_data = [NSData dataWithBytes:argv[2] length:strlen(argv[2])];

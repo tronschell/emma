@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CLI_PLANS, MAX_SECRET_CHARS, MODEL_PLANS, OPENROUTER_KEYS_URL, PLAN_WEEK_MS, PLAN_WINDOW_MS, emptySpend, planBalanceLine, planForProfile, planSpend, type CliPlan, type KeyBalance, type ModelPlan, type PlanGeneration, type PlanSpend, type UserSettings } from "../shared/settings";
 import { charLabel } from "../shared/usage";
+import { localDevice, unreadableKeyNotice } from "../shared/platform-copy";
 import { reasonText } from "./errors";
 import { BrandIcon, InfoDot } from "./icons";
 import { TerminalSurface } from "./terminal";
 import type { TerminalTab } from "../shared/terminal";
 import { brandForImporter, brandForProvider } from "./brands";
 import type { CredentialSummary, Snapshot } from "./types";
+
+const RUNTIME_PLATFORM = typeof window === "undefined" ? "" : window.emma?.platform ?? "";
+const LOCAL_DEVICE = localDevice(RUNTIME_PLATFORM);
 
 type InstalledCli = { id: string; label: string; bin: string; path: string; signedIn?: boolean };
 
@@ -64,20 +68,22 @@ export function ModelPlans({ settings, busy }: { settings: UserSettings; busy: b
 
 export function PlanKeyRow({ plan, stored, draft, setDraft, busy, onSave, models = "", live = false, spend = null }: { plan: ModelPlan; stored: CredentialSummary[]; draft: string; setDraft: (value: string) => void; busy: boolean; onSave: (plan: ModelPlan, secret?: string) => Promise<void>; models?: string; live?: boolean; spend?: ReactNode }) {
   const key = stored.find((item) => item.env === plan.credentialEnv && item.masked);
-  return <div className={`provider-key-row plan-row ${key ? "set" : ""}`}>
+  const unreadable = stored.some((item) => item.env === plan.credentialEnv && !item.readable);
+  return <div className={`provider-key-row plan-row ${key ? "set" : ""} ${unreadable ? "unreadable" : ""}`}>
         <BrandIcon brand={brandForProvider(plan.brand)} className="provider-mark" />
         <div>
           <div className="settings-head"><strong>{plan.label}</strong><InfoDot>{plan.note}</InfoDot></div>
           <small>{key ? key.masked : plan.detail}</small>
+          {unreadable && <em className="provider-key-lost" role="alert">{unreadableKeyNotice(plan.label, RUNTIME_PLATFORM)}</em>}
           <em className="provider-key-balance"><code>{plan.credentialEnv}</code> <a href={plan.keysUrl} target="_blank" rel="noreferrer">Get a key ↗</a> {spend}</em>
         </div>
         <label>
           <span className="sr-only">{plan.label} API key</span>
-          <input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={draft} placeholder={key ? "Paste a replacement" : plan.hint} onChange={(event) => setDraft(event.target.value)} />
+          <input type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={busy} value={draft} placeholder={unreadable ? "Paste it again" : key ? "Paste a replacement" : plan.hint} onChange={(event) => setDraft(event.target.value)} />
         </label>
         <span className={`plan-model ${live ? "live" : ""}`}>{models || "No models"}</span>
         <button type="button" disabled={busy || !draft.trim()} onClick={() => void onSave(plan, draft.trim())}>Save key</button>
-        <button type="button" disabled={busy || !key} onClick={() => void onSave(plan)}>Remove</button>
+        <button type="button" disabled={busy || (!key && !unreadable)} onClick={() => void onSave(plan)}>Remove</button>
   </div>;
 }
 
@@ -131,6 +137,7 @@ export function ProviderGrid({ busy, onReady }: { busy: boolean; onReady: (ready
   };
   const tile = SUBSCRIPTION_TILES.find((item) => item.id === picked);
   const openRouter = stored.find((item) => item.env === OPENROUTER_ENV && item.masked);
+  const openRouterLost = stored.some((item) => item.env === OPENROUTER_ENV && !item.readable);
   const locked = busy || saving || checking;
   return <div className="setup-connections">
     <section className="setup-router" aria-labelledby="setup-router-title">
@@ -143,6 +150,7 @@ export function ProviderGrid({ busy, onReady }: { busy: boolean; onReady: (ready
         <div><input id="setup-router-key" type="password" autoComplete="off" spellCheck={false} maxLength={MAX_SECRET_CHARS} disabled={locked} value={drafts[OPENROUTER_ENV] ?? ""} placeholder={openRouter?.masked ?? "sk-or-v1-…"} onChange={(event) => { setBalance(null); setDrafts((current) => ({ ...current, [OPENROUTER_ENV]: event.target.value })); }} /><button type="submit" className="setup-primary" disabled={locked || (!openRouter && !balance?.keyed && !(drafts[OPENROUTER_ENV] ?? "").trim())}>{checking || saving ? "Checking…" : ready ? "Check again" : "Verify key"}</button></div>
       </form>
       <small className={ready ? "setup-success" : ""} role="status">{ready ? "✓ Key verified. OpenRouter is ready." : checking ? "Checking your saved OpenRouter key…" : "Your key is encrypted using this computer’s credential store."}</small>
+      {openRouterLost && <p className="dialog-error" role="alert">{unreadableKeyNotice("OpenRouter", RUNTIME_PLATFORM)} Emma kept the unreadable one on disk and replaces it the moment you save a new one.</p>}
       {balance?.error && <p className="dialog-error" role="alert">{balance.error} Check the key or try again.</p>}
     </section>
     <div className="setup-subscription-head"><h3>Already have a subscription?</h3><span>Optional</span></div>
@@ -204,7 +212,7 @@ export function CliPlanRow({ plan, installed, busy, onDone }: { plan: CliPlan; i
     <div>
       <div className="settings-head"><strong>{plan.plan}</strong><InfoDot>{plan.note}</InfoDot></div>
       <small>{plan.detail}</small>
-      <code>{installed ? installed.path : `${plan.label} is not on this Mac`}</code>
+      <code>{installed ? installed.path : `${plan.label} is not on this ${LOCAL_DEVICE}`}</code>
     </div>
     <span className="provider-key-value">{installed ? "Sign in with " : "Install, then "}<code>{plan.signIn}</code></span>
     {installed

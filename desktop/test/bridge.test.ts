@@ -377,6 +377,7 @@ function dispatchOn(sandbox: Record<string, unknown>): Dispatch {
     bridgeReplies: new Map<string, Map<string, unknown>>(),
     MAX_REPLIES_PER_THREAD: 32,
     MAX_REPLY_THREADS: 32,
+    DEVICE: "Mac",
     ...sandbox,
   }) as Dispatch;
 }
@@ -414,7 +415,7 @@ test("a folder a phone names is granted only once someone at the Mac approves it
   const dispatch = dispatchOn({
     path,
     homedir: () => home,
-    realpathSync: (value: string) => real[value] ?? value,
+    realpathSync: Object.assign((value: string) => real[value] ?? value, { native: (value: string) => real[value] ?? value }),
     statSync: () => ({ isDirectory: () => true }),
     samePath: (left: string, right: string) => left === right,
     pathInside: (root: string, target: string) => target === root || target.startsWith(`${root}/`),

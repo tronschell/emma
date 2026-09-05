@@ -20,7 +20,7 @@ theming abstraction. Do not hard-code a hex value that a token already names.
 | `--surface-2` | `#17171a` | Card, composer |
 | `--surface-3` | `#1c1c20` | Hover |
 | `--surface-4` | `#232327` | Active |
-| `--chrome` | `var(--surface)` | Titlebar as-is; the sidebar mixes it to 35% over `vibrancy: "sidebar"` |
+| `--chrome` | `var(--surface)` | Titlebar as-is; the sidebar mixes it to 35% over `vibrancy: "sidebar"`. On Windows it also paints the 32px title strip and the native window-controls overlay, which carry the rail nav on the left and the close buttons on the right |
 | `--text` | `#e8e6df` | Primary |
 | `--text-2` | `#e8e6dfad` | Secondary, labels. 6.56:1 on `--surface-4` |
 | `--text-3` | `#e8e6df8c` | Timestamps, captions. 4.80:1 on `--surface-4` — the floor |
@@ -152,6 +152,18 @@ editing the grid:
 
 ```
 node desktop/scripts/make-icons.mjs
+```
+
+Windows takes the bare pink bow rather than the macOS tile, because the taskbar,
+Alt-Tab and Explorer draw it at 16 to 48 pixels where a rounded dark square is a
+smudge. `desktop/scripts/windows-icon.mjs` draws the same grid into
+`desktop/assets/emma.ico` at 16, 24, 32, 48, 64 and 128 as 32-bit bitmaps with
+an AND mask, plus a 256 PNG. `package-windows.mjs` gives that file to rcedit
+and to Squirrel, and `secureWindow` hands it to every unpackaged window so a
+development run matches the installed app:
+
+```
+node desktop/scripts/windows-icon.mjs
 ```
 
 `Mark` in `desktop/src/icons.tsx` is the other one: a bow on a 16x16 pixel grid,

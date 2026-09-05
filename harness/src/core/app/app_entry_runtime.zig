@@ -33,6 +33,10 @@ const test_builtin_commands = if (builtin.is_test)
     @import("../../builtins/commands.zig")
 else
     struct {};
+const test_windows_console = if (builtin.is_test and builtin.os.tag == .windows)
+    @import("../../ui/terminal/windows_console.zig")
+else
+    struct {};
 
 const Allocator = std.mem.Allocator;
 
@@ -1207,4 +1211,73 @@ test "app entry maps unavailable session state to one expected startup failure" 
         try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
         try expectEvents(&.{"init:none"});
     }
+}
+
+test "app entry parses help version and acp as noninteractive launches" {
+    const alloc = std.testing.allocator;
+    const catalog = testConfig().command_catalog;
+    const noninteractive_args = [_][]const [:0]const u8{
+        &.{"--help"},
+        &.{"-h"},
+        &.{"help"},
+        &.{"--version"},
+        &.{"-v"},
+        &.{"acp"},
+        &.{ "acp", "--model", "model" },
+        &.{"sessions"},
+        &.{ "ask", "hello" },
+    };
+
+    for (noninteractive_args) |args| {
+        var parsed = try cli_surface.parseInteractiveLaunch(alloc, args, catalog);
+        switch (parsed) {
+            .noninteractive => |*value| value.deinit(alloc),
+            .interactive => |*launch| {
+                launch.deinit(alloc);
+                return error.TestUnexpectedInteractiveLaunch;
+            },
+        }
+    }
+
+    var bare = try cli_surface.parseInteractiveLaunch(alloc, &.{}, catalog);
+    switch (bare) {
+        .interactive => |*launch| launch.deinit(alloc),
+        .noninteractive => |*value| {
+            value.deinit(alloc);
+            return error.TestUnexpectedNoninteractiveLaunch;
+        },
+    }
+}
+
+test "app entry never reaches the terminal check for a handled command" {
+    const alloc = std.testing.allocator;
+    const handled = [_][]const [:0]const u8{
+        &.{"--help"},
+        &.{"--version"},
+        &.{"acp"},
+    };
+
+    for (handled) |args| {
+        var capture = TestCapture.init(.handled_success);
+        defer capture.deinit();
+        capture.init_error = error.NotATerminal;
+
+        const outcome = try runWithDeps(TestApp, alloc, args, testConfig(), capture.deps());
+
+        try std.testing.expectEqual(RunOutcome.returned, outcome);
+        try std.testing.expectEqual(@as(usize, 1), capture.cli_calls);
+        try std.testing.expectEqualStrings("", capture.stderr.written());
+        try std.testing.expectEqual(@as(usize, 0), test_event_count);
+    }
+}
+
+test "windows console detection rejects redirected stdio" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(std.testing.io, "redirected", .{ .read = true });
+    defer file.close(std.testing.io);
+
+    try std.testing.expect(!test_windows_console.isConsole(file.handle));
 }

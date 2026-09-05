@@ -94,8 +94,9 @@ from any thread afterwards.
 ```
 
 - **The `#!` line is required** — bash, python3, node, whatever the job wants.
-  The script is run under a login shell, so it finds the same interpreters the
-  user's terminal does.
+  On macOS the script runs under a login shell, so it finds the same
+  interpreters the user's terminal does. On Windows the `#!` line picks the
+  interpreter and only node, python, powershell, and bash are available.
 - **One argument in, printed text out.** The script gets the `input` string as
   `$1` and its output is the tool result. Keep it small and print something a
   reader can act on, including when it fails.

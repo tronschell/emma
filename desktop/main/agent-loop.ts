@@ -1,7 +1,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { agentColor, collapseChanges, fromThread, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
+import { agentColor, collapseChanges, fromThread, MAX_LIVE_THREADS, type FileChange, type LiveAgent, type PermissionAnswer, type PermissionAsk, type SubagentRoute, type ThreadStep } from "../shared/agents";
 import type { PermissionMode } from "../shared/permissions";
 import { takeArm } from "./system-prompt";
 import { decodeSpans, encodeSpans, renderTrace, traceHeader, type TraceSpan, type TraceStatus } from "../shared/trace";
@@ -148,7 +148,7 @@ type Run = Omit<LiveAgent, "tool"> & {
 
 export class AgentRuntime {
   private readonly runs = new Map<string, Run>();
-  private readonly asks = new Map<string, { run: Run; settle: (allowed: boolean) => void; shown?: PermissionAsk }>();
+  private readonly asks = new Map<string, { run: Run; settle: (answer: PermissionAnswer) => void; shown?: PermissionAsk }>();
   private spawned = 0;
   private streamedAt = 0;
   private verifications = 0;
@@ -255,7 +255,7 @@ export class AgentRuntime {
       .join("\n");
   }
 
-  noteNotice(threadId: string, kind: "steer" | "compact", text: string): void {
+  noteNotice(threadId: string, kind: "steer" | "compact", text: string, detail?: string): void {
     const run = this.runs.get(threadId);
     if (!run || !run.spans.length) return;
     const at = Date.now();
@@ -268,6 +268,7 @@ export class AgentRuntime {
       endedAt: at,
       status: "ok",
       input: text,
+      ...(detail ? { output: detail } : {}),
       said: run.said,
     });
     this.deps.changed();
@@ -309,7 +310,7 @@ export class AgentRuntime {
   }
 
   answer(id: string, allowed: boolean) {
-    this.asks.get(id)?.settle(allowed);
+    this.asks.get(id)?.settle(allowed ? "allowed" : "denied");
   }
 
   outstandingAsks(): PermissionAsk[] {
@@ -322,7 +323,7 @@ export class AgentRuntime {
   }
 
   private dismissAsks(run: Run) {
-    for (const ask of this.asks.values()) if (ask.run === run) ask.settle(false);
+    for (const ask of this.asks.values()) if (ask.run === run) ask.settle("denied");
   }
 
   authorization(threadId: string): () => boolean {
@@ -697,35 +698,39 @@ export class AgentRuntime {
   }
 
   async question(ask: Omit<PermissionAsk, "id">, options: { humanOnly?: boolean; signal?: AbortSignal } = {}): Promise<boolean> {
+    return await this.approval(ask, options) === "allowed";
+  }
+
+  async approval(ask: Omit<PermissionAsk, "id">, options: { humanOnly?: boolean; signal?: AbortSignal } = {}): Promise<PermissionAnswer> {
     const run = this.runs.get(ask.threadId);
-    if (!run) return false;
+    if (!run) return "denied";
     const current = this.authorization(ask.threadId);
     const live = () => current() && !options.signal?.aborted;
-    if (!live()) return false;
+    if (!live()) return "denied";
     const id = randomUUID();
     let held: { status: Run["status"]; activity: string } | undefined;
-    const allowed = await new Promise<boolean>((resolve) => {
-      const settle = (allowed: boolean) => {
+    const answer = await new Promise<PermissionAnswer>((resolve) => {
+      const settle = (given: PermissionAnswer) => {
         if (!this.asks.delete(id)) return;
         if (held) this.stopWaiting(run);
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", abort);
-        allowed = allowed && live();
+        const allowed = given === "allowed" && live();
         if (held) this.deps.answered(id, allowed);
         if (held && current() && run.status === "waiting") {
           run.status = held.status;
           run.activity = held.activity;
           this.deps.changed();
         }
-        resolve(allowed);
+        resolve(allowed ? "allowed" : given === "lapsed" ? "lapsed" : "denied");
       };
-      const abort = () => settle(false);
-      const timer = setTimeout(abort, MAX_ASK_MS);
+      const abort = () => settle("denied");
+      const timer = setTimeout(() => settle("lapsed"), MAX_ASK_MS);
       this.asks.set(id, { run, settle });
       options.signal?.addEventListener("abort", abort, { once: true });
       const show = () => {
         if (!this.asks.has(id)) return;
-        if (!live()) { settle(false); return; }
+        if (!live()) { settle("denied"); return; }
         held = { status: run.status, activity: run.activity };
         this.startWaiting(run);
         run.status = "waiting";
@@ -736,23 +741,24 @@ export class AgentRuntime {
           this.deps.changed();
           this.deps.ask(shown);
         } catch {
-          settle(false);
+          settle("denied");
         }
       };
       if (run.mode === "auto" && !options.humanOnly) {
         void this.reviewed(run, ask).then((review) => {
           if (!this.asks.has(id)) return;
-          if (!live()) { settle(false); return; }
+          if (!live()) { settle("denied"); return; }
           if (run.mode === "auto") {
-            if (review.verdict?.allow) { settle(true); return; }
+            if (review.verdict?.allow) { settle("allowed"); return; }
             const said = review.verdict ? `blocked this: ${review.verdict.reason || "no reason given"}` : `could not answer: ${review.error ?? "no verdict"}`;
             ask = { ...ask, detail: `${ask.detail}\n\n[auto agent] ${said}` };
           }
           show();
-        }).catch(() => settle(false));
+        }).catch(() => settle("denied"));
       } else show();
     });
-    return allowed && live();
+    if (answer !== "allowed") return answer;
+    return live() ? "allowed" : "denied";
   }
 
   private startWaiting(run: Run): void {

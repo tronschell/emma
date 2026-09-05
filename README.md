@@ -29,14 +29,15 @@ It runs its own agent loop, drives the coding CLIs you already have, writes part
 
 ## Quickstart
 
-Published macOS builds are distributed through [GitHub Releases](https://github.com/tronschell/emma/releases).
-For a published macOS version, unzip `Emma-vX.Y.Z-darwin-arm64.zip` and move
-`Emma.app` to Applications. Windows x64 is the supported distributable/public
-target and is packaged in CI; ARM64 is a CI compile/package rehearsal, not a
-public auto-update target. Public signed Windows x64 publication is pending
-release-workflow authorization. The x64 target is Windows 10 version 1809 or
-later. The toolchains below are only needed to build from source.
-If there is no published download yet, use the source instructions:
+Published macOS and Windows builds are distributed through [GitHub Releases](https://github.com/tronschell/emma/releases).
+On macOS, open `Emma-vX.Y.Z-darwin-arm64.dmg` and drag `Emma.app` onto
+Applications. On Windows 10 version 1809 or later on x64, run
+`Emma-vX.Y.Z-win32-x64-Setup.exe`; it installs per user and needs no
+administrator prompt. Windows builds are not code signed yet, so SmartScreen
+warns once — click **More info**, then **Run anyway**. Both platforms
+auto-update from the published release. Windows ARM64 packages from source but
+is not a published target. The toolchains below are only needed to build from
+source:
 
 ```bash
 git clone https://github.com/tronschell/emma.git
@@ -57,12 +58,12 @@ hosted, `export OPENROUTER_API_KEY=…` or paste a key in Settings.
 
 | | |
 |---|---|
-| **OS** | macOS 12 or later on Apple silicon, or Windows 10 version 1809 or later on x64; ARM64 is a CI compile/package validation target |
+| **OS** | macOS 12 or later on Apple silicon, or Windows 10 version 1809 or later on x64; ARM64 builds from source but is not published |
 | **Node** | 24+ |
 | **Rust** | 1.97.1 (`rust-toolchain.toml` pins it) |
 | **Zig** | 0.16.0 |
 | **Xcode** | macOS only: `clang` builds native helpers; packaging also needs full Xcode's `actool` |
-| **Windows toolchain** | Windows only: LLVM `clang`/`clang++` and Windows SDK import libraries build native helpers; CI builds an unsigned x64 package and an ARM64 compile/package rehearsal |
+| **Windows toolchain** | Windows only: LLVM `clang`/`clang++` and Windows SDK import libraries build native helpers; CI packages and publishes the x64 Squirrel installer |
 
 New to the repo? **[docs/getting-started.md](docs/getting-started.md)**
 
@@ -172,10 +173,10 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 
 Release flow: feature branches → `dev` → `main`. PR titles and release summaries
 feed the automatic changelog; the root `package.json` sets the version. Promoting
-a prepared release to `main` checks, builds, signs, notarizes, and publishes the
-macOS release. Windows CI builds an unsigned
-x64 target package and an ARM64 compile/package rehearsal; public signed Windows
-x64 publication is pending release-workflow authorization.
+a prepared release to `main` checks and packages both platforms, signs,
+notarizes and staples macOS, and publishes one release carrying the macOS disk
+image and zip and the Windows x64 Squirrel installer, package, and `RELEASES`
+feed. Windows publishes unsigned until a code signing certificate is added.
 → **[Release guide](docs/releases.md)** · **[Development](docs/development.md)**
 
 ## Docs

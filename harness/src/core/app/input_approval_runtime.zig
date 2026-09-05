@@ -505,6 +505,13 @@ test "approval wheel keeps scrolling a committed command review after review syn
     try std.testing.expect(app.shell.render_requests.hasReason(.modal));
 }
 
+fn createPrivateFixtureDir(dir: std.Io.Dir, sub_path: []const u8) !void {
+    try dir.createDirPath(io_mod.getIo(), sub_path);
+    var created = try dir.openDir(io_mod.getIo(), sub_path, .{ .follow_symlinks = false });
+    defer created.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(created);
+}
+
 const ApprovalBridgeEnvironment = struct {
     tmp: std.testing.TmpDir,
     home: []u8,
@@ -514,7 +521,7 @@ const ApprovalBridgeEnvironment = struct {
     fn init(alloc: std.mem.Allocator) !ApprovalBridgeEnvironment {
         var tmp = std.testing.tmpDir(.{});
         errdefer tmp.cleanup();
-        try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+        try createPrivateFixtureDir(tmp.dir, "home/.fx");
         try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
         const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
         errdefer alloc.free(home);

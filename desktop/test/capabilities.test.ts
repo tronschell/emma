@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { harnessMcpServers, ImportedCapabilityRuntime, listEmmaTools, MAX_SKILL_RESULTS, parseMcpConfig, seedBuiltinSkills, SkillAttachmentStore, writeEmmaTool } from "../main/capabilities";
 import { shellQuoted } from "../main/tools";
+import { isWindows } from "../main/platform";
 
 test("bundled skills are seeded into both skill roots and are searchable without an import", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "emma-builtin-"));
@@ -24,9 +25,6 @@ test("bundled skills are seeded into both skill roots and are searchable without
     const runtime = new ImportedCapabilityRuntime(userData);
     const [found] = await runtime.searchSkills("build");
     assert.deepEqual(found, { id: "skill:emma:0:building-emma", source: "emma", name: "building-emma" });
-    // What the skills page, the schedule form, the tool-target list and mention
-    // resolution all ask for. Below this the four of them throw rather than
-    // return a short list, and every one of those failures is swallowed.
     assert.ok(await runtime.searchSkills("", MAX_SKILL_RESULTS));
     assert.match((await runtime.selectSkill(found.id)).instructions, /Rebuild, then verify\./);
   } finally {
@@ -73,22 +71,26 @@ test("a tool Emma writes is executable, listed with its description, and replace
     const written = await writeEmmaTool(root, "count-lines", "Counts the lines of the file named in its input.", "#!/bin/sh\nwc -l < \"$1\"\n");
     assert.deepEqual(await listEmmaTools(root), [written]);
 
-    // The whole point: it runs, exactly the way main runs it, with the input as
-    // its one argument — the file here has a quote in its name on purpose.
-    const sample = path.join(root, "it's a sample.txt");
-    await writeFile(sample, "a\nb\nc\n");
-    const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `${shellQuoted(written.run)} ${shellQuoted(sample)}`], { cwd: root });
-    assert.equal(stdout.trim(), "3");
-
-    // Same name replaces it, which is how a tool that turned out wrong gets fixed.
     const fixed = await writeEmmaTool(root, "count-lines", "Counts lines, words and bytes.", "#!/bin/sh\nwc \"$1\"\n");
     assert.equal((await listEmmaTools(root)).length, 1);
     assert.equal((await listEmmaTools(root))[0].description, fixed.description);
 
     await assert.rejects(() => writeEmmaTool(root, "count-lines", "No interpreter.", "wc -l < \"$1\"\n"), /#!/);
     await assert.rejects(() => writeEmmaTool(root, "../escape", "Outside the folder.", "#!/bin/sh\n:\n"), /invalid/);
-    // A tool root that does not exist yet is an empty list, not a failure.
     assert.deepEqual(await listEmmaTools(path.join(root, "nothing-here")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a written tool runs under bash with its input as one argument", { skip: isWindows && "main launches written tools through their shebang interpreter on Windows" }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "emma-tools-run-"));
+  try {
+    const written = await writeEmmaTool(root, "count-lines", "Counts the lines of the file named in its input.", "#!/bin/sh\nwc -l < \"$1\"\n");
+    const sample = path.join(root, "it's a sample.txt");
+    await writeFile(sample, "a\nb\nc\n");
+    const { stdout } = await promisify(execFile)("/bin/bash", ["-lc", `${shellQuoted(written.run)} ${shellQuoted(sample)}`], { cwd: root });
+    assert.equal(stdout.trim(), "3");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

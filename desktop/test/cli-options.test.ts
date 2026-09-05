@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLI_HARNESSES, cliHarness, cliOptions, validateCliOptions } from "../shared/cli";
 import { CliRuns } from "../main/cli";
 import { codexEfforts, modelTableIds } from "../main/cli-models";
 import { parseToolArgs } from "../main/tools";
+import { writeFakeCli } from "./fake-cli";
 
 test("harnesses pass native model and effort flags on first and follow-up turns", () => {
   for (const [id, flag, effort] of [["claude", "--effort", "max"], ["codex", "--config", "max"], ["pi", "--thinking", "xhigh"], ["opencode", "--variant", "custom-deep"], ["antigravity", "--effort", "high"]]) {
@@ -44,8 +45,7 @@ test("tool options preserve exact selections, explicit resets, and reject malfor
 
 test("a harness chain keeps independent model and effort selections across resume and resets", async () => {
   const directory = await mkdtemp(join(tmpdir(), "emma-cli-options-"));
-  const binary = join(directory, "agent");
-  await writeFile(binary, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),effort:process.env.CLAUDE_CODE_EFFORT_LEVEL}));\n`, { mode: 0o700 });
+  const binary = await writeFakeCli(directory, `process.stdout.write(JSON.stringify({args:process.argv.slice(2),effort:process.env.CLAUDE_CODE_EFFORT_LEVEL}));\n`);
   const runs = new CliRuns(() => undefined);
   const paths = Reflect.get(runs, "paths") as Map<string, string>;
   for (const harness of CLI_HARNESSES) paths.set(harness.bin, binary);

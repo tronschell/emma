@@ -4790,7 +4790,11 @@ test "runWithDeps reports a missing image before startup after cleaning prior at
     defer alloc.free(valid_path);
     const valid_path_z = try alloc.dupeZ(u8, valid_path);
     defer alloc.free(valid_path_z);
-    const missing_path_z = try alloc.dupeZ(u8, "/tmp/fx-ask-missing-image.png");
+    const tmp_root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(tmp_root);
+    const missing_path = try std.fs.path.join(alloc, &.{ tmp_root, "fx-ask-missing-image.png" });
+    defer alloc.free(missing_path);
+    const missing_path_z = try alloc.dupeZ(u8, missing_path);
     defer alloc.free(missing_path_z);
 
     var stdout_capture: TestCapture = .{};
@@ -4853,7 +4857,10 @@ test "runWithDeps reports unsupported images in JSON before startup" {
     try std.testing.expectEqual(@as(usize, 0), stderr_capture.bytes.items.len);
     try std.testing.expect(std.mem.find(u8, stdout_capture.bytes.items, "\"exit_code\":1") != null);
     try std.testing.expect(std.mem.find(u8, stdout_capture.bytes.items, "UnsupportedImageType") != null);
-    try std.testing.expect(std.mem.find(u8, stdout_capture.bytes.items, invalid_path_z) != null);
+    const invalid_path_json = try std.fmt.allocPrint(alloc, "{f}", .{std.json.fmt(invalid_path, .{})});
+    defer alloc.free(invalid_path_json);
+    const invalid_path_escaped = invalid_path_json[1 .. invalid_path_json.len - 1];
+    try std.testing.expect(std.mem.find(u8, stdout_capture.bytes.items, invalid_path_escaped) != null);
 }
 
 test "runWithDeps assigns image ids and owns the authorized catalog before processing" {
@@ -6076,8 +6083,8 @@ test "emma-cli ask prepared file mutation callback preserves terminal permission
         .name = "write_file",
         .arguments_json = try std.fmt.allocPrint(
             arena,
-            "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-            .{target_path},
+            "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+            .{std.json.fmt(target_path, .{})},
         ),
     };
     var prepared = switch (try tool_admission.prepareFileMutationCall(arena, call, .{
@@ -6224,8 +6231,8 @@ test "emma-cli ask auto mode uses automatic allow for external prepared file mut
     const target_path = try std.fs.path.join(arena, &.{ external, "desktop-test.txt" });
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-        .{target_path},
+        "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+        .{std.json.fmt(target_path, .{})},
     );
     const call: ToolCall = .{
         .id = "external-write",
@@ -6314,8 +6321,8 @@ test "emma-cli ask preserves CLI headless blocker diagnostics" {
         .name = "copy_file",
         .arguments_json = try std.fmt.allocPrint(
             arena,
-            "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}",
-            .{ source, external_destination },
+            "{{\"source\":{f},\"destination\":{f}}}",
+            .{ std.json.fmt(source, .{}), std.json.fmt(external_destination, .{}) },
         ),
     };
     const external_outcome = try requestToolPermissionOutcome(
@@ -6527,22 +6534,22 @@ test "CLI ask auto mode requires review when only one copy or rename target is c
         .{
             .tool_name = "copy_file",
             .permission_name = "copy_file",
-            .arguments_json = try std.fmt.allocPrint(arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{ workspace_source, external_copy }),
+            .arguments_json = try std.fmt.allocPrint(arena, "{{\"source\":{f},\"destination\":{f}}}", .{ std.json.fmt(workspace_source, .{}), std.json.fmt(external_copy, .{}) }),
         },
         .{
             .tool_name = "copy_file",
             .permission_name = "copy_file",
-            .arguments_json = try std.fmt.allocPrint(arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{ external_source, workspace_copy }),
+            .arguments_json = try std.fmt.allocPrint(arena, "{{\"source\":{f},\"destination\":{f}}}", .{ std.json.fmt(external_source, .{}), std.json.fmt(workspace_copy, .{}) }),
         },
         .{
             .tool_name = "rename_file",
             .permission_name = "rename_file",
-            .arguments_json = try std.fmt.allocPrint(arena, "{{\"old_path\":\"{s}\",\"new_path\":\"{s}\"}}", .{ workspace_source, external_rename }),
+            .arguments_json = try std.fmt.allocPrint(arena, "{{\"old_path\":{f},\"new_path\":{f}}}", .{ std.json.fmt(workspace_source, .{}), std.json.fmt(external_rename, .{}) }),
         },
         .{
             .tool_name = "rename_file",
             .permission_name = "rename_file",
-            .arguments_json = try std.fmt.allocPrint(arena, "{{\"old_path\":\"{s}\",\"new_path\":\"{s}\"}}", .{ external_source, workspace_rename }),
+            .arguments_json = try std.fmt.allocPrint(arena, "{{\"old_path\":{f},\"new_path\":{f}}}", .{ std.json.fmt(external_source, .{}), std.json.fmt(workspace_rename, .{}) }),
         },
     };
 

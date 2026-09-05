@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const cancellable_socket_io = @import("cancellable_socket_io.zig");
 const debug_trace = @import("../core/shared/debug_trace.zig");
 const gateway_client = @import("client.zig");
 const gateway_failure_diagnostics = @import("../core/gateway/gateway_failure_diagnostics.zig");
@@ -21,6 +22,7 @@ pub const max_response_bytes = 4 * 1024 * 1024;
 pub const max_content_bytes = 256 * 1024;
 pub const max_tool_calls_per_step = 16;
 pub const max_routed_model_bytes = 256;
+pub const max_routed_models_per_request = 3;
 
 pub const default_chat_url = "https://openrouter.ai/api/v1/chat/completions";
 pub const chat_url_env = "EMMA_PROVIDER_CHAT_URL";
@@ -195,6 +197,7 @@ fn build(_: ?*anyopaque, alloc: Allocator, request: stream_provider.BuildRequest
         var listed = std.mem.tokenizeScalar(u8, request.model, ',');
         var index: usize = 0;
         while (listed.next()) |model| : (index += 1) {
+            if (index == max_routed_models_per_request) break;
             if (index > 0) try w.writeByte(',');
             try std.json.Stringify.value(model, .{}, w);
         }
@@ -505,7 +508,10 @@ fn writeResponseFormat(
 fn stream(_: ?*anyopaque, alloc: Allocator, request: stream_provider.Request) anyerror!stream_provider.Result {
     if (request.cancel_flag.load(.seq_cst)) return error.Cancelled;
 
-    var client: std.http.Client = .{ .allocator = alloc, .io = io_mod.getIo() };
+    var socket_io: cancellable_socket_io.Scope = .begin(request.cancel_flag);
+    defer socket_io.end();
+
+    var client: std.http.Client = .{ .allocator = alloc, .io = socket_io.io() };
     defer client.deinit();
 
     var auth_header: ?[]u8 = null;
@@ -1341,6 +1347,24 @@ test "one model stays one model, and a chain becomes OpenRouter's fallback array
     defer alloc.free(chained);
     try std.testing.expect(std.mem.indexOf(u8, chained, "\"model\":\"a/one:free\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, chained, "\"models\":[\"a/one:free\",\"b/two:free\",\"c/three:free\"]") != null);
+}
+
+test "a router chain longer than OpenRouter allows sends its first three models" {
+    const alloc = std.testing.allocator;
+    const messages = [_]types.ChatMessage{.{ .role = .user, .content = "Hi" }};
+
+    const body = try build(null, alloc, .{
+        .model = "a/one:free,b/two:free,c/three:free,d/four:free,e/five:free",
+        .serialized_tools = "[]",
+        .messages = &messages,
+        .tool_choice = .auto,
+        .provider_options = .{},
+    });
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"a/one:free\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"models\":[\"a/one:free\",\"b/two:free\",\"c/three:free\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "d/four:free") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "e/five:free") == null);
 }
 
 test "zero retention rides Emma's toggle instead of every request" {

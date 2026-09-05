@@ -20,7 +20,7 @@ for each running app per turn, in every mode. Full matrix in
 | `browser` | Drives a real Chrome, mirrored in the browser pane. `snapshot` returns an accessibility tree with `@e1` refs; later actions take a ref or a CSS selector. | ask | [browser.ts](../desktop/main/browser.ts) |
 | `cli` | Runs Claude Code, Codex, Pi, OpenCode, Gemini CLI, Cursor or Antigravity CLI in a connected folder with explicit model/thinking options and output handoffs. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
 | `cli_runs` | Lists installed CLIs and every run, reads one run's output, or stops its turn. | auto | [cli.ts](../desktop/main/cli.ts) |
-| `computer` | Reads and operates approved running macOS or Windows apps through accessibility or UI Automation, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
+| `computer` | Reads and operates approved macOS or Windows apps through accessibility or UI Automation, in the background, and opens an installed app that is not running. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
 | `shortcut` | Binds a Quick Action prompt to a global keyboard shortcut, in Electron accelerator form. Matching an existing label or combination replaces that slot; there are three. | auto | [main.ts](../desktop/main/main.ts) |
 | `write_skill` | Records a durable lesson as `<userData>/skills/<slug>/SKILL.md`. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_tool` | Writes an executable script into Emma's data folder, callable later by name. `code` must start with a `#!` line. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
@@ -59,8 +59,12 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
 ### Shapes worth knowing
 
 - `computer` — `list_apps` returns running-app metadata without an app grant.
-  `get_app_state` asks for the exact app before returning accessibility text, a
-  snapshot and element indices. `click`, `set_value`, `type_text`, `key` and
+  `launch_app` takes an installed app's `name` (`Notepad`, `Google Chrome`), never
+  a path; it asks for one approval, starts the app outside any job object Emma
+  owns, returns its identity and PID, and grants control of that instance for the
+  turn. Use it instead of asking the user to open something, and never start a
+  GUI app from `terminal`. `get_app_state` asks for the exact app before returning
+  accessibility text, a snapshot and element indices. `click`, `set_value`, `type_text`, `key` and
   `scroll` require that app's single-use snapshot and an element index. Snapshots
   expire after 60 seconds. App approval belongs only to the active parent turn;
   delegated harness agents cannot use `computer`. Menu bars are excluded, and
@@ -130,7 +134,7 @@ file, search and shell tools — Emma has none of her own.
 | `glob_files` | Paths matching a glob; `mode=count` for counts without listing. |
 | `open_file` | Open a file in the OS default app for the user. |
 | `grep_files` | POSIX extended regular expression, matched per line: alternation, character classes, anchors, groups, `{m,n}`. No backreferences, lookaround, lazy quantifiers or the `\d`/`\w`/`\s` shorthands. Modes for lines, files-with-matches or counts, with `head_limit`/`offset`. |
-| `semantic_search` | Lexical keyword ranking over workspace files by default. With Settings → Harness → zvec-grep mode on, it is answered by the bundled [zvec-grep](https://github.com/zvec-ai/zvec-grep) and advertised as the default search: `query` returns two ranked groups with snippets, Q1 by vector similarity and Q2 by BM25 keywords, up to `limit` hits each (default 7, clamped to 1-25), and `regex` runs ripgrep over the same folder. Embeddings come from the model picked there: local ones run on this computer, hosted ones (OpenRouter, OpenAI, Gemini) send indexed file contents and queries to that provider through a loopback proxy in Emma's main process. |
+| `semantic_search` | Lexical keyword ranking over workspace files by default. With Settings → Harness → zvec-grep mode on, it is answered by [zvec-grep](https://github.com/zvec-ai/zvec-grep), downloaded on demand into Emma's data folder rather than shipped in the app, and advertised as the default search: `query` returns two ranked groups with snippets, Q1 by vector similarity and Q2 by BM25 keywords, up to `limit` hits each (default 7, clamped to 1-25), and `regex` runs ripgrep over the same folder. Embeddings come from the model picked there: local ones run on this computer, hosted ones (OpenRouter, OpenAI, Gemini) send indexed file contents and queries to that provider through a loopback proxy in Emma's main process. |
 | `lsp` | Diagnostics, definition, references, hover, symbols from an installed language server. |
 | `terminal` | Runs captured commands and drives durable interactive sessions, with monitors on exit, output, ports, paths. This is the shell. |
 | `web_fetch` | Bounded text from a public HTTP(S) URL, returned as untrusted content. |
@@ -153,6 +157,59 @@ in every mode that may write, `edit_file`, `write_file`, `terminal` and
 security boundary. `task_list` is in that set because the system prompt's task
 tracking section tells the model when to write one, and a rule the model has to
 go searching to obey is a rule it skips.
+
+### The shell `terminal` runs, per platform
+
+`terminal` is the only tool that hands text to a shell, and which shell that is
+differs by platform. [`shell_resolver.zig`](../harness/src/core/terminal/shell_resolver.zig)
+picks it; [`sandbox.zig`](../harness/src/core/permissions/sandbox.zig) runs it.
+
+| | macOS | Windows |
+| --- | --- | --- |
+| Shell | the login shell from `getpwuid` (`/bin/zsh` or `/bin/bash`; anything else falls back to `/bin/zsh`) | `pwsh.exe` if PowerShell 7 is installed under `%ProgramFiles%\PowerShell\7` or `%LOCALAPPDATA%\Microsoft\WindowsApps`, otherwise `System32\WindowsPowerShell\v1.0\powershell.exe` |
+| `profile: user` argv | `<shell> --login` (bash also `-O expand_aliases`) `-c <command>` | `<shell> -NoLogo -NonInteractive -Command <script>` |
+| `profile: clean` argv | `<shell> --noprofile --norc` / `-f`, then `-c <command>` | `<shell> -NoLogo -NoProfile -NonInteractive -Command <script>` |
+| How the command reaches it | written to the shell's stdin, so nothing is quoted twice | one `-Command` argument, quoted by the CreateProcess rules PowerShell itself parses |
+| Exit code | the shell's | see the epilogue below |
+
+`cmd.exe` is not a target. It cannot receive a command containing a double
+quote through an ordinary spawn: the C runtime escapes an inner `"` as `\"`,
+which `cmd` does not understand, so `dir "C:\Program Files"` fails with *the
+filename, directory name, or volume label syntax is incorrect* whether or not
+`/s` is passed. PowerShell parses its own command line by those same rules, so
+the quoting round-trips.
+
+On Windows the command the model wrote is wrapped before it is handed over:
+
+- a one-line prelude sets `[Console]::InputEncoding`, `[Console]::OutputEncoding`
+  and `$OutputEncoding` to UTF-8, so non-ASCII output survives instead of
+  arriving as `?`. It is one line, so a PowerShell parse error still names a line
+  number one off the command the model wrote, not five.
+- an epilogue exits with `$LASTEXITCODE` when a native program ran, `0`/`1` from
+  `$?` when only cmdlets did. Without it PowerShell collapses every failure to
+  `1` and would report a failing cmdlet as success.
+
+The model is told which shell it has: the `shell_path` line of the turn context
+([`context.zig`](../harness/src/builtins/context.zig)) is the shell that was
+actually resolved, not `$SHELL` or `%COMSPEC%`.
+
+On Windows the command's whole process tree lives in a job object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so everything the command started dies when
+the call returns. That is the point: a captured command leaves nothing running.
+It also means a GUI app started from this tool — `Start-Process notepad` — appears
+and then disappears. The job additionally carries
+`JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so a child created with
+`CREATE_BREAKAWAY_FROM_JOB` can leave the job deliberately; nothing the shell
+spawns asks for that, and `Start-Process` does not, so the flag only removes the
+kernel's refusal rather than changing what the shell does. Opening a desktop app
+is the `computer` tool's `launch_app`, which the `terminal` description says.
+
+`terminal.exec` is stateless on every platform: `cd` in one call does not carry
+into the next, because each call starts a new shell in the workspace root. The
+durable half of the tool (`start`, `read`, `write`, `wait`, `close`) runs the
+same on Windows: the terminal host listens on an AF_UNIX socket through Winsock
+and each session is a PowerShell inside a pseudo console; see
+[terminal.md](terminal.md).
 
 ### The four colliding names
 

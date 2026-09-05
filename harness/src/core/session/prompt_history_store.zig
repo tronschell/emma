@@ -894,6 +894,12 @@ fn historyPath(alloc: Allocator, home: []const u8) ![]u8 {
     return profile_paths.promptHistoryPath(alloc, home);
 }
 
+fn expectPrivateFixtureFile(dir: std.Io.Dir, sub_path: []const u8) !void {
+    var file = try dir.openFile(std.testing.io, sub_path, .{ .follow_symlinks = false });
+    defer file.close(std.testing.io);
+    try std.testing.expect(try io_mod.privateFileAclMatches(file));
+}
+
 fn ensureFixtureHome(home: []const u8) !void {
     const fx_dir = try profile_paths.rootDir(std.testing.allocator, home);
     defer std.testing.allocator.free(fx_dir);
@@ -905,6 +911,11 @@ fn ensureFixtureHome(home: []const u8) !void {
         error.PathAlreadyExists => {},
         else => return err,
     };
+    if (comptime builtin.os.tag == .windows) {
+        var dir = try std.Io.Dir.openDirAbsolute(std.testing.io, fx_dir, .{});
+        defer dir.close(std.testing.io);
+        try io_mod.enforcePrivateDirectoryAcl(dir);
+    }
 }
 
 fn writeFixture(home: []const u8, bytes: []const u8) !void {
@@ -912,10 +923,12 @@ fn writeFixture(home: []const u8, bytes: []const u8) !void {
     const path = try historyPath(std.testing.allocator, home);
     defer std.testing.allocator.free(path);
     var file = try std.Io.Dir.createFileAbsolute(std.testing.io, path, .{
+        .read = true,
         .truncate = true,
         .permissions = io_mod.permissionsFromMode(0o600),
     });
     defer file.close(std.testing.io);
+    if (comptime builtin.os.tag == .windows) try io_mod.enforcePrivateFileAcl(file);
     try file.writeStreamingAll(std.testing.io, bytes);
     try file.sync(std.testing.io);
 }
@@ -1381,21 +1394,9 @@ test "first append creates only private prompt history layout and reports layout
         .{ .iterate = true },
     );
     defer fx_dir.close(std.testing.io);
-    const fx_stat = try fx_dir.stat(std.testing.io);
-    try std.testing.expectEqual(
-        @as(std.posix.mode_t, 0o700),
-        io_mod.permissionsMode(fx_stat.permissions) & 0o777,
-    );
-    const history_stat = try fx_dir.statFile(std.testing.io, "history.jsonl", .{});
-    const lock_stat = try fx_dir.statFile(std.testing.io, "history.lock", .{});
-    try std.testing.expectEqual(
-        @as(std.posix.mode_t, 0o600),
-        io_mod.permissionsMode(history_stat.permissions) & 0o777,
-    );
-    try std.testing.expectEqual(
-        @as(std.posix.mode_t, 0o600),
-        io_mod.permissionsMode(lock_stat.permissions) & 0o777,
-    );
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(fx_dir));
+    try expectPrivateFixtureFile(fx_dir, "history.jsonl");
+    try expectPrivateFixtureFile(fx_dir, "history.lock");
 
     var failed_tmp = std.testing.tmpDir(.{});
     defer failed_tmp.cleanup();
@@ -1439,7 +1440,7 @@ test "symlinked durable home is rejected before prompt history reads or writes" 
         "home/.fx",
         .{ .is_directory = true },
     ) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 

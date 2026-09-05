@@ -15,7 +15,7 @@ to a file in this repo.
 | Note tagger | A saved note's text, up to 6 000 characters | The tagger route. OpenRouter by default |
 | Commit-message suggestion | File names and up to 12 000 characters of the diff | The tagger route, when you request a suggested commit message |
 | Model catalog | Nothing but the HTTP request — no credential, no query | `openrouter.ai` |
-| App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org` for the public macOS feed, then GitHub release assets; at packaged-app launch and every six hours. Windows publication is pending release-workflow authorization |
+| App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org` for the public macOS and Windows feeds, then GitHub release assets; at packaged-app launch and every six hours |
 | `web_search` | Your query string, plus a result count on Brave, Tavily and Exa | Your configured provider. `4get.canine.tools` by default |
 | `web_fetch`, page clipping | The URL you or the model named | That site |
 | Dictation | Recorded audio | `127.0.0.1:8080`, or the on-device macOS Speech.framework / Windows SAPI recognizer. Never off this computer |
@@ -182,14 +182,26 @@ A key you paste is encrypted through Electron's `safeStorage` (the operating
 system's secure credential store),
 base64-encoded, and written to `<userData>/credentials.json` — a `.tmp` file at
 mode `0o600` in a directory created `0o700`, renamed into place
-([credentials.ts](../desktop/main/credentials.ts)). If secure storage is
-unavailable, `save()` throws rather than settle for something weaker.
+([credentials.ts](../desktop/main/credentials.ts)). Before every save Emma
+round-trips a probe value through `safeStorage`; if that fails, or secure
+storage is unavailable, `save()` throws rather than settle for something weaker.
+
+A key encrypted by a process that dies before Chromium flushes `Local State`
+cannot be read again: Chromium mints a fresh profile key when it finds none on
+disk and only persists it, DPAPI-wrapped under `os_crypt.encrypted_key`, at a
+clean shutdown. The Windows installer's first-run relaunch is short-lived enough
+to land in that window. Emma does not delete what it cannot read. Each entry is
+decrypted on its own, the ones that fail are kept as opaque ciphertext and
+rewritten verbatim on the next save, and the list API reports them as
+`readable: false` so Settings and the setup cards can say which key to paste
+again. Replacing or removing that slot is the only thing that clears it.
 
 `applyToEnv(process.env)` decrypts onto Electron's environment, which `emma-cli`
 inherits. The Rust host inherits it too but reads no key: nothing in Rust makes a
-network request. The credential-list API returns masks, not full keys:
-`{ env, masked }`. `maskSecret` shows the first six and last four characters of a
-long key. Keys are sent to their configured services as authentication; they do
+network request. An entry Emma could not decrypt is never applied to the
+environment. The credential-list API returns masks, not full keys:
+`{ env, masked, readable }`. `maskSecret` shows the first six and last four
+characters of a long key, and an unreadable slot carries an empty mask. Keys are sent to their configured services as authentication; they do
 not remain exclusively on this computer.
 
 Second models store the *name* of an environment variable, never a secret; main

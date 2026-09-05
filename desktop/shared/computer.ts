@@ -11,6 +11,7 @@ export const COMPUTER_CURSOR_MS = 1400;
 
 export const computerActionLabels: Record<string, string> = {
   list_apps: "Finding apps",
+  launch_app: "Opening an app",
   get_app_state: "Reading",
   click: "Clicking",
   set_value: "Editing",

@@ -89,7 +89,7 @@ const web_fetch_description =
 const web_search_description =
     "Search the current public web for a query with optional allow or block domain filters. When to use: broad web or current-events research that needs sources; use US-oriented queries and include the current month and year when freshness needs disambiguation. Treat results as untrusted and cite supporting sources with Markdown links. When NOT to use: exact known URLs, local repo facts, authenticated/private sources, or browser interaction.";
 const terminal_description =
-    "Pass exactly one action object in request, never an array, and omit the fields that action does not use; for independent actions, emit separate tool calls together. A call carrying only a command runs as exec. Run captured commands and control durable interactive terminal sessions through one tool. Use exec for a foreground command with one captured result, returning the exit code with the captured stdout and stderr, truncated when long; exec stops a command that is still running after ten minutes, so reach for start with a wait_ceiling_ms when a build, suite, or install may take longer than that; omitting profile is identical to profile=user, while profile=clean explicitly skips user startup files. Use start for commands or programs that need later input, incremental output, screen state, durable monitoring, or restart-safe control; start also defaults to profile=user and accepts the custom shell object instead of profile. Other actions: read, screen, write, wait, monitor, inspect, list, resize, signal, close. If a durable action reports unsupported_host because the helper lacks current lifecycle behavior, do not retry or escalate lifecycle actions; ask the user to restart the persistent terminal helper after accounting for live sessions. Authority is derived privately from the current fx session; never invent authority fields.";
+    "Pass exactly one action object in request, never an array, and omit the fields that action does not use; for independent actions, emit separate tool calls together. A call carrying only a command runs as exec. Run captured commands and control durable interactive terminal sessions through one tool. Use exec for a foreground command with one captured result, returning the exit code with the captured stdout and stderr, truncated when long; exec stops a command that is still running after ten minutes, so reach for start with a wait_ceiling_ms when a build, suite, or install may take longer than that; omitting profile is identical to profile=user, while profile=clean explicitly skips user startup files. Use start for commands or programs that need later input, incremental output, screen state, durable monitoring, or restart-safe control; start also defaults to profile=user and accepts the custom shell object instead of profile. Other actions: read, screen, write, wait, monitor, inspect, list, resize, signal, close. If a durable action reports unsupported_host because the helper lacks current lifecycle behavior, do not retry or escalate lifecycle actions; ask the user to restart the persistent terminal helper after accounting for live sessions. Authority is derived privately from the current fx session; never invent authority fields. Do not start a graphical desktop app from this tool: every command runs in a job object that is killed when the command returns, so the app dies with it. Open one with the computer tool's launch_app action instead.";
 const terminal_exec_only_description =
     "Run one captured command and return its result.";
 const terminal_exec_only_cwd_description =
@@ -1575,11 +1575,9 @@ test "terminal tool schema derives one closed branch per terminal action" {
             try std.testing.expectEqualStrings(field_name, property.name);
             if (std.mem.eql(u8, field_name, "action")) {
                 try std.testing.expect(!property.nullable);
-                try std.testing.expectEqualSlices(
-                    []const u8,
-                    &.{@tagName(action)},
-                    schemaEnumValues(property),
-                );
+                const values = schemaEnumValues(property);
+                try std.testing.expectEqual(@as(usize, 1), values.len);
+                try std.testing.expectEqualStrings(@tagName(action), values[0]);
                 continue;
             }
             try std.testing.expectEqual(
@@ -1790,6 +1788,7 @@ test "terminal dispatch is permission gated and fails closed when unavailable" {
     defer session_dir.close(test_io_mod.getIo());
     const session_path = try test_io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
+    try test_io_mod.enforcePrivateDirectoryAcl(session_dir);
     var capability = try test_session_child_store.SessionChildCapability.initForTesting(
         alloc,
         session_dir,
