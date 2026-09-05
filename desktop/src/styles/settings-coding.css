@@ -61,7 +61,7 @@
 .embedding-advice em { color: var(--text-3); font: var(--fs-2xs)/1.5 var(--font-mono); font-style: normal; }
 .embedding-advice > button { flex-shrink: 0; }
 .embedding-key { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-2) var(--s-3); align-items: center; padding: var(--s-3); border: 1px solid var(--border); }
-.embedding-key > div { display: grid; gap: var(--s-1); }
+.embedding-key > div:first-child { display: grid; gap: var(--s-1); }
 .embedding-key strong { color: var(--text); font: var(--fs-sm)/1.4 var(--font-mono); }
 .embedding-key small { max-width: 62ch; color: var(--text-3); font: var(--fs-xs)/1.5 var(--font); }
 .embedding-key code { color: var(--text-3); font: var(--fs-2xs)/1.4 var(--font-code); }

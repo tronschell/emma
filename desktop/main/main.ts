@@ -242,7 +242,9 @@ const background = new BackgroundCommands(() => broadcast("emma:background"));
 const clis = new CliRuns(() => broadcast("emma:cli-runs"));
 const zvecGrep = new ZvecGrepTool(path.join(app.getPath("userData"), "vendor", "zvec-grep"), toolsOrigin(), () => {
   broadcast("emma:zvec-grep");
-  if (zvecGrep.status().phase === "ready") semanticGrep.apply(harnessExperiments);
+  if (zvecGrep.status().phase !== "ready") return;
+  semanticGrep.apply(harnessExperiments);
+  broadcast("emma:semantic-grep");
 });
 const semanticGrep = new SemanticGrep(process.execPath, () => zvecGrep.entry(), proxyPort(app.getPath("userData")), () => broadcast("emma:semantic-grep"));
 let cliModels: CliModelCatalog;
