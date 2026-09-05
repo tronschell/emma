@@ -26,6 +26,6 @@ if (process.platform === "darwin") {
   run(path.join(desktop, "dist-native/emma-transcribe.exe"), ["--self-test"]);
   const computer = path.join(desktop, "native/computer_win.cpp");
   if (!existsSync(computer)) throw new Error(`Missing Windows computer helper source: ${computer}`);
-  run("clang++", ["-O2", "-std=c++20", "-Wall", "-Wextra", "-Werror", computer, resource, "-ladvapi32", "-lole32", "-loleaut32", "-luiautomationcore", "-luser32", "-municode", "-o", "dist-native/emma-computer.exe"]);
+  run("clang++", ["-O2", "-std=c++20", "-Wall", "-Wextra", "-Werror", computer, resource, "-ladvapi32", "-lole32", "-loleaut32", "-lshell32", "-luiautomationcore", "-luser32", "-luuid", "-municode", "-o", "dist-native/emma-computer.exe"]);
   run(path.join(desktop, "dist-native/emma-computer.exe"), ["--self-test"]);
 }

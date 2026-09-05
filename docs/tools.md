@@ -20,7 +20,7 @@ for each running app per turn, in every mode. Full matrix in
 | `browser` | Drives a real Chrome, mirrored in the browser pane. `snapshot` returns an accessibility tree with `@e1` refs; later actions take a ref or a CSS selector. | ask | [browser.ts](../desktop/main/browser.ts) |
 | `cli` | Runs Claude Code, Codex, Pi, OpenCode, Gemini CLI, Cursor or Antigravity CLI in a connected folder with explicit model/thinking options and output handoffs. Needs a folder. | ask | [cli.ts](../desktop/main/cli.ts) |
 | `cli_runs` | Lists installed CLIs and every run, reads one run's output, or stops its turn. | auto | [cli.ts](../desktop/main/cli.ts) |
-| `computer` | Reads and operates approved running macOS or Windows apps through accessibility or UI Automation, in the background. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
+| `computer` | Reads and operates approved macOS or Windows apps through accessibility or UI Automation, in the background, and opens an installed app that is not running. No global pointer, screenshots or clipboard. | app approval | [computer.ts](../desktop/main/computer.ts) |
 | `shortcut` | Binds a Quick Action prompt to a global keyboard shortcut, in Electron accelerator form. Matching an existing label or combination replaces that slot; there are three. | auto | [main.ts](../desktop/main/main.ts) |
 | `write_skill` | Records a durable lesson as `<userData>/skills/<slug>/SKILL.md`. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
 | `write_tool` | Writes an executable script into Emma's data folder, callable later by name. `code` must start with a `#!` line. | auto | [capabilities.ts](../desktop/main/capabilities.ts) |
@@ -59,8 +59,12 @@ Settings → Tools can switch any tool off, which makes it `hidden` in every mod
 ### Shapes worth knowing
 
 - `computer` — `list_apps` returns running-app metadata without an app grant.
-  `get_app_state` asks for the exact app before returning accessibility text, a
-  snapshot and element indices. `click`, `set_value`, `type_text`, `key` and
+  `launch_app` takes an installed app's `name` (`Notepad`, `Google Chrome`), never
+  a path; it asks for one approval, starts the app outside any job object Emma
+  owns, returns its identity and PID, and grants control of that instance for the
+  turn. Use it instead of asking the user to open something, and never start a
+  GUI app from `terminal`. `get_app_state` asks for the exact app before returning
+  accessibility text, a snapshot and element indices. `click`, `set_value`, `type_text`, `key` and
   `scroll` require that app's single-use snapshot and an element index. Snapshots
   expire after 60 seconds. App approval belongs only to the active parent turn;
   delegated harness agents cannot use `computer`. Menu bars are excluded, and
@@ -188,6 +192,17 @@ On Windows the command the model wrote is wrapped before it is handed over:
 The model is told which shell it has: the `shell_path` line of the turn context
 ([`context.zig`](../harness/src/builtins/context.zig)) is the shell that was
 actually resolved, not `$SHELL` or `%COMSPEC%`.
+
+On Windows the command's whole process tree lives in a job object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so everything the command started dies when
+the call returns. That is the point: a captured command leaves nothing running.
+It also means a GUI app started from this tool — `Start-Process notepad` — appears
+and then disappears. The job additionally carries
+`JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so a child created with
+`CREATE_BREAKAWAY_FROM_JOB` can leave the job deliberately; nothing the shell
+spawns asks for that, and `Start-Process` does not, so the flag only removes the
+kernel's refusal rather than changing what the shell does. Opening a desktop app
+is the `computer` tool's `launch_app`, which the `terminal` description says.
 
 `terminal.exec` is stateless on every platform: `cd` in one call does not carry
 into the next, because each call starts a new shell in the workspace root. The

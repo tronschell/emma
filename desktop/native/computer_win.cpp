@@ -14,6 +14,8 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <uiautomation.h>
+#include <shlobj.h>
+#include <shellapi.h>
 #include <oleauto.h>
 #include <winnls.h>
 #include "windows_path.hpp"
@@ -48,6 +50,9 @@ static constexpr size_t max_text_characters = 4096;
 static constexpr size_t max_identity_bytes = 16384;
 static constexpr ULONGLONG snapshot_lifetime_ms = 60000;
 static constexpr ULONGLONG operation_lifetime_ms = 5000;
+static constexpr ULONGLONG launch_window_wait_ms = 12000;
+static constexpr size_t max_app_name_characters = 128;
+static constexpr size_t max_installed_apps = 4096;
 
 static volatile LONG cancelled = 0;
 static ULONGLONG operation_deadline = 0;
@@ -681,17 +686,43 @@ static ParentMap process_parents() {
     return result;
 }
 
-static bool process_descends_from(DWORD pid, DWORD ancestor, const ParentMap &parents) {
-    if (pid == ancestor) return true;
-    for (size_t depth = 0; depth < 64; depth += 1) {
-        auto found = parents.find(pid);
-        if (found == parents.end()) return false;
-        DWORD parent = found->second;
-        if (parent == ancestor) return true;
-        if (parent == 0 || parent == pid) return false;
-        pid = parent;
-    }
-    return true;
+static const wchar_t *const emma_binary_names[] = {
+    L"emma", L"emma-host", L"emma-cli", L"emma-pty", L"emma-computer", L"emma-option-tap", L"emma-transcribe",
+};
+
+static std::wstring containing_directory(const std::wstring &path) {
+    size_t slash = path.find_last_of(L'\\');
+    return slash == std::wstring::npos || slash < 2 ? std::wstring() : path.substr(0, slash);
+}
+
+static bool inside_directory(const std::wstring &normalized_path, const std::wstring &directory) {
+    return !directory.empty() && normalized_path.size() > directory.size() + 1
+        && normalized_path.compare(0, directory.size(), directory) == 0 && normalized_path[directory.size()] == L'\\';
+}
+
+static bool emma_binary_name(const std::wstring &path) {
+    const std::wstring stem = executable_stem(path);
+    for (const wchar_t *name : emma_binary_names) if (_wcsicmp(stem.c_str(), name) == 0) return true;
+    return false;
+}
+
+struct EmmaFiles {
+    DWORD blocked_pid = 0;
+    std::wstring helper_directory;
+    std::wstring app_directory;
+};
+
+static EmmaFiles emma_files(DWORD blocked_pid) {
+    EmmaFiles result;
+    result.blocked_pid = blocked_pid;
+    if (auto helper = process_identity(GetCurrentProcessId())) result.helper_directory = containing_directory(helper->wide_path);
+    if (auto app = process_identity(blocked_pid)) result.app_directory = containing_directory(app->wide_path);
+    return result;
+}
+
+static bool emma_owned(const EmmaFiles &emma, DWORD pid, const std::wstring &normalized_path) {
+    return pid == GetCurrentProcessId() || pid == emma.blocked_pid || emma_binary_name(normalized_path)
+        || inside_directory(normalized_path, emma.helper_directory) || inside_directory(normalized_path, emma.app_directory);
 }
 
 struct WindowList {
@@ -738,6 +769,210 @@ static Json identity_json(const IdentityData &identity) {
     return result;
 }
 
+struct LaunchTarget {
+    std::wstring name;
+    std::wstring target;
+    bool packaged = false;
+};
+
+static bool resolvable_app_name(const std::wstring &name) {
+    if (name.empty() || name.size() > max_app_name_characters) return false;
+    for (wchar_t character : name) {
+        if (character < 0x20 || character == 0x7f || character == L'\\' || character == L'/') return false;
+    }
+    return name.front() != L' ' && name.back() != L' ';
+}
+
+static bool same_app_name(const std::wstring &left, const std::wstring &right) {
+    return CompareStringOrdinal(left.c_str(), static_cast<int>(left.size()), right.c_str(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
+}
+
+static bool app_name_prefix(const std::wstring &candidate, const std::wstring &name) {
+    return candidate.size() > name.size() && same_app_name(candidate.substr(0, name.size()), name);
+}
+
+using NamedTargets = std::vector<std::pair<std::wstring, std::wstring>>;
+
+static void collect_shortcuts(const std::wstring &directory, size_t depth, NamedTargets *shortcuts) {
+    if (depth > 6 || shortcuts->size() >= max_installed_apps) return;
+    WIN32_FIND_DATAW entry{};
+    HANDLE find = FindFirstFileExW((directory + L"\\*").c_str(), FindExInfoBasic, &entry, FindExSearchNameMatch, nullptr, 0);
+    if (find == INVALID_HANDLE_VALUE) return;
+    std::vector<std::wstring> children;
+    do {
+        const std::wstring child(entry.cFileName);
+        if (child == L"." || child == L"..") continue;
+        if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (children.size() < max_installed_apps) children.push_back(directory + L"\\" + child);
+            continue;
+        }
+        if (child.size() < 5 || !same_app_name(child.substr(child.size() - 4), L".lnk")) continue;
+        shortcuts->emplace_back(child.substr(0, child.size() - 4), directory + L"\\" + child);
+    } while (shortcuts->size() < max_installed_apps && FindNextFileW(find, &entry));
+    FindClose(find);
+    for (const std::wstring &child : children) collect_shortcuts(child, depth + 1, shortcuts);
+}
+
+static NamedTargets start_menu_shortcuts() {
+    NamedTargets shortcuts;
+    for (const wchar_t *variable : {L"ProgramData", L"APPDATA"}) {
+        std::array<wchar_t, MAX_PATH> value{};
+        DWORD length = GetEnvironmentVariableW(variable, value.data(), static_cast<DWORD>(value.size()));
+        if (!length || length >= value.size()) continue;
+        collect_shortcuts(std::wstring(value.data(), length) + L"\\Microsoft\\Windows\\Start Menu\\Programs", 0, &shortcuts);
+    }
+    return shortcuts;
+}
+
+static std::wstring existing_executable(std::wstring path) {
+    if (path.size() >= 2 && path.front() == L'"' && path.back() == L'"') path = path.substr(1, path.size() - 2);
+    if (!absolute_windows_path(path) || path.size() < 5 || !same_app_name(path.substr(path.size() - 4), L".exe")) return {};
+    DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) ? std::wstring() : path;
+}
+
+static std::wstring shortcut_executable(const std::wstring &shortcut) {
+    ComPtr<IShellLinkW> link;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(link.put()))) || !link) return {};
+    ComPtr<IPersistFile> file;
+    if (FAILED(link->QueryInterface(IID_PPV_ARGS(file.put()))) || !file) return {};
+    if (FAILED(file->Load(shortcut.c_str(), STGM_READ))) return {};
+    std::array<wchar_t, MAX_PATH> path{};
+    if (FAILED(link->GetPath(path.data(), static_cast<int>(path.size()), nullptr, SLGP_UNCPRIORITY))) return {};
+    return existing_executable(std::wstring(path.data()));
+}
+
+static std::wstring app_paths_executable(const std::wstring &name) {
+    for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        for (const std::wstring &suffix : {std::wstring(), std::wstring(L".exe")}) {
+            const std::wstring key = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + name + suffix;
+            std::array<wchar_t, 4096> value{};
+            DWORD bytes = static_cast<DWORD>(value.size() * sizeof(wchar_t));
+            if (RegGetValueW(root, key.c_str(), nullptr, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, value.data(), &bytes) != ERROR_SUCCESS) continue;
+            const std::wstring executable = existing_executable(std::wstring(value.data()));
+            if (!executable.empty()) return executable;
+        }
+    }
+    return {};
+}
+
+static NamedTargets installed_packaged_apps() {
+    NamedTargets apps;
+    ComPtr<IShellItem> folder;
+    if (FAILED(SHCreateItemFromParsingName(L"shell:AppsFolder", nullptr, IID_PPV_ARGS(folder.put()))) || !folder) return apps;
+    ComPtr<IEnumShellItems> items;
+    if (FAILED(folder->BindToHandler(nullptr, BHID_EnumItems, IID_PPV_ARGS(items.put()))) || !items) return apps;
+    ComPtr<IShellItem> item;
+    while (apps.size() < max_installed_apps && items->Next(1, item.put(), nullptr) == S_OK && item) {
+        LPWSTR display = nullptr;
+        LPWSTR parsing = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &display)) && display
+            && SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &parsing)) && parsing) {
+            apps.emplace_back(display, parsing);
+        }
+        if (display) CoTaskMemFree(display);
+        if (parsing) CoTaskMemFree(parsing);
+    }
+    return apps;
+}
+
+static bool packaged_identifier(const std::wstring &parsing_name) {
+    return parsing_name.find(L'!') != std::wstring::npos && parsing_name.find(L'\\') == std::wstring::npos;
+}
+
+static std::optional<LaunchTarget> resolve_app(const std::wstring &name) {
+    if (!resolvable_app_name(name)) return std::nullopt;
+    const NamedTargets shortcuts = start_menu_shortcuts();
+    for (const auto &shortcut : shortcuts) {
+        if (!same_app_name(shortcut.first, name)) continue;
+        const std::wstring executable = shortcut_executable(shortcut.second);
+        if (!executable.empty()) return LaunchTarget{shortcut.first, executable, false};
+    }
+    const std::wstring executable = app_paths_executable(name);
+    if (!executable.empty()) return LaunchTarget{executable_stem(executable), executable, false};
+    const NamedTargets packaged = installed_packaged_apps();
+    for (const auto &app : packaged) {
+        if (same_app_name(app.first, name) && packaged_identifier(app.second)) return LaunchTarget{app.first, app.second, true};
+    }
+    std::vector<LaunchTarget> near_matches;
+    for (const auto &shortcut : shortcuts) {
+        if (!app_name_prefix(shortcut.first, name)) continue;
+        const std::wstring path = shortcut_executable(shortcut.second);
+        if (!path.empty()) near_matches.push_back({shortcut.first, path, false});
+    }
+    for (const auto &app : packaged) {
+        if (app_name_prefix(app.first, name) && packaged_identifier(app.second)) near_matches.push_back({app.first, app.second, true});
+    }
+    if (near_matches.size() == 1) return near_matches.front();
+    return std::nullopt;
+}
+
+static bool launch_executable(const std::wstring &executable, DWORD *pid) {
+    std::wstring command = L"\"" + executable + L"\"";
+    const std::wstring directory = containing_directory(executable);
+    for (DWORD flags : {static_cast<DWORD>(CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP), static_cast<DWORD>(CREATE_NEW_PROCESS_GROUP)}) {
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION information{};
+        if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE, flags, nullptr,
+                            directory.empty() ? nullptr : directory.c_str(), &startup, &information)) continue;
+        *pid = information.dwProcessId;
+        CloseHandle(information.hThread);
+        CloseHandle(information.hProcess);
+        return true;
+    }
+    return false;
+}
+
+static const CLSID clsid_application_activation_manager = {
+    0x45BA127D, 0x10A8, 0x46EA, {0x8A, 0xB7, 0x56, 0xEA, 0x90, 0x78, 0x94, 0x3C}
+};
+
+static bool launch_packaged_app(const std::wstring &identifier, DWORD *pid) {
+    ComPtr<IApplicationActivationManager> manager;
+    if (SUCCEEDED(CoCreateInstance(clsid_application_activation_manager, nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(manager.put()))) && manager) {
+        DWORD activated = 0;
+        if (SUCCEEDED(manager->ActivateApplication(identifier.c_str(), nullptr, AO_NONE, &activated)) && activated) {
+            *pid = activated;
+            return true;
+        }
+    }
+    const std::wstring shell = L"shell:AppsFolder\\" + identifier;
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    info.lpFile = shell.c_str();
+    info.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&info) != FALSE;
+}
+
+static std::map<DWORD, IdentityData> windowed_processes(const std::map<DWORD, IdentityData> &excluded) {
+    std::map<DWORD, IdentityData> processes;
+    for (const auto &window : windows_for_process().windows) {
+        DWORD pid = window.second;
+        if (excluded.count(pid) || processes.count(pid)) continue;
+        auto identity = process_identity(pid);
+        if (identity) processes.emplace(pid, std::move(*identity));
+    }
+    return processes;
+}
+
+static std::optional<IdentityData> wait_for_launched_app(const std::map<DWORD, IdentityData> &before, DWORD launched, const std::wstring &normalized_executable) {
+    const ULONGLONG deadline = GetTickCount64() + launch_window_wait_ms;
+    while (InterlockedCompareExchange(&cancelled, 0, 0) == 0) {
+        const std::map<DWORD, IdentityData> candidates = windowed_processes(before);
+        auto exact = candidates.find(launched);
+        if (exact != candidates.end()) return exact->second;
+        for (const auto &candidate : candidates) {
+            if (!normalized_executable.empty() && candidate.second.wide_path == normalized_executable) return candidate.second;
+        }
+        if (candidates.size() == 1) return candidates.begin()->second;
+        if (GetTickCount64() >= deadline) return std::nullopt;
+        Sleep(150);
+    }
+    return std::nullopt;
+}
+
 static bool parse_identity(const Json &value, DWORD blocked_pid, IdentityData *identity) {
     if (value.kind != Json::Kind::Object || value.object.size() != 5) return false;
     const Json *id = value.get("id");
@@ -745,16 +980,13 @@ static bool parse_identity(const Json &value, DWORD blocked_pid, IdentityData *i
     const Json *pid = value.get("pid");
     const Json *path = value.get("path");
     const Json *launched = value.get("launchedAt");
-    ParentMap parents = process_parents();
-    auto current_parent = parents.find(GetCurrentProcessId());
     if (!id || !name || !pid || !path || !launched || id->kind != Json::Kind::String || name->kind != Json::Kind::String
         || path->kind != Json::Kind::String || !valid_id(id->text) || !bounded_text(name->text, 256, false)
         || !bounded_text(path->text, 4096, false, &identity->wide_path) || !absolute_windows_path(identity->wide_path)
-        || !finite_integer(pid, 1, INT_MAX, &identity->pid) || identity->pid == blocked_pid
-        || identity->pid == GetCurrentProcessId() || (current_parent != parents.end() && identity->pid == current_parent->second)
-        || !finite_positive(launched)) return false;
+        || !finite_integer(pid, 1, INT_MAX, &identity->pid) || !finite_positive(launched)) return false;
     identity->wide_path = normalized_windows_path(identity->wide_path);
-    if (identity->wide_path.empty() || identity_id(identity->wide_path) != id->text) return false;
+    if (identity->wide_path.empty() || identity_id(identity->wide_path) != id->text
+        || emma_owned(emma_files(blocked_pid), identity->pid, identity->wide_path)) return false;
     identity->id = id->text;
     identity->name = name->text;
     identity->path = path->text;
@@ -1116,8 +1348,7 @@ class AppSession {
 public:
     AppSession(const IdentityData &identity, DWORD blocked_pid, IUIAutomation *automation)
         : identity_(identity), automation_(automation) {
-        ParentMap parents = process_parents();
-        if (!automation_ || process_descends_from(identity_.pid, blocked_pid, parents)) return;
+        if (!automation_ || emma_owned(emma_files(blocked_pid), identity_.pid, identity_.wide_path)) return;
         WindowList windows = windows_for_process(identity_.pid);
         if (windows.windows.empty()) return;
         if (FAILED(automation_->get_ControlViewWalker(walker_.put())) || !walker_) return;
@@ -1562,13 +1793,21 @@ static bool self_test() {
     if (spaced_path.empty() || spaced_path != equivalent_path || spaced_id != identity_id(equivalent_path)
         || spaced_id == identity_id(other_path) || !valid_id(spaced_id)
         || !std::all_of(spaced_id.begin(), spaced_id.end(), [](unsigned char byte) { return byte < 128; })) return false;
-    ParentMap synthetic{{1, 0}, {2, 1}, {3, 2}};
-    if (!process_descends_from(3, 1, synthetic) || process_descends_from(3, 4, synthetic)) return false;
-    ParentMap orphan{{5, 6}};
-    if (process_descends_from(5, 7, orphan) || !process_descends_from(5, 6, orphan)) return false;
-    ParentMap cycle{{2, 3}, {3, 2}};
-    if (!process_descends_from(2, 1, cycle)) return false;
-    if (!process_descends_from(GetCurrentProcessId(), GetCurrentProcessId(), process_parents())) return false;
+    EmmaFiles emma;
+    emma.blocked_pid = 42;
+    emma.helper_directory = normalized_windows_path(L"C:\\Program Files\\Emma\\resources\\dist-native");
+    emma.app_directory = normalized_windows_path(L"C:\\Program Files\\Emma");
+    if (!emma_owned(emma, 7, normalized_windows_path(L"C:\\Program Files\\Emma\\Emma.exe"))
+        || !emma_owned(emma, 7, normalized_windows_path(L"C:\\Program Files\\Emma\\resources\\dist-native\\emma-computer.exe"))
+        || !emma_owned(emma, 42, normalized_windows_path(L"C:\\Windows\\System32\\notepad.exe"))
+        || !emma_owned(emma, 7, normalized_windows_path(L"C:\\Users\\a\\AppData\\Local\\emma-cli.exe"))
+        || emma_owned(emma, 7, normalized_windows_path(L"C:\\Windows\\System32\\notepad.exe"))
+        || emma_owned(emma, 7, normalized_windows_path(L"C:\\Program Files\\Emmanuel\\Emmanuel.exe"))
+        || emma_owned(emma, 7, normalized_windows_path(L"C:\\Program Files\\Google\\Chrome\\chrome.exe"))) return false;
+    if (containing_directory(L"C:\\a\\b.exe") != L"C:\\a" || !containing_directory(L"b.exe").empty()) return false;
+    if (!resolvable_app_name(L"Notepad") || resolvable_app_name(L"C:\\Windows\\notepad.exe")
+        || resolvable_app_name(L"") || resolvable_app_name(std::wstring(129, L'a'))
+        || !resolvable_app_name(L"Google Chrome")) return false;
     return true;
 }
 
@@ -1576,7 +1815,9 @@ int wmain(int argc, wchar_t **argv) {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
     SetConsoleCtrlHandler(console_handler, TRUE);
-    HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool resolving = argc == 3 && std::wcscmp(argv[1], L"--resolve") == 0;
+    const bool launching = argc == 3 && std::wcscmp(argv[1], L"--launch") == 0;
+    HRESULT com_result = CoInitializeEx(nullptr, resolving || launching ? COINIT_APARTMENTTHREADED : COINIT_MULTITHREADED);
     bool uninitialize = SUCCEEDED(com_result);
     auto finish = [uninitialize]() {
         if (uninitialize) CoUninitialize();
@@ -1587,6 +1828,50 @@ int wmain(int argc, wchar_t **argv) {
         else write_result(failure("App control self-test failed."));
         finish();
         return passed ? 0 : 1;
+    }
+    if (resolving || launching) {
+        const std::optional<LaunchTarget> target = resolve_app(std::wstring(argv[2]));
+        std::string target_name;
+        std::string target_value;
+        if (!target || !wide_to_utf8(target->name, &target_name) || !wide_to_utf8(target->target, &target_value)) {
+            write_result(failure("No installed app matches that name. Ask the user which app to open."));
+            finish();
+            return 1;
+        }
+        if (emma_binary_name(target->target) || same_app_name(target->name, L"Emma")) {
+            write_result(failure("Emma cannot start itself."));
+            finish();
+            return 1;
+        }
+        Json described = Json::object_value();
+        described.set("name", Json::string_value(target_name));
+        described.set("target", Json::string_value(target_value));
+        Json result = Json::object_value();
+        result.set("ok", Json::boolean_value(true));
+        if (resolving) {
+            result.set("app", std::move(described));
+            write_result(result);
+            finish();
+            return 0;
+        }
+        const std::map<DWORD, IdentityData> before = windowed_processes({});
+        DWORD launched = 0;
+        if (!(target->packaged ? launch_packaged_app(target->target, &launched) : launch_executable(target->target, &launched))) {
+            write_result(failure("Windows refused to start that app. Ask the user to open it."));
+            finish();
+            return 1;
+        }
+        const std::optional<IdentityData> identity = wait_for_launched_app(before, launched, target->packaged ? std::wstring() : normalized_windows_path(target->target));
+        if (!identity) {
+            write_result(failure("That app was started but no window appeared. Ask the user to check it."));
+            finish();
+            return 1;
+        }
+        result.set("app", identity_json(*identity));
+        result.set("target", std::move(described));
+        write_result(result);
+        finish();
+        return 0;
     }
     DWORD blocked_pid = default_blocked_pid();
     bool list = argc == 2 && std::wcscmp(argv[1], L"--list") == 0;
@@ -1599,17 +1884,17 @@ int wmain(int argc, wchar_t **argv) {
         }
     }
     if (list) {
-        ParentMap parents = process_parents();
-        DWORD parent = parents[GetCurrentProcessId()];
+        const EmmaFiles emma = emma_files(blocked_pid);
         Json result = Json::object_value();
         result.set("ok", Json::boolean_value(true));
         Json apps = Json::array_value();
         std::map<DWORD, IdentityData> identities;
         for (const auto &window : windows_for_process().windows) {
             DWORD pid = window.second;
-            if (pid == GetCurrentProcessId() || pid == parent || process_descends_from(pid, blocked_pid, parents)) continue;
+            if (identities.count(pid)) continue;
             auto identity = process_identity(pid);
-            if (identity) identities.emplace(pid, std::move(*identity));
+            if (!identity || emma_owned(emma, pid, identity->wide_path)) continue;
+            identities.emplace(pid, std::move(*identity));
             if (identities.size() >= 128) break;
         }
         std::vector<IdentityData> ordered;
@@ -1624,7 +1909,7 @@ int wmain(int argc, wchar_t **argv) {
         return 0;
     }
     if (argc != 5 || std::wcscmp(argv[1], L"--app") != 0 || std::wcscmp(argv[3], L"--blocked-pid") != 0) {
-        write_result(failure("Expected --list, or --app with an approved identity and --blocked-pid."));
+        write_result(failure("Expected --list, --resolve, --launch, or --app with an approved identity and --blocked-pid."));
         finish();
         return 1;
     }

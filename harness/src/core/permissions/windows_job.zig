@@ -6,6 +6,7 @@ const windows = std.os.windows;
 
 const job_object_extended_limit_information: u32 = 9;
 const job_object_limit_kill_on_job_close: u32 = 0x2000;
+const job_object_limit_breakaway_ok: u32 = 0x0800;
 
 const BasicLimitInformation = extern struct {
     PerProcessUserTimeLimit: i64,
@@ -94,7 +95,8 @@ fn unlockTrackedJobs() void {
 }
 
 fn limitFlags(kill_on_close: bool) u32 {
-    return if (kill_on_close) job_object_limit_kill_on_job_close else 0;
+    return job_object_limit_breakaway_ok |
+        (if (kill_on_close) job_object_limit_kill_on_job_close else 0);
 }
 
 fn trackJob(job: TrackedJob) Error!void {
@@ -275,5 +277,12 @@ test "Windows job object uses kill on close" {
 }
 
 test "Windows durable job object does not kill on close" {
-    try std.testing.expectEqual(@as(u32, 0), limitFlags(false));
+    try std.testing.expectEqual(job_object_limit_breakaway_ok, limitFlags(false));
+}
+
+test "Windows job object lets a deliberate child break away" {
+    try std.testing.expectEqual(
+        job_object_limit_breakaway_ok | job_object_limit_kill_on_job_close,
+        limitFlags(true),
+    );
 }

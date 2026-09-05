@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
-import type { ComputerApp } from "../main/computer";
+import type { ComputerApp, ComputerLaunch } from "../main/computer";
 import type { ComputerCursor, ComputerRunProgress } from "../shared/computer";
 
 const target: ComputerApp = { id: "com.test.Editor", name: "Test Editor", pid: 12345, path: "/Applications/Test Editor.app", launchedAt: 1_700_000_000_000 };
@@ -18,8 +18,17 @@ let cursorEvents: () => unknown[] = () => [];
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const childProcess: typeof import("node:child_process") = require("node:child_process");
+const opened: string[] = [];
+const launchTarget = (name: string) => ({ name, target: `/Applications/${name}.app` });
+const launchedApp = (name: string): ComputerApp => ({ id: `com.test.${name}`, name, pid: 24000, path: `/Applications/${name}.app`, launchedAt: 1_700_000_100_000 });
+let resolveReply = (name: string) => ({ ok: true, app: launchTarget(name) });
+let launchReply = (name: string) => ({ ok: true, app: launchedApp(name), target: launchTarget(name) });
 const fakeExec = Object.assign(() => {}, {
-  [promisify.custom]: async () => ({ stdout: JSON.stringify({ ok: true, apps: await enumerate() }), stderr: "" }),
+  [promisify.custom]: async (_helper: string, args: string[]) => {
+    if (args[0] === "--resolve") return { stdout: JSON.stringify(resolveReply(args[1])), stderr: "" };
+    if (args[0] === "--launch") { opened.push(args[1]); return { stdout: JSON.stringify(launchReply(args[1])), stderr: "" }; }
+    return { stdout: JSON.stringify({ ok: true, apps: await enumerate() }), stderr: "" };
+  },
 });
 childProcess.execFile = fakeExec as unknown as typeof childProcess.execFile;
 mock.method(childProcess, "spawn", (_helper: string, args: string[]) => {
@@ -78,8 +87,11 @@ afterEach(() => {
   enumerate = async () => apps;
   sent.length = 0;
   spawned.length = 0;
+  opened.length = 0;
   captures = 0;
   cursorEvents = () => [];
+  resolveReply = (name) => ({ ok: true, app: launchTarget(name) });
+  launchReply = (name) => ({ ok: true, app: launchedApp(name), target: launchTarget(name) });
 });
 
 const cursor: ComputerCursor = { windowId: 42, bounds: { x: -100, y: 20, width: 500, height: 400 }, x: 120, y: 80 };
@@ -170,7 +182,56 @@ test("computer accepts only bounded app-scoped commands", () => {
     { ...click("s"), action: "key", key: "cmd+tab" }, { ...click("s"), action: "type_text", text: "x".repeat(4097) },
     { ...click("s"), action: "scroll", direction: "down", amount: 11 }, { ...click("s"), action: "scroll", direction: "sideways" },
   ]) assert.throws(() => computerAction(args));
-  assert.deepEqual(computerTools[0].inputSchema.properties.action.enum, ["list_apps", "get_app_state", "click", "set_value", "type_text", "key", "scroll"]);
+});
+
+test("launch_app takes an app name, never a path or an app-scoped argument", () => {
+  assert.deepEqual(computerAction({ action: "launch_app", name: "Google Chrome" }), { action: "launch_app", name: "Google Chrome" });
+  for (const args of [
+    { action: "launch_app" }, { action: "launch_app", name: "" }, { action: "launch_app", name: " Notepad" },
+    { action: "launch_app", name: "C:\\Windows\\notepad.exe" }, { action: "launch_app", name: "/Applications/Notes.app" },
+    { action: "launch_app", name: "Notepad\n" }, { action: "launch_app", name: "a".repeat(129) },
+    { action: "launch_app", name: "Notepad", app: target.id }, { action: "launch_app", name: "Notepad", pid: 1 },
+    { action: "list_apps", name: "Notepad" }, { ...state(), name: "Notepad" },
+  ]) assert.throws(() => computerAction(args));
+  assert.deepEqual(computerTools[0].inputSchema.properties.action.enum,
+    ["list_apps", "launch_app", "get_app_state", "click", "set_value", "type_text", "key", "scroll"]);
+});
+
+test("launch_app opens an approved app and grants control of it for the turn", async () => {
+  const computer = runtime();
+  const asked: string[] = [];
+  const approve = async (candidate: { name: string }) => { asked.push(candidate.name); return true; };
+  const said = await computer.execute(thread, { action: "launch_app", name: "Notes" }, approve);
+  assert.deepEqual(asked, ["Notes"]);
+  assert.deepEqual(opened, ["Notes"]);
+  assert.match(said, /Opened Notes — com\.test\.Notes — pid 24000/);
+  assert.equal(spawned.length, 0);
+  apps = [...apps, launchedApp("Notes")];
+  const listed = await computer.execute(thread, { action: "list_apps" }, allow);
+  assert.match(listed, /com\.test\.Notes/);
+  const read = await computer.execute(thread, { action: "get_app_state", app: "com.test.Notes" },
+    async () => { throw new Error("Launching already approved this app"); });
+  assert.match(read, /Snapshot: /);
+  assert.deepEqual(spawned[0].args, ["--app", JSON.stringify(launchedApp("Notes")), "--blocked-pid", String(process.pid)]);
+});
+
+test("launch_app refuses a denial, an unknown name and a target the user did not approve", async () => {
+  const denied = runtime();
+  await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" }, async () => false), /did not allow/);
+  await assert.rejects(denied.execute(thread, { action: "launch_app", name: "Notes" },
+    async () => { throw new Error("A denied launch must not ask again"); }), /did not allow/);
+  assert.deepEqual(opened, []);
+  denied.end(thread);
+
+  resolveReply = () => ({ ok: false, error: "No installed app matches that name." } as never);
+  const missing = runtime();
+  await assert.rejects(missing.execute(thread, { action: "launch_app", name: "Nope" }, allow), /No installed app matches/);
+  missing.end(thread);
+
+  resolveReply = (name) => ({ ok: true, app: launchTarget(name) });
+  launchReply = () => ({ ok: true, app: launchedApp("Other"), target: launchTarget("Other") });
+  const swapped = runtime();
+  await assert.rejects(swapped.execute(thread, { action: "launch_app", name: "Notes" }, allow), /different app than the one the user approved/);
 });
 
 test("Windows helper identities and snapshot tokens pass the trust boundary", { skip: process.platform !== "win32" && "Windows executable paths" }, async () => {
@@ -201,7 +262,12 @@ test("discovery exposes app metadata without reading UI or asking", async () => 
 test("the user approves each exact app once, with no global input", async () => {
   const computer = runtime();
   const asks: ComputerApp[] = [];
-  const approve = async (app: ComputerApp) => { assert.equal(sent.filter((item) => item.app.id === app.id).length, 0); asks.push(app); return true; };
+  const approve = async (candidate: ComputerApp | ComputerLaunch) => {
+    const app = candidate as ComputerApp;
+    assert.equal(sent.filter((item) => item.app.id === app.id).length, 0);
+    asks.push(app);
+    return true;
+  };
   const first = token(await computer.execute(thread, state(), approve));
   await computer.execute(thread, click(first), approve);
   await computer.execute(thread, state(), approve);
