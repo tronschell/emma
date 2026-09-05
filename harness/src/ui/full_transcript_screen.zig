@@ -2498,6 +2498,7 @@ test "full projection prefers ordered replay and omits command envelopes and inp
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -2593,6 +2594,7 @@ test "review command replay emits three logical lines and the exact remainder" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -2716,6 +2718,7 @@ test "head-pruned command replay fills absolute prefix and suffix ranges once" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -2976,6 +2979,7 @@ test "corrupt required replay keeps a safe fallback and permanent marker" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3284,6 +3288,7 @@ test "bounded command source rejects a truncated absolute record range" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3335,6 +3340,7 @@ test "oversized newline-free replay stays paged through measurement and tail ren
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3425,6 +3431,7 @@ test "oversized replay keeps shared orphan wrapping in the paged record" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3517,6 +3524,7 @@ test "oversized zero width replay has bounded measurement and visible output" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3618,6 +3626,7 @@ test "oversized interleaved replay preserves more than sixty four record ordinal
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3921,6 +3930,7 @@ test "missing command artifact uses the retained tool result sidecar" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -3977,6 +3987,7 @@ test "paged command result removes an envelope split across source pages" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
@@ -4062,6 +4073,7 @@ test "resumed command detail pages its exact result handle without replay" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const session_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(session_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(

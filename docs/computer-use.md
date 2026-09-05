@@ -72,6 +72,59 @@ PID, not that the app received or handled it; inspect state rather than retrying
 blindly. Scroll works only where the app exposes a writable scrollbar in the
 requested direction.
 
+## Windows
+
+The Windows helper speaks the same seven actions over the same NDJSON protocol
+and enforces the same identity, snapshot and element checks. It uses UI
+Automation (`IUIAutomation`) and is manifested per-monitor-DPI-aware. What
+differs is the platform underneath.
+
+`list_apps` returns every process that owns a visible, unowned, non-tool-window
+top level window, up to 128. The name is the executable's file stem
+(`Notepad`, `chrome`), not a friendly product name, and the ID is
+`app-<hash of the normalized executable path>`; the approval dialog also shows
+the full path and PID. Identity is rechecked against the path, PID and process
+creation time. Emma's own process, its parent and their descendants are
+excluded, as are the taskbar, the desktop and menu window classes.
+
+`get_app_state` walks each of the app's windows in front-to-back z-order through
+the control view, so the window the user is looking at gets the element budget
+first. Roles are UI Automation control-type names (`Button`, `Edit`,
+`Document`, `ListItem`). Password fields, menu bars, menus, menu items and title
+bars are omitted. The 400-element, 23,000-byte, depth-18 and five-second budgets
+match macOS.
+
+`click` performs the control's Invoke pattern, or its Toggle pattern, or selects
+it through the SelectionItem pattern — the three that Windows treats as a
+control's default action. A control exposing none of them is refused; no mouse
+event is ever synthesized. `set_value` and `type_text` write through the Value
+pattern, and `type_text` additionally needs an Edit or ComboBox control with a
+single Text-pattern selection. Both verify the value they wrote, so an app that
+normalizes what it stores reports that the change was accepted but could not be
+verified: Notepad rewrites `\n` as `\r`, so any multi-line `set_value` there
+lands correctly and still reports unverified. `key` posts `WM_KEYDOWN` and
+`WM_KEYUP` to the focused control's own window; Emma never calls
+`SetForegroundWindow`, `AllowSetForegroundWindow` or `AttachThreadInput`, and
+never uses `SendInput`, so a key reaches a background app without taking the
+foreground and cannot leak to another app. `scroll` sets the Scroll pattern's
+percent, moving a tenth of the scrollable range per unit of `amount`, matching
+the macOS scrollbar step.
+
+No operating-system permission is required: UI Automation needs neither a grant
+nor UIAccess, and Windows has no equivalent of Screen Recording or Accessibility
+consent. Setup status therefore reports `accessibility` as not applicable and
+`screen` as granted on Windows.
+
+The limits are the platform's own. A window belonging to a process running
+elevated is unreadable and unactionable from a non-elevated Emma, and Windows
+reports no error the helper can distinguish from an empty app. The secure
+desktop — the UAC prompt, Ctrl+Alt+Del and the lock screen — is a separate
+desktop that Emma cannot see or reach at all. A packaged app that Windows has
+suspended because it is not on screen exposes an empty accessibility tree; the
+Settings app in the background is the common case. Cursor geometry is reported in
+physical pixels, so on a display scaled above 100% the activity cursor is
+currently placed using unconverted coordinates.
+
 ## Data and limits
 
 App metadata and approved accessibility text reach the turn's model as ordinary
@@ -144,6 +197,24 @@ blocked retries, a second app required separate consent, and Stop cancelled a
 pending turn before its next action. Secure fields and menu bars were absent from
 the returned state. The final build repeated the approved interaction successfully.
 
+The Windows helper was exercised on 2026-09-04 on Windows 11 x64 with two 100%
+displays, against Notepad and Chrome. Until that day `list_apps` had always
+returned nothing, because the ancestry walk treated a process whose recorded
+parent had already exited as a descendant of Emma and excluded it, which on
+Windows is nearly every process; the shipped 0.5.1 helper still behaves that way.
+With that fixed, listing, state, click, set_value, type_text, key and scroll were
+each driven directly over NDJSON: Unicode including accents and emoji round-tripped
+through both write paths, a posted key reached a background Notepad without
+taking the foreground, selecting a tab worked once click covered the Toggle and
+SelectionItem patterns, and scroll moved the document by the requested tenths.
+Cursor events carried physical-pixel geometry that matched `GetWindowRect`,
+including negative coordinates on a secondary display, and `moveAbove` with the
+reported window handle placed an Electron overlay immediately above the target
+window and below every other window. Not verified on Windows: a display scaled
+above 100%, mixed-DPI displays, an elevated target window, the secure desktop,
+and the model-driven end-to-end turn, which needs provider credentials the test
+machine did not have.
+
 Automated checks cover validation, snapshot ownership, process replacement,
 concurrent calls, turn admission, parent-only harness calls and permission
 cancellation. Native helper self-tests and the desktop, Rust and Zig checks passed.
@@ -154,8 +225,8 @@ fixture: captured intermediate frames showed the glide in both directions and
 the arrival pulse. The background app workflow was repeated with the cursor build.
 This is not release certification: OS permission grant/denial prompts, the physical
 global Escape shortcut, lock/suspend behavior, VoiceOver, multiple displays, the
-system Reduce Motion setting, release signing and real Windows behavior were not
-manually verified.
+system Reduce Motion setting and release signing were not manually verified. Real
+Windows behavior is recorded above.
 
 ## See also
 

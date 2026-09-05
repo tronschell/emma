@@ -3806,23 +3806,18 @@ pub const Store = struct {
             options,
         );
         var target_owned = true;
-        var target_promoted = false;
         errdefer if (target_owned) {
-            if (target_promoted) {
-                target.deinit(alloc);
-            } else {
-                const disposition = discardRecoveryStagedSession(
-                    &staging_root,
-                    alloc,
-                    &target,
+            const disposition = discardRecoveryStagedSession(
+                &staging_root,
+                alloc,
+                &target,
+            );
+            if (disposition != .discarded) {
+                debug_trace.logf(
+                    "session",
+                    "event=session_recovery_unpublished_target_cleanup disposition={s}",
+                    .{@tagName(disposition)},
                 );
-                if (disposition != .discarded) {
-                    debug_trace.logf(
-                        "session",
-                        "event=session_recovery_unpublished_target_cleanup disposition={s}",
-                        .{@tagName(disposition)},
-                    );
-                }
             }
             target_owned = false;
         };
@@ -3938,6 +3933,9 @@ pub const Store = struct {
             }
             return error.SessionRecoveryIndeterminate;
         };
+        const promoted_position = target.position;
+        target.deinit(alloc);
+        target_owned = false;
         const promotion = self.promoteRecoveryStagedSession(
             &staging_root,
             recovered_id,
@@ -3949,10 +3947,7 @@ pub const Store = struct {
             );
             return error.SessionRecoveryIndeterminate;
         };
-        target_promoted = true;
         if (promotion == .indeterminate) {
-            target.deinit(alloc);
-            target_owned = false;
             return .{
                 .source_session_id = source_id,
                 .recovered_session_id = recovered_id,
@@ -3966,7 +3961,7 @@ pub const Store = struct {
         self.publishRecoveredLatestPointer(
             alloc,
             recovered,
-            target.position,
+            promoted_position,
             source_id,
             options,
         ) catch |err| {
@@ -3975,8 +3970,6 @@ pub const Store = struct {
                 "event=session_recovery_target_indeterminate target={s} latest_err={s}",
                 .{ recovered_id, @errorName(err) },
             );
-            target.deinit(alloc);
-            target_owned = false;
             return .{
                 .source_session_id = source_id,
                 .recovered_session_id = recovered_id,
@@ -3984,8 +3977,6 @@ pub const Store = struct {
                 .status = .indeterminate,
             };
         };
-        target.deinit(alloc);
-        target_owned = false;
 
         var verified = self.resumeExactForWrite(
             alloc,
@@ -4489,7 +4480,6 @@ fn deleteSnapshotFilesAddedByMigration(
 test "session snapshot locators resolve through their owning store" {
     const alloc = std.testing.allocator;
     var history = try alloc.alloc(session.HistoryTurn, 1);
-    errdefer alloc.free(history);
     history[0] = try session.makeAssistantTurn(alloc, "images", "done");
     defer session.freeHistoryTurnSlice(alloc, history);
     history[0].assistant.user.images = try session.dupeImageAttachmentSlice(alloc, &.{
@@ -4521,12 +4511,20 @@ test "session snapshot locators resolve through their owning store" {
         "id",
     );
 
+    const first_expected = try std.fs.path.join(alloc, &.{
+        "/new/fx-home/sessions", "id", "images", "image-1-aaaaaaaaaaaaaaaa.bin",
+    });
+    defer alloc.free(first_expected);
+    const second_expected = try std.fs.path.join(alloc, &.{
+        "/new/fx-home/sessions", "id", "images", "image-2-bbbbbbbbbbbbbbbb.bin",
+    });
+    defer alloc.free(second_expected);
     try std.testing.expectEqualStrings(
-        "/new/fx-home/sessions/id/images/image-1-aaaaaaaaaaaaaaaa.bin",
+        first_expected,
         history[0].assistant.user.images[0].snapshot_path.?,
     );
     try std.testing.expectEqualStrings(
-        "/new/fx-home/sessions/id/images/image-2-bbbbbbbbbbbbbbbb.bin",
+        second_expected,
         history[0].assistant.user.images[1].snapshot_path.?,
     );
     try std.testing.expect(history[0].assistant.user.images[2].snapshot_path == null);
@@ -4666,7 +4664,7 @@ test "session snapshot locator resolver rejects symlink leaves and directories" 
                 "images",
                 .{ .is_directory = true },
             ) catch |err| switch (err) {
-                error.AccessDenied => return error.SkipZigTest,
+                error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
                 else => return err,
             };
         } else {
@@ -4691,7 +4689,7 @@ test "session snapshot locator resolver rejects symlink leaves and directories" 
                 canonical_leaf,
                 .{ .is_directory = false },
             ) catch |err| switch (err) {
-                error.AccessDenied => return error.SkipZigTest,
+                error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
                 else => return err,
             };
         }
@@ -6928,7 +6926,7 @@ test "durable resume does not follow a symlinked snapshot directory" {
     session_dir.symLink(io_mod.getIo(), outside_path, "images", .{
         .is_directory = true,
     }) catch |err| switch (err) {
-        error.AccessDenied => return,
+        error.AccessDenied, error.PermissionDenied => return,
         else => return err,
     };
 
@@ -7523,7 +7521,7 @@ test "same-workspace append defers latest cache contention and marks cache dirty
     defer token.close(io_mod.getIo());
     const token_stat = try token.stat(io_mod.getIo());
     try std.testing.expectEqual(std.Io.File.Kind.file, token_stat.kind);
-    try std.testing.expectEqual(@as(u32, 0o600), io_mod.permissionsMode(token_stat.permissions) & 0o777);
+    try std.testing.expect(try io_mod.privateFileAclMatches(token));
     const token_bytes = try io_mod.readFileToEnd(
         alloc,
         &token,
@@ -12384,7 +12382,7 @@ test "missing home is empty for reads and bootstrapped privately for writes" {
     defer home_dir.close(io_mod.getIo());
     const home_stat = try home_dir.stat(io_mod.getIo());
     try std.testing.expectEqual(std.Io.File.Kind.directory, home_stat.kind);
-    try std.testing.expectEqual(@as(u32, 0o700), io_mod.permissionsMode(home_stat.permissions) & 0o777);
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(home_dir));
     const sessions_path = try std.fs.path.join(alloc, &.{ missing_home, ".fx", "sessions" });
     defer alloc.free(sessions_path);
     try std.Io.Dir.accessAbsolute(io_mod.getIo(), sessions_path, .{});
@@ -12476,11 +12474,7 @@ test "first write creates only the private session layout" {
         .iterate = true,
     });
     defer durable_dir.close(io_mod.getIo());
-    const durable_stat = try durable_dir.stat(io_mod.getIo());
-    try std.testing.expectEqual(
-        @as(u64, 0o700),
-        io_mod.permissionsMode(durable_stat.permissions) & 0o777,
-    );
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(durable_dir));
     var durable_iter = durable_dir.iterate();
     const sessions_entry = (try durable_iter.next(io_mod.getIo())) orelse
         return error.TestExpectedEqual;
@@ -12493,11 +12487,7 @@ test "first write creates only the private session layout" {
         .{ .iterate = true },
     );
     defer sessions_dir.close(io_mod.getIo());
-    const sessions_stat = try sessions_dir.stat(io_mod.getIo());
-    try std.testing.expectEqual(
-        @as(u64, 0o700),
-        io_mod.permissionsMode(sessions_stat.permissions) & 0o777,
-    );
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(sessions_dir));
     var sessions_iter = sessions_dir.iterate();
     var saw_session = false;
     var saw_latest = false;
@@ -13486,11 +13476,12 @@ test "history page maps missing unsafe unavailable unsupported and corrupt sessi
         "home/.fx/sessions/history-unsafe",
         .{ .is_directory = true },
     ) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
     try std.testing.expectError(error.SessionPathUnsafe, ctx.store.loadHistoryPage(alloc, "history-unsafe", null, 1));
 
+    if (comptime builtin.os.tag == .windows) return;
     try chmodPath(alloc, ctx.store.sessions_dir, 0o000);
     var restore_sessions_permissions = true;
     defer if (restore_sessions_permissions) {

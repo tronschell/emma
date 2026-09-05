@@ -57,10 +57,17 @@ cwd they were opened in.
 
 On macOS the shell is `$SHELL` (falling back to `/bin/zsh`) run as `-il` —
 interactive and login, so your rc files, prompt and PATH are the ones you
-already have. On Windows it is `COMSPEC` (normally `cmd.exe`) with `/d`, so
-AutoRun commands are skipped. `TERM` is `xterm-256color` and `COLORTERM` is
+already have. On Windows it is PowerShell — `pwsh.exe` when PowerShell 7 is
+installed, otherwise the `powershell.exe` every Windows ships — run as `-NoLogo`
+so your own profile still loads but the banner does not. That is the same shell
+the agent's `terminal` tool targets, so what you type in the panel and what the
+model writes are one language. `TERM` is `xterm-256color` and `COLORTERM` is
 `truecolor`. The tab is named after the last segment of the cwd, or `shell` if
 that is empty or over 40 characters.
+
+Emma does not offer `cmd.exe` or Git Bash as the panel's shell. Either is one
+`cmd` or `bash` away inside the PowerShell session, and neither is what the
+model is told it has.
 
 A thread keeps at most 8 shells. `+` opens another; the `×` on a tab ends that
 one; the `×` at the right of the strip hides the panel.
@@ -150,3 +157,51 @@ not Emma's own window is refused before any of this runs.
 
 Quitting terminates every shell's process tree and forces it after two seconds if
 one has not gone.
+
+## The agent's durable sessions
+
+The panel is not the only shell in the app. `terminal.start` opens a durable
+session that outlives the `emma-cli` process that asked for it: a background
+terminal host holds the sessions, and every later `list`, `read`, `write`,
+`wait` and `close` reaches it over a socket in the profile's `terminal-host`
+directory (or under `%TEMP%` when that path would exceed the 108-byte
+`sockaddr_un` limit).
+
+| | |
+| --- | --- |
+| Transport | [core/terminal/endpoint.zig](../harness/src/core/terminal/endpoint.zig) |
+| The host | [core/terminal/host.zig](../harness/src/core/terminal/host.zig) |
+| Sessions and the launcher | [core/terminal/native_session.zig](../harness/src/core/terminal/native_session.zig) |
+
+The endpoint is an `AF_UNIX` stream socket on every platform. On Windows the
+socket is created through Winsock rather than the `AF_UNIX` support in Zig's
+standard library, because the standard library opens the socket directly on
+`\Device\Afd` and every `ws2_32` call the host needs — `WSAPoll` to wait for a
+connection without blocking the idle timer, `SIO_AF_UNIX_GETPEERPID` to name the
+peer process, and the send and receive timeouts — answers `WSAENOTSOCK` on a
+handle Winsock never issued. Winsock handles are AFD handles underneath, so
+reads and writes still go through the standard library. `receiveTimeout` is not
+implemented for Windows in Zig 0.16, so the endpoint waits with `WSAPoll` and
+then reads. A path is capped at 108 bytes and is interpreted by the ANSI code
+page, so a profile directory that is not representable there falls back to
+`%TEMP%`.
+
+Each session runs under a launcher process, which puts the shell in a ConPTY and
+a job object. The terminal side of the ConPTY is a duplex named pipe with a
+random name that only the launcher is told; the launcher opens it by name
+because the standard library hands a child a write-only stdout. The shell is
+started with `STARTF_USESTDHANDLES` and null standard handles, so it inherits
+the pseudo console instead of the launcher's own redirected streams, and the
+pseudo console handle is passed to `UpdateProcThreadAttribute` by value.
+
+Killing the host takes the whole tree with it: the launcher sees its standard
+input close, and its job object is created kill-on-close, so the shell and
+everything it started go with it. Cancelling or force-closing a session
+terminates the launcher, which trips the same job.
+
+The bootstrap that reports readiness is a real PowerShell script — PowerShell
+refuses to run a file whose extension it does not know, so the file is named
+`.ps1` (`.cmd` when the pinned shell is `cmd.exe`) and is invoked with the call
+operator. It is submitted with a lone carriage return, because PSReadLine reads
+a line feed as "insert a newline" and would leave the session at a continuation
+prompt.

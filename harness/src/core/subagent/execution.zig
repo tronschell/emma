@@ -8321,14 +8321,14 @@ fn runProductionActionGenerationCase(
     const arguments = if (std.mem.eql(u8, tool_name, "copy_file"))
         try std.fmt.allocPrint(
             alloc,
-            "{{\"source\":\"source.txt\",\"destination\":\"{s}\"}}",
-            .{destination},
+            "{{\"source\":\"source.txt\",\"destination\":{f}}}",
+            .{std.json.fmt(destination, .{})},
         )
     else
         try std.fmt.allocPrint(
             alloc,
-            "{{\"old_path\":\"source.txt\",\"new_path\":\"{s}\"}}",
-            .{destination},
+            "{{\"old_path\":\"source.txt\",\"new_path\":{f}}}",
+            .{std.json.fmt(destination, .{})},
         );
     defer alloc.free(arguments);
 

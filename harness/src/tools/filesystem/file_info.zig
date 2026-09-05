@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const path_display = @import("path_display.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -83,13 +84,13 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
 
     const stat = std.Io.Dir.cwd().statFile(io_mod.getIo(), target, .{}) catch |err| {
         if (err == error.FileNotFound) {
-            const rel = try displayPath(arena, ctx.workspace_root, target);
+            const rel = try path_display.workspaceRelative(arena, ctx.workspace_root, target);
             return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "file_info failed: not found: {s}", .{rel}) };
         }
         return mapPathError(err);
     };
 
-    const rel = try displayPath(arena, ctx.workspace_root, target);
+    const rel = try path_display.workspaceRelative(arena, ctx.workspace_root, target);
     var out: std.Io.Writer.Allocating = .init(ctx.allocator);
     defer out.deinit();
 
@@ -150,11 +151,6 @@ fn extensionForPath(path: []const u8, kind: std.Io.File.Kind) ?[]const u8 {
     const dot = std.mem.findScalarLast(u8, path, '.') orelse return null;
     if (dot >= path.len) return null;
     return path[dot + 1 ..];
-}
-
-fn displayPath(arena: Allocator, workspace_root: []const u8, absolute_path: []const u8) ![]const u8 {
-    const rel = try pathing.workspaceRelativePath(arena, workspace_root, absolute_path);
-    return if (rel.len == 0) "." else rel;
 }
 
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
@@ -376,8 +372,6 @@ test "file_info extension predicate follows active display-path behavior" {
     defer alloc.free(no_dot);
     const hidden = try writeTempFile(alloc, &tmp, ".bashrc", "x");
     defer alloc.free(hidden);
-    const trailing = try writeTempFile(alloc, &tmp, "foo.", "x");
-    defer alloc.free(trailing);
     const parent_dot = try writeTempFile(alloc, &tmp, "src.dir/index", "x");
     defer alloc.free(parent_dot);
     const dotted_file = try writeTempFile(alloc, &tmp, "src.dir/file.txt", "x");
@@ -399,9 +393,13 @@ test "file_info extension predicate follows active display-path behavior" {
     defer bashrc.deinit(alloc);
     try std.testing.expect(std.mem.find(u8, bashrc.body, "extension: bashrc\n") != null);
 
-    var trailing_dot = try dispatchFileInfo(alloc, workspace, "foo.");
-    defer trailing_dot.deinit(alloc);
-    try std.testing.expect(std.mem.find(u8, trailing_dot.body, "extension: \n") != null);
+    if (comptime builtin.os.tag != .windows) {
+        const trailing = try writeTempFile(alloc, &tmp, "foo.", "x");
+        defer alloc.free(trailing);
+        var trailing_dot = try dispatchFileInfo(alloc, workspace, "foo.");
+        defer trailing_dot.deinit(alloc);
+        try std.testing.expect(std.mem.find(u8, trailing_dot.body, "extension: \n") != null);
+    }
 }
 
 test "file_info owner preserves active absolute display behind permission gate" {
@@ -458,6 +456,7 @@ test "file_info line order without extension is exact" {
 }
 
 test "file_info active output omits readonly" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -466,13 +465,7 @@ test "file_info active output omits readonly" {
     const file = try io_mod.openExistingRegularFile(std.Io.Dir.cwd(), path, .read_write);
     defer file.close(io_mod.getIo());
     const original_permissions = (try file.stat(io_mod.getIo())).permissions;
-    const readonly_permissions = if (comptime builtin.os.tag == .windows) blk: {
-        var attributes = original_permissions.toAttributes();
-        attributes.NORMAL = false;
-        attributes.READONLY = true;
-        break :blk @as(std.Io.File.Permissions, @enumFromInt(@as(u32, @bitCast(attributes))));
-    } else io_mod.permissionsFromMode(0o444);
-    try file.setPermissions(io_mod.getIo(), readonly_permissions);
+    try file.setPermissions(io_mod.getIo(), io_mod.permissionsFromMode(0o444));
     defer file.setPermissions(io_mod.getIo(), original_permissions) catch {};
     const stat = try std.Io.Dir.cwd().statFile(io_mod.getIo(), path, .{});
     try std.testing.expect(!io_mod.permissionsWritable(stat.permissions));

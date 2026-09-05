@@ -8,6 +8,9 @@ import { execFileSync } from "node:child_process";
 import { hookRuns, matchesPluginQuery, parseHooksFile, parseHostedApps, parseMarketplace, parseMarketplaceSource, parsePluginInterface, parsePluginManifest, pluginCategories, type HookEvent } from "../shared/plugins";
 import { addMarketplace, ensureDefaultMarketplace, imageType, installedCapabilitySources, installPlugin, pluginDetail, readCatalog, removeMarketplace, runPluginHooks, setHookTrust, trustPluginHooks, uninstallPlugin, unpack, writePlugin } from "../main/marketplace";
 import { loadImportedSkill, mirrorSkillsToHarness, parseMcpConfig, searchImportedSkills } from "../main/capabilities";
+import { isWindows } from "../main/platform";
+
+const POSIX_HOOKS = isWindows && "plugin hook fixtures are POSIX shell scripts";
 
 test("the plugins route stays lazy without making activity eager", () => {
   const app = readFileSync(path.join(__dirname, "../../src/App.tsx"), "utf8");
@@ -357,7 +360,7 @@ test("an npm package that unpacks larger than its ceiling is stopped before it f
     await mkdir(path.join(home, "package"), { recursive: true });
     await writeFile(path.join(home, "package", "index.js"), "x".repeat(64 * 1024));
     const tarball = path.join(home, "bundle.tgz");
-    execFileSync("tar", ["-czf", tarball, "-C", home, "package"]);
+    execFileSync("tar", ["-czf", "bundle.tgz", "package"], { cwd: home });
 
     const roomy = path.join(home, "roomy");
     await mkdir(roomy, { recursive: true });
@@ -375,7 +378,7 @@ test("an npm package that unpacks larger than its ceiling is stopped before it f
 const sessionStart = (command: string, matcher = "startup|resume", extra: Record<string, unknown> = {}) =>
   ({ SessionStart: [{ matcher, hooks: [{ type: "command", command, statusMessage: "Waking up", ...extra }] }] });
 
-test("a plugin's hooks stay off until they are reviewed, run once trusted, and lose that trust the moment the definition changes", async () => {
+test("a plugin's hooks stay off until they are reviewed, run once trusted, and lose that trust the moment the definition changes", { skip: POSIX_HOOKS }, async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-hooks-")));
   try {
     const userData = path.join(home, "user-data");
@@ -399,8 +402,6 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
 
     const trusted = await trustPluginHooks(userData, "hooked/watcher", true);
     assert.deepEqual(trusted.installed[0].hooks.map((hook) => hook.trusted), [true, true]);
-    // The phone writes through setHookTrust, which skips the catalogue read on the way back; the
-    // record it leaves has to be the one trustPluginHooks would have written.
     await setHookTrust(userData, "hooked/watcher", null);
     assert.deepEqual((await readCatalog(userData)).installed[0].hooks.map((hook) => hook.trusted), [false, false]);
     await setHookTrust(userData, "hooked/watcher", trusted.installed[0].hooks.map((hook) => hook.hash));
@@ -436,7 +437,7 @@ test("a plugin's hooks stay off until they are reviewed, run once trusted, and l
   }
 });
 
-test("a plugin root that reads like a shell command is expanded as a value, never as a second command", async () => {
+test("a plugin root that reads like a shell command is expanded as a value, never as a second command", { skip: POSIX_HOOKS }, async () => {
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "emma-hook-escape-")));
   try {
     const userData = path.join(home, "user-data");

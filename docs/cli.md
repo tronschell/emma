@@ -21,9 +21,11 @@ emma-cli session resume last
 ```
 
 The current directory is its workspace, and it gates a tool call on the tty
-rather than through Emma's permission channel. It is Emma's fork of
-[vercel-labs/fx](https://github.com/vercel-labs/fx) (Apache-2.0; provenance in
-[FORK.md](../harness/FORK.md)) — its own surface is
+rather than through Emma's permission channel. Only the REPL needs a console:
+`--help`, `--version`, `ask`, `sessions`, and `acp` run the same over pipes or
+redirected output, which is how Emma drives `acp` over stdio. It is Emma's fork
+of [vercel-labs/fx](https://github.com/vercel-labs/fx) (Apache-2.0; provenance
+in [FORK.md](../harness/FORK.md)) — its own surface is
 [harness/README.md](../harness/README.md), and how Emma drives it is
 [harness.md](harness.md).
 

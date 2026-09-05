@@ -1,10 +1,9 @@
 # Getting started
 
 Emma targets macOS 12 or later on Apple silicon and Windows 10 version 1809 or
-later on x64. Published downloads currently contain the macOS zip; Windows x64
-is the supported distributable/public target and is packaged in CI. Public
-signed Windows x64 publication is pending release-workflow authorization. No build
-toolchains are needed for a published macOS build. The rest of this page covers building from
+later on x64. Published downloads contain the macOS disk image and zip and the
+Windows x64 installer, which is unsigned until the Windows signing secrets
+exist. No build toolchains are needed for a published build. The rest of this page covers building from
 source; see [releases.md](releases.md) for how a prepared version reaches the
 download page.
 
@@ -30,9 +29,8 @@ On Windows, install Node 24, the Rust toolchain selected by
 `rust-toolchain.toml`, Zig 0.16.0, LLVM `clang`/`clang++`, and the Windows SDK
 with its import libraries.
 The `windows-2025` (x64) CI runner runs `package:win` on promotion pull
-requests. x64 is the supported distributable/public target. The current release
-workflow does not sign or publish Windows artifacts; public signed Windows x64
-publication is pending release-workflow authorization.
+requests. x64 is the supported distributable/public target and every release
+publishes its installer and Squirrel update feed.
 
 `rustup` reads `rust-toolchain.toml` and installs 1.97.1 the first time you run
 `cargo` here. The first `start`, `package:mac`, `package:win`, or
@@ -178,9 +176,9 @@ npm --prefix desktop run package:win
 
 Local packaging omits signing credentials and produces an unsigned structure
 check for the current host architecture; it does not establish Authenticode
-trust. The current release workflow does not sign or publish Windows artifacts,
-and public signed Windows x64 publication is pending release-workflow
-authorization. Windows ARM64 has no CI lane and is not a supported target.
+trust. The release workflow publishes the Windows x64 installer and signs it
+only when the Windows signing secrets exist. Windows ARM64 has no CI lane and
+is not a supported target.
 
 ## Credits
 

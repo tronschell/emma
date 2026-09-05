@@ -2288,7 +2288,7 @@ test "scope discovery emits primary-relative and added-absolute paths in root or
     defer alloc.free(primary);
     const shared = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "shared");
     defer alloc.free(shared);
-    const shared_file = try std.fs.path.join(alloc, &.{ shared, "nested/lib.zig" });
+    const shared_file = try std.fs.path.join(alloc, &.{ shared, "nested", "lib.zig" });
     defer alloc.free(shared_file);
     const shared_directory = try std.fs.path.join(alloc, &.{ shared, "nested" });
     defer alloc.free(shared_directory);

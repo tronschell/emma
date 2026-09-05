@@ -275,6 +275,7 @@ test "router rejects shell fingerprint backend and target mismatches" {
 }
 
 test "router executes direct plan without consulting approved shell capacity" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

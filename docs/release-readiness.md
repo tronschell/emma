@@ -132,8 +132,8 @@ job, and it predates the hardening changes above. Keep that draft unpublished.
 Global shortcuts, fresh privacy grants, VoiceOver, multiple-display geometry,
 macOS 12 hardware, Intel hardware, and Windows runtime behavior are not verified
 by these checks.
-Windows x64 is the supported distributable/public target, and the current
-workflow produces an unsigned x64 target package on promotion pull requests.
-Public signed Windows x64 publication is pending release-workflow authorization.
+Windows x64 is the supported distributable/public target; the workflow builds
+its installer on promotion pull requests and publishes it, unsigned until the
+Windows signing secrets exist, with every release.
 A local test pass is not a claim that every feature or platform interaction is
 bug-free.

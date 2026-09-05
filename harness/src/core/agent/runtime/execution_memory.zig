@@ -450,6 +450,7 @@ test "exact command sources delete replay and missing handles retain it" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     const display_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "session");
     defer alloc.free(display_path);
     var capability = try session_child_store.SessionChildCapability.initForTesting(

@@ -4,6 +4,7 @@ const io_mod = @import("../../core/shared/io.zig");
 const pathing = @import("../../core/workspace/pathing.zig");
 const permission_gate = @import("../../core/permissions/permission_gate.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const path_display = @import("path_display.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -85,8 +86,8 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
         return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "Unable to resolve copy destination: {s} ({s})", .{ input.destination, @errorName(err) }) };
     };
 
-    const source_rel = try displayPath(arena, ctx.workspace_root, source);
-    const dest_rel = try displayPath(arena, ctx.workspace_root, destination);
+    const source_rel = try path_display.workspaceRelative(arena, ctx.workspace_root, source);
+    const dest_rel = try path_display.workspaceRelative(arena, ctx.workspace_root, destination);
 
     pathing.ensureParentDirectories(destination) catch |err| {
         return .{ .failure = try std.fmt.allocPrint(ctx.allocator, "Unable to copy: {s} -> {s} ({s})", .{ source_rel, dest_rel, @errorName(err) }) };
@@ -97,11 +98,6 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     };
 
     return .{ .success = try std.fmt.allocPrint(ctx.allocator, "copied {s} -> {s}", .{ source_rel, dest_rel }) };
-}
-
-fn displayPath(arena: Allocator, workspace_root: []const u8, absolute_path: []const u8) ![]const u8 {
-    const rel = try pathing.workspaceRelativePath(arena, workspace_root, absolute_path);
-    return if (rel.len == 0) "." else rel;
 }
 
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {

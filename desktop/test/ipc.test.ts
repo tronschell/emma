@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { externalUrl, keepRequest, runCommandRequest, statsExportRequest, MAX_FETCHED_TEXT_CHARS, metaContent, readablePage, trustedSender, validJpegDataUrl, validateRequest, vaultRequest } from "../main/ipc";
 import { toCsv } from "../shared/csv";
 import { MAX_NOTE_BYTES, MAX_TITLE_BYTES } from "../shared/vault";
@@ -424,6 +425,13 @@ test("IPC sender is limited to the local renderer location", () => {
   assert.equal(trustedSender("file:///tmp/untrusted.html", "/Applications/Emma"), false);
   assert.equal(trustedSender("https://evil.test/", "/Applications/Emma", "http://127.0.0.1:5173"), false);
   assert.equal(trustedSender("http://127.0.0.1:5173/?overlay=1", "/Applications/Emma", "http://127.0.0.1:5173"), true);
+});
+
+test("the packaged renderer is trusted from the file URL this platform actually loads", () => {
+  const appRoot = path.join(tmpdir(), "Emma", "resources", "app.asar");
+  const entry = pathToFileURL(path.join(appRoot, "dist-renderer", "index.html")).href;
+  assert.equal(trustedSender(entry, appRoot), true);
+  assert.equal(trustedSender(pathToFileURL(path.join(appRoot, "dist-renderer", "overlay.html")).href, appRoot), false);
 });
 
 test("pane layout restores only bounded persisted values", () => {

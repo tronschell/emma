@@ -3193,12 +3193,15 @@ test "Vision path admission retains the canonical execution targets" {
         var file = try tmp.dir.createFile(std.testing.io, name, .{});
         file.close(std.testing.io);
     }
-    try tmp.dir.symLink(
+    tmp.dir.symLink(
         std.testing.io,
         "target-a.png",
         "approved.png",
         .{ .is_directory = false },
-    );
+    ) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
     defer alloc.free(workspace);
     const target_a = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "target-a.png");
@@ -3499,8 +3502,8 @@ test "external file action identity is canonical across call IDs and distinguish
     );
     const absolute_arguments = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"denied\\n\"}}",
-        .{absolute_target},
+        "{{\"path\":{f},\"content\":\"denied\\n\"}}",
+        .{std.json.fmt(absolute_target, .{})},
     );
     const relative_arguments =
         "{\"content\":\"denied\\n\",\"path\":\"../external/denied/nested/file.txt\"}";
@@ -4179,10 +4182,11 @@ test "interactive file admission passes its canonical grant offer to the prompte
     );
     input.workspace_root = workspace;
     input.permission_prompter = recording.prompter();
+    const note_path = try std.fs.path.join(arena, &.{ workspace, "note.txt" });
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}/note.txt\",\"content\":\"hello\\n\"}}",
-        .{workspace},
+        "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+        .{std.json.fmt(note_path, .{})},
     );
 
     const outcome = try requestPermissionOutcome(
@@ -4648,8 +4652,8 @@ test "yolo file admission preserves canonical mutation authority" {
     const target = try std.fs.path.join(arena, &.{ workspace, "yolo.txt" });
     const arguments = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"ok\\n\"}}",
-        .{target},
+        "{{\"path\":{f},\"content\":\"ok\\n\"}}",
+        .{std.json.fmt(target, .{})},
     );
 
     const outcome = try requestPermissionOutcome(
@@ -4900,7 +4904,7 @@ test "live authority resolves a missing read target without changing ordinary ad
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace/src");
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(workspace);
-    const expected = try std.fs.path.join(alloc, &.{ workspace, "src/missing.zig" });
+    const expected = try std.fs.path.join(alloc, &.{ workspace, "src", "missing.zig" });
     defer alloc.free(expected);
     const external_root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
     defer alloc.free(external_root);
@@ -4951,8 +4955,8 @@ test "live authority resolves a missing read target without changing ordinary ad
                 .name = "read_file",
                 .arguments_json = try std.fmt.allocPrint(
                     arena_state.allocator(),
-                    "{{\"path\":\"{s}\"}}",
-                    .{external_expected},
+                    "{{\"path\":{f}}}",
+                    .{std.json.fmt(external_expected, .{})},
                 ),
             },
         ),
@@ -4968,7 +4972,7 @@ test "live authority preserves a non-directory read failure for tool execution" 
     blocking_file.close(io_mod.getIo());
     const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(workspace);
-    const expected = try std.fs.path.join(alloc, &.{ workspace, "not-a-dir/child.txt" });
+    const expected = try std.fs.path.join(alloc, &.{ workspace, "not-a-dir", "child.txt" });
     defer alloc.free(expected);
 
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -5648,6 +5652,7 @@ test "automatic clean direct command bypasses the reviewer" {
 }
 
 test "known reversible auto commands bypass the reviewer" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     var worker: WorkerRuntime = .{};
@@ -5690,6 +5695,42 @@ test "known reversible auto commands bypass the reviewer" {
         );
     }
     try std.testing.expectEqual(@as(usize, 0), fake.calls);
+}
+
+test "the Windows shell sends every automatic command to the reviewer" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var background: BackgroundRuntime = .{};
+    defer background.deinit(std.testing.allocator);
+    var fake = FakeAutoClassifier{};
+    const input = testInputWithClassifier(
+        &worker,
+        &background,
+        permission_auto_classifier.Classifier.withOverride(
+            @ptrCast(&fake),
+            FakeAutoClassifier.classify,
+        ),
+    );
+    const arguments = try std.fmt.allocPrint(
+        arena_state.allocator(),
+        "{{\"action\":\"exec\",\"command\":{f}}}",
+        .{std.json.fmt("git status --short --branch", .{})},
+    );
+    const outcome = try requestPermissionOutcome(
+        input,
+        arena_state.allocator(),
+        .{ .id = "ordinary", .name = "terminal", .arguments_json = arguments },
+        .auto,
+        &.{},
+    );
+    try std.testing.expectEqual(
+        command_admission.ShellAuthorizationSource.auto_classifier,
+        outcome.execution_authority.?.run_command.shell_allowed.source,
+    );
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
 }
 
 test "session deny narrows configured command allow" {
@@ -6440,8 +6481,8 @@ test "external prepared file review carries frozen path and diff authority" {
     }
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-        .{target_path},
+        "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+        .{std.json.fmt(target_path, .{})},
     );
     const outcome = try requestPermissionOutcome(
         input,
@@ -6527,8 +6568,8 @@ test "human approval phase routes prepared file mutation through the prompter" {
     const target_path = try std.fs.path.join(arena, &.{ external, "prepared.txt" });
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-        .{target_path},
+        "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+        .{std.json.fmt(target_path, .{})},
     );
     const call: ToolCall = .{
         .id = "prepared-human-approval",
@@ -6594,8 +6635,8 @@ test "automatic workspace write uses reversible admission without reviewer" {
     const target_path = try std.fs.path.join(arena, &.{ workspace, "note.txt" });
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-        .{target_path},
+        "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+        .{std.json.fmt(target_path, .{})},
     );
 
     const outcome = try requestPermissionOutcome(
@@ -6624,8 +6665,8 @@ test "automatic workspace write uses reversible admission without reviewer" {
     const edit_target = try std.fs.path.join(arena, &.{ workspace, "editable.txt" });
     const edit_arguments = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"old_string\":\"before\",\"new_string\":\"after\"}}",
-        .{edit_target},
+        "{{\"path\":{f},\"old_string\":\"before\",\"new_string\":\"after\"}}",
+        .{std.json.fmt(edit_target, .{})},
     );
     const edit_outcome = try requestPermissionOutcome(
         input,
@@ -6698,8 +6739,8 @@ test "automatic added-root write bypasses reviewer while untrusted external writ
         const target_path = try std.fs.path.join(arena, &.{ case.root, "note.txt" });
         const arguments_json = try std.fmt.allocPrint(
             arena,
-            "{{\"path\":\"{s}\",\"content\":\"hello\\n\"}}",
-            .{target_path},
+            "{{\"path\":{f},\"content\":\"hello\\n\"}}",
+            .{std.json.fmt(target_path, .{})},
         );
         const outcome = try requestPermissionOutcome(
             input,
@@ -6758,8 +6799,8 @@ test "automatic trusted-root write keeps persistence targets on reviewer path" {
         const target_path = try std.fs.path.join(arena, &.{ workspace, relative_target });
         const arguments_json = try std.fmt.allocPrint(
             arena,
-            "{{\"path\":\"{s}\",\"content\":\"test\\n\"}}",
-            .{target_path},
+            "{{\"path\":{f},\"content\":\"test\\n\"}}",
+            .{std.json.fmt(target_path, .{})},
         );
         const outcome = try requestPermissionOutcome(
             input,
@@ -6818,8 +6859,8 @@ test "automatic trusted-root overwrite preserves configured read disclosure revi
     const target_path = try std.fs.path.join(arena, &.{ workspace, "secret.txt" });
     const arguments_json = try std.fmt.allocPrint(
         arena,
-        "{{\"path\":\"{s}\",\"content\":\"after\\n\"}}",
-        .{target_path},
+        "{{\"path\":{f},\"content\":\"after\\n\"}}",
+        .{std.json.fmt(target_path, .{})},
     );
 
     const outcome = try requestPermissionOutcome(
@@ -6891,8 +6932,8 @@ test "automatic trusted-root folder creation bypasses reviewer while external do
     for (cases) |case| {
         const arguments_json = try std.fmt.allocPrint(
             arena,
-            "{{\"path\":\"{s}\"}}",
-            .{case.target},
+            "{{\"path\":{f}}}",
+            .{std.json.fmt(case.target, .{})},
         );
         const outcome = try requestPermissionOutcome(
             input,

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { access, constants, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -156,12 +156,32 @@ export function squirrelEvent(args: readonly string[] = process.argv): "install"
   return null;
 }
 
+export function windowsPwshExecutable(): string | undefined {
+  if (!isWindows) return undefined;
+  for (const root of [process.env.ProgramW6432, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
+    if (!root) continue;
+    const candidate = path.win32.join(root, "PowerShell", "7", "pwsh.exe");
+    if (existsSync(candidate)) return candidate;
+  }
+  const app = process.env.LOCALAPPDATA && path.win32.join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps", "pwsh.exe");
+  return app && existsSync(app) ? app : undefined;
+}
+
+export function windowsCommandShell(): string {
+  return windowsSystemExecutable("cmd.exe");
+}
+
+const WINDOWS_SHELL_PRELUDE = "$e = [Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $e; [Console]::OutputEncoding = $e; $OutputEncoding = $e\n";
+const WINDOWS_SHELL_EPILOGUE = "\nexit $(if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 })";
+
 export function shellBinary(): string {
-  return isWindows ? windowsSystemExecutable("cmd.exe") : "/bin/bash";
+  if (!isWindows) return "/bin/bash";
+  return windowsPwshExecutable() ?? windowsPowerShellExecutable();
 }
 
 export function shellArguments(command: string, login = true): string[] {
-  return isWindows ? ["/d", "/s", "/c", command] : [login ? "-ilc" : "-lc", command];
+  if (!isWindows) return [login ? "-ilc" : "-lc", command];
+  return ["-NoLogo", "-NonInteractive", "-Command", `${WINDOWS_SHELL_PRELUDE}${command}${WINDOWS_SHELL_EPILOGUE}`];
 }
 
 export function commandShimArguments(command: string, args: readonly string[]): string[] {
@@ -171,7 +191,7 @@ export function commandShimArguments(command: string, args: readonly string[]): 
 
 export function spawnCommand(command: string, args: readonly string[], options: SpawnOptions = {}): ChildProcess {
   if (isWindows && WINDOWS_SHIM.test(command)) {
-    return spawn(shellBinary(), commandShimArguments(command, args), { ...options, shell: false, windowsVerbatimArguments: true });
+    return spawn(windowsCommandShell(), commandShimArguments(command, args), { ...options, shell: false, windowsVerbatimArguments: true });
   }
   return spawn(command, [...args], { ...options, shell: false });
 }

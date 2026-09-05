@@ -16230,7 +16230,7 @@ test "modern MCP calls delegate unsupported schema assertions to the server" {
         \\      printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
         \\      ;;
         \\    *'"method":"tools/list"'*)
-        \\      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":60000,"tools":[{"name":"local","inputSchema":{"type":"object","properties":{"email":{"type":"string"}},"required":["email"]}},{"name":"provider_pattern","inputSchema":{"type":"object","properties":{"email":{"type":"string","pattern":"^(?!\\.)(?!.*\\.\\.)[A-Za-z0-9_+.-]+@[A-Za-z0-9.-]+$"}},"required":["email"]},"outputSchema":{"type":"object","properties":{"email":{"type":"string","pattern":"^(?!\\.)(?!.*\\.\\.)[A-Za-z0-9_+.-]+@[A-Za-z0-9.-]+$"}},"required":["email"]}}]}}'
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":60000,"tools":[{"name":"local","inputSchema":{"type":"object","properties":{"email":{"type":"string"}},"required":["email"]}},{"name":"provider_pattern","inputSchema":{"type":"object","properties":{"email":{"type":"string","pattern":"^(?![.])(?!.*[.][.])[A-Za-z0-9_+.-]+@[A-Za-z0-9.-]+$"}},"required":["email"]},"outputSchema":{"type":"object","properties":{"email":{"type":"string","pattern":"^(?![.])(?!.*[.][.])[A-Za-z0-9_+.-]+@[A-Za-z0-9.-]+$"}},"required":["email"]}}]}}'
         \\      ;;
         \\    *'"method":"tools/call"'*'"email":"person@example.com"'*)
         \\      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","content":[{"type":"text","text":"accepted"}],"structuredContent":{"email":"person@example.com"}}}'

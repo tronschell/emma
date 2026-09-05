@@ -149,6 +149,7 @@ jobs:
       - macos
       - zig
       - package_mac
+      - package_win
       - check-windows
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -159,6 +160,7 @@ jobs:
           test "${{ needs.zig.result }}" = success
           test "${{ needs.check-windows.result }}" = success
           test "${{ needs.package_mac.result }}" = "${{ github.base_ref == 'main' && 'success' || 'skipped' }}"
+          test "${{ needs.package_win.result }}" = "${{ github.base_ref == 'main' && 'success' || 'skipped' }}"
 
   check-windows:
     if: github.event_name == 'pull_request' && always()
@@ -170,11 +172,11 @@ jobs:
     steps:
       - name: require all Windows checks
         run: |
-          test "${{ needs.windows.result }}" = skipped
-          test "${{ needs.zig_windows.result }}" = skipped
+          test "${{ needs.windows.result }}" = success
+          test "${{ needs.zig_windows.result }}" = success
 
   windows:
-    if: false
+    if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -200,10 +202,7 @@ jobs:
       - run: npm ci
         working-directory: desktop
 
-      - run: npm run build:main
-        working-directory: desktop
-
-      - run: node --test --test-timeout=60000 dist-main/test/background.test.js test/windows.test.mjs
+      - run: npm run test
         working-directory: desktop
 
       - name: msvc-dev-cmd v1.13.0
@@ -219,7 +218,7 @@ jobs:
 
   zig_windows:
     name: zig-windows
-    if: false
+    if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -232,5 +231,90 @@ jobs:
         with:
           version: 0.16.0
 
-      - run: zig build test
+      - run: zig build test --test-timeout 2m --summary all
         working-directory: harness
+
+  package_win:
+    name: package-win
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == 'main')
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: setup-zig v2.2.1
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target\release
+          key: cargo-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-package-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: msvc-dev-cmd v1.13.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: amd64
+
+      - run: npm ci
+        working-directory: desktop
+
+      - name: stage the Windows signing certificate
+        id: certificate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:CERT_PFX_BASE64 -or -not $env:CERT_PASSWORD) {
+            Write-Output 'Packaging Windows unsigned. Add WINDOWS_CERT_PFX_BASE64 and WINDOWS_CERT_PASSWORD to sign it.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'emma-cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+          "pfx=$pfx" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: package the Windows release candidate
+        env:
+          WINDOWS_CERT_PFX: ${{ steps.certificate.outputs.pfx }}
+          WINDOWS_CERT_PASSWORD: ${{ steps.certificate.outputs.pfx != '' && secrets.WINDOWS_CERT_PASSWORD || '' }}
+        run: npm run package:win
+
+      - name: stage the Windows release candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          $candidate = Join-Path $env:RUNNER_TEMP 'emma-release-candidate-windows'
+          New-Item -ItemType Directory -Force -Path $candidate | Out-Null
+          $feed = @('RELEASES', 'SHA256SUMS')
+          Get-ChildItem -Path desktop/release/squirrel -File |
+            Where-Object { $feed -contains $_.Name -or $_.Extension -eq '.nupkg' -or $_.Name -like 'Emma-*-Setup.exe' } |
+            Copy-Item -Destination $candidate
+          node -e "require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ source_sha: process.env.GITHUB_SHA, version: require('./package.json').version, workflow_run_id: process.env.GITHUB_RUN_ID }) + '\n')" "$candidate/manifest.json"
+
+      - name: upload the Windows release candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emma-release-candidate-windows
+          path: ${{ runner.temp }}/emma-release-candidate-windows
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: remove the Windows signing certificate
+        if: always()
+        run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP 'emma-cert.pfx')

@@ -88,6 +88,7 @@ import { createBridge, type Bridge } from "./bridge";
 import { clampTrace, compactionNotice } from "../shared/trace";
 import { isPin, MAX_ASK_MS, MAX_LABEL_PROMPT_CHARS, PROTOCOL_VERSION, type BridgeEvent, type BridgeMethod, type CommandMenu, type DesktopIdentity, type GitSyncResult, type LiveAgent, type LiveState, type CredentialSlot, type KeyStatus, type MacSettings, type MemoryNote, type ModelEntry, type PhoneList, type PluginEntry, type ScheduledJob, type ToolSwitches, type ToolTargets, type Message, type ThreadStep as RemoteStep, type ThreadSummary, type ThreadTrace, type TraceSpan as PhoneTraceSpan } from "../shared/mobile-protocol";
 import type { TraceSpan } from "../shared/trace";
+import { localDevice } from "../shared/platform-copy";
 import { canonicalResetPath, findExecutable, isMac, isWindows, pathInside, realPath, realPathInside, resetDataRoots, samePath, shellArguments, shellBinary, spawnCommand, squirrelEvent as readSquirrelEvent, terminateProcessTree, WINDOWS_APP_USER_MODEL_ID } from "./platform";
 
 const MAX_HOST_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -95,6 +96,7 @@ const SNAPSHOT_CACHE_MS = 5000;
 const MAX_HOST_CALL_MS = 60 * 1000;
 const WINDOWS_SHUTDOWN_TIMEOUT_MS = 8000;
 
+const DEVICE = localDevice(process.platform);
 if (isWindows) app.setName("Emma");
 
 class Host {
@@ -678,6 +680,7 @@ function openMain() {
     minWidth: 1040,
     minHeight: 680,
     ...(isMac ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 18, y: 17 } } : {}),
+    ...(isWindows ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: "#131316", symbolColor: "#e8e6df", height: 32 } } : {}),
     ...(process.platform === "darwin" ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const, backgroundColor: "#00000000" } : {}),
   });
   mainWindow.on("closed", () => (mainWindow = null));
@@ -780,13 +783,13 @@ function toggleOverlay(command?: string) {
   }
   overlayBusy = false;
   closeOverlayWhenIdle = false;
-  overlaySurface = isWindows ? "pill" : "notch";
+  overlaySurface = isWindows ? "popout" : "notch";
   overlayGrow = 0;
   overlayFront = frontContextNote().catch(() => "");
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const pill = isWindows ? pillLayout(display, pillSpot) : undefined;
   if (pill) pillSpot = { x: pill.x, y: pill.y };
-  const layout = pill ? { bounds: pill, notch: { left: 0, width: 0, height: 0 } } : overlayLayout(display, overlayPreferences, notches.find((item) => item.id === display.id));
+  const layout = pill ? { bounds: popoutLayout(display, pill).bounds, notch: { left: 0, width: 0, height: 0 } } : overlayLayout(display, overlayPreferences, notches.find((item) => item.id === display.id));
   const window = secureWindow({
     ...layout.bounds,
     ...floating,
@@ -1135,7 +1138,7 @@ async function confirmOnMac(message: string, detail: string, accept: string): Pr
   try {
     const choice = await dialog.showMessageBox(mainWindow, {
       type: "warning",
-      title: "Approve on this Mac",
+      title: `Approve on this ${DEVICE}`,
       message: clip(message),
       detail: clip(detail),
       buttons: ["Cancel", accept],
@@ -1266,7 +1269,8 @@ function showComputerCursor() {
     return;
   }
   try {
-    window.setBounds(cursor.bounds);
+    const bounds = isWindows ? screen.screenToDipRect(null, cursor.bounds) : cursor.bounds;
+    window.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) });
     window.webContents.send("emma:computer-run-progress", { ...progress, cursor });
     window.showInactive();
     window.moveAbove(above);
@@ -2428,7 +2432,7 @@ function routedModelKey(key: string): string {
   if (providerFor(key)) return key;
   const routerId = routerIdFor(key);
   if (routerId === FREE_ROUTER_ID || routers.some((router) => router.id === routerId)) return key;
-  throw new Error("That model is not set up on this Mac any more. Pick another one.");
+  throw new Error(`That model is not set up on this ${DEVICE} any more. Pick another one.`);
 }
 
 const thinkingLevel = (value: unknown): ThinkingLevel => isThinkingLevel(value) ? value : "";
@@ -3184,7 +3188,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
     case "saveCredential": {
       const slot = credentialSlot(params);
 
-      if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error("That is not a key this Mac holds a slot for.");
+      if (!credentialSlotsHeld().some((held) => held.env === slot.env)) throw new Error(`That is not a key this ${DEVICE} holds a slot for.`);
 
       if (slot.secret === undefined) credentials!.remove(slot.env);
       else credentials!.set(slot.env, slot.secret);
@@ -3304,7 +3308,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
         const labels = importSources(homedir()).filter((source) => adding.includes(source.id)).map((source) => source.label).join(", ");
         const approved = await confirmOnMac(
           "Read another agent's skills and MCP servers?",
-          `Emma will read ${labels} on this Mac and start the servers their config files name.`,
+          `Emma will read ${labels} on this ${DEVICE} and start the servers their config files name.`,
           "Import",
         );
         if (!approved) throw new Error("Nobody at your Mac approved that import.");
@@ -3468,7 +3472,7 @@ async function bridgeDispatch(method: BridgeMethod, params: Record<string, unkno
       const model = selected.model ?? run.model ?? "";
 
       const { models } = await cliModels.read(run.cli, (cli) => clis.where(cli));
-      if (model && !models.includes(model)) throw new Error("That is not a model this Mac found for that CLI.");
+      if (model && !models.includes(model)) throw new Error(`That is not a model this ${DEVICE} found for that CLI.`);
       return clis.setOptions(id, selected);
     }
     case "listScheduledJobs":
@@ -4064,7 +4068,10 @@ protocol.registerSchemesAsPrivileged([
 
 app.commandLine.appendSwitch("remote-debugging-port", "0");
 
-if (isWindows) app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+if (isWindows) {
+  app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+  Menu.setApplicationMenu(null);
+}
 
 function addUpdateMenuItem() {
   if (!isMac) return;

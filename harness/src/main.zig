@@ -10,6 +10,8 @@ else
 
 pub const version = "0.0.4";
 
+const null_device_path = if (builtin.os.tag == .windows) "\\\\.\\NUL" else "/dev/null";
+
 const app_lifecycle = @import("core/app/app_lifecycle.zig");
 const provider_runtime = @import("core/app/provider_runtime.zig");
 const auth_runtime = @import("core/auth/auth_runtime.zig");
@@ -556,6 +558,7 @@ const App = struct {
     pub fn init(alloc: Allocator, launch: *cli_surface.InteractiveLaunch) !Self {
         var app = Self{
             .alloc = alloc,
+            .terminal = TerminalState.forConsole(),
             .subagents = ui_subagents.Controller.init(),
             .lifecycle_runtime = hooks.Runtime.init(alloc),
             .background = BackgroundRuntime.init(if (comptime host_target.is_wasm)
@@ -2892,9 +2895,14 @@ fn rawArgs(c_argc: c_int, c_argv: [*][*:0]c_char) []const [*:0]const u8 {
     return argv[0..argc];
 }
 
+fn windowsCommandLine() []const u16 {
+    if (comptime builtin.os.tag != .windows) return &.{};
+    return std.os.windows.peb().ProcessParameters.CommandLine.slice();
+}
+
 fn argsFromRaw(raw_args: []const [*:0]const u8) std.process.Args {
     return switch (builtin.os.tag) {
-        .windows => .{ .vector = &[_]u16{} },
+        .windows => .{ .vector = windowsCommandLine() },
         else => .{ .vector = raw_args },
     };
 }
@@ -3301,7 +3309,7 @@ test "session reset traces and clears active paste state" {
     defer debug_trace.resetForTest();
     try debug_trace.configureForTestWithScopes(alloc, trace_path, "input");
 
-    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var app = App{
@@ -3358,7 +3366,7 @@ test "terminal help styling respects terminal capability and color opt-outs" {
 }
 
 test "follow up prompt card top margin is renderer-owned" {
-    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var app = App{
@@ -3394,7 +3402,7 @@ test "follow up prompt card top margin is renderer-owned" {
 }
 
 test "follow up prompt card does not over-pad when assistant ends with blank row" {
-    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var app = App{
@@ -3430,7 +3438,7 @@ test "diff block writes are classified" {
     const c_alloc = std.heap.c_allocator;
     const diff_mod = @import("core/output/diff.zig");
 
-    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var app = App{
@@ -3470,7 +3478,7 @@ test "diff block writes are classified" {
 }
 
 test "prompt card wraps image badges in OSC 8 hyperlinks" {
-    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var app = App{
@@ -3505,7 +3513,7 @@ test "prompt card wraps image badges in OSC 8 hyperlinks" {
 }
 
 test "/version command writes version to transcript" {
-    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    var sink = try std.Io.Dir.openFileAbsolute(std.testing.io, null_device_path, .{ .mode = .write_only });
     defer sink.close(io_mod.getIo());
 
     var app = App{
@@ -3874,4 +3882,14 @@ test {
     _ = @import("core/agent/worker_runtime.zig");
     _ = @import("gateway/client.zig");
     _ = @import("gateway/host_stream_provider.zig");
+    if (comptime builtin.os.tag == .windows) {
+        _ = @import("core/hosts/windows_protected_store.zig");
+        _ = @import("core/shared/windows_acl.zig");
+        _ = @import("core/shared/windows_clipboard.zig");
+        _ = @import("core/shared/windows_paths.zig");
+        _ = @import("core/shared/windows_process.zig");
+        _ = @import("core/shared/windows_process_tree.zig");
+        _ = @import("core/shared/windows_stdio.zig");
+        _ = @import("ui/terminal/windows_console.zig");
+    }
 }

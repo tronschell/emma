@@ -91,76 +91,84 @@ pub fn recordingsDir(alloc: Allocator, home: []const u8) ![]u8 {
     return std.fs.path.join(alloc, &.{ home, root_dir_name, recordings_dir_name });
 }
 
+fn expectProfilePath(actual: []const u8, parts: []const []const u8) !void {
+    const alloc = std.testing.allocator;
+    const base = try std.fs.path.join(alloc, &.{ "/tmp/fake-home", ".fx" });
+    defer alloc.free(base);
+    var expected = try alloc.dupe(u8, base);
+    defer alloc.free(expected);
+    for (parts) |part| {
+        const next = try std.fs.path.join(alloc, &.{ expected, part });
+        alloc.free(expected);
+        expected = next;
+    }
+    try std.testing.expectEqualStrings(expected, actual);
+}
+
 test "profile path helpers preserve current default locations" {
     const alloc = std.testing.allocator;
 
     const root = try rootDir(alloc, "/tmp/fake-home");
     defer alloc.free(root);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx", root);
+    try expectProfilePath(root, &.{});
 
     const settings = try settingsPath(alloc, "/tmp/fake-home");
     defer alloc.free(settings);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/settings.json", settings);
+    try expectProfilePath(settings, &.{"settings.json"});
 
     const mcp = try mcpConfigPath(alloc, "/tmp/fake-home");
     defer alloc.free(mcp);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/mcp.json", mcp);
+    try expectProfilePath(mcp, &.{"mcp.json"});
 
     const mcp_credentials_dir = try mcpCredentialsDir(alloc, "/tmp/fake-home");
     defer alloc.free(mcp_credentials_dir);
-    try std.testing.expectEqualStrings(
-        "/tmp/fake-home/.fx/mcp-credentials",
-        mcp_credentials_dir,
-    );
+    try expectProfilePath(mcp_credentials_dir, &.{"mcp-credentials"});
 
     const mcp_credentials = try mcpCredentialsPath(alloc, "/tmp/fake-home");
     defer alloc.free(mcp_credentials);
-    try std.testing.expectEqualStrings(
-        "/tmp/fake-home/.fx/mcp-credentials/credentials.json",
-        mcp_credentials,
-    );
+    try expectProfilePath(mcp_credentials, &.{ "mcp-credentials", "credentials.json" });
 
     const skills = try managedSkillsDir(alloc, "/tmp/fake-home");
     defer alloc.free(skills);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/skills", skills);
+    try expectProfilePath(skills, &.{"skills"});
 
     const auth = try authPath(alloc, "/tmp/fake-home");
     defer alloc.free(auth);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/auth.json", auth);
+    try expectProfilePath(auth, &.{"auth.json"});
 
     const chatgpt_auth = try chatgptAuthPath(alloc, "/tmp/fake-home");
     defer alloc.free(chatgpt_auth);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/chatgpt-auth.json", chatgpt_auth);
+    try expectProfilePath(chatgpt_auth, &.{"chatgpt-auth.json"});
 
     const api_key = try apiKeyPath(alloc, "/tmp/fake-home");
     defer alloc.free(api_key);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/api-key", api_key);
+    try expectProfilePath(api_key, &.{"api-key"});
 
     const sessions = try sessionsDir(alloc, "/tmp/fake-home");
     defer alloc.free(sessions);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/sessions", sessions);
+    try expectProfilePath(sessions, &.{"sessions"});
 
     const history = try promptHistoryPath(alloc, "/tmp/fake-home");
     defer alloc.free(history);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/history.jsonl", history);
+    try expectProfilePath(history, &.{"history.jsonl"});
 
     const memories = try memoriesPath(alloc, "/tmp/fake-home");
     defer alloc.free(memories);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/memories.json", memories);
+    try expectProfilePath(memories, &.{"memories.json"});
 
     const backups = try backupsDir(alloc, "/tmp/fake-home");
     defer alloc.free(backups);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/backups", backups);
+    try expectProfilePath(backups, &.{"backups"});
 
     const logs = try logsDir(alloc, "/tmp/fake-home");
     defer alloc.free(logs);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/logs", logs);
+    try expectProfilePath(logs, &.{"logs"});
 
     const trace = try traceLogPath(alloc, "/tmp/fake-home");
     defer alloc.free(trace);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/logs/trace.log", trace);
+    try expectProfilePath(trace, &.{ "logs", "trace.log" });
 
     const recordings = try recordingsDir(alloc, "/tmp/fake-home");
     defer alloc.free(recordings);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/recordings", recordings);
+    try expectProfilePath(recordings, &.{"recordings"});
 }

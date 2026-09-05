@@ -15,7 +15,7 @@ to a file in this repo.
 | Note tagger | A saved note's text, up to 6 000 characters | The tagger route. OpenRouter by default |
 | Commit-message suggestion | File names and up to 12 000 characters of the diff | The tagger route, when you request a suggested commit message |
 | Model catalog | Nothing but the HTTP request — no credential, no query | `openrouter.ai` |
-| App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org` for the public macOS feed, then GitHub release assets; at packaged-app launch and every six hours. Windows publication is pending release-workflow authorization |
+| App updates | Repository name, platform, architecture and installed version in the feed URL; ordinary request metadata | `update.electronjs.org` for the public macOS and Windows feeds, then GitHub release assets; at packaged-app launch and every six hours |
 | `web_search` | Your query string, plus a result count on Brave, Tavily and Exa | Your configured provider. `4get.canine.tools` by default |
 | `web_fetch`, page clipping | The URL you or the model named | That site |
 | Dictation | Recorded audio | `127.0.0.1:8080`, or the on-device macOS Speech.framework / Windows SAPI recognizer. Never off this computer |

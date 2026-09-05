@@ -1442,31 +1442,21 @@ test "credential store is private atomic and supports restart deletion" {
 
     var root = try tmp.dir.openDir(std.testing.io, "home/.fx", .{ .iterate = true });
     defer root.close(std.testing.io);
-    const root_stat = try root.stat(std.testing.io);
-    try std.testing.expectEqual(
-        @as(u32, 0o700),
-        io_mod.permissionsMode(root_stat.permissions) & 0o777,
-    );
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(root));
     var credentials_dir = try root.openDir(
         std.testing.io,
         profile_paths.mcp_credentials_dir_name,
         .{ .iterate = true },
     );
     defer credentials_dir.close(std.testing.io);
-    const dir_stat = try credentials_dir.stat(std.testing.io);
-    try std.testing.expectEqual(
-        @as(u32, 0o700),
-        io_mod.permissionsMode(dir_stat.permissions) & 0o777,
-    );
-    const file_stat = try credentials_dir.statFile(
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(credentials_dir));
+    var credentials_file = try credentials_dir.openFile(
         std.testing.io,
         profile_paths.mcp_credentials_file_name,
-        .{},
+        .{ .follow_symlinks = false },
     );
-    try std.testing.expectEqual(
-        @as(u32, 0o600),
-        io_mod.permissionsMode(file_stat.permissions) & 0o777,
-    );
+    defer credentials_file.close(std.testing.io);
+    try std.testing.expect(try io_mod.privateFileAclMatches(credentials_file));
 
     const deleted = try delete(
         alloc,

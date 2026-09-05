@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const model_context_encoding = @import("../shared/model_context_encoding.zig");
 const skill_contract = @import("skill_contract.zig");
@@ -1281,6 +1282,7 @@ const CandidatePathReplacementHook = struct {
 };
 
 test "skill invocation reads validated candidate resources after path replacement" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     inline for (.{
         .{ "SKILL.md", "ORIGINAL SKILL BODY", "REPLACEMENT SKILL BODY" },
@@ -1734,6 +1736,7 @@ test "skill resources continue on line-safe UTF-8 boundaries and reject unsafe i
 }
 
 test "skill invocation encodes loaded paths and preserves the skill body" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1838,9 +1841,7 @@ test "skill invocation preserves strict discovery diagnostics without a profile 
         try file.writeStreamingAll(io_mod.getIo(), "---\nname: bad/name\ndescription: invalid name\n---\n\nINVALID BODY SENTINEL\n");
     }
 
-    const canonical_tmp = try io_mod.realpathAlloc(alloc, "/tmp");
-    defer alloc.free(canonical_tmp);
-    const workspace_root = try std.fs.path.join(alloc, &.{ canonical_tmp, "fx-skill-tool-strict-workspace" });
+    const workspace_root = try std.fs.path.join(alloc, &.{ tmp_root, "fx-skill-tool-strict-workspace" });
     defer alloc.free(workspace_root);
     const skills_dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "custom-skills");
     defer alloc.free(skills_dir);

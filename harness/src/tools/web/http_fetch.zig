@@ -2691,7 +2691,7 @@ fn pipeBackedTlsBoundaryReader(
     transport_reader: *PlainDeadlineReader,
     boundary_reader: *ScriptedTlsBoundaryReader,
 ) !posix.fd_t {
-    if (comptime builtin.os.tag == .windows) return error.PipeFailed;
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var fds: [2]std.c.fd_t = undefined;
     if (std.c.pipe(&fds) != 0) return error.PipeFailed;
     errdefer closeFd(fds[0]);

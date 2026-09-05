@@ -1449,7 +1449,7 @@ pub const FakeAgentRuntimeDeps = struct {
         if (swap_link) |link| {
             const target = swap_target orelse return error.InvalidToolArguments;
             var cwd = std.Io.Dir.cwd();
-            cwd.deleteFile(io_mod.getIo(), link) catch {};
+            io_mod.deleteSymLink(cwd, link) catch {};
             try cwd.symLink(io_mod.getIo(), target, link, .{ .is_directory = true });
         }
         if (should_return_ordinary_cancel) return error.Cancelled;

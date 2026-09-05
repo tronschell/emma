@@ -7,6 +7,7 @@ const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_result_errors = @import("../../core/tooling/tool_result_errors.zig");
 const workspace_files = @import("../../core/workspace/workspace_files.zig");
 const sort_utils = @import("../../core/shared/sort_utils.zig");
+const path_display = @import("path_display.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -127,7 +128,7 @@ fn callWithWorkspaceOptions(ctx: tool_dispatch.DispatchContext, erased: tool_dis
     };
     defer compiled_pattern.deinit(arena);
 
-    var matches: std.ArrayList([]u8) = .empty;
+    var matches: std.ArrayList([]const u8) = .empty;
     defer matches.deinit(arena);
     var match_count: usize = 0;
     var output_truncated = false;
@@ -184,7 +185,7 @@ fn callWithWorkspaceOptions(ctx: tool_dispatch.DispatchContext, erased: tool_dis
         if (compiled_pattern.matchesPath(basename)) {
             match_count += 1;
             if (input.mode == .matches) {
-                try matches.append(arena, try arena.dupe(u8, root_relative));
+                try matches.append(arena, try path_display.slashSeparated(arena, root_relative));
             }
         }
     }
@@ -323,11 +324,11 @@ fn isPathSeparator(ch: u8) bool {
     return ch == '/' or ch == '\\';
 }
 
-fn joinRelativeSearchPath(arena: Allocator, root_relative: []const u8, child_relative: []const u8) ![]u8 {
+fn joinRelativeSearchPath(arena: Allocator, root_relative: []const u8, child_relative: []const u8) ![]const u8 {
     if (std.mem.eql(u8, root_relative, ".") or root_relative.len == 0) {
-        return arena.dupe(u8, child_relative);
+        return path_display.slashSeparated(arena, child_relative);
     }
-    return std.fs.path.join(arena, &.{ root_relative, child_relative });
+    return path_display.slashSeparated(arena, try std.fs.path.join(arena, &.{ root_relative, child_relative }));
 }
 
 fn shouldIncludeHidden(root_relative: []const u8, pattern: []const u8) bool {
@@ -996,19 +997,14 @@ test "glob_files distinguishes candidate cap from output cap" {
 
 test "glob_files allows external absolute path search roots" {
     const alloc = std.testing.allocator;
-    const root = try std.fmt.allocPrint(alloc, "/tmp/fx-glob-external-{d}", .{io_mod.nanoTimestamp()});
-    defer alloc.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), root) catch {};
-    const workspace_dir = try std.fs.path.join(alloc, &.{ root, "workspace" });
-    defer alloc.free(workspace_dir);
-    const external_dir = try std.fs.path.join(alloc, &.{ root, "external" });
-    defer alloc.free(external_dir);
-    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), workspace_dir);
-    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), external_dir);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    try tmp.dir.createDirPath(io_mod.getIo(), "external");
 
-    const workspace = try io_mod.realpathAlloc(alloc, workspace_dir);
+    const workspace = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
     defer alloc.free(workspace);
-    const external = try io_mod.realpathAlloc(alloc, external_dir);
+    const external = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "external");
     defer alloc.free(external);
     const external_file = try std.fs.path.join(alloc, &.{ external, "outside.txt" });
     defer alloc.free(external_file);

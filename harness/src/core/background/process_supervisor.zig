@@ -899,7 +899,7 @@ pub fn pathBelongsToWorkspace(path: []const u8, workspace_root: []const u8) bool
     if (std.mem.eql(u8, path, workspace_root)) return true;
     if (!std.mem.startsWith(u8, path, workspace_root)) return false;
     if (path.len <= workspace_root.len) return false;
-    return path[workspace_root.len] == std.fs.path.sep;
+    return std.fs.path.isSep(path[workspace_root.len]);
 }
 
 fn copyTaskSnapshot(alloc: std.mem.Allocator, task: TaskRecord) !TaskSnapshot {

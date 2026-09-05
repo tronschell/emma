@@ -220,6 +220,7 @@ test "background launch output removes managed log on cancellation" {
         .follow_symlinks = false,
     });
     defer session_dir.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(session_dir);
     var capability = try session_child_store.SessionChildCapability.initForTesting(
         alloc,
         session_dir,

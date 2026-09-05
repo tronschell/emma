@@ -412,7 +412,7 @@ test "web_fetch artifact store refuses symlinks and partial temp files determini
         defer tmp.cleanup();
         try tmp.dir.createDirPath(io_mod.getIo(), "artifacts/web-fetch");
         tmp.dir.symLink(io_mod.getIo(), "target", "artifacts/web-fetch/artifact-link.bin", .{ .is_directory = false }) catch |err| switch (err) {
-            error.AccessDenied => return error.SkipZigTest,
+            error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
             else => return err,
         };
         const session_dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
@@ -428,13 +428,19 @@ test "web_fetch artifact store rejects a symlinked store directory" {
     try tmp.dir.createDirPath(io_mod.getIo(), "artifacts");
     try tmp.dir.createDirPath(io_mod.getIo(), "outside");
     tmp.dir.symLink(io_mod.getIo(), "../outside", "artifacts/web-fetch", .{ .is_directory = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
     const session_dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
     defer alloc.free(session_dir);
 
     try std.testing.expectError(error.CorruptArtifactStore, Store.init(alloc, session_dir));
+}
+
+fn expectPrivateManagedDir(parent: std.Io.Dir, sub_path: []const u8) !void {
+    var dir = try parent.openDir(io_mod.getIo(), sub_path, .{ .follow_symlinks = false });
+    defer dir.close(io_mod.getIo());
+    try std.testing.expect(try io_mod.privateDirectoryAclMatches(dir));
 }
 
 test "web_fetch artifact store creates private managed directories" {
@@ -447,10 +453,8 @@ test "web_fetch artifact store creates private managed directories" {
     var store = try Store.init(alloc, session_dir);
     defer store.deinit();
 
-    const artifacts_stat = try tmp.dir.statFile(io_mod.getIo(), "artifacts", .{ .follow_symlinks = false });
-    const web_fetch_stat = try tmp.dir.statFile(io_mod.getIo(), "artifacts/web-fetch", .{ .follow_symlinks = false });
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), io_mod.permissionsMode(artifacts_stat.permissions) & 0o777);
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), io_mod.permissionsMode(web_fetch_stat.permissions) & 0o777);
+    try expectPrivateManagedDir(tmp.dir, "artifacts");
+    try expectPrivateManagedDir(tmp.dir, "artifacts/web-fetch");
 }
 
 test "web_fetch corrupt durable artifact store fails instead of degrading to storeless metadata" {

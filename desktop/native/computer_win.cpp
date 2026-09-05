@@ -685,7 +685,7 @@ static bool process_descends_from(DWORD pid, DWORD ancestor, const ParentMap &pa
     if (pid == ancestor) return true;
     for (size_t depth = 0; depth < 64; depth += 1) {
         auto found = parents.find(pid);
-        if (found == parents.end()) return true;
+        if (found == parents.end()) return false;
         DWORD parent = found->second;
         if (parent == ancestor) return true;
         if (parent == 0 || parent == pid) return false;
@@ -725,9 +725,6 @@ static WindowList windows_for_process(DWORD pid = 0) {
             return item.second != pid;
         }), list.windows.end());
     }
-    std::sort(list.windows.begin(), list.windows.end(), [](const auto &left, const auto &right) {
-        return reinterpret_cast<UINT_PTR>(left.first) < reinterpret_cast<UINT_PTR>(right.first);
-    });
     return list;
 }
 
@@ -895,7 +892,14 @@ static std::string role_name(CONTROLTYPEID type) {
     case UIA_ButtonControlTypeId: return "Button";
     case UIA_CheckBoxControlTypeId: return "CheckBox";
     case UIA_ComboBoxControlTypeId: return "ComboBox";
+    case UIA_CustomControlTypeId: return "Custom";
+    case UIA_DataGridControlTypeId: return "DataGrid";
+    case UIA_DataItemControlTypeId: return "DataItem";
+    case UIA_DocumentControlTypeId: return "Document";
     case UIA_EditControlTypeId: return "Edit";
+    case UIA_GroupControlTypeId: return "Group";
+    case UIA_HeaderControlTypeId: return "Header";
+    case UIA_HeaderItemControlTypeId: return "HeaderItem";
     case UIA_HyperlinkControlTypeId: return "Hyperlink";
     case UIA_ImageControlTypeId: return "Image";
     case UIA_ListControlTypeId: return "List";
@@ -907,14 +911,17 @@ static std::string role_name(CONTROLTYPEID type) {
     case UIA_ProgressBarControlTypeId: return "ProgressBar";
     case UIA_RadioButtonControlTypeId: return "RadioButton";
     case UIA_ScrollBarControlTypeId: return "ScrollBar";
+    case UIA_SemanticZoomControlTypeId: return "SemanticZoom";
     case UIA_SeparatorControlTypeId: return "Separator";
     case UIA_SliderControlTypeId: return "Slider";
     case UIA_SpinnerControlTypeId: return "Spinner";
+    case UIA_SplitButtonControlTypeId: return "SplitButton";
     case UIA_StatusBarControlTypeId: return "StatusBar";
     case UIA_TabControlTypeId: return "Tab";
     case UIA_TabItemControlTypeId: return "TabItem";
     case UIA_TableControlTypeId: return "Table";
     case UIA_TextControlTypeId: return "Text";
+    case UIA_ThumbControlTypeId: return "Thumb";
     case UIA_TitleBarControlTypeId: return "TitleBar";
     case UIA_ToolBarControlTypeId: return "ToolBar";
     case UIA_ToolTipControlTypeId: return "ToolTip";
@@ -1013,6 +1020,12 @@ static Json element_identity(IUIAutomationElement *element) {
     result.set("title", Json::string_value(title));
     result.set("identifier", Json::string_value(identifier));
     return result;
+}
+
+static bool pressable(IUIAutomationElement *element) {
+    return current_pattern<IUIAutomationInvokePattern>(element, UIA_InvokePatternId)
+        || current_pattern<IUIAutomationTogglePattern>(element, UIA_TogglePatternId)
+        || current_pattern<IUIAutomationSelectionItemPattern>(element, UIA_SelectionItemPatternId);
 }
 
 static bool excluded_element(IUIAutomationElement *element) {
@@ -1277,7 +1290,7 @@ private:
         BOOL focused = FALSE;
         if (SUCCEEDED(element->get_CurrentIsEnabled(&enabled)) && !enabled) line.append(" disabled");
         if (SUCCEEDED(element->get_CurrentHasKeyboardFocus(&focused)) && focused) line.append(" focused");
-        if (current_pattern<IUIAutomationInvokePattern>(element, UIA_InvokePatternId)) line.append(" clickable");
+        if (pressable(element)) line.append(" clickable");
         BOOL read_only = TRUE;
         if (value_pattern && SUCCEEDED(value_pattern->get_CurrentIsReadOnly(&read_only)) && !read_only) line.append(" editable_value");
         line.push_back('\n');
@@ -1364,11 +1377,16 @@ private:
 
     Json click(IUIAutomationElement *element) {
         ComPtr<IUIAutomationInvokePattern> invoke = current_pattern<IUIAutomationInvokePattern>(element, UIA_InvokePatternId);
-        if (!invoke) return failure("This control does not expose a background invoke action. No mouse fallback was used.");
+        ComPtr<IUIAutomationTogglePattern> toggle;
+        ComPtr<IUIAutomationSelectionItemPattern> select;
+        if (!invoke) toggle = current_pattern<IUIAutomationTogglePattern>(element, UIA_TogglePatternId);
+        if (!invoke && !toggle) select = current_pattern<IUIAutomationSelectionItemPattern>(element, UIA_SelectionItemPatternId);
+        if (!invoke && !toggle && !select) return failure("This control does not expose a background press action. No mouse fallback was used.");
         if (!valid_application() || !allowed_element(element) || !within_deadline()) return failure("The approved app or control changed. Get app state again.");
         announce_cursor(element);
         if (!valid_application() || !allowed_element(element) || !within_deadline()) return failure("The approved app or control changed. Get app state again.");
-        return mutation_result(invoke->Invoke(), "This control does not support background activation. No foreground or global-input fallback was used.");
+        HRESULT result = invoke ? invoke->Invoke() : toggle ? toggle->Toggle() : select->Select();
+        return mutation_result(result, "This control does not support background activation. No foreground or global-input fallback was used.");
     }
 
     Json set_value(IUIAutomationElement *element, const std::string &encoded_value) {
@@ -1464,16 +1482,12 @@ private:
         if (!valid_application() || !allowed_element(element) || !within_deadline()) return failure("The approved app or scrollbar changed. Get app state again.");
         announce_cursor(element);
         if (!valid_application() || !allowed_element(current.get()) || !within_deadline()) return failure("The approved app or scrollbar changed. Get app state again.");
-        ScrollAmount horizontal_amount = ScrollAmount_NoAmount;
-        ScrollAmount vertical_amount = ScrollAmount_NoAmount;
-        if (horizontal) horizontal_amount = increasing ? ScrollAmount_SmallIncrement : ScrollAmount_SmallDecrement;
-        else vertical_amount = increasing ? ScrollAmount_SmallIncrement : ScrollAmount_SmallDecrement;
-        for (int count = 0; count < amount; count += 1) {
-            if (!within_deadline()) return failure("App control was stopped or timed out. No further scrolling was sent.");
-            HRESULT result = pattern->Scroll(horizontal_amount, vertical_amount);
-            if (FAILED(result)) return mutation_result(result, "This control does not support the requested background scroll. No mouse or global-input fallback was used.");
-        }
-        return success("The app accepted the background scroll. Get app state again to verify its effect.");
+        double position = 0;
+        HRESULT read = horizontal ? pattern->get_CurrentHorizontalScrollPercent(&position) : pattern->get_CurrentVerticalScrollPercent(&position);
+        if (FAILED(read) || !std::isfinite(position) || position < 0) return failure("The app does not report a scroll position. No mouse or global-input fallback was used.");
+        double next = std::clamp(position + (increasing ? 1 : -1) * amount * 10.0, 0.0, 100.0);
+        HRESULT result = pattern->SetScrollPercent(horizontal ? next : UIA_ScrollPatternNoScroll, horizontal ? UIA_ScrollPatternNoScroll : next);
+        return mutation_result(result, "This control does not support the requested background scroll. No mouse or global-input fallback was used.");
     }
 
     IdentityData identity_;
@@ -1550,6 +1564,8 @@ static bool self_test() {
         || !std::all_of(spaced_id.begin(), spaced_id.end(), [](unsigned char byte) { return byte < 128; })) return false;
     ParentMap synthetic{{1, 0}, {2, 1}, {3, 2}};
     if (!process_descends_from(3, 1, synthetic) || process_descends_from(3, 4, synthetic)) return false;
+    ParentMap orphan{{5, 6}};
+    if (process_descends_from(5, 7, orphan) || !process_descends_from(5, 6, orphan)) return false;
     ParentMap cycle{{2, 3}, {3, 2}};
     if (!process_descends_from(2, 1, cycle)) return false;
     if (!process_descends_from(GetCurrentProcessId(), GetCurrentProcessId(), process_parents())) return false;

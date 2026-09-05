@@ -9,6 +9,7 @@ const workspace_access = @import("../../core/workspace/workspace_access.zig");
 const sort_utils = @import("../../core/shared/sort_utils.zig");
 const mcp_contract = @import("../../core/mcp/mcp_contract.zig");
 const gateway_schema = @import("../../core/tooling/gateway_schema.zig");
+const path_display = @import("path_display.zig");
 
 pub const grep_description =
     "Search this workspace with zvec-grep over a prebuilt index of the connected folder. `query` returns two ranked groups of up to `limit` hits each: Q1 by embedding similarity, whose hits often do not contain your literal words, and Q2 by BM25 keywords. Each hit is a workspace-relative path with a line range and a source snippet, so a hit usually answers the question without a follow-up read. `regex` runs ripgrep over the same folder for one exact symbol or literal and returns up to 20 matching lines per file. Pass exactly one of `query` or `regex`. When to use: you do not know the wording or the file, or the answer spans files: architecture, call relationships, data flow, rationale. When NOT to use: you already know the path (read it), you need per-line ERE, match counts, or paginated output (grep_files), or you want a filename (glob_files). The index may lag the working tree, so no hits means not in the index, not not in the repo; confirm with grep_files before concluding something is absent. Never build or rebuild the index yourself.";
@@ -142,10 +143,10 @@ pub fn grepArgv(arena: std.mem.Allocator, grep: *const mcp_contract.McpServerCon
     try argv.append(arena, grep.command orelse return error.McpInvalidServerConfig);
     try argv.appendSlice(arena, grep.args);
     const scope: ?[]const u8 = if (path) |requested| blk: {
-        const relative = if (std.fs.path.isAbsolute(requested))
+        const relative = try path_display.slashSeparated(arena, if (std.fs.path.isAbsolute(requested))
             try pathing.workspaceRelativePath(arena, workspace_root, requested)
         else
-            requested;
+            requested);
         const trimmed = std.mem.trimEnd(u8, relative, "/");
         break :blk if (trimmed.len > 0 and !std.mem.eql(u8, trimmed, ".")) trimmed else null;
     } else null;
@@ -230,7 +231,7 @@ test "grepArgv scopes a subdirectory with a glob and passes the configured comma
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const args = [_][]const u8{ "/app/zg/index.js" };
+    const args = [_][]const u8{"/app/zg/index.js"};
     const grep: mcp_contract.McpServerConfig = .{ .name = "zg", .command = "/app/Electron", .args = args[0..] };
     const argv = try grepArgv(arena, &grep, "/workspace", "where are permissions gated", null, "src/", grep_default_limit);
     try std.testing.expectEqualStrings("/app/Electron", argv[0]);
@@ -507,7 +508,7 @@ fn resolveSearchRoot(cfg: Config, arena: std.mem.Allocator, requested: []const u
     const absolute = try scope.resolvePath(arena, requested, .existing);
     const scope_root = scope.rootForPath(absolute) orelse return error.PathOutsideWorkspace;
     const relative = if (std.mem.eql(u8, scope_root, cfg.workspace_root))
-        try pathing.workspaceRelativePath(arena, cfg.workspace_root, absolute)
+        try path_display.slashSeparated(arena, try pathing.workspaceRelativePath(arena, cfg.workspace_root, absolute))
     else
         absolute;
 
@@ -520,11 +521,11 @@ fn resolveSearchRoot(cfg: Config, arena: std.mem.Allocator, requested: []const u
     return .{ .absolute = absolute, .relative = relative, .is_directory = true, .scope_root = scope_root };
 }
 
-fn joinRelativeSearchPath(arena: std.mem.Allocator, root_relative: []const u8, child_relative: []const u8) ![]u8 {
+fn joinRelativeSearchPath(arena: std.mem.Allocator, root_relative: []const u8, child_relative: []const u8) ![]const u8 {
     if (std.mem.eql(u8, root_relative, ".") or root_relative.len == 0) {
-        return arena.dupe(u8, child_relative);
+        return path_display.slashSeparated(arena, child_relative);
     }
-    return std.fs.path.join(arena, &.{ root_relative, child_relative });
+    return path_display.slashSeparated(arena, try std.fs.path.join(arena, &.{ root_relative, child_relative }));
 }
 
 fn resolveDirectoryEntryTarget(arena: std.mem.Allocator, workspace_root: []const u8, absolute_path: []const u8, entry_kind: std.Io.File.Kind) !?[]const u8 {

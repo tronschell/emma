@@ -419,6 +419,7 @@ fn loadStartupStateFromOwnedWorkspace(
 }
 
 pub fn bootstrapInteractiveApp(cfg: BootstrapConfig) !StartupState {
+    cfg.shell.stdout_file = std.Io.File.stdout();
     try cfg.terminal.ensureInteractive();
     try cfg.terminal.captureOriginalTermios();
 
@@ -1978,7 +1979,7 @@ test "loadStartupState defaults fast mode off and preserves explicit preferences
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "absent");
     try tmp.dir.createDirPath(io_mod.getIo(), "configured");
     try tmp.dir.createDirPath(io_mod.getIo(), "enabled");
@@ -1994,8 +1995,8 @@ test "loadStartupState defaults fast mode off and preserves explicit preferences
 
     const fixture = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{{\"workspaces\":{{\"{s}\":{{\"model\":\"openai/gpt-5\"}},\"{s}\":{{\"fast_mode\":true}}}}}}\n",
-        .{ configured_root, enabled_root },
+        "{{\"workspaces\":{{{f}:{{\"model\":\"openai/gpt-5\"}},{f}:{{\"fast_mode\":true}}}}}}\n",
+        .{ std.json.fmt(configured_root, .{}), std.json.fmt(enabled_root, .{}) },
     );
     defer std.testing.allocator.free(fixture);
     try writeFixtureFile(tmp.dir, "home/.fx/settings.json", fixture);
@@ -2026,7 +2027,7 @@ test "loadStartupState resolves startup scrollback default and explicit false" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "absent");
     try tmp.dir.createDirPath(io_mod.getIo(), "disabled");
 
@@ -2039,8 +2040,8 @@ test "loadStartupState resolves startup scrollback default and explicit false" {
 
     const fixture = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{{\"workspaces\":{{\"{s}\":{{\"startup_scrollback\":false}}}}}}\n",
-        .{disabled_root},
+        "{{\"workspaces\":{{{f}:{{\"startup_scrollback\":false}}}}}}\n",
+        .{std.json.fmt(disabled_root, .{})},
     );
     defer std.testing.allocator.free(fixture);
     try writeFixtureFile(tmp.dir, "home/.fx/settings.json", fixture);
@@ -2062,7 +2063,7 @@ test "loadStartupState resolves input appearance default and explicit lines" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "absent");
     try tmp.dir.createDirPath(io_mod.getIo(), "lines");
 
@@ -2075,8 +2076,8 @@ test "loadStartupState resolves input appearance default and explicit lines" {
 
     const fixture = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{{\"workspaces\":{{\"{s}\":{{\"input_appearance\":\"lines\"}}}}}}\n",
-        .{lines_root},
+        "{{\"workspaces\":{{{f}:{{\"input_appearance\":\"lines\"}}}}}}\n",
+        .{std.json.fmt(lines_root, .{})},
     );
     defer std.testing.allocator.free(fixture);
     try writeFixtureFile(tmp.dir, "home/.fx/settings.json", fixture);
@@ -2097,7 +2098,7 @@ test "loadStartupState resolves slash menu categories default and explicit false
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
 
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
@@ -2198,7 +2199,7 @@ test "loadStartupState falls back to auto for invalid first_call_tool_choice" {
 test "loadStartupState diagnoses the retired fuzzy skill setting" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try createPrivateFixtureDir(tmp.dir, "home/.fx");
     try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
 
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
@@ -2215,6 +2216,13 @@ test "loadStartupState diagnoses the retired fuzzy skill setting" {
     defer state.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), state.config_diagnostics.len);
     try std.testing.expectEqual(config_runtime.ConfigDiagnosticCause.retired_skill_match_fuzzy, state.config_diagnostics[0].cause);
+}
+
+fn createPrivateFixtureDir(dir: std.Io.Dir, sub_path: []const u8) !void {
+    try dir.createDirPath(io_mod.getIo(), sub_path);
+    var created = try dir.openDir(io_mod.getIo(), sub_path, .{ .follow_symlinks = false });
+    defer created.close(io_mod.getIo());
+    try io_mod.enforcePrivateDirectoryAcl(created);
 }
 
 fn writeFixtureFile(dir: std.Io.Dir, sub_path: []const u8, text: []const u8) !void {

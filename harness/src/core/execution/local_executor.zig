@@ -100,6 +100,8 @@ test "local executor keeps route-specific foreground result limits" {
     );
 }
 
+const test_command_root = if (@import("builtin").os.tag == .windows) "C:\\Windows" else "/tmp";
+
 test "local executor runs an approved shell command with its admitted context" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -108,7 +110,7 @@ test "local executor runs an approved shell command with its admitted context" {
     const command = PreparedCommand{ .approved_shell = .{
         .command_ctx = .{
             .command = "printf local-executor",
-            .resolved_cwd = "/tmp",
+            .resolved_cwd = test_command_root,
             .background = false,
             .resolved_backend = .none,
             .target_os = @import("builtin").os.tag,
@@ -118,7 +120,7 @@ test "local executor runs an approved shell command with its admitted context" {
     } };
     const executed = try executePreparedCommand(.{
         .backend = .none,
-        .workspace_root = "/tmp",
+        .workspace_root = test_command_root,
         .max_command_output_bytes = 1024,
     }, arena, command);
 

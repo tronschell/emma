@@ -73,6 +73,17 @@ const SystemSignalEffects = struct {
     }
 };
 
+fn terminateWindowsProcess(process: WindowsTrackedProcess) bool {
+    if (windows_job.Job.terminateForProcess(
+        process.process_id,
+        process.creation_time,
+    )) return true;
+    return windows_process.terminateByIdentity(
+        process.process_id,
+        process.creation_time,
+    );
+}
+
 pub const Tracker = struct {
     alloc: Allocator,
     root: ?TrackedProcess = null,
@@ -273,22 +284,14 @@ pub const Tracker = struct {
         if (comptime builtin.os.tag == .windows) {
             var summary: DeliverySummary = .{};
             if (self.windows_root) |root| {
-                if (windows_job.Job.terminateForProcess(
-                    root.process_id,
-                    root.creation_time,
-                )) {
+                if (terminateWindowsProcess(root)) {
                     summary.delivered += 1;
                 } else {
                     summary.incomplete = true;
                 }
             }
             for (self.windows_processes.items) |process| {
-                if (windows_job.Job.terminateForProcess(
-                    process.process_id,
-                    process.creation_time,
-                )) {
-                    summary.delivered += 1;
-                }
+                if (terminateWindowsProcess(process)) summary.delivered += 1;
             }
             return summary;
         }
@@ -937,4 +940,25 @@ test "tracked identity distinguishes process instances" {
     try std.testing.expect(linux.eql(.{ .linux_start_ticks = 42 }));
     try std.testing.expect(!linux.eql(.{ .linux_start_ticks = 43 }));
     try std.testing.expect(!linux.eql(.{ .macos_unique_id = 42 }));
+}
+
+test "Windows terminates a tracked tree whose launcher owns no job object" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var child = try std.process.spawn(io_mod.getIo(), .{
+        .argv = &.{ "cmd.exe", "/c", "ping -n 30 127.0.0.1 >NUL" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    defer child.kill(io_mod.getIo());
+
+    var tracker = try Tracker.init(std.testing.allocator);
+    defer tracker.deinit();
+    try tracker.refresh(child.id.?);
+    try std.testing.expect(tracker.anyAlive());
+
+    const summary = tracker.signalProcessesChecked(std.posix.SIG.TERM, null);
+    try std.testing.expect(!summary.incomplete);
+    try std.testing.expect(summary.delivered >= 1);
+    _ = try child.wait(io_mod.getIo());
 }

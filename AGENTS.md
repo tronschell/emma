@@ -82,10 +82,11 @@ Full contract: [`.claude/skills/sibling-repos/SKILL.md`](.claude/skills/sibling-
 
 Feature branches start from and squash-merge into `dev`, the default branch.
 Every PR runs the full `ci` workflow. Only the owner can merge `dev` into
-`main`; that merge commit is the release. `ci` packages the candidate on that
-push. The `release` workflow reads the root `package.json` version, skips if
-that version is already published, and otherwise verifies that candidate, signs,
-notarizes, and publishes it with notes collected from the merged commits.
+`main`; that merge commit is the release. `ci` packages the macOS and Windows
+x64 candidates on that push. The `release` workflow reads the root
+`package.json` version, skips if that version is already published, and
+otherwise verifies both candidates, signs and notarizes the macOS app, and
+publishes both with notes collected from the merged commits.
 Bump the version on `dev` before promoting. There is no changelog file, release
 PR, or hand-made tag.
 

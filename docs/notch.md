@@ -1,7 +1,8 @@
 # The notch
 
-Quick Ask: one macOS island that opens under the camera housing, or a Windows
-pill near the top of the display, on top of whatever you were doing. Main-process geometry is
+Quick Ask: one macOS island that opens under the camera housing, or the same
+island parked near the top of the Windows work area, on top of whatever you were
+doing. Main-process geometry is
 [`desktop/main/overlay.ts`](../desktop/main/overlay.ts), the windows are in
 [`desktop/main/main.ts`](../desktop/main/main.ts), and every surface is the same
 renderer bundle picking a component off its query string
@@ -40,8 +41,10 @@ number is what makes the island's shoulders sit where you want them.
 
 The macOS island window spans the housing and hangs below it: 620px wide (or the
 display minus 16), the menu-bar height, plus 97px of island and a 126px
-transparent band for the orbs. On Windows, the pill uses the active display's
-work area and the saved pill position; it has no camera-housing geometry.
+transparent band for the orbs. On Windows there is no camera-housing geometry:
+the island opens beside where the chip is parked in the active display's work
+area — top right until the chip has been dragged — and wears the same 28px
+header the popout does.
 
 ## The idle sliver
 
@@ -81,7 +84,7 @@ picker, and a footer reading the model's window and the last answer's tok/s.
 |---|---|
 | Nothing running | The window is **destroyed** — no idle renderer sitting behind the menu bar |
 | A turn running | The window hides and is destroyed when the run lands (`closeOverlayWhenIdle`) |
-| The island detached | It collapses to the chip instead of closing |
+| The island detached, or any island on Windows | It collapses to the chip instead of closing |
 
 An unsent draft survives either way: the composer writes it to `localStorage`
 under `emma.overlayDraft.v1` on every keystroke and reads it back when the island
@@ -93,6 +96,10 @@ Dragged off the housing, Quick Ask becomes a 44px chip parked where you left it
 — always whole and inside the work area, because a chip half off the screen is
 one you cannot get back. Clicking it expands the same island beside it, with a
 28px header where the housing wrap would have been.
+
+The chip is also the island's exit on Windows: leaving collapses to it, it
+reports the run's state — working, error, or done — and once the run is done it
+lingers **2.4 s**, fades for **0.32 s**, and destroys the window.
 
 ## The orb ring
 

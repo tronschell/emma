@@ -1,16 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CliRuns } from "../main/cli";
 import { cliInputIds } from "../shared/cli";
 import { parseToolArgs } from "../main/tools";
+import { NO_MULTILINE_PROMPT, writeFakeCli } from "./fake-cli";
 
-test("CLI handoffs validate sources and pass only the latest stdout through a chain", async () => {
+test("CLI handoffs validate sources and pass only the latest stdout through a chain", { skip: NO_MULTILINE_PROMPT }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "emma-cli-chain-"));
-  const binary = join(directory, "agent");
-  await writeFile(binary, `#!${process.execPath}\nconst prompt = process.argv.at(-1);\nprocess.stderr.write('diagnostic-only\\n');\nif (prompt === 'fail') process.exit(2);\nprocess.stdout.write(prompt === 'large' ? 'x'.repeat(270000) : 'Result: ' + prompt);\n`, { mode: 0o700 });
+  const binary = await writeFakeCli(directory, `const prompt = process.argv.at(-1);\nprocess.stderr.write('diagnostic-only\\n');\nif (prompt === 'fail') process.exit(2);\nprocess.stdout.write(prompt === 'large' ? 'x'.repeat(270000) : 'Result: ' + prompt);\n`);
   const runs = new CliRuns(() => undefined);
   const paths = Reflect.get(runs, "paths") as Map<string, string>;
   for (const bin of ["claude", "codex", "pi"]) paths.set(bin, binary);

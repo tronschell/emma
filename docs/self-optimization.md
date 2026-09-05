@@ -51,7 +51,7 @@ evidence, not a promise of unlimited history or byte-for-byte provider requests.
 | Paired replay bench, t + sign test, fixed N | [bench.ts](../desktop/shared/bench.ts), [bench-run.ts](../desktop/src/bench-run.ts) | Cases from real threads, arms interleaved per case |
 | Friction reader and proposal drafts | `frictionOf`, `spendOf`, `draftProposal` in improvement.ts | Ranks failing tools and where the tokens go, drafts one change |
 | Family- and model-scoped prompt presets | [prompts.ts](../desktop/shared/prompts.ts) | `scope: family:glm` or `model:<id>`, seven variables |
-| Harness knobs per turn | `HarnessExperiments` in [settings.ts](../desktop/shared/settings.ts) | compact %, reinject, prune tools, command timeout, semantic grep, embedding model |
+| Harness knobs per turn | `HarnessExperiments` in [settings.ts](../desktop/shared/settings.ts) | compact %, fresh context, reinject, prune tools, command timeout, semantic grep, embedding model |
 | Lazy tool discovery | `advertisement_order` in [tools.zig](../harness/src/builtins/tools.zig) | The harness's 24 file, shell and discovery tools are always advertised; of Emma's 27 only `task_list` is, and every other schema costs a `select_tool` model step to load |
 | Model-specific prompt hook | `modelPromptOverlay` in [context.zig](../harness/src/builtins/context.zig) | Returns null for every model today; the desktop's family-scoped presets are the live branch |
 

@@ -1,5 +1,6 @@
 import { type VerifierSettings } from "../shared/settings";
 import { PROHIBITED } from "../shared/settings";
+import { localDevice } from "../shared/platform-copy";
 
 export { PROHIBITED, defaultVerifierSystem } from "../shared/settings";
 
@@ -52,7 +53,7 @@ const guards: Guard[] = [
   { rule: 1, says: "forces a recursive delete", hit: /\brm\s+(-\S*\s+)*-\S*(rf|fr)\b|\brm\b[^|;&]*--recursive[^|;&]*--force|\bfind\b[^|;&]*-delete\b/i },
   { rule: 2, says: "destroys version control history", hit: /\bgit\s+push\b[^|;&]*(--force\b|--force-with-lease\b|\s-f\b)|\bgit\s+reset\b[^|;&]*--hard\b|\bgit\s+clean\b[^|;&]*-\S*f|\bgit\s+(branch|tag)\s+-\S*[dD]\b|\bgit\s+stash\s+(drop|clear)\b|\bgit\s+(filter-branch|filter-repo)\b|\bgit\s+push\b[^|;&]*--delete\b/i },
   { rule: 3, says: "publishes or destroys something others read", hit: /\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b|\bdocker\s+push\b|\bkubectl\s+(apply|delete)\b|\b(drop|truncate)\s+(table|database)\b|\bdelete\s+from\b(?![^;]*\bwhere\b)/i },
-  { rule: 4, says: "sends local content off this Mac", hit: /\bcurl\b[^|;&]*(-T\b|--upload-file\b|--data-binary\s*@|-d\s*@|-F\s+\S*@)|\bscp\b|\brsync\b[^|;&]*\s\S+@\S+:|\bnc\b[^|;&]*\s<\s*\S/i },
+  { rule: 4, says: `sends local content off this ${localDevice(process.platform)}`, hit: /\bcurl\b[^|;&]*(-T\b|--upload-file\b|--data-binary\s*@|-d\s*@|-F\s+\S*@)|\bscp\b|\brsync\b[^|;&]*\s\S+@\S+:|\bnc\b[^|;&]*\s<\s*\S/i },
   { rule: 5, says: "downloads and runs code", hit: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|d)?sh\b|\b(curl|wget)\b[^|;&]*\s-o\s*\S+\s*&&\s*(\.\/|sh\b|bash\b)|\bnpx\s+(?!-)\S+@(?!\d)/i },
   { rule: 6, says: "touches credentials", hit: /(^|[\s"'=/])\.env\b|~\/\.ssh\b|\bid_[re]sa\b|\.aws\/credentials\b|\.netrc\b|\bsecurity\s+\S*-password\b|\bkeychain\b|\bCookies\b|\.config\/gh\/hosts/i },
   { rule: 7, says: "changes the machine", hit: /(^|[\s|;&(])sudo\b|\blaunchctl\b|\bcrontab\b|\bdefaults\s+write\b|\bcsrutil\b|\bspctl\b|\bsystemsetup\b|\bscutil\b|>>?\s*~?\/?(\.\w+\/)*\.(zshrc|bashrc|bash_profile|zprofile|profile)\b/i },

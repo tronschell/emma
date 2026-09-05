@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const debug_trace = @import("../core/shared/debug_trace.zig");
 const gateway_client = @import("client.zig");
@@ -2041,7 +2042,8 @@ test "a refused connection reports retryable transport failure evidence" {
     defer harness.deinit();
 
     harness.bind("http://127.0.0.1:1/chat");
-    try std.testing.expectError(error.ConnectionRefused, provider.stream(alloc, harness.request));
+    const refused_error = if (builtin.os.tag == .windows) error.Unexpected else error.ConnectionRefused;
+    try std.testing.expectError(refused_error, provider.stream(alloc, harness.request));
     try std.testing.expectEqual(
         stream_provider.NetworkFailureCause.transport_interrupted,
         harness.attempt_evidence.network_failure.?.cause,

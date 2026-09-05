@@ -173,6 +173,20 @@ test("computer accepts only bounded app-scoped commands", () => {
   assert.deepEqual(computerTools[0].inputSchema.properties.action.enum, ["list_apps", "get_app_state", "click", "set_value", "type_text", "key", "scroll"]);
 });
 
+test("Windows helper identities and snapshot tokens pass the trust boundary", { skip: process.platform !== "win32" && "Windows executable paths" }, async () => {
+  const notepad: ComputerApp = { id: "app-178cce32aabda457", name: "Notepad", pid: 26200, path: "C:\\Program Files\\WindowsApps\\Microsoft.WindowsNotepad\\Notepad.exe", launchedAt: 1_788_578_020_543.14 };
+  const windowsSnapshot = "1052238-6658-0";
+  assert.deepEqual(computerAction({ action: "click", app: notepad.id, snapshot: windowsSnapshot, element_index: 27 }),
+    { action: "click", app: notepad.id, snapshot: windowsSnapshot, element_index: 27 });
+  apps = [notepad];
+  const computer = runtime();
+  assert.match(await computer.execute(thread, { action: "list_apps" }, allow), /^Notepad — app-178cce32aabda457 — pid 26200 — C:\\/);
+  await computer.execute(thread, state(notepad), allow);
+  assert.deepEqual(spawned[0].args, ["--app", JSON.stringify(notepad), "--blocked-pid", String(process.pid)]);
+  apps = [{ ...notepad, path: "Notepad.exe" }];
+  await assert.rejects(computer.execute(thread, { action: "list_apps" }, allow), /Invalid computer app identity/);
+});
+
 test("discovery exposes app metadata without reading UI or asking", async () => {
   apps.push({ ...target, id: "com.test.Emma", pid: process.pid });
   const computer = runtime();
