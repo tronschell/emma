@@ -581,18 +581,18 @@ pub fn setRawEnviron(raw: RawEnviron) void {
 }
 
 pub fn getenv(key: []const u8) ?[]const u8 {
-    const value = getenvExact(key);
-    if (value) |present| {
-        if (comptime builtin.os.tag != .windows) return present;
-        if (present.len > 0) return present;
-    }
-    if (comptime builtin.os.tag == .windows) {
-        if (std.mem.eql(u8, key, "HOME")) return getenvExact("USERPROFILE");
-        if (std.mem.eql(u8, key, "TMPDIR")) {
-            return getenvExact("TMP") orelse getenvExact("TEMP");
-        }
+    if (comptime builtin.os.tag != .windows) return getenvExact(key);
+    if (getenvPresent(key)) |present| return present;
+    if (std.mem.eql(u8, key, "HOME")) return getenvPresent("USERPROFILE");
+    if (std.mem.eql(u8, key, "TMPDIR")) {
+        return getenvPresent("TMP") orelse getenvPresent("TEMP");
     }
     return null;
+}
+
+fn getenvPresent(key: []const u8) ?[]const u8 {
+    const value = getenvExact(key) orelse return null;
+    return if (value.len > 0) value else null;
 }
 
 fn getenvExact(key: []const u8) ?[]const u8 {
@@ -1383,6 +1383,32 @@ test "getenv returns set value after setEnvironMap" {
 
     setEnvironMap(&environ);
     try std.testing.expectEqualStrings("present", getenv("FX_IO_TEST").?);
+    global_environ = null;
+}
+
+test "Windows treats an empty environment value as absent at every path-building fallback" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const previous = global_environ;
+    global_environ = null;
+    defer global_environ = previous;
+
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("HOME", "");
+    try environ.put("USERPROFILE", "C:/Users/fake");
+    try environ.put("TMP", "");
+    try environ.put("TEMP", "C:/Temp");
+    try environ.put("LOCALAPPDATA", "");
+    setEnvironMap(&environ);
+
+    try std.testing.expectEqualStrings("C:/Users/fake", getenv("HOME").?);
+    try std.testing.expectEqualStrings("C:/Temp", getenv("TMPDIR").?);
+    try std.testing.expect(getenv("LOCALAPPDATA") == null);
+
+    try environ.put("USERPROFILE", "");
+    try environ.put("TEMP", "");
+    try std.testing.expect(getenv("HOME") == null);
+    try std.testing.expect(getenv("TMPDIR") == null);
     global_environ = null;
 }
 

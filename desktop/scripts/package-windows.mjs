@@ -155,29 +155,19 @@ const required = [
 for (const resource of required) assert.ok(existsSync(resource), `Missing Windows resource: ${resource}`);
 
 const ico = path.join(staging, "emma.ico");
-const png = readFileSync(path.join(desktop, "assets/emma-dock.png"));
-const icoHeader = Buffer.alloc(22);
-icoHeader.writeUInt16LE(0, 0);
-icoHeader.writeUInt16LE(1, 2);
-icoHeader.writeUInt16LE(1, 4);
-icoHeader.writeUInt8(0, 6);
-icoHeader.writeUInt8(0, 7);
-icoHeader.writeUInt8(0, 8);
-icoHeader.writeUInt8(0, 9);
-icoHeader.writeUInt16LE(1, 10);
-icoHeader.writeUInt16LE(32, 12);
-icoHeader.writeUInt32LE(png.length, 14);
-icoHeader.writeUInt32LE(22, 18);
-writeFileSync(ico, Buffer.concat([icoHeader, png]));
+cpSync(path.join(desktop, "assets/emma.ico"), ico);
 const icon = readFileSync(ico);
 assert.equal(icon.readUInt16LE(0), 0, "Invalid ICO reserved field.");
 assert.equal(icon.readUInt16LE(2), 1, "Invalid ICO type.");
-assert.equal(icon.readUInt16LE(4), 1, "Invalid ICO image count.");
-assert.equal(icon.readUInt16LE(10), 1, "Invalid ICO color planes.");
-assert.equal(icon.readUInt16LE(12), 32, "Invalid ICO bit depth.");
-assert.equal(icon.readUInt32LE(14), png.length, "Invalid ICO image size.");
-assert.equal(icon.readUInt32LE(18), 22, "Invalid ICO image offset.");
-assert.deepEqual(icon.subarray(22, 30), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "ICO image is not PNG.");
+const iconSizes = [];
+for (let entry = 0; entry < icon.readUInt16LE(4); entry += 1) {
+  const at = 6 + 16 * entry;
+  assert.equal(icon.readUInt16LE(at + 4), 1, "Invalid ICO color planes.");
+  assert.equal(icon.readUInt16LE(at + 6), 32, "Invalid ICO bit depth.");
+  assert.ok(icon.readUInt32LE(at + 12) + icon.readUInt32LE(at + 8) <= icon.length, "Invalid ICO image bounds.");
+  iconSizes.push(icon[at] || 256);
+}
+for (const size of [16, 32, 48, 256]) assert.ok(iconSizes.includes(size), `The Windows icon is missing its ${size}px image.`);
 
 const bundled = /^\/(?:package\.json$|dist-main(?:$|\/(?:main|shared)(?:\/|$))|dist-renderer(?:\/|$)|node_modules(?:$|\/ws(?:\/|$)))/;
 await packager({
@@ -239,6 +229,7 @@ await createWindowsInstaller({
   setupExe: `Emma-${version}-win32-${arch}-Setup.exe`,
   setupIcon: ico,
   loadingGif,
+  iconUrl: "https://raw.githubusercontent.com/tronschell/emma/main/desktop/assets/emma.ico",
   noMsi: true,
   title: "Emma",
   version,
