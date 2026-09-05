@@ -130,7 +130,11 @@ nvidia/nemotron-3-super-120b-a12b:free      nvidia/nemotron-3.5-lightning:free
 
 Every chain is filtered against the catalog Emma actually has, so a retired id is
 dropped rather than sent; an empty catalog means the list goes unfiltered, so a
-first launch still routes. A router whose ids are all `:free` is badged **Free**.
+first launch still routes. OpenRouter refuses a request that names more than
+three models, so the harness sends the surviving chain's first three and drops
+the rest; the links past third are the ranked reserve for the day one retires,
+not ten tries in one request. A router whose ids are all `:free` is badged
+**Free**.
 
 **Settings → Models** lists the routers above the catalog: rename one in place,
 the gear opens the chain (drag to reorder, ✕ to drop a link, the field below adds
