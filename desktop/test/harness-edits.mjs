@@ -10,7 +10,7 @@ import { FolderStore } from '../dist-main/main/folders.js';
 
 const source = ts.createSourceFile('main.ts', fs.readFileSync(new URL('../main/main.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
 const node = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'noteHarnessChange');
-const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'emma-edit-capture-')));
+const cwd = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'emma-edit-capture-')));
 const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'emma-edit-outside-'));
 try {
   const captured = [], reads = [], snapshots = new Map();
