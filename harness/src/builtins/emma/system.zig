@@ -205,12 +205,13 @@ pub const install_mcp = ToolSpec{
 
 const computer_description =
     "Use a desktop app in the background through app-scoped accessibility controls. Prefer dedicated tools for files, code and structured integrations.\n" ++
-    "list_apps returns running apps and their bundle identifiers and process IDs. get_app_state reads an app's accessibility text and returns a snapshot token with element_index values. Supply app as a bundle identifier; supply pid to distinguish multiple running instances. If the app is not running, ask the user to open it.\n" ++
-    "Emma asks the user before reading or controlling the exact running app. Approval lasts only for the current parent turn; full and auto modes never bypass it. Child agents cannot use computer and must ask the parent to perform app actions. A denial means do not use that app again this turn.\n" ++
+    "list_apps returns running apps with their app IDs and process IDs. get_app_state reads an app's accessibility text and returns a snapshot token with element_index values. Supply app as an app ID from list_apps; supply pid to distinguish multiple running instances.\n" ++
+    "launch_app opens an installed app by name — Notepad, Calculator, Google Chrome — and grants control of it for this turn, so use it whenever the app you need is not in list_apps instead of asking the user to open it. Never start a graphical app from the terminal tool: every command there runs in a job that is killed when the command returns, so the app dies with it.\n" ++
+    "Emma asks the user before opening, reading or controlling the exact app. Approval lasts only for the current parent turn; full and auto modes never bypass it. Child agents cannot use computer and must ask the parent to perform app actions. A denial means do not use that app again this turn. A prompt nobody answered before it expired is not a denial: ask for that app once more, and give up if the second request also goes unanswered.\n" ++
     "App approval is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those. Never use this to approve Emma's own dialogs.\n" ++
     "Every mutation requires snapshot and element_index from the latest get_app_state for that app. A snapshot is single-use: perform one action, then get_app_state again before the next action.\n" ++
     "type_text supports only plain AXTextField or AXComboBox controls, not rich text. key dispatch does not prove the app handled it; verify the result with get_app_state.\n" ++
-    "Only click, set_value, type_text, key and scroll are supported. There is no screenshot, coordinate, global shortcut, app activation or clipboard fallback. If an accessibility operation is unavailable, stop and explain the limitation.";
+    "Only click, set_value, type_text, key and scroll change an app. Apart from launch_app, which brings the app it starts forward, there is no screenshot, coordinate, global shortcut, app activation or clipboard fallback. If an accessibility operation is unavailable, stop and explain the limitation.";
 
 pub const computer = ToolSpec{
     .name = "computer",
@@ -225,6 +226,7 @@ pub const computer = ToolSpec{
                     .json_type = .string,
                     .shape = &.{ .enum_values = &.{
                         "list_apps",
+                        "launch_app",
                         "get_app_state",
                         "click",
                         "set_value",
@@ -236,7 +238,13 @@ pub const computer = ToolSpec{
                 .{
                     .name = "app",
                     .json_type = .string,
-                    .description = "Running app's bundle identifier. Required except for list_apps.",
+                    .description = "Running app's ID from list_apps. Required except for list_apps and launch_app.",
+                    .min_length = 1,
+                },
+                .{
+                    .name = "name",
+                    .json_type = .string,
+                    .description = "Installed app to open, as the user would name it: Notepad, Calculator, Google Chrome. Required for launch_app, and never a file path.",
                     .min_length = 1,
                 },
                 .{
@@ -318,6 +326,10 @@ test "computer schema exposes only app-scoped background controls" {
     try std.testing.expectEqualStrings(computer_description, description);
     for ([_][]const u8{
         "current parent turn",
+        "launch_app opens an installed app by name",
+        "not in list_apps instead of asking the user to open it",
+        "Never start a graphical app from the terminal tool",
+        "is not a denial: ask for that app once more",
         "Child agents cannot use computer",
         "purchases, deletions, sending private data",
         "ask separately for those",
@@ -328,12 +340,13 @@ test "computer schema exposes only app-scoped background controls" {
     const schema = parsed.value.object.get("inputSchema").?.object;
     const properties = schema.get("properties").?.object;
     const actions = properties.get("action").?.object.get("enum").?.array.items;
-    const expected_actions = [_][]const u8{ "list_apps", "get_app_state", "click", "set_value", "type_text", "key", "scroll" };
+    const expected_actions = [_][]const u8{ "list_apps", "launch_app", "get_app_state", "click", "set_value", "type_text", "key", "scroll" };
     try std.testing.expectEqual(expected_actions.len, actions.len);
     for (expected_actions, actions) |expected, actual| try std.testing.expectEqualStrings(expected, actual.string);
     const expected_properties = [_][2][]const u8{
         .{ "action", "string" },
         .{ "app", "string" },
+        .{ "name", "string" },
         .{ "pid", "integer" },
         .{ "snapshot", "string" },
         .{ "element_index", "integer" },

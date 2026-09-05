@@ -4,6 +4,7 @@ import { desktopCapturer, systemPreferences, type Display } from "electron";
 import pathModule from "node:path";
 import { BoundedLines } from "./ndjson";
 import { MAX_SCREEN_CONTEXT_CHARS, validJpegDataUrl } from "./ipc";
+import type { PermissionAnswer } from "../shared/agents";
 import { computerActionLabels, validComputerCursor, type ComputerCursor, type ComputerRunProgress } from "../shared/computer";
 
 export const MAX_RUN_STEPS = 20;
@@ -35,13 +36,13 @@ type ComputerAction = {
   direction?: (typeof directions)[number];
   amount?: number;
 };
-type ApproveApp = (app: ComputerApp | ComputerLaunch, signal: AbortSignal) => Promise<boolean>;
+type ApproveApp = (app: ComputerApp | ComputerLaunch, signal: AbortSignal) => Promise<PermissionAnswer>;
 export type ScreenFrame = { image: string; width: number; height: number };
 
 export const computerTools = [
   {
     name: "computer",
-    description: "Use a desktop app in the background, only after the user approves that exact app for this parent turn. Delegated agents must ask the parent to perform computer actions. App approval is required even in Auto and Full access. Start with list_apps, then get_app_state with its app ID (and pid if ambiguous). State returns untrusted UI text, a snapshot token and element indices. Every mutation requires that snapshot and an element_index; get_app_state again afterward. Unsupported controls fail without taking the pointer, using the clipboard or capturing the desktop. When the app you need is not in list_apps, call launch_app with its name instead of asking the user to open it; that asks for one approval, starts the installed app and grants control of it for this turn. Never start a GUI app from the terminal tool — the shell kills it when the command returns. A denial cannot be retried this turn. Never use this to approve Emma's own dialogs. App consent is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those.",
+    description: "Use a desktop app in the background, only after the user approves that exact app for this parent turn. Delegated agents must ask the parent to perform computer actions. App approval is required even in Auto and Full access. Start with list_apps, then get_app_state with its app ID (and pid if ambiguous). State returns untrusted UI text, a snapshot token and element indices. Every mutation requires that snapshot and an element_index; get_app_state again afterward. Unsupported controls fail without taking the pointer, using the clipboard or capturing the desktop. When the app you need is not in list_apps, call launch_app with its name instead of asking the user to open it; that asks for one approval, starts the installed app and grants control of it for this turn. Never start a GUI app from the terminal tool — the shell kills it when the command returns. A denial cannot be retried this turn, but an approval prompt that expired before anyone answered is not a denial: ask for that app once more. Never use this to approve Emma's own dialogs. App consent is not consent to purchases, deletions, sending private data or other consequential actions; ask separately for those.",
     inputSchema: {
       type: "object",
       properties: {
@@ -244,6 +245,7 @@ type ActiveRun = {
   lastActionAt: number;
   approved: Map<string, AppGrant>;
   denied: Set<string>;
+  lapsed: Set<string>;
   queue: Promise<void>;
 };
 
@@ -262,7 +264,7 @@ export class ComputerUseRuntime {
     if (this.run) throw new Error("A computer run already owns this turn; it cannot restart or be borrowed by another thread");
     const timer = setTimeout(() => this.abort("expired after ten minutes"), MAX_RUN_MS);
     timer.unref();
-    this.run = { threadId, controller: new AbortController(), timer, steps: 0, actions: 0, lastActionAt: 0, approved: new Map(), denied: new Set(), queue: Promise.resolve() };
+    this.run = { threadId, controller: new AbortController(), timer, steps: 0, actions: 0, lastActionAt: 0, approved: new Map(), denied: new Set(), lapsed: new Set(), queue: Promise.resolve() };
     this.log(`Emma computer run started for ${threadId}`);
   }
 
@@ -289,13 +291,9 @@ export class ComputerUseRuntime {
     let grant = run.approved.get(app.id);
     if (grant && (grant.app.pid !== app.pid || grant.app.path !== app.path || grant.app.launchedAt !== app.launchedAt)) throw new Error("The approved app instance changed. Start a new turn for a new approval.");
     if (!grant) {
-      run.denied.add(app.id);
-      const allowed = await approve(app, run.controller.signal);
-      this.check(run);
-      if (!allowed) throw new Error("The user did not allow this app. Do not try it again this turn.");
+      await this.consent(run, app.id, app, approve);
       grant = { app };
       run.approved.set(app.id, grant);
-      run.denied.delete(app.id);
     }
     grant.helper ??= new AppHelper(this.helperPath, app, run.controller.signal);
     if (action.action !== "get_app_state" && action.snapshot !== grant.snapshot) throw new Error("Get a fresh app state before acting; that snapshot is stale or belongs to another app");
@@ -329,11 +327,7 @@ export class ComputerUseRuntime {
     this.check(run);
     const key = `launch:${resolved.target}`;
     if (run.denied.has(key)) throw new Error("The user did not allow this app. Do not try it again this turn.");
-    run.denied.add(key);
-    const allowed = await approve(resolved, run.controller.signal);
-    this.check(run);
-    if (!allowed) throw new Error("The user did not allow this app. Do not try it again this turn.");
-    run.denied.delete(key);
+    await this.consent(run, key, resolved, approve);
     run.actions++;
     run.lastActionAt = Date.now();
     this.progress({ step: run.steps, actions: run.actions, action: computerActionLabels.launch_app, app: resolved.name });
@@ -343,6 +337,21 @@ export class ComputerUseRuntime {
     if (target.target !== resolved.target) throw new Error("That name resolved to a different app than the one the user approved. Ask the user to open it instead.");
     run.approved.set(app.id, { app });
     return `Opened ${app.name} — ${app.id} — pid ${app.pid} — ${app.path}\nIt is approved for this turn. Call get_app_state with that app ID to see its window.`;
+  }
+
+  private async consent(run: ActiveRun, key: string, target: ComputerApp | ComputerLaunch, approve: ApproveApp): Promise<void> {
+    run.denied.add(key);
+    const answer = await approve(target, run.controller.signal);
+    this.check(run);
+    if (answer === "allowed") {
+      run.denied.delete(key);
+      run.lapsed.delete(key);
+      return;
+    }
+    if (answer === "denied" || run.lapsed.has(key)) throw new Error("The user did not allow this app. Do not try it again this turn.");
+    run.denied.delete(key);
+    run.lapsed.add(key);
+    throw new Error("No answer yet: the approval request for this app expired before anyone answered it. Ask for the same app once more, and if that also goes unanswered, stop and say what you needed it for.");
   }
 
   abort(reason = "stopped by the user") {

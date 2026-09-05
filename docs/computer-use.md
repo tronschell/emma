@@ -24,9 +24,16 @@ perform app actions. Another app needs its own approval. Separate thread turns
 cannot borrow the grant.
 
 This is an explicit human decision in **every permission mode**, including Auto
-and Full access. The verifier cannot approve it. **Don't**, Escape in the dialog,
-or a ten-minute unanswered prompt denies access, and that app cannot be requested
-again in the same turn. There is no persistent or always-allow grant.
+and Full access. The verifier cannot approve it. **Don't** or Escape in the dialog
+denies access, and that app cannot be requested again in the same turn. There is
+no persistent or always-allow grant.
+
+A prompt nobody answered within ten minutes lapses instead of denying. The tool
+call still fails, and the model is told there is no answer yet rather than that it
+was refused, so it may ask for that one app a second time — after which a second
+lapse is treated as a denial for the rest of the turn. Only an explicit refusal,
+Escape, a stop or a cancelled turn is a denial. Nothing is opened, read or
+controlled while a prompt is unanswered.
 
 The grant lives only in memory. The helper checks the bundle identity, path, PID
 and kernel process birth timestamp before acting; quitting or relaunching an app
